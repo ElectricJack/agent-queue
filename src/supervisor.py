@@ -38,7 +38,7 @@ from src.config import AppConfig, ChatProviderConfig
 from src.llm_logger import LLMLogger
 from src.orchestrator import Orchestrator
 from src.reflection import ReflectionEngine, ReflectionVerdict
-from src.tool_registry import ToolRegistry as _ToolRegistry
+from src.tools.registry import ToolRegistry as _ToolRegistry
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

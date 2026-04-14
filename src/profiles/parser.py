@@ -575,7 +575,7 @@ def get_registry_tool_names(registry=None) -> set[str]:
         Set of tool name strings.
     """
     if registry is None:
-        from src.tool_registry import ToolRegistry
+        from src.tools import ToolRegistry
 
         registry = ToolRegistry()
     return {t["name"] for t in registry.get_all_tools()}

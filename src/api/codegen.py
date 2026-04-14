@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field, create_model
 from src.api.dependencies import get_command_handler
 from src.api.models import get_all_response_models
 from src.cli.auto_commands import _strip_category_prefix
-from src.tool_registry import (
+from src.tools import (
     CATEGORIES,
     _ALL_TOOL_DEFINITIONS,
     _CLI_CATEGORY_OVERRIDES,

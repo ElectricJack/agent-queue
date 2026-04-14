@@ -2221,7 +2221,7 @@ class TestGetRegistryToolNames:
 
     def test_with_explicit_registry(self):
         """Passing an explicit ToolRegistry works."""
-        from src.tool_registry import ToolRegistry
+        from src.tools import ToolRegistry
 
         registry = ToolRegistry()
         names = get_registry_tool_names(registry)
@@ -2230,7 +2230,7 @@ class TestGetRegistryToolNames:
 
     def test_custom_registry_with_limited_tools(self):
         """A custom registry with limited tools returns only those names."""
-        from src.tool_registry import ToolRegistry
+        from src.tools import ToolRegistry
 
         registry = ToolRegistry(
             tools=[

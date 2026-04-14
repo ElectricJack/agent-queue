@@ -697,7 +697,7 @@ class TestFilesCategoryRegistry:
     def _registry_with_plugins(self):
         """Create a ToolRegistry with plugin tools included."""
         from unittest.mock import MagicMock
-        from src.tool_registry import ToolRegistry, _ALL_TOOL_DEFINITIONS
+        from src.tools import ToolRegistry, _ALL_TOOL_DEFINITIONS
 
         mock_pr = MagicMock()
         mock_pr.get_all_tool_definitions.return_value = [

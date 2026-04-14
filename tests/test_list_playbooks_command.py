@@ -465,7 +465,7 @@ class TestListPlaybooksToolRegistry:
 
     def test_tool_definition_exists(self):
         """list_playbooks is registered in the tool registry."""
-        from src.tool_registry import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
+        from src.tools import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
         # Check category mapping
         assert "list_playbooks" in _TOOL_CATEGORIES
@@ -477,7 +477,7 @@ class TestListPlaybooksToolRegistry:
 
     def test_tool_definition_has_scope_enum(self):
         """The list_playbooks tool definition includes scope enum."""
-        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+        from src.tools import _ALL_TOOL_DEFINITIONS
 
         tool = next(t for t in _ALL_TOOL_DEFINITIONS if t["name"] == "list_playbooks")
         scope_prop = tool["input_schema"]["properties"]["scope"]

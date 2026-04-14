@@ -21,7 +21,7 @@ from collections import defaultdict
 import click
 from rich.console import Console
 
-from src.tool_registry import (
+from src.tools import (
     CATEGORIES,
     _ALL_TOOL_DEFINITIONS,
     _CLI_CATEGORY_OVERRIDES,

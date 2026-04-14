@@ -519,7 +519,7 @@ def test_observe_handles_llm_error():
 
 def test_reply_to_user_tool_in_registry():
     """reply_to_user is registered as a core tool."""
-    from src.tool_registry import ToolRegistry
+    from src.tools import ToolRegistry
 
     registry = ToolRegistry()
     core = registry.get_core_tools()
@@ -529,7 +529,7 @@ def test_reply_to_user_tool_in_registry():
 
 def test_reply_to_user_tool_schema():
     """reply_to_user has the expected schema."""
-    from src.tool_registry import ToolRegistry
+    from src.tools import ToolRegistry
 
     registry = ToolRegistry()
     all_tools = {t["name"]: t for t in registry.get_all_tools()}

@@ -32,7 +32,7 @@ from pydantic import ConfigDict
 
 from src.database import Database
 from src.models import AgentState, TaskStatus
-from src.tool_registry import _ALL_TOOL_DEFINITIONS
+from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 from src.mcp_interfaces import (
     agent_to_dict,
     profile_to_dict,

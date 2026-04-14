@@ -55,7 +55,7 @@ async def api_execute(body: ExecuteRequest, ch=Depends(get_command_handler)) -> 
 async def api_tools() -> JSONResponse:
     """Return all tool definitions for CLI auto-generation."""
     from src.mcp_registration import _discover_all_commands
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 
     explicit = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
     discovered = _discover_all_commands()

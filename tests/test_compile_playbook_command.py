@@ -314,14 +314,14 @@ class TestToolRegistryIncludesCompilePlaybook:
 
     def test_tool_definition_exists(self):
         """compile_playbook tool definition exists in _ALL_TOOL_DEFINITIONS."""
-        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+        from src.tools import _ALL_TOOL_DEFINITIONS
 
         names = [t["name"] for t in _ALL_TOOL_DEFINITIONS]
         assert "compile_playbook" in names
 
     def test_tool_definition_has_schema(self):
         """compile_playbook tool definition has a valid input_schema."""
-        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+        from src.tools import _ALL_TOOL_DEFINITIONS
 
         tool = next(t for t in _ALL_TOOL_DEFINITIONS if t["name"] == "compile_playbook")
         schema = tool["input_schema"]
@@ -332,13 +332,13 @@ class TestToolRegistryIncludesCompilePlaybook:
 
     def test_tool_category_mapping(self):
         """compile_playbook is mapped to the playbook category."""
-        from src.tool_registry import _TOOL_CATEGORIES
+        from src.tools import _TOOL_CATEGORIES
 
         assert _TOOL_CATEGORIES["compile_playbook"] == "playbook"
 
     def test_tool_registry_category_includes_compile_playbook(self):
         """ToolRegistry includes compile_playbook in the playbook category."""
-        from src.tool_registry import ToolRegistry, _ALL_TOOL_DEFINITIONS
+        from src.tools import ToolRegistry, _ALL_TOOL_DEFINITIONS
 
         registry = ToolRegistry(_ALL_TOOL_DEFINITIONS)
         tool_names = registry.get_category_tool_names("playbook")

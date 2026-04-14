@@ -458,7 +458,7 @@ class TestShowPlaybookGraphToolRegistry:
 
     def test_tool_definition_exists(self):
         """show_playbook_graph tool definition exists in the registry."""
-        from src.tool_registry import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
+        from src.tools import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
         assert "show_playbook_graph" in _TOOL_CATEGORIES
         assert _TOOL_CATEGORIES["show_playbook_graph"] == "playbook"
@@ -468,7 +468,7 @@ class TestShowPlaybookGraphToolRegistry:
 
     def test_tool_definition_has_format_enum(self):
         """The show_playbook_graph definition includes format and direction enums."""
-        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+        from src.tools import _ALL_TOOL_DEFINITIONS
 
         tool = next(t for t in _ALL_TOOL_DEFINITIONS if t["name"] == "show_playbook_graph")
         props = tool["input_schema"]["properties"]
@@ -1121,7 +1121,7 @@ class TestAllPlaybookCommandsRegistered:
 
     def test_all_in_tool_categories(self):
         """All 7 commands are mapped to the 'playbook' category."""
-        from src.tool_registry import _TOOL_CATEGORIES
+        from src.tools import _TOOL_CATEGORIES
 
         for cmd in self.EXPECTED_COMMANDS:
             assert cmd in _TOOL_CATEGORIES, f"{cmd} not in _TOOL_CATEGORIES"
@@ -1131,7 +1131,7 @@ class TestAllPlaybookCommandsRegistered:
 
     def test_all_have_tool_definitions(self):
         """All 7 commands have tool definitions with descriptions and schemas."""
-        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+        from src.tools import _ALL_TOOL_DEFINITIONS
 
         tool_map = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
 
@@ -1150,7 +1150,7 @@ class TestAllPlaybookCommandsRegistered:
 
     def test_tool_registry_category_has_correct_count(self):
         """The playbook category in ToolRegistry contains exactly 7 tools."""
-        from src.tool_registry import ToolRegistry, _ALL_TOOL_DEFINITIONS
+        from src.tools import ToolRegistry, _ALL_TOOL_DEFINITIONS
 
         registry = ToolRegistry(_ALL_TOOL_DEFINITIONS)
         tool_names = registry.get_category_tool_names("playbook")

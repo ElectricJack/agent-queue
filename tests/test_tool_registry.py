@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock
 
-from src.tool_registry import ToolRegistry, _TOOL_CATEGORIES
+from src.tools import ToolRegistry, _TOOL_CATEGORIES
 
 
 def _make_tool(name: str, category: str | None = None) -> dict:
@@ -378,7 +378,7 @@ def test_core_tools_are_compact(registry):
 
 def _real_registry():
     """Create a ToolRegistry with real definitions + mock plugin tools."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    from src.tools import _ALL_TOOL_DEFINITIONS
 
     reg = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
     reg.set_plugin_registry(_mock_plugin_registry())
@@ -387,7 +387,7 @@ def _real_registry():
 
 def test_all_tools_have_descriptions():
     """Every tool in _ALL_TOOL_DEFINITIONS should have a non-empty description."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    from src.tools import _ALL_TOOL_DEFINITIONS
 
     for tool in _ALL_TOOL_DEFINITIONS:
         assert "description" in tool, f"Tool {tool['name']} missing description"
@@ -398,7 +398,7 @@ def test_all_tools_have_descriptions():
 
 def test_all_tools_have_input_schema():
     """Every tool in _ALL_TOOL_DEFINITIONS should have an input_schema."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    from src.tools import _ALL_TOOL_DEFINITIONS
 
     for tool in _ALL_TOOL_DEFINITIONS:
         assert "input_schema" in tool, f"Tool {tool['name']} missing input_schema"
@@ -629,7 +629,7 @@ class TestPlaybookToolRegistration:
 
     def test_all_playbook_commands_in_category_map(self):
         """Every spec §15 command appears in _TOOL_CATEGORIES under 'playbook'."""
-        from src.tool_registry import _TOOL_CATEGORIES
+        from src.tools import _TOOL_CATEGORIES
 
         for cmd in _PLAYBOOK_COMMANDS:
             assert cmd in _TOOL_CATEGORIES, f"{cmd} missing from _TOOL_CATEGORIES"
@@ -639,7 +639,7 @@ class TestPlaybookToolRegistration:
 
     def test_no_extra_playbook_commands(self):
         """No unexpected tools are mapped to the 'playbook' category."""
-        from src.tool_registry import _TOOL_CATEGORIES
+        from src.tools import _TOOL_CATEGORIES
 
         actual = {name for name, cat in _TOOL_CATEGORIES.items() if cat == "playbook"}
         expected = set(_PLAYBOOK_COMMANDS)
@@ -650,7 +650,7 @@ class TestPlaybookToolRegistration:
 
     def test_all_playbook_commands_have_definitions(self):
         """Every spec §15 command has a full tool definition."""
-        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+        from src.tools import _ALL_TOOL_DEFINITIONS
 
         defined = {t["name"] for t in _ALL_TOOL_DEFINITIONS}
         for cmd in _PLAYBOOK_COMMANDS:
@@ -658,7 +658,7 @@ class TestPlaybookToolRegistration:
 
     def test_all_playbook_definitions_have_description(self):
         """Every playbook tool has a non-trivial description."""
-        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+        from src.tools import _ALL_TOOL_DEFINITIONS
 
         for tool in _ALL_TOOL_DEFINITIONS:
             if tool["name"] in _PLAYBOOK_COMMANDS:
@@ -669,7 +669,7 @@ class TestPlaybookToolRegistration:
 
     def test_all_playbook_definitions_have_input_schema(self):
         """Every playbook tool has an input_schema with type=object."""
-        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+        from src.tools import _ALL_TOOL_DEFINITIONS
 
         for tool in _ALL_TOOL_DEFINITIONS:
             if tool["name"] in _PLAYBOOK_COMMANDS:
@@ -680,7 +680,7 @@ class TestPlaybookToolRegistration:
 
     def test_required_params_present_in_schema(self):
         """Tools with required params have them defined in properties."""
-        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+        from src.tools import _ALL_TOOL_DEFINITIONS
 
         for tool in _ALL_TOOL_DEFINITIONS:
             if tool["name"] in _PLAYBOOK_COMMANDS:
@@ -730,7 +730,7 @@ class TestPlaybookToolRegistration:
 
     def test_playbook_category_description(self):
         """The playbook CategoryMeta has a descriptive string."""
-        from src.tool_registry import CATEGORIES
+        from src.tools import CATEGORIES
 
         assert "playbook" in CATEGORIES
         meta = CATEGORIES["playbook"]

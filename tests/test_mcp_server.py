@@ -32,7 +32,7 @@ from src.models import (
     TaskType,
     Workspace,
 )
-from src.tool_registry import _ALL_TOOL_DEFINITIONS
+from src.tools import _ALL_TOOL_DEFINITIONS
 from src.mcp_interfaces import (
     ResourceScheme,
     agent_to_dict,

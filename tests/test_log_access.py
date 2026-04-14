@@ -315,7 +315,7 @@ class TestReadLogs:
 
 class TestToolRegistryDefinitions:
     def test_read_logs_in_registry(self):
-        from src.tool_registry import ToolRegistry, _TOOL_CATEGORIES
+        from src.tools import ToolRegistry, _TOOL_CATEGORIES
 
         registry = ToolRegistry()
         all_tools = registry.get_all_tools()
@@ -324,7 +324,7 @@ class TestToolRegistryDefinitions:
         assert _TOOL_CATEGORIES["read_logs"] == "system"
 
     def test_get_recent_events_has_filters(self):
-        from src.tool_registry import ToolRegistry
+        from src.tools import ToolRegistry
 
         registry = ToolRegistry()
         all_tools = registry.get_all_tools()
@@ -337,7 +337,7 @@ class TestToolRegistryDefinitions:
         assert "task_id" in props
 
     def test_read_logs_schema(self):
-        from src.tool_registry import ToolRegistry
+        from src.tools import ToolRegistry
 
         registry = ToolRegistry()
         all_tools = registry.get_all_tools()
@@ -351,7 +351,7 @@ class TestToolRegistryDefinitions:
         assert props["level"]["enum"] == ["debug", "info", "warning", "error", "critical"]
 
     def test_system_category_in_browse(self):
-        from src.tool_registry import ToolRegistry
+        from src.tools import ToolRegistry
 
         registry = ToolRegistry()
         system_tools = registry.get_category_tools("system")
