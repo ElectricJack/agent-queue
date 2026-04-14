@@ -24,9 +24,9 @@ import pytest
 
 from src.event_bus import EventBus
 from src.event_schemas import validate_payload
-from src.playbook_manager import PlaybookManager
-from src.playbook_models import CompiledPlaybook, PlaybookNode
-from src.playbook_runner import PlaybookRunner, RunResult
+from src.playbooks.manager import PlaybookManager
+from src.playbooks.models import CompiledPlaybook, PlaybookNode
+from src.playbooks.runner import PlaybookRunner, RunResult
 
 
 # ---------------------------------------------------------------------------

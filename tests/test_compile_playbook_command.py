@@ -60,7 +60,7 @@ SIMPLE_PLAYBOOK_MD = _make_playbook_md()
 
 def _make_compiled_playbook(**overrides):
     """Create a mock CompiledPlaybook with realistic attributes."""
-    from src.playbook_models import CompiledPlaybook, PlaybookNode
+    from src.playbooks.models import CompiledPlaybook, PlaybookNode
 
     defaults = dict(
         id="test-playbook",
@@ -79,7 +79,7 @@ def _make_compiled_playbook(**overrides):
 
 def _make_compilation_result(*, success=True, playbook=None, **overrides):
     """Create a mock CompilationResult."""
-    from src.playbook_compiler import CompilationResult
+    from src.playbooks.compiler import CompilationResult
 
     if success and playbook is None:
         playbook = _make_compiled_playbook()

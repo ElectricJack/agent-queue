@@ -17,7 +17,7 @@ Metrics computed:
 
 Example usage::
 
-    from src.playbook_health import compute_playbook_health
+    from src.playbooks.health import compute_playbook_health
     runs = await db.list_playbook_runs(playbook_id="my-playbook", limit=200)
     metrics = compute_playbook_health(runs)
 """

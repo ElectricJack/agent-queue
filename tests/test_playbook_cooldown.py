@@ -22,8 +22,8 @@ import time
 
 import pytest
 
-from src.playbook_manager import PlaybookManager
-from src.playbook_models import CompiledPlaybook, PlaybookNode
+from src.playbooks.manager import PlaybookManager
+from src.playbooks.models import CompiledPlaybook, PlaybookNode
 
 
 # ---------------------------------------------------------------------------

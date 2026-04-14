@@ -16,8 +16,8 @@ See ``docs/specs/design/playbooks.md`` §14 (Dashboard Visualization) and §15
 
 Typical usage::
 
-    from src.playbook_graph import render_ascii, render_mermaid
-    from src.playbook_models import CompiledPlaybook
+    from src.playbooks.graph import render_ascii, render_mermaid
+    from src.playbooks.models import CompiledPlaybook
 
     playbook = CompiledPlaybook.from_dict(data)
     print(render_ascii(playbook))
@@ -30,7 +30,7 @@ from collections import deque
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.playbook_models import CompiledPlaybook, PlaybookNode
+    from src.playbooks.models import CompiledPlaybook, PlaybookNode
 
 
 # ---------------------------------------------------------------------------

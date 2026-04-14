@@ -17,7 +17,7 @@ import pytest
 
 from src.event_bus import EventBus
 from src.notifications.events import PlaybookRunPausedEvent
-from src.playbook_runner import PlaybookRunner
+from src.playbooks.runner import PlaybookRunner
 
 
 # ---------------------------------------------------------------------------

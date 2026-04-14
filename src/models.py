@@ -625,7 +625,7 @@ class PlaybookRunStatus(Enum):
     """Valid statuses for a playbook execution run.
 
     These map directly to the state machine defined in VALID_PLAYBOOK_RUN_TRANSITIONS
-    (see src/playbook_state_machine.py).  The PlaybookRunner drives runs through
+    (see src/playbooks/state_machine.py).  The PlaybookRunner drives runs through
     these states based on events like terminal node reached, node failure, token
     budget exhaustion, and human-in-the-loop pause/resume.
 
@@ -643,7 +643,7 @@ class PlaybookRunEvent(Enum):
     """Events that trigger transitions between PlaybookRunStatus states.
 
     Each (PlaybookRunStatus, PlaybookRunEvent) pair maps to exactly one target
-    PlaybookRunStatus in the transitions table.  See src/playbook_state_machine.py.
+    PlaybookRunStatus in the transitions table.  See src/playbooks/state_machine.py.
 
     Event groups:
 

@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 import pytest
 
 from src.command_handler import CommandHandler
-from src.playbook_models import CompiledPlaybook, PlaybookNode
+from src.playbooks.models import CompiledPlaybook, PlaybookNode
 
 
 # ---------------------------------------------------------------------------

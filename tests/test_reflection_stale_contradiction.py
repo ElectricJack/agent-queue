@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.playbook_runner import PlaybookRunner
+from src.playbooks.runner import PlaybookRunner
 
 
 # ---------------------------------------------------------------------------

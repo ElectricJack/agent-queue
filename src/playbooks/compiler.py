@@ -2,7 +2,7 @@
 
 Reads a playbook ``.md`` file (natural language body + YAML frontmatter),
 invokes an LLM with the content and the target JSON Schema, validates the
-LLM's output, and returns a :class:`~src.playbook_models.CompiledPlaybook`.
+LLM's output, and returns a :class:`~src.playbooks.models.CompiledPlaybook`.
 
 The compiler is a *one-shot translation* — it runs once per markdown edit,
 not per playbook execution.  The resulting JSON graph is what the runtime
@@ -12,7 +12,7 @@ See ``docs/specs/design/playbooks.md`` Section 4 for the specification.
 
 Typical usage::
 
-    from src.playbook_compiler import PlaybookCompiler
+    from src.playbooks.compiler import PlaybookCompiler
     from src.chat_providers import create_chat_provider
 
     provider = create_chat_provider(config)
@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from src.playbook_models import CompiledPlaybook, generate_json_schema
+from src.playbooks.models import CompiledPlaybook, generate_json_schema
 
 if TYPE_CHECKING:
     from src.chat_providers.base import ChatProvider

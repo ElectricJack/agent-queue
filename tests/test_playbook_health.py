@@ -12,7 +12,7 @@ Covers:
 import json
 
 from src.models import PlaybookRun
-from src.playbook_health import (
+from src.playbooks.health import (
     _percentile,
     compute_duration_metrics,
     compute_failure_analysis,
@@ -658,7 +658,7 @@ class TestNodeTraceEntryTokens:
     """Verify NodeTraceEntry.tokens_used flows through _trace_to_dict."""
 
     def test_trace_to_dict_includes_tokens(self):
-        from src.playbook_runner import NodeTraceEntry, PlaybookRunner
+        from src.playbooks.runner import NodeTraceEntry, PlaybookRunner
 
         entry = NodeTraceEntry(
             node_id="scan",
@@ -672,7 +672,7 @@ class TestNodeTraceEntryTokens:
 
     def test_trace_to_dict_omits_zero_tokens(self):
         """Zero tokens_used is omitted (backward compat with pre-5.7.1 traces)."""
-        from src.playbook_runner import NodeTraceEntry, PlaybookRunner
+        from src.playbooks.runner import NodeTraceEntry, PlaybookRunner
 
         entry = NodeTraceEntry(
             node_id="scan",
@@ -685,7 +685,7 @@ class TestNodeTraceEntryTokens:
         assert "tokens_used" not in d
 
     def test_trace_entry_default_tokens_zero(self):
-        from src.playbook_runner import NodeTraceEntry
+        from src.playbooks.runner import NodeTraceEntry
 
         entry = NodeTraceEntry(node_id="test", started_at=0)
         assert entry.tokens_used == 0

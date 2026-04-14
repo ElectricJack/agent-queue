@@ -21,9 +21,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.chat_providers.types import ChatResponse, TextBlock
-from src.playbook_compiler import CompilationResult, PlaybookCompiler
-from src.playbook_models import CompiledPlaybook, generate_json_schema
-from src.playbook_store import CompiledPlaybookStore
+from src.playbooks.compiler import CompilationResult, PlaybookCompiler
+from src.playbooks.models import CompiledPlaybook, generate_json_schema
+from src.playbooks.store import CompiledPlaybookStore
 
 
 # ---------------------------------------------------------------------------

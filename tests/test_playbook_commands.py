@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.command_handler import CommandHandler
-from src.playbook_models import CompiledPlaybook, PlaybookNode, PlaybookTransition
+from src.playbooks.models import CompiledPlaybook, PlaybookNode, PlaybookTransition
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +495,7 @@ class TestResponseFormatConsistency:
 
     async def test_compile_playbook_success_format(self):
         """compile_playbook success returns dict with compiled=True, no error."""
-        from src.playbook_compiler import CompilationResult
+        from src.playbooks.compiler import CompilationResult
 
         pb = _make_playbook()
         compile_result = CompilationResult(
@@ -532,7 +532,7 @@ class TestResponseFormatConsistency:
 
     async def test_dry_run_playbook_success_format(self):
         """dry_run_playbook success returns dict with dry_run=True, no error."""
-        from src.playbook_runner import RunResult
+        from src.playbooks.runner import RunResult
 
         pb = _make_playbook(playbook_id="dry-test")
         handler = _make_handler(playbooks={"dry-test": pb})
@@ -545,7 +545,7 @@ class TestResponseFormatConsistency:
             error=None,
         )
 
-        with patch("src.playbook_runner.PlaybookRunner.dry_run", new_callable=AsyncMock) as m:
+        with patch("src.playbooks.runner.PlaybookRunner.dry_run", new_callable=AsyncMock) as m:
             m.return_value = mock_result
             result = await handler._cmd_dry_run_playbook({"playbook_id": "dry-test"})
 

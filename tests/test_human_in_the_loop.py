@@ -24,8 +24,8 @@ import pytest
 
 from src.event_bus import EventBus
 from src.models import PlaybookRun
-from src.playbook_resume_handler import PlaybookResumeHandler
-from src.playbook_runner import PlaybookRunner
+from src.playbooks.resume_handler import PlaybookResumeHandler
+from src.playbooks.runner import PlaybookRunner
 
 
 # ---------------------------------------------------------------------------
@@ -436,7 +436,7 @@ class TestEventDrivenResume:
                 MockSupervisor.return_value = mock_sup
 
                 with patch(
-                    "src.playbook_runner.PlaybookRunner.resume",
+                    "src.playbooks.runner.PlaybookRunner.resume",
                     new_callable=AsyncMock,
                 ) as mock_resume:
                     mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
@@ -479,7 +479,7 @@ class TestEventDrivenResume:
                 MockSupervisor.return_value = mock_sup
 
                 with patch(
-                    "src.playbook_runner.PlaybookRunner.resume",
+                    "src.playbooks.runner.PlaybookRunner.resume",
                     new_callable=AsyncMock,
                 ) as mock_resume:
                     mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
@@ -816,7 +816,7 @@ class TestResumePlaybookCommand:
             MockSupervisor.return_value = mock_sup
 
             with patch(
-                "src.playbook_runner.PlaybookRunner.resume",
+                "src.playbooks.runner.PlaybookRunner.resume",
                 new_callable=AsyncMock,
             ) as mock_resume:
                 mock_resume.return_value = MagicMock(
@@ -1015,7 +1015,7 @@ class TestMultiplePausedRuns:
                 MockSupervisor.return_value = mock_sup
 
                 with patch(
-                    "src.playbook_runner.PlaybookRunner.resume",
+                    "src.playbooks.runner.PlaybookRunner.resume",
                     new_callable=AsyncMock,
                 ) as mock_resume:
                     mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
@@ -1069,7 +1069,7 @@ class TestMultiplePausedRuns:
                 MockSupervisor.return_value = mock_sup
 
                 with patch(
-                    "src.playbook_runner.PlaybookRunner.resume",
+                    "src.playbooks.runner.PlaybookRunner.resume",
                     new_callable=AsyncMock,
                 ) as mock_resume:
                     mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
@@ -1353,7 +1353,7 @@ class TestStateSurvivesRestart:
                 MockSupervisor.return_value = mock_sup
 
                 with patch(
-                    "src.playbook_runner.PlaybookRunner.resume",
+                    "src.playbooks.runner.PlaybookRunner.resume",
                     new_callable=AsyncMock,
                 ) as mock_resume:
                     mock_resume.return_value = MagicMock(status="completed", tokens_used=100)

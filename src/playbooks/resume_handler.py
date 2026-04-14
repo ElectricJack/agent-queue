@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from src.database.base import DatabaseBackend
     from src.event_bus import EventBus
-    from src.playbook_manager import PlaybookManager
+    from src.playbooks.manager import PlaybookManager
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +188,7 @@ class PlaybookResumeHandler:
         5. Call :meth:`PlaybookRunner.resume` to restore conversation
            history and continue execution from the paused node.
         """
-        from src.playbook_runner import PlaybookRunner
+        from src.playbooks.runner import PlaybookRunner
 
         try:
             # 1. Fetch the paused run from the database

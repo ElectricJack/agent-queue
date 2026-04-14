@@ -7,8 +7,8 @@ compiled version remains active when compilation fails.
 
 The manager is the integration layer between:
 
-- :class:`~src.playbook_compiler.PlaybookCompiler` — LLM compilation
-- :class:`~src.playbook_store.CompiledPlaybookStore` — scope-mirrored storage
+- :class:`~src.playbooks.compiler.PlaybookCompiler` — LLM compilation
+- :class:`~src.playbooks.store.CompiledPlaybookStore` — scope-mirrored storage
 - :class:`~src.event_bus.EventBus` — error/success notifications
 - Filesystem — persistence of compiled JSON artifacts
 
@@ -77,13 +77,13 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from src.playbook_compiler import CompilationResult, PlaybookCompiler
-from src.playbook_models import CompiledPlaybook, PlaybookScope, PlaybookTrigger
+from src.playbooks.compiler import CompilationResult, PlaybookCompiler
+from src.playbooks.models import CompiledPlaybook, PlaybookScope, PlaybookTrigger
 
 if TYPE_CHECKING:
     from src.chat_providers.base import ChatProvider
     from src.event_bus import EventBus
-    from src.playbook_store import CompiledPlaybookStore
+    from src.playbooks.store import CompiledPlaybookStore
 
 # Type alias for the trigger callback:
 #   async callback(playbook: CompiledPlaybook, event_data: dict) -> None
@@ -160,7 +160,7 @@ class PlaybookManager:
         JSON files are stored under ``{data_dir}/playbooks/compiled/``.
         When ``None``, persistence is disabled (in-memory only).
     store:
-        Optional :class:`~src.playbook_store.CompiledPlaybookStore` for
+        Optional :class:`~src.playbooks.store.CompiledPlaybookStore` for
         scope-mirrored storage.  When provided, :meth:`load_from_store`
         uses it to load all compiled playbooks across all scopes on
         startup.  The legacy ``data_dir`` flat-directory persistence is

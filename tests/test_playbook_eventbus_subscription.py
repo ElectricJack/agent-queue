@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.event_bus import EventBus
-from src.playbook_manager import PlaybookManager
-from src.playbook_models import CompiledPlaybook, PlaybookNode, PlaybookTrigger
+from src.playbooks.manager import PlaybookManager
+from src.playbooks.models import CompiledPlaybook, PlaybookNode, PlaybookTrigger
 
 
 # ---------------------------------------------------------------------------

@@ -7330,7 +7330,7 @@ feature work stuck on feature branches across multiple workspaces.
             if pb:
                 timeout_graph = pb.to_dict() if hasattr(pb, "to_dict") else pb.__dict__
 
-        from src.playbook_runner import PlaybookRunner
+        from src.playbooks.runner import PlaybookRunner
 
         if timeout_graph:
             pause_timeout_seconds = PlaybookRunner._resolve_pause_timeout(
@@ -7426,7 +7426,7 @@ feature work stuck on feature branches across multiple workspaces.
         # Resolve event_bus
         event_bus = getattr(self.orchestrator, "bus", None)
 
-        from src.playbook_runner import PlaybookRunner
+        from src.playbooks.runner import PlaybookRunner
 
         try:
             result = await PlaybookRunner.resume(
@@ -7601,7 +7601,7 @@ feature work stuck on feature branches across multiple workspaces.
                 Only used when format is ``"mermaid"``.
             show_prompts: Include truncated prompt previews (default ``True``).
         """
-        from src.playbook_graph import render_ascii, render_mermaid
+        from src.playbooks.graph import render_ascii, render_mermaid
 
         playbook_id = args.get("playbook_id", "").strip()
         if not playbook_id:
@@ -7736,7 +7736,7 @@ feature work stuck on feature branches across multiple workspaces.
 
         event_bus = getattr(self.orchestrator, "bus", None)
 
-        from src.playbook_runner import PlaybookRunner
+        from src.playbooks.runner import PlaybookRunner
 
         runner = PlaybookRunner(
             graph=graph,
@@ -7830,7 +7830,7 @@ feature work stuck on feature branches across multiple workspaces.
         # Convert CompiledPlaybook to the dict format PlaybookRunner expects
         graph = playbook.to_dict()
 
-        from src.playbook_runner import PlaybookRunner
+        from src.playbooks.runner import PlaybookRunner
 
         try:
             result = await PlaybookRunner.dry_run(graph=graph, event=event)
@@ -7878,7 +7878,7 @@ feature work stuck on feature branches across multiple workspaces.
             limit: Optional — max runs to analyse (default 200).
             status: Optional — filter by run status.
         """
-        from src.playbook_health import compute_playbook_health
+        from src.playbooks.health import compute_playbook_health
 
         playbook_id = args.get("playbook_id")
         status = args.get("status")
@@ -7921,8 +7921,8 @@ feature work stuck on feature branches across multiple workspaces.
             include_history: Include run history timeline. Default: ``False``.
             history_limit: Max runs in the history timeline. Default: ``20``.
         """
-        from src.playbook_graph_view import build_graph_view
-        from src.playbook_health import compute_node_metrics
+        from src.playbooks.graph_view import build_graph_view
+        from src.playbooks.health import compute_node_metrics
 
         playbook_id = args.get("playbook_id", "").strip()
         if not playbook_id:
@@ -8347,7 +8347,7 @@ feature work stuck on feature branches across multiple workspaces.
             if not graph:
                 continue
 
-            from src.playbook_runner import PlaybookRunner
+            from src.playbooks.runner import PlaybookRunner
 
             timeout_seconds = PlaybookRunner._resolve_pause_timeout(graph, db_run.current_node)
 

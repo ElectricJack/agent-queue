@@ -21,7 +21,7 @@ that downstream nodes naturally see prior context.
   updates it after each node so that paused/failed runs can be inspected and
   (eventually) resumed.
 
-See also: :mod:`src.playbook_handler` (vault watcher / compilation dispatch).
+See also: :mod:`src.playbooks.handler` (vault watcher / compilation dispatch).
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from src.models import PlaybookRun, PlaybookRunEvent, PlaybookRunStatus
-from src.playbook_state_machine import (
+from src.playbooks.state_machine import (
     InvalidPlaybookRunTransition,
     validate_transition,
 )
@@ -366,7 +366,7 @@ class PlaybookRunner:
         self._seed_message: str = ""
 
         # Current run status — tracked via the state machine
-        # (see src/playbook_state_machine.py).
+        # (see src/playbooks/state_machine.py).
         self._status: PlaybookRunStatus = PlaybookRunStatus.RUNNING
 
         # Dry-run mode — no LLM calls, no DB writes, no event emission.
@@ -438,7 +438,7 @@ class PlaybookRunner:
     def _transition(self, event: PlaybookRunEvent) -> PlaybookRunStatus:
         """Validate and apply a state transition.
 
-        Uses the formal state machine (:mod:`src.playbook_state_machine`) to
+        Uses the formal state machine (:mod:`src.playbooks.state_machine`) to
         check whether the transition is legal.  On success, updates
         ``self._status`` and returns the new status.  On invalid transitions,
         logs a warning but still applies the transition to avoid breaking

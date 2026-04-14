@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.models import PlaybookRun
-from src.playbook_runner import (
+from src.playbooks.runner import (
     DailyTokenTracker,
     NodeTraceEntry,
     PlaybookRunner,
@@ -730,7 +730,7 @@ class TestTokenBudget:
         # but under budget (< 100), so the run completes with a warning.
         mock_supervisor.chat.return_value = "x" * 360
 
-        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+        with caplog.at_level(logging.WARNING, logger="src.playbooks.runner"):
             runner = PlaybookRunner(graph, event_data, mock_supervisor)
             result = await runner.run()
 
@@ -4208,7 +4208,7 @@ class TestExpressionEvaluation:
     def test_invalid_syntax_logs_warning(self, runner, caplog):
         """5.2.15c: invalid expression syntax produces clear warning log."""
         cond = {"expression": "this is not valid at all"}
-        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+        with caplog.at_level(logging.WARNING, logger="src.playbooks.runner"):
             result = runner._evaluate_structured_condition(cond, "any")
         assert result is False
         assert "Invalid expression syntax" in caplog.text
@@ -4217,7 +4217,7 @@ class TestExpressionEvaluation:
     def test_missing_operator_logs_warning(self, runner, caplog):
         """5.2.15c: expression without operator produces clear warning."""
         cond = {"expression": 'task.status "completed"'}
-        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+        with caplog.at_level(logging.WARNING, logger="src.playbooks.runner"):
             result = runner._evaluate_structured_condition(cond, "any")
         assert result is False
         assert "Invalid expression syntax" in caplog.text
@@ -4225,7 +4225,7 @@ class TestExpressionEvaluation:
     def test_empty_expression_logs_warning(self, runner, caplog):
         """5.2.15c: empty expression produces clear warning."""
         cond = {"expression": ""}
-        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+        with caplog.at_level(logging.WARNING, logger="src.playbooks.runner"):
             result = runner._evaluate_structured_condition(cond, "any")
         assert result is False
         assert "Invalid expression syntax" in caplog.text
@@ -4233,7 +4233,7 @@ class TestExpressionEvaluation:
     def test_undefined_variable_logs_warning(self, runner, caplog):
         """5.2.15d: undefined variable produces descriptive warning with variable name."""
         cond = {"expression": 'unknown_ns.field == "x"'}
-        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+        with caplog.at_level(logging.WARNING, logger="src.playbooks.runner"):
             result = runner._evaluate_structured_condition(cond, "any")
         assert result is False
         assert "Undefined variable" in caplog.text
@@ -4242,7 +4242,7 @@ class TestExpressionEvaluation:
     def test_undefined_nested_variable_logs_warning(self, runner, caplog):
         """5.2.15d: undefined nested path produces descriptive warning."""
         cond = {"expression": 'task.nonexistent.deep == "x"'}
-        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+        with caplog.at_level(logging.WARNING, logger="src.playbooks.runner"):
             result = runner._evaluate_structured_condition(cond, "any")
         assert result is False
         assert "Undefined variable" in caplog.text
@@ -4251,7 +4251,7 @@ class TestExpressionEvaluation:
     def test_compare_missing_keys_logs_warning(self, runner, caplog):
         """5.2.15c: compare condition with missing keys produces clear warning."""
         cond = {"function": "compare", "operator": "==", "value": "x"}
-        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+        with caplog.at_level(logging.WARNING, logger="src.playbooks.runner"):
             result = runner._evaluate_structured_condition(cond, "any")
         assert result is False
         assert "Incomplete compare condition" in caplog.text
@@ -4264,7 +4264,7 @@ class TestExpressionEvaluation:
             "operator": "~=",
             "value": "x",
         }
-        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+        with caplog.at_level(logging.WARNING, logger="src.playbooks.runner"):
             result = runner._evaluate_structured_condition(cond, "any")
         assert result is False
         assert "Unsupported operator" in caplog.text
@@ -4631,7 +4631,7 @@ class TestExpressionTransitions:
         mock_supervisor.chat.side_effect = lambda **kw: next(responses)
 
         runner = PlaybookRunner(graph, event, mock_supervisor)
-        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+        with caplog.at_level(logging.WARNING, logger="src.playbooks.runner"):
             result = await runner.run()
 
         assert result.status == "completed"
@@ -4671,7 +4671,7 @@ class TestExpressionTransitions:
         mock_supervisor.chat.side_effect = lambda **kw: next(responses)
 
         runner = PlaybookRunner(graph, event, mock_supervisor)
-        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+        with caplog.at_level(logging.WARNING, logger="src.playbooks.runner"):
             result = await runner.run()
 
         assert result.status == "completed"
@@ -4715,7 +4715,7 @@ class TestExpressionTransitions:
         mock_supervisor.chat.side_effect = lambda **kw: next(responses)
 
         runner = PlaybookRunner(graph, event, mock_supervisor)
-        with caplog.at_level(logging.WARNING, logger="src.playbook_runner"):
+        with caplog.at_level(logging.WARNING, logger="src.playbooks.runner"):
             result = await runner.run()
 
         assert result.status == "completed"
@@ -6501,7 +6501,7 @@ class TestResumePlaybookCommand:
 
         with (
             patch("src.supervisor.Supervisor") as MockSupervisor,
-            patch("src.playbook_runner.PlaybookRunner") as MockRunner,
+            patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
         ):
             mock_sup = MockSupervisor.return_value
             mock_sup.initialize.return_value = True
@@ -6570,7 +6570,7 @@ class TestResumePlaybookCommand:
 
         with (
             patch("src.supervisor.Supervisor") as MockSupervisor,
-            patch("src.playbook_runner.PlaybookRunner") as MockRunner,
+            patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
         ):
             mock_sup = MockSupervisor.return_value
             mock_sup.initialize.return_value = True
@@ -6640,7 +6640,7 @@ class TestResumePlaybookCommand:
 
         with (
             patch("src.supervisor.Supervisor") as MockSupervisor,
-            patch("src.playbook_runner.PlaybookRunner") as MockRunner,
+            patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
         ):
             mock_sup = MockSupervisor.return_value
             mock_sup.initialize.return_value = True
@@ -6787,7 +6787,7 @@ class TestResumePlaybookCommand:
             error="Pause timeout exceeded",
         )
 
-        with patch("src.playbook_runner.PlaybookRunner") as MockRunner:
+        with patch("src.playbooks.runner.PlaybookRunner") as MockRunner:
             MockRunner._resolve_pause_timeout = PlaybookRunner._resolve_pause_timeout
             MockRunner.handle_timeout = AsyncMock(return_value=timed_out_result)
             result = await handler._cmd_resume_playbook(
@@ -6835,7 +6835,7 @@ class TestResumePlaybookCommand:
 
         with (
             patch("src.supervisor.Supervisor") as MockSupervisor,
-            patch("src.playbook_runner.PlaybookRunner") as MockRunner,
+            patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
         ):
             mock_sup = MockSupervisor.return_value
             mock_sup.initialize.return_value = True
@@ -7947,7 +7947,7 @@ class TestConfigurablePauseTimeout:
     async def test_state_machine_pause_timeout_transition(self):
         """State machine allows PAUSED → TIMED_OUT via PAUSE_TIMEOUT event."""
         from src.models import PlaybookRunEvent, PlaybookRunStatus
-        from src.playbook_state_machine import playbook_run_transition
+        from src.playbooks.state_machine import playbook_run_transition
 
         result = playbook_run_transition(
             PlaybookRunStatus.PAUSED,
@@ -7959,7 +7959,7 @@ class TestConfigurablePauseTimeout:
 
     async def test_playbook_node_pause_timeout_roundtrip(self):
         """PlaybookNode serializes/deserializes pause_timeout_seconds and on_timeout."""
-        from src.playbook_models import PlaybookNode
+        from src.playbooks.models import PlaybookNode
 
         node = PlaybookNode(
             prompt="Review",
@@ -7977,7 +7977,7 @@ class TestConfigurablePauseTimeout:
 
     async def test_compiled_playbook_pause_timeout_roundtrip(self):
         """CompiledPlaybook serializes/deserializes pause_timeout_seconds."""
-        from src.playbook_models import CompiledPlaybook, PlaybookNode
+        from src.playbooks.models import CompiledPlaybook, PlaybookNode
 
         pb = CompiledPlaybook(
             id="test",

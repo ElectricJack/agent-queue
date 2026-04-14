@@ -23,7 +23,7 @@ import pytest
 
 from src.event_bus import EventBus
 from src.models import PlaybookRun
-from src.playbook_runner import PlaybookRunner
+from src.playbooks.runner import PlaybookRunner
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +415,7 @@ class TestFailedEventEmission:
         self, mock_supervisor, simple_graph, event_data, event_bus
     ):
         """Failed event emitted on daily token cap pre-flight rejection."""
-        from src.playbook_runner import DailyTokenTracker
+        from src.playbooks.runner import DailyTokenTracker
 
         tracker = DailyTokenTracker()
         tracker.add_tokens(1000)  # Already used 1000

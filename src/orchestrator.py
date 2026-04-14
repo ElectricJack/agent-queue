@@ -960,8 +960,8 @@ class Orchestrator:
         # can be recompiled into executable graphs.  The PlaybookManager
         # handles compilation, versioning, and error recovery (keeping the
         # previous compiled version active on failure — roadmap 5.1.7).
-        from src.playbook_handler import register_playbook_handlers
-        from src.playbook_manager import PlaybookManager
+        from src.playbooks.handler import register_playbook_handlers
+        from src.playbooks.manager import PlaybookManager
 
         # Ensure a chat provider is available for playbook compilation.
         # self._chat_provider is only set when use_llm_parser is enabled,
@@ -1008,7 +1008,7 @@ class Orchestrator:
         # (Discord buttons, API endpoints) fire the event; this handler
         # validates, creates a Supervisor, and delegates to
         # PlaybookRunner.resume().
-        from src.playbook_resume_handler import PlaybookResumeHandler
+        from src.playbooks.resume_handler import PlaybookResumeHandler
 
         self.playbook_resume_handler = PlaybookResumeHandler(
             db=self.db,

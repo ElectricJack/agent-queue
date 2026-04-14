@@ -165,15 +165,15 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 
 | Module | Purpose |
 |--------|---------|
-| `src/playbook_compiler.py` | Markdown → JSON graph compilation |
-| `src/playbook_runner.py` | Graph walker with conversation history and per-node context |
-| `src/playbook_manager.py` | Lifecycle, triggers, cooldown, concurrency |
-| `src/playbook_models.py` | Data models for compiled playbooks and runs |
-| `src/playbook_store.py` | Scope-mirrored disk storage |
-| `src/playbook_health.py` | Run metrics and analysis |
-| `src/playbook_graph.py` | Graph rendering (ASCII + Mermaid visualization) |
-| `src/playbook_state_machine.py` | Formal state machine for run lifecycle |
-| `src/playbook_resume_handler.py` | Human-in-the-loop resume logic |
+| `src/playbooks/compiler.py` | Markdown → JSON graph compilation |
+| `src/playbooks/runner.py` | Graph walker with conversation history and per-node context |
+| `src/playbooks/manager.py` | Lifecycle, triggers, cooldown, concurrency |
+| `src/playbooks/models.py` | Data models for compiled playbooks and runs |
+| `src/playbooks/store.py` | Scope-mirrored disk storage |
+| `src/playbooks/health.py` | Run metrics and analysis |
+| `src/playbooks/graph.py` | Graph rendering (ASCII + Mermaid visualization) |
+| `src/playbooks/state_machine.py` | Formal state machine for run lifecycle |
+| `src/playbooks/resume_handler.py` | Human-in-the-loop resume logic |
 
 ### Workflow Coordination
 

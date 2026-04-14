@@ -1,6 +1,6 @@
 """Tests for playbook graph view — dashboard visualization data layer.
 
-Tests the structured graph view output from ``src/playbook_graph_view``:
+Tests the structured graph view output from ``src/playbooks/graph_view``:
 nodes as positioned boxes, edges as labelled arrows, live state overlays,
 run path highlighting, metrics overlays, and run history timelines.
 
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from src.playbook_graph_view import (
+from src.playbooks.graph_view import (
     LIVE_STATE_COLORS,
     NODE_TYPE_COLORS,
     RUN_STATUS_COLORS,
@@ -34,7 +34,7 @@ from src.playbook_graph_view import (
     build_run_history,
     build_run_overlay,
 )
-from src.playbook_models import (
+from src.playbooks.models import (
     CompiledPlaybook,
     PlaybookNode,
     PlaybookTransition,

@@ -21,8 +21,8 @@ import pytest
 
 from src.event_bus import EventBus
 from src.models import PlaybookRun, PlaybookRunEvent, PlaybookRunStatus, Workflow
-from src.playbook_runner import PlaybookRunner
-from src.playbook_state_machine import (
+from src.playbooks.runner import PlaybookRunner
+from src.playbooks.state_machine import (
     VALID_PLAYBOOK_RUN_TRANSITIONS,
     playbook_run_transition,
 )

@@ -28,7 +28,7 @@ import pytest
 
 from src.event_bus import EventBus
 from src.models import PlaybookRun
-from src.playbook_resume_handler import PlaybookResumeHandler
+from src.playbooks.resume_handler import PlaybookResumeHandler
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ class TestEventDrivenResume:
             MockSupervisor.return_value = mock_sup
 
             with patch(
-                "src.playbook_runner.PlaybookRunner.resume",
+                "src.playbooks.runner.PlaybookRunner.resume",
                 new_callable=AsyncMock,
             ) as mock_resume:
                 mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
@@ -243,7 +243,7 @@ class TestEventDrivenResume:
             MockSupervisor.return_value = mock_sup
 
             with patch(
-                "src.playbook_runner.PlaybookRunner.resume",
+                "src.playbooks.runner.PlaybookRunner.resume",
                 new_callable=AsyncMock,
             ) as mock_resume:
                 mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
@@ -279,7 +279,7 @@ class TestEventDrivenResume:
             MockSupervisor.return_value = mock_sup
 
             with patch(
-                "src.playbook_runner.PlaybookRunner.resume",
+                "src.playbooks.runner.PlaybookRunner.resume",
                 new_callable=AsyncMock,
             ) as mock_resume:
                 mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
@@ -364,7 +364,7 @@ class TestValidation:
         mock_db.get_playbook_run.return_value = completed_run
 
         with patch(
-            "src.playbook_runner.PlaybookRunner.resume",
+            "src.playbooks.runner.PlaybookRunner.resume",
             new_callable=AsyncMock,
         ) as mock_resume:
             await event_bus.emit(
@@ -408,7 +408,7 @@ class TestValidation:
         handler._pause_timeout_seconds = 1
 
         with patch(
-            "src.playbook_runner.PlaybookRunner.resume",
+            "src.playbooks.runner.PlaybookRunner.resume",
             new_callable=AsyncMock,
         ) as mock_resume:
             await event_bus.emit(
@@ -439,7 +439,7 @@ class TestValidation:
             MockSupervisor.return_value = mock_sup
 
             with patch(
-                "src.playbook_runner.PlaybookRunner.resume",
+                "src.playbooks.runner.PlaybookRunner.resume",
                 new_callable=AsyncMock,
             ) as mock_resume:
                 await event_bus.emit(
@@ -481,7 +481,7 @@ class TestValidation:
         mock_db.get_playbook_run.return_value = run_no_graph
 
         with patch(
-            "src.playbook_runner.PlaybookRunner.resume",
+            "src.playbooks.runner.PlaybookRunner.resume",
             new_callable=AsyncMock,
         ) as mock_resume:
             await event_bus.emit(
@@ -523,7 +523,7 @@ class TestDeDuplication:
             MockSupervisor.return_value = mock_sup
 
             with patch(
-                "src.playbook_runner.PlaybookRunner.resume",
+                "src.playbooks.runner.PlaybookRunner.resume",
                 new_callable=AsyncMock,
                 side_effect=slow_resume,
             ) as mock_resume:
@@ -621,7 +621,7 @@ class TestGraphResolution:
             MockSupervisor.return_value = mock_sup
 
             with patch(
-                "src.playbook_runner.PlaybookRunner.resume",
+                "src.playbooks.runner.PlaybookRunner.resume",
                 new_callable=AsyncMock,
             ) as mock_resume:
                 mock_resume.return_value = MagicMock(status="completed", tokens_used=20)

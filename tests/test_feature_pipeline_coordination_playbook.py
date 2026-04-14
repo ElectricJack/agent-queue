@@ -40,8 +40,8 @@ from src.models import (
     Workflow,
 )
 from src.orchestrator import Orchestrator
-from src.playbook_manager import PlaybookManager
-from src.playbook_models import CompiledPlaybook, PlaybookNode, PlaybookTrigger
+from src.playbooks.manager import PlaybookManager
+from src.playbooks.models import CompiledPlaybook, PlaybookNode, PlaybookTrigger
 from src.scheduler import Scheduler, SchedulerState
 
 

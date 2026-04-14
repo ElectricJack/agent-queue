@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.playbook_manager import PlaybookManager
+    from src.playbooks.manager import PlaybookManager
     from src.vault_watcher import VaultChange, VaultWatcher
 
 logger = logging.getLogger(__name__)
@@ -136,7 +136,7 @@ async def on_playbook_changed(
         List of :class:`~src.vault_watcher.VaultChange` objects for files
         matching one of the registered playbook patterns.
     playbook_manager:
-        Optional :class:`~src.playbook_manager.PlaybookManager` instance.
+        Optional :class:`~src.playbooks.manager.PlaybookManager` instance.
         When ``None``, the handler falls back to log-only mode.
     """
     for change in changes:
@@ -241,7 +241,7 @@ def register_playbook_handlers(
         The :class:`~src.vault_watcher.VaultWatcher` instance to register
         handlers on (typically ``orchestrator.vault_watcher``).
     playbook_manager:
-        Optional :class:`~src.playbook_manager.PlaybookManager` instance.
+        Optional :class:`~src.playbooks.manager.PlaybookManager` instance.
         When provided, file changes trigger compilation and version management.
 
     Returns

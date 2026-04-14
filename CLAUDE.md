@@ -6,7 +6,7 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 
 - **Entry point:** `src/main.py` → orchestrator + Discord bot + embedded MCP server
 - **Core files:** `orchestrator.py`, `command_handler.py`, `supervisor.py`, `database/`, `models.py`
-- **Playbooks:** `playbook_compiler.py`, `playbook_runner.py`, `playbook_manager.py`, `playbook_models.py`, `playbook_store.py`, `playbook_handler.py`, `playbook_state_machine.py`, `playbook_health.py`, `playbook_graph.py`
+- **Playbooks:** `src/playbooks/` (compiler, runner, manager, models, store, handler, state_machine, health, graph, graph_view, resume_handler)
 - **Memory:** `memory_v2_service.py`, `memory_extractor.py`, `facts_parser.py`, `profile_parser.py`
 - **Intelligence:** `prompt_builder.py`, `tool_registry.py`, `reflection.py`, `llm_logger.py`, `chat_observer.py`
 - **Workflows:** `workflow_stage_resume_handler.py`, `orphan_workflow_recovery.py`, `workflow_pipeline_view.py`

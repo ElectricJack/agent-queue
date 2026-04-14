@@ -136,7 +136,7 @@ def validate_transition(
 
     Returns the target status on success.  On invalid transitions, logs a
     warning and raises :class:`InvalidPlaybookRunTransition`.  This is the
-    primary entry point used by :class:`~src.playbook_runner.PlaybookRunner`.
+    primary entry point used by :class:`~src.playbooks.runner.PlaybookRunner`.
     """
     try:
         target = playbook_run_transition(current, event)

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.playbook_graph import (
+from src.playbooks.graph import (
     _collect_edges,
     _edge_label,
     _mermaid_escape,
@@ -22,7 +22,7 @@ from src.playbook_graph import (
     render_ascii,
     render_mermaid,
 )
-from src.playbook_models import CompiledPlaybook, PlaybookNode, PlaybookTransition
+from src.playbooks.models import CompiledPlaybook, PlaybookNode, PlaybookTransition
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,7 @@ See ``docs/specs/design/playbooks.md`` Section 8 — Scoping / Storage.
 
 Typical usage::
 
-    from src.playbook_store import CompiledPlaybookStore
+    from src.playbooks.store import CompiledPlaybookStore
 
     store = CompiledPlaybookStore(vault_manager)
 
@@ -47,7 +47,7 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from src.playbook_models import CompiledPlaybook
+from src.playbooks.models import CompiledPlaybook
 
 if TYPE_CHECKING:
     from src.vault_manager import Scope, VaultManager

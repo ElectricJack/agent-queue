@@ -1187,7 +1187,7 @@ def ensure_default_playbooks(data_dir: str) -> dict:
 
     Copies bundled playbook markdown files from ``src/prompts/default_playbooks/``
     into the vault's system playbook directory.  These playbooks are compiled at
-    first use by the :class:`~src.playbook_compiler.PlaybookCompiler`.
+    first use by the :class:`~src.playbooks.compiler.PlaybookCompiler`.
 
     Default playbooks (playbooks spec §12):
 

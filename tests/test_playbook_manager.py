@@ -29,8 +29,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.playbook_manager import PlaybookManager
-from src.playbook_models import CompiledPlaybook, PlaybookNode
+from src.playbooks.manager import PlaybookManager
+from src.playbooks.models import CompiledPlaybook, PlaybookNode
 
 
 # ---------------------------------------------------------------------------
@@ -1079,7 +1079,7 @@ class TestPlaybookHandler:
     @pytest.mark.asyncio
     async def test_on_playbook_changed_created(self, tmp_path: Path) -> None:
         """Handler triggers compilation on 'created' operation."""
-        from src.playbook_handler import on_playbook_changed
+        from src.playbooks.handler import on_playbook_changed
 
         # Write a playbook file
         md_path = tmp_path / "test.md"
@@ -1103,7 +1103,7 @@ class TestPlaybookHandler:
     @pytest.mark.asyncio
     async def test_on_playbook_changed_modified(self, tmp_path: Path) -> None:
         """Handler triggers recompilation on 'modified' operation."""
-        from src.playbook_handler import on_playbook_changed
+        from src.playbooks.handler import on_playbook_changed
 
         md_path = tmp_path / "test.md"
         md_path.write_text(SIMPLE_PLAYBOOK_MD)
@@ -1139,7 +1139,7 @@ class TestPlaybookHandler:
     @pytest.mark.asyncio
     async def test_on_playbook_changed_deleted(self, tmp_path: Path) -> None:
         """Handler removes playbook from registry on 'deleted' operation."""
-        from src.playbook_handler import on_playbook_changed
+        from src.playbooks.handler import on_playbook_changed
 
         compiled_dir = tmp_path / "playbooks" / "compiled"
         compiled_dir.mkdir(parents=True)
@@ -1162,7 +1162,7 @@ class TestPlaybookHandler:
     @pytest.mark.asyncio
     async def test_on_playbook_changed_no_manager(self) -> None:
         """Handler gracefully falls back to log-only when no manager provided."""
-        from src.playbook_handler import on_playbook_changed
+        from src.playbooks.handler import on_playbook_changed
 
         change = MagicMock()
         change.path = "/vault/system/playbooks/test.md"
@@ -1175,7 +1175,7 @@ class TestPlaybookHandler:
     @pytest.mark.asyncio
     async def test_on_playbook_changed_unreadable_file(self, tmp_path: Path) -> None:
         """Handler handles unreadable files gracefully."""
-        from src.playbook_handler import on_playbook_changed
+        from src.playbooks.handler import on_playbook_changed
 
         manager = PlaybookManager(
             chat_provider=_make_mock_provider(),
@@ -1268,7 +1268,7 @@ class TestHelperFunctions:
 
     def test_derive_playbook_id_from_path(self) -> None:
         """_derive_playbook_id_from_path extracts filename stem."""
-        from src.playbook_handler import _derive_playbook_id_from_path
+        from src.playbooks.handler import _derive_playbook_id_from_path
 
         assert _derive_playbook_id_from_path("system/playbooks/deploy.md") == "deploy"
         assert _derive_playbook_id_from_path("projects/my-app/playbooks/review.md") == "review"
@@ -1276,7 +1276,7 @@ class TestHelperFunctions:
 
     def test_derive_playbook_scope(self) -> None:
         """derive_playbook_scope extracts scope and identifier."""
-        from src.playbook_handler import derive_playbook_scope
+        from src.playbooks.handler import derive_playbook_scope
 
         assert derive_playbook_scope("system/playbooks/deploy.md") == ("system", None)
         assert derive_playbook_scope("orchestrator/playbooks/routing.md") == (
@@ -1406,7 +1406,7 @@ class TestSourceHashChangeDetection:
     @pytest.mark.asyncio
     async def test_skipped_result_contains_source_hash(self, tmp_path: Path) -> None:
         """Skipped result includes the source_hash for the unchanged content."""
-        from src.playbook_compiler import PlaybookCompiler
+        from src.playbooks.compiler import PlaybookCompiler
 
         provider = _make_mock_provider()
         manager = PlaybookManager(
@@ -1456,7 +1456,7 @@ class TestSourceHashChangeDetection:
     @pytest.mark.asyncio
     async def test_skip_works_after_load_from_disk(self, tmp_path: Path) -> None:
         """Hash check works against playbooks loaded from disk at startup."""
-        from src.playbook_compiler import PlaybookCompiler
+        from src.playbooks.compiler import PlaybookCompiler
 
         # Pre-populate a compiled playbook on disk with a known hash
         compiled_dir = tmp_path / "playbooks" / "compiled"
@@ -1486,7 +1486,7 @@ class TestSourceHashChangeDetection:
     @pytest.mark.asyncio
     async def test_handler_skips_unchanged_file(self, tmp_path: Path) -> None:
         """Vault watcher handler skips compilation when file hasn't changed."""
-        from src.playbook_handler import on_playbook_changed
+        from src.playbooks.handler import on_playbook_changed
 
         md_path = tmp_path / "test.md"
         md_path.write_text(SIMPLE_PLAYBOOK_MD)
@@ -1536,7 +1536,7 @@ class TestSourceHashChangeDetection5110:
     @pytest.mark.asyncio
     async def test_a_unchanged_markdown_does_not_recompile(self, tmp_path: Path) -> None:
         """(a) Saving the same playbook markdown does NOT trigger recompilation."""
-        from src.playbook_handler import on_playbook_changed
+        from src.playbooks.handler import on_playbook_changed
 
         md_path = tmp_path / "test.md"
         md_path.write_text(SIMPLE_PLAYBOOK_MD)
@@ -1687,7 +1687,7 @@ Do something then finish.
     @pytest.mark.asyncio
     async def test_d_source_hash_matches_new_content_after_recompile(self, tmp_path: Path) -> None:
         """(d) After recompilation, the stored source_hash matches new content."""
-        from src.playbook_compiler import PlaybookCompiler
+        from src.playbooks.compiler import PlaybookCompiler
         from src.chat_providers.types import ChatResponse, TextBlock
 
         json_str = json.dumps(VALID_COMPILED_NODES, indent=2)

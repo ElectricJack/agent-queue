@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from src.database.base import DatabaseBackend
     from src.event_bus import EventBus
-    from src.playbook_manager import PlaybookManager
+    from src.playbooks.manager import PlaybookManager
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,7 @@ class WorkflowStageResumeHandler:
         6. Call :meth:`PlaybookRunner.resume_from_event` to continue
            execution with the event data in conversation context.
         """
-        from src.playbook_runner import PlaybookRunner
+        from src.playbooks.runner import PlaybookRunner
 
         try:
             # 1. Fetch the paused run

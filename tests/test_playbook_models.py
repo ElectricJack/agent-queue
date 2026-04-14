@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from src.playbook_models import (
+from src.playbooks.models import (
     CompiledPlaybook,
     LlmConfig,
     NodeTraceEntry,

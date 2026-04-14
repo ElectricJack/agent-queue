@@ -14,7 +14,7 @@ See ``docs/specs/design/playbooks.md`` Section 5 for the full specification.
 Typical usage::
 
     import json
-    from src.playbook_models import CompiledPlaybook
+    from src.playbooks.models import CompiledPlaybook
 
     with open("compiled/code-quality-gate.json") as f:
         data = json.load(f)

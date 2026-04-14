@@ -20,7 +20,7 @@ Payload format::
 Integration:
 
 - Created and started in ``Orchestrator.initialize()`` after the
-  :class:`~src.playbook_manager.PlaybookManager` loads compiled playbooks.
+  :class:`~src.playbooks.manager.PlaybookManager` loads compiled playbooks.
 - ``tick()`` is called every orchestrator cycle (~5 seconds) in the
   housekeeping phase.
 - Automatically rebuilds when playbooks are compiled or removed (subscribed
@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
-    from src.playbook_manager import PlaybookManager
+    from src.playbooks.manager import PlaybookManager
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ def extract_timer_intervals(triggers: list[str]) -> dict[str, float]:
 class TimerService:
     """Emits synthetic ``timer.*`` events on the EventBus.
 
-    The service scans the :class:`~src.playbook_manager.PlaybookManager` for
+    The service scans the :class:`~src.playbooks.manager.PlaybookManager` for
     compiled playbooks with ``timer.{interval}`` triggers, tracks only
     intervals that have at least one active subscriber, and emits events
     when intervals elapse.
@@ -125,7 +125,7 @@ class TimerService:
     event_bus:
         The :class:`~src.event_bus.EventBus` to emit timer events on.
     playbook_manager:
-        The :class:`~src.playbook_manager.PlaybookManager` to scan for
+        The :class:`~src.playbooks.manager.PlaybookManager` to scan for
         timer triggers.
     """
 

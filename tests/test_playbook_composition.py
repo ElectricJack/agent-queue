@@ -22,9 +22,9 @@ composition per the playbooks spec Section 10 (Composability):
 These tests exercise the full interaction between:
 
 - :class:`~src.event_bus.EventBus` — filtered pub/sub delivery
-- :class:`~src.playbook_manager.PlaybookManager` — trigger mapping,
+- :class:`~src.playbooks.manager.PlaybookManager` — trigger mapping,
   cooldown, concurrency tracking
-- :class:`~src.playbook_runner.PlaybookRunner` — graph execution and
+- :class:`~src.playbooks.runner.PlaybookRunner` — graph execution and
   event emission on completion/failure
 
 Since no ``PlaybookDispatcher`` component exists yet, the tests wire up
@@ -40,9 +40,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.event_bus import EventBus
-from src.playbook_manager import PlaybookManager
-from src.playbook_models import CompiledPlaybook, PlaybookNode
-from src.playbook_runner import PlaybookRunner
+from src.playbooks.manager import PlaybookManager
+from src.playbooks.models import CompiledPlaybook, PlaybookNode
+from src.playbooks.runner import PlaybookRunner
 
 
 # ---------------------------------------------------------------------------

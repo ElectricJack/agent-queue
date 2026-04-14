@@ -1,4 +1,4 @@
-"""Tests for :mod:`src.playbook_store` — compiled playbook JSON storage.
+"""Tests for :mod:`src.playbooks.store` — compiled playbook JSON storage.
 
 Tests cover the full CRUD surface of :class:`CompiledPlaybookStore`:
 
@@ -18,8 +18,8 @@ import os
 
 import pytest
 
-from src.playbook_models import CompiledPlaybook, PlaybookNode, PlaybookTransition
-from src.playbook_store import COMPILED_SUFFIX, CompiledPlaybookStore
+from src.playbooks.models import CompiledPlaybook, PlaybookNode, PlaybookTransition
+from src.playbooks.store import COMPILED_SUFFIX, CompiledPlaybookStore
 
 
 # ---------------------------------------------------------------------------

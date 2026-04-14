@@ -1,4 +1,4 @@
-"""Tests for src/playbook_handler — playbook .md vault watcher handler registration.
+"""Tests for src/playbooks/handler — playbook .md vault watcher handler registration.
 
 Also includes full end-to-end integration tests (roadmap 5.1.6) that verify
 the complete pipeline: VaultWatcher detects file change → PlaybookHandler
@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.playbook_handler import (
+from src.playbooks.handler import (
     PLAYBOOK_PATTERNS,
     derive_playbook_scope,
     on_playbook_changed,
@@ -90,7 +90,7 @@ class TestOnPlaybookChanged:
             rel_path="system/playbooks/deploy.md",
             operation="modified",
         )
-        with caplog.at_level(logging.INFO, logger="src.playbook_handler"):
+        with caplog.at_level(logging.INFO, logger="src.playbooks.handler"):
             await on_playbook_changed([change])
 
         assert len(caplog.records) == 1
@@ -118,7 +118,7 @@ class TestOnPlaybookChanged:
                 operation="deleted",
             ),
         ]
-        with caplog.at_level(logging.INFO, logger="src.playbook_handler"):
+        with caplog.at_level(logging.INFO, logger="src.playbooks.handler"):
             await on_playbook_changed(changes)
 
         assert len(caplog.records) == 3
@@ -129,7 +129,7 @@ class TestOnPlaybookChanged:
 
     @pytest.mark.asyncio
     async def test_empty_changes_no_log(self, caplog):
-        with caplog.at_level(logging.INFO, logger="src.playbook_handler"):
+        with caplog.at_level(logging.INFO, logger="src.playbooks.handler"):
             await on_playbook_changed([])
 
         assert len(caplog.records) == 0
@@ -142,7 +142,7 @@ class TestOnPlaybookChanged:
             rel_path="projects/mech-fighters/playbooks/deploy.md",
             operation="created",
         )
-        with caplog.at_level(logging.INFO, logger="src.playbook_handler"):
+        with caplog.at_level(logging.INFO, logger="src.playbooks.handler"):
             await on_playbook_changed([change])
 
         assert "project/mech-fighters" in caplog.records[0].message
@@ -155,7 +155,7 @@ class TestOnPlaybookChanged:
             rel_path="orchestrator/playbooks/routing.md",
             operation="modified",
         )
-        with caplog.at_level(logging.INFO, logger="src.playbook_handler"):
+        with caplog.at_level(logging.INFO, logger="src.playbooks.handler"):
             await on_playbook_changed([change])
 
         msg = caplog.records[0].message
@@ -170,7 +170,7 @@ class TestOnPlaybookChanged:
             rel_path="projects/app/playbooks/deploy.md",
             operation="created",
         )
-        with caplog.at_level(logging.INFO, logger="src.playbook_handler"):
+        with caplog.at_level(logging.INFO, logger="src.playbooks.handler"):
             await on_playbook_changed([change])
 
         msg = caplog.records[0].message
@@ -426,7 +426,7 @@ class TestEndToEndDispatch:
         (vault / "orchestrator" / "playbooks" / "route.md").write_text("# Route\n")
 
         # Detect and dispatch
-        with caplog.at_level(logging.INFO, logger="src.playbook_handler"):
+        with caplog.at_level(logging.INFO, logger="src.playbooks.handler"):
             await watcher.check()
 
         # The stub handler should have logged all 4
@@ -533,7 +533,7 @@ class TestEndToEndCompilation:
     @pytest.mark.asyncio
     async def test_create_file_triggers_compilation(self, tmp_path):
         """Creating a playbook .md file compiles it via the full pipeline."""
-        from src.playbook_manager import PlaybookManager
+        from src.playbooks.manager import PlaybookManager
 
         vault = tmp_path / "vault"
         vault.mkdir()
@@ -577,7 +577,7 @@ class TestEndToEndCompilation:
     async def test_modify_file_triggers_recompilation(self, tmp_path):
         """Modifying a playbook .md file triggers recompilation."""
         from src.chat_providers.types import ChatResponse, TextBlock
-        from src.playbook_manager import PlaybookManager
+        from src.playbooks.manager import PlaybookManager
 
         vault = tmp_path / "vault"
         vault.mkdir()
@@ -628,7 +628,7 @@ class TestEndToEndCompilation:
     @pytest.mark.asyncio
     async def test_unchanged_file_skips_recompilation(self, tmp_path):
         """Touching a file without changing content skips recompilation."""
-        from src.playbook_manager import PlaybookManager
+        from src.playbooks.manager import PlaybookManager
 
         vault = tmp_path / "vault"
         vault.mkdir()
@@ -674,7 +674,7 @@ class TestEndToEndCompilation:
     @pytest.mark.asyncio
     async def test_delete_file_removes_from_registry(self, tmp_path):
         """Deleting a playbook .md file removes it from the active registry."""
-        from src.playbook_manager import PlaybookManager
+        from src.playbooks.manager import PlaybookManager
 
         vault = tmp_path / "vault"
         vault.mkdir()
@@ -712,7 +712,7 @@ class TestEndToEndCompilation:
     @pytest.mark.asyncio
     async def test_compiled_json_persisted_to_disk(self, tmp_path):
         """Compiled playbook JSON is written to the data directory."""
-        from src.playbook_manager import PlaybookManager
+        from src.playbooks.manager import PlaybookManager
 
         vault = tmp_path / "vault"
         data_dir = tmp_path / "data"
@@ -753,7 +753,7 @@ class TestEndToEndCompilation:
     async def test_compilation_failure_keeps_previous_version(self, tmp_path):
         """Failed recompilation keeps the previous version active in the full pipeline."""
         from src.chat_providers.types import ChatResponse, TextBlock
-        from src.playbook_manager import PlaybookManager
+        from src.playbooks.manager import PlaybookManager
 
         vault = tmp_path / "vault"
         vault.mkdir()
@@ -804,7 +804,7 @@ class TestEndToEndCompilation:
     async def test_multiple_scopes_compiled_independently(self, tmp_path):
         """Playbooks in different scopes compile independently via the pipeline."""
         from src.chat_providers.types import ChatResponse, TextBlock
-        from src.playbook_manager import PlaybookManager
+        from src.playbooks.manager import PlaybookManager
 
         vault = tmp_path / "vault"
         vault.mkdir()
@@ -851,7 +851,7 @@ class TestEndToEndCompilation:
     @pytest.mark.asyncio
     async def test_startup_load_then_watcher_skip(self, tmp_path):
         """After loading from disk at startup, file watcher skips unchanged files."""
-        from src.playbook_manager import PlaybookManager
+        from src.playbooks.manager import PlaybookManager
 
         vault = tmp_path / "vault"
         vault.mkdir()

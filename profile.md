@@ -126,16 +126,16 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 
 | File | Purpose |
 |------|---------|
-| `src/playbook_models.py` | Data models: CompiledPlaybook, PlaybookNode, PlaybookTransition, PlaybookRun |
-| `src/playbook_compiler.py` | LLM-powered markdown → JSON graph compiler with retry/validation |
-| `src/playbook_runner.py` | Graph walker — steps through nodes maintaining conversation history |
-| `src/playbook_manager.py` | Lifecycle: compilation, versioning, trigger mapping, cooldown, concurrency |
-| `src/playbook_store.py` | Disk storage with scope-mirrored directory structure |
-| `src/playbook_handler.py` | Vault watcher — detects `.md` changes, dispatches to compiler |
-| `src/playbook_state_machine.py` | Formal state machine for run lifecycle |
-| `src/playbook_resume_handler.py` | Human-in-the-loop resume logic |
-| `src/playbook_health.py` | Metrics computation for run analysis |
-| `src/playbook_graph.py` | Graph rendering (ASCII + Mermaid visualization) |
+| `src/playbooks/models.py` | Data models: CompiledPlaybook, PlaybookNode, PlaybookTransition, PlaybookRun |
+| `src/playbooks/compiler.py` | LLM-powered markdown → JSON graph compiler with retry/validation |
+| `src/playbooks/runner.py` | Graph walker — steps through nodes maintaining conversation history |
+| `src/playbooks/manager.py` | Lifecycle: compilation, versioning, trigger mapping, cooldown, concurrency |
+| `src/playbooks/store.py` | Disk storage with scope-mirrored directory structure |
+| `src/playbooks/handler.py` | Vault watcher — detects `.md` changes, dispatches to compiler |
+| `src/playbooks/state_machine.py` | Formal state machine for run lifecycle |
+| `src/playbooks/resume_handler.py` | Human-in-the-loop resume logic |
+| `src/playbooks/health.py` | Metrics computation for run analysis |
+| `src/playbooks/graph.py` | Graph rendering (ASCII + Mermaid visualization) |
 
 ### Workflow Coordination
 

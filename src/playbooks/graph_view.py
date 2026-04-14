@@ -24,8 +24,8 @@ Roadmap 5.7.2.
 
 Example usage::
 
-    from src.playbook_graph_view import build_graph_view
-    from src.playbook_models import CompiledPlaybook
+    from src.playbooks.graph_view import build_graph_view
+    from src.playbooks.models import CompiledPlaybook
 
     playbook = CompiledPlaybook.from_dict(data)
     view = build_graph_view(playbook)
@@ -49,7 +49,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from src.models import PlaybookRun
-    from src.playbook_models import CompiledPlaybook, PlaybookNode
+    from src.playbooks.models import CompiledPlaybook, PlaybookNode
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +264,7 @@ def build_nodes(
     Each node includes its id, type classification, display attributes (label,
     symbol, colors), position, and metadata (timeout, human review, etc.).
     """
-    from src.playbook_graph import _topo_order
+    from src.playbooks.graph import _topo_order
 
     order = _topo_order(playbook)
     nodes: list[dict[str, Any]] = []
@@ -315,7 +315,7 @@ def build_edges(playbook: CompiledPlaybook) -> list[dict[str, Any]]:
 
     Each edge includes source, target, label, and edge type for styling.
     """
-    from src.playbook_graph import _topo_order
+    from src.playbooks.graph import _topo_order
 
     order = _topo_order(playbook)
     edges: list[dict[str, Any]] = []

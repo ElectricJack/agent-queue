@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock
 import pytest
 import yaml
 
-from src.playbook_runner import PlaybookRunner
+from src.playbooks.runner import PlaybookRunner
 
 # ---------------------------------------------------------------------------
 # Constants

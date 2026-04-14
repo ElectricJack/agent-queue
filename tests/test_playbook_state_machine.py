@@ -1,7 +1,7 @@
 """Tests for PlaybookRun state machine — formal transition validation.
 
-Tests the state machine defined in src/playbook_state_machine.py and its
-integration with PlaybookRunner (src/playbook_runner.py).
+Tests the state machine defined in src/playbooks/state_machine.py and its
+integration with PlaybookRunner (src/playbooks/runner.py).
 
 Coverage:
 - All valid transitions produce the correct target status
@@ -20,8 +20,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.models import PlaybookRun, PlaybookRunEvent, PlaybookRunStatus
-from src.playbook_runner import PlaybookRunner
-from src.playbook_state_machine import (
+from src.playbooks.runner import PlaybookRunner
+from src.playbooks.state_machine import (
     TERMINAL_STATUSES,
     VALID_PLAYBOOK_RUN_STATUS_TRANSITIONS,
     VALID_PLAYBOOK_RUN_TRANSITIONS,
