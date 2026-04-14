@@ -382,9 +382,10 @@ class ClaudeAdapter(AgentAdapter):
 
             mcp_names = list(self._task.mcp_servers.keys()) if self._task.mcp_servers else []
             logger.info(
-                "Claude adapter: starting query (session=%s, prompt=%d chars, "
+                "Claude adapter: starting query (session=%s, model=%s, prompt=%d chars, "
                 "allowed_tools=%s, mcp_servers=%s)",
                 self._session_id or "new",
+                self._config.model or "(default)",
                 len(current_prompt),
                 allowed,
                 mcp_names,
