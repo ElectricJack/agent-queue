@@ -1185,32 +1185,6 @@ class Supervisor:
             if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
                 self._provider._caller = prev_caller
 
-    async def process_hook_llm(
-        self,
-        hook_context: str,
-        rendered_prompt: str,
-        project_id: str | None = None,
-        hook_name: str = "unknown",
-        on_progress=None,
-        provider: ChatProvider | None = None,
-    ) -> str:
-        """Process a hook's LLM invocation through the Supervisor."""
-        if project_id:
-            self.set_active_project(project_id)
-        full_prompt = hook_context + rendered_prompt
-        async with self._llm_lock:
-            token = _hook_provider_override.set(provider) if provider else None
-            try:
-                return await self._chat_unlocked(
-                    text=full_prompt,
-                    user_name=f"hook:{hook_name}",
-                    on_progress=on_progress,
-                    _reflection_trigger="hook.completed",
-                )
-            finally:
-                if token is not None:
-                    _hook_provider_override.reset(token)
-
     async def break_plan_into_tasks(
         self,
         raw_plan: str,

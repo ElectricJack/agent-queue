@@ -533,8 +533,8 @@ class ToolRegistry:
                 schema_parts.append(prop_def["description"])
         return f"{name} {desc} {' '.join(schema_parts)}"
 
-    # Categories to never auto-preload (deprecated or low-value).
-    _SKIP_PRELOAD: frozenset[str] = frozenset({"rules"})
+    # Categories to never auto-preload (low-value or noisy).
+    _SKIP_PRELOAD: frozenset[str] = frozenset()
 
     def search_relevant_categories(
         self,

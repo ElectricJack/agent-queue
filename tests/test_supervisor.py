@@ -97,32 +97,6 @@ async def test_build_system_prompt_returns_string():
     assert len(prompt) > 0
 
 
-def test_process_hook_llm_exists():
-    sup = _make_supervisor()
-    assert hasattr(sup, "process_hook_llm")
-    assert callable(sup.process_hook_llm)
-
-
-def test_process_hook_llm_sets_project():
-    """process_hook_llm sets active project before processing."""
-    sup = _make_supervisor()
-    sup._provider = MagicMock()
-    resp = _make_resp(tool_uses=[_make_reply_tool_use("Hook processed successfully")])
-    sup._provider.create_message = AsyncMock(return_value=resp)
-    sup.handler.execute = AsyncMock(return_value={"status": "ok"})
-
-    result = asyncio.run(
-        sup.process_hook_llm(
-            hook_context="## Hook Context\nProject: test",
-            rendered_prompt="Check tunnel status",
-            project_id="my-game",
-            hook_name="tunnel-monitor",
-        )
-    )
-    assert "Hook processed" in result
-    assert sup._active_project_id == "my-game"
-
-
 def test_chat_simple_text_no_tools():
     """Simple text response with no tool use returns directly."""
     sup = _make_supervisor()
@@ -315,48 +289,6 @@ def test_reflect_method_exists():
     assert callable(sup.reflect)
 
 
-def test_process_hook_llm_uses_hook_trigger():
-    """process_hook_llm triggers reflection with hook-specific trigger."""
-    sup = _make_supervisor()
-    sup._provider = MagicMock()
-
-    # First call: LLM uses a tool
-    resp1 = _make_resp(
-        tool_uses=[
-            _make_tool_use("list_tasks", {"status": "ready"}, "tu-1"),
-        ]
-    )
-
-    # Second call: reply_to_user
-    resp2 = _make_resp(
-        tool_uses=[
-            _make_reply_tool_use("Hook done"),
-        ]
-    )
-
-    sup._provider.create_message = AsyncMock(side_effect=[resp1, resp2])
-    sup.handler.execute = AsyncMock(return_value={"tasks": []})
-
-    # Track what trigger the reflection sees
-    triggers_seen = []
-
-    def track_should(trigger):
-        triggers_seen.append(trigger)
-        return False  # Skip actual reflection for test speed
-
-    sup.reflection.should_reflect = track_should
-
-    asyncio.run(
-        sup.process_hook_llm(
-            hook_context="ctx",
-            rendered_prompt="prompt",
-            project_id="p1",
-            hook_name="my-hook",
-        )
-    )
-    assert any("hook" in t for t in triggers_seen)
-
-
 def test_full_integration_supervisor_replaces_chat_agent():
     """Verify Supervisor can be used everywhere ChatAgent was."""
     from src.supervisor import Supervisor
@@ -374,7 +306,6 @@ def test_full_integration_supervisor_replaces_chat_agent():
     assert hasattr(sup, "reload_credentials")
     assert hasattr(sup, "handler")
     assert hasattr(sup, "reflection")
-    assert hasattr(sup, "process_hook_llm")
     assert hasattr(sup, "reflect")
 
 

@@ -50,17 +50,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_agent": "agent",
     "pause_agent": "agent",
     "resume_agent": "agent",
-    # rules — deprecated, redirecting to playbooks (playbooks spec §13 Phase 3)
-    "browse_rules": "rules",
-    "list_rules": "rules",
-    "load_rule": "rules",
-    "save_rule": "rules",
-    "delete_rule": "rules",
-    "fire_rule": "rules",
-    "rule_runs": "rules",
-    "toggle_rule": "rules",
-    "refresh_rules": "rules",
-    "migrate_rules_to_playbooks": "rules",
     # vault — reference stub management
     "scan_stub_staleness": "system",
     # memory — migrated to aq-memory-v2 internal plugin (src/plugins/internal/memory_v2.py)
@@ -1767,53 +1756,6 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     # ------------------------------------------------------------------
-    # Rule tools — DEPRECATED (playbooks spec §13 Phase 3)
-    # All rule commands return deprecation notices and redirect to playbooks.
-    # ------------------------------------------------------------------
-    {
-        "name": "list_rules",
-        "description": (
-            "DEPRECATED — use list_playbooks instead. "
-            "Rules have been replaced by playbooks."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID (optional)",
-                },
-            },
-        },
-    },
-    {
-        "name": "save_rule",
-        "description": (
-            "DEPRECATED — use compile_playbook instead. "
-            "Rules have been replaced by playbooks."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "Rule content (deprecated)",
-                },
-            },
-        },
-    },
-    {
-        "name": "refresh_hooks",
-        "description": (
-            "DEPRECATED — hooks and rules have been removed. "
-            "Playbooks are compiled automatically."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
-    # ------------------------------------------------------------------
     # Commands below were added to ensure ALL CommandHandler commands
     # have explicit MCP tool definitions with rich schemas.
     # ------------------------------------------------------------------
@@ -2019,110 +1961,6 @@ _ALL_TOOL_DEFINITIONS = [
     # GitHub operations + convenience git commands (create_github_repo, generate_readme,
     # create_branch, checkout_branch, commit_changes, push_branch, merge_branch)
     # migrated to aq-git internal plugin.
-    # --- Rule tools — DEPRECATED (playbooks spec §13 Phase 3) ---
-    {
-        "name": "browse_rules",
-        "description": (
-            "DEPRECATED — use list_playbooks instead. "
-            "Rules have been replaced by playbooks."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID (optional)",
-                },
-            },
-        },
-    },
-    {
-        "name": "fire_rule",
-        "description": (
-            "DEPRECATED — use dry_run_playbook instead. "
-            "Rules have been replaced by playbooks."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "Rule ID (deprecated)"},
-            },
-            "required": ["id"],
-        },
-    },
-    {
-        "name": "load_rule",
-        "description": (
-            "DEPRECATED — use list_playbooks instead. "
-            "Rules have been replaced by playbooks."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "Rule ID (deprecated)"},
-            },
-            "required": ["id"],
-        },
-    },
-    {
-        "name": "delete_rule",
-        "description": (
-            "DEPRECATED — rules have been replaced by playbooks. "
-            "Delete the playbook file from the vault instead."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "Rule ID (deprecated)"},
-            },
-            "required": ["id"],
-        },
-    },
-    {
-        "name": "rule_runs",
-        "description": (
-            "DEPRECATED — use list_playbook_runs instead. "
-            "Rules have been replaced by playbooks."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "Rule ID (deprecated)"},
-            },
-            "required": ["id"],
-        },
-    },
-    {
-        "name": "toggle_rule",
-        "description": (
-            "DEPRECATED — rules have been replaced by playbooks. "
-            "Edit the playbook's enabled field instead."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "Rule ID (deprecated)"},
-                "enabled": {"type": "boolean", "description": "Enabled state (deprecated)"},
-            },
-            "required": ["id"],
-        },
-    },
-    {
-        "name": "refresh_rules",
-        "description": (
-            "DEPRECATED — rules have been replaced by playbooks. "
-            "Playbooks are compiled automatically."
-        ),
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "migrate_rules_to_playbooks",
-        "description": (
-            "DEPRECATED — migration is complete. Rules have been replaced "
-            "by playbooks (playbooks spec §13 Phase 3)."
-        ),
-        "input_schema": {"type": "object", "properties": {}},
-    },
     # --- Communication ---
     {
         "name": "send_message",
