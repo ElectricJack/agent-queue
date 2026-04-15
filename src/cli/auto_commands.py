@@ -75,7 +75,6 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "task": "task",
     "project": "project",
     "agent": "agent",
-    "hooks": "hook",
     "plugin": "plugin",
     "git": "git",
     "memory": "memory",

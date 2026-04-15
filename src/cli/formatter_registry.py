@@ -154,8 +154,6 @@ def _register_all():
     """Register all built-in formatters. Called once at import time."""
     from .adapters import (
         agent_proxy,
-        hook_proxy,
-        hook_run_proxy,
         project_proxy,
         task_proxy,
     )
@@ -168,15 +166,11 @@ def _register_all():
         format_confirmation,
         format_entity_detail,
         format_event_list,
-        format_hook_run_table,
-        format_hook_table,
         format_key_value,
         format_profile_detail,
         format_profile_list,
         format_prompt_list,
         format_project_table,
-        format_rule_list,
-        format_schedule_list,
         format_task_deps,
         format_task_detail,
         format_task_table,
@@ -257,24 +251,6 @@ def _register_all():
         proxy=agent_proxy,
         many=True,
         empty_message="No agents found.",
-    )
-
-    # -- Hook commands -------------------------------------------------------
-
-    FORMATTERS["list_hooks"] = FormatterSpec(
-        render=format_hook_table,
-        extract="hooks",
-        proxy=hook_proxy,
-        many=True,
-        empty_message="No hooks found.",
-    )
-
-    FORMATTERS["list_hook_runs"] = FormatterSpec(
-        render=format_hook_run_table,
-        extract="runs",
-        proxy=hook_run_proxy,
-        many=True,
-        empty_message="No hook runs found.",
     )
 
     # -- Task extra commands ---------------------------------------------------
@@ -391,62 +367,6 @@ def _register_all():
         "import_profile",
     ):
         FORMATTERS[_agent_confirm] = FormatterSpec(
-            render=format_confirmation,
-            extract=None,
-            many=False,
-        )
-
-    # -- Hook/rule commands --------------------------------------------------
-
-    FORMATTERS["list_hooks"] = FormatterSpec(
-        render=format_hook_table,
-        extract="hooks",
-        proxy=hook_proxy,
-        many=True,
-        empty_message="No hooks found.",
-    )
-
-    FORMATTERS["list_hook_runs"] = FormatterSpec(
-        render=format_hook_run_table,
-        extract="runs",
-        proxy=hook_run_proxy,
-        many=True,
-        empty_message="No hook runs found.",
-    )
-
-    for _rule_list_cmd in ("browse_rules", "list_rules"):
-        FORMATTERS[_rule_list_cmd] = FormatterSpec(
-            render=format_rule_list,
-            extract=None,
-            many=False,
-        )
-    FORMATTERS["load_rule"] = FormatterSpec(
-        render=format_entity_detail,
-        extract=None,
-        many=False,
-    )
-    for _sched_cmd in ("hook_schedules", "list_scheduled"):
-        FORMATTERS[_sched_cmd] = FormatterSpec(
-            render=format_schedule_list,
-            extract=None,
-            many=False,
-        )
-
-    # Hook/rule confirmations
-    for _hook_confirm in (
-        "create_hook",
-        "edit_hook",
-        "delete_hook",
-        "fire_hook",
-        "save_rule",
-        "delete_rule",
-        "refresh_hooks",
-        "schedule_hook",
-        "cancel_scheduled",
-        "fire_all_scheduled_hooks",
-        "toggle_project_hooks",
-    ):
-        FORMATTERS[_hook_confirm] = FormatterSpec(
             render=format_confirmation,
             extract=None,
             many=False,

@@ -155,20 +155,4 @@ def agent_proxy(d: Any) -> DictProxy | TypedProxy:
     return TypedProxy(d, aliases={"id": "workspace_id"})
 
 
-def hook_proxy(d: Any) -> DictProxy | TypedProxy:
-    """Wrap a hook response for formatters."""
-    if isinstance(d, dict):
-        patched = dict(d)
-        trigger = d.get("trigger")
-        if isinstance(trigger, dict):
-            patched["trigger"] = json.dumps(trigger)
-        patched.setdefault("last_triggered_at", None)
-        return DictProxy(patched)
-    # For typed models, trigger may be a nested object — convert to JSON string
-    proxy = TypedProxy(d)
-    return proxy
 
-
-def hook_run_proxy(d: Any) -> DictProxy | TypedProxy:
-    """Wrap a hook-run response for formatters."""
-    return _wrap(d)
