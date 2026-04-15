@@ -99,8 +99,17 @@ class ProfileCommandsMixin:
                 "error": (f"Profile file written to vault but DB sync failed: {sync_result.errors}")
             }
 
-        # V1 ensure_agent_type_collection removed (roadmap 8.6).
-        # Agent-type collections are now managed by MemoryV2Plugin.
+        # Ensure memory collection is ready for indexing starter knowledge.
+        memory_mgr = getattr(self.orchestrator, "memory_manager", None)
+        if memory_mgr and hasattr(memory_mgr, "ensure_agent_type_collection"):
+            try:
+                await memory_mgr.ensure_agent_type_collection(profile_id)
+            except Exception:
+                logger.debug(
+                    "Failed to ensure memory collection for profile '%s'",
+                    profile_id,
+                    exc_info=True,
+                )
 
         result: dict = {"created": profile_id, "name": name}
         if starter_result["copied"]:

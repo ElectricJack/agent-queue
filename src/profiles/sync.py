@@ -19,6 +19,7 @@ Validation on sync (per spec Section 3):
 
 Patterns watched:
     - ``agent-types/*/profile.md`` -- per-agent-type profile definitions (includes supervisor)
+    - ``orchestrator/profile.md`` -- orchestrator profile definition
 
 See ``docs/specs/design/profiles.md`` Section 3 for the full sync model.
 """
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 # Glob patterns for profile files (relative to vault root)
 PROFILE_PATTERNS: list[str] = [
     "agent-types/*/profile.md",
+    "orchestrator/profile.md",
 ]
 
 
@@ -93,6 +95,7 @@ def derive_profile_id(rel_path: str) -> str | None:
 
     - ``agent-types/coding/profile.md`` -> ``"coding"``
     - ``agent-types/supervisor/profile.md`` -> ``"supervisor"``
+    - ``orchestrator/profile.md`` -> ``"orchestrator"``
 
     Parameters
     ----------
@@ -110,6 +113,10 @@ def derive_profile_id(rel_path: str) -> str | None:
     # agent-types/<type>/profile.md -> <type>
     if len(parts) >= 3 and parts[0] == "agent-types" and parts[-1] == "profile.md":
         return parts[1]
+
+    # orchestrator/profile.md -> orchestrator
+    if len(parts) == 2 and parts[0] == "orchestrator" and parts[-1] == "profile.md":
+        return "orchestrator"
 
     return None
 
