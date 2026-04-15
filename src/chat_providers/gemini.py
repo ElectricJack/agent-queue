@@ -21,12 +21,14 @@ class GeminiChatProvider(ChatProvider):
         self,
         model: str = "gemini-2.5-flash",
         api_key: str = "",
+        thinking_budget: int = 8192,
     ):
         from google import genai
 
         resolved_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
         self._client = genai.Client(api_key=resolved_key)
         self._model = str(model) if model else "gemini-2.5-flash"
+        self._thinking_budget = thinking_budget
 
     @property
     def model_name(self) -> str:
@@ -45,7 +47,7 @@ class GeminiChatProvider(ChatProvider):
         config = types.GenerateContentConfig(
             system_instruction=system,
             max_output_tokens=max_tokens,
-            thinking_config=types.ThinkingConfig(thinking_budget=8192),
+            thinking_config=types.ThinkingConfig(thinking_budget=self._thinking_budget),
         )
         if tools:
             config.tools = gemini_adapter.convert_tools(tools)

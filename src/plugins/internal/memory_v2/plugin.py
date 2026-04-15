@@ -3822,10 +3822,11 @@ class MemoryV2Plugin(InternalPlugin):
             )
 
             try:
+                max_tokens = app_config.chat_provider.max_tokens
                 resp = await provider.create_message(
                     messages=[{"role": "user", "content": user}],
                     system=system,
-                    max_tokens=2048,
+                    max_tokens=max_tokens,
                 )
                 consolidated_text = "\n".join(resp.text_parts).strip()
                 if not consolidated_text:

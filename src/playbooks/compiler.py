@@ -47,9 +47,8 @@ logger = logging.getLogger(__name__)
 # validation.  Each retry includes the validation errors as feedback.
 MAX_RETRIES = 2
 
-# Default max_tokens for the compilation LLM call.  Playbook graphs are
-# typically compact (under 2k tokens) but we leave headroom for complex
-# playbooks with many nodes.
+# Fallback max_tokens when no config is available (e.g. standalone usage).
+# The runtime default comes from config.chat_provider.playbook_max_tokens.
 DEFAULT_MAX_TOKENS = 4096
 
 

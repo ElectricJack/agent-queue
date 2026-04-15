@@ -517,6 +517,9 @@ class ChatProviderConfig:
     api_key: str = ""  # For Gemini (falls back to GEMINI_API_KEY / GOOGLE_API_KEY env vars)
     keep_alive: str = "1h"  # Ollama: how long to keep model loaded after last request
     num_ctx: int = 0  # Ollama: context window size (0 = model default)
+    max_tokens: int = 2048  # Default response token budget for LLM calls
+    playbook_max_tokens: int = 4096  # Response token budget for playbook compilation & nodes
+    thinking_budget: int = 8192  # Thinking/reasoning token budget (Gemini models)
 
     def __post_init__(self) -> None:
         # YAML may parse numeric model names (e.g. ``model: 4``) as int/float.
@@ -1443,6 +1446,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             api_key=cp.get("api_key", ""),
             keep_alive=cp.get("keep_alive", "1h"),
             num_ctx=cp.get("num_ctx", 0),
+            max_tokens=cp.get("max_tokens", 2048),
+            playbook_max_tokens=cp.get("playbook_max_tokens", 4096),
+            thinking_budget=cp.get("thinking_budget", 8192),
         )
 
     if "supervisor" in raw:

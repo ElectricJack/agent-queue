@@ -787,6 +787,7 @@ class Orchestrator(
             chat_provider=playbook_provider,
             event_bus=self.bus,
             data_dir=self.config.data_dir,
+            playbook_max_tokens=self.config.chat_provider.playbook_max_tokens,
         )
         # Restore previously compiled playbooks from disk so version numbers
         # continue from where they left off and source-hash change detection
@@ -923,6 +924,7 @@ class Orchestrator(
                 config=self.config.memory,
                 enabled=True,
                 max_source_chars=self.config.memory.stub_enrichment_max_source_chars,
+                max_tokens=self.config.chat_provider.max_tokens,
             )
             self.reference_stub_enricher.subscribe()
             logger.info("ReferenceStubEnricher initialized and subscribed")

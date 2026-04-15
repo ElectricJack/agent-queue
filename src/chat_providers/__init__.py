@@ -42,6 +42,7 @@ def create_chat_provider(config: ChatProviderConfig) -> ChatProvider | None:
         return GeminiChatProvider(
             model=config.model or "gemini-2.5-flash",
             api_key=config.api_key,
+            thinking_budget=config.thinking_budget,
         )
 
     # Default: anthropic

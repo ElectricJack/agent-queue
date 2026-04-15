@@ -411,10 +411,11 @@ class MemoryExtractor:
 
         # LLM extraction
         try:
+            max_tokens = getattr(self._chat_provider_config, "max_tokens", 2048)
             resp = await provider.create_message(
                 messages=[{"role": "user", "content": user_msg}],
                 system=_SYSTEM_PROMPT,
-                max_tokens=1024,
+                max_tokens=max_tokens,
             )
             text = "\n".join(resp.text_parts).strip()
             items = self._parse_response(text)

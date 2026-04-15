@@ -77,7 +77,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from src.playbooks.compiler import CompilationResult, PlaybookCompiler
+from src.playbooks.compiler import DEFAULT_MAX_TOKENS, CompilationResult, PlaybookCompiler
 from src.playbooks.models import CompiledPlaybook, PlaybookScope, PlaybookTrigger
 
 if TYPE_CHECKING:
@@ -185,6 +185,7 @@ class PlaybookManager:
         store: CompiledPlaybookStore | None = None,
         max_concurrent_runs: int = 2,
         on_trigger: TriggerCallback | None = None,
+        playbook_max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         self._chat_provider = chat_provider
         self._event_bus = event_bus
@@ -246,9 +247,10 @@ class PlaybookManager:
         self.system_notification_channel_id: str | None = None
 
         # Compiler instance (created lazily when provider is available)
+        self._playbook_max_tokens = playbook_max_tokens
         self._compiler: PlaybookCompiler | None = None
         if chat_provider is not None:
-            self._compiler = PlaybookCompiler(chat_provider)
+            self._compiler = PlaybookCompiler(chat_provider, max_tokens=playbook_max_tokens)
 
     # -- public API ----------------------------------------------------------
 

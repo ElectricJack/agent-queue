@@ -1534,11 +1534,12 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         prompt = self._build_node_prompt(node_id, node, extra_vars)
 
         # Resolve per-node LLM config, defaulting to higher max_tokens for playbooks
+        pb_max = self.supervisor.config.chat_provider.playbook_max_tokens
         node_llm_config = self._resolve_node_llm_config(node)
         if node_llm_config is None:
-            node_llm_config = {"max_tokens": 4096}
+            node_llm_config = {"max_tokens": pb_max}
         elif "max_tokens" not in node_llm_config:
-            node_llm_config = {**node_llm_config, "max_tokens": 4096}
+            node_llm_config = {**node_llm_config, "max_tokens": pb_max}
 
         supervisor_progress = self._make_supervisor_progress(node_id)
 

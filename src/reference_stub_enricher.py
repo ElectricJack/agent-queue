@@ -589,6 +589,7 @@ class ReferenceStubEnricher:
         provider: ChatProvider | None = None,
         enabled: bool = True,
         max_source_chars: int = DEFAULT_MAX_SOURCE_CHARS,
+        max_tokens: int = 2048,
     ) -> None:
         self._bus = bus
         self._vault_projects_dir = vault_projects_dir
@@ -596,6 +597,7 @@ class ReferenceStubEnricher:
         self._provider = provider
         self._enabled = enabled
         self._max_source_chars = max_source_chars
+        self._max_tokens = max_tokens
 
         # Statistics
         self._total_enriched: int = 0
@@ -1021,7 +1023,7 @@ class ReferenceStubEnricher:
         response = await provider.create_message(
             messages=[{"role": "user", "content": user_prompt}],
             system=SUMMARIZE_SYSTEM_PROMPT,
-            max_tokens=1024,
+            max_tokens=self._max_tokens,
         )
 
         text_parts = response.text_parts

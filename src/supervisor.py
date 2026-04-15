@@ -504,11 +504,12 @@ class Supervisor:
 
         try:
             system_prompt = await self._build_system_prompt()
+            max_tokens = self.config.chat_provider.max_tokens
             reflect_resp = await self._provider.create_message(
                 messages=messages,
                 system=system_prompt,
                 tools=list(active_tools.values()),
-                max_tokens=1024,
+                max_tokens=max_tokens,
             )
 
             # Collect all text from reflection (including after tool use)
@@ -538,7 +539,7 @@ class Supervisor:
                     messages=messages,
                     system=system_prompt,
                     tools=list(active_tools.values()),
-                    max_tokens=1024,
+                    max_tokens=max_tokens,
                 )
                 reflection_text_parts.extend(followup.text_parts)
 
@@ -871,8 +872,9 @@ class Supervisor:
             # contextvar override > default self._provider.
             active_provider = call_provider or _hook_provider_override.get() or self._provider
 
-            # Apply max_tokens from llm_config (or default 1024).
-            effective_max_tokens = llm_config.get("max_tokens", 1024) if llm_config else 1024
+            # Apply max_tokens from llm_config (or config default).
+            default_max = self.config.chat_provider.max_tokens
+            effective_max_tokens = llm_config.get("max_tokens", default_max) if llm_config else default_max
 
             resp = await active_provider.create_message(
                 messages=messages,
@@ -1167,7 +1169,7 @@ class Supervisor:
                     }
                 ],
                 system=effective_system,
-                max_tokens=1024,
+                max_tokens=self.config.chat_provider.max_tokens,
             )
             parts = resp.text_parts
             return parts[0] if parts else None
@@ -1238,7 +1240,7 @@ class Supervisor:
                     "tools. Always include the 'do nothing' path so the agent "
                     "doesn't take unnecessary action."
                 ),
-                max_tokens=1024,
+                max_tokens=self.config.chat_provider.max_tokens,
             )
             parts = resp.text_parts
             return parts[0] if parts else None
