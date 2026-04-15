@@ -22,7 +22,7 @@ from src.database.tables import (
     token_ledger,
     workspaces,
 )
-from src.models import Task, TaskStatus, TaskType, VerificationType, WorkspaceMode
+from src.models import TaskStatus
 
 
 class ArchiveQueryMixin:
@@ -190,47 +190,6 @@ class ArchiveQueryMixin:
             if not row:
                 return None
             return self._row_to_archived_task(row)
-
-    async def restore_archived_task(self, task_id: str) -> bool:
-        """Move an archived task back into active ``tasks``. Returns *True* if restored."""
-        archived = await self.get_archived_task(task_id)
-        if archived is None:
-            return False
-
-        task = Task(
-            id=archived["id"],
-            project_id=archived["project_id"],
-            parent_task_id=archived["parent_task_id"],
-            repo_id=archived["repo_id"],
-            title=archived["title"],
-            description=archived["description"],
-            priority=archived["priority"],
-            status=TaskStatus.DEFINED,
-            verification_type=VerificationType(archived["verification_type"]),
-            retry_count=0,
-            max_retries=archived["max_retries"],
-            assigned_agent_id=None,
-            branch_name=archived["branch_name"],
-            resume_after=None,
-            requires_approval=archived["requires_approval"],
-            pr_url=archived["pr_url"],
-            plan_source=archived["plan_source"],
-            is_plan_subtask=archived["is_plan_subtask"],
-            task_type=TaskType(archived["task_type"]) if archived["task_type"] else None,
-            workflow_id=archived.get("workflow_id"),
-            agent_type=archived.get("agent_type"),
-            affinity_agent_id=archived.get("affinity_agent_id"),
-            affinity_reason=archived.get("affinity_reason"),
-            workspace_mode=(
-                WorkspaceMode(archived["workspace_mode"])
-                if archived.get("workspace_mode")
-                else None
-            ),
-        )
-        await self.create_task(task)
-        async with self._engine.begin() as conn:
-            await conn.execute(delete(archived_tasks).where(archived_tasks.c.id == task_id))
-        return True
 
     async def delete_archived_task(self, task_id: str) -> bool:
         """Permanently delete an archived task. Returns *True* if deleted."""

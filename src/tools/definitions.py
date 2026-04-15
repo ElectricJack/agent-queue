@@ -29,7 +29,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "release_workspace": "project",
     "remove_workspace": "project",
     "queue_sync_workspaces": "project",
-    "set_active_project": "project",
     "set_project_channel": "project",
     "set_control_interface": "project",
     # agent (workspace-as-agent model — deprecated CRUD still available)
@@ -62,7 +61,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_task": "task",
     "skip_task": "task",
     "set_task_status": "task",
-    "restore_task": "task",
     "approve_task": "task",
     "process_task_completion": "task",
     "approve_plan": "task",
@@ -70,11 +68,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_plan": "task",
     "process_plan": "task",
     "archive_task": "task",
-    "archive_tasks": "task",
     "archive_settings": "task",
     "list_archived": "task",
     "get_task_result": "task",
-    "get_task_diff": "task",
     "get_task_tree": "task",
     "get_task_dependencies": "task",
     "task_deps": "task",
@@ -790,19 +786,6 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "set_active_project",
-        "description": "Set or clear the active project. When set, all commands default to this project without needing to specify project_id.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID to set as active, or empty/null to clear",
-                },
-            },
-        },
-    },
-    {
         "name": "get_task",
         "description": "Get full details of a specific task including its description.",
         "input_schema": {
@@ -959,44 +942,36 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "archive_tasks",
+        "name": "archive_task",
         "description": (
-            "Archive completed tasks to clear them from active task lists. "
-            "Tasks are moved to the archived_tasks DB table (viewable with "
-            "list_archived, restorable with restore_task) and a markdown "
-            "reference note is written to ~/.agent-queue/archived_tasks/. "
-            "Optionally also archive FAILED and BLOCKED tasks."
+            "Archive tasks. Provide task_id to archive a single task, or "
+            "project_id to bulk-archive all completed tasks in a project."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": (
+                        "Archive a single task by ID "
+                        "(must be COMPLETED, FAILED, or BLOCKED)"
+                    ),
+                },
                 "project_id": {
                     "type": "string",
-                    "description": "Project ID to scope archiving to (optional — omit for all projects)",
+                    "description": (
+                        "Bulk-archive all completed tasks in this project "
+                        "(alternative to task_id)"
+                    ),
                 },
                 "include_failed": {
                     "type": "boolean",
                     "description": (
-                        "If true, also archive FAILED and BLOCKED tasks. Default false."
+                        "When bulk-archiving by project_id, also archive "
+                        "FAILED and BLOCKED tasks. Default false."
                     ),
                 },
             },
-            "required": [],
-        },
-    },
-    {
-        "name": "archive_task",
-        "description": (
-            "Archive a single task by ID. The task must be in a terminal status "
-            "(COMPLETED, FAILED, or BLOCKED). Archived tasks are removed from "
-            "active views but preserved for reference."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string", "description": "Task ID to archive"},
-            },
-            "required": ["task_id"],
         },
     },
     {
@@ -1019,24 +994,6 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": [],
-        },
-    },
-    {
-        "name": "restore_task",
-        "description": (
-            "Restore an archived task back into the active task list. The task "
-            "is restored with DEFINED status so it re-enters the normal "
-            "orchestrator lifecycle."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "Archived task ID to restore",
-                },
-            },
-            "required": ["task_id"],
         },
     },
     {
@@ -1324,17 +1281,6 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "get_task_result",
         "description": "Retrieve a task's output: summary, files changed, error message, tokens used. Use this when the user asks about what a task did or its results.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string", "description": "Task ID"},
-            },
-            "required": ["task_id"],
-        },
-    },
-    {
-        "name": "get_task_diff",
-        "description": "Show the git diff for a task's branch against the base branch. Use when the user asks to see code changes.",
         "input_schema": {
             "type": "object",
             "properties": {

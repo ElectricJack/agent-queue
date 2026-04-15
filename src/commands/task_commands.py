@@ -1380,32 +1380,74 @@ class TaskCommandsMixin:
     # ``~/.agent-queue/archived_tasks/<project_id>/``.  Tasks can be listed,
     # inspected, restored, or permanently deleted from the archive.
 
-    async def _cmd_archive_tasks(self, args: dict) -> dict:
-        """Archive completed (and optionally failed/blocked) tasks.
+    async def _cmd_archive_task(self, args: dict) -> dict:
+        """Archive tasks — single task by ID or bulk by project.
 
-        Moves matching tasks into the ``archived_tasks`` database table and
-        writes a markdown reference note for each task into
-        ``~/.agent-queue/archived_tasks/<project_id>/``.
+        **Single mode** (``task_id``): archives one task.  Must be in a
+        terminal status (COMPLETED, FAILED, or BLOCKED).
+
+        **Bulk mode** (``project_id``): archives all completed tasks in a
+        project.  Set ``include_failed=True`` to also archive FAILED and
+        BLOCKED tasks.
 
         Parameters
         ----------
         args : dict
-            ``project_id`` – optional project scope.  When omitted, all
-            matching tasks across every project are archived.
-            ``include_failed`` – if ``True``, also archive FAILED and BLOCKED
-            tasks in addition to COMPLETED.  Default ``False``.
+            ``task_id`` – archive a single task by ID.
+            ``project_id`` – bulk-archive completed tasks in this project.
+            ``include_failed`` – (bulk only) also archive FAILED/BLOCKED.
         """
+        task_id = args.get("task_id")
         project_id = args.get("project_id")
-        include_failed = args.get("include_failed", False)
 
-        # Determine which statuses to archive.
+        if task_id:
+            # --- Single-task mode ---
+            task = await self.db.get_task(task_id)
+            if not task:
+                return {"error": f"Task '{task_id}' not found"}
+
+            terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
+            if task.status not in terminal:
+                return {
+                    "error": (
+                        f"Cannot archive task in {task.status.value} status. "
+                        "Only COMPLETED, FAILED, or BLOCKED tasks can be archived."
+                    ),
+                }
+
+            result = await self.db.get_task_result(task_id)
+            deps = await self.db.get_dependencies(task_id)
+            await self._write_archive_note(task, result, deps)
+
+            success = await self.db.archive_task(task_id)
+            if not success:
+                return {"error": f"Failed to archive task '{task_id}'"}
+
+            await self.db.log_event(
+                "task_archived",
+                project_id=task.project_id,
+                task_id=task_id,
+            )
+            return {
+                "archived": task_id,
+                "title": task.title,
+                "status": task.status.value,
+            }
+
+        if not project_id and not task_id:
+            return {"error": "Provide task_id or project_id."}
+
+        # --- Bulk mode ---
+        include_failed = args.get("include_failed", False)
         statuses_to_archive = [TaskStatus.COMPLETED]
         if include_failed:
             statuses_to_archive.extend([TaskStatus.FAILED, TaskStatus.BLOCKED])
 
         tasks_to_archive: list = []
         for status in statuses_to_archive:
-            tasks_to_archive.extend(await self.db.list_tasks(project_id=project_id, status=status))
+            tasks_to_archive.extend(
+                await self.db.list_tasks(project_id=project_id, status=status)
+            )
 
         if not tasks_to_archive:
             scope = f" in project `{project_id}`" if project_id else ""
@@ -1421,12 +1463,8 @@ class TaskCommandsMixin:
         # Phase 2 — archive each task (DB table + optional markdown note).
         archived: list[dict] = []
         for task, result, deps in task_data:
-            # Write markdown note if the project has a workspace.
             archive_path = await self._write_archive_note(task, result, deps)
-
-            # Move to the archived_tasks table.
             await self.db.archive_task(task.id)
-
             await self.db.log_event(
                 "task_archived",
                 project_id=task.project_id,
@@ -1441,7 +1479,6 @@ class TaskCommandsMixin:
                 }
             )
 
-        # Determine archive_dir for the response (use first task's project).
         archive_dir = None
         for entry in archived:
             if entry["archive_path"]:
@@ -1454,55 +1491,6 @@ class TaskCommandsMixin:
             "archived": archived,
             "archive_dir": archive_dir,
             "project_id": project_id,
-        }
-
-    async def _cmd_archive_task(self, args: dict) -> dict:
-        """Archive a single task by ID.
-
-        The task must be in a terminal status (COMPLETED, FAILED, or BLOCKED).
-        Active (non-terminal) tasks cannot be archived — stop or complete them
-        first.
-
-        Parameters
-        ----------
-        args : dict
-            ``task_id`` – the task to archive.
-        """
-        task_id = args.get("task_id")
-        if not task_id:
-            return {"error": "task_id is required"}
-
-        task = await self.db.get_task(task_id)
-        if not task:
-            return {"error": f"Task '{task_id}' not found"}
-
-        terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
-        if task.status not in terminal:
-            return {
-                "error": (
-                    f"Cannot archive task in {task.status.value} status. "
-                    "Only COMPLETED, FAILED, or BLOCKED tasks can be archived."
-                ),
-            }
-
-        # Gather result/deps before archiving (archive deletes child rows).
-        result = await self.db.get_task_result(task_id)
-        deps = await self.db.get_dependencies(task_id)
-        await self._write_archive_note(task, result, deps)
-
-        success = await self.db.archive_task(task_id)
-        if not success:
-            return {"error": f"Failed to archive task '{task_id}'"}
-
-        await self.db.log_event(
-            "task_archived",
-            project_id=task.project_id,
-            task_id=task_id,
-        )
-        return {
-            "archived": task_id,
-            "title": task.title,
-            "status": task.status.value,
         }
 
     async def _cmd_list_archived(self, args: dict) -> dict:
@@ -1526,40 +1514,6 @@ class TaskCommandsMixin:
             "count": len(tasks),
             "total": total,
             "project_id": project_id,
-        }
-
-    async def _cmd_restore_task(self, args: dict) -> dict:
-        """Restore an archived task back into the active task list.
-
-        The task is restored with status DEFINED so it enters the normal
-        orchestrator lifecycle (dependency check → READY → scheduling).
-
-        Parameters
-        ----------
-        args : dict
-            ``task_id`` – the archived task to restore.
-        """
-        task_id = args.get("task_id")
-        if not task_id:
-            return {"error": "task_id is required"}
-
-        archived = await self.db.get_archived_task(task_id)
-        if not archived:
-            return {"error": f"Archived task '{task_id}' not found"}
-
-        success = await self.db.restore_archived_task(task_id)
-        if not success:
-            return {"error": f"Failed to restore task '{task_id}'"}
-
-        await self.db.log_event(
-            "task_restored",
-            project_id=archived["project_id"],
-            task_id=task_id,
-        )
-        return {
-            "restored": task_id,
-            "title": archived["title"],
-            "new_status": "DEFINED",
         }
 
     async def _cmd_archive_settings(self, args: dict) -> dict:
@@ -2691,38 +2645,6 @@ class TaskCommandsMixin:
         if not result:
             return {"error": f"No results found for task '{args['task_id']}'"}
         return result
-
-    async def _cmd_get_task_diff(self, args: dict) -> dict:
-        task = await self.db.get_task(args["task_id"])
-        if not task:
-            return {"error": f"Task '{args['task_id']}' not found"}
-        if not task.branch_name:
-            return {"error": "Task has no branch name"}
-
-        # Resolve checkout path from workspaces (locked by this task)
-        checkout_path = None
-        workspaces = await self.db.list_workspaces(project_id=task.project_id)
-        for ws in workspaces:
-            if ws.locked_by_task_id == task.id:
-                checkout_path = ws.workspace_path
-                break
-        # Fallback: first workspace for the project
-        if not checkout_path and workspaces:
-            checkout_path = workspaces[0].workspace_path
-        # Legacy fallback: repo source_path
-        if not checkout_path and task.repo_id:
-            repo = await self.db.get_repo(task.repo_id)
-            if repo and repo.source_path:
-                checkout_path = repo.source_path
-        if not checkout_path:
-            return {"error": "Could not determine checkout path for diff"}
-
-        project = await self.db.get_project(task.project_id)
-        default_branch = project.repo_default_branch if project else "main"
-        diff = await self.orchestrator.git.aget_diff(checkout_path, default_branch)
-        if not diff:
-            return {"diff": "(no changes)", "branch": task.branch_name}
-        return {"diff": diff, "branch": task.branch_name}
 
     async def _cmd_get_agent_error(self, args: dict) -> dict:
         task_id = args["task_id"]

@@ -318,7 +318,11 @@ class Supervisor:
         return any(not ev.is_set() for ev in self._cancel_events)
 
     async def _build_system_prompt(
-        self, *, l2_query: str = "", preloaded_categories: list[str] | None = None
+        self,
+        *,
+        l2_query: str = "",
+        preloaded_categories: list[str] | None = None,
+        extra_context: dict[str, str] | None = None,
     ) -> str:
         """Build the system prompt for the current conversation.
 
@@ -330,6 +334,8 @@ class Supervisor:
             l2_query: Optional user text for L2 semantic memory search.
                       Pass on the first round only to avoid redundant
                       embedding calls during the tool-loop.
+            extra_context: Optional dict of named context blocks to inject
+                (e.g. channel context, thread context from Discord).
 
         Returns:
             Assembled system prompt string.
@@ -376,6 +382,12 @@ class Supervisor:
                             builder.set_l2_context(l2_text)
                     except Exception:
                         pass  # graceful degradation
+        # Inject caller-provided context blocks (channel context, thread
+        # context, etc.) before the tool index.
+        if extra_context:
+            for ctx_name, ctx_content in extra_context.items():
+                builder.add_context(ctx_name, ctx_content)
+
         # Exclude preloaded categories from the tool index — the LLM already
         # has their full schemas, so listing names again is duplication.
         exclude_cats = set(preloaded_categories or [])
@@ -536,6 +548,7 @@ class Supervisor:
         _reflection_trigger: str = "user.request",
         llm_config: dict | None = None,
         tool_overrides: list[str] | None = None,
+        context: dict[str, str] | None = None,
     ) -> str:
         """Process a user message with tool use. Returns response text.
 
@@ -565,6 +578,10 @@ class Supervisor:
                 default tool set is used (backward compatible).  An empty
                 list ``[]`` means no tools (text-only response).  Unknown
                 tool names raise ``ValueError`` before the LLM call.
+            context: Optional dict of named context blocks to inject
+                into the system prompt (e.g. channel context, thread
+                context).  Keys are context names, values are content
+                strings.
         """
         async with self._llm_lock:
             return await self._chat_unlocked(
@@ -575,6 +592,7 @@ class Supervisor:
                 _reflection_trigger,
                 llm_config=llm_config,
                 tool_overrides=tool_overrides,
+                context=context,
             )
 
     async def _chat_unlocked(
@@ -586,6 +604,7 @@ class Supervisor:
         _reflection_trigger: str = "user.request",
         llm_config: dict | None = None,
         tool_overrides: list[str] | None = None,
+        context: dict[str, str] | None = None,
     ) -> str:
         """Process a user message without acquiring ``_llm_lock``.
 
@@ -629,6 +648,7 @@ class Supervisor:
                 cancel_event=cancel_event,
                 llm_config=llm_config,
                 tool_overrides=tool_overrides,
+                context=context,
             )
             # Emit event for memory extraction (background, non-blocking)
             bus = getattr(self.orchestrator, "bus", None)
@@ -681,6 +701,7 @@ class Supervisor:
         cancel_event: asyncio.Event | None = None,
         llm_config: dict | None = None,
         tool_overrides: list[str] | None = None,
+        context: dict[str, str] | None = None,
     ) -> str:
         """Inner implementation of chat() — separated so chat() can manage
         the cancel event lifecycle in a try/finally.
@@ -794,7 +815,9 @@ class Supervisor:
         # already first-round-only, and project context / L1 facts don't
         # change mid-conversation).
         cached_system_prompt = await self._build_system_prompt(
-            l2_query=text, preloaded_categories=preloaded_categories
+            l2_query=text,
+            preloaded_categories=preloaded_categories,
+            extra_context=context,
         )
 
         round_num = 0
@@ -953,14 +976,24 @@ class Supervisor:
                     and tool_use.name == "load_tools"
                     and "loaded" in result
                 ):
-                    category = result["loaded"]
-                    cat_tools = registry.get_category_tools(
-                        category,
-                        compressed=compressed,
-                    )
-                    if cat_tools:
-                        for t in cat_tools:
-                            active_tools[t["name"]] = t
+                    if result.get("single_tool"):
+                        # Single-tool mode — inject just the one tool
+                        name = result["tools_added"][0]
+                        tool_def = registry.get_tool_definition(
+                            name, compressed=compressed,
+                        )
+                        if tool_def:
+                            active_tools[tool_def["name"]] = tool_def
+                    else:
+                        # Category mode — inject all tools from the category
+                        category = result["loaded"]
+                        cat_tools = registry.get_category_tools(
+                            category,
+                            compressed=compressed,
+                        )
+                        if cat_tools:
+                            for t in cat_tools:
+                                active_tools[t["name"]] = t
 
                 tool_results.append(
                     {

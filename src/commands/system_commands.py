@@ -271,18 +271,6 @@ class SystemCommandsMixin:
     # system rather than any single project or task.
     # -----------------------------------------------------------------------
 
-    async def _cmd_set_active_project(self, args: dict) -> dict:
-        pid = args.get("project_id")
-        if pid:
-            project = await self.db.get_project(pid)
-            if not project:
-                return {"error": f"Project '{pid}' not found"}
-            self._active_project_id = pid
-            return {"active_project": pid, "name": project.name}
-        else:
-            self._active_project_id = None
-            return {"active_project": None, "message": "Active project cleared"}
-
     async def _cmd_orchestrator_control(self, args: dict) -> dict:
         action = args["action"]
         orch = self.orchestrator

@@ -7,7 +7,7 @@ class ToolCommandsMixin:
     """Tool navigation command methods mixed into CommandHandler."""
 
     async def _cmd_load_tools(self, args: dict) -> dict:
-        """Load a tool category's definitions for the current interaction.
+        """Load tools by category or individual name.
 
         The actual schema injection happens in the chat layer (Supervisor),
         not here. This command returns the list of tool names so the chat
@@ -15,21 +15,42 @@ class ToolCommandsMixin:
         """
         from src.tools import ToolRegistry
 
+        tool_name = args.get("tool_name", "")
         category = args.get("category", "")
         registry = ToolRegistry()
         if hasattr(self, "orchestrator") and self.orchestrator:
             if hasattr(self.orchestrator, "plugin_registry") and self.orchestrator.plugin_registry:
                 registry.set_plugin_registry(self.orchestrator.plugin_registry)
+
+        # Single-tool mode
+        if tool_name:
+            defn = registry.get_tool_definition(tool_name)
+            if not defn:
+                return {"error": f"Unknown tool: '{tool_name}'."}
+            cat = registry.get_tool_category(tool_name)
+            if not cat:
+                return {"error": f"'{tool_name}' is a core tool (already loaded)."}
+            return {
+                "loaded": cat,
+                "tools_added": [tool_name],
+                "single_tool": True,
+                "message": f"Tool '{tool_name}' is now available.",
+            }
+
+        # Category mode
+        if not category:
+            return {"error": "Provide 'category' or 'tool_name'."}
+
         names = registry.get_category_tool_names(category)
         if names is None:
             available = [c["name"] for c in registry.get_categories()]
             return {
-                "error": (f"Unknown category: {category}. Available: {', '.join(available)}"),
+                "error": f"Unknown category: {category}. Available: {', '.join(available)}",
             }
         return {
             "loaded": category,
             "tools_added": names,
-            "message": (f"{len(names)} {category} tools are now available."),
+            "message": f"{len(names)} {category} tools are now available.",
         }
 
     async def _cmd_find_applicable_tool(self, args: dict) -> dict:

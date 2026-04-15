@@ -1333,6 +1333,37 @@ class AgentQueueBot(commands.Bot):
                 return m
         return None
 
+    def _build_thread_context(
+        self, channel_id: int, before_msg: discord.Message, limit: int = 8,
+    ) -> str | None:
+        """Build a compact text block of recent thread messages for system prompt.
+
+        Returns a formatted string of the last ``limit`` messages before
+        ``before_msg``, or None if no recent messages exist.  Thinking
+        indicator messages are excluded.
+        """
+        buf = self._channel_buffers.get(channel_id)
+        if not buf:
+            return None
+
+        before_ts = before_msg.created_at.timestamp()
+        recent = [
+            m for m in buf
+            if m.created_at < before_ts and m.id not in self._thinking_msg_ids
+        ][-limit:]
+
+        if not recent:
+            return None
+
+        lines = []
+        for msg in recent:
+            content = msg.content
+            if len(content) > 300:
+                content = content[:297] + "..."
+            lines.append(f"[{msg.author_name}]: {content}")
+
+        return "\n".join(lines)
+
     def _maybe_trigger_summarization(self, channel_id: int) -> None:
         """Start a background summarization task if none is already running."""
         existing = self._summarization_tasks.get(channel_id)
@@ -1587,12 +1618,10 @@ class AgentQueueBot(commands.Bot):
                         )
                         return
 
-                    # Prepend project context for project channels and notes threads
+                    # Build context dict for system prompt injection (not prepended to user message)
                     user_text = text
+                    llm_context: dict[str, str] = {}
                     if project_channel_id and not is_bot_channel:
-                        # List other projects so the LLM can route tasks
-                        # to the correct project when the user's request
-                        # is about a different project than the channel's.
                         other_projects = [
                             pid for pid in self._project_channels if pid != project_channel_id
                         ]
@@ -1604,22 +1633,55 @@ class AgentQueueBot(commands.Bot):
                                 f"If the user's request is clearly about a "
                                 f"different project, set project_id explicitly."
                             )
-                        user_text = (
-                            f"[Context: this is the channel for project "
+                        llm_context["channel_context"] = (
+                            f"This is the channel for project "
                             f"`{project_channel_id}`. Default to using "
                             f"project_id='{project_channel_id}' for all project-scoped "
-                            f"commands.{cross_project_hint}]\n{text}"
+                            f"commands.{cross_project_hint}"
                         )
                     elif is_notes_thread and not is_bot_channel:
-                        user_text = (
-                            f"[NOTES MODE for project '{notes_project_id}'. "
+                        llm_context["channel_context"] = (
+                            f"NOTES MODE for project '{notes_project_id}'. "
                             f"BEHAVIOR: The user will type stream-of-consciousness thoughts. "
                             f"1. Call list_notes to see existing notes. "
                             f"2. Categorize input — decide which note it belongs to or create new. "
                             f"3. Use append_note to add to existing, or write_note for new. "
                             f"4. Respond with BRIEF confirmation: which note updated + 1-line summary. "
                             f"5. For browsing/management/comparison requests, use appropriate tools. "
-                            f"Default project_id='{notes_project_id}'.]\n{text}"
+                            f"Default project_id='{notes_project_id}'."
+                        )
+
+                    # Include replied-to message in user request
+                    if message.reference and message.reference.message_id:
+                        ref_id = message.reference.message_id
+                        ref_msg = self._find_cached_message(message.channel.id, ref_id)
+                        if ref_msg:
+                            user_text = (
+                                f'[Replying to {ref_msg.author_name}: '
+                                f'"{ref_msg.content}"]\n{user_text}'
+                            )
+                        elif (
+                            message.reference.resolved
+                            and isinstance(message.reference.resolved, discord.Message)
+                        ):
+                            resolved = message.reference.resolved
+                            ref_author = (
+                                "AgentQueue"
+                                if resolved.author == self.user
+                                else resolved.author.display_name
+                            )
+                            user_text = (
+                                f'[Replying to {ref_author}: '
+                                f'"{resolved.content}"]\n{user_text}'
+                            )
+
+                    # Include recent thread messages as system prompt context
+                    thread_ctx = self._build_thread_context(
+                        message.channel.id, message,
+                    )
+                    if thread_ctx:
+                        llm_context["recent_thread"] = (
+                            f"## Recent Thread Messages\n\n{thread_ctx}"
                         )
 
                     # Set active project from channel context so that git
@@ -1698,6 +1760,7 @@ class AgentQueueBot(commands.Bot):
                             message.author.display_name,
                             history=history,
                             on_progress=_on_progress,
+                            context=llm_context or None,
                         )
                     except Exception as e:
                         _is_auth_error = False
@@ -1717,6 +1780,7 @@ class AgentQueueBot(commands.Bot):
                                     message.author.display_name,
                                     history=history,
                                     on_progress=_on_progress,
+                                    context=llm_context or None,
                                 )
                             else:
                                 response = (

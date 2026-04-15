@@ -176,21 +176,26 @@ class ToolRegistry:
             self._all_tools["load_tools"] = {
                 "name": "load_tools",
                 "description": (
-                    "Load all tools from a specific category, making "
-                    "them available for the remainder of this "
+                    "Load tools by category name or individual tool name, "
+                    "making them available for the remainder of this "
                     "interaction. Check the Tool Index in your system "
-                    "prompt to see available categories, or call "
-                    "find_applicable_tool to search by description."
+                    "prompt to see available categories and tool names."
                 ),
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "category": {
                             "type": "string",
-                            "description": ("Category name to load (e.g. 'git', 'project')"),
+                            "description": (
+                                "Category name to load all tools from "
+                                "(e.g. 'git', 'project', 'task')"
+                            ),
+                        },
+                        "tool_name": {
+                            "type": "string",
+                            "description": "Load a single tool by exact name",
                         },
                     },
-                    "required": ["category"],
                 },
             }
         if "send_message" not in self._all_tools:
@@ -312,6 +317,11 @@ class ToolRegistry:
         cat = tool.get("_category")
         if cat:
             return cat
+        # Plugin tools without an explicit category use their plugin name
+        # as a synthetic category so they never pollute the core tool set.
+        plugin = tool.get("_plugin")
+        if plugin:
+            return plugin
         # Fall back to hardcoded mapping
         return _TOOL_CATEGORIES.get(name)
 
@@ -455,6 +465,44 @@ class ToolRegistry:
 
         names = [name for name, t in merged.items() if self._tool_category(name, t) == category]
         return names or None
+
+    def get_tool_definition(
+        self,
+        tool_name: str,
+        compressed: bool = False,
+    ) -> dict | None:
+        """Look up a single tool definition by name.
+
+        Args:
+            tool_name: Exact tool name.
+            compressed: If True, return minimal schema.
+
+        Returns:
+            Tool definition dict, or ``None`` if not found.
+        """
+        plugin_tools = self._get_plugin_tools()
+        merged = {**self._all_tools, **plugin_tools}
+        tool = merged.get(tool_name)
+        if tool is None:
+            return None
+        return self.compress_tool_schema(tool) if compressed else tool
+
+    def get_tool_category(self, tool_name: str) -> str | None:
+        """Return the category a tool belongs to, or None if core.
+
+        Args:
+            tool_name: Exact tool name.
+
+        Returns:
+            Category name string, or ``None`` if the tool is core
+            (always loaded) or doesn't exist.
+        """
+        plugin_tools = self._get_plugin_tools()
+        merged = {**self._all_tools, **plugin_tools}
+        tool = merged.get(tool_name)
+        if tool is None:
+            return None
+        return self._tool_category(tool_name, tool)
 
     def get_all_tools(self) -> list[dict]:
         """Return all tool definitions (core + all categories + plugins).
