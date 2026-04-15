@@ -770,16 +770,36 @@ class Supervisor:
                 t["name"]: t for t in registry.get_core_tools(compressed=compressed)
             }
 
-            # Pre-load categories relevant to the user's prompt so the LLM
-            # doesn't need to spend a turn calling load_tools.
+            # Pre-load the top-N individual tools most relevant to the
+            # user's prompt so the LLM doesn't need to spend a turn
+            # calling load_tools.  Uses the semantic ToolIndex (vector
+            # similarity) when available, falls back to keyword matching.
             preloaded_categories: list[str] = []
-            relevant_cats = registry.search_relevant_categories(text)
-            for cat_name in relevant_cats:
-                cat_tools = registry.get_category_tools(cat_name, compressed=compressed)
-                if cat_tools:
-                    for t in cat_tools:
-                        active_tools[t["name"]] = t
-                    preloaded_categories.append(cat_name)
+            idx = registry.tool_index
+            if idx and idx.ready:
+                matches = await idx.search(text, top_k=5)
+                for match in matches:
+                    if match["score"] < 0.3:
+                        continue
+                    tool_def = registry.get_tool_definition(
+                        match["name"], compressed=compressed,
+                    )
+                    if tool_def and match["name"] not in active_tools:
+                        active_tools[match["name"]] = tool_def
+            else:
+                # Fallback: keyword-based, but load individual tools
+                # instead of entire categories.
+                relevant_cats = registry.search_relevant_categories(
+                    text, max_categories=1, min_score=0.3,
+                )
+                for cat_name in relevant_cats:
+                    cat_tools = registry.get_category_tools(
+                        cat_name, compressed=compressed,
+                    )
+                    if cat_tools:
+                        for t in cat_tools:
+                            active_tools[t["name"]] = t
+                        preloaded_categories.append(cat_name)
 
         messages = list(history) if history else []
 
