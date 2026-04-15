@@ -220,22 +220,24 @@ async def _resilient_query(prompt, options, adapter=None):
                 adapter._active_transport = None
             if adapter._active_query is _our_query:
                 adapter._active_query = None
-        # Close with a timeout.  The CLI subprocess may hang during shutdown
-        # (e.g. open MCP HTTP connections that prevent clean exit).  After
-        # a 5-second grace period, force-kill the subprocess.
+        # Kill the subprocess first so close() doesn't hang waiting for
+        # it to exit (the CLI keeps MCP HTTP connections open after the
+        # agent finishes).  Killing the process is safe — we already
+        # have the ResultMessage.  Then close() just cleans up handles.
+        # We must NOT use asyncio.wait_for here — its cancellation
+        # mechanism leaks through anyio task groups and can corrupt
+        # shared resources like the database connection pool.
+        _force_kill_transport(_our_transport)
         if _our_query is not None:
             try:
-                await asyncio.wait_for(_our_query.close(), timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.info("Claude adapter: graceful close timed out, force-killing subprocess")
-                _force_kill_transport(_our_transport)
+                await _our_query.close()
             except Exception:
-                _force_kill_transport(_our_transport)
+                pass
         elif _our_transport is not None:
             try:
-                await asyncio.wait_for(_our_transport.close(), timeout=5.0)
-            except (asyncio.TimeoutError, Exception):
-                _force_kill_transport(_our_transport)
+                await _our_transport.close()
+            except Exception:
+                pass
 
 
 @dataclass
