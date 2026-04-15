@@ -220,14 +220,9 @@ async def _resilient_query(prompt, options, adapter=None):
                 adapter._active_transport = None
             if adapter._active_query is _our_query:
                 adapter._active_query = None
-        # Kill the subprocess first so close() doesn't hang waiting for
-        # it to exit (the CLI keeps MCP HTTP connections open after the
-        # agent finishes).  Killing the process is safe — we already
-        # have the ResultMessage.  Then close() just cleans up handles.
-        # We must NOT use asyncio.wait_for here — its cancellation
-        # mechanism leaks through anyio task groups and can corrupt
-        # shared resources like the database connection pool.
-        _force_kill_transport(_our_transport)
+        # The subprocess is already dead (killed after ResultMessage in the
+        # loop above, or it exited naturally).  close() just cleans up
+        # internal state — it should be fast with no live process.
         if _our_query is not None:
             try:
                 await _our_query.close()
@@ -486,10 +481,12 @@ class ClaudeAdapter(AgentAdapter):
                                     "output_tokens", 0
                                 )
                             # ResultMessage is the final message from the agent.
-                            # Break immediately — the CLI subprocess may hang
-                            # during shutdown (e.g. open MCP HTTP connections)
-                            # and we already have everything we need.
-                            break
+                            # Kill the subprocess so the message stream ends
+                            # naturally (pipe closes).  We must NOT use break
+                            # here — it triggers aclose() on the async generator
+                            # which runs anyio cancel scope cleanup that leaks
+                            # CancelledError into the SQLAlchemy connection pool.
+                            _force_kill_transport(_our_transport)
                         elif hasattr(message, "result") and message.result:
                             summary_parts.append(str(message.result))
 
