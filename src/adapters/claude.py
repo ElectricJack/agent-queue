@@ -79,26 +79,6 @@ def _classify_error_result(error_msg: str) -> AgentResult:
     return AgentResult.FAILED
 
 
-def _force_kill_transport(transport) -> None:
-    """Force-terminate the CLI subprocess if it's still running.
-
-    Called when graceful close times out — typically because the CLI is
-    holding MCP HTTP connections open and won't exit on its own.
-    """
-    if transport is None:
-        return
-    proc = getattr(transport, "_process", None)
-    if proc is None:
-        return
-    if getattr(proc, "returncode", None) is not None:
-        return  # already exited
-    try:
-        proc.kill()
-        logger.info("Claude adapter: force-killed subprocess (pid=%s)", getattr(proc, "pid", "?"))
-    except (ProcessLookupError, OSError):
-        pass
-
-
 async def _resilient_query(prompt, options, adapter=None):
     """Wrap claude_agent_sdk.query() to survive MessageParseError.
 
@@ -220,19 +200,19 @@ async def _resilient_query(prompt, options, adapter=None):
                 adapter._active_transport = None
             if adapter._active_query is _our_query:
                 adapter._active_query = None
-        # The subprocess is already dead (killed after ResultMessage in the
-        # loop above, or it exited naturally).  close() just cleans up
-        # internal state — it should be fast with no live process.
+        # Wrap close() in try/except so cleanup errors never mask the
+        # original exception (e.g. ProcessError from a failed resume).
         if _our_query is not None:
             try:
                 await _our_query.close()
-            except Exception:
-                pass
+            except Exception as close_err:
+                print(f"Claude adapter: cleanup error (suppressed): {close_err}")
         elif _our_transport is not None:
+            # connect() succeeded but Query wasn't created — close transport directly
             try:
                 await _our_transport.close()
-            except Exception:
-                pass
+            except Exception as close_err:
+                print(f"Claude adapter: transport cleanup error (suppressed): {close_err}")
 
 
 @dataclass
@@ -480,13 +460,6 @@ class ClaudeAdapter(AgentAdapter):
                                 tokens_used += usage.get("input_tokens", 0) + usage.get(
                                     "output_tokens", 0
                                 )
-                            # ResultMessage is the final message from the agent.
-                            # Kill the subprocess so the message stream ends
-                            # naturally (pipe closes).  We must NOT use break
-                            # here — it triggers aclose() on the async generator
-                            # which runs anyio cancel scope cleanup that leaks
-                            # CancelledError into the SQLAlchemy connection pool.
-                            _force_kill_transport(_our_transport)
                         elif hasattr(message, "result") and message.result:
                             summary_parts.append(str(message.result))
 
