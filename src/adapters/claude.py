@@ -79,6 +79,26 @@ def _classify_error_result(error_msg: str) -> AgentResult:
     return AgentResult.FAILED
 
 
+def _force_kill_transport(transport) -> None:
+    """Force-terminate the CLI subprocess if it's still running.
+
+    Called when graceful close times out — typically because the CLI is
+    holding MCP HTTP connections open and won't exit on its own.
+    """
+    if transport is None:
+        return
+    proc = getattr(transport, "_process", None)
+    if proc is None:
+        return
+    if getattr(proc, "returncode", None) is not None:
+        return  # already exited
+    try:
+        proc.kill()
+        logger.info("Claude adapter: force-killed subprocess (pid=%s)", getattr(proc, "pid", "?"))
+    except (ProcessLookupError, OSError):
+        pass
+
+
 async def _resilient_query(prompt, options, adapter=None):
     """Wrap claude_agent_sdk.query() to survive MessageParseError.
 
@@ -200,19 +220,22 @@ async def _resilient_query(prompt, options, adapter=None):
                 adapter._active_transport = None
             if adapter._active_query is _our_query:
                 adapter._active_query = None
-        # Wrap close() in try/except so cleanup errors never mask the
-        # original exception (e.g. ProcessError from a failed resume).
+        # Close with a timeout.  The CLI subprocess may hang during shutdown
+        # (e.g. open MCP HTTP connections that prevent clean exit).  After
+        # a 5-second grace period, force-kill the subprocess.
         if _our_query is not None:
             try:
-                await _our_query.close()
-            except Exception as close_err:
-                print(f"Claude adapter: cleanup error (suppressed): {close_err}")
+                await asyncio.wait_for(_our_query.close(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.info("Claude adapter: graceful close timed out, force-killing subprocess")
+                _force_kill_transport(_our_transport)
+            except Exception:
+                _force_kill_transport(_our_transport)
         elif _our_transport is not None:
-            # connect() succeeded but Query wasn't created — close transport directly
             try:
-                await _our_transport.close()
-            except Exception as close_err:
-                print(f"Claude adapter: transport cleanup error (suppressed): {close_err}")
+                await asyncio.wait_for(_our_transport.close(), timeout=5.0)
+            except (asyncio.TimeoutError, Exception):
+                _force_kill_transport(_our_transport)
 
 
 @dataclass
@@ -460,6 +483,11 @@ class ClaudeAdapter(AgentAdapter):
                                 tokens_used += usage.get("input_tokens", 0) + usage.get(
                                     "output_tokens", 0
                                 )
+                            # ResultMessage is the final message from the agent.
+                            # Break immediately — the CLI subprocess may hang
+                            # during shutdown (e.g. open MCP HTTP connections)
+                            # and we already have everything we need.
+                            break
                         elif hasattr(message, "result") and message.result:
                             summary_parts.append(str(message.result))
 
