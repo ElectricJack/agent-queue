@@ -1,10 +1,36 @@
-"""Tool commands mixin — find_applicable_tool."""
+"""Tool commands mixin — load_tools, find_applicable_tool."""
 
 from __future__ import annotations
 
 
 class ToolCommandsMixin:
     """Tool navigation command methods mixed into CommandHandler."""
+
+    async def _cmd_load_tools(self, args: dict) -> dict:
+        """Load a tool category's definitions for the current interaction.
+
+        The actual schema injection happens in the chat layer (Supervisor),
+        not here. This command returns the list of tool names so the chat
+        layer knows which schemas to add.
+        """
+        from src.tools import ToolRegistry
+
+        category = args.get("category", "")
+        registry = ToolRegistry()
+        if hasattr(self, "orchestrator") and self.orchestrator:
+            if hasattr(self.orchestrator, "plugin_registry") and self.orchestrator.plugin_registry:
+                registry.set_plugin_registry(self.orchestrator.plugin_registry)
+        names = registry.get_category_tool_names(category)
+        if names is None:
+            available = [c["name"] for c in registry.get_categories()]
+            return {
+                "error": (f"Unknown category: {category}. Available: {', '.join(available)}"),
+            }
+        return {
+            "loaded": category,
+            "tools_added": names,
+            "message": (f"{len(names)} {category} tools are now available."),
+        }
 
     async def _cmd_find_applicable_tool(self, args: dict) -> dict:
         """Semantic search over all tool definitions.

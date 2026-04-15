@@ -62,6 +62,7 @@ EXCLUDED = {
     "restart_daemon",
     "update_and_restart",
     "run_command",
+    "load_tools",  # supervisor-internal meta-tool
     # Core messaging tools — not useful from CLI
     "send_message",
     "reply_to_user",

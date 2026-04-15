@@ -53,6 +53,7 @@ DEFAULT_EXCLUDED_COMMANDS = {
     "restart_daemon",
     "update_and_restart",
     "run_command",  # dangerous for external MCP clients
+    "load_tools",  # supervisor-internal meta-tool, not for MCP agents
 }
 
 

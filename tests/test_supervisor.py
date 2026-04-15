@@ -542,9 +542,9 @@ def test_chat_tool_overrides_none_uses_default():
     call_kwargs = sup._provider.create_message.call_args
     tools_sent = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
     tool_names = {t["name"] for t in tools_sent}
-    # Default includes all tools (no more dynamic loading)
+    # Default includes core tools + pre-loaded categories
     assert "reply_to_user" in tool_names
-    assert "create_task" in tool_names
+    assert "load_tools" in tool_names
 
 
 def test_chat_tool_overrides_unknown_raises_valueerror():
@@ -580,26 +580,32 @@ def test_chat_tool_overrides_can_include_category_tools():
     assert tool_names == {"create_project", "reply_to_user"}
 
 
-def test_chat_tool_overrides_restricts_tool_set():
-    """When tool_overrides is active, only specified tools are available."""
+def test_chat_tool_overrides_disables_load_tools_expansion():
+    """When tool_overrides is active, load_tools calls don't expand the tool set."""
     sup = _make_supervisor()
     sup._provider = MagicMock()
 
-    resp = _make_resp(
+    # First response: LLM calls load_tools
+    resp1 = _make_resp(
+        tool_uses=[_make_tool_use("load_tools", {"category": "git"}, "tu-load")]
+    )
+    # Second response: LLM calls reply_to_user
+    resp2 = _make_resp(
         tool_uses=[_make_reply_tool_use("Done.", "tu-reply")]
     )
 
-    sup._provider.create_message = AsyncMock(return_value=resp)
-    sup.handler.execute = AsyncMock(return_value={"status": "ok"})
+    sup._provider.create_message = AsyncMock(side_effect=[resp1, resp2])
+    sup.handler.execute = AsyncMock(return_value={"loaded": "git"})
 
     asyncio.run(
-        sup.chat("Hello", "testuser", tool_overrides=["list_tasks", "reply_to_user"])
+        sup.chat("Hello", "testuser", tool_overrides=["load_tools", "reply_to_user"])
     )
 
-    call_kwargs = sup._provider.create_message.call_args
-    tools_sent = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
+    # Second call should still only have the override tools (no git tools added)
+    second_call = sup._provider.create_message.call_args_list[1]
+    tools_sent = second_call.kwargs.get("tools") or second_call[1].get("tools")
     tool_names = {t["name"] for t in tools_sent}
-    assert tool_names == {"list_tasks", "reply_to_user"}
+    assert tool_names == {"load_tools", "reply_to_user"}
 
 
 # ------------------------------------------------------------------
@@ -686,12 +692,12 @@ def test_tool_overrides_none_backward_compat():
     tools_sent = call_kwargs.kwargs.get("tools") or call_kwargs[1].get("tools")
     tool_names = {t["name"] for t in tools_sent}
 
-    # Default must include all tools (no more dynamic loading)
-    for expected in ("reply_to_user", "create_task", "list_tasks"):
-        assert expected in tool_names, f"Default tool set missing tool '{expected}'"
+    # Default must include core + pre-loaded tools
+    for expected in ("load_tools", "reply_to_user", "create_task", "list_tasks"):
+        assert expected in tool_names, f"Default tool set missing core tool '{expected}'"
 
-    # Should have many tools — all tools are loaded at once
-    assert len(tool_names) >= 20, f"Expected at least 20 tools, got {len(tool_names)}"
+    # Should have more than just a couple — the core set + pre-loaded categories
+    assert len(tool_names) >= 5, f"Expected at least 5 core tools, got {len(tool_names)}"
 
 
 def test_tool_overrides_empty_disables_all_tools():
@@ -769,8 +775,9 @@ def test_tool_overrides_restriction_is_per_call():
     second_call = sup._provider.create_message.call_args_list[1]
     tools_second = second_call.kwargs.get("tools") or second_call[1].get("tools")
     names_second = {t["name"] for t in tools_second}
-    assert "reply_to_user" in names_second, "Second call should have reply_to_user"
-    assert "create_task" in names_second, "Second call should have create_task"
+    assert "load_tools" in names_second, "Second call should have load_tools (core)"
+    assert "reply_to_user" in names_second, "Second call should have reply_to_user (core)"
+    assert "create_task" in names_second, "Second call should have create_task (core)"
     assert len(names_second) > len(names_first), (
         f"Default tool set ({len(names_second)}) should be larger than "
         f"restricted set ({len(names_first)})"

@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 # Commands to exclude from the API entirely (internal/MCP-only).
 API_EXCLUDED = {
+    "load_tools",
     "send_message",
     "reply_to_user",
 }

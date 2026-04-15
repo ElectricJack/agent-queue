@@ -165,12 +165,34 @@ class ToolRegistry:
         self._tool_index = idx
 
     def _ensure_navigation_tools(self) -> None:
-        """Add send_message and reply_to_user stubs if absent.
+        """Add load_tools, send_message, reply_to_user stubs if absent.
 
         These tools are synthesised at init time rather than being defined in
         ``_ALL_TOOL_DEFINITIONS`` because they need special handling in the
-        Supervisor's tool-use loop (``reply_to_user`` terminates the loop).
+        Supervisor's tool-use loop (e.g. ``load_tools`` expands the active set,
+        ``reply_to_user`` terminates the loop).
         """
+        if "load_tools" not in self._all_tools:
+            self._all_tools["load_tools"] = {
+                "name": "load_tools",
+                "description": (
+                    "Load all tools from a specific category, making "
+                    "them available for the remainder of this "
+                    "interaction. Check the Tool Index in your system "
+                    "prompt to see available categories, or call "
+                    "find_applicable_tool to search by description."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "description": ("Category name to load (e.g. 'git', 'project')"),
+                        },
+                    },
+                    "required": ["category"],
+                },
+            }
         if "send_message" not in self._all_tools:
             self._all_tools["send_message"] = {
                 "name": "send_message",

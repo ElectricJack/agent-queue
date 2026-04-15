@@ -318,7 +318,7 @@ class Supervisor:
         return any(not ev.is_set() for ev in self._cancel_events)
 
     async def _build_system_prompt(
-        self, *, l2_query: str = "",
+        self, *, l2_query: str = "", preloaded_categories: list[str] | None = None
     ) -> str:
         """Build the system prompt for the current conversation.
 
@@ -376,6 +376,12 @@ class Supervisor:
                             builder.set_l2_context(l2_text)
                     except Exception:
                         pass  # graceful degradation
+        # Exclude preloaded categories from the tool index — the LLM already
+        # has their full schemas, so listing names again is duplication.
+        exclude_cats = set(preloaded_categories or [])
+        tool_index = self._registry.get_tool_index(exclude=exclude_cats)
+        if tool_index:
+            builder.add_context("tool_index", f"## Tool Index\n\n{tool_index}")
         system_prompt, _ = builder.build()
         return system_prompt
 
@@ -731,19 +737,28 @@ class Supervisor:
             # Build tool set from only the specified tools (empty list = no tools).
             all_tools_map = {t["name"]: t for t in registry.get_all_tools()}
             active_tools: dict[str, dict] = {}
+            preloaded_categories: list[str] = []
             for name in tool_overrides:
                 tool = all_tools_map[name]
                 if compressed:
                     tool = registry.compress_tool_schema(tool)
                 active_tools[name] = tool
         else:
-            # Load all tools — agents can use find_applicable_tool for discovery.
+            # Default: start with core tools, expand via load_tools
             active_tools: dict[str, dict] = {
-                t["name"]: (
-                    registry.compress_tool_schema(t) if compressed else t
-                )
-                for t in registry.get_all_tools()
+                t["name"]: t for t in registry.get_core_tools(compressed=compressed)
             }
+
+            # Pre-load categories relevant to the user's prompt so the LLM
+            # doesn't need to spend a turn calling load_tools.
+            preloaded_categories: list[str] = []
+            relevant_cats = registry.search_relevant_categories(text)
+            for cat_name in relevant_cats:
+                cat_tools = registry.get_category_tools(cat_name, compressed=compressed)
+                if cat_tools:
+                    for t in cat_tools:
+                        active_tools[t["name"]] = t
+                    preloaded_categories.append(cat_name)
 
         messages = list(history) if history else []
 
@@ -778,7 +793,9 @@ class Supervisor:
         # the query; subsequent rounds reuse the cached prompt (L2 is
         # already first-round-only, and project context / L1 facts don't
         # change mid-conversation).
-        cached_system_prompt = await self._build_system_prompt(l2_query=text)
+        cached_system_prompt = await self._build_system_prompt(
+            l2_query=text, preloaded_categories=preloaded_categories
+        )
 
         round_num = 0
         while True:  # No step limit — agents run until they finish
@@ -927,6 +944,23 @@ class Supervisor:
                         "result": result,
                     }
                 )
+
+                # If load_tools was called, expand active tool set.
+                # Skip expansion when tool_overrides is active — the override
+                # set is the complete, fixed tool set for this call.
+                if (
+                    tool_overrides is None
+                    and tool_use.name == "load_tools"
+                    and "loaded" in result
+                ):
+                    category = result["loaded"]
+                    cat_tools = registry.get_category_tools(
+                        category,
+                        compressed=compressed,
+                    )
+                    if cat_tools:
+                        for t in cat_tools:
+                            active_tools[t["name"]] = t
 
                 tool_results.append(
                     {
