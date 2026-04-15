@@ -676,18 +676,20 @@ class TestFactsWriterPreamble:
         assert "deploy_branch: main" in content
 
     def test_no_preamble_new_file(self, tmp_path):
-        """A new file (no existing content) should have no preamble."""
+        """A new file (no existing content) should get default frontmatter."""
         svc = MemoryV2Service()
         facts_path = tmp_path / "facts.md"
 
         svc._sync_facts_file(facts_path, "project", "key", "value")
 
         content = facts_path.read_text(encoding="utf-8")
-        assert content.startswith("## project")
+        assert content.startswith("---\n")
+        assert "type: factsheet" in content
+        assert "## project" in content
         assert "key: value" in content
 
     def test_no_preamble_existing_file_without_preamble(self, tmp_path):
-        """Existing file without preamble should produce no preamble on write."""
+        """Existing file without preamble should get default frontmatter on write."""
         svc = MemoryV2Service()
         facts_path = tmp_path / "facts.md"
         facts_path.write_text("## project\nold_key: old_val\n", encoding="utf-8")
@@ -695,7 +697,8 @@ class TestFactsWriterPreamble:
         svc._sync_facts_file(facts_path, "project", "new_key", "new_val")
 
         content = facts_path.read_text(encoding="utf-8")
-        assert content.startswith("## project")
+        assert content.startswith("---\n")
+        assert "type: factsheet" in content
         assert "old_key: old_val" in content
         assert "new_key: new_val" in content
 

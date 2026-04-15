@@ -129,7 +129,10 @@ def parse_facts_file(text: str) -> dict[str, dict[str, str]]:
     return result
 
 
-def render_facts_file(data: dict[str, dict[str, str]]) -> str:
+def render_facts_file(
+    data: dict[str, dict[str, str]],
+    frontmatter: dict[str, object] | None = None,
+) -> str:
     """Render a ``{namespace: {key: value}}`` dict to facts.md format.
 
     Namespaces and keys are sorted alphabetically for deterministic output.
@@ -138,19 +141,39 @@ def render_facts_file(data: dict[str, dict[str, str]]) -> str:
     ----------
     data:
         Mapping of namespace -> {key -> value}.
+    frontmatter:
+        Optional YAML frontmatter properties to include at the top of the
+        file.  When provided, a ``---`` delimited block is prepended.
 
     Returns
     -------
     str
-        Formatted markdown content.  Empty string if *data* is empty.
+        Formatted markdown content.  Empty string if *data* is empty
+        and no frontmatter is provided.
 
     Examples
     --------
     >>> render_facts_file({"project": {"lang": "Python", "db": "SQLite"}})
     '## project\\ndb: SQLite\\nlang: Python\\n'
     """
-    if not data:
+    if not data and not frontmatter:
         return ""
+
+    parts: list[str] = []
+
+    if frontmatter:
+        import json as _json
+
+        fm_lines = ["---"]
+        for key in sorted(frontmatter.keys()):
+            val = frontmatter[key]
+            if isinstance(val, (list, dict)):
+                fm_lines.append(f"{key}: {_json.dumps(val)}")
+            else:
+                fm_lines.append(f"{key}: {val}")
+        fm_lines.append("---")
+        fm_lines.append("")
+        parts.append("\n".join(fm_lines))
 
     sections: list[str] = []
     for ns in sorted(data.keys()):
@@ -160,7 +183,10 @@ def render_facts_file(data: dict[str, dict[str, str]]) -> str:
             lines.append(f"{k}: {entries[k]}")
         sections.append("\n".join(lines))
 
-    return "\n\n".join(sections) + "\n"
+    if sections:
+        parts.append("\n\n".join(sections) + "\n")
+
+    return "\n".join(parts) if parts else ""
 
 
 def extract_preamble(text: str) -> tuple[str, str]:

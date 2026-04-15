@@ -365,9 +365,21 @@ class Supervisor:
                 try:
                     l1_text = await mem_svc.load_l1_facts(
                         project_id=self._active_project_id,
+                        agent_type="supervisor",
                     )
                     if l1_text:
                         builder.set_l1_facts(l1_text)
+                except Exception:
+                    pass  # graceful degradation
+
+                # L1 Guidance — deterministic behavioral rules.
+                try:
+                    l1_guid = await mem_svc.load_l1_guidance(
+                        project_id=self._active_project_id,
+                        agent_type="supervisor",
+                    )
+                    if l1_guid:
+                        builder.set_l1_guidance(l1_guid)
                 except Exception:
                     pass  # graceful degradation
 

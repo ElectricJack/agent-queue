@@ -44,6 +44,7 @@ class BufferedEvent:
     project_id: str
     summary: str
     source_ref: str
+    agent_type: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +233,10 @@ class MemoryExtractor:
         if files:
             text += f"\nFiles changed: {', '.join(str(f) for f in files[:15])}"
 
-        self._buffer_event(project_id, text, f"task:{task_id}", "task.completed")
+        self._buffer_event(
+            project_id, text, f"task:{task_id}", "task.completed",
+            agent_type=data.get("agent_type"),
+        )
 
     async def _on_task_failed(self, data: dict) -> None:
         self.events_received += 1
@@ -249,7 +253,10 @@ class MemoryExtractor:
 
         title = data.get("title", "")
         text = f'Task failed: "{title}"\nError: {error[:500]}'
-        self._buffer_event(project_id, text, f"task:{data.get('task_id', '')}", "task.failed")
+        self._buffer_event(
+            project_id, text, f"task:{data.get('task_id', '')}", "task.failed",
+            agent_type=data.get("agent_type"),
+        )
 
     async def _on_supervisor_chat(self, data: dict) -> None:
         self.events_received += 1
@@ -350,7 +357,12 @@ class MemoryExtractor:
     # ------------------------------------------------------------------
 
     def _buffer_event(
-        self, project_id: str, summary: str, source_ref: str, event_type: str
+        self,
+        project_id: str,
+        summary: str,
+        source_ref: str,
+        event_type: str,
+        agent_type: str | None = None,
     ) -> None:
         """Add an event to the project buffer."""
         self._buffers[project_id].append(
@@ -360,6 +372,7 @@ class MemoryExtractor:
                 project_id=project_id,
                 summary=summary,
                 source_ref=source_ref,
+                agent_type=agent_type,
             )
         )
         if project_id not in self._buffer_first_ts:
@@ -429,11 +442,16 @@ class MemoryExtractor:
         if not items:
             return
 
+        # Determine agent_type for the batch (first non-None from events)
+        batch_agent_type = next(
+            (ev.agent_type for ev in events if ev.agent_type), None
+        )
+
         # Save each extracted item
         source_refs = ", ".join(ev.source_ref for ev in events[:5])
         for item in items:
             try:
-                await self._save_item(project_id, item, source_refs)
+                await self._save_item(project_id, item, source_refs, agent_type=batch_agent_type)
                 self.facts_saved += 1
             except Exception:
                 logger.warning(
@@ -446,8 +464,19 @@ class MemoryExtractor:
             len(items), len(events), project_id,
         )
 
-    async def _save_item(self, project_id: str, item: dict, source_refs: str) -> None:
-        """Route an extracted item to the appropriate memory store."""
+    async def _save_item(
+        self,
+        project_id: str,
+        item: dict,
+        source_refs: str,
+        agent_type: str | None = None,
+    ) -> None:
+        """Route an extracted item to the appropriate memory store.
+
+        Items are always saved to project scope.  When *agent_type* is
+        provided, guidance items are additionally saved to the agent-type
+        scope so that agent-type memory accumulates over time.
+        """
         item_type = item.get("type", "insight")
 
         if item_type == "fact":
@@ -491,6 +520,7 @@ class MemoryExtractor:
             if topic:
                 tags.append(topic)
 
+            # Always save to project scope
             await self._memory.save_document(
                 project_id=project_id,
                 content=content,
@@ -499,6 +529,25 @@ class MemoryExtractor:
                 source_task=source_refs,
                 source_playbook="memory-extractor",
             )
+
+            # Also save guidance items to agent-type scope so agent-type
+            # memory accumulates across projects.
+            if agent_type and item_type == "guidance":
+                try:
+                    await self._memory.save_document(
+                        project_id=project_id,
+                        content=content,
+                        tags=tags,
+                        topic=topic,
+                        source_task=source_refs,
+                        source_playbook="memory-extractor",
+                        scope=f"agenttype_{agent_type}",
+                    )
+                except Exception:
+                    logger.debug(
+                        "MemoryExtractor: failed to save guidance to agent-type scope %s",
+                        agent_type, exc_info=True,
+                    )
 
     def _parse_response(self, text: str) -> list[dict]:
         """Parse LLM response into list of extracted items."""

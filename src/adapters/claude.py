@@ -849,6 +849,10 @@ class ClaudeAdapter(AgentAdapter):
         if self._task.l1_facts:
             builder.set_l1_facts(self._task.l1_facts)
 
+        # L1 Guidance tier — deterministic behavioral rules (~300 tokens)
+        if self._task.l1_guidance:
+            builder.set_l1_guidance(self._task.l1_guidance)
+
         # L2 Topic Context tier — semantic search results (~500 tokens)
         if self._task.l2_context:
             builder.set_l2_context(self._task.l2_context)

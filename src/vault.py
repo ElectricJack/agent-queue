@@ -924,6 +924,77 @@ After coordinating work, consider:
 ```
 """
 
+CLAUDE_CODE_PROFILE = """\
+---
+id: claude-code
+name: Claude Code
+tags: [profile, claude-code, coding]
+---
+
+# Claude Code
+
+## Role
+You are a coding agent — you write, test, debug, and ship code. You work
+inside a project checkout and have full access to files, the shell, and
+development tools.
+
+Your responsibilities:
+- Implement features, fix bugs, and refactor code as described in your task
+- Run tests and verify your changes before marking work complete
+- Create focused git commits with clear messages
+- Follow the project's existing conventions and patterns
+- Read existing code before modifying it — understand context first
+
+Focus on correctness and simplicity. Prefer minimal, targeted changes over
+broad rewrites unless the task explicitly calls for refactoring.
+
+## Config
+```json
+{
+  "model": "claude-sonnet-4-6",
+  "permission_mode": "auto"
+}
+```
+
+## Tools
+```json
+{
+  "allowed": [],
+  "denied": []
+}
+```
+
+## MCP Servers
+```json
+{}
+```
+
+## Rules
+- Run tests before marking work complete
+- Create focused commits with clear messages that explain why, not just what
+- Read existing code and understand patterns before making changes
+- Prefer editing existing files over creating new ones
+- Do not add features, refactoring, or improvements beyond what was asked
+- When stuck, report the blocker clearly rather than guessing
+
+## Reflection
+After completing work, consider:
+- Did the implementation match the task requirements?
+- Are there edge cases I missed or should flag?
+- Did I follow existing project conventions?
+- Were tests adequate for the changes made?
+- Is there anything the supervisor should know for future tasks?
+
+## Install
+```json
+{
+  "npm": [],
+  "pip": [],
+  "commands": []
+}
+```
+"""
+
 
 # ---------------------------------------------------------------------------
 # Phase 2: Migrate passive rules to vault memory files (playbooks spec §13)
@@ -1117,6 +1188,7 @@ def ensure_vault_layout(data_dir: str) -> None:
     ensure_default_templates(data_dir)
     ensure_default_playbooks(data_dir)
     ensure_supervisor_profile(data_dir)
+    ensure_claude_code_profile(data_dir)
     logger.info("Vault directory structure ensured at %s/vault", data_dir)
 
 
@@ -1279,6 +1351,39 @@ def ensure_supervisor_profile(data_dir: str) -> bool:
         f.write(SUPERVISOR_PROFILE)
 
     logger.info("Created supervisor profile: %s", profile_path)
+    return True
+
+
+def ensure_claude_code_profile(data_dir: str) -> bool:
+    """Write the claude-code profile to ``vault/agent-types/claude-code/profile.md`` if absent.
+
+    The claude-code profile is the default agent type for coding agents
+    (Claude Code instances that execute tasks).  This function writes the
+    default :data:`CLAUDE_CODE_PROFILE` to the vault so that the profile
+    sync system can pick it up and upsert it into the ``agent_profiles``
+    database table at startup.
+
+    The operation is **idempotent**: if the file already exists it is not
+    overwritten, preserving any user customisations.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+
+    Returns:
+        ``True`` if the file was created, ``False`` if it already existed.
+    """
+    profile_path = os.path.join(data_dir, "vault", "agent-types", "claude-code", "profile.md")
+
+    if os.path.exists(profile_path):
+        logger.debug("Claude Code profile already exists, skipping: %s", profile_path)
+        return False
+
+    os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+    with open(profile_path, "w", encoding="utf-8") as f:
+        f.write(CLAUDE_CODE_PROFILE)
+
+    ensure_vault_profile_dirs(data_dir, "claude-code")
+    logger.info("Created Claude Code profile: %s", profile_path)
     return True
 
 

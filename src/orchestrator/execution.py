@@ -429,6 +429,7 @@ class ExecutionMixin:
             l0_role = profile.system_prompt_suffix.strip()
 
         l1_facts = ""
+        l1_guidance = ""
         l2_context = ""
         if self._memory_v2_service:
             try:
@@ -440,6 +441,16 @@ class ExecutionMixin:
                     l1_facts = l1_text
             except Exception as e:
                 logger.warning("L1 facts injection failed for task %s: %s", task.id, e)
+
+            try:
+                l1_guid = await self._memory_v2_service.load_l1_guidance(
+                    project_id=task.project_id,
+                    agent_type=profile.id if profile else None,
+                )
+                if l1_guid:
+                    l1_guidance = l1_guid
+            except Exception as e:
+                logger.warning("L1 guidance injection failed for task %s: %s", task.id, e)
 
             # L2 Topic Context — semantic search using task description.
             if task.project_id and task.description:
@@ -465,6 +476,7 @@ class ExecutionMixin:
             description=full_description,
             l0_role=l0_role,
             l1_facts=l1_facts,
+            l1_guidance=l1_guidance,
             l2_context=l2_context,
             checkout_path=workspace,
             branch_name=task.branch_name or "",

@@ -40,14 +40,10 @@ def build_task_summary(
     """
     lines: list[str] = []
 
-    task_type = task.task_type.value if task.task_type else "unknown"
     lines.append(f"# Task: {task.id} — {task.title}")
     lines.append("")
 
-    meta = (
-        f"**Project:** {task.project_id} | **Type:** {task_type}"
-        f" | **Status:** {task.status.value}"
-    )
+    meta = f"**Project:** {task.project_id} | **Status:** {task.status.value}"
     lines.append(meta)
 
     date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -101,15 +97,14 @@ def build_task_summary(
 def task_summary_path(vault_root: str, task) -> str:
     """Build the vault path for a task summary note.
 
-    Returns ``{vault}/projects/{pid}/tasks/{category}/{datetime}_{title}({id}).md``.
+    Returns ``{vault}/projects/{pid}/tasks/{datetime}_{title}({id}).md``.
     """
     now = datetime.datetime.now()
-    category = task.task_type.value if task.task_type else "general"
     date_time = now.strftime("%Y-%m-%d_%H%M")
     slug = _slugify(task.title)
     filename = f"{date_time}_{slug}({task.id}).md"
     return os.path.join(
-        vault_root, "projects", task.project_id, "tasks", category, filename
+        vault_root, "projects", task.project_id, "tasks", filename
     )
 
 

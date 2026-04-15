@@ -122,6 +122,7 @@ class PromptBuilder:
         self._l0_role: str = ""  # L0 Identity tier (~50 tokens, always present)
         self._override_content: str = ""  # Project-specific override (after L0 role)
         self._l1_facts: str = ""  # L1 Critical Facts tier (~200 tokens, always at task start)
+        self._l1_guidance: str = ""  # L1 Guidance tier (~300 tokens, deterministic rules)
         self._l2_context: str = ""  # L2 Topic Context tier (~500 tokens, semantic search results)
         self._identity: str = ""
         self._project_context: str = ""
@@ -325,6 +326,18 @@ class PromptBuilder:
             )
         self._l1_facts = text
 
+    def set_l1_guidance(self, guidance_text: str) -> None:
+        """L1 Guidance tier: Set behavioral guidance rules (~300 tokens).
+
+        Deterministically loaded from ``memory/guidance/`` directories
+        under the agent-type and project vault paths.  Guidance contains
+        rules that should always be present in the agent's prompt.
+        """
+        text = guidance_text.strip()
+        if not text:
+            return
+        self._l1_guidance = text
+
     def set_l2_context(self, context_text: str) -> None:
         """L2 Topic Context tier: Set semantic search results (~500 tokens).
 
@@ -452,6 +465,8 @@ class PromptBuilder:
             sections.append(self._override_content)
         if self._l1_facts:
             sections.append(self._l1_facts)
+        if self._l1_guidance:
+            sections.append(self._l1_guidance)
         if self._l2_context:
             sections.append(self._l2_context)
         if self._identity:

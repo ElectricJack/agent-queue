@@ -598,17 +598,22 @@ class MemoryV2Service:
             data[namespace] = {}
         data[namespace][key] = value
 
-        rendered = self._render_facts_file(data)
-
-        # Combine preamble with rendered structured sections
-        if preamble:
-            # Ensure preamble ends with a blank line separator before
-            # the first ``## heading``.
+        # Generate frontmatter if the file is new or has no preamble
+        if preamble and preamble.strip():
+            # Preserve existing preamble (frontmatter, title, etc.)
             if not preamble.endswith("\n\n"):
                 preamble = preamble.rstrip("\n") + "\n\n"
+            rendered = self._render_facts_file(data)
             output = preamble + rendered
         else:
-            output = rendered
+            # New file — render with default frontmatter
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            fm = {
+                "tags": ["facts", "auto-updated"],
+                "type": "factsheet",
+                "updated": now,
+            }
+            output = render_facts_file(data, frontmatter=fm)
 
         # Write back
         facts_path.parent.mkdir(parents=True, exist_ok=True)
@@ -782,6 +787,88 @@ class MemoryV2Service:
                 continue
             for key in sorted(entries.keys()):
                 lines.append(f"- {key}: {entries[key]}")
+        return "\n".join(lines)
+
+    async def load_l1_guidance(
+        self,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+    ) -> str:
+        """Load guidance files from agent-type and project scopes for prompt injection.
+
+        Reads all ``.md`` files from ``memory/guidance/`` directories under
+        the agent-type and project vault paths.  Guidance is loaded
+        deterministically (not via semantic search) because it contains
+        behavioral rules the agent should always follow.
+
+        Agent-type guidance loads first, then project guidance appends.
+        Both are included — project guidance does not override agent-type
+        guidance.
+
+        Parameters
+        ----------
+        project_id:
+            Project identifier.  When set, the project's guidance
+            directory is also scanned.
+        agent_type:
+            Agent type name (e.g. ``"claude-code"``).  When set, the
+            agent-type's guidance directory is scanned first.
+
+        Returns
+        -------
+        str
+            Formatted markdown block (``## Guidance`` heading with
+            guidance content), or empty string if no guidance files exist.
+        """
+        guidance_parts: list[str] = []
+
+        def _read_guidance_dir(base_path: Path) -> list[str]:
+            """Read all .md files from a guidance directory, stripping frontmatter."""
+            guidance_dir = base_path / "guidance"
+            if not guidance_dir.is_dir():
+                return []
+            parts = []
+            for md_file in sorted(guidance_dir.glob("*.md")):
+                try:
+                    text = md_file.read_text(encoding="utf-8")
+                    # Strip YAML frontmatter if present
+                    if text.startswith("---"):
+                        end = text.find("---", 3)
+                        if end != -1:
+                            text = text[end + 3:].strip()
+                    text = text.strip()
+                    if text:
+                        parts.append(text)
+                except OSError:
+                    logger.debug("Could not read guidance file: %s", md_file)
+            return parts
+
+        # Agent-type scope
+        if agent_type and MEMSEARCH_AVAILABLE:
+            at_paths = vault_paths(MemoryScope.AGENT_TYPE, agent_type)
+            base = Path(self._data_dir).expanduser() if self._data_dir else Path.home() / ".agent-queue"
+            for p in at_paths:
+                if p.endswith("/memory/") or p.endswith("/memory"):
+                    mem_dir = base / p
+                    parts = await asyncio.to_thread(_read_guidance_dir, mem_dir)
+                    guidance_parts.extend(parts)
+
+        # Project scope
+        if project_id and MEMSEARCH_AVAILABLE:
+            proj_paths = vault_paths(MemoryScope.PROJECT, project_id)
+            base = Path(self._data_dir).expanduser() if self._data_dir else Path.home() / ".agent-queue"
+            for p in proj_paths:
+                if p.endswith("/memory/") or p.endswith("/memory"):
+                    mem_dir = base / p
+                    parts = await asyncio.to_thread(_read_guidance_dir, mem_dir)
+                    guidance_parts.extend(parts)
+
+        if not guidance_parts:
+            return ""
+
+        lines: list[str] = ["## Guidance"]
+        lines.extend(guidance_parts)
         return "\n".join(lines)
 
     async def load_l2_context(
