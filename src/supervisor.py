@@ -508,7 +508,7 @@ class Supervisor:
                 messages=messages,
                 system=system_prompt,
                 tools=list(active_tools.values()),
-                max_tokens=512,
+                max_tokens=1024,
             )
 
             # Collect all text from reflection (including after tool use)
@@ -538,7 +538,7 @@ class Supervisor:
                     messages=messages,
                     system=system_prompt,
                     tools=list(active_tools.values()),
-                    max_tokens=512,
+                    max_tokens=1024,
                 )
                 reflection_text_parts.extend(followup.text_parts)
 
@@ -1167,7 +1167,7 @@ class Supervisor:
                     }
                 ],
                 system=effective_system,
-                max_tokens=512,
+                max_tokens=1024,
             )
             parts = resp.text_parts
             return parts[0] if parts else None

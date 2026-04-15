@@ -45,6 +45,7 @@ class GeminiChatProvider(ChatProvider):
         config = types.GenerateContentConfig(
             system_instruction=system,
             max_output_tokens=max_tokens,
+            thinking_config=types.ThinkingConfig(thinking_budget=8192),
         )
         if tools:
             config.tools = gemini_adapter.convert_tools(tools)
