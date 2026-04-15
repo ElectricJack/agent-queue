@@ -503,9 +503,10 @@ class Supervisor:
         )
 
         try:
+            system_prompt = await self._build_system_prompt()
             reflect_resp = await self._provider.create_message(
                 messages=messages,
-                system=await self._build_system_prompt(),
+                system=system_prompt,
                 tools=list(active_tools.values()),
                 max_tokens=512,
             )
@@ -529,6 +530,17 @@ class Supervisor:
                             ],
                         }
                     )
+
+                # Call the LLM again to get the verdict now that it has
+                # the tool results.  Without this, reflections that call
+                # get_task/list_tasks to verify silently lose their verdict.
+                followup = await self._provider.create_message(
+                    messages=messages,
+                    system=system_prompt,
+                    tools=list(active_tools.values()),
+                    max_tokens=512,
+                )
+                reflection_text_parts.extend(followup.text_parts)
 
             estimated_tokens = len(reflection_prompt) // 4
             self.reflection.record_tokens(estimated_tokens)
