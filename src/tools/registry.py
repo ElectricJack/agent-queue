@@ -143,6 +143,7 @@ class ToolRegistry:
             tools = list(_ALL_TOOL_DEFINITIONS)
         self._all_tools: dict[str, dict] = {t["name"]: t for t in tools}
         self._plugin_registry = None
+        self._tool_index = None  # ToolIndex, built lazily
         # Add new tools that don't exist in the legacy TOOLS list
         self._ensure_navigation_tools()
 
@@ -150,45 +151,26 @@ class ToolRegistry:
         """Set the plugin registry for dynamic tool merging."""
         self._plugin_registry = plugin_registry
 
+    @property
+    def tool_index(self):
+        """The in-memory semantic ToolIndex (None until built)."""
+        return self._tool_index
+
+    async def build_tool_index(self, memory_config) -> None:
+        """Build the in-memory semantic tool index for find_applicable_tool."""
+        from src.tools.tool_index import ToolIndex
+
+        idx = ToolIndex()
+        await idx.build(self.get_all_tools(), memory_config)
+        self._tool_index = idx
+
     def _ensure_navigation_tools(self) -> None:
-        """Add browse_tools, load_tools, send_message, reply_to_user stubs if absent.
+        """Add send_message and reply_to_user stubs if absent.
 
         These tools are synthesised at init time rather than being defined in
         ``_ALL_TOOL_DEFINITIONS`` because they need special handling in the
-        Supervisor's tool-use loop (e.g. ``load_tools`` expands the active set,
-        ``reply_to_user`` terminates the loop).
+        Supervisor's tool-use loop (``reply_to_user`` terminates the loop).
         """
-        if "browse_tools" not in self._all_tools:
-            self._all_tools["browse_tools"] = {
-                "name": "browse_tools",
-                "description": (
-                    "List available tool categories. Returns category "
-                    "names, descriptions, and tool counts. Use this to "
-                    "discover what tools are available, then call "
-                    "load_tools to load a category."
-                ),
-                "input_schema": {"type": "object", "properties": {}},
-            }
-        if "load_tools" not in self._all_tools:
-            self._all_tools["load_tools"] = {
-                "name": "load_tools",
-                "description": (
-                    "Load all tools from a specific category, making "
-                    "them available for the remainder of this "
-                    "interaction. Call browse_tools first to see "
-                    "available categories."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "category": {
-                            "type": "string",
-                            "description": ("Category name to load (e.g. 'git', 'project')"),
-                        },
-                    },
-                    "required": ["category"],
-                },
-            }
         if "send_message" not in self._all_tools:
             self._all_tools["send_message"] = {
                 "name": "send_message",
@@ -241,10 +223,6 @@ class ToolRegistry:
                     "required": ["message"],
                 },
             }
-        # Rule tools removed — rules have been replaced by playbooks
-        # (playbooks spec §13 Phase 3). Deprecated stub definitions remain
-        # in _ALL_TOOL_DEFINITIONS for backward compatibility.
-
     # ------------------------------------------------------------------
     # Schema compression for small-context LLMs
     # ------------------------------------------------------------------

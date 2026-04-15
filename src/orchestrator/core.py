@@ -342,6 +342,10 @@ class Orchestrator(
         if hasattr(self, "plugin_registry") and self.plugin_registry:
             supervisor._registry.set_plugin_registry(self.plugin_registry)
 
+        # Store the registry on the orchestrator so command handlers can access
+        # the shared instance (with plugin tools and the tool index).
+        self._tool_registry = supervisor._registry
+
         # Wire LLM invocation callback into the plugin registry so plugins
         # can call ctx.invoke_llm() from cron jobs and command handlers.
         if hasattr(self, "plugin_registry") and self.plugin_registry:
@@ -952,6 +956,14 @@ class Orchestrator(
                 logger.info("Loaded %d plugins", loaded)
         except Exception as e:
             logger.error("Plugin initialization failed: %s", e, exc_info=True)
+
+        # Build the in-memory semantic tool index for find_applicable_tool.
+        # Runs after plugins are loaded so plugin-contributed tools are included.
+        if hasattr(self, "_tool_registry") and self._tool_registry:
+            try:
+                await self._tool_registry.build_tool_index(self.config.memory)
+            except Exception as e:
+                logger.warning("Tool index build failed (semantic search disabled): %s", e)
 
         # Wire MemoryV2Service to facts.md watcher handlers (spec §7).
         #

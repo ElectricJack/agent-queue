@@ -53,8 +53,6 @@ DEFAULT_EXCLUDED_COMMANDS = {
     "restart_daemon",
     "update_and_restart",
     "run_command",  # dangerous for external MCP clients
-    "browse_tools",
-    "load_tools",  # meta-tools for LLM context management, not MCP
 }
 
 

@@ -62,8 +62,6 @@ EXCLUDED = {
     "restart_daemon",
     "update_and_restart",
     "run_command",
-    "browse_tools",
-    "load_tools",
     # Core messaging tools — not useful from CLI
     "send_message",
     "reply_to_user",

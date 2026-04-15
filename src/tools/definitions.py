@@ -2014,28 +2014,28 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "browse_tools",
+        "name": "find_applicable_tool",
         "description": (
-            "List available tool categories with metadata. "
-            "Meta-tool for LLM context management — excluded from MCP by default."
-        ),
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "load_tools",
-        "description": (
-            "Load a tool category's definitions for the current interaction. "
-            "Meta-tool for LLM context management — excluded from MCP by default."
+            "Search for tools by describing what you want to do. Returns "
+            "the most relevant tools ranked by semantic similarity. "
+            "Example: 'create a new task for a project' → create_task, "
+            "edit_task, etc."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "category": {
+                "description": {
                     "type": "string",
-                    "description": "Category name to load (e.g. 'git', 'project')",
+                    "description": (
+                        "Natural language description of what you want to do"
+                    ),
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Number of results to return (default 5)",
                 },
             },
-            "required": ["category"],
+            "required": ["description"],
         },
     },
     # ------------------------------------------------------------------
