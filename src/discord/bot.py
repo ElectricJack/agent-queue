@@ -1675,13 +1675,14 @@ class AgentQueueBot(commands.Bot):
                                 f'"{resolved.content}"]\n{user_text}'
                             )
 
-                    # Include recent thread messages as system prompt context
+                    # Include recent thread messages right before the user request
                     thread_ctx = self._build_thread_context(
                         message.channel.id, message,
                     )
                     if thread_ctx:
-                        llm_context["recent_thread"] = (
+                        user_text = (
                             f"## Recent Thread Messages\n\n{thread_ctx}"
+                            f"\n\n## User Request\n\n{user_text}"
                         )
 
                     # Set active project from channel context so that git
