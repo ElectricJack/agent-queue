@@ -132,12 +132,168 @@ class VaultIndexGenerator:
         logger.info("Generated %d vault hub files", len(written))
         return written
 
+    async def generate_all_with_summaries(self, chat_provider: object) -> list[str]:
+        """Full rebuild with LLM-generated summaries of folder contents.
+
+        Like :meth:`generate_all` but reads child files in each hub
+        directory and asks the LLM to produce a 1-2 sentence summary
+        of what the knowledge in that folder covers.
+        """
+        written: list[str] = []
+        hub_dirs: list[tuple[str, str]] = []
+
+        # Pass 1: identify which dirs need hubs (bottom-up)
+        for dirpath, dirnames, filenames in os.walk(self._root, topdown=False):
+            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+            rel_dir = os.path.relpath(dirpath, self._root)
+            if rel_dir == ".":
+                rel_dir = ""
+            if any(part in _SKIP_DIRS for part in Path(rel_dir).parts):
+                continue
+
+            dir_path = Path(dirpath)
+            hub_name = _hub_filename(dir_path)
+            md_files = sorted(
+                f.name for f in dir_path.iterdir()
+                if f.is_file() and f.suffix == ".md"
+                and f.name != hub_name and not _is_hub_file(f)
+            )
+            subdirs = sorted(
+                d.name for d in dir_path.iterdir()
+                if d.is_dir() and d.name not in _SKIP_DIRS and self._has_content(d)
+            )
+
+            if (len(md_files) + len(subdirs)) < self._min_children:
+                continue
+            if not self._needs_hub(dir_path, md_files, subdirs):
+                continue
+
+            hub_dirs.append((dirpath, rel_dir))
+
+        # Pass 2: generate summaries and write hubs
+        for dirpath, rel_dir in hub_dirs:
+            summary = await self._generate_summary(dirpath, chat_provider)
+            result = self._generate_hub_for_dir(dirpath, rel_dir, summary=summary)
+            if result:
+                written.append(result)
+
+        # Pass 3: rewrite with correct parent links
+        for dirpath, rel_dir in hub_dirs:
+            # Preserve the summary from the file we just wrote
+            hub_path = self._hub_path(Path(dirpath))
+            existing_summary = ""
+            if hub_path.exists():
+                existing_summary = self._extract_summary(hub_path)
+            self._generate_hub_for_dir(dirpath, rel_dir, summary=existing_summary)
+
+        logger.info("Generated %d vault hub files with summaries", len(written))
+        return written
+
+    async def _generate_summary(
+        self, abs_dir: str, chat_provider: object
+    ) -> str:
+        """Generate a short summary of the knowledge in a directory."""
+        dir_path = Path(abs_dir)
+
+        # Collect snippets from child files (first ~200 chars each)
+        snippets: list[str] = []
+        for f in sorted(dir_path.iterdir()):
+            if not f.is_file() or f.suffix != ".md" or _is_hub_file(f):
+                continue
+            try:
+                content = f.read_text(encoding="utf-8")
+                # Strip frontmatter
+                if content.startswith("---"):
+                    end = content.find("\n---", 3)
+                    if end != -1:
+                        content = content[end + 4:]
+                # Strip markdown headings for cleaner context
+                clean = content.strip()[:300]
+                if clean:
+                    snippets.append(f"**{f.stem}**: {clean}")
+            except Exception:
+                continue
+
+        # Also note subdirectory names
+        for d in sorted(dir_path.iterdir()):
+            if d.is_dir() and d.name not in _SKIP_DIRS and self._has_content(d):
+                snippets.append(f"**{d.name}/**: (subdirectory)")
+
+        if not snippets:
+            return ""
+
+        context = "\n".join(snippets[:20])  # Cap at 20 items
+        dirname = _display_name(dir_path.name)
+
+        prompt = (
+            f"This is the '{dirname}' folder in a knowledge vault. "
+            f"Based on its contents, write a single concise sentence "
+            f"(max 30 words) summarizing what knowledge this folder "
+            f"covers. No markdown formatting, just a plain sentence.\n\n"
+            f"Contents:\n{context}"
+        )
+
+        try:
+            response = await chat_provider.complete(prompt)
+            summary = response.strip().strip('"').strip("'")
+            # Ensure it's a reasonable length
+            if summary and len(summary) < 200:
+                return summary
+        except Exception:
+            logger.debug("Summary generation failed for %s", abs_dir, exc_info=True)
+
+        return ""
+
+    def _extract_summary(self, hub_path: Path) -> str:
+        """Extract the summary line from an existing hub file.
+
+        The summary is the text between the parent link and the first
+        list item or heading.
+        """
+        try:
+            content = hub_path.read_text(encoding="utf-8")
+        except Exception:
+            return ""
+
+        # Skip frontmatter
+        if content.startswith("---"):
+            end = content.find("\n---", 3)
+            if end != -1:
+                content = content[end + 4:]
+
+        lines = content.strip().split("\n")
+        summary_lines: list[str] = []
+        past_header = False
+        for line in lines:
+            if line.startswith("# "):
+                past_header = True
+                continue
+            if not past_header:
+                continue
+            if line.startswith("Parent:"):
+                continue
+            if line.startswith("- ") or line.startswith("## ") or line.startswith("### "):
+                break
+            stripped = line.strip()
+            if stripped:
+                summary_lines.append(stripped)
+
+        return " ".join(summary_lines).strip()
+
     def update_directory(self, rel_dir: str) -> str | None:
         abs_dir = self._root / rel_dir if rel_dir else self._root
         if not abs_dir.is_dir():
             return None
 
-        result = self._generate_hub_for_dir(str(abs_dir), rel_dir)
+        # Preserve existing summary when regenerating
+        existing_summary = ""
+        hub = self._hub_path(abs_dir)
+        if hub.exists():
+            existing_summary = self._extract_summary(hub)
+
+        result = self._generate_hub_for_dir(
+            str(abs_dir), rel_dir, summary=existing_summary
+        )
 
         if rel_dir:
             parent_rel = str(Path(rel_dir).parent)
@@ -145,7 +301,13 @@ class VaultIndexGenerator:
                 parent_rel = ""
             parent_abs = self._root / parent_rel if parent_rel else self._root
             if parent_abs.is_dir():
-                self._generate_hub_for_dir(str(parent_abs), parent_rel)
+                parent_summary = ""
+                parent_hub = self._hub_path(parent_abs)
+                if parent_hub.exists():
+                    parent_summary = self._extract_summary(parent_hub)
+                self._generate_hub_for_dir(
+                    str(parent_abs), parent_rel, summary=parent_summary
+                )
 
         return result
 
@@ -182,7 +344,9 @@ class VaultIndexGenerator:
             return True
         return False
 
-    def _generate_hub_for_dir(self, abs_dir: str, rel_dir: str) -> str | None:
+    def _generate_hub_for_dir(
+        self, abs_dir: str, rel_dir: str, summary: str = ""
+    ) -> str | None:
         dir_path = Path(abs_dir)
         hub_name = _hub_filename(dir_path)
 
@@ -207,7 +371,9 @@ class VaultIndexGenerator:
                 stale.unlink()
             return None
 
-        content = self._build_hub_content(rel_dir, md_files, subdirs, dir_path)
+        content = self._build_hub_content(
+            rel_dir, md_files, subdirs, dir_path, summary=summary
+        )
         hub_path = dir_path / hub_name
         hub_path.write_text(content, encoding="utf-8")
         return str(hub_path)
@@ -220,7 +386,7 @@ class VaultIndexGenerator:
 
     def _build_hub_content(
         self, rel_dir: str, md_files: list[str], subdirs: list[str],
-        dir_path: Path,
+        dir_path: Path, summary: str = "",
     ) -> str:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         dirname = dir_path.name
@@ -237,9 +403,15 @@ class VaultIndexGenerator:
             "",
         ]
 
-        breadcrumb = self._get_parent_breadcrumb(rel_dir)
-        if breadcrumb:
-            lines.append(breadcrumb)
+        # Single parent link (not a full breadcrumb chain)
+        parent_link = self._get_parent_link(rel_dir)
+        if parent_link:
+            lines.append(parent_link)
+            lines.append("")
+
+        # LLM-generated summary of folder contents
+        if summary:
+            lines.append(summary)
             lines.append("")
 
         is_references_dir = dirname == "references"
@@ -299,36 +471,34 @@ class VaultIndexGenerator:
         lines.append("")
         return "\n".join(lines)
 
-    def _get_parent_breadcrumb(self, rel_dir: str) -> str:
+    def _get_parent_link(self, rel_dir: str) -> str:
+        """Return a single parent link (not a full breadcrumb chain).
+
+        Only links to the immediate parent to keep the graph tree-like.
+        """
         if not rel_dir:
             return ""
 
-        parts = Path(rel_dir).parts
-        root_name = self._root.name  # "vault"
-        root_link = f"[[{root_name}|{_display_name(root_name)}]]"
+        parent_path = Path(rel_dir).parent
+        if str(parent_path) == ".":
+            # Parent is vault root
+            root_name = self._root.name
+            return f"Parent: [[{root_name}|{_display_name(root_name)}]]"
 
-        if len(parts) <= 1:
-            return f"> {root_link}"
+        parent_abs = self._root / parent_path
+        parent_name = parent_path.name
 
-        chain = [root_link]
-        for i in range(len(parts) - 1):
-            ancestor_rel = "/".join(parts[: i + 1])
-            ancestor_path = self._root / ancestor_rel
-            ancestor_name = parts[i]
+        # Find the parent's hub or root file
+        if self._hub_path(parent_abs).exists():
+            target = f"{parent_path}/{parent_name}"
+            return f"Parent: [[{target}|{_display_name(parent_name)}]]"
 
-            if self._hub_path(ancestor_path).exists():
-                chain.append(
-                    f"[[{ancestor_rel}/{ancestor_name}|{_display_name(ancestor_name)}]]"
-                )
-            elif _find_root_file(ancestor_path):
-                rf = _find_root_file(ancestor_path)
-                chain.append(
-                    f"[[{ancestor_rel}/{Path(rf).stem}|{_display_name(ancestor_name)}]]"
-                )
-            else:
-                chain.append(f"**{_display_name(ancestor_name)}**")
+        root_file = _find_root_file(parent_abs)
+        if root_file:
+            target = f"{parent_path}/{Path(root_file).stem}"
+            return f"Parent: [[{target}|{_display_name(parent_name)}]]"
 
-        return "> " + " > ".join(chain)
+        return ""
 
     def _group_reference_stubs(self, files: list[str]) -> dict[str, list[str]]:
         specs_design: list[str] = []

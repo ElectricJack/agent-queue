@@ -106,7 +106,8 @@ class TestVaultIndexGenerator:
         assert "Specs — Components" in content
         assert "Documentation" in content
 
-    def test_breadcrumbs(self, tmp_path):
+    def test_parent_link_only(self, tmp_path):
+        """Hub files link to immediate parent only, not full chain."""
         vault = tmp_path / "vault"
         deep = vault / "projects" / "my-proj" / "memory"
         insights = deep / "insights"
@@ -119,7 +120,10 @@ class TestVaultIndexGenerator:
 
         if (deep / "memory.md").exists():
             content = (deep / "memory.md").read_text()
-            assert "[[vault|Vault]]" in content
+            # Should have parent link to my-proj, not full chain
+            assert "Parent:" in content
+            # Should NOT have vault root in the parent line
+            assert "[[vault|" not in content
 
     def test_update_directory(self, tmp_path):
         vault = tmp_path / "vault"
