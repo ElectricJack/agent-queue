@@ -786,6 +786,13 @@ class AppConfig:
         "max_facts_per_batch": 10,
         "max_input_chars": 8000,
     })
+    inbox: dict = field(default_factory=lambda: {
+        "enabled": False,
+        "projects": [],
+        "oauth_token_path": "~/.config/google-docs-mcp/token.json",
+        "client_secret": "$GOOGLE_CLIENT_SECRET",
+        "mark_read_on_emit": True,
+    })
     _config_path: str = field(default="", repr=False)
 
     # -- Vault path properties (derived from data_dir) -----------------------
@@ -1597,6 +1604,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "memory_extractor" in raw:
         # Merge with defaults so missing keys get defaults
         config.memory_extractor = {**config.memory_extractor, **raw["memory_extractor"]}
+
+    if "inbox" in raw:
+        config.inbox = {**config.inbox, **raw["inbox"]}
 
     # Fail fast on misconfiguration — surface all errors at once.
     # validate() returns ConfigError list; convert fatal errors to exception

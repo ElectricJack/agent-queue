@@ -239,6 +239,8 @@ class ConfigService(Protocol):
     def memory_extractor(self) -> dict: ...
     @property
     def chat_provider(self) -> Any: ...
+    @property
+    def inbox(self) -> dict: ...
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +556,10 @@ class ConfigServiceImpl:
     @property
     def chat_provider(self) -> Any:
         return self._config.chat_provider
+
+    @property
+    def inbox(self) -> dict:
+        return self._config.inbox
 
 
 # ---------------------------------------------------------------------------

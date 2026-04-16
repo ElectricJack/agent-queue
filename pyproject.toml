@@ -28,6 +28,10 @@ anthropic = [
 gemini = [
     "google-genai>=1.0.0",
 ]
+inbox = [
+    "google-api-python-client>=2.100.0",
+    "google-auth-oauthlib>=1.0.0",
+]
 postgresql = [
     "asyncpg>=0.29.0",
 ]
