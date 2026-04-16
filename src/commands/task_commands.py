@@ -778,13 +778,12 @@ class TaskCommandsMixin:
             agent_type = agent_type.strip()
             if not agent_type:
                 return {"error": "agent_type cannot be empty"}
-        # Inherit project default when caller didn't specify one. This lets
-        # projects force all tasks to use a specific agent-type profile
-        # (e.g. the per-project claude-code profile with MCP overrides).
-        if agent_type is None:
-            project = await self.db.get_project(project_id)
-            if project and project.default_agent_type:
-                agent_type = project.default_agent_type
+        # Note: we intentionally do NOT inherit project.default_agent_type
+        # into task.agent_type here.  task.agent_type is a scheduler filter
+        # (must match agent.agent_type like "claude"/"codex"), not a profile
+        # selector.  Profile resolution already consults
+        # project.default_agent_type via Orchestrator._resolve_profile, so
+        # tasks with no explicit agent_type still pick up the scoped profile.
 
         # Validate optional affinity_agent_id
         affinity_agent_id = args.get("affinity_agent_id")
