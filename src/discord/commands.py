@@ -3654,42 +3654,43 @@ def setup_commands(bot: commands.Bot) -> None:
 
         result = await handler.execute("memory_stats", {"project_id": project_id})
         if "error" in result:
-            await _send_error(interaction, result["error"])
+            # Plugin returns an error dict when the service isn't available
+            # (memsearch not installed, Milvus unreachable, etc.).
+            msg = result.get("error", "")
+            if "not available" in msg.lower():
+                await _send_info(
+                    interaction,
+                    "Memory Unavailable",
+                    description=(
+                        f"Memory service is not available for `{project_id}`.\n\n"
+                        f"{msg}"
+                    ),
+                )
+            else:
+                await _send_error(interaction, msg)
             return
 
-        enabled = result.get("enabled", False)
-        available = result.get("available", False)
-
-        if not enabled:
-            await _send_info(
-                interaction,
-                "Memory Disabled",
-                description=(
-                    f"Memory is **not enabled** for `{project_id}`.\n"
-                    f"memsearch installed: {'Yes' if available else 'No'}\n\n"
-                    "Set `memory.enabled = true` in your config to enable."
-                ),
-            )
-            return
-
-        if not available:
-            await _send_warning(
-                interaction,
-                "Memory Unavailable",
-                description=(
-                    f"Memory is enabled for `{project_id}` but the "
-                    "`memsearch` package is not installed."
-                ),
-            )
-            return
-
+        # Memory V2 response shape (see MemoryV2Service.stats):
+        # collection, scope, total_entries, documents, kv_entries,
+        # temporal_entries, contested_memories, embedding_model, needs_reindex.
         fields = [
-            ("Collection", f"`{result.get('collection', 'N/A')}`", True),
-            ("Embedding Provider", f"`{result.get('embedding_provider', 'N/A')}`", True),
-            ("Milvus URI", f"`{result.get('milvus_uri', 'N/A')}`", False),
-            ("Auto Recall", "Enabled" if result.get("auto_recall") else "Disabled", True),
-            ("Auto Remember", "Enabled" if result.get("auto_remember") else "Disabled", True),
-            ("Recall Top-K", str(result.get("recall_top_k", "N/A")), True),
+            ("Collection", f"`{result.get('collection', 'N/A')}`", False),
+            ("Scope", f"`{result.get('scope', 'N/A')}`", True),
+            ("Total Entries", str(result.get("total_entries", 0)), True),
+            ("Documents", str(result.get("documents", 0)), True),
+            ("KV Entries", str(result.get("kv_entries", 0)), True),
+            ("Temporal", str(result.get("temporal_entries", 0)), True),
+            ("Contested", str(result.get("contested_memories", 0)), True),
+            (
+                "Embedding Model",
+                f"`{result.get('embedding_model', 'N/A')}`",
+                False,
+            ),
+            (
+                "Needs Reindex",
+                "Yes" if result.get("needs_reindex") else "No",
+                True,
+            ),
         ]
 
         await _send_success(
