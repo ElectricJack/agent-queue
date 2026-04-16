@@ -501,6 +501,70 @@ class Orchestrator(
 
         return None
 
+    async def _on_playbook_trigger(self, playbook: Any, event_data: dict) -> None:
+        """PlaybookManager trigger dispatch — launch a run for a matched event.
+
+        Registered as ``playbook_manager.on_trigger`` at startup.  The
+        manager has already applied cooldown + concurrency checks before
+        calling us, so we just build the runtime context (Supervisor,
+        event bus, plugin registry) and fire a PlaybookRunner.  The run
+        is intentionally fire-and-forget — the event dispatch path must
+        not block waiting for an LLM-driven graph walk.
+        """
+        try:
+            from src.supervisor import Supervisor
+            from src.playbooks.runner import PlaybookRunner
+
+            graph = playbook.to_dict()
+            supervisor = Supervisor(self, self.config, llm_logger=self.llm_logger)
+            if not supervisor.initialize():
+                logger.error(
+                    "Playbook trigger for '%s': failed to initialise LLM — skipping",
+                    playbook.id,
+                )
+                return
+
+            project_id = event_data.get("project_id")
+            if project_id:
+                supervisor.set_active_project(project_id)
+
+            plugin_registry = getattr(self, "plugin_registry", None)
+            if plugin_registry:
+                supervisor._registry.set_plugin_registry(plugin_registry)
+
+            runner = PlaybookRunner(
+                graph=graph,
+                event=event_data,
+                supervisor=supervisor,
+                db=self.db,
+                event_bus=self.bus,
+            )
+
+            async def _run() -> None:
+                try:
+                    await runner.run()
+                except Exception:
+                    logger.exception(
+                        "Playbook '%s' run failed (trigger event=%s)",
+                        playbook.id,
+                        event_data.get("type") or event_data.get("_event_type"),
+                    )
+
+            # Detach so the EventBus dispatch loop isn't blocked on the run.
+            asyncio.create_task(
+                _run(), name=f"playbook:{playbook.id}:{event_data.get('type', 'trigger')}"
+            )
+            logger.info(
+                "Dispatched playbook '%s' for trigger event (project=%s)",
+                playbook.id,
+                project_id or "(none)",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to dispatch playbook '%s' trigger",
+                getattr(playbook, "id", "?"),
+            )
+
     def pause(self) -> None:
         """Pause scheduling — no new tasks are assigned, but monitoring continues.
 
@@ -837,6 +901,15 @@ class Orchestrator(
         # continue from where they left off and source-hash change detection
         # can skip recompilation of unchanged files (roadmap 5.1.5).
         await self.playbook_manager.load_from_disk()
+
+        # Wire trigger dispatch: when a playbook's trigger event fires on
+        # the bus, create a PlaybookRunner and execute the graph.  Without
+        # this, events fire but playbooks never auto-run.
+        self.playbook_manager.on_trigger = self._on_playbook_trigger
+        subscribed = self.playbook_manager.subscribe_to_events()
+        logger.info(
+            "Subscribed to %d playbook trigger event(s)", subscribed
+        )
 
         register_playbook_handlers(
             self.vault_watcher,
