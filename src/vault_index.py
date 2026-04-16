@@ -192,10 +192,14 @@ class VaultIndexGenerator:
     async def _generate_summary(
         self, abs_dir: str, chat_provider: object
     ) -> str:
-        """Generate a short summary of the knowledge in a directory."""
+        """Generate a short summary of the knowledge in a directory.
+
+        Uses ``ChatProvider.create_message()`` to ask the LLM for a
+        one-sentence summary based on file names and content snippets.
+        """
         dir_path = Path(abs_dir)
 
-        # Collect snippets from child files (first ~200 chars each)
+        # Collect snippets from child files (first ~300 chars each)
         snippets: list[str] = []
         for f in sorted(dir_path.iterdir()):
             if not f.is_file() or f.suffix != ".md" or _is_hub_file(f):
@@ -207,7 +211,6 @@ class VaultIndexGenerator:
                     end = content.find("\n---", 3)
                     if end != -1:
                         content = content[end + 4:]
-                # Strip markdown headings for cleaner context
                 clean = content.strip()[:300]
                 if clean:
                     snippets.append(f"**{f.stem}**: {clean}")
@@ -225,7 +228,7 @@ class VaultIndexGenerator:
         context = "\n".join(snippets[:20])  # Cap at 20 items
         dirname = _display_name(dir_path.name)
 
-        prompt = (
+        user_msg = (
             f"This is the '{dirname}' folder in a knowledge vault. "
             f"Based on its contents, write a single concise sentence "
             f"(max 30 words) summarizing what knowledge this folder "
@@ -234,11 +237,17 @@ class VaultIndexGenerator:
         )
 
         try:
-            response = await chat_provider.complete(prompt)
-            summary = response.strip().strip('"').strip("'")
-            # Ensure it's a reasonable length
-            if summary and len(summary) < 200:
-                return summary
+            response = await chat_provider.create_message(
+                messages=[{"role": "user", "content": user_msg}],
+                system="You are a concise technical writer. Respond with only the requested sentence, nothing else.",
+                max_tokens=1024,
+            )
+            # ChatResponse has text_parts -> list[str]
+            # Take the LAST text part (thinking parts come first)
+            parts = response.text_parts
+            text = parts[-1].strip().strip('"').strip("'") if parts else ""
+            if text and len(text) < 200:
+                return text
         except Exception:
             logger.debug("Summary generation failed for %s", abs_dir, exc_info=True)
 

@@ -665,3 +665,46 @@ class SystemCommandsMixin:
             "rendered": rendered,
             "variables_used": variables,
         }
+
+    # -----------------------------------------------------------------------
+    # Vault index management
+    # -----------------------------------------------------------------------
+
+    async def _cmd_vault_rebuild_index(self, args: dict) -> dict:
+        """Rebuild vault hub files with optional LLM-generated summaries.
+
+        Regenerates all hub files in the vault tree.  If
+        ``with_summaries`` is true and a chat provider is available,
+        each hub gets a short LLM-generated description of the folder's
+        contents.
+        """
+        from src.vault_index import VaultIndexGenerator
+
+        vault_root = os.path.join(self.config.data_dir, "vault")
+        gen = VaultIndexGenerator(vault_root)
+        with_summaries = args.get("with_summaries", False)
+
+        if with_summaries:
+            # Get the chat provider from the orchestrator
+            provider = getattr(self, "_chat_provider", None)
+            if provider is None:
+                try:
+                    from src.chat_providers import create_chat_provider
+
+                    provider = create_chat_provider(self.config.chat_provider)
+                except Exception:
+                    pass
+
+            if provider is None:
+                return {"error": "No chat provider available for summary generation."}
+
+            written = await gen.generate_all_with_summaries(provider)
+        else:
+            written = gen.generate_all()
+
+        return {
+            "success": True,
+            "hubs_written": len(written),
+            "with_summaries": with_summaries,
+            "paths": [os.path.relpath(p, vault_root) for p in written],
+        }

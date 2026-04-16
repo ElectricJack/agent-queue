@@ -763,16 +763,17 @@ class Orchestrator(
         # Register vault index hub generator watcher.  When vault files
         # change, regenerate the affected hub file so the Obsidian graph
         # tree stays current.
-        from src.vault_index import VaultIndexGenerator
+        from src.vault_index import VaultIndexGenerator, _is_hub_file
 
-        _index_gen = VaultIndexGenerator(
-            os.path.join(self.config.data_dir, "vault")
-        )
+        _vault_root = os.path.join(self.config.data_dir, "vault")
+        _index_gen = VaultIndexGenerator(_vault_root)
 
         async def _on_vault_index_changed(changes: list) -> None:
             affected = set()
             for ch in changes:
-                if os.path.basename(ch.rel_path) == "index.md":
+                # Skip hub files (named after their parent dir)
+                fp = Path(os.path.join(_vault_root, ch.rel_path))
+                if _is_hub_file(fp):
                     continue
                 affected.add(os.path.dirname(ch.rel_path))
             for d in affected:
