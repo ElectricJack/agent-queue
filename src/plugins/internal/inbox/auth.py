@@ -36,21 +36,43 @@ class AuthResults:
     raw: str  # the header verbatim, for debugging
 
     def dkim_matches_from_domain(self, from_header: str) -> bool:
-        """Whether the DKIM signing domain matches the From: domain.
+        """Whether the DKIM signing domain aligns with the From: domain.
 
         This is what DMARC alignment enforces.  Without it, an attacker
         with a valid DKIM signature from an unrelated domain could still
         spoof the From: header.
+
+        Accepts three forms of alignment:
+
+        1. Direct / subdomain match (DMARC relaxed mode).
+        2. Google Workspace delegated DKIM — a customer domain without
+           a custom DKIM key is signed by Google as
+           ``<domain-with-dots-as-dashes>.<selector>.gappssmtp.com``.
+           e.g. ``mossandspade.com`` → ``mossandspade-com.20251104.gappssmtp.com``.
         """
         if not self.dkim_signing_domain:
             return False
         from_domain = _extract_domain(from_header)
         if not from_domain:
             return False
-        # Allow subdomain alignment (per DMARC relaxed mode).
         dkim = self.dkim_signing_domain.lstrip("@").lower()
         f = from_domain.lower()
-        return f == dkim or f.endswith("." + dkim) or dkim.endswith("." + f)
+
+        # Direct or subdomain alignment.
+        if f == dkim or f.endswith("." + dkim) or dkim.endswith("." + f):
+            return True
+
+        # Google Workspace delegated signing.  The prefix check is
+        # directional — we derive the expected label from the From: domain
+        # and require DKIM to match, so an attacker can't substitute an
+        # arbitrary gappssmtp prefix.
+        if dkim.endswith(".gappssmtp.com"):
+            expected_prefix = f.replace(".", "-")
+            first_label = dkim.split(".", 1)[0]
+            if first_label == expected_prefix:
+                return True
+
+        return False
 
 
 # RFC 8601 method=result patterns.  Each method appears as

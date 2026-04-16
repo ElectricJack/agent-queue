@@ -72,6 +72,38 @@ class TestAuthResultsParser:
         r = parse_authentication_results("spf=pass")
         assert r.dkim_matches_from_domain("user@example.com") is False
 
+    def test_google_workspace_delegated_dkim_aligns(self):
+        # Real-world example: Google Workspace customer without custom DKIM.
+        # Gmail signs outbound as <from-domain-dashes>.<selector>.gappssmtp.com.
+        hdr = (
+            "mx.google.com; "
+            "dkim=pass header.i=@mossandspade-com.20251104.gappssmtp.com header.s=20251104; "
+            "spf=pass; arc=pass"
+        )
+        r = parse_authentication_results(hdr)
+        assert r.dkim_matches_from_domain("Jessica <jessica@mossandspade.com>") is True
+
+    def test_google_workspace_prefix_mismatch_does_not_align(self):
+        # Attacker signs as a gappssmtp delegate for a DIFFERENT domain and
+        # tries to impersonate mossandspade.com — must fail.
+        hdr = (
+            "mx.google.com; "
+            "dkim=pass header.i=@attacker-com.20251104.gappssmtp.com header.s=20251104; "
+            "spf=pass"
+        )
+        r = parse_authentication_results(hdr)
+        assert r.dkim_matches_from_domain("jessica@mossandspade.com") is False
+
+    def test_google_workspace_multi_label_domain(self):
+        # example.co.uk -> example-co-uk.<sel>.gappssmtp.com
+        hdr = (
+            "mx.google.com; "
+            "dkim=pass header.i=@example-co-uk.202501.gappssmtp.com; "
+            "spf=pass"
+        )
+        r = parse_authentication_results(hdr)
+        assert r.dkim_matches_from_domain("bob@example.co.uk") is True
+
 
 class TestExtractFromAddress:
     def test_display_name_form(self):
