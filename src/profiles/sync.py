@@ -46,7 +46,13 @@ logger = logging.getLogger(__name__)
 PROFILE_PATTERNS: list[str] = [
     "agent-types/*/profile.md",
     "orchestrator/profile.md",
+    "projects/*/agent-types/*/profile.md",
 ]
+
+
+def project_scoped_profile_id(project_id: str, agent_type: str) -> str:
+    """Format the scoped profile id for a per-project agent-type profile."""
+    return f"project:{project_id}:{agent_type}"
 
 
 @dataclass(frozen=True)
@@ -109,6 +115,15 @@ def derive_profile_id(rel_path: str) -> str | None:
         a recognized profile location.
     """
     parts = rel_path.replace("\\", "/").split("/")
+
+    # projects/<project>/agent-types/<type>/profile.md -> project:<project>:<type>
+    if (
+        len(parts) == 5
+        and parts[0] == "projects"
+        and parts[2] == "agent-types"
+        and parts[-1] == "profile.md"
+    ):
+        return project_scoped_profile_id(parts[1], parts[3])
 
     # agent-types/<type>/profile.md -> <type>
     if len(parts) >= 3 and parts[0] == "agent-types" and parts[-1] == "profile.md":
@@ -395,6 +410,7 @@ async def on_profile_changed(
                 and data_dir
                 and path_id
                 and path_id != "supervisor"
+                and not path_id.startswith("project:")
             ):
                 from src.vault import copy_starter_knowledge
 

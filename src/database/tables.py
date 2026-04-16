@@ -42,6 +42,7 @@ projects = Table(
     Column("repo_url", Text, nullable=True, server_default="''"),
     Column("repo_default_branch", Text, nullable=True, server_default="'main'"),
     Column("default_profile_id", Text, ForeignKey("agent_profiles.id"), nullable=True),
+    Column("default_agent_type", Text, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 

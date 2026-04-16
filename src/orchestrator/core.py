@@ -459,27 +459,45 @@ class Orchestrator(
                 )
 
     async def _resolve_profile(self, task: Task) -> AgentProfile | None:
-        """Resolve the agent profile for a task using a three-level fallback chain.
+        """Resolve the agent profile for a task.
 
         Resolution order (first non-None wins):
         1. **Task-level** — ``task.profile_id`` (explicit override per task)
-        2. **Project-level** — ``project.default_profile_id`` (project default)
-        3. **System default** — returns None, meaning the adapter uses its
-           built-in defaults (no tool restrictions, no custom system prompt,
-           default model).
+        2. **Project-scoped agent-type** — if an ``agent_type`` is known
+           (task.agent_type or project.default_agent_type), look up
+           ``project:{project_id}:{agent_type}``.  This is the row synced
+           from ``vault/projects/{project}/agent-types/{type}/profile.md``.
+        3. **Global agent-type** — if an ``agent_type`` is known, fall
+           back to the global ``{agent_type}`` profile.
+        4. **Project default** — ``project.default_profile_id`` (only when
+           no agent_type was resolvable).
+        5. **System default** — returns None; the adapter uses built-in
+           defaults.
 
         Profiles control: model selection, permission mode (e.g. plan-only),
         allowed tools allowlist, MCP server configuration, and a system prompt
         suffix that sets the agent's "role" for the task.
-
-        See ``_execute_task`` where the resolved profile is passed to the
-        adapter factory and injected into the agent's system context prompt.
         """
         if task.profile_id:
             return await self.db.get_profile(task.profile_id)
+
         project = await self.db.get_project(task.project_id)
+        agent_type = task.agent_type or (project.default_agent_type if project else None)
+
+        if agent_type and project:
+            scoped_id = f"project:{project.id}:{agent_type}"
+            scoped = await self.db.get_profile(scoped_id)
+            if scoped:
+                return scoped
+
+        if agent_type:
+            global_profile = await self.db.get_profile(agent_type)
+            if global_profile:
+                return global_profile
+
         if project and project.default_profile_id:
             return await self.db.get_profile(project.default_profile_id)
+
         return None
 
     def pause(self) -> None:
@@ -1279,9 +1297,12 @@ class Orchestrator(
                 passive_report["moved"],
             )
 
-        # Per-profile directories (vault/agent-types/{profile_id}/)
+        # Per-profile directories (vault/agent-types/{profile_id}/).
+        # Skip project-scoped profiles — their vault home is
+        # projects/{project}/agent-types/{type}/, managed elsewhere.
         for profile in all_profiles:
-            self.vault_manager.register_agent_type(profile.id)
+            if not profile.id.startswith("project:"):
+                self.vault_manager.register_agent_type(profile.id)
 
         # Per-project directories via vault_manager (handles project
         # registration beyond what ensure_vault_project_dirs does).
