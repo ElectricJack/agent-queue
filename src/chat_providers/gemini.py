@@ -44,10 +44,14 @@ class GeminiChatProvider(ChatProvider):
     ) -> ChatResponse:
         from google.genai import types
 
+        thinking = self._thinking_budget
         config = types.GenerateContentConfig(
             system_instruction=system,
-            max_output_tokens=max_tokens,
-            thinking_config=types.ThinkingConfig(thinking_budget=self._thinking_budget),
+            # Gemini counts thinking tokens against max_output_tokens, so add
+            # the thinking budget on top of the caller's requested response
+            # budget to avoid starving the visible response.
+            max_output_tokens=max_tokens + thinking,
+            thinking_config=types.ThinkingConfig(thinking_budget=thinking),
         )
         if tools:
             config.tools = gemini_adapter.convert_tools(tools)
