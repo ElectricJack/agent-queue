@@ -1195,6 +1195,17 @@ class CollectionRouter:
         if store is None:
             return []
 
+        # Empty collections crash hybrid_search with "Invalid sparse row:
+        # NaN or Inf value" because Milvus's BM25 IDF is undefined when
+        # N=0 (log of zero).  Short-circuit rather than let the RPC raise.
+        try:
+            if await asyncio.to_thread(store.count) == 0:
+                return []
+        except Exception:
+            # If we can't read stats, let the search attempt proceed —
+            # worst case, we get the same error we would have gotten.
+            pass
+
         # Run sync Milvus call in a thread for true parallelism
         results = await asyncio.to_thread(
             store.search,
