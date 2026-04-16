@@ -1619,7 +1619,7 @@ class Supervisor:
                         "You are observing a project channel passively. "
                         "Respond with a single JSON object. No other text."
                     ),
-                    max_tokens=256,
+                    max_tokens=1024,
                 )
                 text = "\n".join(resp.text_parts).strip()
                 return self._parse_observe_response(text)
