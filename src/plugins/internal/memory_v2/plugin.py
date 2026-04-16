@@ -47,6 +47,7 @@ AGENT_TOOLS: frozenset[str] = frozenset(
         "memory_store",
         "memory_recall",
         "memory_delete",
+        "memory_follow",
     }
 )
 
@@ -718,6 +719,33 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
             },
             "required": ["chunk_hash"],
+        },
+    },
+    # ---- Link Following (vault knowledge graph navigation) ----
+    {
+        "name": "memory_follow",
+        "description": (
+            "Follow a wiki-link from a memory result to read the linked "
+            "vault file.  Use this to get additional context from "
+            "related_links returned by memory_recall.  Returns the file "
+            "content plus any further related_links for continued "
+            "navigation through the knowledge graph.  Works with hub "
+            "pages (index files), glossary entries, guidance docs, "
+            "insights, playbooks, and any other vault file."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "link": {
+                    "type": "string",
+                    "description": (
+                        "Wiki-link target path from a related_links entry "
+                        "(e.g. 'projects/agent-queue/memory/guidance/qa/"
+                        "testing-patterns' or 'glossary/reflection-engine')"
+                    ),
+                },
+            },
+            "required": ["link"],
         },
     },
     {
@@ -3291,6 +3319,18 @@ class MemoryV2Plugin(InternalPlugin):
                 entry["scope"] = r["_scope"]
             if "_scope_id" in r:
                 entry["scope_id"] = r["_scope_id"]
+
+            # Parse wiki-links from content for agent navigation
+            try:
+                from src.wiki_links import parse_wiki_links
+
+                raw_content = original if original else content
+                links = parse_wiki_links(raw_content)
+                if links:
+                    entry["related_links"] = links
+            except Exception:
+                pass  # wiki_links module not available — skip gracefully
+
             formatted.append(entry)
         return formatted
 
@@ -3441,6 +3481,58 @@ class MemoryV2Plugin(InternalPlugin):
         except Exception as e:
             self._log.error("memory_delete failed: %s", e, exc_info=True)
             return {"error": f"Delete failed: {e}"}
+
+    async def cmd_memory_follow(self, args: dict) -> dict:
+        """Follow a wiki-link to read the linked vault file.
+
+        Reads a vault file by its wiki-link path and returns the content
+        plus any outgoing wiki-links for continued navigation through
+        the knowledge graph.
+        """
+        link = (args.get("link") or "").strip()
+        if not link:
+            return {"success": False, "error": "link parameter is required"}
+
+        from src.wiki_links import resolve_wiki_link, parse_wiki_links, strip_frontmatter
+
+        vault_root = self._get_vault_root()
+        if not vault_root:
+            return {"success": False, "error": "vault root not available"}
+
+        filepath = resolve_wiki_link(vault_root, link)
+        if not filepath or not filepath.exists():
+            return {"success": False, "error": f"Could not resolve link: {link}"}
+
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except Exception as e:
+            return {"success": False, "error": f"Failed to read file: {e}"}
+
+        stripped = strip_frontmatter(content)
+        outgoing = parse_wiki_links(content)
+
+        result: dict = {
+            "success": True,
+            "path": str(filepath.relative_to(vault_root)),
+            "content": stripped,
+        }
+        if outgoing:
+            result["related_links"] = outgoing
+        return result
+
+    def _get_vault_root(self) -> str | None:
+        """Get the vault root directory path."""
+        if self._service and hasattr(self._service, "_data_dir"):
+            from pathlib import Path
+
+            data_dir = self._service._data_dir
+            base = (
+                Path(data_dir).expanduser()
+                if data_dir
+                else Path.home() / ".agent-queue"
+            )
+            return str(base / "vault")
+        return None
 
     async def cmd_memory_update(self, args: dict) -> dict:
         """Update an existing memory entry's content, tags, or topic.

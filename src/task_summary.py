@@ -91,6 +91,12 @@ def build_task_summary(
             lines.append(f"- `{sha[:10]}` {subject}")
         lines.append("")
 
+    # Structural backlink to project hub
+    if task.project_id:
+        lines.append("## See Also")
+        lines.append(f"- [[projects/{task.project_id}/{task.project_id}|{task.project_id}]]")
+        lines.append("")
+
     return "\n".join(lines)
 
 

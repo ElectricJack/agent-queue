@@ -760,6 +760,30 @@ class Orchestrator(
 
         register_facts_handlers(self.vault_watcher)
 
+        # Register vault index hub generator watcher.  When vault files
+        # change, regenerate the affected hub file so the Obsidian graph
+        # tree stays current.
+        from src.vault_index import VaultIndexGenerator
+
+        _index_gen = VaultIndexGenerator(
+            os.path.join(self.config.data_dir, "vault")
+        )
+
+        async def _on_vault_index_changed(changes: list) -> None:
+            affected = set()
+            for ch in changes:
+                if os.path.basename(ch.rel_path) == "index.md":
+                    continue
+                affected.add(os.path.dirname(ch.rel_path))
+            for d in affected:
+                _index_gen.update_directory(d)
+
+        self.vault_watcher.register_handler(
+            "**/*.md",
+            _on_vault_index_changed,
+            handler_id="vault-index-updater",
+        )
+
         # V1 memory/*.md watcher handlers removed (roadmap 8.6).
         # Memory file watching is now handled by MemoryV2Plugin.
 

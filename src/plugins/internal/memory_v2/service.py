@@ -935,6 +935,18 @@ class MemoryV2Service:
             prefix = f"[{topic}] " if topic else ""
             lines.append(f"- {prefix}{content}")
 
+            # Include link hints so the agent knows related content exists
+            try:
+                from src.wiki_links import parse_wiki_links
+
+                raw = r.get("original", "") or r.get("content", "")
+                links = parse_wiki_links(raw)
+                if links:
+                    names = ", ".join(lnk["display"] for lnk in links[:3])
+                    lines.append(f"  *(see also: {names})*")
+            except Exception:
+                pass
+
         return "\n".join(lines) if len(lines) > 1 else ""
 
     async def recall(
@@ -1236,6 +1248,43 @@ class MemoryV2Service:
         if original and original != content:
             body_parts.append("\n\n## Original\n")
             body_parts.append(original)
+
+        # Annotate with glossary concept links if available
+        try:
+            from src.vault_glossary import VaultGlossary
+
+            base = Path(self._data_dir).expanduser() if self._data_dir else Path.home() / ".agent-queue"
+            glossary = VaultGlossary(base / "vault")
+            glossary.load()
+            if glossary._concepts:
+                body_text = "\n".join(body_parts)
+                body_text = glossary.annotate_content(body_text)
+                body_parts = [body_text]
+        except Exception:
+            pass
+
+        # Add structural backlinks (## See Also)
+        try:
+            from src.wiki_links import add_see_also
+
+            base_dir = Path(self._data_dir).expanduser() if self._data_dir else Path.home() / ".agent-queue"
+            vault_root = base_dir / "vault"
+            vault_rel = str(vault_dir.relative_to(vault_root))
+            parts = vault_rel.split(os.sep)
+            see_also_links: list[tuple[str, str]] = []
+            if len(parts) >= 2 and parts[0] == "projects":
+                project_id = parts[1]
+                see_also_links.append((f"projects/{project_id}/{project_id}", project_id))
+            if source_playbook:
+                see_also_links.append(
+                    (f"system/playbooks/{source_playbook}", f"Source: {source_playbook}")
+                )
+            if see_also_links:
+                body_text = "\n".join(body_parts)
+                body_text = add_see_also(body_text, see_also_links)
+                body_parts = [body_text]
+        except Exception:
+            pass
 
         full = "\n".join(fm_lines) + "\n".join(body_parts) + "\n"
         filepath.write_text(full, encoding="utf-8")

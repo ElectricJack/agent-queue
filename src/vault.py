@@ -1189,6 +1189,17 @@ def ensure_vault_layout(data_dir: str) -> None:
     ensure_default_playbooks(data_dir)
     ensure_supervisor_profile(data_dir)
     ensure_claude_code_profile(data_dir)
+
+    # Generate vault hub files for Obsidian graph tree structure
+    try:
+        from src.vault_index import VaultIndexGenerator
+
+        vault_root = os.path.join(data_dir, "vault")
+        generator = VaultIndexGenerator(vault_root)
+        generator.generate_all()
+    except Exception:
+        logger.debug("Vault index generation skipped", exc_info=True)
+
     logger.info("Vault directory structure ensured at %s/vault", data_dir)
 
 
@@ -1402,6 +1413,16 @@ def ensure_vault_profile_dirs(data_dir: str, profile_id: str) -> None:
     os.makedirs(os.path.join(base, "memory"), exist_ok=True)
     os.makedirs(os.path.join(base, "memory", "guidance"), exist_ok=True)
 
+    # Update hub files for the agent-types directory
+    try:
+        from src.vault_index import VaultIndexGenerator
+
+        vault_root = os.path.join(data_dir, "vault")
+        generator = VaultIndexGenerator(vault_root)
+        generator.update_directory("agent-types")
+    except Exception:
+        pass
+
 
 def copy_starter_knowledge(data_dir: str, profile_id: str) -> dict:
     """Copy starter knowledge pack templates into a new profile's memory folder.
@@ -1613,6 +1634,16 @@ def ensure_vault_project_dirs(data_dir: str, project_id: str) -> None:
         "overrides",
     ):
         os.makedirs(os.path.join(base, subdir), exist_ok=True)
+
+    # Update hub files for the projects directory
+    try:
+        from src.vault_index import VaultIndexGenerator
+
+        vault_root = os.path.join(data_dir, "vault")
+        generator = VaultIndexGenerator(vault_root)
+        generator.update_directory(f"projects/{project_id}")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

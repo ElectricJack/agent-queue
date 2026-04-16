@@ -261,6 +261,8 @@ last_synced: {today_str}
 
 # {title_prefix}: {title_name}
 
+> Part of [[projects/{project_id}/{project_id}|{project_id}]] > [[projects/{project_id}/references/references|References]]
+
 Full {tag_type} at `{rel_path}` in the {project_id} workspace.
 
 ## Excerpt
@@ -278,6 +280,9 @@ Full {tag_type} at `{rel_path}` in the {project_id} workspace.
 ## Key Interfaces
 
 *Pending LLM extraction.*
+
+## See Also
+- [[projects/{project_id}/references/references|References]]
 """
 
 
