@@ -235,6 +235,10 @@ class ConfigService(Protocol):
     def workspace_dir(self) -> str: ...
     @property
     def data_dir(self) -> str: ...
+    @property
+    def memory_extractor(self) -> dict: ...
+    @property
+    def chat_provider(self) -> Any: ...
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +546,14 @@ class ConfigServiceImpl:
     @property
     def data_dir(self) -> str:
         return self._config.data_dir
+
+    @property
+    def memory_extractor(self) -> dict:
+        return self._config.memory_extractor
+
+    @property
+    def chat_provider(self) -> Any:
+        return self._config.chat_provider
 
 
 # ---------------------------------------------------------------------------
