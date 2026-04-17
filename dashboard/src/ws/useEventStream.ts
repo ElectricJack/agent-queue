@@ -21,7 +21,6 @@ type Listener = (event: NotifyEvent) => void;
 type StatusListener = (status: ConnectionStatus) => void;
 
 let ws: WebSocket | null = null;
-let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectDelay = BASE_RECONNECT_MS;
 let currentStatus: ConnectionStatus = "disconnected";
 
@@ -63,7 +62,7 @@ function connect() {
   sock.onclose = () => {
     ws = null;
     setStatus("disconnected");
-    reconnectTimer = setTimeout(() => {
+    setTimeout(() => {
       reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_MS);
       connect();
     }, reconnectDelay);

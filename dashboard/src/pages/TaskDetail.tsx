@@ -1,7 +1,8 @@
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { useTask, type TaskRef } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
+import TaskActions from "../components/TaskActions";
 
 export default function TaskDetail() {
   const { taskId } = useParams<{ taskId: string }>();
@@ -18,7 +19,7 @@ export default function TaskDetail() {
         to="/tasks"
         className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-gray-200"
       >
-        <ArrowLeft className="h-4 w-4" /> Back to tasks
+        <ArrowLeftIcon className="h-4 w-4" /> Back to tasks
       </Link>
 
       {/* Header */}
@@ -46,6 +47,9 @@ export default function TaskDetail() {
           )}
         </div>
       </div>
+
+      {/* Actions */}
+      <TaskActions task={task} />
 
       {/* Description */}
       {task.description && (
@@ -94,7 +98,7 @@ export default function TaskDetail() {
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 text-indigo-400 hover:underline"
           >
-            {task.pr_url} <ExternalLink className="h-3.5 w-3.5" />
+            {task.pr_url} <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
           </a>
         </section>
       )}

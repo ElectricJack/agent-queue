@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiPost, apiGet } from "./client";
 
 // --- System ---
@@ -147,4 +147,67 @@ export function useProjects() {
     },
     refetchInterval: 30_000,
   });
+}
+
+// --- Task Mutations ---
+
+function useTaskMutation<TInput extends Record<string, unknown>, TOutput = unknown>(
+  endpoint: string,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: TInput) => apiPost<TOutput>(endpoint, input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["task"] });
+    },
+  });
+}
+
+export function useStopTask() {
+  return useTaskMutation<{ task_id: string }, { stopped: string }>("/task/stop");
+}
+
+export function useRestartTask() {
+  return useTaskMutation<{ task_id: string }, { restarted: string; title: string; previous_status: string }>("/task/restart");
+}
+
+export function useSkipTask() {
+  return useTaskMutation<{ task_id: string }, { skipped: string; unblocked_count: number }>("/task/skip");
+}
+
+export function useApproveTask() {
+  return useTaskMutation<{ task_id: string }, { approved: string; title: string }>("/task/approve");
+}
+
+export function useApprovePlan() {
+  return useTaskMutation<{ task_id: string }, { approved: string; subtask_count: number }>("/task/approve-plan");
+}
+
+export function useRejectPlan() {
+  return useTaskMutation<{ task_id: string; feedback: string }, { rejected: string }>("/task/reject-plan");
+}
+
+export function useDeletePlan() {
+  return useTaskMutation<{ task_id: string }, { deleted: string; draft_subtasks_deleted: number }>("/task/delete-plan");
+}
+
+export function useReopenWithFeedback() {
+  return useTaskMutation<{ task_id: string; feedback: string }, { reopened: string }>("/task/reopen-with-feedback");
+}
+
+export function useEditTask() {
+  return useTaskMutation<Record<string, unknown>, { updated: string; fields: string[] }>("/task/edit");
+}
+
+export function useDeleteTask() {
+  return useTaskMutation<{ task_id: string }, { deleted: string; title: string }>("/task/delete");
+}
+
+export function useCreateTask() {
+  return useTaskMutation<Record<string, unknown>, { created: string; title: string }>("/task/create");
+}
+
+export function useProvideInput() {
+  return useTaskMutation<{ task_id: string; input: string }>("/system/provide-input");
 }

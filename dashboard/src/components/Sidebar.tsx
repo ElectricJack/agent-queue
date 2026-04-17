@@ -1,18 +1,23 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Bot, ListTodo, Radio } from "lucide-react";
+import {
+  Squares2X2Icon,
+  CpuChipIcon,
+  ClipboardDocumentListIcon,
+  SignalIcon,
+} from "@heroicons/react/24/outline";
 
 const links = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/agents", label: "Agents", icon: Bot },
-  { to: "/tasks", label: "Tasks", icon: ListTodo },
-  { to: "/events", label: "Events", icon: Radio },
+  { to: "/", label: "Dashboard", icon: Squares2X2Icon },
+  { to: "/agents", label: "Agents", icon: CpuChipIcon },
+  { to: "/tasks", label: "Tasks", icon: ClipboardDocumentListIcon },
+  { to: "/events", label: "Events", icon: SignalIcon },
 ] as const;
 
 export default function Sidebar() {
   return (
     <aside className="flex w-56 flex-col border-r border-gray-800 bg-gray-900">
       <div className="flex h-14 items-center gap-2 border-b border-gray-800 px-4">
-        <Bot className="h-6 w-6 text-indigo-400" />
+        <CpuChipIcon className="h-6 w-6 text-indigo-400" />
         <span className="text-lg font-semibold tracking-tight">Agent Queue</span>
       </div>
       <nav className="flex-1 space-y-1 p-3">

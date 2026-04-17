@@ -1,7 +1,24 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useTasks, useProjects } from "../api/hooks";
+import {
+  PlusIcon,
+  StopIcon,
+  ArrowPathIcon,
+  CheckIcon,
+  DocumentCheckIcon,
+  ChatBubbleLeftIcon,
+} from "@heroicons/react/24/outline";
+import {
+  useTasks,
+  useProjects,
+  useStopTask,
+  useRestartTask,
+  useApproveTask,
+  useApprovePlan,
+  type Task,
+} from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
+import CreateTaskModal from "../components/CreateTaskModal";
 
 export default function Tasks() {
   const { data: projects } = useProjects();
@@ -9,6 +26,8 @@ export default function Tasks() {
   const [showCompleted, setShowCompleted] = useState(
     () => localStorage.getItem("tasks:showCompleted") === "true",
   );
+  const [createOpen, setCreateOpen] = useState(false);
+
   const toggleShowCompleted = (v: boolean) => {
     setShowCompleted(v);
     localStorage.setItem("tasks:showCompleted", String(v));
@@ -19,7 +38,16 @@ export default function Tasks() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Tasks</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Tasks</h1>
+        <button
+          onClick={() => setCreateOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
+        >
+          <PlusIcon className="h-4 w-4" />
+          Create Task
+        </button>
+      </div>
 
       {/* Tab bar with toggle on the right */}
       {projectList.length > 0 && (
@@ -68,6 +96,87 @@ export default function Tasks() {
       ) : (
         <p className="text-sm text-gray-500">No projects found.</p>
       )}
+
+      <CreateTaskModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        defaultProjectId={selectedProjectId}
+      />
+    </div>
+  );
+}
+
+function QuickAction({
+  icon,
+  title,
+  onClick,
+  variant = "default",
+}: {
+  icon: React.ReactNode;
+  title: string;
+  onClick: () => void;
+  variant?: "default" | "success" | "danger";
+}) {
+  const cls =
+    variant === "success"
+      ? "text-emerald-400 hover:bg-emerald-500/20"
+      : variant === "danger"
+        ? "text-red-400 hover:bg-red-500/20"
+        : "text-gray-400 hover:bg-gray-700";
+  return (
+    <button onClick={onClick} title={title} className={`rounded p-1 transition-colors ${cls}`}>
+      {icon}
+    </button>
+  );
+}
+
+function RowActions({ task }: { task: Task }) {
+  const stopTask = useStopTask();
+  const restartTask = useRestartTask();
+  const approveTask = useApproveTask();
+  const approvePlan = useApprovePlan();
+  const s = task.status?.toUpperCase() ?? "";
+
+  return (
+    <div className="flex items-center gap-0.5">
+      {s === "IN_PROGRESS" && (
+        <QuickAction
+          icon={<StopIcon className="h-3.5 w-3.5" />}
+          title="Stop"
+          onClick={() => stopTask.mutate({ task_id: task.id })}
+          variant="danger"
+        />
+      )}
+      {s === "AWAITING_APPROVAL" && (
+        <QuickAction
+          icon={<CheckIcon className="h-3.5 w-3.5" />}
+          title="Approve"
+          onClick={() => approveTask.mutate({ task_id: task.id })}
+          variant="success"
+        />
+      )}
+      {s === "AWAITING_PLAN_APPROVAL" && (
+        <QuickAction
+          icon={<DocumentCheckIcon className="h-3.5 w-3.5" />}
+          title="Approve Plan"
+          onClick={() => approvePlan.mutate({ task_id: task.id })}
+          variant="success"
+        />
+      )}
+      {s === "WAITING_INPUT" && (
+        <QuickAction
+          icon={<ChatBubbleLeftIcon className="h-3.5 w-3.5" />}
+          title="Answer (open detail)"
+          onClick={() => window.location.assign(`/tasks/${task.id}`)}
+        />
+      )}
+      {["COMPLETED", "FAILED", "BLOCKED"].includes(s) && (
+        <QuickAction
+          icon={<ArrowPathIcon className="h-3.5 w-3.5" />}
+          title="Restart"
+          onClick={() => restartTask.mutate({ task_id: task.id })}
+        />
+      )}
     </div>
   );
 }
@@ -87,6 +196,7 @@ function TaskTable({ projectId, showCompleted }: { projectId: string; showComple
             <th className="px-4 py-3">Status</th>
             <th className="px-4 py-3">Priority</th>
             <th className="px-4 py-3">Agent</th>
+            <th className="px-4 py-3 w-24"></th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-800">
@@ -107,6 +217,9 @@ function TaskTable({ projectId, showCompleted }: { projectId: string; showComple
                 {task.priority != null ? `P${task.priority}` : "-"}
               </td>
               <td className="px-4 py-3 text-gray-400">{task.agent_name ?? "-"}</td>
+              <td className="px-4 py-3">
+                <RowActions task={task} />
+              </td>
             </tr>
           ))}
         </tbody>

@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Radio, Trash2, ArrowDown, Pause, Play } from "lucide-react";
+import { SignalIcon, TrashIcon, ArrowDownIcon } from "@heroicons/react/24/outline";
 import {
   useEventStreamStatus,
   useEventBuffer,
-  type EventEntry,
 } from "../ws/EventStreamProvider";
 import type { NotifyEvent } from "../ws/types";
 
@@ -67,7 +66,7 @@ function eventSummary(event: NotifyEvent): string {
     case "notify.stuck_defined_task":
       return `Stuck task: ${event.task.title} (${event.stuck_hours.toFixed(1)}h)`;
     default:
-      return event.event_type;
+      return (event as NotifyEvent).event_type;
   }
 }
 
@@ -139,7 +138,7 @@ export default function Events() {
                   : "bg-red-500/10 text-red-400"
             }`}
           >
-            <Radio className="h-3 w-3" />
+            <SignalIcon className="h-3 w-3" />
             {status}
           </span>
           <span className="text-sm text-gray-500">{filteredEvents.length} events</span>
@@ -153,7 +152,7 @@ export default function Events() {
               }}
               className="flex items-center gap-1.5 rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800"
             >
-              <ArrowDown className="h-3.5 w-3.5" />
+              <ArrowDownIcon className="h-3.5 w-3.5" />
               Follow
             </button>
           )}
@@ -161,7 +160,7 @@ export default function Events() {
             onClick={clearEvents}
             className="flex items-center gap-1.5 rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800"
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <TrashIcon className="h-3.5 w-3.5" />
             Clear
           </button>
         </div>

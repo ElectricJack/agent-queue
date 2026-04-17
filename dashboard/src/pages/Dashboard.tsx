@@ -1,4 +1,9 @@
-import { Activity, Bot, ListTodo, AlertTriangle } from "lucide-react";
+import {
+  BoltIcon,
+  CpuChipIcon,
+  ClipboardDocumentListIcon,
+  ExclamationTriangleIcon,
+} from "@heroicons/react/24/outline";
 import { useAllAgents, useActiveTasksAllProjects, useHealth, useProjects } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 
@@ -21,22 +26,22 @@ export default function Dashboard() {
       {/* Stats row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          icon={<Activity className="h-5 w-5 text-green-400" />}
+          icon={<BoltIcon className="h-5 w-5 text-green-400" />}
           label="System"
           value={health.data?.status ?? "..."}
         />
         <StatCard
-          icon={<Bot className="h-5 w-5 text-indigo-400" />}
+          icon={<CpuChipIcon className="h-5 w-5 text-indigo-400" />}
           label="Agents"
           value={`${busyAgents} / ${agentList.length} busy`}
         />
         <StatCard
-          icon={<ListTodo className="h-5 w-5 text-blue-400" />}
+          icon={<ClipboardDocumentListIcon className="h-5 w-5 text-blue-400" />}
           label="Active Tasks"
           value={String(taskList.length)}
         />
         <StatCard
-          icon={<AlertTriangle className="h-5 w-5 text-red-400" />}
+          icon={<ExclamationTriangleIcon className="h-5 w-5 text-red-400" />}
           label="Failed"
           value={String(failedTasks)}
         />
