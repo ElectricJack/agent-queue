@@ -13,7 +13,7 @@ Covers:
 
 import pytest
 from src.config import AppConfig, DiscordConfig
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.database import Database
 from src.models import Project
 from src.orchestrator import Orchestrator
@@ -33,6 +33,7 @@ def config(tmp_path):
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
         database_path=str(tmp_path / "test.db"),
+        data_dir=str(tmp_path / "data"),
     )
 
 
@@ -198,14 +199,14 @@ class TestSetControlInterfaceToolDefinition:
     """
 
     def test_tool_not_in_core_tools(self):
-        from src.tool_registry import ToolRegistry
+        from src.tools import ToolRegistry
 
         registry = ToolRegistry()
         core_names = {t["name"] for t in registry.get_core_tools()}
         assert "set_control_interface" not in core_names
 
     def test_tool_description_mentions_deprecated(self):
-        from src.tool_registry import _ALL_TOOL_DEFINITIONS
+        from src.tools import _ALL_TOOL_DEFINITIONS
 
         defn = next(
             (d for d in _ALL_TOOL_DEFINITIONS if d["name"] == "set_control_interface"),

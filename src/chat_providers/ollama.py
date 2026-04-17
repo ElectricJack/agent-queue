@@ -1,12 +1,8 @@
 """Ollama chat provider using the OpenAI-compatible ``/v1`` endpoint.
 
 Ollama exposes an OpenAI-compatible API, so this provider uses the ``openai``
-Python SDK.  The main complexity is format conversion: the rest of the
-codebase uses Anthropic-style tool definitions and message structures, so
-this module translates between the two formats on every request and response.
-
-Useful for local or self-hosted LLM inference where Anthropic API access
-is unavailable or cost-prohibitive.
+Python SDK.  Format conversion between the internal Anthropic-style types
+and OpenAI format is handled by the shared ``openai_adapter`` module.
 """
 
 from __future__ import annotations
@@ -16,11 +12,10 @@ import json
 import re
 import time
 import urllib.request
-import uuid
 
+from .adapters import openai_adapter
 from .base import ChatProvider
-from .tool_conversion import anthropic_tools_to_openai
-from .types import ChatResponse, TextBlock, ToolUseBlock
+from .types import ChatResponse
 
 
 class OllamaChatProvider(ChatProvider):
@@ -94,54 +89,25 @@ class OllamaChatProvider(ChatProvider):
         tools: list[dict] | None = None,
         max_tokens: int = 1024,
     ) -> ChatResponse:
-        openai_messages = self._convert_messages(messages, system)
-
         kwargs: dict = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "messages": openai_messages,
+            "messages": openai_adapter.convert_messages(messages, system),
             "extra_body": {
                 "keep_alive": self._keep_alive,
                 **({"options": {"num_ctx": self._num_ctx}} if self._num_ctx > 0 else {}),
             },
         }
         if tools:
-            kwargs["tools"] = anthropic_tools_to_openai(tools)
+            kwargs["tools"] = openai_adapter.convert_tools(tools)
 
         resp = await self._client.chat.completions.create(**kwargs)
-        # Model just responded — record the time so is_model_loaded()
-        # can skip the /api/ps probe while the model is still warm.
         self._last_request_at = time.monotonic()
-
-        choice = resp.choices[0]
-        content: list[TextBlock | ToolUseBlock] = []
-
-        if choice.message.content:
-            content.append(TextBlock(text=choice.message.content))
-
-        if choice.message.tool_calls:
-            for tc in choice.message.tool_calls:
-                args = tc.function.arguments
-                if isinstance(args, str):
-                    args = json.loads(args)
-                content.append(
-                    ToolUseBlock(
-                        id=tc.id or str(uuid.uuid4())[:8],
-                        name=tc.function.name,
-                        input=args,
-                    )
-                )
-
-        return ChatResponse(content=content)
+        return openai_adapter.parse_response(resp)
 
     @staticmethod
     def _parse_duration(s: str) -> float:
-        """Parse an Ollama keep_alive duration string into seconds.
-
-        Supports Go-style durations (``1h``, ``30m``, ``5s``, ``1h30m``),
-        bare integers (seconds), ``-1`` (infinite), and ``0`` (immediate
-        unload).
-        """
+        """Parse an Ollama keep_alive duration string into seconds."""
         s = s.strip()
         if s == "-1":
             return float("inf")
@@ -155,61 +121,3 @@ class OllamaChatProvider(ChatProvider):
             except ValueError:
                 pass
         return total
-
-    @staticmethod
-    def _convert_messages(messages: list[dict], system: str) -> list[dict]:
-        """Convert Anthropic-format messages to OpenAI format."""
-        result: list[dict] = [{"role": "system", "content": system}]
-
-        for msg in messages:
-            role = msg["role"]
-            content = msg["content"]
-
-            if role == "user" and isinstance(content, list):
-                # Could be tool_result blocks
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "tool_result":
-                        result.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": item["tool_use_id"],
-                                "content": item.get("content", ""),
-                            }
-                        )
-                    elif isinstance(item, dict) and item.get("type") == "text":
-                        result.append({"role": "user", "content": item["text"]})
-                    else:
-                        result.append({"role": "user", "content": str(item)})
-
-            elif role == "assistant" and isinstance(content, list):
-                # Could be tool_use blocks (our normalized ToolUseBlock dataclasses)
-                text_parts = []
-                tool_calls = []
-                for item in content:
-                    if hasattr(item, "text"):
-                        text_parts.append(item.text)
-                    elif hasattr(item, "name") and hasattr(item, "input"):
-                        tool_calls.append(
-                            {
-                                "id": item.id,
-                                "type": "function",
-                                "function": {
-                                    "name": item.name,
-                                    "arguments": json.dumps(item.input),
-                                },
-                            }
-                        )
-
-                assistant_msg: dict = {"role": "assistant"}
-                if text_parts:
-                    assistant_msg["content"] = "\n".join(text_parts)
-                else:
-                    assistant_msg["content"] = None
-                if tool_calls:
-                    assistant_msg["tool_calls"] = tool_calls
-                result.append(assistant_msg)
-
-            else:
-                result.append({"role": role, "content": content})
-
-        return result

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class TaskStatus(Enum):
@@ -76,6 +77,7 @@ class TaskEvent(Enum):
     PLAN_APPROVED = "PLAN_APPROVED"
     PLAN_REJECTED = "PLAN_REJECTED"
     PLAN_DELETED = "PLAN_DELETED"
+    SUBTASKS_COMPLETED = "SUBTASKS_COMPLETED"
     TIMEOUT = "TIMEOUT"
     EXECUTION_ERROR = "EXECUTION_ERROR"
     RECOVERY = "RECOVERY"
@@ -105,6 +107,26 @@ class TaskType(Enum):
 
 # Convenience set for validation without constructing enum members.
 TASK_TYPE_VALUES = frozenset(t.value for t in TaskType)
+
+
+class WorkspaceMode(Enum):
+    """Lock mode for workspace access during task execution.
+
+    Controls how agents share (or don't share) workspace resources.
+    The coordination playbook specifies this when creating tasks.
+
+    See docs/specs/design/agent-coordination.md §7 (Workspace Strategy).
+    """
+
+    EXCLUSIVE = "exclusive"  # One agent, one workspace (current default)
+    BRANCH_ISOLATED = "branch-isolated"  # Multiple agents, same repo, different branches
+    DIRECTORY_ISOLATED = (
+        "directory-isolated"  # Multiple agents, same branch, different dirs (deferred — stub only)
+    )
+
+
+# Convenience set for validation without constructing enum members.
+WORKSPACE_MODE_VALUES = frozenset(m.value for m in WorkspaceMode)
 
 
 class AgentState(Enum):
@@ -162,11 +184,13 @@ class VerificationType(Enum):
 
 class RepoSourceType(Enum):
     """How a project's repository was set up — cloned from a URL, linked to
-    an existing local path, or initialized as a new git repo."""
+    an existing local path, initialized as a new git repo, or created as a
+    git worktree for branch-isolated workspace sharing."""
 
     CLONE = "clone"
     LINK = "link"
     INIT = "init"
+    WORKTREE = "worktree"  # Git worktree of another workspace (branch-isolated mode)
 
 
 @dataclass
@@ -218,6 +242,36 @@ class Project:
 
 
 @dataclass
+class ProjectConstraint:
+    """Temporary scheduling constraint on a project.
+
+    Constraints are set by workflows, playbooks, or admins to temporarily
+    restrict how the scheduler assigns work to a project. They persist
+    until explicitly released via ``release_project_constraint``.
+
+    Fields:
+        project_id: The project this constraint applies to.
+        exclusive: If True, only one agent may work on the project at a
+            time (overrides ``max_concurrent_agents`` to 1).
+        max_agents_by_type: Per-agent-type concurrency limits, e.g.
+            ``{"claude": 2, "codex": 1}``. When set, the scheduler checks
+            how many agents of each type are active and enforces the cap.
+        pause_scheduling: If True, the scheduler skips this project
+            entirely — no new tasks are assigned until released.
+        created_by: Identifier of who/what set the constraint (e.g.
+            workflow ID, admin username). Informational only.
+        created_at: Unix timestamp when the constraint was created.
+    """
+
+    project_id: str
+    exclusive: bool = False
+    max_agents_by_type: dict[str, int] = field(default_factory=dict)
+    pause_scheduling: bool = False
+    created_by: str | None = None
+    created_at: float = 0.0
+
+
+@dataclass
 class Task:
     """The fundamental unit of work in the system.
 
@@ -256,6 +310,13 @@ class Task:
         default_factory=list
     )  # absolute paths to attached files (images, etc.)
     auto_approve_plan: bool = False  # if True, auto-approve any plan this task generates
+    skip_verification: bool = False  # if True, skip git verification on completion
+    workflow_id: str | None = None  # FK to workflows table (coordination playbooks)
+    agent_type: str | None = None  # required agent type (e.g. "coding", "code-review", "qa")
+    affinity_agent_id: str | None = None  # preferred agent ID for context continuity
+    affinity_reason: str | None = None  # why: "context", "workspace", "type"
+    workspace_mode: WorkspaceMode | None = None  # lock mode for workspace access
+    created_at: float = 0.0  # unix timestamp when the task was created
 
 
 @dataclass
@@ -313,6 +374,7 @@ class Workspace:
     locked_by_agent_id: str | None = None
     locked_by_task_id: str | None = None
     locked_at: float | None = None
+    lock_mode: WorkspaceMode | None = None  # lock mode used for current lock (None = unlocked)
 
 
 @dataclass
@@ -352,6 +414,10 @@ class TaskContext:
 
     description: str
     task_id: str = ""
+    l0_role: str = ""  # L0 Identity tier (~50 tokens, always present at task start)
+    l1_facts: str = ""  # L1 Critical Facts tier (~200 tokens, always present at task start)
+    l1_guidance: str = ""  # L1 Guidance tier (~300 tokens, deterministic behavioral rules)
+    l2_context: str = ""  # L2 Topic Context tier (~500 tokens, semantic search results)
     acceptance_criteria: list[str] = field(default_factory=list)
     test_commands: list[str] = field(default_factory=list)
     checkout_path: str = ""
@@ -380,8 +446,89 @@ class AgentOutput:
     files_changed: list[str] = field(default_factory=list)
     tokens_used: int = 0
     error_message: str | None = None
+    exit_code: int | None = None
     question: str | None = None
     session_id: str | None = None
+
+
+@dataclass
+class ProjectFactsheet:
+    """Typed access to a project's factsheet YAML frontmatter.
+
+    The factsheet is a structured YAML-frontmatter + markdown file at
+    ``memory/{project_id}/factsheet.md`` that serves as the quick-reference
+    card for a project.  This dataclass provides typed access to the YAML
+    frontmatter fields for programmatic use.
+
+    Fields correspond to the YAML structure defined in
+    ``FACTSHEET_SEED_TEMPLATE`` (see ``src/prompts/memory_consolidation.py``).
+    """
+
+    raw_yaml: dict[str, Any] = field(default_factory=dict)
+    body_markdown: str = ""
+
+    # Convenience accessors for common fields
+    @property
+    def project_name(self) -> str:
+        return self.raw_yaml.get("project", {}).get("name", "")
+
+    @property
+    def project_id(self) -> str:
+        return self.raw_yaml.get("project", {}).get("id", "")
+
+    @property
+    def urls(self) -> dict[str, str | None]:
+        return self.raw_yaml.get("urls", {})
+
+    @property
+    def tech_stack(self) -> dict[str, Any]:
+        return self.raw_yaml.get("tech_stack", {})
+
+    @property
+    def contacts(self) -> dict[str, str | None]:
+        return self.raw_yaml.get("contacts", {})
+
+    @property
+    def key_paths(self) -> dict[str, str | None]:
+        return self.raw_yaml.get("key_paths", {})
+
+    @property
+    def environments(self) -> list[dict[str, Any]]:
+        return self.raw_yaml.get("environments", [])
+
+    @property
+    def last_updated(self) -> str:
+        return self.raw_yaml.get("last_updated", "")
+
+    def get_field(self, dotted_key: str, default: Any = None) -> Any:
+        """Retrieve a nested YAML value using dot notation.
+
+        Example: ``get_field("urls.github")`` returns the GitHub URL.
+        """
+        keys = dotted_key.split(".")
+        current: Any = self.raw_yaml
+        for key in keys:
+            if isinstance(current, dict):
+                current = current.get(key)
+            else:
+                return default
+            if current is None:
+                return default
+        return current
+
+    def set_field(self, dotted_key: str, value: Any) -> None:
+        """Set a nested YAML value using dot notation.
+
+        Creates intermediate dicts as needed.
+        Example: ``set_field("urls.github", "https://github.com/user/repo")``
+        """
+        keys = dotted_key.split(".")
+        current = self.raw_yaml
+        for key in keys[:-1]:
+            if key not in current or not isinstance(current.get(key), dict):
+                current[key] = {}
+            current = current[key]
+        current[keys[-1]] = value
 
 
 @dataclass
@@ -390,24 +537,47 @@ class MemoryContext:
 
     Each field contains pre-formatted markdown text ready for injection into
     the agent's context. The orchestrator assembles these tiers in priority
-    order (profile first, then notes, recent tasks, and semantic search)
-    and trims to fit the configured token budget.
+    order (factsheet first, then profile, topic context, notes, recent tasks,
+    and semantic search) and trims to fit the configured token budget.
     """
 
-    profile: str = ""  # Project profile (highest priority, always included)
+    factsheet: str = ""  # Project factsheet (Tier 0, highest priority — always included)
+    profile: str = ""  # Project profile (Tier 1, always included)
     project_docs: str = ""  # Project documentation (CLAUDE.md etc., Tier 1.5)
+    topic_context: str = ""  # L2 topic-filtered knowledge (Tier 2, on-demand by topic)
+    topic_memories: str = ""  # L2 memories filtered by topic frontmatter (spec §2)
+    detected_topics: list[str] = field(default_factory=list)  # Topics detected from task context
     notes: str = ""  # Relevant notes matched by semantic search
     recent_tasks: str = ""  # Recent task summaries for continuity
     search_results: str = ""  # Semantic search results (current behavior)
     memory_folder: str = ""  # Path to project memory folder for agent reference
+    tasks_folder: str = ""  # Path to task records folder (outside memory tree)
 
     def to_context_block(self) -> str:
         """Assemble all tiers into a single markdown context block."""
         sections = []
+        if self.factsheet:
+            sections.append(f"## Project Factsheet\n{self.factsheet}")
         if self.profile:
             sections.append(f"## Project Profile\n{self.profile}")
         if self.project_docs:
             sections.append(f"## Project Documentation\n{self.project_docs}")
+        if self.topic_context or self.topic_memories:
+            topic_label = ", ".join(self.detected_topics) if self.detected_topics else "detected"
+            l2_parts: list[str] = []
+            l2_parts.append(
+                f"## Topic Context ({topic_label})\n"
+                "The following knowledge was pre-loaded based on topics detected "
+                "in your task description."
+            )
+            if self.topic_context:
+                l2_parts.append(self.topic_context)
+            if self.topic_memories:
+                l2_parts.append(
+                    "### Related Memories\n"
+                    "These past insights matched the detected topics:\n\n" + self.topic_memories
+                )
+            sections.append("\n\n".join(l2_parts))
         if self.notes:
             sections.append(f"## Relevant Notes\n{self.notes}")
         if self.recent_tasks:
@@ -415,6 +585,7 @@ class MemoryContext:
         if self.search_results:
             sections.append(f"## Relevant Context from Project Memory\n{self.search_results}")
         if self.memory_folder:
+            tasks_ref = f"- **Task memories:** `{self.tasks_folder}`\n" if self.tasks_folder else ""
             sections.append(
                 "## Project Memory Reference\n"
                 "This project has a memory system with historical context, past decisions, "
@@ -422,8 +593,11 @@ class MemoryContext:
                 "automatically retrieved based on relevance to your task.\n\n"
                 "If you need additional historical context, you can browse markdown files "
                 "in the memory folder using the Read tool:\n"
-                f"- **Task memories:** `{self.memory_folder}tasks/`\n"
-                f"- **Project profile:** `{self.memory_folder}profile.md`"
+                f"{tasks_ref}"
+                f"- **Project profile:** `{self.memory_folder}profile.md`\n"
+                f"- **Factsheet:** `{self.memory_folder}factsheet.md`\n"
+                f"- **Knowledge base:** `{self.memory_folder}knowledge/` "
+                "(topic files: architecture, conventions, decisions, etc.)"
             )
         return "\n\n".join(sections)
 
@@ -431,8 +605,11 @@ class MemoryContext:
     def is_empty(self) -> bool:
         return not any(
             [
+                self.factsheet,
                 self.profile,
                 self.project_docs,
+                self.topic_context,
+                self.topic_memories,
                 self.notes,
                 self.recent_tasks,
                 self.search_results,
@@ -441,56 +618,114 @@ class MemoryContext:
         )
 
 
-@dataclass
-class Hook:
-    """Definition of an automated hook that runs in response to events or on a schedule.
+# Hook and HookRun dataclasses removed (playbooks spec §13 Phase 3).
+# All automation is now managed through playbooks.
 
-    Hooks allow project-level automation without manual intervention: they can
-    be triggered periodically, by cron, or by task lifecycle events (via the
-    EventBus). Each hook defines context-gathering steps, an LLM prompt
-    template, and cooldown/budget limits to prevent runaway costs.
-    See specs/hooks.md.
+
+class PlaybookRunStatus(Enum):
+    """Valid statuses for a playbook execution run.
+
+    These map directly to the state machine defined in VALID_PLAYBOOK_RUN_TRANSITIONS
+    (see src/playbooks/state_machine.py).  The PlaybookRunner drives runs through
+    these states based on events like terminal node reached, node failure, token
+    budget exhaustion, and human-in-the-loop pause/resume.
+
+    See docs/specs/design/playbooks.md §6 (Run Persistence).
     """
 
-    id: str
-    project_id: str
-    name: str
-    enabled: bool = True
-    trigger: str = "{}"  # JSON: {"type": "periodic", "interval_seconds": 7200}
-    context_steps: str = "[]"  # JSON array of step configs
-    prompt_template: str = ""  # Template with {{step_0}}, {{event}} placeholders
-    llm_config: str | None = None  # JSON: {"provider": "anthropic", "model": "..."}
-    cooldown_seconds: int = 3600
-    max_tokens_per_run: int | None = None
-    last_triggered_at: float | None = None  # epoch seconds; persisted across restarts
-    source_hash: str | None = None  # content hash of source rule for idempotent reconciliation
-    created_at: float = 0.0
-    updated_at: float = 0.0
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+
+
+class PlaybookRunEvent(Enum):
+    """Events that trigger transitions between PlaybookRunStatus states.
+
+    Each (PlaybookRunStatus, PlaybookRunEvent) pair maps to exactly one target
+    PlaybookRunStatus in the transitions table.  See src/playbooks/state_machine.py.
+
+    Event groups:
+
+    - **Completion:** TERMINAL_REACHED — graph walk reached a terminal node.
+    - **Failure:** NODE_FAILED (node execution error), TRANSITION_FAILED
+      (transition evaluation error), GRAPH_ERROR (missing entry/node).
+    - **Budget:** BUDGET_EXCEEDED — token budget exhausted mid-run.
+    - **Human-in-the-loop:** HUMAN_WAIT (node has ``wait_for_human``),
+      HUMAN_RESUMED (human provided input to resume),
+      PAUSE_TIMEOUT (pause timeout expired without human input).
+    """
+
+    TERMINAL_REACHED = "TERMINAL_REACHED"
+    NODE_FAILED = "NODE_FAILED"
+    TRANSITION_FAILED = "TRANSITION_FAILED"
+    GRAPH_ERROR = "GRAPH_ERROR"
+    BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
+    HUMAN_WAIT = "HUMAN_WAIT"
+    HUMAN_RESUMED = "HUMAN_RESUMED"
+    EVENT_WAIT = "EVENT_WAIT"
+    EVENT_RESUMED = "EVENT_RESUMED"
+    PAUSE_TIMEOUT = "PAUSE_TIMEOUT"
 
 
 @dataclass
-class HookRun:
-    """A single execution record of a Hook.
+class PlaybookRun:
+    """A single execution record of a playbook graph.
 
-    Captures the full lifecycle of one hook invocation: why it fired
-    (trigger_reason), what context was gathered, what prompt was sent to the
-    LLM, and what actions resulted. Used for auditing and debugging hook
-    behavior.
+    Tracks the full lifecycle of one playbook invocation: which playbook
+    was executed, the trigger event, accumulated conversation history,
+    the path taken through the graph (node trace), and token usage.
+
+    For paused runs (human-in-the-loop), the conversation history is
+    serialised so the run can resume exactly where it left off, even
+    across process restarts.
+
+    See docs/specs/design/playbooks.md §6 (Run Persistence).
     """
 
-    id: str
-    hook_id: str
-    project_id: str
-    trigger_reason: str  # "periodic", "cron", "event:task_completed", "manual"
-    status: str = "running"  # running, completed, failed, skipped
-    event_data: str | None = None
-    context_results: str | None = None
-    prompt_sent: str | None = None
-    llm_response: str | None = None
-    actions_taken: str | None = None
-    skipped_reason: str | None = None
+    run_id: str
+    playbook_id: str
+    playbook_version: int
+    trigger_event: str = "{}"  # JSON-serialised event dict
+    status: str = "running"
+    current_node: str | None = None
+    conversation_history: str = "[]"  # JSON-serialised message list
+    node_trace: str = "[]"  # JSON list of {node_id, started_at, completed_at, status}
     tokens_used: int = 0
     started_at: float = 0.0
+    completed_at: float | None = None
+    error: str | None = None
+    pinned_graph: str | None = None  # JSON-serialised compiled graph for version pinning
+    paused_at: float | None = None  # Unix timestamp when the run was paused
+    waiting_for_event: str | None = (
+        None  # Event type the run is waiting for (event-triggered pause)
+    )
+
+
+@dataclass
+class Workflow:
+    """A coordination workflow spawned by a playbook run.
+
+    Workflows track the lifecycle of a coordination playbook execution:
+    which stages have run, which tasks were created, and agent affinity
+    preferences for context continuity.  The workflow is created in the
+    first node of a coordination playbook and updated as the playbook
+    progresses through its graph.
+
+    See docs/specs/design/agent-coordination.md §6 (Workflow Runtime).
+    """
+
+    workflow_id: str
+    playbook_id: str
+    playbook_run_id: str
+    project_id: str
+    status: str = "running"  # running, paused, completed, failed
+    current_stage: str | None = None
+    task_ids: list[str] = field(default_factory=list)
+    agent_affinity: dict[str, str] = field(default_factory=dict)
+    stages: list[dict] = field(default_factory=list)  # stage history for pipeline view
+    created_at: float = 0.0
     completed_at: float | None = None
 
 

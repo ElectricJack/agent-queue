@@ -248,13 +248,14 @@ class TestCommandHandlerIntegration:
 
     async def test_create_agent_returns_deprecation_error(self, tmp_path):
         """create_agent should return a deprecation error."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
         from src.config import AppConfig
         from src.orchestrator import Orchestrator
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orchestrator = Orchestrator(config)
         await orchestrator.db.initialize()
@@ -271,13 +272,14 @@ class TestCommandHandlerIntegration:
 
     async def test_delete_agent_returns_deprecation_error(self, tmp_path):
         """delete_agent should return a deprecation error."""
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
         from src.config import AppConfig
         from src.orchestrator import Orchestrator
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orchestrator = Orchestrator(config)
         await orchestrator.db.initialize()

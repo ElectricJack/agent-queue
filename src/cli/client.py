@@ -313,11 +313,6 @@ class PluginClient:
     async def delete_plugin_data_all(self, plugin_id: str) -> None:
         await self.db.delete_plugin_data_all(plugin_id)
 
-    async def list_hooks(self, **kwargs):
-        return await self.db.list_hooks(**kwargs)
-
-    async def list_hook_runs(self, hook_id: str, limit: int = 20):
-        return await self.db.list_hook_runs(hook_id, limit=limit)
 
 
 def _resolve_db_config() -> dict | None:

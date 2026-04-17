@@ -4,7 +4,7 @@
 every ``create_message()`` call — including timing, inputs, outputs, and
 errors — via an ``LLMLogger`` instance.  The caller can set the ``caller``
 attribute to tag log entries with the call site (e.g. "supervisor.chat",
-"hook_engine", "plan_parser").
+"playbook_executor", "plan_parser").
 
 Usage::
 
@@ -24,7 +24,7 @@ import time
 from src.llm_logger import LLMLogger
 
 from .base import ChatProvider
-from .types import ChatResponse
+from .types import ChatResponse, serialize_canonical
 
 
 class LoggedChatProvider(ChatProvider):
@@ -78,7 +78,7 @@ class LoggedChatProvider(ChatProvider):
                 caller=self._caller,
                 model=self._inner.model_name,
                 provider=provider_name,
-                messages=messages,
+                messages=serialize_canonical(messages),
                 system=system,
                 tools=tools,
                 max_tokens=max_tokens,

@@ -14,7 +14,24 @@ class ProjectSummary(BaseModel):
     credit_weight: float = 1.0
     max_concurrent_agents: int = 1
     workspace: str | None = None
+    repo_url: str | None = None
     discord_channel_id: str | None = None
+
+
+class GetProjectResponse(BaseModel):
+    id: str
+    name: str
+    status: str = ""
+    repo_url: str = ""
+    repo_default_branch: str = "main"
+    workspace: str | None = None
+    credit_weight: float = 1.0
+    max_concurrent_agents: int = 1
+    total_tokens_used: int = 0
+    tokens_used_recent: int = 0
+    budget_limit: int | None = None
+    discord_channel_id: str | None = None
+    default_profile_id: str | None = None
 
 
 class WorkspaceSummary(BaseModel):
@@ -125,6 +142,20 @@ class QueueSyncWorkspacesResponse(BaseModel):
     message: str = ""
 
 
+class SetProjectConstraintResponse(BaseModel):
+    project_id: str
+    constraint_set: bool = False
+    active_fields: list[str] = []
+
+
+class ReleaseProjectConstraintResponse(BaseModel):
+    project_id: str
+    constraint_released: bool = False
+    fields: str | None = None
+    fields_released: list[str] = []
+    remaining_fields: list[str] = []
+
+
 class SetActiveProjectResponse(BaseModel):
     active_project: str | None = None
     name: str | None = None
@@ -141,6 +172,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "set_project_channel": SetProjectChannelResponse,
     "set_control_interface": SetProjectChannelResponse,
     "set_default_branch": SetDefaultBranchResponse,
+    "get_project": GetProjectResponse,
     "get_project_channels": GetProjectChannelsResponse,
     "get_project_for_channel": GetProjectForChannelResponse,
     "add_workspace": AddWorkspaceResponse,
@@ -149,5 +181,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "release_workspace": ReleaseWorkspaceResponse,
     "find_merge_conflict_workspaces": FindMergeConflictWorkspacesResponse,
     "queue_sync_workspaces": QueueSyncWorkspacesResponse,
+    "set_project_constraint": SetProjectConstraintResponse,
+    "release_project_constraint": ReleaseProjectConstraintResponse,
     "set_active_project": SetActiveProjectResponse,
 }

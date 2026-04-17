@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import click
 
@@ -85,6 +86,159 @@ def is_daemon_running() -> bool:
     return _find_daemon_pid() is not None
 
 
+def _is_docker_running() -> bool:
+    """Check whether the Docker daemon is reachable."""
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _is_container_running(name: str) -> bool:
+    """Check if a Docker container is running by name."""
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", name],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "true"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _find_compose_file() -> str | None:
+    """Find docker-compose.yml relative to the project root."""
+    project_root = Path(__file__).resolve().parent.parent.parent
+    compose_file = project_root / "docker-compose.yml"
+    if compose_file.exists():
+        return str(compose_file)
+    return None
+
+
+def _start_docker_desktop() -> bool:
+    """Attempt to start Docker Desktop (WSL2 / Linux)."""
+    # On WSL2, Docker Desktop is a Windows app
+    wsl_docker = "/mnt/c/Program Files/Docker/Docker/Docker Desktop.exe"
+    if os.path.exists(wsl_docker):
+        console.print("[dim]Starting Docker Desktop...[/]")
+        try:
+            subprocess.Popen(
+                [wsl_docker],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            pass
+    else:
+        # Native Linux — try systemctl
+        console.print("[dim]Starting Docker via systemctl...[/]")
+        try:
+            subprocess.run(
+                ["sudo", "systemctl", "start", "docker"],
+                capture_output=True,
+                timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    # Wait for Docker daemon to become reachable
+    for i in range(60):
+        if _is_docker_running():
+            return True
+        if i % 10 == 0 and i > 0:
+            console.print(f"[dim]  Waiting for Docker daemon... ({i}s)[/]")
+        time.sleep(1)
+    return False
+
+
+def _ensure_docker_postgres() -> bool:
+    """Ensure Docker and the aq-postgres container are running.
+
+    Returns True if Postgres is ready, False if it could not be started.
+    """
+    compose_file = _find_compose_file()
+    if not compose_file:
+        console.print(
+            "[bold red]Error:[/] docker-compose.yml not found. "
+            "Cannot auto-start PostgreSQL."
+        )
+        return False
+
+    # Step 1: Make sure Docker itself is running
+    if not _is_docker_running():
+        console.print("[yellow]Docker is not running.[/]")
+        if not _start_docker_desktop():
+            console.print(
+                "[bold red]Error:[/] Could not start Docker. "
+                "Please start Docker Desktop manually and retry."
+            )
+            return False
+        console.print("[green]Docker is running.[/]")
+
+    # Step 2: Start the Postgres container if not already running
+    if not _is_container_running("aq-postgres"):
+        console.print("[dim]Starting PostgreSQL container...[/]")
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "-f", compose_file, "up", "-d", "postgres"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                console.print("[bold red]Error:[/] Failed to start PostgreSQL container")
+                if result.stderr:
+                    console.print(f"[dim]{result.stderr.strip()}[/]")
+                return False
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            console.print(f"[bold red]Error:[/] {e}")
+            return False
+
+    # Step 3: Wait for Postgres to accept connections
+    console.print("[dim]Waiting for PostgreSQL to be ready...[/]")
+    for i in range(30):
+        try:
+            result = subprocess.run(
+                [
+                    "docker", "compose", "-f", compose_file,
+                    "exec", "-T", "postgres",
+                    "pg_isready", "-U", "agent_queue",
+                ],
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                console.print("[green]PostgreSQL is ready.[/]")
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        time.sleep(1)
+
+    console.print("[bold red]Error:[/] PostgreSQL did not become ready in 30s.")
+    return False
+
+
+def _config_uses_postgres() -> bool:
+    """Quick check whether the config file references PostgreSQL."""
+    try:
+        with open(CONFIG_PATH) as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("url:") and "postgresql" in stripped:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 def start_daemon() -> bool:
     """Start the daemon. Returns True on success."""
     if not os.path.exists(CONFIG_PATH):
@@ -96,6 +250,11 @@ def start_daemon() -> bool:
     if existing:
         console.print(f"[yellow]Daemon is already running[/] (PID {existing})")
         return True
+
+    # If PostgreSQL is configured, ensure Docker + container are running
+    if _config_uses_postgres():
+        if not _ensure_docker_postgres():
+            return False
 
     # Acquire lock
     try:
@@ -133,21 +292,24 @@ def start_daemon() -> bool:
         with open(PID_FILE, "w") as f:
             f.write(str(proc.pid))
 
-        # Wait and verify
-        time.sleep(2)
-        try:
-            os.kill(proc.pid, 0)
-            console.print(f"[bold green]Daemon started[/] (PID {proc.pid})")
-            console.print(f"[dim]Logs: tail -f {LOG_PATH}[/]")
-            return True
-        except OSError:
-            console.print("[bold red]Error:[/] Daemon exited immediately. Check logs:")
-            _tail_log(20)
+        # Wait and verify — check multiple times to catch crashes
+        # during initialization (e.g. database connection failures).
+        for tick in range(5):
+            time.sleep(1)
             try:
-                os.remove(PID_FILE)
+                os.kill(proc.pid, 0)
             except OSError:
-                pass
-            return False
+                console.print("[bold red]Error:[/] Daemon exited during startup:")
+                _tail_log(30)
+                try:
+                    os.remove(PID_FILE)
+                except OSError:
+                    pass
+                return False
+
+        console.print(f"[bold green]Daemon started[/] (PID {proc.pid})")
+        console.print(f"[dim]Logs: tail -f {LOG_PATH}[/]")
+        return True
     finally:
         try:
             os.rmdir(LOCK_DIR)

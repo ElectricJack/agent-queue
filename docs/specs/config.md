@@ -1,3 +1,7 @@
+---
+tags: [spec, config]
+---
+
 # Config Module Specification
 
 ## 1. Overview
@@ -66,8 +70,33 @@ These fields appear at the root of the YAML document and map directly to scalar 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `workspace_dir` | `str` | `~/agent-queue-workspaces` (home-expanded at class instantiation time) | Filesystem path to the directory where agent workspaces are stored. |
-| `database_path` | `str` | `~/.agent-queue/agent-queue.db` (home-expanded at class instantiation time) | Filesystem path to the SQLite database file. |
+| `database_path` | `str` | `~/.agent-queue/agent-queue.db` (home-expanded at class instantiation time) | Filesystem path to the SQLite database file. Legacy field — prefer using the `database` section for new setups. |
 | `global_token_budget_daily` | `int` or `None` | `None` | Daily token budget across all agents. `None` means no global cap is enforced. |
+
+### 4.1.1 `database` Section
+
+Maps to `DatabaseConfig`. The YAML key is `database`. This section configures the database backend. The backend (SQLite or PostgreSQL) is inferred automatically from the URL scheme.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `url` | `str` | `""` | Database connection URL. A `postgresql://` or `postgres://` prefix selects PostgreSQL (asyncpg). Anything else is treated as a SQLite file path. |
+| `pool_min_size` | `int` | `2` | Minimum connection pool size (PostgreSQL only). |
+| `pool_max_size` | `int` | `10` | Maximum connection pool size (PostgreSQL only). |
+
+**Backward compatibility:** If no `database` section is present, the top-level `database_path` field is used as the `url` value (SQLite). New installations using the setup wizard will write the appropriate section automatically.
+
+**Examples:**
+
+```yaml
+# SQLite (default):
+database_path: ~/.agent-queue/agent-queue.db
+
+# PostgreSQL:
+database:
+  url: postgresql://agent_queue:mypassword@localhost:5432/agent_queue
+  pool_min_size: 2
+  pool_max_size: 10
+```
 
 ### 4.2 `discord` Section
 
@@ -142,9 +171,14 @@ Maps to `ChatProviderConfig`. The YAML key is `chat_provider`.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `provider` | `str` | `"anthropic"` | LLM provider to use for the chat agent. Valid values are `"anthropic"` and `"ollama"`. |
+| `provider` | `str` | `"anthropic"` | LLM provider to use for the chat agent. Valid values are `"anthropic"`, `"ollama"`, and `"gemini"`. |
 | `model` | `str` | `""` | Model name to use. An empty string means the provider's own default model is used. |
 | `base_url` | `str` | `""` | Base URL for the provider's API endpoint. Primarily used for Ollama installations. Empty string means the provider SDK's default URL is used. |
+| `api_key` | `str` | `""` | API key for the provider. Currently used by Gemini (falls back to `GEMINI_API_KEY` or `GOOGLE_API_KEY` env vars). |
+| `keep_alive` | `str` | `"1h"` | Ollama only: how long to keep the model loaded in memory after the last request. Accepts Go-style durations (`"1h"`, `"30m"`, `"-1"` for infinite, `"0"` for immediate unload). |
+| `num_ctx` | `int` | `0` | Ollama only: context window size override. `0` means use the model's default. |
+
+**Note:** The `__post_init__` method coerces `model` to a string, since YAML may parse numeric model names (e.g., `model: 4`) as integers.
 
 ### 4.7 `hook_engine` Section
 
@@ -204,8 +238,40 @@ The subsystem is **disabled by default** — set `enabled: true` to activate it.
 | `recall_top_k` | `int` | `5` | Number of memory chunks to inject during automatic recall. |
 | `compact_enabled` | `bool` | `False` | Whether periodic LLM-based memory compaction is active. |
 | `compact_interval_hours` | `int` | `24` | Hours between compaction runs when `compact_enabled` is `true`. |
+| `compact_llm_provider` | `str` | `""` | LLM provider for compaction (defaults to `revision_provider` or `chat_provider`). |
+| `compact_llm_model` | `str` | `""` | Model override for compaction. |
+| `compact_recent_days` | `int` | `7` | Task memories younger than this many days are kept as-is during compaction. |
+| `compact_archive_days` | `int` | `30` | Task memories older than this many days are deleted after digesting during compaction. |
 | `index_notes` | `bool` | `True` | When `true`, markdown files in the project's `notes/` directory are included in the memory index. |
+| `index_specs` | `bool` | `True` | When `true`, the workspace `specs/` directory is included in the memory index. |
+| `index_docs` | `bool` | `True` | When `true`, the workspace `docs/` directory (published documentation) is included in the memory index. |
+| `index_project_docs` | `bool` | `True` | When `true`, individual project doc files are indexed separately for targeted retrieval. |
+| `project_docs_files` | `tuple[str, ...]` | `("CLAUDE.md", "README.md")` | Files to index individually when `index_project_docs` is enabled. |
 | `index_sessions` | `bool` | `False` | When `true`, session transcripts are included in the memory index. |
+| `profile_enabled` | `bool` | `True` | Toggle project profiles — auto-generated summaries of each project. |
+| `profile_max_size` | `int` | `5000` | Maximum characters for project profile content. |
+| `revision_enabled` | `bool` | `True` | Toggle post-task profile revision — updates the project profile after each task completes. |
+| `revision_provider` | `str` | `""` | LLM provider for profile revision (defaults to `chat_provider`). |
+| `revision_model` | `str` | `""` | Model override for profile revision. |
+| `auto_generate_notes` | `bool` | `False` | Auto-note generation after tasks. Off by default as it can be noisy. |
+| `notes_inform_profile` | `bool` | `True` | Include notes in profile revision context for richer profiles. |
+| `fact_extraction_enabled` | `bool` | `True` | Extract structured facts after task completion into staging files for consolidation. |
+| `index_knowledge` | `bool` | `True` | When `true`, the `knowledge/` directory is included in the vector index. |
+| `knowledge_topics` | `tuple[str, ...]` | `("architecture", "api-and-endpoints", "deployment", "dependencies", "gotchas", "conventions", "decisions")` | Default topic files in the knowledge base. |
+| `consolidation_enabled` | `bool` | `False` | Master switch for knowledge consolidation (daily + weekly). |
+| `consolidation_schedule` | `str` | `"0 3 * * *"` | Cron expression for daily consolidation runs. |
+| `deep_consolidation_schedule` | `str` | `"0 4 * * 0"` | Cron expression for weekly deep consolidation. |
+| `consolidation_provider` | `str` | `""` | LLM provider for consolidation (defaults to `revision_provider`). |
+| `consolidation_model` | `str` | `""` | Model override for consolidation LLM calls. |
+| `factsheet_in_context` | `bool` | `True` | Include the project factsheet in agent context as Tier 0 (always included). |
+| `context_max_tokens` | `int` | `4000` | Soft budget for total memory context injected into agent prompts. |
+| `context_include_recent` | `int` | `3` | Number of recent same-project task results to include in context. |
+| `consolidation_auto_trigger` | `bool` | `True` | Auto-run consolidation when growth thresholds are met (independent of cron schedule). |
+| `consolidation_growth_threshold` | `int` | `10` | Number of staging files that triggers auto-consolidation. |
+| `consolidation_min_age_hours` | `float` | `1.0` | Minimum age (hours) of staging facts before they are eligible for consolidation. |
+| `consolidation_max_batch_size` | `int` | `50` | Maximum staging files processed per consolidation run. |
+| `consolidation_similarity_threshold` | `float` | `0.7` | Similarity threshold for clustering related facts during consolidation. |
+| `consolidation_cooldown_minutes` | `int` | `30` | Minimum minutes between auto-triggered consolidation runs. |
 
 #### Storage Layout
 
@@ -291,3 +357,130 @@ Environment variables set in the process environment before `load_config` is cal
 1. Process environment (set externally before launch, or by the OS)
 2. `.env` file in the same directory as the config file
 3. Hardcoded defaults in the dataclasses
+
+---
+
+## 6. Logging Configuration
+
+### LoggingConfig
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `level` | str | `"INFO"` | Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL |
+| `format` | str | `"dev"` | Output mode: `"dev"` (colored), `"json"` (JSONL), `"plain"` (no ANSI). `"text"` is accepted as an alias for `"dev"`. |
+| `include_source` | bool | `false` | Include filename and line number in log output |
+| `log_file` | str | `""` | Path for JSONL log file. Empty = auto (`~/.agent-queue/logs/agent-queue.log`) |
+| `log_file_max_bytes` | int | `50000000` | Max bytes per log file before rotation (50 MB) |
+| `log_file_backup_count` | int | `5` | Number of rotated log files to keep |
+| `console_format` | str | `""` | Custom format template (see below). Empty = default structlog layout. |
+
+### Environment Variables
+
+| Variable | Effect |
+|---|---|
+| `AGENT_QUEUE_LOG_LEVEL` | Override `logging.level` (used before config loads) |
+| `AGENT_QUEUE_LOG_FORMAT` | Override `logging.format` (`dev`, `json`, `plain`) |
+
+### Output Modes
+
+**dev** (default) — Rich-colored console output with aligned columns. Best for local terminal use. Timestamps are shortened to `HH:MM:SS`, logger names strip the `src.` prefix.
+
+**json** — Single-line JSON objects (JSONL). Every log line is a valid JSON object with `timestamp`, `level`, `logger`, `event`, and any bound context fields. Ideal for piping to `jq`, or shipping to log aggregation systems.
+
+**plain** — Same layout as `dev` but without ANSI escape codes. Use when piping to a file or a tool that doesn't support colors.
+
+### Custom Format Templates (`console_format`)
+
+When set, replaces the default structlog ConsoleRenderer with a user-defined template. Uses `{field}` placeholders that expand to values from the log event.
+
+**Available fields:**
+- `{timestamp}` — Time (HH:MM:SS in dev/plain, full ISO in json)
+- `{level}` — Log level (info, warning, error, ...)
+- `{logger}` — Logger name (with `src.` prefix stripped)
+- `{event}` or `{message}` — The log message
+- `{lineno}` — Source line number (requires `include_source: true`)
+- `{filename}` — Source filename (requires `include_source: true`)
+- Any context field: `{task_id}`, `{project_id}`, `{component}`, `{command}`, `{plugin}`, `{platform}`, `{hook_id}`, `{agent_id}`, `{route}`, `{request_id}`, `{cycle_id}`, etc.
+- `{*}` — All remaining context fields as colored `key=value` pairs
+
+**Bracket group collapsing:** Groups like `[{component}:{project_id}]` are removed entirely when all fields inside are empty, so output stays clean.
+
+**Coloring** is automatic in `dev` mode:
+- Level → green (info), yellow (warning), red (error)
+- Timestamp, logger, lineno → dim
+- Error/critical messages → bold
+- `{*}` key=value → cyan keys, magenta values
+- Colors disabled automatically in `plain` mode
+
+**Examples:**
+
+```yaml
+# Compact with source location
+logging:
+  console_format: "{timestamp} [{level}] {event} [{logger}:{lineno}] [{component}:{project_id}]"
+
+# Minimal with catch-all
+logging:
+  console_format: "[{level}] {event} [{component}] {*}"
+
+# Task-focused
+logging:
+  console_format: "{timestamp} {level} {event} [{task_id}] [{plugin}] {*}"
+```
+
+### Log File
+
+The daemon always writes a JSONL log file alongside console output. The file uses JSON format regardless of the console `format` setting, so `jq` and `aq logs` always work.
+
+Default path: `~/.agent-queue/logs/agent-queue.log`
+
+Rotation: `RotatingFileHandler` with configurable size and backup count. Default keeps up to ~300 MB total (50 MB × 6 files).
+
+### CLI: `aq logs`
+
+Reads the JSONL log file directly (no running daemon required).
+
+```
+aq logs                          # tail + follow with colors
+aq logs -F -n 100                # last 100 lines, no follow
+aq logs --level ERROR            # filter by minimum level
+aq logs --task-id swift-dawn     # filter by task_id
+aq logs --project-id acme        # filter by project_id
+aq logs --component hooks        # filter by component
+aq logs --plugin github-issues   # filter by plugin name
+aq logs --command create_task    # filter by command
+aq logs --since 5m               # last 5 minutes
+aq logs --json                   # raw JSONL (pipe to jq)
+aq logs --no-color               # disable colors
+```
+
+### Context Propagation
+
+Context fields are bound at system boundaries and automatically appear on all log lines within that scope:
+
+| Boundary | Fields bound |
+|---|---|
+| CommandHandler.execute() | `command`, `component="command_handler"` |
+| API middleware | `request_id`, `route`, `method`, `component="api"` |
+| Orchestrator task execution | `task_id`, `project_id`, `component="orchestrator"` |
+| Plugin command | `plugin` (nested inside command handler context) |
+| Plugin cron | `plugin`, `component="plugin_cron"`, `cron_method` |
+| Discord bot | `platform="discord"`, `discord_user`, `channel_id` |
+| Telegram bot | `platform="telegram"`, `telegram_user`, `chat_id` |
+| Supervisor | `component="supervisor"` |
+| Hook engine | `hook_id`, `project_id`, `component="hooks"` |
+
+Context propagates through async call chains via `contextvars`. A log call deep in `database/queries/tasks.py` automatically includes the `task_id` and `command` from the outer scope.
+
+### YAML Example
+
+```yaml
+logging:
+  level: INFO
+  format: dev
+  include_source: false
+  console_format: "{timestamp} [{level}] {event} [{component}:{task_id}] {*}"
+  log_file: ""  # auto
+  log_file_max_bytes: 50000000
+  log_file_backup_count: 5
+```

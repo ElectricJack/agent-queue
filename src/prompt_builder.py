@@ -1,19 +1,18 @@
 """Unified prompt assembly pipeline.
 
-Assembles system prompts from composable sections for the Supervisor and hook
-LLM calls.  Replaces ``prompt_registry.py`` and scattered string concatenation
-across orchestrator, adapters, supervisor, and hooks.  Each prompt is built by
-stacking named sections (identity, rules, memory context, tool instructions)
-with YAML-driven templates that can be overridden per-project.
+Assembles system prompts from composable sections for the Supervisor and
+playbook LLM calls.  Replaces ``prompt_registry.py`` and scattered string
+concatenation across orchestrator, adapters, and supervisor.  Each prompt
+is built by stacking named sections (identity, memory context, tool
+instructions) with YAML-driven templates that can be overridden per-project.
 
-The pipeline has five layers, assembled in order:
+The pipeline has four layers, assembled in order:
 
 1. **Identity** — who the LLM is (loaded from a Markdown template).
 2. **Project context** — project profile from the memory system.
-3. **Rules** — applicable active/passive rules from the RuleManager.
-4. **Context blocks** — arbitrary named sections (task depth, active
+3. **Context blocks** — arbitrary named sections (task depth, active
    project, dependency results, etc.).
-5. **Tools** — JSON Schema tool definitions for the LLM's tool-use loop.
+4. **Tools** — JSON Schema tool definitions for the LLM's tool-use loop.
 
 Templates live in ``src/prompts/*.md`` as Markdown files with YAML
 frontmatter.  The ``{{variable}}`` placeholders use Mustache-style
@@ -31,8 +30,52 @@ from typing import Any
 
 import yaml
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+# Approximate token budgets for memory tiers (see memory-scoping.md §2).
+# 1 token ≈ 4 chars.  We warn when a tier significantly exceeds its budget.
+_CHARS_PER_TOKEN = 4
+_L0_TOKEN_BUDGET = 50  # ~200 chars
+_L1_TOKEN_BUDGET = 200  # ~800 chars
+_L2_TOKEN_BUDGET = 500  # ~2000 chars
+
+
+def extract_section(content: str, heading: str) -> str | None:
+    """Extract the body text under a specific ``##`` heading from markdown.
+
+    Searches for a line matching ``## {heading}`` (case-insensitive), then
+    returns all text up to the next ``##`` heading or end of file.  The
+    heading line itself is excluded from the result.
+
+    Args:
+        content: Full markdown text to search.
+        heading: The heading text to find (e.g. ``"Role"``).
+
+    Returns:
+        The section body text (stripped), or ``None`` if not found.
+    """
+    pattern = rf"^##\s+{re.escape(heading)}\s*$"
+    lines = content.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if re.match(pattern, line, re.IGNORECASE):
+            start = i + 1
+            break
+    if start is None:
+        return None
+
+    body_lines: list[str] = []
+    for line in lines[start:]:
+        if re.match(r"^##\s+", line):
+            break
+        body_lines.append(line)
+
+    body = "\n".join(body_lines).strip()
+    return body if body else None
 
 
 @dataclass
@@ -52,15 +95,13 @@ class PromptBuilder:
     Layers:
         1. Identity — who is the LLM? (loaded from template)
         2. Project context — what project? (from memory)
-        3. Relevant rules — what rules apply? (Phase 2)
-        4. Specific context — named context blocks
-        5. Tools — JSON Schema tool definitions
+        3. Specific context — named context blocks
+        4. Tools — JSON Schema tool definitions
     """
 
     def __init__(
         self,
         project_id: str | None = None,
-        memory_manager: Any | None = None,
         rule_manager: Any | None = None,
         prompts_dir: Path | str | None = None,
     ):
@@ -68,24 +109,23 @@ class PromptBuilder:
 
         Args:
             project_id: Active project for context loading.  When set,
-                layers 2 (project context) and 3 (rules) can auto-load
-                relevant data.
-            memory_manager: A ``MemoryManager`` instance for loading project
-                profiles (layer 2).  May be ``None`` — layer 2 is skipped.
-            rule_manager: A ``RuleManager`` instance for loading applicable
-                rules (layer 3).  May be ``None`` — layer 3 is skipped.
+                layer 2 (project context) can auto-load relevant data.
+            rule_manager: Deprecated, ignored.  Retained for API
+                compatibility.
             prompts_dir: Override for the template directory.  Defaults to
                 ``src/prompts/``.
         """
         self._project_id = project_id
-        self._memory_manager = memory_manager
-        self._rule_manager = rule_manager
         self._prompts_dir = Path(prompts_dir) if prompts_dir else _DEFAULT_PROMPTS_DIR
 
         # Layer state
+        self._l0_role: str = ""  # L0 Identity tier (~50 tokens, always present)
+        self._override_content: str = ""  # Project-specific override (after L0 role)
+        self._l1_facts: str = ""  # L1 Critical Facts tier (~200 tokens, always at task start)
+        self._l1_guidance: str = ""  # L1 Guidance tier (~300 tokens, deterministic rules)
+        self._l2_context: str = ""  # L2 Topic Context tier (~500 tokens, semantic search results)
         self._identity: str = ""
         self._project_context: str = ""
-        self._rules: str = ""
         self._context_blocks: list[tuple[str, str]] = []
         self._tools: list[dict] = []
 
@@ -204,39 +244,145 @@ class PromptBuilder:
     # Layer setters
     # ------------------------------------------------------------------
 
+    def set_l0_role(self, role_text: str) -> None:
+        """L0 Identity tier: Set the agent's role description (~50 tokens).
+
+        This is the highest-priority content in the prompt, injected before
+        all other layers.  Sourced from the ``## Role`` section of an
+        agent-type profile.md or from ``AgentProfile.system_prompt_suffix``.
+
+        See ``docs/specs/design/memory-scoping.md`` §2 (L0 tier).
+        """
+        text = role_text.strip()
+        if not text:
+            return
+        estimated_tokens = len(text) / _CHARS_PER_TOKEN
+        if estimated_tokens > _L0_TOKEN_BUDGET * 2:
+            logger.warning(
+                "L0 role text is ~%d tokens (budget ~%d); consider trimming",
+                int(estimated_tokens),
+                _L0_TOKEN_BUDGET,
+            )
+        self._l0_role = text
+
+    def set_l0_role_from_markdown(self, profile_md: str) -> bool:
+        """Extract ``## Role`` from a markdown profile and set as L0 role.
+
+        Args:
+            profile_md: Raw markdown content of a profile file.
+
+        Returns:
+            ``True`` if a ``## Role`` section was found and set,
+            ``False`` otherwise.
+        """
+        role = extract_section(profile_md, "Role")
+        if role:
+            self.set_l0_role(role)
+            return True
+        return False
+
+    def set_override_content(self, content: str) -> None:
+        """Set project-specific override content (injected after L0 role).
+
+        Override content supplements or tweaks the agent's base profile for
+        a specific project.  The LLM resolves any tension between the base
+        profile (L0 role) and the override naturally, with the override
+        taking precedence as the more specific guidance.
+
+        YAML frontmatter (``---`` delimited) is automatically stripped.
+
+        See ``docs/specs/design/memory-scoping.md`` §5 (Override Model).
+
+        Args:
+            content: Raw markdown content of the override file.  May
+                include YAML frontmatter which will be stripped.
+        """
+        if not content or not content.strip():
+            return
+        # Strip YAML frontmatter if present
+        _, body = self._split_frontmatter(content)
+        text = body.strip()
+        if text:
+            self._override_content = text
+
+    def set_l1_facts(self, facts_text: str) -> None:
+        """L1 Critical Facts tier: Set project/agent-type KV facts (~200 tokens).
+
+        Eagerly loaded at task start — no search needed.  The text should
+        be a compact rendering of key-value entries from the project and
+        agent-type ``facts.md`` files.
+
+        See ``docs/specs/design/memory-scoping.md`` §2 (L1 tier).
+        """
+        text = facts_text.strip()
+        if not text:
+            return
+        estimated_tokens = len(text) / _CHARS_PER_TOKEN
+        if estimated_tokens > _L1_TOKEN_BUDGET * 2:
+            logger.warning(
+                "L1 facts text is ~%d tokens (budget ~%d); consider trimming",
+                int(estimated_tokens),
+                _L1_TOKEN_BUDGET,
+            )
+        self._l1_facts = text
+
+    def set_l1_guidance(self, guidance_text: str) -> None:
+        """L1 Guidance tier: Set behavioral guidance rules (~300 tokens).
+
+        Deterministically loaded from ``memory/guidance/`` directories
+        under the agent-type and project vault paths.  Guidance contains
+        rules that should always be present in the agent's prompt.
+        """
+        text = guidance_text.strip()
+        if not text:
+            return
+        self._l1_guidance = text
+
+    def set_l2_context(self, context_text: str) -> None:
+        """L2 Topic Context tier: Set semantic search results (~500 tokens).
+
+        Loaded by searching memories against the task description or user
+        message.  Contains relevant insights, knowledge, and guidance from
+        the project and system memory scopes.
+
+        See ``docs/specs/design/memory-scoping.md`` §2 (L2 tier).
+        """
+        text = context_text.strip()
+        if not text:
+            return
+        estimated_tokens = len(text) / _CHARS_PER_TOKEN
+        if estimated_tokens > _L2_TOKEN_BUDGET * 2:
+            logger.warning(
+                "L2 context text is ~%d tokens (budget ~%d); consider trimming",
+                int(estimated_tokens),
+                _L2_TOKEN_BUDGET,
+            )
+        self._l2_context = text
+
     def set_identity(self, name: str, variables: dict[str, str] | None = None) -> None:
         """Layer 1: Set the identity from a prompt template."""
         rendered = self.render_template(name, variables)
         self._identity = rendered or ""
 
     async def load_project_context(self) -> None:
-        """Layer 2: Load project context from memory system."""
-        if not self._memory_manager or not self._project_id:
-            return
-        try:
-            ctx = await self._memory_manager.build_context(
-                self._project_id, task=None, workspace_path=""
-            )
-            if ctx and not ctx.is_empty():
-                self._project_context = ctx.to_context_block()
-        except Exception:
-            pass  # graceful degradation
+        """Layer 2: Load project context from memory system.
+
+        V1 MemoryManager integration removed (roadmap 8.6).
+        Project context is now injected by MemoryV2Plugin via L1 facts.
+        This method is retained as a no-op for API compatibility.
+        """
+        pass
 
     async def load_relevant_rules(self, query: str) -> None:
-        """Layer 3: Load relevant rules from the rule system.
+        """Deprecated no-op — rules have been replaced by playbooks.
 
-        Uses RuleManager to load all applicable rules for the current
-        project (plus globals). Without memsearch, loads ALL rules.
-        Future: semantic search against query for relevance filtering.
+        Previously loaded active rules via RuleManager. The rule manager
+        has been removed (playbooks spec §13 Phase 3). Contextual guidance
+        is now surfaced through vault memory search.
+
+        Retained as a no-op for API compatibility.
         """
-        if not self._rule_manager or not self._project_id:
-            self._rules = ""
-            return
-        try:
-            rules_text = self._rule_manager.get_rules_for_prompt(self._project_id, query)
-            self._rules = rules_text
-        except Exception:
-            self._rules = ""  # graceful degradation
+        pass
 
     def add_context(self, name: str, content: str) -> None:
         """Layer 4: Add a named context block."""
@@ -302,6 +448,10 @@ class PromptBuilder:
     def build(self) -> tuple[str, list[dict]]:
         """Assemble all layers into a system prompt and tool list.
 
+        Layer order:
+            L0 role → Override → L1 facts → L2 context → Identity template
+            → Project context → Context blocks
+
         Returns:
             Tuple of ``(system_prompt, tools)`` where *system_prompt*
             is a single string with layers separated by ``---`` dividers
@@ -309,12 +459,20 @@ class PromptBuilder:
         """
         sections: list[str] = []
 
+        if self._l0_role:
+            sections.append(self._l0_role)
+        if self._override_content:
+            sections.append(self._override_content)
+        if self._l1_facts:
+            sections.append(self._l1_facts)
+        if self._l1_guidance:
+            sections.append(self._l1_guidance)
+        if self._l2_context:
+            sections.append(self._l2_context)
         if self._identity:
             sections.append(self._identity)
         if self._project_context:
             sections.append(self._project_context)
-        if self._rules:
-            sections.append(self._rules)
         for _name, content in self._context_blocks:
             sections.append(content)
 

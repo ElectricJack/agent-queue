@@ -60,6 +60,7 @@ class TestTaskEvent:
             "PLAN_APPROVED",
             "PLAN_REJECTED",
             "PLAN_DELETED",
+            "SUBTASKS_COMPLETED",
             "TIMEOUT",
             "EXECUTION_ERROR",
             "RECOVERY",

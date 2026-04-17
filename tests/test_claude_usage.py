@@ -25,7 +25,7 @@ def mock_db():
 
 @pytest.fixture
 def handler(mock_orchestrator, mock_db):
-    from src.command_handler import CommandHandler
+    from src.commands.handler import CommandHandler
 
     h = CommandHandler(mock_orchestrator, mock_db)
     return h

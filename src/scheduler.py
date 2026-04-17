@@ -64,17 +64,21 @@ Integration with the orchestrator:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from src.models import (
     Agent,
     AgentState,
     Project,
+    ProjectConstraint,
     ProjectStatus,
     Task,
     TaskStatus,
     TaskType,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -135,6 +139,26 @@ class SchedulerState:
     global_budget: int | None = None
     # Total tokens used across all projects in the rolling window.
     global_tokens_used: int = 0
+    # Provider-level cooldowns: maps agent_type (e.g. "claude") to the
+    # Unix timestamp when the cooldown expires.  Agents of a cooled-down
+    # type are excluded from scheduling until the timestamp passes.
+    # This supports per-provider session limits without affecting other
+    # provider types.
+    provider_cooldowns: dict[str, float] = field(default_factory=dict)
+    # Active project constraints, keyed by project_id.  The scheduler
+    # checks these to enforce exclusive access, per-type agent limits,
+    # and scheduling pauses.  Constraints are set via set_project_constraint
+    # and persist until explicitly released via release_project_constraint.
+    project_constraints: dict[str, ProjectConstraint] = field(default_factory=dict)
+    # Current wall-clock time (Unix timestamp).  Used for bounded-wait
+    # affinity: when a task's preferred agent is busy, the scheduler
+    # defers assignment for up to ``affinity_wait_seconds`` before
+    # falling back to any idle agent.  0.0 disables time-based logic.
+    now: float = 0.0
+    # Maximum seconds to wait for a busy affinity agent before falling
+    # back to assigning any idle agent.  Sourced from
+    # ``config.scheduling.affinity_wait_seconds``.
+    affinity_wait_seconds: float = 120.0
 
 
 def _workspace_available(task: Task, locks: dict[str, str | None]) -> bool:
@@ -146,6 +170,83 @@ def _workspace_available(task: Task, locks: dict[str, str | None]) -> bool:
     if not task.preferred_workspace_id or not locks:
         return True
     return locks.get(task.preferred_workspace_id) is None
+
+
+def _task_agent_type_matches(task: Task, agent: Agent) -> bool:
+    """Check if a task's agent_type requirement is satisfied by the agent.
+
+    Agent type matching is a **hard constraint** — tasks with an explicit
+    ``agent_type`` are only assigned to agents whose ``agent_type`` field
+    matches exactly.  Tasks without an ``agent_type`` requirement match
+    any agent regardless of the agent's type.
+
+    Agents may advertise multiple type capabilities via a comma-separated
+    ``agent_type`` string (e.g. ``"coding,code-review"``).  A task matches
+    if its required type appears anywhere in the agent's type list.
+
+    This enforces the type-matching dimension of agent affinity described
+    in the agent-coordination spec §3 (Core Concepts): "a review task
+    should go to a review agent, not a coding agent."
+
+    Unlike agent-id affinity (which is advisory and uses soft ordering),
+    type matching is a filter — mismatched tasks are excluded from
+    consideration entirely, and will stay queued until a matching agent
+    becomes available.
+    """
+    if not task.agent_type or task.agent_type.lower() in ("none", "null"):
+        return True  # no type requirement → any agent is fine
+    # Support comma-separated multiple type capabilities on agents
+    agent_types = {t.strip() for t in agent.agent_type.split(",")} if agent.agent_type else set()
+    if task.agent_type in agent_types:
+        return True
+    logger.debug(
+        "Agent type mismatch: task %s requires type '%s' but agent %s has type '%s'",
+        task.id,
+        task.agent_type,
+        agent.id,
+        agent.agent_type,
+    )
+    return False
+
+
+def _is_scheduling_paused(project_id: str, constraints: dict[str, ProjectConstraint]) -> bool:
+    """Return True if a project has an active pause_scheduling constraint."""
+    c = constraints.get(project_id)
+    return bool(c and c.pause_scheduling)
+
+
+def _agent_type_allowed(
+    agent: Agent,
+    project_id: str,
+    max_by_type: dict[str, int],
+    state: "SchedulerState",
+    assigned_agents: set[str],
+) -> bool:
+    """Check if assigning *agent* would violate a per-agent-type limit.
+
+    Only agent types listed in ``max_by_type`` are constrained; unlisted
+    types are unrestricted.  Returns True if the assignment is allowed.
+    """
+    atype = agent.agent_type
+    if atype not in max_by_type:
+        return True  # no limit for this type
+
+    limit = max_by_type[atype]
+
+    # Count agents of the same type currently working on this project.
+    # An agent is "active on a project" if it is BUSY and its current
+    # task belongs to the project.
+    count = 0
+    for a in state.agents:
+        if a.agent_type != atype or a.id in assigned_agents:
+            continue
+        if a.state == AgentState.BUSY and a.current_task_id:
+            for t in state.tasks:
+                if t.id == a.current_task_id and t.project_id == project_id:
+                    count += 1
+                    break
+
+    return count < limit
 
 
 class Scheduler:
@@ -174,7 +275,14 @@ class Scheduler:
         if state.global_budget is not None and state.global_tokens_used >= state.global_budget:
             return []
 
-        idle_agents = [a for a in state.agents if a.state == AgentState.IDLE]
+        import time as _time
+
+        now = _time.time()
+        idle_agents = [
+            a
+            for a in state.agents
+            if a.state == AgentState.IDLE and state.provider_cooldowns.get(a.agent_type, 0) <= now
+        ]
         if not idle_agents:
             return []
 
@@ -222,11 +330,15 @@ class Scheduler:
                     t for t in ready_by_project[pid] if t.task_type == TaskType.SYNC
                 ]
 
-        # Filter to active projects with ready tasks
+        # Filter to active projects with ready tasks.
+        # Also enforce project constraints:
+        # - pause_scheduling=True → skip the project entirely
         active_projects = [
             p
             for p in state.projects
-            if p.status == ProjectStatus.ACTIVE and p.id in ready_by_project
+            if p.status == ProjectStatus.ACTIVE
+            and p.id in ready_by_project
+            and not _is_scheduling_paused(p.id, state.project_constraints)
         ]
         if not active_projects:
             return []
@@ -290,9 +402,24 @@ class Scheduler:
                 ):
                     continue
 
-                # Check concurrency limit
+                # Check concurrency limit.
+                # When exclusive=True constraint is active, override to 1.
+                max_agents = project.max_concurrent_agents
+                constraint = state.project_constraints.get(project.id)
+                if constraint and constraint.exclusive:
+                    max_agents = 1
                 current_agents = round_agent_counts.get(project.id, 0)
-                if current_agents >= project.max_concurrent_agents:
+                if current_agents >= max_agents:
+                    continue
+
+                # Check per-agent-type limits from constraints.
+                if (
+                    constraint
+                    and constraint.max_agents_by_type
+                    and not _agent_type_allowed(
+                        agent, project.id, constraint.max_agents_by_type, state, assigned_agents
+                    )
+                ):
                     continue
 
                 # Skip projects with no available workspaces.
@@ -308,17 +435,104 @@ class Scheduler:
                 ):
                     continue
 
-                # Pick highest priority ready task not yet assigned
+                # Pick highest priority ready task not yet assigned.
                 # Also filter out tasks whose preferred workspace is locked
+                # and tasks whose agent_type doesn't match the current agent.
                 available = [
                     t
                     for t in ready_by_project.get(project.id, [])
-                    if t.id not in assigned_tasks and _workspace_available(t, state.workspace_locks)
+                    if t.id not in assigned_tasks
+                    and _workspace_available(t, state.workspace_locks)
+                    and _task_agent_type_matches(t, agent)
                 ]
                 if not available:
                     continue
 
+                # ── Agent affinity ordering (four tiers) ─────────────────
+                #
+                #  0 — Task prefers *this* agent: prioritize it.
+                #  1 — Task has no affinity, or affinity wait expired
+                #      (fallback): treat normally.
+                #  2 — Task prefers *another* idle agent: defer so that
+                #      agent can pick it up instead.
+                #  3 — Task prefers a busy agent and bounded wait has
+                #      NOT expired: defer (wait for preferred agent).
+                #
+                # Within each tier the existing priority/id ordering
+                # (set by the pre-sort above) is preserved.
+                #
+                # Tier 3 implements the *bounded wait* from the spec:
+                # when a task's preferred agent is busy, the scheduler
+                # defers assignment for up to ``affinity_wait_seconds``
+                # (measured from task.created_at).  After the wait
+                # expires the task falls through to tier 1 so any idle
+                # agent can pick it up — preventing starvation.
+                #
+                # This is advisory — if the only available tasks are in
+                # tier 2 or 3, the current agent still picks one up (no
+                # starvation).
+                idle_agent_ids = {a.id for a in idle_agents if a.id not in assigned_agents}
+                busy_agent_ids = {
+                    a.id
+                    for a in state.agents
+                    if a.state == AgentState.BUSY and a.id not in idle_agent_ids
+                }
+                wait_limit = state.affinity_wait_seconds
+                sched_now = state.now  # 0.0 disables time-based wait
+
+                def _affinity_key(t: Task) -> tuple[int, int, str]:
+                    aff = t.affinity_agent_id
+                    if aff == agent.id:
+                        # Tier 0 — task prefers *this* agent
+                        return (0, t.priority, t.id)
+                    if aff and aff in idle_agent_ids:
+                        # Tier 2 — another idle agent is preferred
+                        return (2, t.priority, t.id)
+                    if (
+                        aff
+                        and aff in busy_agent_ids
+                        and sched_now > 0
+                        and wait_limit > 0
+                        and t.created_at > 0
+                    ):
+                        # Preferred agent is busy — bounded wait?
+                        waited = sched_now - t.created_at
+                        if waited < wait_limit:
+                            # Tier 3 — still within wait window
+                            return (3, t.priority, t.id)
+                    # Tier 1 — no affinity, unknown agent, or wait expired
+                    return (1, t.priority, t.id)
+
+                available.sort(key=_affinity_key)
+
+                # If every candidate is in the bounded-wait tier (3),
+                # skip this project for the current agent — the
+                # preferred agents may become idle next cycle.  This
+                # prevents assigning work to a non-preferred agent when
+                # the wait window hasn't expired yet.
+                #
+                # We only skip if ALL tasks are tier 3; if at least one
+                # task is in tier 0/1/2 we proceed normally (no
+                # starvation).
+                top_tier = _affinity_key(available[0])[0]
+                if top_tier == 3:
+                    continue
+
                 task = available[0]
+
+                # Log affinity reason for debugging when present.
+                if task.affinity_reason:
+                    aff_tier = top_tier
+                    logger.debug(
+                        "Affinity: task %s → agent %s "
+                        "(preferred=%s, reason=%s, tier=%d)",
+                        task.id,
+                        agent.id,
+                        task.affinity_agent_id,
+                        task.affinity_reason,
+                        aff_tier,
+                    )
+
                 actions.append(
                     AssignAction(
                         agent_id=agent.id,

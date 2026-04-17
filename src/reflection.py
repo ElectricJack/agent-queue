@@ -74,19 +74,63 @@ class ReflectionEngine:
     def level(self) -> str:
         return self._config.level
 
-    def should_reflect(self, trigger: str) -> bool:
+    # Tools that only read state — no side effects, no delegation.
+    # When ALL tools used in an interaction are in this set, reflection
+    # is skipped to save a full LLM round (~3,500 tokens).
+    _READ_ONLY_TOOLS: frozenset[str] = frozenset({
+        "list_tasks", "get_task", "get_task_result", "get_task_diff",
+        "get_task_tree", "get_task_dependencies", "get_chain_health",
+        "list_active_tasks_all_projects", "task_deps",
+        "list_playbooks", "list_playbook_runs", "inspect_playbook_run",
+        "playbook_health", "show_playbook_graph", "playbook_graph_view",
+        "get_project", "list_projects", "get_project_channels",
+        "get_project_for_channel", "list_workspaces",
+        "browse_tools", "load_tools",
+        "memory_recall",
+        "list_agents", "list_profiles", "get_profile", "check_profile",
+        "get_status", "get_token_usage", "get_recent_events",
+        "list_prompts", "read_prompt", "read_logs", "token_audit",
+        "claude_usage", "scan_stub_staleness",
+        "list_notes", "read_note",
+        "read_file", "glob_files", "grep", "search_files", "list_directory",
+        "browse_rules", "load_rule", "list_rules", "rule_runs",
+        "plugin_list", "plugin_info", "plugin_prompts",
+        "reply_to_user", "send_message",
+    })
+
+    def is_read_only_interaction(self, tool_names: list[str]) -> bool:
+        """Return ``True`` if all tools used are read-only (no side effects).
+
+        Used to skip reflection for simple queries where the LLM only
+        looked things up and reported back.
+        """
+        return all(name in self._READ_ONLY_TOOLS for name in tool_names)
+
+    def should_reflect(self, trigger: str, tool_names: list[str] | None = None) -> bool:
         """Decide whether to run reflection for the given trigger.
 
         Args:
             trigger: Event name (e.g. ``"user.request"``, ``"task.completed"``).
+            tool_names: Optional list of tool names used in the interaction.
+                When provided and all tools are read-only, reflection is
+                skipped for ``user.request`` triggers.
 
         Returns:
             ``True`` if reflection should proceed.  Returns ``False`` when
-            reflection is disabled or the hourly circuit breaker is tripped.
+            reflection is disabled, the hourly circuit breaker is tripped,
+            or the interaction was read-only.
         """
         if self._config.level == "off":
             return False
         if self.is_circuit_breaker_tripped():
+            return False
+        # Skip reflection for read-only interactions on user requests.
+        # Deep triggers (task.completed, task.failed) always reflect.
+        if (
+            tool_names
+            and trigger not in _DEEP_TRIGGERS
+            and self.is_read_only_interaction(tool_names)
+        ):
             return False
         return True
 
@@ -137,9 +181,20 @@ class ReflectionEngine:
             return self._build_standard_prompt(trigger, action_summary, action_results)
         return self._build_light_prompt(trigger, action_summary, action_results)
 
+    @staticmethod
+    def _truncate_result(result: object, max_len: int = 300) -> str:
+        """Truncate a tool result to avoid bloating reflection prompts."""
+        text = str(result)
+        if len(text) > max_len:
+            return text[:max_len] + "..."
+        return text
+
     def _build_deep_prompt(self, trigger: str, summary: str, results: list[dict]) -> str:
         results_text = (
-            "\n".join(f"- {r.get('tool', 'action')}: {r.get('result', '')}" for r in results)
+            "\n".join(
+                f"- {r.get('tool', 'action')}: {self._truncate_result(r.get('result', ''))}"
+                for r in results
+            )
             if results
             else "No tool results."
         )
@@ -158,7 +213,11 @@ class ReflectionEngine:
             "5. Is there follow-up work needed?\n"
             "6. Did I modify files directly when I should have created a task? "
             "An agent with a full context window and isolated workspace would "
-            "do this better. If so, note this for improvement.\n\n"
+            "do this better. If so, note this for improvement.\n"
+            "7. Did I answer a feature/behavior request directly instead of "
+            "creating a task? If the user said something 'should' work "
+            "differently and I explained current behavior, I should have "
+            "delegated instead.\n\n"
             "If follow-up is needed, take action. Otherwise, confirm completion.\n\n"
             "After your analysis, output a JSON verdict on its own line:\n"
             '```json\n{"passed": true/false, "reason": "...", "followup": "suggested followup or null"}\n```'
@@ -166,7 +225,10 @@ class ReflectionEngine:
 
     def _build_standard_prompt(self, trigger: str, summary: str, results: list[dict]) -> str:
         results_text = (
-            "\n".join(f"- {r.get('tool', 'action')}: {r.get('result', '')}" for r in results)
+            "\n".join(
+                f"- {r.get('tool', 'action')}: {self._truncate_result(r.get('result', ''))}"
+                for r in results
+            )
             if results
             else "No tool results."
         )
@@ -178,7 +240,11 @@ class ReflectionEngine:
             "1. Did the action succeed?\n"
             "2. Any directly relevant rules to check?\n"
             "3. Did I do inline file work (write/edit) that should have been "
-            "delegated as a task? Agents execute code changes more reliably.\n\n"
+            "delegated as a task? Agents execute code changes more reliably.\n"
+            "4. Did I answer a feature request or behavior change directly "
+            "instead of creating a task? If the user said something 'should' "
+            "work differently and I explained current behavior instead of "
+            "delegating, that's wrong — create a task.\n\n"
             "After your analysis, output a JSON verdict on its own line:\n"
             '```json\n{"passed": true/false, "reason": "...", "followup": "suggested followup or null"}\n```'
         )

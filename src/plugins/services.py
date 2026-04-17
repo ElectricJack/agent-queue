@@ -6,11 +6,11 @@ contract; implementation wrappers delegate to the real managers.
 
 Services available to internal plugins via ``ctx.get_service(name)``:
 
-- ``"git"``       — :class:`GitService`
-- ``"db"``        — :class:`DatabaseService`
-- ``"memory"``    — :class:`MemoryService`
-- ``"workspace"`` — :class:`WorkspaceService`
-- ``"config"``    — :class:`ConfigService`
+- ``"git"``        — :class:`GitService`
+- ``"db"``         — :class:`DatabaseService`
+- ``"memory_v2"``  — :class:`MemoryV2ServiceProtocol`
+- ``"workspace"``  — :class:`WorkspaceService`
+- ``"config"``     — :class:`ConfigService`
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from src.config import AppConfig
     from src.database import Database
     from src.git.manager import GitManager
-    from src.models import Project, Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +39,26 @@ class GitService(Protocol):
     async def status(self, checkout_path: str) -> dict: ...
     async def commit_all(self, checkout_path: str, message: str) -> bool: ...
     async def pull(self, checkout_path: str, branch: str | None = None) -> str: ...
-    async def push(self, checkout_path: str, branch: str, *, force_with_lease: bool = False) -> str: ...
-    async def create_branch(self, checkout_path: str, name: str, *, base: str | None = None) -> None: ...
+    async def push(
+        self, checkout_path: str, branch: str, *, force_with_lease: bool = False
+    ) -> str: ...
+    async def create_branch(
+        self, checkout_path: str, name: str, *, base: str | None = None
+    ) -> None: ...
     async def checkout(self, checkout_path: str, branch: str) -> None: ...
-    async def merge(self, checkout_path: str, source: str, *, target: str | None = None) -> dict: ...
-    async def create_pr(self, checkout_path: str, *, title: str, body: str, base: str | None = None, head: str | None = None, draft: bool = False) -> dict: ...
+    async def merge(
+        self, checkout_path: str, source: str, *, target: str | None = None
+    ) -> dict: ...
+    async def create_pr(
+        self,
+        checkout_path: str,
+        *,
+        title: str,
+        body: str,
+        base: str | None = None,
+        head: str | None = None,
+        draft: bool = False,
+    ) -> dict: ...
     async def log(self, checkout_path: str, limit: int = 10) -> list[dict]: ...
     async def diff(self, checkout_path: str, base: str, head: str | None = None) -> str: ...
     async def changed_files(self, checkout_path: str, base: str) -> list[str]: ...
@@ -74,27 +88,140 @@ class DatabaseService(Protocol):
 
 
 @runtime_checkable
-class MemoryService(Protocol):
-    """Semantic search and memory management."""
+class MemoryV2ServiceProtocol(Protocol):
+    """V2 memory operations via memsearch/Milvus with scoped collections.
 
-    async def search(self, project_id: str, workspace: str, query: str, *, top_k: int = 10) -> list[dict]: ...
-    async def reindex(self, project_id: str, workspace: str) -> int: ...
-    async def compact(self, project_id: str, workspace: str) -> dict: ...
-    async def stats(self, project_id: str, workspace: str) -> dict: ...
-    async def get_profile(self, project_id: str) -> str | None: ...
-    async def promote_note(self, project_id: str, note_filename: str, note_content: str, workspace: str) -> str | None: ...
-    async def update_profile(self, project_id: str, content: str, workspace: str) -> str | None: ...
-    async def regenerate_profile(self, project_id: str, workspace: str) -> str | None: ...
+    Provides semantic search, KV storage, temporal facts, and cross-scope
+    tag search.  Wraps the memsearch fork's ``CollectionRouter`` and
+    ``MilvusStore``.
+
+    See ``docs/specs/design/memory-plugin.md`` §3.
+    """
+
     @property
-    def notes_inform_profile(self) -> bool: ...
+    def available(self) -> bool: ...
+
+    # Semantic search
+    async def search(
+        self,
+        project_id: str,
+        query: str,
+        *,
+        scope: str | None = None,
+        topic: str | None = None,
+        top_k: int = 10,
+    ) -> list[dict]: ...
+    async def batch_search(
+        self,
+        project_id: str,
+        queries: list[str],
+        *,
+        scope: str | None = None,
+        topic: str | None = None,
+        top_k: int = 10,
+    ) -> dict[str, list[dict]]: ...
+    async def search_by_tag(
+        self, tag: str, *, entry_type: str | None = None, topic: str | None = None, limit: int = 10
+    ) -> list[dict]: ...
+
+    # KV operations
+    async def kv_get(self, project_id: str, namespace: str, key: str) -> dict | None: ...
+    async def kv_set(
+        self,
+        project_id: str,
+        namespace: str,
+        key: str,
+        value: str,
+        *,
+        scope: str | None = None,
+        _from_vault: bool = False,
+    ) -> dict: ...
+    async def kv_list(self, project_id: str, namespace: str) -> list[dict]: ...
+    async def load_l1_facts(
+        self,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+    ) -> str: ...
+    async def kv_recall(
+        self,
+        key: str,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+        namespace: str | None = None,
+    ) -> dict | None: ...
+    async def recall(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        agent_type: str | None = None,
+        namespace: str | None = None,
+        topic: str | None = None,
+        top_k: int = 5,
+    ) -> dict: ...
+
+    # Temporal facts
+    async def fact_get(
+        self, project_id: str, key: str, *, as_of: int | None = None
+    ) -> dict | None: ...
+    async def fact_set(self, project_id: str, key: str, value: str) -> dict: ...
+    async def fact_list(
+        self, project_id: str, namespace: str = "", *, current_only: bool = True
+    ) -> list[dict]: ...
+    async def fact_history(self, project_id: str, key: str) -> list[dict]: ...
+
+    # Document save (spec §8)
+    async def save_document(
+        self,
+        project_id: str,
+        content: str,
+        *,
+        summary: str | None = None,
+        original: str | None = None,
+        tags: list[str] | None = None,
+        topic: str | None = None,
+        source_task: str | None = None,
+        scope: str | None = None,
+    ) -> dict: ...
+    async def update_document_timestamp(
+        self,
+        project_id: str,
+        chunk_hash: str,
+        *,
+        source_task: str | None = None,
+        scope: str | None = None,
+    ) -> dict: ...
+    async def update_document_content(
+        self,
+        project_id: str,
+        chunk_hash: str,
+        content: str,
+        *,
+        original: str | None = None,
+        tags: list[str] | None = None,
+        scope: str | None = None,
+    ) -> dict: ...
+
+    # Stats
+    async def stats(self, project_id: str, *, scope: str | None = None) -> dict: ...
+
+    # Lifecycle
+    async def initialize(self) -> None: ...
+    async def shutdown(self) -> None: ...
 
 
 @runtime_checkable
 class WorkspaceService(Protocol):
     """Path resolution, validation, and workspace helpers."""
 
-    async def resolve_repo_path(self, args: dict, active_project_id: str | None = None) -> tuple[str | None, Any, dict | None]: ...
-    async def resolve_workspace(self, project_id: str, workspace: str | None) -> tuple[Any, dict | None]: ...
+    async def resolve_repo_path(
+        self, args: dict, active_project_id: str | None = None
+    ) -> tuple[str | None, Any, dict | None]: ...
+    async def resolve_workspace(
+        self, project_id: str, workspace: str | None
+    ) -> tuple[Any, dict | None]: ...
     async def validate_path(self, path: str) -> str | None: ...
     def get_notes_dir(self, project_id: str) -> str: ...
     def resolve_note_path(self, notes_dir: str, title: str) -> str | None: ...
@@ -138,7 +265,9 @@ class GitServiceImpl:
     async def push(self, checkout_path: str, branch: str, *, force_with_lease: bool = False) -> str:
         return await self._git.apush(checkout_path, branch, force_with_lease=force_with_lease)
 
-    async def create_branch(self, checkout_path: str, name: str, *, base: str | None = None) -> None:
+    async def create_branch(
+        self, checkout_path: str, name: str, *, base: str | None = None
+    ) -> None:
         await self._git.acreate_branch(checkout_path, name, base=base)
 
     async def checkout(self, checkout_path: str, branch: str) -> None:
@@ -147,8 +276,19 @@ class GitServiceImpl:
     async def merge(self, checkout_path: str, source: str, *, target: str | None = None) -> dict:
         return await self._git.amerge(checkout_path, source, target=target)
 
-    async def create_pr(self, checkout_path: str, *, title: str, body: str, base: str | None = None, head: str | None = None, draft: bool = False) -> dict:
-        return await self._git.acreate_pr(checkout_path, title=title, body=body, base=base, head=head, draft=draft)
+    async def create_pr(
+        self,
+        checkout_path: str,
+        *,
+        title: str,
+        body: str,
+        base: str | None = None,
+        head: str | None = None,
+        draft: bool = False,
+    ) -> dict:
+        return await self._git.acreate_pr(
+            checkout_path, title=title, body=body, base=base, head=head, draft=draft
+        )
 
     async def log(self, checkout_path: str, limit: int = 10) -> list[dict]:
         return await self._git.alog(checkout_path, limit=limit)
@@ -218,59 +358,6 @@ class DatabaseServiceImpl:
         return await self._db.get_project_workspace_path(project_id)
 
 
-class MemoryServiceImpl:
-    """Wraps ``MemoryManager`` behind the :class:`MemoryService` protocol."""
-
-    def __init__(self, memory_manager: Any) -> None:
-        self._mm = memory_manager
-
-    async def search(self, project_id: str, workspace: str, query: str, *, top_k: int = 10) -> list[dict]:
-        if not self._mm:
-            return []
-        return await self._mm.search(project_id, workspace, query, top_k=top_k)
-
-    async def reindex(self, project_id: str, workspace: str) -> int:
-        if not self._mm:
-            return 0
-        return await self._mm.reindex(project_id, workspace)
-
-    async def compact(self, project_id: str, workspace: str) -> dict:
-        if not self._mm:
-            return {"error": "Memory manager not available"}
-        return await self._mm.compact(project_id, workspace)
-
-    async def stats(self, project_id: str, workspace: str) -> dict:
-        if not self._mm:
-            return {"error": "Memory manager not available"}
-        return await self._mm.stats(project_id, workspace)
-
-    async def get_profile(self, project_id: str) -> str | None:
-        if not self._mm:
-            return None
-        return await self._mm.get_profile(project_id)
-
-    async def promote_note(self, project_id: str, note_filename: str, note_content: str, workspace: str) -> str | None:
-        if not self._mm:
-            return None
-        return await self._mm.promote_note(project_id, note_filename, note_content, workspace)
-
-    async def update_profile(self, project_id: str, content: str, workspace: str) -> str | None:
-        if not self._mm:
-            return None
-        return await self._mm.update_profile(project_id, content, workspace)
-
-    async def regenerate_profile(self, project_id: str, workspace: str) -> str | None:
-        if not self._mm:
-            return None
-        return await self._mm.regenerate_profile(project_id, workspace)
-
-    @property
-    def notes_inform_profile(self) -> bool:
-        if not self._mm:
-            return False
-        return getattr(self._mm.config, "notes_inform_profile", False)
-
-
 class WorkspaceServiceImpl:
     """Path resolution and validation helpers.
 
@@ -326,16 +413,23 @@ class WorkspaceServiceImpl:
                 repo = repos[0]
                 if repo.source_type == RepoSourceType.LINK and repo.source_path:
                     checkout_path = repo.source_path
-                elif repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT) and repo.checkout_base_path:
+                elif (
+                    repo.source_type in (RepoSourceType.CLONE, RepoSourceType.INIT)
+                    and repo.checkout_base_path
+                ):
                     checkout_path = repo.checkout_base_path
 
         if not checkout_path:
             if not project:
                 return None, None, {"error": "No workspace found and no project context"}
-            return None, None, {
-                "error": f"Project '{project_id}' has no workspaces. "
-                f"Use /add-workspace to create one."
-            }
+            return (
+                None,
+                None,
+                {
+                    "error": f"Project '{project_id}' has no workspaces. "
+                    f"Use /add-workspace to create one."
+                },
+            )
 
         if not os.path.isdir(checkout_path):
             return None, project, {"error": f"Path not found: {checkout_path}"}
@@ -345,7 +439,9 @@ class WorkspaceServiceImpl:
         return checkout_path, project, None
 
     async def resolve_workspace(
-        self, project_id: str, workspace: str | None,
+        self,
+        project_id: str,
+        workspace: str | None,
     ) -> tuple[Any, dict | None]:
         """Resolve a workspace by ID or name within a project."""
         if not workspace:
@@ -380,8 +476,11 @@ class WorkspaceServiceImpl:
         return None
 
     def get_notes_dir(self, project_id: str) -> str:
-        """Return the central notes directory for a project."""
-        return os.path.join(self._config.data_dir, "notes", project_id)
+        """Return the central notes directory for a project.
+
+        Notes live in the vault at ``vault/projects/{project_id}/notes/``.
+        """
+        return os.path.join(self._config.data_dir, "vault", "projects", project_id, "notes")
 
     def resolve_note_path(self, notes_dir: str, title: str) -> str | None:
         """Resolve a note file path from a title, filename, or slug.
@@ -455,16 +554,31 @@ def build_internal_services(
     db: Database,
     git: GitManager,
     config: AppConfig,
-    memory_manager: Any = None,
+    memory_v2_service: Any = None,
 ) -> dict[str, Any]:
     """Build the services dict for internal plugin contexts.
 
     Called by the PluginRegistry during internal plugin loading.
+
+    Parameters
+    ----------
+    db:
+        Database instance.
+    git:
+        Git manager instance.
+    config:
+        Application configuration.
+    memory_v2_service:
+        Optional v2 MemoryV2Service instance.  When provided, exposed
+        as ``"memory_v2"`` for plugins that need v2-specific operations
+        (KV, temporal facts, scoped search).
     """
-    return {
+    services: dict[str, Any] = {
         "git": GitServiceImpl(git),
         "db": DatabaseServiceImpl(db),
-        "memory": MemoryServiceImpl(memory_manager),
         "workspace": WorkspaceServiceImpl(db, git, config),
         "config": ConfigServiceImpl(config),
     }
+    if memory_v2_service is not None:
+        services["memory_v2"] = memory_v2_service
+    return services

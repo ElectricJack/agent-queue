@@ -1,9 +1,13 @@
+---
+tags: [spec, chat, observer, discord]
+---
+
 # Chat Observer Specification
 
-The ChatObserver provides integrated observation in the Supervisor.
-It processes project channel messages through a two-stage pipeline:
-deterministic filtering (Stage 1) followed by Supervisor LLM evaluation
-(Stage 2).
+The ChatObserver replaces the ChatAnalyzer with integrated observation
+in the [[specs/supervisor|Supervisor]]. It processes project channel messages through a two-stage
+pipeline: deterministic filtering (Stage 1) followed by [[specs/supervisor|Supervisor]] LLM
+evaluation (Stage 2).
 
 ## Class: ChatObserver (src/chat_observer.py)
 
@@ -95,7 +99,7 @@ deterministic filtering (Stage 1) followed by Supervisor LLM evaluation
 
 ## Database Schema
 
-**chat_analyzer_suggestions table**:
+**chat_analyzer_suggestions table** (reused from ChatAnalyzer):
 - `id` (primary key)
 - `project_id`
 - `channel_id`
@@ -140,6 +144,27 @@ Created when suggestion posted, updated when user interacts with buttons.
 - One buffer per active channel (max 20 messages each)
 - Buffers auto-flush when processed
 - No long-term memory accumulation
+
+## Differences from ChatAnalyzer
+
+**Removed:**
+- Separate ChatAnalyzer class and process
+- Memory-informed context retrieval
+- Confidence scoring model
+- Cooldown tracking per suggestion type
+- Auto-execution of high-confidence suggestions
+
+**Simplified:**
+- Two-stage pipeline replaces multi-step analysis
+- Single LLM call instead of multiple rounds
+- Suggestion types reduced to 4 (was 6+)
+- No separate suggestion queue or batch processing
+
+**Improved:**
+- Zero token cost for trivial messages (Stage 1 filter)
+- Integrated with Supervisor (single LLM entity)
+- Reuses existing UI components (SuggestionView)
+- Simpler configuration (part of SupervisorConfig)
 
 ## Testing Strategy
 

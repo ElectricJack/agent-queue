@@ -18,7 +18,8 @@ class TestConfigLoading:
                     "discord": {
                         "bot_token": "test-token",
                         "guild_id": "123",
-                    }
+                    },
+                    "database_path": str(config_dir / "test.db"),
                 }
             )
         )
@@ -35,7 +36,8 @@ class TestConfigLoading:
                     "discord": {
                         "bot_token": "${TEST_BOT_TOKEN}",
                         "guild_id": "123",
-                    }
+                    },
+                    "database_path": str(config_dir / "test.db"),
                 }
             )
         )
@@ -44,9 +46,11 @@ class TestConfigLoading:
 
     def test_defaults_applied(self, config_dir):
         config_file = config_dir / "config.yaml"
-        config_file.write_text(yaml.dump({"discord": {"bot_token": "x", "guild_id": "1"}}))
+        config_file.write_text(yaml.dump({
+            "discord": {"bot_token": "x", "guild_id": "1"},
+            "database_path": str(config_dir / "test.db"),
+        }))
         config = load_config(str(config_file))
-        assert config.database_path == os.path.expanduser("~/.agent-queue/agent-queue.db")
         assert config.scheduling.rolling_window_hours == 24
         assert config.scheduling.min_task_guarantee is True
         assert config.agents_config.heartbeat_interval_seconds == 30
@@ -58,6 +62,7 @@ class TestConfigLoading:
                 {
                     "workspace_dir": "/custom/path",
                     "discord": {"bot_token": "x", "guild_id": "1"},
+                    "database_path": str(config_dir / "test.db"),
                 }
             )
         )

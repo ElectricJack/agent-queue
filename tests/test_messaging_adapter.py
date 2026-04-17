@@ -125,25 +125,25 @@ class TestMessagingAdapterABC:
 class TestCreateMessagingAdapter:
     """Verify the factory dispatches correctly and rejects unknown platforms."""
 
-    def test_unknown_platform_raises(self):
-        config = AppConfig()
+    def test_unknown_platform_raises(self, tmp_path):
+        config = AppConfig(data_dir=str(tmp_path / "data"))
         config.messaging_platform = "slack"
         with pytest.raises(ValueError, match="Unknown messaging platform.*slack"):
             create_messaging_adapter(config, MagicMock())
 
-    def test_empty_platform_raises(self):
-        config = AppConfig()
+    def test_empty_platform_raises(self, tmp_path):
+        config = AppConfig(data_dir=str(tmp_path / "data"))
         config.messaging_platform = ""
         with pytest.raises(ValueError, match="Unknown messaging platform"):
             create_messaging_adapter(config, MagicMock())
 
     @patch("src.messaging.factory.DiscordMessagingAdapter", create=True)
-    def test_discord_platform(self, mock_cls):
+    def test_discord_platform(self, mock_cls, tmp_path):
         """Factory imports and instantiates DiscordMessagingAdapter for 'discord'."""
         mock_instance = MagicMock(spec=MessagingAdapter)
         mock_cls.return_value = mock_instance
 
-        config = AppConfig()
+        config = AppConfig(data_dir=str(tmp_path / "data"))
         config.messaging_platform = "discord"
 
         with patch.dict(
@@ -169,12 +169,12 @@ class TestCreateMessagingAdapter:
         assert result is mock_instance
 
     @patch("src.messaging.factory.TelegramMessagingAdapter", create=True)
-    def test_telegram_platform(self, mock_cls):
+    def test_telegram_platform(self, mock_cls, tmp_path):
         """Factory imports and instantiates TelegramMessagingAdapter for 'telegram'."""
         mock_instance = MagicMock(spec=MessagingAdapter)
         mock_cls.return_value = mock_instance
 
-        config = AppConfig()
+        config = AppConfig(data_dir=str(tmp_path / "data"))
         config.messaging_platform = "telegram"
 
         with patch.dict(
@@ -266,17 +266,18 @@ class TestTelegramConfig:
 class TestAppConfigMessagingPlatform:
     """Verify messaging_platform defaults and validation behavior."""
 
-    def test_default_is_discord(self):
-        config = AppConfig()
+    def test_default_is_discord(self, tmp_path):
+        config = AppConfig(data_dir=str(tmp_path / "data"))
         assert config.messaging_platform == "discord"
 
-    def test_has_telegram_config(self):
-        config = AppConfig()
+    def test_has_telegram_config(self, tmp_path):
+        config = AppConfig(data_dir=str(tmp_path / "data"))
         assert isinstance(config.telegram, TelegramConfig)
 
-    def test_validation_discord_skips_telegram(self):
+    def test_validation_discord_skips_telegram(self, tmp_path):
         """When messaging_platform is 'discord', telegram config is not validated."""
         config = AppConfig(
+            data_dir=str(tmp_path / "data"),
             messaging_platform="discord",
             discord=MagicMock(validate=MagicMock(return_value=[])),
             telegram=TelegramConfig(),  # empty — would fail if validated
@@ -297,9 +298,10 @@ class TestAppConfigMessagingPlatform:
         # No telegram errors should appear
         assert not any("telegram" in s for s in error_strs)
 
-    def test_validation_telegram_skips_discord(self):
+    def test_validation_telegram_skips_discord(self, tmp_path):
         """When messaging_platform is 'telegram', discord config is not validated."""
         config = AppConfig(
+            data_dir=str(tmp_path / "data"),
             messaging_platform="telegram",
             discord=MagicMock(),  # empty — would fail if validated
             telegram=TelegramConfig(bot_token="123:ABC", chat_id="-100123"),
@@ -321,16 +323,17 @@ class TestAppConfigMessagingPlatform:
         # discord.validate() should NOT have been called
         config.discord.validate.assert_not_called()
 
-    def test_validation_invalid_platform(self):
+    def test_validation_invalid_platform(self, tmp_path):
         """Unknown messaging_platform produces a validation error."""
-        config = AppConfig(messaging_platform="slack")
+        config = AppConfig(data_dir=str(tmp_path / "data"), messaging_platform="slack")
         errors = config.validate()
         platform_errors = [e for e in errors if "messaging_platform" in str(e)]
         assert len(platform_errors) >= 1
 
-    def test_validation_telegram_invalid_config_surfaces_errors(self):
+    def test_validation_telegram_invalid_config_surfaces_errors(self, tmp_path):
         """When telegram is active, missing telegram fields produce errors."""
         config = AppConfig(
+            data_dir=str(tmp_path / "data"),
             messaging_platform="telegram",
             telegram=TelegramConfig(),  # empty bot_token and chat_id
         )

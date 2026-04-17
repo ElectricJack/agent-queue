@@ -17,14 +17,12 @@ from typing import TYPE_CHECKING
 
 from src.telegram.notifications import (
     bold,
-    code,
     escape_markdown,
-    format_embed_as_text,
     split_message,
 )
 
 if TYPE_CHECKING:
-    from src.command_handler import CommandHandler
+    from src.commands.handler import CommandHandler
 
 logger = logging.getLogger(__name__)
 

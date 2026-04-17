@@ -66,6 +66,36 @@ class ProfileQueryMixin:
                 update(agent_profiles).where(agent_profiles.c.id == profile_id).values(**values)
             )
 
+    async def upsert_profile(self, profile: AgentProfile) -> str:
+        """Insert or update an agent profile.
+
+        If a profile with the same ``id`` already exists, all mutable fields
+        are updated.  Otherwise a new row is inserted.
+
+        Returns
+        -------
+        str
+            ``"created"`` if a new row was inserted, ``"updated"`` if an
+            existing row was modified.
+        """
+        existing = await self.get_profile(profile.id)
+        if existing:
+            await self.update_profile(
+                profile.id,
+                name=profile.name,
+                description=profile.description,
+                model=profile.model,
+                permission_mode=profile.permission_mode,
+                allowed_tools=profile.allowed_tools,
+                mcp_servers=profile.mcp_servers,
+                system_prompt_suffix=profile.system_prompt_suffix,
+                install=profile.install,
+            )
+            return "updated"
+        else:
+            await self.create_profile(profile)
+            return "created"
+
     async def delete_profile(self, profile_id: str) -> None:
         """Delete a profile and clear foreign-key references."""
         async with self._engine.begin() as conn:

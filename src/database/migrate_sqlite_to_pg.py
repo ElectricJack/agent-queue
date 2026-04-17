@@ -26,8 +26,6 @@ from src.database.tables import (
     archived_tasks,
     chat_analyzer_suggestions,
     events,
-    hook_runs,
-    hooks,
     plugin_data,
     plugins,
     projects,
@@ -73,10 +71,7 @@ _ORDERED_TABLES = [
     token_ledger,
     task_results,
     events,
-    # FK → projects
-    hooks,
-    # FK → hooks
-    hook_runs,
+    # hooks and hook_runs tables removed (playbooks spec §13 Phase 3)
     # No enforced FKs
     chat_analyzer_suggestions,
     archived_tasks,

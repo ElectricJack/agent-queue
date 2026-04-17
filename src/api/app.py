@@ -43,7 +43,7 @@ def create_app(
     Returns:
         A configured FastAPI app ready to be served by uvicorn.
     """
-    from src.command_handler import CommandHandler
+    from src.commands.handler import CommandHandler
 
     app = FastAPI(
         title="AgentQueue API",

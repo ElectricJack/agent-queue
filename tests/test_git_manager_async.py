@@ -185,6 +185,101 @@ class TestAsyncCommitAll:
         committed = await mgr.acommit_all(clone, "nothing")
         assert committed is False
 
+    @pytest.mark.asyncio
+    async def test_emits_git_commit_event(self, clone, mgr):
+        """Successful commit emits git.commit on the EventBus."""
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        received: list[dict] = []
+        bus.subscribe("git.commit", lambda data: received.append(data))
+
+        pathlib.Path(clone, "event_test.txt").write_text("event content")
+        committed = await mgr.acommit_all(
+            clone,
+            "feat: event test",
+            event_bus=bus,
+            project_id="proj-1",
+            agent_id="agent-1",
+        )
+        assert committed is True
+        assert len(received) == 1
+        evt = received[0]
+        assert evt["branch"] == "main"
+        assert evt["message"] == "feat: event test"
+        assert evt["project_id"] == "proj-1"
+        assert evt["agent_id"] == "agent-1"
+        assert "event_test.txt" in evt["changed_files"]
+        # commit_hash should be a 40-char hex SHA
+        assert len(evt["commit_hash"]) == 40
+
+    @pytest.mark.asyncio
+    async def test_no_event_when_nothing_to_commit(self, clone, mgr):
+        """No event should be emitted when there are no changes."""
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        received: list[dict] = []
+        bus.subscribe("git.commit", lambda data: received.append(data))
+
+        committed = await mgr.acommit_all(
+            clone,
+            "nothing here",
+            event_bus=bus,
+            project_id="proj-1",
+        )
+        assert committed is False
+        assert len(received) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_event_without_bus(self, clone, mgr):
+        """Without an EventBus, commit succeeds silently (backward compat)."""
+        pathlib.Path(clone, "no_bus.txt").write_text("no bus")
+        committed = await mgr.acommit_all(clone, "no bus commit")
+        assert committed is True
+        # No exception means success — no bus to emit to
+
+    @pytest.mark.asyncio
+    async def test_event_emission_failure_does_not_break_commit(self, clone, mgr):
+        """If event emission raises, the commit should still succeed."""
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+
+        async def bad_handler(data):
+            raise RuntimeError("boom")
+
+        bus.subscribe("git.commit", bad_handler)
+
+        pathlib.Path(clone, "resilient.txt").write_text("resilient")
+        committed = await mgr.acommit_all(
+            clone,
+            "resilient commit",
+            event_bus=bus,
+            project_id="proj-1",
+        )
+        assert committed is True
+
+    @pytest.mark.asyncio
+    async def test_event_multiple_files(self, clone, mgr):
+        """Event changed_files should list all committed files."""
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        received: list[dict] = []
+        bus.subscribe("git.commit", lambda data: received.append(data))
+
+        pathlib.Path(clone, "a.txt").write_text("a")
+        pathlib.Path(clone, "b.txt").write_text("b")
+        committed = await mgr.acommit_all(
+            clone,
+            "add two files",
+            event_bus=bus,
+        )
+        assert committed is True
+        assert len(received) == 1
+        assert set(received[0]["changed_files"]) == {"a.txt", "b.txt"}
+
 
 class TestAsyncPrepareForTask:
     @pytest.mark.asyncio
@@ -246,6 +341,110 @@ class TestAsyncPushBranch:
             cwd=clone,
         )
         await mgr.apush_branch(clone, "task/fwl", force_with_lease=True)
+
+    @pytest.mark.asyncio
+    async def test_emits_git_push_event(self, clone, mgr):
+        """Successful push emits git.push on the EventBus."""
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        received: list[dict] = []
+        bus.subscribe("git.push", lambda data: received.append(data))
+
+        await mgr.aprepare_for_task(clone, "task/push-event")
+        _commit_file(clone, "push_evt.txt", "data", "push event test")
+        local_ref = _git(["rev-parse", "HEAD"], cwd=clone)
+
+        await mgr.apush_branch(
+            clone,
+            "task/push-event",
+            event_bus=bus,
+            project_id="proj-push",
+        )
+
+        assert len(received) == 1
+        evt = received[0]
+        assert evt["branch"] == "task/push-event"
+        assert evt["remote"] == "origin"
+        assert evt["project_id"] == "proj-push"
+        # First push — no remote ref before, so commit_range is the local ref
+        assert evt["commit_range"] == local_ref
+
+    @pytest.mark.asyncio
+    async def test_git_push_event_commit_range(self, clone, mgr):
+        """Second push should have old..new commit range."""
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        received: list[dict] = []
+        bus.subscribe("git.push", lambda data: received.append(data))
+
+        await mgr.aprepare_for_task(clone, "task/push-range")
+        _commit_file(clone, "first.txt", "1", "first commit")
+        await mgr.apush_branch(clone, "task/push-range")
+        remote_ref = _git(["rev-parse", "origin/task/push-range"], cwd=clone)
+
+        _commit_file(clone, "second.txt", "2", "second commit")
+        local_ref = _git(["rev-parse", "HEAD"], cwd=clone)
+
+        await mgr.apush_branch(
+            clone,
+            "task/push-range",
+            event_bus=bus,
+            project_id="proj-range",
+        )
+
+        assert len(received) == 1
+        evt = received[0]
+        assert evt["commit_range"] == f"{remote_ref}..{local_ref}"
+
+    @pytest.mark.asyncio
+    async def test_no_git_push_event_without_bus(self, clone, mgr):
+        """Without an EventBus, push succeeds silently (backward compat)."""
+        await mgr.aprepare_for_task(clone, "task/push-nobus")
+        _commit_file(clone, "nobus.txt", "data", "no bus push")
+        await mgr.apush_branch(clone, "task/push-nobus")
+        # No exception means success — no bus to emit to
+
+    @pytest.mark.asyncio
+    async def test_no_git_push_event_on_failure(self, clone, mgr):
+        """Failed push should NOT emit a git.push event."""
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        received: list[dict] = []
+        bus.subscribe("git.push", lambda data: received.append(data))
+
+        with pytest.raises(GitError):
+            await mgr.apush_branch(
+                clone,
+                "nonexistent-branch-xyz",
+                event_bus=bus,
+                project_id="proj-fail",
+            )
+        assert len(received) == 0
+
+    @pytest.mark.asyncio
+    async def test_git_push_event_emission_failure_does_not_break_push(self, clone, mgr):
+        """If event emission raises, the push should still succeed."""
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+
+        async def bad_handler(data):
+            raise RuntimeError("boom")
+
+        bus.subscribe("git.push", bad_handler)
+
+        await mgr.aprepare_for_task(clone, "task/push-resilient")
+        _commit_file(clone, "resilient.txt", "data", "resilient push")
+        # Should not raise despite bad handler
+        await mgr.apush_branch(
+            clone,
+            "task/push-resilient",
+            event_bus=bus,
+            project_id="proj-resilient",
+        )
 
 
 class TestAsyncMergeBranch:

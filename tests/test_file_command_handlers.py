@@ -10,7 +10,7 @@ import os
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Project, RepoConfig, RepoSourceType, Workspace
@@ -37,6 +37,7 @@ def config(tmp_path):
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
         database_path=str(tmp_path / "test.db"),
+        data_dir=str(tmp_path / "data"),
     )
 
 
@@ -696,7 +697,7 @@ class TestFilesCategoryRegistry:
     def _registry_with_plugins(self):
         """Create a ToolRegistry with plugin tools included."""
         from unittest.mock import MagicMock
-        from src.tool_registry import ToolRegistry, _ALL_TOOL_DEFINITIONS
+        from src.tools import ToolRegistry, _ALL_TOOL_DEFINITIONS
 
         mock_pr = MagicMock()
         mock_pr.get_all_tool_definitions.return_value = [

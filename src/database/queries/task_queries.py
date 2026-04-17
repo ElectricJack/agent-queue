@@ -19,7 +19,7 @@ from src.database.tables import (
     tasks,
     token_ledger,
 )
-from src.models import Task, TaskStatus, TaskType, VerificationType
+from src.models import Task, TaskStatus, TaskType, VerificationType, WorkspaceMode
 from src.state_machine import is_valid_status_transition
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,12 @@ class TaskQueryMixin:
                     preferred_workspace_id=task.preferred_workspace_id,
                     attachments=json.dumps(task.attachments) if task.attachments else "[]",
                     auto_approve_plan=int(task.auto_approve_plan),
+                    skip_verification=int(task.skip_verification),
+                    workflow_id=task.workflow_id,
+                    agent_type=task.agent_type,
+                    affinity_agent_id=task.affinity_agent_id,
+                    affinity_reason=task.affinity_reason,
+                    workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
                     created_at=now,
                     updated_at=now,
                 )
@@ -144,7 +150,7 @@ class TaskQueryMixin:
         """Update arbitrary task fields."""
         values = {}
         for key, value in kwargs.items():
-            if isinstance(value, (TaskStatus, VerificationType, TaskType)):
+            if isinstance(value, (TaskStatus, VerificationType, TaskType, WorkspaceMode)):
                 value = value.value
             values[key] = value
         values["updated_at"] = time.time()
@@ -204,6 +210,7 @@ class TaskQueryMixin:
             )
             await conn.execute(delete(task_criteria).where(task_criteria.c.task_id == task_id))
             await conn.execute(delete(task_context).where(task_context.c.task_id == task_id))
+            await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
             await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
             await conn.execute(delete(tasks).where(tasks.c.id == task_id))
 
@@ -375,4 +382,13 @@ class TaskQueryMixin:
             preferred_workspace_id=row["preferred_workspace_id"],
             attachments=json.loads(row["attachments"]) if row["attachments"] else [],
             auto_approve_plan=bool(row["auto_approve_plan"]),
+            skip_verification=bool(row.get("skip_verification", 0)),
+            workflow_id=row.get("workflow_id"),
+            agent_type=row.get("agent_type"),
+            affinity_agent_id=row.get("affinity_agent_id"),
+            affinity_reason=row.get("affinity_reason"),
+            workspace_mode=(
+                WorkspaceMode(row["workspace_mode"]) if row.get("workspace_mode") else None
+            ),
+            created_at=row.get("created_at", 0.0),
         )

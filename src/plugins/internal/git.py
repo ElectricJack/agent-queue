@@ -349,6 +349,29 @@ def _build_tool_definitions() -> list[dict]:
                 "required": ["name"],
             },
         },
+        {
+            "name": "git_remote_url",
+            "description": (
+                "Get the git remote URL (e.g. GitHub URL) for a project's workspace. "
+                "Returns the origin remote URL directly from the git repository. "
+                "Use this when you need the repo/GitHub URL and it's not in project metadata."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "description": "Project ID"},
+                    "remote": {
+                        "type": "string",
+                        "description": "Remote name (default: origin)",
+                        "default": "origin",
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name or ID (optional)",
+                    },
+                },
+            },
+        },
     ]
 
 
@@ -476,6 +499,7 @@ def _build_cli_formatters():
         "generate_readme",
         "git_branch",
         "git_changed_files",
+        "git_remote_url",
     ):
         formatters[cmd] = FormatterSpec(render=_fmt_git_action, extract=None, many=False)
     return formatters
@@ -520,6 +544,7 @@ class GitPlugin(InternalPlugin):
             ("merge_branch", self.cmd_merge_branch),
             ("create_github_repo", self.cmd_create_github_repo),
             ("generate_readme", self.cmd_generate_readme),
+            ("git_remote_url", self.cmd_git_remote_url),
         ]
         for name, handler in cmds:
             ctx.register_command(name, handler)
@@ -624,6 +649,7 @@ class GitPlugin(InternalPlugin):
                 branch = await git.aget_current_branch(ws_path)
                 status_output = await git.aget_status(ws_path)
                 recent_commits = await git.aget_recent_commits(ws_path, count=5)
+                remote_url = await git.aget_remote_url(ws_path)
                 lock_info = ""
                 if ws.locked_by_agent_id:
                     lock_info = f" (locked by {ws.locked_by_agent_id})"
@@ -638,24 +664,25 @@ class GitPlugin(InternalPlugin):
                     if task:
                         current_task_title = task.title
 
-                repo_statuses.append(
-                    {
-                        "workspace_id": ws.id,
-                        "workspace_name": ws.name or "",
-                        "path": ws_path,
-                        "branch": branch,
-                        "status": status_output or "(clean)",
-                        "recent_commits": recent_commits,
-                        "lock": lock_info,
-                        "ahead": ahead_behind[0],
-                        "behind": ahead_behind[1],
-                        "stash_count": stash_count,
-                        "diff_stat": diff_stat,
-                        "locked_by_agent_id": ws.locked_by_agent_id,
-                        "locked_by_task_id": ws.locked_by_task_id,
-                        "current_task_title": current_task_title,
-                    }
-                )
+                ws_info: dict = {
+                    "workspace_id": ws.id,
+                    "workspace_name": ws.name or "",
+                    "path": ws_path,
+                    "branch": branch,
+                    "status": status_output or "(clean)",
+                    "recent_commits": recent_commits,
+                    "lock": lock_info,
+                    "ahead": ahead_behind[0],
+                    "behind": ahead_behind[1],
+                    "stash_count": stash_count,
+                    "diff_stat": diff_stat,
+                    "locked_by_agent_id": ws.locked_by_agent_id,
+                    "locked_by_task_id": ws.locked_by_task_id,
+                    "current_task_title": current_task_title,
+                }
+                if remote_url:
+                    ws_info["remote_url"] = remote_url
+                repo_statuses.append(ws_info)
         else:
             repos = await self._db.list_repos(project_id)
             if repos:
@@ -706,8 +733,15 @@ class GitPlugin(InternalPlugin):
         if err:
             return err
         project_id = args.get("project_id", "")
+        agent_id = args.get("agent_id")
         try:
-            committed = await self._git.acommit_all(checkout_path, message)
+            committed = await self._git.acommit_all(
+                checkout_path,
+                message,
+                event_bus=self._ctx._bus,
+                project_id=project_id or None,
+                agent_id=agent_id,
+            )
         except GitError as e:
             return {"error": str(e)}
         if not committed:
@@ -742,7 +776,12 @@ class GitPlugin(InternalPlugin):
         if not branch:
             return {"error": "Could not determine current branch"}
         try:
-            await git.apush_branch(checkout_path, branch)
+            await git.apush_branch(
+                checkout_path,
+                branch,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id"),
+            )
         except GitError as e:
             return {"error": str(e)}
         return {"project_id": args.get("project_id", ""), "pushed": branch}
@@ -805,7 +844,15 @@ class GitPlugin(InternalPlugin):
             return {"error": "Could not determine current branch"}
         base = args.get("base") or (project.repo_default_branch if project else "main") or "main"
         try:
-            pr_url = await git.acreate_pr(checkout_path, branch, title, body, base)
+            pr_url = await git.acreate_pr(
+                checkout_path,
+                branch,
+                title,
+                body,
+                base,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id", ""),
+            )
         except GitError as e:
             return {"error": str(e)}
         return {
@@ -958,7 +1005,13 @@ class GitPlugin(InternalPlugin):
         if err:
             return err
         try:
-            committed = await self._git.acommit_all(checkout_path, message)
+            committed = await self._git.acommit_all(
+                checkout_path,
+                message,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id") or None,
+                agent_id=args.get("agent_id"),
+            )
         except GitError as e:
             return {"error": str(e)}
         if not committed:
@@ -990,7 +1043,12 @@ class GitPlugin(InternalPlugin):
             if not branch_name:
                 return {"error": "Could not determine current branch"}
         try:
-            await git.apush_branch(checkout_path, branch_name)
+            await git.apush_branch(
+                checkout_path,
+                branch_name,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id"),
+            )
         except GitError as e:
             return {"error": str(e)}
         return {"project_id": args["project_id"], "branch": branch_name, "status": "pushed"}
@@ -1095,7 +1153,13 @@ class GitPlugin(InternalPlugin):
 
         git = self._git
         try:
-            committed = await git.acommit_all(checkout_path, "Add generated README.md")
+            committed = await git.acommit_all(
+                checkout_path,
+                "Add generated README.md",
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id") or None,
+                agent_id=args.get("agent_id"),
+            )
         except GitError as e:
             return {"error": f"Failed to commit README.md: {e}"}
 
@@ -1111,7 +1175,12 @@ class GitPlugin(InternalPlugin):
         pushed = False
         try:
             branch = await git.aget_current_branch(checkout_path) or "main"
-            await git.apush_branch(checkout_path, branch)
+            await git.apush_branch(
+                checkout_path,
+                branch,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id"),
+            )
             pushed = True
         except GitError:
             pass
@@ -1122,4 +1191,32 @@ class GitPlugin(InternalPlugin):
             "committed": True,
             "pushed": pushed,
             "status": "generated",
+        }
+
+    async def cmd_git_remote_url(self, args: dict) -> dict:
+        """Return the git remote URL for a project's workspace."""
+        checkout_path, project, err = await self._resolve(args)
+        if err:
+            return err
+        remote = args.get("remote", "origin")
+        git = self._git
+        url = await git.aget_remote_url(checkout_path, remote)
+        project_id = args.get("project_id", "")
+        if not url:
+            return {
+                "project_id": project_id,
+                "remote": remote,
+                "url": None,
+                "message": f"No '{remote}' remote configured in this workspace",
+            }
+        # Auto-populate project.repo_url if it's empty
+        if project and not project.repo_url and url:
+            try:
+                await self._db.update_project(project_id, repo_url=url)
+            except Exception:
+                pass  # Non-fatal — we still return the URL
+        return {
+            "project_id": project_id,
+            "remote": remote,
+            "url": url,
         }

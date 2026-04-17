@@ -29,14 +29,15 @@ from src.database.queries.archive_queries import ArchiveQueryMixin
 from src.database.queries.chat_queries import ChatQueryMixin
 from src.database.queries.dependency_queries import DependencyQueryMixin
 from src.database.queries.event_queries import EventQueryMixin
-from src.database.queries.hook_queries import HookQueryMixin
 from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
 from src.database.queries.task_queries import TaskQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
+from src.database.queries.playbook_queries import PlaybookQueryMixin
 from src.database.queries.plugin_queries import PluginQueryMixin
+from src.database.queries.workflow_queries import WorkflowQueryMixin
 from src.database.queries.workspace_queries import WorkspaceQueryMixin
 from src.database.tables import agents as agents_t, events as events_t, tasks as tasks_t
 from src.models import AgentState, TaskStatus
@@ -56,10 +57,11 @@ class PostgreSQLDatabaseAdapter(
     TokenQueryMixin,
     ResultQueryMixin,
     EventQueryMixin,
-    HookQueryMixin,
     ArchiveQueryMixin,
     ChatQueryMixin,
     PluginQueryMixin,
+    PlaybookQueryMixin,
+    WorkflowQueryMixin,
 ):
     """Async PostgreSQL persistence layer using SQLAlchemy Core.
 

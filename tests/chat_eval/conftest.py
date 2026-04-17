@@ -48,6 +48,7 @@ async def eval_config(tmp_path):
     return AppConfig(
         database_path=str(tmp_path / "eval_test.db"),
         workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
     )
 
 

@@ -1,8 +1,12 @@
+---
+tags: [spec, setup, cli]
+---
+
 # Setup Wizard Specification
 
 ## 1. Overview
 
-The setup wizard is an interactive CLI tool that guides a first-time user through configuring all required services (Discord, Claude, chat provider) and writing the config files needed to run agent-queue. It is idempotent — running it again pre-fills all prompts from existing config, skipping steps that are already satisfied.
+The setup wizard is an interactive CLI tool that guides a first-time user through configuring all required services (Discord or Telegram, Claude, chat provider) and writing the config files needed to run agent-queue. It is idempotent — running it again pre-fills all prompts from existing config, skipping steps that are already satisfied.
 
 ## Source Files
 
@@ -12,7 +16,7 @@ The setup wizard is an interactive CLI tool that guides a first-time user throug
 
 ## 2. Entry Point
 
-The wizard runs via `./setup.sh` (which handles venv and dependencies) or directly via `python src/setup_wizard.py`. The `main()` function orchestrates eight sequential steps:
+The wizard runs via `./setup.sh` (which handles venv and dependencies) or directly via `python src/setup_wizard.py`. The `main()` function orchestrates eight sequential steps that produce a [[specs/config]] file:
 
 1. Load existing configuration (pre-fill defaults)
 2. Step 1: Workspace & Database directories

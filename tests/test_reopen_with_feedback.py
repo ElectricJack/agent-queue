@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import text
 from unittest.mock import MagicMock
 
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Project, Task, TaskStatus
@@ -31,6 +31,7 @@ def config(tmp_path):
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path / "workspaces"),
         database_path=str(tmp_path / "test.db"),
+        data_dir=str(tmp_path / "data"),
     )
 
 

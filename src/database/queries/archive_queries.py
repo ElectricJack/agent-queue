@@ -15,13 +15,14 @@ from src.database.tables import (
     task_context,
     task_criteria,
     task_dependencies,
+    task_metadata,
     task_results,
     task_tools,
     tasks,
     token_ledger,
     workspaces,
 )
-from src.models import Task, TaskStatus, TaskType, VerificationType
+from src.models import TaskStatus
 
 
 class ArchiveQueryMixin:
@@ -68,6 +69,12 @@ class ArchiveQueryMixin:
                     preferred_workspace_id=task.preferred_workspace_id,
                     attachments=json.dumps(task.attachments) if task.attachments else "[]",
                     auto_approve_plan=int(task.auto_approve_plan),
+                    skip_verification=int(task.skip_verification),
+                    workflow_id=task.workflow_id,
+                    agent_type=task.agent_type,
+                    affinity_agent_id=task.affinity_agent_id,
+                    affinity_reason=task.affinity_reason,
+                    workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
                     created_at=0.0,
                     updated_at=0.0,
                     archived_at=now,
@@ -97,6 +104,7 @@ class ArchiveQueryMixin:
             )
             await conn.execute(delete(task_criteria).where(task_criteria.c.task_id == task_id))
             await conn.execute(delete(task_context).where(task_context.c.task_id == task_id))
+            await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
             await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
             await conn.execute(
                 update(tasks).where(tasks.c.parent_task_id == task_id).values(parent_task_id=None)
@@ -183,38 +191,6 @@ class ArchiveQueryMixin:
                 return None
             return self._row_to_archived_task(row)
 
-    async def restore_archived_task(self, task_id: str) -> bool:
-        """Move an archived task back into active ``tasks``. Returns *True* if restored."""
-        archived = await self.get_archived_task(task_id)
-        if archived is None:
-            return False
-
-        task = Task(
-            id=archived["id"],
-            project_id=archived["project_id"],
-            parent_task_id=archived["parent_task_id"],
-            repo_id=archived["repo_id"],
-            title=archived["title"],
-            description=archived["description"],
-            priority=archived["priority"],
-            status=TaskStatus.DEFINED,
-            verification_type=VerificationType(archived["verification_type"]),
-            retry_count=0,
-            max_retries=archived["max_retries"],
-            assigned_agent_id=None,
-            branch_name=archived["branch_name"],
-            resume_after=None,
-            requires_approval=archived["requires_approval"],
-            pr_url=archived["pr_url"],
-            plan_source=archived["plan_source"],
-            is_plan_subtask=archived["is_plan_subtask"],
-            task_type=TaskType(archived["task_type"]) if archived["task_type"] else None,
-        )
-        await self.create_task(task)
-        async with self._engine.begin() as conn:
-            await conn.execute(delete(archived_tasks).where(archived_tasks.c.id == task_id))
-        return True
-
     async def delete_archived_task(self, task_id: str) -> bool:
         """Permanently delete an archived task. Returns *True* if deleted."""
         async with self._engine.begin() as conn:
@@ -262,6 +238,11 @@ class ArchiveQueryMixin:
             "plan_source": row.get("plan_source"),
             "is_plan_subtask": bool(row.get("is_plan_subtask", 0)),
             "task_type": row.get("task_type"),
+            "workflow_id": row.get("workflow_id"),
+            "agent_type": row.get("agent_type"),
+            "affinity_agent_id": row.get("affinity_agent_id"),
+            "affinity_reason": row.get("affinity_reason"),
+            "workspace_mode": row.get("workspace_mode"),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "archived_at": row["archived_at"],

@@ -7,6 +7,9 @@ Verifies that:
 4. The abstraction layer works with mock adapters
 """
 
+import asyncio
+import json
+
 import pytest
 import time
 
@@ -16,14 +19,14 @@ from src.models import (
     Agent,
     AgentProfile,
     AgentState,
-    Hook,
-    HookRun,
+    PlaybookRun,
     Project,
     ProjectStatus,
     RepoConfig,
     RepoSourceType,
     Task,
     TaskStatus,
+    Workflow,
     Workspace,
 )
 
@@ -546,115 +549,7 @@ class TestEventQueries:
         assert events[0]["event_type"] == "test_event"
 
 
-# ── Hook Queries ─────────────────────────────────────────────────────────
-
-
-class TestHookQueries:
-    async def test_create_get_hook(self, db):
-        await _make_project(db)
-        hook = Hook(
-            id="h-1",
-            project_id="p-1",
-            name="test-hook",
-            trigger="task_completed",
-            prompt_template="Do stuff",
-        )
-        await db.create_hook(hook)
-        h = await db.get_hook("h-1")
-        assert h is not None
-        assert h.name == "test-hook"
-
-    async def test_list_hooks_by_project(self, db):
-        await _make_project(db, "p-1")
-        await _make_project(db, "p-2")
-        await db.create_hook(
-            Hook(
-                id="h-1",
-                project_id="p-1",
-                name="a",
-                trigger="t",
-                prompt_template="p",
-            )
-        )
-        await db.create_hook(
-            Hook(
-                id="h-2",
-                project_id="p-2",
-                name="b",
-                trigger="t",
-                prompt_template="p",
-            )
-        )
-        hooks = await db.list_hooks(project_id="p-1")
-        assert len(hooks) == 1
-
-    async def test_delete_hook(self, db):
-        await _make_project(db)
-        await db.create_hook(
-            Hook(
-                id="h-1",
-                project_id="p-1",
-                name="a",
-                trigger="t",
-                prompt_template="p",
-            )
-        )
-        await db.delete_hook("h-1")
-        assert await db.get_hook("h-1") is None
-
-    async def test_hook_run_lifecycle(self, db):
-        await _make_project(db)
-        await db.create_hook(
-            Hook(
-                id="h-1",
-                project_id="p-1",
-                name="a",
-                trigger="t",
-                prompt_template="p",
-            )
-        )
-        run = HookRun(
-            id="hr-1",
-            hook_id="h-1",
-            project_id="p-1",
-            trigger_reason="manual",
-            status="running",
-            started_at=time.time(),
-        )
-        await db.create_hook_run(run)
-        last = await db.get_last_hook_run("h-1")
-        assert last is not None
-        assert last.id == "hr-1"
-
-        await db.update_hook_run("hr-1", status="completed")
-        runs = await db.list_hook_runs("h-1")
-        assert runs[0].status == "completed"
-
-    async def test_hooks_by_prefix(self, db):
-        await _make_project(db)
-        await db.create_hook(
-            Hook(
-                id="rule-abc-1",
-                project_id="p-1",
-                name="a",
-                trigger="t",
-                prompt_template="p",
-            )
-        )
-        await db.create_hook(
-            Hook(
-                id="rule-abc-2",
-                project_id="p-1",
-                name="b",
-                trigger="t",
-                prompt_template="p",
-            )
-        )
-        hooks = await db.list_hooks_by_id_prefix("rule-abc")
-        assert len(hooks) == 2
-
-        deleted = await db.delete_hooks_by_id_prefix("rule-abc")
-        assert deleted == 2
+# ── Hook Queries removed (playbooks spec §13 Phase 3) ────────────────────
 
 
 # ── Archive Queries ──────────────────────────────────────────────────────
@@ -813,6 +708,1307 @@ class TestAtomicOperations:
 
 
 # ── Mock Adapter Test ────────────────────────────────────────────────────
+
+
+# ── Playbook Run Queries ────────────────────────────────────────────────
+
+
+def _make_playbook_run(
+    run_id: str = "run-1",
+    playbook_id: str = "pb-test",
+    version: int = 1,
+    status: str = "running",
+    conversation_history: list | None = None,
+    node_trace: list | None = None,
+    **kwargs,
+) -> PlaybookRun:
+    """Helper to build a PlaybookRun with sensible defaults."""
+    pinned_graph = kwargs.get("pinned_graph")
+    return PlaybookRun(
+        run_id=run_id,
+        playbook_id=playbook_id,
+        playbook_version=version,
+        trigger_event=json.dumps(kwargs.get("trigger_event", {"type": "test"})),
+        status=status,
+        current_node=kwargs.get("current_node"),
+        conversation_history=json.dumps(conversation_history or []),
+        node_trace=json.dumps(node_trace or []),
+        tokens_used=kwargs.get("tokens_used", 0),
+        started_at=kwargs.get("started_at", time.time()),
+        completed_at=kwargs.get("completed_at"),
+        error=kwargs.get("error"),
+        pinned_graph=json.dumps(pinned_graph) if pinned_graph is not None else None,
+    )
+
+
+class TestPlaybookRunQueries:
+    """Integration tests for PlaybookRun CRUD — real SQLite, not mocks."""
+
+    async def test_create_and_get_run(self, db):
+        run = _make_playbook_run()
+        await db.create_playbook_run(run)
+        fetched = await db.get_playbook_run("run-1")
+        assert fetched is not None
+        assert fetched.run_id == "run-1"
+        assert fetched.playbook_id == "pb-test"
+        assert fetched.playbook_version == 1
+        assert fetched.status == "running"
+
+    async def test_get_nonexistent_returns_none(self, db):
+        assert await db.get_playbook_run("nope") is None
+
+    async def test_conversation_history_json_round_trip(self, db):
+        """Conversation history must survive serialization through the DB."""
+        messages = [
+            {"role": "user", "content": 'Event received: {"type": "git.push"}'},
+            {"role": "user", "content": "Scan the repository for issues."},
+            {"role": "assistant", "content": "Found 3 issues in src/main.py."},
+            {"role": "user", "content": "Triage the findings by severity."},
+            {"role": "assistant", "content": "Critical: 1, Warning: 2."},
+        ]
+        run = _make_playbook_run(conversation_history=messages)
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("run-1")
+        assert fetched is not None
+        restored = json.loads(fetched.conversation_history)
+        assert restored == messages
+        assert len(restored) == 5
+        assert restored[2]["role"] == "assistant"
+        assert "3 issues" in restored[2]["content"]
+
+    async def test_node_trace_json_round_trip(self, db):
+        """Node trace entries must survive serialization through the DB."""
+        trace = [
+            {
+                "node_id": "scan",
+                "started_at": 1000.0,
+                "completed_at": 1001.5,
+                "status": "completed",
+            },
+            {
+                "node_id": "triage",
+                "started_at": 1001.5,
+                "completed_at": 1003.0,
+                "status": "completed",
+            },
+            {
+                "node_id": "fix",
+                "started_at": 1003.0,
+                "completed_at": None,
+                "status": "failed",
+            },
+        ]
+        run = _make_playbook_run(node_trace=trace, current_node="fix", status="failed")
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("run-1")
+        assert fetched is not None
+        restored = json.loads(fetched.node_trace)
+        assert restored == trace
+        assert restored[2]["status"] == "failed"
+        assert restored[2]["completed_at"] is None
+
+    async def test_trigger_event_json_round_trip(self, db):
+        event = {"type": "git.push", "project_id": "proj-1", "ref": "refs/heads/main"}
+        run = _make_playbook_run(trigger_event=event)
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("run-1")
+        restored = json.loads(fetched.trigger_event)
+        assert restored == event
+
+    async def test_update_status_and_fields(self, db):
+        run = _make_playbook_run()
+        await db.create_playbook_run(run)
+
+        completed_at = time.time()
+        await db.update_playbook_run(
+            "run-1",
+            status="completed",
+            tokens_used=1500,
+            completed_at=completed_at,
+        )
+
+        fetched = await db.get_playbook_run("run-1")
+        assert fetched.status == "completed"
+        assert fetched.tokens_used == 1500
+        assert fetched.completed_at == completed_at
+
+    async def test_update_conversation_history(self, db):
+        """Conversation history can be incrementally updated after each node."""
+        run = _make_playbook_run(conversation_history=[{"role": "user", "content": "seed"}])
+        await db.create_playbook_run(run)
+
+        # Simulate adding messages after node execution
+        new_history = [
+            {"role": "user", "content": "seed"},
+            {"role": "user", "content": "Step A"},
+            {"role": "assistant", "content": "Result A"},
+        ]
+        await db.update_playbook_run("run-1", conversation_history=json.dumps(new_history))
+
+        fetched = await db.get_playbook_run("run-1")
+        restored = json.loads(fetched.conversation_history)
+        assert len(restored) == 3
+        assert restored[2]["content"] == "Result A"
+
+    async def test_update_node_trace(self, db):
+        """Node trace grows as each node completes."""
+        run = _make_playbook_run()
+        await db.create_playbook_run(run)
+
+        trace = [
+            {"node_id": "a", "started_at": 100.0, "completed_at": 101.0, "status": "completed"}
+        ]
+        await db.update_playbook_run("run-1", node_trace=json.dumps(trace), current_node="a")
+
+        trace.append(
+            {"node_id": "b", "started_at": 101.0, "completed_at": 102.0, "status": "completed"}
+        )
+        await db.update_playbook_run("run-1", node_trace=json.dumps(trace), current_node="b")
+
+        fetched = await db.get_playbook_run("run-1")
+        restored = json.loads(fetched.node_trace)
+        assert len(restored) == 2
+        assert restored[1]["node_id"] == "b"
+        assert fetched.current_node == "b"
+
+    async def test_list_runs_newest_first(self, db):
+        for i in range(3):
+            run = _make_playbook_run(
+                run_id=f"run-{i}",
+                started_at=1000.0 + i,
+            )
+            await db.create_playbook_run(run)
+
+        runs = await db.list_playbook_runs()
+        assert len(runs) == 3
+        # Newest first
+        assert runs[0].run_id == "run-2"
+        assert runs[2].run_id == "run-0"
+
+    async def test_list_filter_by_playbook_id(self, db):
+        await db.create_playbook_run(_make_playbook_run(run_id="r1", playbook_id="pb-a"))
+        await db.create_playbook_run(_make_playbook_run(run_id="r2", playbook_id="pb-b"))
+        await db.create_playbook_run(_make_playbook_run(run_id="r3", playbook_id="pb-a"))
+
+        runs = await db.list_playbook_runs(playbook_id="pb-a")
+        assert len(runs) == 2
+        assert all(r.playbook_id == "pb-a" for r in runs)
+
+    async def test_list_filter_by_status(self, db):
+        await db.create_playbook_run(_make_playbook_run(run_id="r1", status="running"))
+        await db.create_playbook_run(_make_playbook_run(run_id="r2", status="completed"))
+        await db.create_playbook_run(_make_playbook_run(run_id="r3", status="paused"))
+
+        running = await db.list_playbook_runs(status="running")
+        assert len(running) == 1
+        assert running[0].run_id == "r1"
+
+        paused = await db.list_playbook_runs(status="paused")
+        assert len(paused) == 1
+        assert paused[0].run_id == "r3"
+
+    async def test_list_with_limit(self, db):
+        for i in range(5):
+            await db.create_playbook_run(
+                _make_playbook_run(run_id=f"run-{i}", started_at=1000.0 + i)
+            )
+
+        runs = await db.list_playbook_runs(limit=2)
+        assert len(runs) == 2
+        assert runs[0].run_id == "run-4"  # newest
+
+    async def test_list_combined_filters(self, db):
+        """Filter by both playbook_id and status simultaneously."""
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="r1", playbook_id="pb-a", status="completed")
+        )
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="r2", playbook_id="pb-a", status="running")
+        )
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="r3", playbook_id="pb-b", status="completed")
+        )
+
+        runs = await db.list_playbook_runs(playbook_id="pb-a", status="completed")
+        assert len(runs) == 1
+        assert runs[0].run_id == "r1"
+
+    async def test_delete_run(self, db):
+        await db.create_playbook_run(_make_playbook_run())
+        await db.delete_playbook_run("run-1")
+        assert await db.get_playbook_run("run-1") is None
+
+    async def test_delete_nonexistent_is_noop(self, db):
+        # Should not raise
+        await db.delete_playbook_run("nonexistent")
+
+    async def test_error_field_persisted(self, db):
+        run = _make_playbook_run(
+            status="failed",
+            error="Node 'scan' failed: LLM provider down",
+            completed_at=time.time(),
+        )
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("run-1")
+        assert fetched.status == "failed"
+        assert fetched.error == "Node 'scan' failed: LLM provider down"
+
+    async def test_paused_run_full_state_round_trip(self, db):
+        """A paused run must persist all state needed for resume.
+
+        This is the critical path for human-in-the-loop: the full conversation
+        history, node trace, current_node, and tokens_used must all survive
+        a write→read cycle so PlaybookRunner.resume() can reconstruct state.
+        """
+        messages = [
+            {"role": "user", "content": "Event: git.push on proj-1"},
+            {"role": "user", "content": "Analyse the issue."},
+            {"role": "assistant", "content": "Analysis: found 2 issues."},
+            {"role": "user", "content": "Present for human review."},
+            {"role": "assistant", "content": "Please review: 2 issues found."},
+        ]
+        trace = [
+            {
+                "node_id": "analyse",
+                "started_at": 1000.0,
+                "completed_at": 1005.0,
+                "status": "completed",
+            },
+            {
+                "node_id": "review",
+                "started_at": 1005.0,
+                "completed_at": 1010.0,
+                "status": "completed",
+            },
+        ]
+        event = {"type": "git.push", "project_id": "proj-1"}
+
+        run = _make_playbook_run(
+            run_id="paused-1",
+            playbook_id="review-playbook",
+            version=3,
+            status="paused",
+            conversation_history=messages,
+            node_trace=trace,
+            trigger_event=event,
+            current_node="review",
+            tokens_used=750,
+            started_at=1000.0,
+        )
+        await db.create_playbook_run(run)
+
+        # Fetch and verify every field needed for resume
+        fetched = await db.get_playbook_run("paused-1")
+        assert fetched is not None
+        assert fetched.status == "paused"
+        assert fetched.current_node == "review"
+        assert fetched.playbook_id == "review-playbook"
+        assert fetched.playbook_version == 3
+        assert fetched.tokens_used == 750
+        assert fetched.started_at == 1000.0
+        assert fetched.completed_at is None
+        assert fetched.error is None
+
+        # Verify conversation history round-trip
+        restored_history = json.loads(fetched.conversation_history)
+        assert restored_history == messages
+
+        # Verify node trace round-trip
+        restored_trace = json.loads(fetched.node_trace)
+        assert restored_trace == trace
+
+        # Verify trigger event round-trip
+        restored_event = json.loads(fetched.trigger_event)
+        assert restored_event == event
+
+    async def test_full_lifecycle_create_update_complete(self, db):
+        """Simulate the full run lifecycle: create → update per node → complete."""
+        # 1. Create at startup
+        run = _make_playbook_run(
+            run_id="lifecycle-1",
+            playbook_id="ci-pipeline",
+            version=2,
+            started_at=1000.0,
+        )
+        await db.create_playbook_run(run)
+
+        # 2. After node "build" completes
+        history_1 = [
+            {"role": "user", "content": "seed"},
+            {"role": "user", "content": "Build the project."},
+            {"role": "assistant", "content": "Build succeeded."},
+        ]
+        trace_1 = [
+            {
+                "node_id": "build",
+                "started_at": 1000.0,
+                "completed_at": 1010.0,
+                "status": "completed",
+            }
+        ]
+        await db.update_playbook_run(
+            "lifecycle-1",
+            current_node="build",
+            conversation_history=json.dumps(history_1),
+            node_trace=json.dumps(trace_1),
+            tokens_used=200,
+        )
+
+        # 3. After node "test" completes
+        history_2 = history_1 + [
+            {"role": "user", "content": "Run the test suite."},
+            {"role": "assistant", "content": "All 42 tests passed."},
+        ]
+        trace_2 = trace_1 + [
+            {"node_id": "test", "started_at": 1010.0, "completed_at": 1020.0, "status": "completed"}
+        ]
+        await db.update_playbook_run(
+            "lifecycle-1",
+            current_node="test",
+            conversation_history=json.dumps(history_2),
+            node_trace=json.dumps(trace_2),
+            tokens_used=450,
+        )
+
+        # 4. Final completion
+        await db.update_playbook_run(
+            "lifecycle-1",
+            status="completed",
+            conversation_history=json.dumps(history_2),
+            node_trace=json.dumps(trace_2),
+            tokens_used=450,
+            completed_at=1020.0,
+        )
+
+        # Verify final state
+        fetched = await db.get_playbook_run("lifecycle-1")
+        assert fetched.status == "completed"
+        assert fetched.tokens_used == 450
+        assert fetched.completed_at == 1020.0
+        assert fetched.current_node == "test"
+
+        restored_history = json.loads(fetched.conversation_history)
+        assert len(restored_history) == 5
+        assert restored_history[-1]["content"] == "All 42 tests passed."
+
+        restored_trace = json.loads(fetched.node_trace)
+        assert len(restored_trace) == 2
+        assert [t["node_id"] for t in restored_trace] == ["build", "test"]
+
+    async def test_large_conversation_history(self, db):
+        """Verify large conversation histories are stored and retrieved correctly."""
+        messages = []
+        for i in range(50):
+            messages.append({"role": "user", "content": f"Step {i}: do task {i}"})
+            messages.append({"role": "assistant", "content": f"Completed task {i}. " + "x" * 200})
+
+        run = _make_playbook_run(conversation_history=messages)
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("run-1")
+        restored = json.loads(fetched.conversation_history)
+        assert len(restored) == 100
+        assert restored[99]["content"].startswith("Completed task 49.")
+
+    async def test_pinned_graph_round_trip(self, db):
+        """Pinned compiled graph must survive serialization through the DB."""
+        graph = {
+            "id": "review-playbook",
+            "version": 2,
+            "source_hash": "abcdef1234567890",
+            "nodes": {
+                "analyse": {
+                    "entry": True,
+                    "prompt": "Analyse the issue.",
+                    "goto": "review",
+                },
+                "review": {
+                    "prompt": "Present for human review.",
+                    "wait_for_human": True,
+                    "transitions": [
+                        {"goto": "execute", "when": "approved"},
+                        {"goto": "done", "otherwise": True},
+                    ],
+                },
+                "execute": {"prompt": "Execute the plan.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        run = _make_playbook_run(
+            run_id="pinned-1",
+            pinned_graph=graph,
+        )
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("pinned-1")
+        assert fetched is not None
+        assert fetched.pinned_graph is not None
+        restored = json.loads(fetched.pinned_graph)
+        assert restored == graph
+        assert restored["version"] == 2
+        assert "analyse" in restored["nodes"]
+        assert restored["nodes"]["review"]["wait_for_human"] is True
+
+    async def test_pinned_graph_null_by_default(self, db):
+        """Runs created without a pinned_graph should have None."""
+        run = _make_playbook_run(run_id="no-graph-1")
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("no-graph-1")
+        assert fetched is not None
+        assert fetched.pinned_graph is None
+
+    async def test_paused_run_with_pinned_graph_full_state(self, db):
+        """A paused run with pinned_graph preserves all state for resume."""
+        graph = {
+            "id": "review-pb",
+            "version": 5,
+            "nodes": {
+                "scan": {"entry": True, "prompt": "Scan.", "goto": "review"},
+                "review": {
+                    "prompt": "Review.",
+                    "wait_for_human": True,
+                    "transitions": [{"goto": "done", "otherwise": True}],
+                },
+                "done": {"terminal": True},
+            },
+        }
+        messages = [
+            {"role": "user", "content": "Event: test"},
+            {"role": "user", "content": "Scan."},
+            {"role": "assistant", "content": "Scan complete."},
+        ]
+        run = _make_playbook_run(
+            run_id="paused-pinned-1",
+            playbook_id="review-pb",
+            version=5,
+            status="paused",
+            current_node="review",
+            conversation_history=messages,
+            tokens_used=100,
+            started_at=2000.0,
+            pinned_graph=graph,
+        )
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("paused-pinned-1")
+        assert fetched is not None
+        assert fetched.status == "paused"
+        assert fetched.current_node == "review"
+        assert fetched.playbook_version == 5
+        # Pinned graph matches original
+        restored_graph = json.loads(fetched.pinned_graph)
+        assert restored_graph == graph
+        assert restored_graph["version"] == 5
+        # Other state also round-trips
+        assert json.loads(fetched.conversation_history) == messages
+        assert fetched.tokens_used == 100
+
+
+class TestRoadmap5217DB:
+    """Roadmap 5.2.17 — DB-layer integration tests for PlaybookRun persistence.
+
+    These complement the mock-based runner tests with real SQLite round-trips
+    for cases (f), (g), and (h).
+    """
+
+    async def test_f_source_hash_round_trip_via_pinned_graph(self, db):
+        """(f) source_hash survives DB round-trip inside pinned_graph."""
+        graph = {
+            "id": "versioned-playbook",
+            "version": 4,
+            "source_hash": "sha256:deadbeef12345678",
+            "triggers": ["git.push"],
+            "scope": "project",
+            "nodes": {
+                "start": {"entry": True, "prompt": "Go.", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        run = _make_playbook_run(
+            run_id="hash-round-trip-1",
+            playbook_id="versioned-playbook",
+            version=4,
+            status="completed",
+            completed_at=time.time(),
+            pinned_graph=graph,
+        )
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("hash-round-trip-1")
+        assert fetched is not None
+        assert fetched.pinned_graph is not None
+        restored = json.loads(fetched.pinned_graph)
+        assert restored["source_hash"] == "sha256:deadbeef12345678"
+        assert restored["version"] == 4
+
+    async def test_g_query_by_playbook_id_returns_sorted(self, db):
+        """(g) Querying runs by playbook_id returns all runs sorted by
+        start time (newest first)."""
+        # Create 4 runs for two playbooks with interleaved start times
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="g-1", playbook_id="pb-alpha", started_at=1000.0)
+        )
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="g-2", playbook_id="pb-beta", started_at=1001.0)
+        )
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="g-3", playbook_id="pb-alpha", started_at=1002.0)
+        )
+        await db.create_playbook_run(
+            _make_playbook_run(run_id="g-4", playbook_id="pb-alpha", started_at=1003.0)
+        )
+
+        # Filter by pb-alpha — should return 3 runs
+        runs = await db.list_playbook_runs(playbook_id="pb-alpha")
+        assert len(runs) == 3
+        assert all(r.playbook_id == "pb-alpha" for r in runs)
+
+        # Sorted by start_time descending (newest first)
+        assert runs[0].run_id == "g-4"  # started_at=1003
+        assert runs[1].run_id == "g-3"  # started_at=1002
+        assert runs[2].run_id == "g-1"  # started_at=1000
+
+        # pb-beta should be excluded
+        assert not any(r.playbook_id == "pb-beta" for r in runs)
+
+    async def test_h_timing_fields_round_trip(self, db):
+        """(h) Run record includes start_time, end_time, and per-node
+        durations — all survive DB round-trip."""
+        node_trace = [
+            {
+                "node_id": "start",
+                "started_at": 1000.0,
+                "completed_at": 1002.5,
+                "status": "completed",
+            },
+            {
+                "node_id": "analyze",
+                "started_at": 1002.5,
+                "completed_at": 1007.3,
+                "status": "completed",
+            },
+            {
+                "node_id": "report",
+                "started_at": 1007.3,
+                "completed_at": 1010.0,
+                "status": "completed",
+            },
+        ]
+        run = _make_playbook_run(
+            run_id="timing-1",
+            status="completed",
+            started_at=1000.0,
+            completed_at=1010.0,
+            node_trace=node_trace,
+            tokens_used=500,
+        )
+        await db.create_playbook_run(run)
+
+        fetched = await db.get_playbook_run("timing-1")
+        assert fetched is not None
+
+        # Run-level timing
+        assert fetched.started_at == 1000.0
+        assert fetched.completed_at == 1010.0
+
+        # Per-node durations
+        trace = json.loads(fetched.node_trace)
+        assert len(trace) == 3
+
+        expected_durations = {
+            "start": 2.5,
+            "analyze": 4.8,
+            "report": 2.7,
+        }
+        for entry in trace:
+            assert entry["started_at"] is not None
+            assert entry["completed_at"] is not None
+            duration = entry["completed_at"] - entry["started_at"]
+            assert abs(duration - expected_durations[entry["node_id"]]) < 0.01, (
+                f"Node '{entry['node_id']}': expected duration "
+                f"{expected_durations[entry['node_id']]}, got {duration}"
+            )
+
+
+# ── Workflow Queries ─────────────────────────────────────────────────────
+
+
+def _make_playbook_run_for_workflow(
+    run_id: str = "pbr-wf-1",
+    playbook_id: str = "pb-coord",
+) -> PlaybookRun:
+    """Helper to create a playbook run record for workflow FK constraints."""
+    return PlaybookRun(
+        run_id=run_id,
+        playbook_id=playbook_id,
+        playbook_version=1,
+        trigger_event=json.dumps({"type": "test"}),
+        status="running",
+        started_at=time.time(),
+    )
+
+
+def _make_workflow(
+    workflow_id: str = "wf-1",
+    playbook_id: str = "pb-coord",
+    playbook_run_id: str = "pbr-wf-1",
+    project_id: str = "p-1",
+    status: str = "running",
+    current_stage: str | None = None,
+    task_ids: list[str] | None = None,
+    agent_affinity: dict | None = None,
+    created_at: float = 0.0,
+    completed_at: float | None = None,
+) -> Workflow:
+    """Helper to build a Workflow with sensible defaults."""
+    return Workflow(
+        workflow_id=workflow_id,
+        playbook_id=playbook_id,
+        playbook_run_id=playbook_run_id,
+        project_id=project_id,
+        status=status,
+        current_stage=current_stage,
+        task_ids=task_ids or [],
+        agent_affinity=agent_affinity or {},
+        created_at=created_at or time.time(),
+        completed_at=completed_at,
+    )
+
+
+async def _setup_workflow_fks(db, project_id="p-1", run_id="pbr-wf-1"):
+    """Create the project and playbook_run that workflows FK-reference."""
+    await _make_project(db, project_id)
+    await db.create_playbook_run(_make_playbook_run_for_workflow(run_id=run_id))
+
+
+class TestWorkflowQueries:
+    """Integration tests for Workflow CRUD — real SQLite, not mocks."""
+
+    # ── Create + Get ─────────────────────────────────────────────────
+
+    async def test_create_and_get_workflow(self, db):
+        await _setup_workflow_fks(db)
+        wf = _make_workflow()
+        await db.create_workflow(wf)
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched is not None
+        assert fetched.workflow_id == "wf-1"
+        assert fetched.playbook_id == "pb-coord"
+        assert fetched.playbook_run_id == "pbr-wf-1"
+        assert fetched.project_id == "p-1"
+        assert fetched.status == "running"
+
+    async def test_get_nonexistent_returns_none(self, db):
+        assert await db.get_workflow("nope") is None
+
+    async def test_create_with_all_fields(self, db):
+        await _setup_workflow_fks(db)
+        wf = _make_workflow(
+            current_stage="build",
+            task_ids=["t-1", "t-2"],
+            agent_affinity={"t-1": "agent-3"},
+            created_at=1000.0,
+        )
+        await db.create_workflow(wf)
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.current_stage == "build"
+        assert fetched.task_ids == ["t-1", "t-2"]
+        assert fetched.agent_affinity == {"t-1": "agent-3"}
+        assert fetched.created_at == 1000.0
+        assert fetched.completed_at is None
+
+    # ── Update Status ────────────────────────────────────────────────
+
+    async def test_update_workflow_status(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.update_workflow_status("wf-1", "paused")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.status == "paused"
+        assert fetched.completed_at is None  # not terminal
+
+    async def test_update_workflow_status_to_completed_sets_timestamp(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.update_workflow_status("wf-1", "completed")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.status == "completed"
+        assert fetched.completed_at is not None
+
+    async def test_update_workflow_status_to_failed_sets_timestamp(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.update_workflow_status("wf-1", "failed")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.status == "failed"
+        assert fetched.completed_at is not None
+
+    async def test_update_workflow_status_explicit_completed_at(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.update_workflow_status("wf-1", "completed", completed_at=9999.0)
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.completed_at == 9999.0
+
+    async def test_update_workflow_status_noop_same_status(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(created_at=1000.0))
+
+        await db.update_workflow_status("wf-1", "running")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.status == "running"
+
+    async def test_update_workflow_status_invalid_raises(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        with pytest.raises(ValueError, match="Invalid workflow status"):
+            await db.update_workflow_status("wf-1", "bogus")
+
+    async def test_update_workflow_status_invalid_transition_logs_warning(self, db, caplog):
+        """Invalid transitions log a warning but still apply."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+
+        # running -> running is a no-op (tested above), but
+        # completed -> running would be invalid if we could get to completed
+        await db.update_workflow_status("wf-1", "completed")
+        await db.update_workflow_status("wf-1", "paused")  # completed -> paused is invalid
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.status == "paused"  # still applied
+        assert any("Invalid workflow status transition" in r.message for r in caplog.records)
+
+    async def test_update_workflow_status_nonexistent_logs_warning(self, db, caplog):
+        await db.update_workflow_status("nope", "completed")
+        assert any("not found" in r.message for r in caplog.records)
+
+    # ── Add Task ─────────────────────────────────────────────────────
+
+    async def test_add_workflow_task(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.add_workflow_task("wf-1", "t-100")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.task_ids == ["t-100"]
+
+    async def test_add_workflow_task_appends(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(task_ids=["t-1"]))
+
+        await db.add_workflow_task("wf-1", "t-2")
+        await db.add_workflow_task("wf-1", "t-3")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.task_ids == ["t-1", "t-2", "t-3"]
+
+    async def test_add_workflow_task_idempotent(self, db):
+        """Adding the same task ID twice should not duplicate it."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(task_ids=["t-1"]))
+
+        await db.add_workflow_task("wf-1", "t-1")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.task_ids == ["t-1"]
+
+    async def test_add_workflow_task_nonexistent_logs_warning(self, db, caplog):
+        await db.add_workflow_task("nope", "t-1")
+        assert any("not found" in r.message for r in caplog.records)
+
+    # ── Generic Update ───────────────────────────────────────────────
+
+    async def test_update_workflow_generic(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.update_workflow("wf-1", current_stage="deploy")
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.current_stage == "deploy"
+
+    async def test_update_workflow_agent_affinity(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        new_affinity = json.dumps({"stage-build": "agent-5"})
+        await db.update_workflow("wf-1", agent_affinity=new_affinity)
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.agent_affinity == {"stage-build": "agent-5"}
+
+    # ── List ─────────────────────────────────────────────────────────
+
+    async def test_list_workflows_newest_first(self, db):
+        await _setup_workflow_fks(db)
+        for i in range(3):
+            await db.create_workflow(_make_workflow(workflow_id=f"wf-{i}", created_at=1000.0 + i))
+
+        wfs = await db.list_workflows()
+        assert len(wfs) == 3
+        assert wfs[0].workflow_id == "wf-2"  # newest
+        assert wfs[2].workflow_id == "wf-0"  # oldest
+
+    async def test_list_filter_by_project_id(self, db):
+        await _make_project(db, "p-1")
+        await _make_project(db, "p-2")
+        await db.create_playbook_run(_make_playbook_run_for_workflow())
+
+        await db.create_workflow(_make_workflow(workflow_id="wf-a", project_id="p-1"))
+        await db.create_workflow(_make_workflow(workflow_id="wf-b", project_id="p-2"))
+        await db.create_workflow(_make_workflow(workflow_id="wf-c", project_id="p-1"))
+
+        wfs = await db.list_workflows(project_id="p-1")
+        assert len(wfs) == 2
+        assert all(w.project_id == "p-1" for w in wfs)
+
+    async def test_list_filter_by_status(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(workflow_id="wf-r", status="running"))
+        await db.create_workflow(_make_workflow(workflow_id="wf-p", status="paused"))
+        await db.create_workflow(_make_workflow(workflow_id="wf-c", status="completed"))
+
+        running = await db.list_workflows(status="running")
+        assert len(running) == 1
+        assert running[0].workflow_id == "wf-r"
+
+    async def test_list_filter_by_playbook_id(self, db):
+        await _make_project(db, "p-1")
+        await db.create_playbook_run(_make_playbook_run_for_workflow(run_id="pbr-wf-1"))
+        await db.create_playbook_run(
+            _make_playbook_run_for_workflow(run_id="pbr-wf-2", playbook_id="pb-other")
+        )
+
+        await db.create_workflow(_make_workflow(workflow_id="wf-a", playbook_id="pb-coord"))
+        await db.create_workflow(
+            _make_workflow(
+                workflow_id="wf-b",
+                playbook_id="pb-other",
+                playbook_run_id="pbr-wf-2",
+            )
+        )
+
+        wfs = await db.list_workflows(playbook_id="pb-coord")
+        assert len(wfs) == 1
+        assert wfs[0].workflow_id == "wf-a"
+
+    async def test_list_with_limit(self, db):
+        await _setup_workflow_fks(db)
+        for i in range(5):
+            await db.create_workflow(_make_workflow(workflow_id=f"wf-{i}", created_at=1000.0 + i))
+
+        wfs = await db.list_workflows(limit=2)
+        assert len(wfs) == 2
+        assert wfs[0].workflow_id == "wf-4"  # newest
+
+    async def test_list_combined_filters(self, db):
+        await _make_project(db, "p-1")
+        await _make_project(db, "p-2")
+        await db.create_playbook_run(_make_playbook_run_for_workflow())
+
+        await db.create_workflow(
+            _make_workflow(workflow_id="wf-1", project_id="p-1", status="completed")
+        )
+        await db.create_workflow(
+            _make_workflow(workflow_id="wf-2", project_id="p-1", status="running")
+        )
+        await db.create_workflow(
+            _make_workflow(workflow_id="wf-3", project_id="p-2", status="completed")
+        )
+
+        wfs = await db.list_workflows(project_id="p-1", status="completed")
+        assert len(wfs) == 1
+        assert wfs[0].workflow_id == "wf-1"
+
+    # ── Delete ───────────────────────────────────────────────────────
+
+    async def test_delete_workflow(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+        await db.delete_workflow("wf-1")
+        assert await db.get_workflow("wf-1") is None
+
+    async def test_delete_nonexistent_is_noop(self, db):
+        # Should not raise
+        await db.delete_workflow("nonexistent")
+
+    # ── JSON Round-trips ─────────────────────────────────────────────
+
+    async def test_task_ids_json_round_trip(self, db):
+        await _setup_workflow_fks(db)
+        ids = ["t-alpha", "t-beta", "t-gamma"]
+        await db.create_workflow(_make_workflow(task_ids=ids))
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.task_ids == ids
+
+    async def test_agent_affinity_json_round_trip(self, db):
+        await _setup_workflow_fks(db)
+        affinity = {
+            "build-stage": "agent-1",
+            "test-stage": "agent-2",
+            "deploy-stage": "agent-1",
+        }
+        await db.create_workflow(_make_workflow(agent_affinity=affinity))
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.agent_affinity == affinity
+
+    async def test_empty_task_ids_round_trip(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(task_ids=[]))
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.task_ids == []
+
+    async def test_empty_agent_affinity_round_trip(self, db):
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(agent_affinity={}))
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.agent_affinity == {}
+
+
+class TestWorkflowLifecycle:
+    """Roadmap 7.1.5 — Workflow CRUD and lifecycle test cases (a)-(h).
+
+    These complement TestWorkflowQueries (unit-level CRUD) with higher-level
+    lifecycle scenarios specified in the roadmap.
+    """
+
+    # ── (a) Create returns valid workflow_id and initial status ───────
+
+    async def test_create_returns_valid_id_and_initial_status(self, db):
+        """(a) create_workflow returns a retrievable record with initial status 'running'."""
+        await _setup_workflow_fks(db)
+        wf = _make_workflow(workflow_id="wf-new")
+        await db.create_workflow(wf)
+
+        fetched = await db.get_workflow("wf-new")
+        assert fetched is not None
+        assert fetched.workflow_id == "wf-new"
+        # Implementation uses "running" as the initial status (not "pending")
+        assert fetched.status == "running"
+        assert fetched.created_at > 0
+        assert fetched.completed_at is None
+
+    async def test_create_preserves_all_fields(self, db):
+        """(a) All fields survive the create → get round-trip."""
+        await _setup_workflow_fks(db)
+        wf = _make_workflow(
+            workflow_id="wf-full",
+            current_stage="build",
+            task_ids=["t-1", "t-2"],
+            agent_affinity={"stage-build": "agent-1"},
+            created_at=42.0,
+        )
+        await db.create_workflow(wf)
+
+        fetched = await db.get_workflow("wf-full")
+        assert fetched.playbook_id == "pb-coord"
+        assert fetched.playbook_run_id == "pbr-wf-1"
+        assert fetched.project_id == "p-1"
+        assert fetched.current_stage == "build"
+        assert fetched.task_ids == ["t-1", "t-2"]
+        assert fetched.agent_affinity == {"stage-build": "agent-1"}
+        assert fetched.created_at == 42.0
+
+    # ── (b) Associate tasks with workflow via workflow_id FK ──────────
+
+    async def test_tasks_associated_via_workflow_id(self, db):
+        """(b) Tasks can be created with workflow_id FK and queried by it."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        # Create tasks — two linked to the workflow, one standalone
+        await db.create_task(
+            Task(
+                id="t-w1",
+                project_id="p-1",
+                title="WF Task 1",
+                description="desc",
+                workflow_id="wf-1",
+            )
+        )
+        await db.create_task(
+            Task(
+                id="t-w2",
+                project_id="p-1",
+                title="WF Task 2",
+                description="desc",
+                workflow_id="wf-1",
+            )
+        )
+        await db.create_task(
+            Task(
+                id="t-standalone",
+                project_id="p-1",
+                title="Standalone Task",
+                description="desc",
+            )
+        )
+
+        # Individual lookups reflect the FK
+        assert (await db.get_task("t-w1")).workflow_id == "wf-1"
+        assert (await db.get_task("t-w2")).workflow_id == "wf-1"
+        assert (await db.get_task("t-standalone")).workflow_id is None
+
+        # Tasks are queryable by workflow — filter from list_tasks
+        all_tasks = await db.list_tasks(project_id="p-1")
+        wf_tasks = [t for t in all_tasks if t.workflow_id == "wf-1"]
+        assert len(wf_tasks) == 2
+        assert {t.id for t in wf_tasks} == {"t-w1", "t-w2"}
+
+    async def test_workflow_tracks_task_ids_via_add_workflow_task(self, db):
+        """(b) add_workflow_task atomically associates tasks with the workflow."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.add_workflow_task("wf-1", "t-a")
+        await db.add_workflow_task("wf-1", "t-b")
+        await db.add_workflow_task("wf-1", "t-c")
+
+        fetched = await db.get_workflow("wf-1")
+        assert fetched.task_ids == ["t-a", "t-b", "t-c"]
+
+    # ── (c) Workflow status transitions ──────────────────────────────
+
+    async def test_transition_running_to_completed(self, db):
+        """(c) running → completed sets completed_at."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+
+        await db.update_workflow_status("wf-1", "completed")
+        wf = await db.get_workflow("wf-1")
+        assert wf.status == "completed"
+        assert wf.completed_at is not None
+
+    async def test_transition_running_to_failed(self, db):
+        """(c) running → failed sets completed_at."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+
+        await db.update_workflow_status("wf-1", "failed")
+        wf = await db.get_workflow("wf-1")
+        assert wf.status == "failed"
+        assert wf.completed_at is not None
+
+    async def test_transition_full_path_via_pause(self, db):
+        """(c) running → paused → running → completed (multi-hop path)."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+
+        await db.update_workflow_status("wf-1", "paused")
+        assert (await db.get_workflow("wf-1")).status == "paused"
+
+        await db.update_workflow_status("wf-1", "running")
+        assert (await db.get_workflow("wf-1")).status == "running"
+
+        await db.update_workflow_status("wf-1", "completed")
+        wf = await db.get_workflow("wf-1")
+        assert wf.status == "completed"
+        assert wf.completed_at is not None
+
+    async def test_transition_failed_allows_retry(self, db):
+        """(c) failed → running is a valid retry path."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+
+        await db.update_workflow_status("wf-1", "failed")
+        assert (await db.get_workflow("wf-1")).status == "failed"
+
+        # Retry: failed → running
+        await db.update_workflow_status("wf-1", "running")
+        wf = await db.get_workflow("wf-1")
+        assert wf.status == "running"
+
+    # ── (d) Invalid status transitions are rejected ──────────────────
+
+    async def test_invalid_transition_completed_to_running_warns(self, db, caplog):
+        """(d) completed → running is invalid (completed is terminal)."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+        await db.update_workflow_status("wf-1", "completed")
+
+        await db.update_workflow_status("wf-1", "running")
+        assert any("Invalid workflow status transition" in r.message for r in caplog.records)
+
+    async def test_invalid_transition_completed_to_paused_warns(self, db, caplog):
+        """(d) completed → paused is invalid (completed is terminal)."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+        await db.update_workflow_status("wf-1", "completed")
+
+        await db.update_workflow_status("wf-1", "paused")
+        assert any("Invalid workflow status transition" in r.message for r in caplog.records)
+
+    async def test_invalid_transition_paused_to_completed_warns(self, db, caplog):
+        """(d) paused → completed is invalid (must resume first)."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow(status="running"))
+        await db.update_workflow_status("wf-1", "paused")
+
+        await db.update_workflow_status("wf-1", "completed")
+        assert any("Invalid workflow status transition" in r.message for r in caplog.records)
+
+    async def test_invalid_status_string_raises_value_error(self, db):
+        """(d) Completely bogus status strings raise ValueError."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        for bad_status in ("pending", "stopped", "cancelled", ""):
+            with pytest.raises(ValueError, match="Invalid workflow status"):
+                await db.update_workflow_status("wf-1", bad_status)
+
+    # ── (e) workflow.stage.completed event ────────────────────────────
+
+    @pytest.mark.skip(
+        reason="Depends on roadmap 7.1.4 (workflow.stage.completed event emission) — not yet implemented"
+    )
+    async def test_stage_completed_event_emitted(self, db):
+        """(e) workflow.stage.completed event fires when all stage tasks complete."""
+        # Placeholder — the event schema exists (src/event_schemas.py) but
+        # the emission logic in the orchestrator (7.1.4) is not yet wired up.
+        pass
+
+    # ── (f) Workflow with no tasks can be created and tracked ────────
+
+    async def test_empty_workflow_full_lifecycle(self, db):
+        """(f) A workflow with no associated tasks can be created, tracked, and completed."""
+        await _setup_workflow_fks(db)
+        wf = _make_workflow(task_ids=[])
+        await db.create_workflow(wf)
+
+        # Readable
+        fetched = await db.get_workflow("wf-1")
+        assert fetched is not None
+        assert fetched.task_ids == []
+
+        # Updatable
+        await db.update_workflow("wf-1", current_stage="deploy")
+        assert (await db.get_workflow("wf-1")).current_stage == "deploy"
+
+        # Status-transitionable
+        await db.update_workflow_status("wf-1", "completed")
+        assert (await db.get_workflow("wf-1")).status == "completed"
+
+        # Listable
+        wfs = await db.list_workflows()
+        assert len(wfs) == 1
+        assert wfs[0].workflow_id == "wf-1"
+
+        # Deletable
+        await db.delete_workflow("wf-1")
+        assert await db.get_workflow("wf-1") is None
+
+    # ── (g) Deleting workflow does not delete its tasks ───────────────
+
+    async def test_delete_workflow_preserves_tasks(self, db):
+        """(g) Tasks associated with a workflow survive workflow deletion."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        # Create tasks associated with the workflow
+        await db.create_task(
+            Task(
+                id="t-surv1",
+                project_id="p-1",
+                title="Survivor 1",
+                description="desc",
+                workflow_id="wf-1",
+            )
+        )
+        await db.create_task(
+            Task(
+                id="t-surv2",
+                project_id="p-1",
+                title="Survivor 2",
+                description="desc",
+                workflow_id="wf-1",
+            )
+        )
+
+        # Detach tasks from workflow (clear FK) then delete
+        await db.update_task("t-surv1", workflow_id=None)
+        await db.update_task("t-surv2", workflow_id=None)
+        await db.delete_workflow("wf-1")
+
+        # Workflow is gone
+        assert await db.get_workflow("wf-1") is None
+
+        # Tasks survived
+        t1 = await db.get_task("t-surv1")
+        t2 = await db.get_task("t-surv2")
+        assert t1 is not None
+        assert t2 is not None
+        assert t1.workflow_id is None
+        assert t2.workflow_id is None
+
+    async def test_tasks_not_cascade_deleted_with_workflow(self, db):
+        """(g) No ON DELETE CASCADE — FK blocks direct deletion of referenced workflow."""
+        await _setup_workflow_fks(db)
+        await db.create_workflow(_make_workflow())
+
+        await db.create_task(
+            Task(
+                id="t-linked",
+                project_id="p-1",
+                title="Linked",
+                description="desc",
+                workflow_id="wf-1",
+            )
+        )
+
+        # Attempting to delete the workflow while tasks reference it
+        # should either raise (FK enforced) or succeed without
+        # cascade-deleting the task.
+        try:
+            await db.delete_workflow("wf-1")
+        except Exception:
+            # FK constraint prevented deletion — task is protected
+            pass
+
+        # Regardless of whether the delete succeeded, the task must exist
+        task = await db.get_task("t-linked")
+        assert task is not None
+
+    # ── (h) Concurrent creation — no ID collisions ───────────────────
+
+    async def test_concurrent_creation_no_id_collisions(self, db):
+        """(h) Multiple concurrent create_workflow calls with distinct IDs all succeed."""
+        await _setup_workflow_fks(db)
+
+        wfs = [_make_workflow(workflow_id=f"wf-cc-{i}", created_at=1000.0 + i) for i in range(10)]
+
+        await asyncio.gather(*(db.create_workflow(wf) for wf in wfs))
+
+        # All 10 should exist
+        all_wfs = await db.list_workflows(limit=20)
+        assert len(all_wfs) == 10
+        ids = {w.workflow_id for w in all_wfs}
+        assert ids == {f"wf-cc-{i}" for i in range(10)}
+
+    async def test_concurrent_creation_duplicate_id_handled(self, db):
+        """(h) Creating two workflows with the same ID raises (integrity constraint)."""
+        await _setup_workflow_fks(db)
+
+        wf_a = _make_workflow(workflow_id="wf-dup", created_at=1000.0)
+        wf_b = _make_workflow(workflow_id="wf-dup", created_at=2000.0)
+
+        # First creation succeeds
+        await db.create_workflow(wf_a)
+
+        # Duplicate ID should raise
+        with pytest.raises(Exception):
+            await db.create_workflow(wf_b)
 
 
 class TestMockAdapter:

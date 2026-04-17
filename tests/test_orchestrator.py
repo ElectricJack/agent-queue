@@ -75,6 +75,7 @@ async def orch(tmp_path):
     config = AppConfig(
         database_path=str(tmp_path / "test.db"),
         workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
     )
     o = Orchestrator(config, adapter_factory=MockAdapterFactory())
     await o.initialize()
@@ -109,15 +110,16 @@ async def _run_cycle_and_wait(orch):
 
 
 async def _approve_plan_for_task(orch, task_id: str) -> list:
-    """Simulate plan approval: transition to COMPLETED and promote subtasks.
+    """Simulate plan approval: transition to IN_PROGRESS and promote subtasks.
 
     Returns an empty list (subtask creation is now handled by the supervisor
     LLM via break_plan_into_tasks, not by the orchestrator).
+    The parent stays IN_PROGRESS until all subtasks complete.
     """
     task = await orch.db.get_task(task_id)
     if not task or task.status != TaskStatus.AWAITING_PLAN_APPROVAL:
         return []
-    await orch.db.transition_task(task_id, TaskStatus.COMPLETED, context="plan_approved")
+    await orch.db.transition_task(task_id, TaskStatus.IN_PROGRESS, context="plan_approved")
     await orch._check_defined_tasks()
     return []
 
@@ -496,6 +498,7 @@ class TestPlanApprovalBlocking:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(workspace),
+            data_dir=str(tmp_path / "data"),
         )
         config.auto_task = AutoTaskConfig(enabled=True, chain_dependencies=True)
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
@@ -554,7 +557,7 @@ class TestPlanApprovalBlocking:
         assert s2.status == TaskStatus.DEFINED, "Sub 2 should stay DEFINED"
 
     async def test_subtasks_promoted_after_plan_approved(self, orch_with_workspace):
-        """After parent transitions to COMPLETED, first subtask gets promoted."""
+        """After parent transitions to IN_PROGRESS (plan approved), first subtask gets promoted."""
         orch, workspace = orch_with_workspace
 
         await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
@@ -593,8 +596,14 @@ class TestPlanApprovalBlocking:
         await orch.db.add_dependency("t-sub-1", depends_on="t-plan")
         await orch.db.add_dependency("t-sub-2", depends_on="t-sub-1")
 
-        # Simulate plan approval: transition parent to COMPLETED
-        await orch.db.transition_task("t-plan", TaskStatus.COMPLETED, context="plan_approved")
+        # Simulate plan approval: transition parent to IN_PROGRESS
+        await orch.db.transition_task("t-plan", TaskStatus.IN_PROGRESS, context="plan_approved")
+
+        # Parent should be IN_PROGRESS, not COMPLETED
+        plan = await orch.db.get_task("t-plan")
+        assert plan.status == TaskStatus.IN_PROGRESS, (
+            "Plan parent should be IN_PROGRESS after approval"
+        )
 
         # Now run _check_defined_tasks — first subtask should promote
         await orch._check_defined_tasks()
@@ -603,6 +612,58 @@ class TestPlanApprovalBlocking:
         s2 = await orch.db.get_task("t-sub-2")
         assert s1.status == TaskStatus.READY, "Sub 1 should be READY after approval"
         assert s2.status == TaskStatus.DEFINED, "Sub 2 should stay DEFINED (deps not met)"
+
+    async def test_plan_parent_auto_completes_when_subtasks_done(self, orch_with_workspace):
+        """Plan parent transitions to COMPLETED when all subtasks finish."""
+        orch, workspace = orch_with_workspace
+
+        await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
+
+        # Create parent in IN_PROGRESS (plan approved)
+        parent = Task(
+            id="t-plan",
+            project_id="p-1",
+            title="Plan Task",
+            description="Create plan",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(parent)
+
+        # Create subtasks
+        sub1 = Task(
+            id="t-sub-1",
+            project_id="p-1",
+            title="Sub 1",
+            description="First subtask",
+            status=TaskStatus.COMPLETED,
+            parent_task_id="t-plan",
+            is_plan_subtask=True,
+        )
+        sub2 = Task(
+            id="t-sub-2",
+            project_id="p-1",
+            title="Sub 2",
+            description="Second subtask",
+            status=TaskStatus.IN_PROGRESS,
+            parent_task_id="t-plan",
+            is_plan_subtask=True,
+        )
+        await orch.db.create_task(sub1)
+        await orch.db.create_task(sub2)
+
+        # Not all subtasks done — parent should stay IN_PROGRESS
+        await orch._check_plan_parent_completion()
+        plan = await orch.db.get_task("t-plan")
+        assert plan.status == TaskStatus.IN_PROGRESS, "Parent should stay IN_PROGRESS"
+
+        # Complete the last subtask
+        await orch.db.transition_task("t-sub-2", TaskStatus.COMPLETED, context="test")
+
+        # Now all subtasks are done — parent should auto-complete
+        orch._emit_text_notify = AsyncMock()
+        await orch._check_plan_parent_completion()
+        plan = await orch.db.get_task("t-plan")
+        assert plan.status == TaskStatus.COMPLETED, "Parent should auto-complete"
 
 
 class TestIsLastSubtask:
@@ -615,6 +676,7 @@ class TestIsLastSubtask:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(workspace),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await o.initialize()
@@ -730,6 +792,7 @@ class TestPrepareWorkspaceCleanDefault:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await orch.initialize()
@@ -791,6 +854,7 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
         orch.git = mock_git
 
@@ -817,6 +881,7 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.aprepare_for_task = AsyncMock()
         mock_git.aswitch_to_branch = AsyncMock()
         mock_git._arun = AsyncMock(return_value="")
@@ -837,6 +902,7 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git._arun = AsyncMock(return_value="")
         orch.git = mock_git
 
@@ -858,6 +924,7 @@ class TestPhaseVerifyNormalTask:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await o.initialize()
@@ -882,6 +949,10 @@ class TestPhaseVerifyNormalTask:
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value=None)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.acommit_all = AsyncMock(return_value=True)
+        mock_git.apush_branch = AsyncMock(return_value=None)
+        mock_git.aabort_in_progress_operations = AsyncMock()
+        mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         o.git = mock_git
 
         yield o
@@ -902,6 +973,61 @@ class TestPhaseVerifyNormalTask:
             ),
             default_branch="main",
         )
+
+    async def test_nonzero_exit_code_auto_remediates(self, pipeline_orch):
+        """Non-zero exit code skips verification but still auto-remediates dirty workspace."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-exit",
+            project_id="p-1",
+            title="Test exit",
+            description="test",
+            branch_name="feature-exit",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        # Agent left uncommitted changes and exited with error
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+        ctx.output.exit_code = 1  # Non-zero exit code
+
+        result = await orch._phase_verify(ctx)
+        # Should still CONTINUE (skip verification) but auto-remediate
+        assert result == PhaseResult.CONTINUE
+        # Should have attempted to commit the uncommitted changes
+        orch.git.acommit_all.assert_awaited_once()
+
+    async def test_nonzero_exit_code_skips_when_clean(self, pipeline_orch):
+        """Non-zero exit code with clean workspace skips without remediation."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-exit2",
+            project_id="p-1",
+            title="Test exit clean",
+            description="test",
+            branch_name="feature-exit2",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        # Workspace is clean
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=False)
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+        ctx.output.exit_code = 1  # Non-zero exit code
+
+        result = await orch._phase_verify(ctx)
+        assert result == PhaseResult.CONTINUE
+        # No commit attempt because workspace is clean
+        orch.git.acommit_all.assert_not_awaited()
 
     async def test_passes_on_default_branch_clean_synced(self, pipeline_orch):
         """Normal task passes when on default branch, no uncommitted, synced."""
@@ -924,8 +1050,8 @@ class TestPhaseVerifyNormalTask:
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
 
-    async def test_fails_when_on_task_branch(self, pipeline_orch):
-        """Normal task fails when workspace is still on task branch (not default)."""
+    async def test_auto_merges_when_on_task_branch(self, pipeline_orch):
+        """Normal task auto-merges task branch to default when agent forgot to merge."""
         orch = pipeline_orch
         from src.models import PhaseResult
 
@@ -946,10 +1072,50 @@ class TestPhaseVerifyNormalTask:
         ctx = self._make_ctx(orch, task, ws.workspace_path)
 
         result = await orch._phase_verify(ctx)
+        # Auto-merge should handle the branch switch + merge automatically
+        assert result == PhaseResult.CONTINUE
+        # Verify that checkout and merge were called
+        calls = [str(c) for c in orch.git._arun.call_args_list]
+        assert any("checkout" in c and "main" in c for c in calls)
+        assert any("merge" in c and "feature-2" in c for c in calls)
+
+    async def test_fails_when_auto_merge_fails(self, pipeline_orch):
+        """Falls back to failure when auto-merge raises an exception (e.g. conflict)."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-2b",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-2b",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        # Agent left workspace on task branch instead of default
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-2b")
+
+        # Checkout default succeeds, but merge fails (conflict)
+        async def mock_arun(args, cwd=None):
+            if args[0] == "merge":
+                raise Exception("merge conflict")
+            if args[0] == "checkout" and args[1] == "feature-2b":
+                return ""  # Recovery checkout back to task branch
+            return "0"
+
+        orch.git._arun = AsyncMock(side_effect=mock_arun)
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        # Auto-merge failed, should fall through to verification failure
         assert result == PhaseResult.STOP
 
-    async def test_fails_when_uncommitted_changes(self, pipeline_orch):
-        """Normal task fails when there are uncommitted changes on default branch."""
+    async def test_auto_commits_uncommitted_changes(self, pipeline_orch):
+        """Uncommitted changes on default branch are auto-committed."""
         orch = pipeline_orch
         from src.models import PhaseResult
 
@@ -963,7 +1129,36 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
+        # First call returns True (initial check), second returns False (re-check after commit)
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        # Auto-commit should fix the uncommitted changes
+        assert result == PhaseResult.CONTINUE
+        orch.git.acommit_all.assert_awaited_once()
+
+    async def test_fails_when_all_remediation_fails(self, pipeline_orch):
+        """Falls back to failure when all auto-remediation attempts fail."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-3b",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-3b",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
         orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
+        # Force-clean also fails to clean the workspace
+        orch.git.aforce_clean_workspace = AsyncMock(return_value=False)
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -971,8 +1166,68 @@ class TestPhaseVerifyNormalTask:
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
 
-    async def test_fails_when_ahead_of_origin(self, pipeline_orch):
-        """Normal task fails when local default branch has unpushed commits."""
+    async def test_force_cleans_when_commit_fails(self, pipeline_orch):
+        """Force-clean recovers the workspace when auto-commit fails."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-3b2",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-3b2",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
+        # Force-clean succeeds — workspace is clean after reset+clean
+        orch.git.aforce_clean_workspace = AsyncMock(return_value=True)
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        # Force-clean should have recovered the workspace
+        assert result == PhaseResult.CONTINUE
+        # force_clean may be called more than once (initial + final safety-net sweep)
+        assert orch.git.aforce_clean_workspace.await_count >= 1
+
+    async def test_auto_commit_and_merge_when_on_task_branch(self, pipeline_orch):
+        """Uncommitted changes on task branch are auto-committed, then auto-merged."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-3c",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-3c",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        # Agent left uncommitted changes on task branch
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-3c")
+        # First call True (initial), second False (after auto-commit)
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        # Auto-commit cleans up changes, then auto-merge merges to default
+        assert result == PhaseResult.CONTINUE
+        orch.git.acommit_all.assert_awaited_once()
+        # Verify merge happened
+        calls = [str(c) for c in orch.git._arun.call_args_list]
+        assert any("merge" in c and "feature-3c" in c for c in calls)
+
+    async def test_auto_pushes_unpushed_commits(self, pipeline_orch):
+        """Unpushed commits on default branch are auto-pushed."""
         orch = pipeline_orch
         from src.models import PhaseResult
 
@@ -986,9 +1241,38 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
-        # First _arun call is for "behind" check (returns "0" = ok),
-        # second is for "ahead" check (returns "3" = unpushed commits)
-        orch.git._arun = AsyncMock(side_effect=["0", "3"])
+        # Auto-push rev-list returns "3" (ahead), then scenario behind
+        # check returns "0", then scenario ahead check returns "0"
+        # (pushed successfully — mock won't change state but verification
+        # re-checks via _arun which we feed with subsequent values).
+        orch.git._arun = AsyncMock(side_effect=["3", "0", "0"])
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        assert result == PhaseResult.CONTINUE
+        orch.git.apush_branch.assert_awaited_once()
+
+    async def test_fails_when_ahead_and_auto_push_fails(self, pipeline_orch):
+        """Falls back to failure when auto-push raises an exception."""
+        orch = pipeline_orch
+        from src.models import PhaseResult
+
+        task = Task(
+            id="t-4b",
+            project_id="p-1",
+            title="Test",
+            description="test",
+            branch_name="feature-4b",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+
+        # Auto-push rev-list returns "3" (ahead) — triggers push
+        # Push fails, so scenario behind check gets "0", ahead check gets "3"
+        orch.git._arun = AsyncMock(side_effect=["3", "0", "3"])
+        orch.git.apush_branch = AsyncMock(side_effect=Exception("push failed"))
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1006,6 +1290,7 @@ class TestPhaseVerifyApprovalTask:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await o.initialize()
@@ -1030,6 +1315,10 @@ class TestPhaseVerifyApprovalTask:
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.acommit_all = AsyncMock(return_value=True)
+        mock_git.apush_branch = AsyncMock(return_value=None)
+        mock_git.aabort_in_progress_operations = AsyncMock()
+        mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         o.git = mock_git
 
         yield o
@@ -1110,6 +1399,7 @@ class TestPhaseVerifyIntermediateSubtask:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await o.initialize()
@@ -1168,6 +1458,10 @@ class TestPhaseVerifyIntermediateSubtask:
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.afind_open_pr = AsyncMock(return_value=None)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.acommit_all = AsyncMock(return_value=True)
+        mock_git.apush_branch = AsyncMock(return_value=None)
+        mock_git.aabort_in_progress_operations = AsyncMock()
+        mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
         o.git = mock_git
 
         yield o, sub1
@@ -1200,18 +1494,108 @@ class TestPhaseVerifyIntermediateSubtask:
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
 
-    async def test_fails_when_uncommitted_changes(self, pipeline_orch):
-        """Intermediate subtask fails when there are uncommitted changes."""
+    async def test_auto_commits_uncommitted_changes(self, pipeline_orch):
+        """Intermediate subtask auto-commits uncommitted changes."""
+        orch, sub1 = pipeline_orch
+        from src.models import PhaseResult
+
+        # First call returns True (initial check), second returns False (re-check after commit)
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False])
+
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = self._make_ctx(orch, sub1, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+        # Auto-commit should fix the uncommitted changes
+        assert result == PhaseResult.CONTINUE
+        orch.git.acommit_all.assert_awaited_once()
+
+    async def test_fails_when_all_remediation_fails(self, pipeline_orch):
+        """Intermediate subtask fails when all auto-remediation attempts fail."""
         orch, sub1 = pipeline_orch
         from src.models import PhaseResult
 
         orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
+        # Force-clean also fails to clean the workspace
+        orch.git.aforce_clean_workspace = AsyncMock(return_value=False)
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, sub1, ws.workspace_path)
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
+
+
+class TestCleanupWorkspaceForNextTask:
+    """Tests for _cleanup_workspace_for_next_task."""
+
+    @pytest.fixture
+    async def cleanup_orch(self, tmp_path):
+        """Orchestrator with mocked git for workspace cleanup tests."""
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
+        )
+        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        await o.initialize()
+
+        mock_git = MagicMock()
+        mock_git.avalidate_checkout = AsyncMock(return_value=True)
+        mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
+        mock_git.aget_current_branch = AsyncMock(return_value="main")
+        mock_git.acommit_all = AsyncMock(return_value=True)
+        mock_git._arun = AsyncMock(return_value=None)
+        mock_git.aabort_in_progress_operations = AsyncMock()
+        mock_git.aforce_clean_workspace = AsyncMock(return_value=True)
+        o.git = mock_git
+
+        yield o
+        await _drain_running_tasks(o)
+        await o.shutdown()
+
+    async def test_noop_when_workspace_is_none(self, cleanup_orch):
+        """Does nothing when workspace is None."""
+        orch = cleanup_orch
+        await orch._cleanup_workspace_for_next_task(None, "main", "t-1")
+        orch.git.avalidate_checkout.assert_not_awaited()
+
+    async def test_noop_when_no_uncommitted_on_default(self, cleanup_orch):
+        """Does nothing when workspace is clean and on default branch."""
+        orch = cleanup_orch
+        await orch._cleanup_workspace_for_next_task("/fake/path", "main", "t-1")
+        orch.git.acommit_all.assert_not_awaited()
+
+    async def test_commits_uncommitted_changes(self, cleanup_orch):
+        """Commits uncommitted changes during cleanup."""
+        orch = cleanup_orch
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+
+        await orch._cleanup_workspace_for_next_task("/fake/path", "main", "t-1")
+        orch.git.acommit_all.assert_awaited_once()
+
+    async def test_stashes_when_commit_fails(self, cleanup_orch):
+        """Falls back to git stash when auto-commit fails."""
+        orch = cleanup_orch
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
+
+        await orch._cleanup_workspace_for_next_task("/fake/path", "main", "t-1")
+        # Should have tried stash via _arun
+        orch.git._arun.assert_awaited()
+        stash_call = orch.git._arun.call_args_list[0]
+        assert stash_call[0][0][0] == "stash"
+
+    async def test_switches_to_default_branch(self, cleanup_orch):
+        """Switches to default branch when on a different branch."""
+        orch = cleanup_orch
+        orch.git.aget_current_branch = AsyncMock(return_value="feature-branch")
+
+        await orch._cleanup_workspace_for_next_task("/fake/path", "main", "t-1")
+        # Should checkout default branch
+        checkout_call = orch.git._arun.call_args_list[0]
+        assert checkout_call[0][0] == ["checkout", "main"]
 
 
 class TestVerificationReopen:
@@ -1223,6 +1607,7 @@ class TestVerificationReopen:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
             auto_task=AutoTaskConfig(max_verification_retries=2),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
@@ -1259,7 +1644,7 @@ class TestVerificationReopen:
         )
         await orch.db.create_task(task)
 
-        failures = ["You left uncommitted changes."]
+        failures = [("You left uncommitted changes.", True)]
         result = await orch._reopen_with_verification_feedback(task, failures)
 
         assert result is True
@@ -1304,7 +1689,7 @@ class TestVerificationReopen:
             content="attempt 2",
         )
 
-        failures = ["Still has uncommitted changes."]
+        failures = [("Still has uncommitted changes.", True)]
         result = await orch._reopen_with_verification_feedback(task, failures)
 
         assert result is False
@@ -1326,6 +1711,7 @@ class TestCompletionPipelineVerify:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config, adapter_factory=MockAdapterFactory())
         await o.initialize()
@@ -1427,8 +1813,12 @@ class TestCompletionPipelineVerify:
         await orch.db.create_task(task)
         await orch.db.acquire_workspace("p-1", "a-1", "t-2")
 
-        # Agent left workspace on task branch (verification failure)
+        # Agent left uncommitted changes that can't be remediated —
+        # all auto-remediation attempts fail, forcing verification STOP.
         orch.git.aget_current_branch = AsyncMock(return_value="feature-2")
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        orch.git.acommit_all = AsyncMock(side_effect=Exception("commit failed"))
+        orch.git.aforce_clean_workspace = AsyncMock(return_value=False)
 
         ws = await orch.db.get_workspace_for_task("t-2")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1483,4 +1873,150 @@ class TestCompletionPipelineVerify:
         assert ok is False  # should not crash
 
 
-# ── Workspace Affinity for Plan Subtasks ───────────────────────────────
+# ── Workspace Affinity for Plan Subtasks ────────────────���──────────────
+
+
+# ── Failed/Blocked Report ──────────��───────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestFailedBlockedReport:
+    """Test the periodic failed/blocked task report in the orchestrator."""
+
+    async def test_report_sent_when_tasks_exist(self, orch):
+        """Report should be sent when there are FAILED or BLOCKED tasks."""
+        await _create_project_with_workspace(orch.db)
+        orch._emit_text_notify = AsyncMock()
+
+        # Create a failed and a blocked task
+        await orch.db.create_task(
+            Task(
+                id="t-fail",
+                project_id="p-1",
+                title="Failed task",
+                description="D",
+                status=TaskStatus.FAILED,
+                retry_count=2,
+                max_retries=3,
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-block",
+                project_id="p-1",
+                title="Blocked task",
+                description="D",
+                status=TaskStatus.BLOCKED,
+            )
+        )
+
+        # Ensure the rate-limiter allows the report
+        orch._last_failed_blocked_report = 0.0
+        await orch._check_failed_blocked_tasks()
+
+        # Should have sent a notification
+        assert orch._emit_text_notify.call_count >= 1
+        # Check the plain-text message contains key info
+        call_msg = orch._emit_text_notify.call_args_list[0][0][0]
+        assert "Attention Required" in call_msg
+        assert "t-fail" in call_msg
+        assert "t-block" in call_msg
+
+    async def test_no_report_when_no_failed_blocked(self, orch):
+        """Report should NOT be sent when there are no FAILED/BLOCKED tasks."""
+        await _create_project_with_workspace(orch.db)
+        orch._emit_text_notify = AsyncMock()
+
+        # Create only a READY task
+        await orch.db.create_task(
+            Task(
+                id="t-ready",
+                project_id="p-1",
+                title="Ready task",
+                description="D",
+                status=TaskStatus.READY,
+            )
+        )
+
+        orch._last_failed_blocked_report = 0.0
+        await orch._check_failed_blocked_tasks()
+
+        orch._emit_text_notify.assert_not_called()
+
+    async def test_report_rate_limited(self, orch):
+        """Report should be rate-limited by the configured interval."""
+        await _create_project_with_workspace(orch.db)
+        orch._emit_text_notify = AsyncMock()
+
+        await orch.db.create_task(
+            Task(
+                id="t-fail",
+                project_id="p-1",
+                title="Failed",
+                description="D",
+                status=TaskStatus.FAILED,
+            )
+        )
+
+        # First call — should send
+        orch._last_failed_blocked_report = 0.0
+        await orch._check_failed_blocked_tasks()
+        assert orch._emit_text_notify.call_count == 1
+
+        # Second call immediately — should NOT send (rate-limited)
+        await orch._check_failed_blocked_tasks()
+        assert orch._emit_text_notify.call_count == 1  # still 1
+
+    async def test_report_disabled_when_interval_zero(self, orch):
+        """Report should be disabled when interval is 0."""
+        await _create_project_with_workspace(orch.db)
+        orch._emit_text_notify = AsyncMock()
+
+        await orch.db.create_task(
+            Task(
+                id="t-fail",
+                project_id="p-1",
+                title="Failed",
+                description="D",
+                status=TaskStatus.FAILED,
+            )
+        )
+
+        orch.config.monitoring.failed_blocked_report_interval_seconds = 0
+        orch._last_failed_blocked_report = 0.0
+        await orch._check_failed_blocked_tasks()
+
+        orch._emit_text_notify.assert_not_called()
+
+    async def test_report_groups_by_project(self, orch):
+        """Report should send separate notifications for each project."""
+        await _create_project_with_workspace(orch.db, project_id="p-1", name="alpha")
+        await _create_project_with_workspace(
+            orch.db, project_id="p-2", name="beta", workspace_path="/tmp/ws-2"
+        )
+        orch._emit_text_notify = AsyncMock()
+
+        await orch.db.create_task(
+            Task(
+                id="t-f1",
+                project_id="p-1",
+                title="Fail in alpha",
+                description="D",
+                status=TaskStatus.FAILED,
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-b2",
+                project_id="p-2",
+                title="Blocked in beta",
+                description="D",
+                status=TaskStatus.BLOCKED,
+            )
+        )
+
+        orch._last_failed_blocked_report = 0.0
+        await orch._check_failed_blocked_tasks()
+
+        # Should have notified twice — once per project
+        assert orch._emit_text_notify.call_count == 2

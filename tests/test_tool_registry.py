@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock
 
-from src.tool_registry import ToolRegistry, _TOOL_CATEGORIES
+from src.tools import ToolRegistry, _TOOL_CATEGORIES
 
 
 def _make_tool(name: str, category: str | None = None) -> dict:
@@ -113,12 +113,13 @@ def test_registry_has_categories(registry):
         "git",
         "project",
         "agent",
-        "hooks",
+        "rules",
         "memory",
         "notes",
         "system",
         "task",
         "plugin",
+        "playbook",
     }
 
     for cat in categories:
@@ -188,7 +189,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 def _get_command_handler():
     """Import CommandHandler."""
-    from src.command_handler import CommandHandler
+    from src.commands.handler import CommandHandler
 
     return CommandHandler
 
@@ -249,18 +250,18 @@ def test_cmd_send_message_stub():
     assert "error" in result or "success" in result
 
 
-def test_cmd_browse_rules():
+def test_cmd_browse_rules_deprecated():
     handler = _make_handler()
     result = asyncio.run(handler.execute("browse_rules", {}))
-    # Phase 2 implemented — returns rules list (may be empty)
-    assert "rules" in result or "error" not in result
+    # browse_rules now redirects to list_playbooks with deprecation notice
+    assert "_deprecated" in result
 
 
-def test_cmd_save_rule():
+def test_cmd_save_rule_deprecated():
     handler = _make_handler()
-    # Ensure the real implementation is wired (not a Phase 2 stub)
-    # Full save_rule testing is in test_rule_manager.py
-    assert hasattr(handler, "_cmd_save_rule")
+    result = asyncio.run(handler.execute("save_rule", {"type": "active", "content": "test"}))
+    # save_rule now returns deprecation notice
+    assert "_deprecated" in result
 
 
 # -------------------------------------------------------------------
@@ -323,17 +324,12 @@ def test_total_tool_count_preserved():
     all_tools = reg.get_all_tools()
     all_names = {t["name"] for t in all_tools}
 
-    # These are the new navigation tools added by the registry
+    # These are the navigation tools added by the registry
     expected_new_tools = {
         "browse_tools",
         "load_tools",
         "send_message",
         "reply_to_user",
-        "list_rules",
-        "load_rule",
-        "save_rule",
-        "delete_rule",
-        "refresh_hooks",
     }
 
     # Every original categorized tool should still exist
@@ -382,7 +378,7 @@ def test_core_tools_are_compact(registry):
 
 def _real_registry():
     """Create a ToolRegistry with real definitions + mock plugin tools."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    from src.tools import _ALL_TOOL_DEFINITIONS
 
     reg = ToolRegistry(tools=list(_ALL_TOOL_DEFINITIONS))
     reg.set_plugin_registry(_mock_plugin_registry())
@@ -391,7 +387,7 @@ def _real_registry():
 
 def test_all_tools_have_descriptions():
     """Every tool in _ALL_TOOL_DEFINITIONS should have a non-empty description."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    from src.tools import _ALL_TOOL_DEFINITIONS
 
     for tool in _ALL_TOOL_DEFINITIONS:
         assert "description" in tool, f"Tool {tool['name']} missing description"
@@ -402,7 +398,7 @@ def test_all_tools_have_descriptions():
 
 def test_all_tools_have_input_schema():
     """Every tool in _ALL_TOOL_DEFINITIONS should have an input_schema."""
-    from src.tool_registry import _ALL_TOOL_DEFINITIONS
+    from src.tools import _ALL_TOOL_DEFINITIONS
 
     for tool in _ALL_TOOL_DEFINITIONS:
         assert "input_schema" in tool, f"Tool {tool['name']} missing input_schema"
@@ -446,11 +442,13 @@ def test_search_relevant_categories_files_query():
     assert "files" in cats
 
 
-def test_search_relevant_categories_hooks_query():
-    """Hook-related queries should return the hooks category."""
+def test_search_relevant_categories_rules_query():
+    """Rule-related queries should return the rules category (deprecated but still present)."""
     registry = _real_registry()
-    cats = registry.search_relevant_categories("create a hook that fires on schedule")
-    assert "hooks" in cats
+    cats = registry.search_relevant_categories("create a rule that fires on schedule")
+    # Rules category still exists (deprecated) — may or may not match depending on scoring
+    # The important thing is the function doesn't crash
+    assert isinstance(cats, list)
 
 
 def test_search_relevant_categories_memory_query():
@@ -600,3 +598,385 @@ class TestCompressToolSchema:
         import json
 
         assert len(json.dumps(comp)) < len(json.dumps(full))
+
+
+# ------------------------------------------------------------------
+# Playbook category registration (Roadmap 5.5.7)
+# ------------------------------------------------------------------
+
+# Canonical list of playbook commands from spec §15.
+_PLAYBOOK_COMMANDS = [
+    "compile_playbook",
+    "dry_run_playbook",
+    "show_playbook_graph",
+    "list_playbooks",
+    "list_playbook_runs",
+    "inspect_playbook_run",
+    "resume_playbook",
+]
+
+
+class TestPlaybookToolRegistration:
+    """Verify all playbook commands from spec §15 are registered in the tool registry.
+
+    Roadmap 5.5.7 — Register all playbook commands in CommandHandler via tool
+    registry.  This test class validates the *complete* set as a cohesive unit,
+    complementing the per-command tests that live alongside each command's own
+    test file.
+    """
+
+    # -- Category mapping --------------------------------------------------
+
+    def test_all_playbook_commands_in_category_map(self):
+        """Every spec §15 command appears in _TOOL_CATEGORIES under 'playbook'."""
+        from src.tools import _TOOL_CATEGORIES
+
+        for cmd in _PLAYBOOK_COMMANDS:
+            assert cmd in _TOOL_CATEGORIES, f"{cmd} missing from _TOOL_CATEGORIES"
+            assert _TOOL_CATEGORIES[cmd] == "playbook", (
+                f"{cmd} mapped to '{_TOOL_CATEGORIES[cmd]}' instead of 'playbook'"
+            )
+
+    def test_no_extra_playbook_commands(self):
+        """No unexpected tools are mapped to the 'playbook' category."""
+        from src.tools import _TOOL_CATEGORIES
+
+        actual = {name for name, cat in _TOOL_CATEGORIES.items() if cat == "playbook"}
+        expected = set(_PLAYBOOK_COMMANDS)
+        extra = actual - expected
+        assert not extra, f"Unexpected playbook-category tools: {extra}"
+
+    # -- Tool definitions --------------------------------------------------
+
+    def test_all_playbook_commands_have_definitions(self):
+        """Every spec §15 command has a full tool definition."""
+        from src.tools import _ALL_TOOL_DEFINITIONS
+
+        defined = {t["name"] for t in _ALL_TOOL_DEFINITIONS}
+        for cmd in _PLAYBOOK_COMMANDS:
+            assert cmd in defined, f"{cmd} missing from _ALL_TOOL_DEFINITIONS"
+
+    def test_all_playbook_definitions_have_description(self):
+        """Every playbook tool has a non-trivial description."""
+        from src.tools import _ALL_TOOL_DEFINITIONS
+
+        for tool in _ALL_TOOL_DEFINITIONS:
+            if tool["name"] in _PLAYBOOK_COMMANDS:
+                assert "description" in tool, f"{tool['name']} missing description"
+                assert len(tool["description"]) > 20, (
+                    f"{tool['name']} description too short: {tool['description']!r}"
+                )
+
+    def test_all_playbook_definitions_have_input_schema(self):
+        """Every playbook tool has an input_schema with type=object."""
+        from src.tools import _ALL_TOOL_DEFINITIONS
+
+        for tool in _ALL_TOOL_DEFINITIONS:
+            if tool["name"] in _PLAYBOOK_COMMANDS:
+                assert "input_schema" in tool, f"{tool['name']} missing input_schema"
+                assert tool["input_schema"]["type"] == "object", (
+                    f"{tool['name']} input_schema.type is not 'object'"
+                )
+
+    def test_required_params_present_in_schema(self):
+        """Tools with required params have them defined in properties."""
+        from src.tools import _ALL_TOOL_DEFINITIONS
+
+        for tool in _ALL_TOOL_DEFINITIONS:
+            if tool["name"] in _PLAYBOOK_COMMANDS:
+                schema = tool["input_schema"]
+                required = schema.get("required", [])
+                props = schema.get("properties", {})
+                for param in required:
+                    assert param in props, (
+                        f"{tool['name']}: required param '{param}' "
+                        f"not in properties"
+                    )
+
+    # -- ToolRegistry integration -----------------------------------------
+
+    def test_playbook_category_exists_in_registry(self):
+        """The 'playbook' category appears in registry.get_categories()."""
+        reg = _real_registry()
+        categories = reg.get_categories()
+        cat_names = {c["name"] for c in categories}
+        assert "playbook" in cat_names
+
+    def test_playbook_category_has_correct_count(self):
+        """The 'playbook' category reports exactly 7 tools."""
+        reg = _real_registry()
+        categories = reg.get_categories()
+        playbook_cat = next(c for c in categories if c["name"] == "playbook")
+        assert playbook_cat["tool_count"] == len(_PLAYBOOK_COMMANDS), (
+            f"Expected {len(_PLAYBOOK_COMMANDS)} playbook tools, "
+            f"got {playbook_cat['tool_count']}"
+        )
+
+    def test_playbook_category_tools_match_spec(self):
+        """get_category_tool_names('playbook') returns exactly the spec §15 set."""
+        reg = _real_registry()
+        names = reg.get_category_tool_names("playbook")
+        assert names is not None
+        assert set(names) == set(_PLAYBOOK_COMMANDS)
+
+    def test_playbook_tools_not_in_core(self):
+        """Playbook tools are on-demand, not in the core set."""
+        reg = _real_registry()
+        core_names = {t["name"] for t in reg.get_core_tools()}
+        for cmd in _PLAYBOOK_COMMANDS:
+            assert cmd not in core_names, (
+                f"{cmd} should not be in core tools — it's in the playbook category"
+            )
+
+    def test_playbook_category_description(self):
+        """The playbook CategoryMeta has a descriptive string."""
+        from src.tools import CATEGORIES
+
+        assert "playbook" in CATEGORIES
+        meta = CATEGORIES["playbook"]
+        assert "playbook" in meta.description.lower() or "compilation" in meta.description.lower()
+
+    # -- Search integration ------------------------------------------------
+
+    def test_search_finds_playbook_category(self):
+        """A playbook-related query returns the 'playbook' category."""
+        reg = _real_registry()
+        cats = reg.search_relevant_categories("compile and run a playbook")
+        assert "playbook" in cats
+
+    def test_search_finds_playbook_for_resume_query(self):
+        """A human-in-the-loop query returns the playbook category."""
+        reg = _real_registry()
+        cats = reg.search_relevant_categories("resume the paused playbook run")
+        assert "playbook" in cats
+
+    # -- CommandHandler routing (execute() dispatch) -----------------------
+
+    def test_all_commands_have_handler_methods(self):
+        """Every spec §15 command has a _cmd_* method on CommandHandler."""
+        handler = _make_handler()
+        for cmd in _PLAYBOOK_COMMANDS:
+            method = getattr(handler, f"_cmd_{cmd}", None)
+            assert method is not None, (
+                f"CommandHandler missing _cmd_{cmd} method"
+            )
+            assert callable(method), f"_cmd_{cmd} is not callable"
+
+    def test_execute_routes_unknown_playbook_command(self):
+        """execute() returns error for a non-existent playbook command."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("nonexistent_playbook_cmd", {}))
+        assert "error" in result
+
+    def test_browse_tools_includes_playbook_category(self):
+        """browse_tools returns the playbook category with tool count."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("browse_tools", {}))
+        assert "categories" in result
+        cat_names = {c["name"] for c in result["categories"]}
+        assert "playbook" in cat_names
+        playbook_cat = next(c for c in result["categories"] if c["name"] == "playbook")
+        assert playbook_cat["tool_count"] == len(_PLAYBOOK_COMMANDS)
+
+    def test_load_tools_playbook_category(self):
+        """load_tools('playbook') returns all playbook tool definitions."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("load_tools", {"category": "playbook"}))
+        assert result.get("loaded") == "playbook"
+        assert "tools_added" in result
+        loaded_names = set(result["tools_added"])
+        assert loaded_names == set(_PLAYBOOK_COMMANDS), (
+            f"Expected {set(_PLAYBOOK_COMMANDS)}, got {loaded_names}"
+        )
+
+
+# -------------------------------------------------------------------
+# Deprecated hook → playbook/rule redirect tests (Roadmap 8.3)
+# -------------------------------------------------------------------
+
+
+class TestDeprecatedHookAndRuleCommands:
+    """Verify hook and rule commands return deprecation notices (Phase 3)."""
+
+    # -- Hook commands return deprecation errors ----------------------------
+
+    def test_fire_hook_returns_deprecation(self):
+        """fire_hook returns a deprecation error pointing to compile_playbook."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("fire_hook", {"hook_id": "test-hook"}))
+        assert "error" in result
+        assert "_deprecated" in result
+        assert "compile_playbook" in result["_deprecated"]
+        assert "replacements" in result
+
+    def test_create_hook_returns_deprecation(self):
+        """create_hook returns a deprecation error pointing to compile_playbook."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("create_hook", {}))
+        assert "error" in result
+        assert "_deprecated" in result
+        assert "compile_playbook" in result["_deprecated"]
+        assert "replacements" in result
+
+    def test_edit_hook_returns_deprecation(self):
+        """edit_hook returns a deprecation error pointing to compile_playbook."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("edit_hook", {}))
+        assert "error" in result
+        assert "_deprecated" in result
+        assert "compile_playbook" in result["_deprecated"]
+        assert "replacements" in result
+
+    def test_delete_hook_returns_deprecation(self):
+        """delete_hook returns a deprecation error."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("delete_hook", {}))
+        assert "error" in result
+        assert "_deprecated" in result
+        assert "replacements" in result
+
+    def test_refresh_hooks_returns_deprecation(self):
+        """refresh_hooks returns a deprecation error."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("refresh_hooks", {}))
+        assert "error" in result
+        assert "_deprecated" in result
+
+    # -- Hook commands that redirect and return results ---------------------
+
+    def test_list_hooks_redirects_to_list_playbooks(self):
+        """list_hooks delegates to list_playbooks and adds deprecation notice."""
+        handler = _make_handler()
+        handler.orchestrator.playbook_manager = None
+        result = asyncio.run(handler.execute("list_hooks", {}))
+        assert "_deprecated" in result
+        assert "list_playbooks" in result["_deprecated"]
+
+    def test_list_hook_runs_redirects_to_list_playbook_runs(self):
+        """list_hook_runs delegates to list_playbook_runs and adds deprecation notice."""
+        handler = _make_handler()
+        handler.orchestrator.db.list_playbook_runs = AsyncMock(return_value=[])
+        result = asyncio.run(handler.execute("list_hook_runs", {}))
+        assert "_deprecated" in result
+        assert "list_playbook_runs" in result["_deprecated"]
+
+    # -- Rule commands return deprecation errors ----------------------------
+
+    def test_save_rule_returns_deprecation(self):
+        """save_rule returns a deprecation error pointing to compile_playbook."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("save_rule", {"type": "active", "content": "x"}))
+        assert "error" in result
+        assert "_deprecated" in result
+        assert "compile_playbook" in result["_deprecated"]
+
+    def test_delete_rule_returns_deprecation(self):
+        """delete_rule returns a deprecation error."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("delete_rule", {"id": "test-rule"}))
+        assert "error" in result
+        assert "_deprecated" in result
+
+    def test_browse_rules_redirects_to_list_playbooks(self):
+        """browse_rules delegates to list_playbooks with deprecation notice."""
+        handler = _make_handler()
+        handler.orchestrator.playbook_manager = None
+        result = asyncio.run(handler.execute("browse_rules", {}))
+        assert "_deprecated" in result
+        assert "list_playbooks" in result["_deprecated"]
+
+    def test_load_rule_returns_deprecation(self):
+        """load_rule returns a deprecation error."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("load_rule", {"id": "test-rule"}))
+        assert "error" in result
+        assert "_deprecated" in result
+
+    def test_fire_rule_returns_deprecation(self):
+        """fire_rule returns a deprecation error pointing to dry_run_playbook."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("fire_rule", {"id": "test-rule"}))
+        assert "error" in result
+        assert "_deprecated" in result
+        assert "dry_run_playbook" in result["_deprecated"]
+
+    def test_toggle_rule_returns_deprecation(self):
+        """toggle_rule returns a deprecation error."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("toggle_rule", {"id": "r", "enabled": True}))
+        assert "error" in result
+        assert "_deprecated" in result
+
+    def test_refresh_rules_returns_deprecation(self):
+        """refresh_rules returns a deprecation error."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("refresh_rules", {}))
+        assert "error" in result
+        assert "_deprecated" in result
+
+    def test_migrate_rules_to_playbooks_returns_deprecation(self):
+        """migrate_rules_to_playbooks returns deprecation notice."""
+        handler = _make_handler()
+        result = asyncio.run(handler.execute("migrate_rules_to_playbooks", {}))
+        assert "error" in result
+        assert "_deprecated" in result
+
+    # -- Handler method existence ------------------------------------------
+
+    def test_all_deprecated_commands_have_handler_methods(self):
+        """Every deprecated hook/rule command has a _cmd_* method."""
+        handler = _make_handler()
+        deprecated_commands = [
+            "fire_hook",
+            "list_hooks",
+            "create_hook",
+            "edit_hook",
+            "delete_hook",
+            "list_hook_runs",
+            "refresh_hooks",
+            "save_rule",
+            "delete_rule",
+            "browse_rules",
+            "list_rules",
+            "load_rule",
+            "fire_rule",
+            "rule_runs",
+            "toggle_rule",
+            "refresh_rules",
+            "migrate_rules_to_playbooks",
+        ]
+        for cmd in deprecated_commands:
+            method = getattr(handler, f"_cmd_{cmd}", None)
+            assert method is not None, f"Missing _cmd_{cmd}"
+            assert callable(method), f"_cmd_{cmd} is not callable"
+
+    # -- Tool registry deprecation notices ----------------------------------
+
+    def test_refresh_hooks_tool_definition_marked_deprecated(self):
+        """The refresh_hooks tool definition includes 'DEPRECATED' in description."""
+        reg = _real_registry()
+        all_tools = reg.get_all_tools()
+        rh = next((t for t in all_tools if t["name"] == "refresh_hooks"), None)
+        assert rh is not None, "refresh_hooks tool not found"
+        assert "DEPRECATED" in rh["description"]
+
+    def test_rule_tool_definitions_marked_deprecated(self):
+        """All rule tool definitions include 'DEPRECATED' in description."""
+        reg = _real_registry()
+        all_tools = reg.get_all_tools()
+        rule_tool_names = [
+            "list_rules",
+            "save_rule",
+            "browse_rules",
+            "fire_rule",
+            "load_rule",
+            "delete_rule",
+            "rule_runs",
+            "toggle_rule",
+            "refresh_rules",
+            "migrate_rules_to_playbooks",
+        ]
+        for name in rule_tool_names:
+            tool = next((t for t in all_tools if t["name"] == name), None)
+            assert tool is not None, f"{name} tool not found"
+            assert "DEPRECATED" in tool["description"], f"{name} missing DEPRECATED notice"

@@ -137,7 +137,7 @@ class AgentsDefaultConfig:
     """Default timeouts for agent health monitoring and graceful shutdown."""
 
     heartbeat_interval_seconds: int = 30
-    stuck_timeout_seconds: int = 0  # 0 = no timeout (was 600)
+    stuck_timeout_seconds: int = 1800  # 30 min; 0 = no timeout
     graceful_shutdown_timeout_seconds: int = 30
 
     def validate(self) -> list[ConfigError]:
@@ -162,11 +162,16 @@ class SchedulingConfig:
 
     rolling_window_hours: int = 24
     min_task_guarantee: bool = True
+    affinity_wait_seconds: int = 120  # max seconds to wait for a busy affinity agent
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if self.rolling_window_hours <= 0:
             errors.append(ConfigError("scheduling", "rolling_window_hours", "must be > 0"))
+        if self.affinity_wait_seconds < 0:
+            errors.append(
+                ConfigError("scheduling", "affinity_wait_seconds", "must be >= 0")
+            )
         return errors
 
 
@@ -279,19 +284,19 @@ class MonitoringConfig:
     """Configuration for monitoring stuck or stalled tasks."""
 
     stuck_task_threshold_seconds: int = 3600  # 1 hour default
+    failed_blocked_report_interval_seconds: int = 3600  # 1 hour default
 
 
 @dataclass
 class MemoryConfig:
     """Configuration for the semantic memory subsystem (memsearch).
 
-    All fields have safe defaults — the subsystem is disabled unless
-    ``enabled`` is explicitly set to ``True`` in the YAML config.
-    See notes/memsearch-integration.md for full documentation.
+    Enabled by default.  Set ``enabled: false`` in the YAML config to
+    disable.  See notes/memsearch-integration.md for full documentation.
     """
 
-    enabled: bool = False
-    embedding_provider: str = "openai"  # openai, google, voyage, ollama, local
+    enabled: bool = True
+    embedding_provider: str = "ollama"  # openai, google, voyage, ollama, local
     embedding_model: str = ""  # empty = provider default
     embedding_base_url: str = ""  # for Ollama or custom endpoints
     embedding_api_key: str = ""  # supports ${ENV_VAR} substitution
@@ -326,9 +331,68 @@ class MemoryConfig:
     # Phase 3: Notes Integration
     auto_generate_notes: bool = False  # auto-note generation (off by default, can be noisy)
     notes_inform_profile: bool = True  # include notes in profile revision context
-    # Phase 4: Enhanced Context Delivery
+    # Phase 3.5: Post-Task Fact Extraction
+    fact_extraction_enabled: bool = True  # extract structured facts after task completion
+    # Phase 3.6: Knowledge Base Topic Files
+    index_knowledge: bool = True  # index knowledge/ directory in vector DB
+    knowledge_topics: tuple[str, ...] = (
+        "architecture",
+        "api-and-endpoints",
+        "deployment",
+        "dependencies",
+        "gotchas",
+        "conventions",
+        "decisions",
+    )
+    # Knowledge Consolidation (unified: daily, deep/weekly, bootstrap)
+    consolidation_enabled: bool = True  # master switch for consolidation
+    consolidation_schedule: str = "0 3 * * *"  # daily consolidation cron
+    deep_consolidation_schedule: str = "0 4 * * 0"  # weekly deep consolidation
+    consolidation_provider: str = ""  # LLM provider (defaults to revision_provider)
+    consolidation_model: str = ""  # model override for consolidation
+    index_knowledge: bool = True  # index knowledge/ in vector DB
+    factsheet_in_context: bool = True  # include factsheet in agent context (Tier 0)
+    knowledge_topics: tuple[str, ...] = (
+        "architecture",
+        "api-and-endpoints",
+        "deployment",
+        "dependencies",
+        "gotchas",
+        "conventions",
+        "decisions",
+    )
+    # L2 Topic Detection (spec §3 — pre-filtered memory loading by topic)
+    topic_detection_enabled: bool = True  # detect topics from task description for L2 loading
+    topic_max_knowledge_files: int = 3  # max knowledge files to inject per task
+    topic_max_chars_per_file: int = 2000  # max chars per knowledge topic file in context
+    # L2 Topic-Filtered Memories (spec §2 — memories with matching topic frontmatter)
+    topic_memory_enabled: bool = True  # load memories filtered by detected topic
+    topic_memory_budget_chars: int = 2000  # ~500 token budget for topic-filtered memories
+    topic_memory_max_results: int = 5  # max number of topic-matched memory files
+    # Enhanced Context Delivery
     context_max_tokens: int = 4000  # soft budget for total memory context
     context_include_recent: int = 3  # number of recent same-project tasks to include
+    # Consolidation auto-trigger thresholds
+    consolidation_auto_trigger: bool = True  # auto-run consolidation when thresholds are met
+    consolidation_growth_threshold: int = 10  # staging files before auto-consolidation fires
+    consolidation_min_age_hours: float = 1.0  # min age of staging facts before consolidating
+    consolidation_max_batch_size: int = 50  # max staging files per consolidation run
+    consolidation_similarity_threshold: float = 0.7  # similarity threshold for memory clustering
+    consolidation_cooldown_minutes: int = 30  # min minutes between auto-triggered consolidations
+    # Workspace spec/doc change detector (vault.md §4 — reference stubs)
+    spec_watcher_enabled: bool = True  # detect spec/doc changes in project workspaces
+    spec_watcher_poll_interval: int = 60  # seconds between workspace scans
+    spec_watcher_patterns: tuple[str, ...] = (
+        "specs/**/*.md",
+        "docs/specs/**/*.md",
+        "docs/**/*.md",
+    )
+    spec_watcher_max_excerpt_lines: int = 30  # lines of source to include in stub
+    # Reference stub LLM enrichment (roadmap 6.3.2 — vault.md §4)
+    stub_enrichment_enabled: bool = True  # enrich stubs with LLM summaries
+    stub_enrichment_provider: str = ""  # LLM provider (falls back to revision_provider)
+    stub_enrichment_model: str = ""  # model override for enrichment
+    stub_enrichment_max_source_chars: int = 20_000  # max chars sent to LLM (~5k tokens)
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -444,24 +508,18 @@ class SupervisorConfig:
 
 
 @dataclass
-class HookEngineConfig:
-    enabled: bool = True
-    max_concurrent_hooks: int = 2
-    file_watcher_enabled: bool = True
-    file_watcher_poll_interval: float = 10.0
-    file_watcher_debounce_seconds: float = 5.0
-    hook_timeout_seconds: int = 300  # 5 minutes
-
-
-@dataclass
 class ChatProviderConfig:
     """LLM provider settings for the Discord chat agent (not the coding agents)."""
 
-    provider: str = "anthropic"  # "anthropic" or "ollama"
+    provider: str = "anthropic"  # "anthropic", "ollama", or "gemini"
     model: str = ""  # Empty = provider default
     base_url: str = ""  # For Ollama
+    api_key: str = ""  # For Gemini (falls back to GEMINI_API_KEY / GOOGLE_API_KEY env vars)
     keep_alive: str = "1h"  # Ollama: how long to keep model loaded after last request
     num_ctx: int = 0  # Ollama: context window size (0 = model default)
+    max_tokens: int = 2048  # Default response token budget for LLM calls
+    playbook_max_tokens: int = 4096  # Response token budget for playbook compilation & nodes
+    thinking_budget: int = 8192  # Thinking/reasoning token budget (Gemini models)
 
     def __post_init__(self) -> None:
         # YAML may parse numeric model names (e.g. ``model: 4``) as int/float.
@@ -473,7 +531,7 @@ class ChatProviderConfig:
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
-        valid_providers = {"anthropic", "ollama"}
+        valid_providers = {"anthropic", "ollama", "gemini"}
         if self.provider and self.provider not in valid_providers:
             errors.append(
                 ConfigError(
@@ -511,18 +569,16 @@ class McpServerConfig:
     requiring manual ``.mcp.json`` files in each workspace.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 8081
     excluded_commands: list[str] = field(default_factory=list)
-    inject_into_tasks: bool | None = None  # None = auto (True when enabled)
+    inject_into_tasks: bool = True
 
     @property
     def should_inject_into_tasks(self) -> bool:
         """Whether to auto-inject the MCP server into task contexts."""
-        if self.inject_into_tasks is not None:
-            return self.inject_into_tasks
-        return self.enabled  # default: inject when enabled
+        return self.enabled and self.inject_into_tasks
 
     def task_mcp_entry(self) -> dict[str, dict]:
         """Return the MCP server config dict to merge into task contexts.
@@ -557,7 +613,7 @@ class McpServerConfig:
 class LLMLoggingConfig:
     """Configuration for logging LLM inputs/outputs to JSONL files."""
 
-    enabled: bool = False
+    enabled: bool = True
     retention_days: int = 30
 
     def validate(self) -> list[ConfigError]:
@@ -593,7 +649,15 @@ class AgentProfileConfig:
                     "agent_profiles", "id", f"profile with name '{self.name}' has an empty id"
                 )
             )
-        valid_permission_modes = {"default", "plan", "full", "bypassPermissions", ""}
+        valid_permission_modes = {
+            "default",
+            "plan",
+            "full",
+            "bypassPermissions",
+            "acceptEdits",
+            "auto",
+            "",
+        }
         if self.permission_mode and self.permission_mode not in valid_permission_modes:
             errors.append(
                 ConfigError(
@@ -618,8 +682,8 @@ class HealthCheckConfig:
     the daemon falls back to ``http://localhost:{port}``.
     """
 
-    enabled: bool = False
-    port: int = 8080
+    enabled: bool = True
+    port: int = 8081
     base_url: str = ""
 
 
@@ -689,12 +753,11 @@ class AppConfig:
     workspace_dir: str = field(
         default_factory=lambda: os.path.expanduser("~/agent-queue-workspaces")
     )
-    database_path: str = field(
-        default_factory=lambda: os.path.expanduser("~/.agent-queue/agent-queue.db")
-    )
+    database_path: str = ""  # Legacy SQLite path — use database.url instead
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     profile: str = ""
     env: str = "production"
+    validate_events: bool = True
     messaging_platform: str = "discord"  # "discord" or "telegram"
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
@@ -703,7 +766,6 @@ class AppConfig:
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
-    hook_engine: HookEngineConfig = field(default_factory=HookEngineConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
@@ -714,8 +776,55 @@ class AppConfig:
     llm_logging: LLMLoggingConfig = field(default_factory=LLMLoggingConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
+    max_daily_playbook_tokens: int | None = None
+    max_concurrent_playbook_runs: int = 2
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
+    memory_extractor: dict = field(default_factory=lambda: {
+        "enabled": True,
+        "batch_window_seconds": 30,
+        "max_buffer_size": 1,
+        "max_facts_per_batch": 10,
+        "max_input_chars": 8000,
+    })
     _config_path: str = field(default="", repr=False)
+
+    # -- Vault path properties (derived from data_dir) -----------------------
+    # See docs/specs/design/vault.md Section 2 for the full directory layout.
+
+    @property
+    def vault_root(self) -> str:
+        """Root of the Obsidian-compatible vault: ``{data_dir}/vault/``."""
+        return os.path.join(self.data_dir, "vault")
+
+    @property
+    def vault_system(self) -> str:
+        """System-scoped vault directory (merged into supervisor): ``{vault_root}/agent-types/supervisor/``."""
+        return os.path.join(self.vault_root, "agent-types", "supervisor")
+
+    @property
+    def vault_supervisor(self) -> str:
+        """Supervisor vault directory: ``{vault_root}/agent-types/supervisor/``."""
+        return os.path.join(self.vault_root, "agent-types", "supervisor")
+
+    @property
+    def vault_agent_types(self) -> str:
+        """Agent-type profiles and memory: ``{vault_root}/agent-types/``."""
+        return os.path.join(self.vault_root, "agent-types")
+
+    @property
+    def vault_projects(self) -> str:
+        """Per-project vault directories: ``{vault_root}/projects/``."""
+        return os.path.join(self.vault_root, "projects")
+
+    @property
+    def vault_templates(self) -> str:
+        """Templates for new profiles, playbooks: ``{vault_root}/templates/``."""
+        return os.path.join(self.vault_root, "templates")
+
+    @property
+    def compiled_root(self) -> str:
+        """Compiled playbook JSON (runtime artifacts): ``{data_dir}/compiled/``."""
+        return os.path.join(self.data_dir, "compiled")
 
     def validate(self) -> list[ConfigError]:
         """Validate all configuration settings, delegating to per-section validators.
@@ -838,7 +947,7 @@ class AppConfig:
 
         Non-critical settings (safe to change at runtime without restart):
         - scheduling, pause_retry, auto_task, archive, monitoring
-        - hook_engine, llm_logging
+        - llm_logging
 
         Critical settings (NOT reloaded — require restart):
         - discord, database_path, workspace_dir, chat_provider, memory,
@@ -864,8 +973,9 @@ class AppConfig:
         updated.auto_task = fresh.auto_task
         updated.archive = fresh.archive
         updated.monitoring = fresh.monitoring
-        updated.hook_engine = fresh.hook_engine
         updated.llm_logging = fresh.llm_logging
+        updated.max_daily_playbook_tokens = fresh.max_daily_playbook_tokens
+        updated.max_concurrent_playbook_runs = fresh.max_concurrent_playbook_runs
 
         return updated
 
@@ -877,7 +987,6 @@ class AppConfig:
 HOT_RELOADABLE_SECTIONS = {
     "scheduling",
     "monitoring",
-    "hook_engine",
     "archive",
     "llm_logging",
     "pause_retry",
@@ -885,6 +994,8 @@ HOT_RELOADABLE_SECTIONS = {
     "auto_task",
     "logging",
     "agent_profiles",
+    "max_daily_playbook_tokens",
+    "max_concurrent_playbook_runs",
     "rate_limits",
 }
 """Config sections that can be safely updated at runtime without restart."""
@@ -917,7 +1028,6 @@ _SECTION_FIELDS = {
     "scheduling",
     "pause_retry",
     "chat_provider",
-    "hook_engine",
     "health_check",
     "logging",
     "monitoring",
@@ -927,6 +1037,8 @@ _SECTION_FIELDS = {
     "llm_logging",
     "agent_profiles",
     "global_token_budget_daily",
+    "max_daily_playbook_tokens",
+    "max_concurrent_playbook_runs",
     "rate_limits",
 }
 
@@ -1221,6 +1333,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     config._config_path = path
     config.profile = resolved_profile
     config.env = env
+    # Event validation toggle: YAML key or env var override
+    if "validate_events" in raw:
+        config.validate_events = bool(raw["validate_events"])
+    env_val = os.environ.get("AGENT_QUEUE_VALIDATE_EVENTS")
+    if env_val is not None:
+        config.validate_events = env_val.lower() not in ("0", "false", "no", "off")
 
     if "data_dir" in raw:
         config.data_dir = raw["data_dir"]
@@ -1240,6 +1358,10 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.database.url = config.database_path
     if "global_token_budget_daily" in raw:
         config.global_token_budget_daily = raw["global_token_budget_daily"]
+    if "max_daily_playbook_tokens" in raw:
+        config.max_daily_playbook_tokens = raw["max_daily_playbook_tokens"]
+    if "max_concurrent_playbook_runs" in raw:
+        config.max_concurrent_playbook_runs = int(raw["max_concurrent_playbook_runs"])
     if "messaging_platform" in raw:
         config.messaging_platform = raw["messaging_platform"]
 
@@ -1302,6 +1424,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.scheduling = SchedulingConfig(
             rolling_window_hours=s.get("rolling_window_hours", 24),
             min_task_guarantee=s.get("min_task_guarantee", True),
+            affinity_wait_seconds=s.get("affinity_wait_seconds", 120),
         )
 
     if "pause_retry" in raw:
@@ -1320,8 +1443,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             provider=cp.get("provider", "anthropic"),
             model=str(raw_model) if raw_model else "",
             base_url=cp.get("base_url", ""),
+            api_key=cp.get("api_key", ""),
             keep_alive=cp.get("keep_alive", "1h"),
             num_ctx=cp.get("num_ctx", 0),
+            max_tokens=cp.get("max_tokens", 2048),
+            playbook_max_tokens=cp.get("playbook_max_tokens", 4096),
+            thinking_budget=cp.get("thinking_budget", 8192),
         )
 
     if "supervisor" in raw:
@@ -1344,15 +1471,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             ),
         )
 
-    if "hook_engine" in raw:
-        h = raw["hook_engine"]
-        config.hook_engine = HookEngineConfig(
-            enabled=h.get("enabled", True),
-            max_concurrent_hooks=h.get("max_concurrent_hooks", 2),
-            file_watcher_enabled=h.get("file_watcher_enabled", True),
-            file_watcher_poll_interval=h.get("file_watcher_poll_interval", 10.0),
-            file_watcher_debounce_seconds=h.get("file_watcher_debounce_seconds", 5.0),
-        )
+    # hook_engine config section removed (playbooks spec §13 Phase 3).
+    # Existing config files with hook_engine section are silently ignored.
 
     if "logging" in raw:
         lg = raw["logging"]
@@ -1473,6 +1593,10 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     if "rate_limits" in raw:
         config.rate_limits = raw["rate_limits"]
+
+    if "memory_extractor" in raw:
+        # Merge with defaults so missing keys get defaults
+        config.memory_extractor = {**config.memory_extractor, **raw["memory_extractor"]}
 
     # Fail fast on misconfiguration — surface all errors at once.
     # validate() returns ConfigError list; convert fatal errors to exception

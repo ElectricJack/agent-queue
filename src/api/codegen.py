@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field, create_model
 from src.api.dependencies import get_command_handler
 from src.api.models import get_all_response_models
 from src.cli.auto_commands import _strip_category_prefix
-from src.tool_registry import (
+from src.tools import (
     CATEGORIES,
     _ALL_TOOL_DEFINITIONS,
     _CLI_CATEGORY_OVERRIDES,
@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 
 # Commands to exclude from the API entirely (internal/MCP-only).
 API_EXCLUDED = {
-    "browse_tools",
     "load_tools",
     "send_message",
     "reply_to_user",
@@ -187,7 +186,7 @@ def build_category_routers() -> list[APIRouter]:
             continue
 
         api_name = _category_to_api_path(cat_name)
-        cat_desc = CATEGORIES[cat_name].description
+        CATEGORIES[cat_name].description
         router = APIRouter(prefix=f"/api/{api_name}", tags=[cat_name])
 
         for cmd_name, defn in sorted(tools):

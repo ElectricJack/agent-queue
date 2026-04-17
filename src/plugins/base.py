@@ -248,6 +248,17 @@ class PluginContext:
             return self._active_project_id_getter()
         return None
 
+    @property
+    def bus(self) -> EventBus:
+        """EventBus reference (internal plugins only).
+
+        Raises:
+            PermissionError: If the plugin is not INTERNAL trust level.
+        """
+        if self._trust_level != TrustLevel.INTERNAL:
+            raise PermissionError("EventBus direct access requires INTERNAL trust")
+        return self._bus
+
     # --- Service Access ---
 
     def get_service(self, name: str) -> Any:

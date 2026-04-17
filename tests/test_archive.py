@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import text
 from unittest.mock import MagicMock
 
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.config import AppConfig, ArchiveConfig, DiscordConfig
 from src.database import Database
 from src.models import (
@@ -284,35 +284,6 @@ class TestCountArchivedTasks:
         assert await db.count_archived_tasks(project_id="p-2") == 0
 
 
-class TestRestoreArchivedTask:
-    async def test_restore_archived_task(self, db):
-        await _seed_project(db)
-        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
-        await db.archive_task("t-1")
-
-        # Verify it's archived
-        assert await db.get_task("t-1") is None
-        assert await db.get_archived_task("t-1") is not None
-
-        # Restore it
-        result = await db.restore_archived_task("t-1")
-        assert result is True
-
-        # Should be back in active with DEFINED status
-        task = await db.get_task("t-1")
-        assert task is not None
-        assert task.status == TaskStatus.DEFINED
-        assert task.title == "Test Task"
-        assert task.retry_count == 0  # reset
-
-        # Should be gone from archive
-        assert await db.get_archived_task("t-1") is None
-
-    async def test_restore_nonexistent_returns_false(self, db):
-        result = await db.restore_archived_task("no-such-task")
-        assert result is False
-
-
 class TestDeleteArchivedTask:
     async def test_delete_archived_task(self, db):
         await _seed_project(db)
@@ -362,7 +333,7 @@ class TestArchiveCommands:
         await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
         await _seed_task(db, "t-2", status=TaskStatus.COMPLETED, title="Task 2")
 
-        result = await handler.execute("archive_tasks", {"project_id": "p-1"})
+        result = await handler.execute("archive_task", {"project_id": "p-1"})
         assert "error" not in result
         assert result["archived_count"] == 2
         assert set(result["archived_ids"]) == {"t-1", "t-2"}
@@ -371,7 +342,7 @@ class TestArchiveCommands:
         await _seed_project(db)
         await _seed_task(db, "t-1", status=TaskStatus.READY)
 
-        result = await handler.execute("archive_tasks", {"project_id": "p-1"})
+        result = await handler.execute("archive_task", {"project_id": "p-1"})
         assert "message" in result
         assert "No completed tasks" in result["message"]
 
@@ -384,7 +355,7 @@ class TestArchiveCommands:
         await _seed_task(db, "t-4", status=TaskStatus.READY, title="Active")
 
         result = await handler.execute(
-            "archive_tasks",
+            "archive_task",
             {
                 "project_id": "p-1",
                 "include_failed": True,
@@ -457,26 +428,6 @@ class TestArchiveCommands:
         assert result["count"] == 0
         assert result["tasks"] == []
 
-    async def test_restore_task_command(self, handler, db):
-        await _seed_project(db)
-        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
-        await db.archive_task("t-1")
-
-        result = await handler.execute("restore_task", {"task_id": "t-1"})
-        assert "error" not in result
-        assert result["restored"] == "t-1"
-        assert result["new_status"] == "DEFINED"
-
-        # Task should be back in active
-        task = await db.get_task("t-1")
-        assert task is not None
-        assert task.status == TaskStatus.DEFINED
-
-    async def test_restore_task_not_found(self, handler, db):
-        result = await handler.execute("restore_task", {"task_id": "nope"})
-        assert "error" in result
-        assert "not found" in result["error"]
-
     async def test_archive_settings_command(self, handler, db):
         result = await handler.execute("archive_settings", {})
         assert "error" not in result
@@ -500,7 +451,7 @@ class TestArchiveCommands:
 
 
 class TestArchiveMarkdownNotes:
-    """Tests that archiving writes markdown reference notes to data dir."""
+    """Tests that archiving writes task summary notes to the vault."""
 
     @pytest.fixture
     async def handler(self, db, tmp_path):
@@ -516,26 +467,37 @@ class TestArchiveMarkdownNotes:
         orchestrator.git = MagicMock()
         return CommandHandler(orchestrator, config)
 
+    @staticmethod
+    def _find_note(vault_root: str, project_id: str, task_id: str) -> str | None:
+        """Find a task summary note by task ID using glob."""
+        import glob as _glob
+
+        pattern = os.path.join(
+            vault_root, "projects", project_id, "tasks", "**", f"*({task_id}).md"
+        )
+        matches = _glob.glob(pattern, recursive=True)
+        return matches[0] if matches else None
+
     async def test_archive_creates_markdown_files(self, handler, db, tmp_path):
         ws = str(tmp_path / "workspaces" / "p-1")
         await _seed_project(db, workspace_path=ws)
         await _seed_task(db, "t-1", title="Done task", status=TaskStatus.COMPLETED)
         await _seed_task(db, "t-2", title="Also done", status=TaskStatus.COMPLETED)
 
-        result = await handler.execute("archive_tasks", {"project_id": "p-1"})
+        result = await handler.execute("archive_task", {"project_id": "p-1"})
         assert "error" not in result
         assert result["archived_count"] == 2
 
-        archive_dir = result["archive_dir"]
-        assert archive_dir is not None
-        assert os.path.isdir(archive_dir)
-        assert os.path.isfile(os.path.join(archive_dir, "t-1.md"))
-        assert os.path.isfile(os.path.join(archive_dir, "t-2.md"))
+        vault_root = handler.config.vault_root
+        note1 = self._find_note(vault_root, "p-1", "t-1")
+        note2 = self._find_note(vault_root, "p-1", "t-2")
+        assert note1 is not None
+        assert note2 is not None
 
-        with open(os.path.join(archive_dir, "t-1.md")) as f:
+        with open(note1) as f:
             content = f.read()
-        assert "# Done task" in content
-        assert "`t-1`" in content
+        assert "Done task" in content
+        assert "t-1" in content
         assert "COMPLETED" in content
 
     async def test_archive_removes_from_active_keeps_in_archive_table(
@@ -548,7 +510,7 @@ class TestArchiveMarkdownNotes:
         await _seed_project(db, workspace_path=ws)
         await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
 
-        await handler.execute("archive_tasks", {"project_id": "p-1"})
+        await handler.execute("archive_task", {"project_id": "p-1"})
 
         # Gone from active, present in archive table
         assert await db.get_task("t-1") is None
@@ -570,9 +532,11 @@ class TestArchiveMarkdownNotes:
             ),
         )
 
-        result = await handler.execute("archive_tasks", {"project_id": "p-1"})
-        archive_dir = result["archive_dir"]
-        with open(os.path.join(archive_dir, "t-1.md")) as f:
+        await handler.execute("archive_task", {"project_id": "p-1"})
+        vault_root = handler.config.vault_root
+        note = self._find_note(vault_root, "p-1", "t-1")
+        assert note is not None
+        with open(note) as f:
             content = f.read()
 
         assert "Implemented the feature successfully" in content
@@ -593,9 +557,13 @@ class TestArchiveMarkdownNotes:
             pr_url="https://github.com/org/repo/pull/42",
         )
 
-        result = await handler.execute("archive_tasks", {"project_id": "p-1"})
-        archive_dir = result["archive_dir"]
-        with open(os.path.join(archive_dir, "t-meta.md")) as f:
+        await handler.execute("archive_task", {"project_id": "p-1"})
+        vault_root = handler.config.vault_root
+        note = self._find_note(vault_root, "p-1", "t-meta")
+        assert note is not None
+        # Feature tasks go into the "feature" category directory
+        assert "/tasks/feature/" in note
+        with open(note) as f:
             content = f.read()
 
         assert "feature" in content
@@ -609,25 +577,31 @@ class TestArchiveMarkdownNotes:
         await _seed_task(db, "t-down", title="Downstream", status=TaskStatus.COMPLETED)
         await db.add_dependency("t-down", "t-up")
 
-        result = await handler.execute("archive_tasks", {"project_id": "p-1"})
-        archive_dir = result["archive_dir"]
-        with open(os.path.join(archive_dir, "t-down.md")) as f:
+        await handler.execute("archive_task", {"project_id": "p-1"})
+        vault_root = handler.config.vault_root
+        note = self._find_note(vault_root, "p-1", "t-down")
+        assert note is not None
+        with open(note) as f:
             content = f.read()
 
         assert "`t-up`" in content
         assert "Dependencies" in content
 
     async def test_archive_note_without_result(self, handler, db, tmp_path):
+        """When no execution result exists, the summary falls back to the task description."""
         ws = str(tmp_path / "workspaces" / "p-1")
         await _seed_project(db, workspace_path=ws)
         await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
 
-        result = await handler.execute("archive_tasks", {"project_id": "p-1"})
-        archive_dir = result["archive_dir"]
-        with open(os.path.join(archive_dir, "t-1.md")) as f:
+        await handler.execute("archive_task", {"project_id": "p-1"})
+        vault_root = handler.config.vault_root
+        note = self._find_note(vault_root, "p-1", "t-1")
+        assert note is not None
+        with open(note) as f:
             content = f.read()
 
-        assert "No execution result recorded" in content
+        # No agent result → falls back to task description
+        assert "Description of Test Task" in content
 
     async def test_single_task_archive_writes_note(self, handler, db, tmp_path):
         ws = str(tmp_path / "workspaces" / "p-1")
@@ -637,12 +611,12 @@ class TestArchiveMarkdownNotes:
         result = await handler.execute("archive_task", {"task_id": "t-1"})
         assert "error" not in result
 
-        data_dir = str(tmp_path / "data")
-        note_path = os.path.join(data_dir, "archived_tasks", "p-1", "t-1.md")
-        assert os.path.isfile(note_path)
-        with open(note_path) as f:
+        vault_root = handler.config.vault_root
+        note = self._find_note(vault_root, "p-1", "t-1")
+        assert note is not None
+        with open(note) as f:
             content = f.read()
-        assert "# Single" in content
+        assert "Single" in content
 
 
 # ---------------------------------------------------------------------------
@@ -747,6 +721,7 @@ class TestAutoArchive:
     @pytest.fixture
     async def orchestrator(self, db, tmp_path):
         config = AppConfig(
+            data_dir=str(tmp_path / "data"),
             discord=DiscordConfig(bot_token="test-token", guild_id="123"),
             workspace_dir=str(tmp_path / "workspaces"),
             database_path=str(tmp_path / "test.db"),

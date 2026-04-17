@@ -333,13 +333,14 @@ class TestCheckProfileFunctional:
 
     @pytest.fixture
     async def handler(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
         from src.config import AppConfig
         from src.orchestrator import Orchestrator
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()

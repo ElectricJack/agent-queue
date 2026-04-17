@@ -32,7 +32,7 @@ from pydantic import ConfigDict
 
 from src.database import Database
 from src.models import AgentState, TaskStatus
-from src.tool_registry import _ALL_TOOL_DEFINITIONS
+from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 from src.mcp_interfaces import (
     agent_to_dict,
     profile_to_dict,
@@ -53,8 +53,7 @@ DEFAULT_EXCLUDED_COMMANDS = {
     "restart_daemon",
     "update_and_restart",
     "run_command",  # dangerous for external MCP clients
-    "browse_tools",
-    "load_tools",  # meta-tools for LLM context management, not MCP
+    "load_tools",  # supervisor-internal meta-tool, not for MCP agents
 }
 
 
@@ -154,7 +153,7 @@ def _discover_all_commands() -> dict[str, dict]:
     """
     # Lazy import to avoid circular dependency at module level.
     # CommandHandler imports tool_registry → tool_registry is imported here.
-    from src.command_handler import CommandHandler  # noqa: E402
+    from src.commands.handler import CommandHandler  # noqa: E402
 
     discovered: dict[str, dict] = {}
     for attr_name in dir(CommandHandler):
@@ -187,19 +186,25 @@ def _discover_all_commands() -> dict[str, dict]:
 def register_command_tools(
     mcp_server: FastMCP,
     excluded: set[str] | None = None,
+    plugin_tools: list[dict] | None = None,
 ) -> list[str]:
     """Auto-register all CommandHandler commands as MCP tools.
 
-    **Two-pass registration:**
+    **Three-pass registration:**
 
     1. **Explicit definitions** — iterates ``_ALL_TOOL_DEFINITIONS`` and
        registers each tool with its rich JSON Schema (descriptions,
        required fields, enums, etc.).
-    2. **Auto-discovered commands** — scans ``CommandHandler`` for any
-       ``_cmd_*`` methods that were *not* covered in pass 1 and registers
-       them with a basic schema derived from the method docstring.  This
-       safety net ensures that newly added commands are automatically
-       available via MCP without requiring manual tool-definition updates.
+    2. **Plugin tools** — registers tool definitions contributed by plugins
+       (internal and external) that are not already covered by pass 1.
+       Plugin tools have rich schemas and are passed in by the caller
+       (typically from ``PluginRegistry.get_all_tool_definitions()``).
+    3. **Auto-discovered commands** — scans ``CommandHandler`` for any
+       ``_cmd_*`` methods that were *not* covered in passes 1–2 and
+       registers them with a basic schema derived from the method
+       docstring.  This safety net ensures that newly added commands are
+       automatically available via MCP without requiring manual
+       tool-definition updates.
 
     Commands in the *excluded* set are skipped in both passes.
 
@@ -261,7 +266,28 @@ def register_command_tools(
         if _register_tool(name, description, input_schema):
             registered.append(name)
 
-    # --- Pass 2: auto-discover any missing commands -----------------------
+    # --- Pass 2: plugin-contributed tool definitions (rich schemas) --------
+
+    plugin_registered: list[str] = []
+    for tool_def in plugin_tools or []:
+        name = tool_def.get("name", "")
+        if not name or name in explicit_names:
+            continue  # already handled in pass 1
+        explicit_names.add(name)  # prevent duplicate in pass 3
+        description = tool_def.get("description", f"Execute the {name} command.")
+        input_schema = tool_def.get("input_schema", {"type": "object", "properties": {}})
+        if _register_tool(name, description, input_schema):
+            plugin_registered.append(name)
+            registered.append(name)
+
+    if plugin_registered:
+        logger.info(
+            "Registered %d plugin-contributed MCP tools: %s",
+            len(plugin_registered),
+            ", ".join(plugin_registered),
+        )
+
+    # --- Pass 3: auto-discover any missing commands -----------------------
 
     try:
         all_commands = _discover_all_commands()
@@ -284,9 +310,10 @@ def register_command_tools(
             registered.append(cmd_name)
 
     logger.info(
-        "Registered %d MCP tools (%d explicit, %d auto-discovered, %d excluded)",
+        "Registered %d MCP tools (%d explicit, %d plugin, %d auto-discovered, %d excluded)",
         len(registered),
-        len(registered) - len(auto_registered),
+        len(registered) - len(plugin_registered) - len(auto_registered),
+        len(plugin_registered),
         len(auto_registered),
         len(excluded),
     )
@@ -494,7 +521,7 @@ Format your response as JSON with keys: title, description, priority, requires_a
         contexts = await db.get_task_contexts(task_id)
         context_text = (
             "\n".join(
-                f"- [{c.get('type', 'unknown')}] {c.get('content', '')[:200]}" for c in contexts
+                f"- [{c.get('type', 'unknown')}] {c.get('content', '')}" for c in contexts
             )
             if contexts
             else "No additional context."

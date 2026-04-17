@@ -1,6 +1,12 @@
+---
+tags: [spec, reflection, self-improvement]
+---
+
 # Reflection Engine Specification
 
-The ReflectionEngine manages the Supervisor's action-reflect cycle.
+The ReflectionEngine manages the [[specs/supervisor|Supervisor]]'s action-reflect cycle.
+
+Reflection is a [[design/playbooks|playbook]]-driven process. See [[design/self-improvement]] for the self-improvement loop.
 
 ## Class: ReflectionEngine (src/reflection.py)
 

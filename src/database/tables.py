@@ -85,6 +85,12 @@ tasks = Table(
     ),
     Column("attachments", Text, nullable=True, server_default="'[]'"),
     Column("auto_approve_plan", Integer, nullable=False, server_default="0"),
+    Column("skip_verification", Integer, nullable=False, server_default="0"),
+    Column("workflow_id", Text, ForeignKey("workflows.workflow_id", use_alter=True), nullable=True),
+    Column("agent_type", Text, nullable=True),
+    Column("affinity_agent_id", Text, nullable=True),
+    Column("affinity_reason", Text, nullable=True),
+    Column("workspace_mode", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
@@ -219,49 +225,13 @@ workspaces = Table(
     Column("locked_by_agent_id", Text, ForeignKey("agents.id"), nullable=True),
     Column("locked_by_task_id", Text, ForeignKey("tasks.id"), nullable=True),
     Column("locked_at", Float, nullable=True),
+    Column("lock_mode", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     UniqueConstraint("project_id", "workspace_path"),
 )
 
-hooks = Table(
-    "hooks",
-    metadata,
-    Column("id", Text, primary_key=True),
-    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
-    Column("name", Text, nullable=False),
-    Column("enabled", Integer, nullable=False, server_default="1"),
-    Column("trigger", Text, nullable=False),
-    Column("context_steps", Text, nullable=False, server_default="'[]'"),
-    Column("prompt_template", Text, nullable=False),
-    Column("llm_config", Text, nullable=True),
-    Column("cooldown_seconds", Integer, nullable=False, server_default="3600"),
-    Column("max_tokens_per_run", Integer, nullable=True),
-    Column("last_triggered_at", Float, nullable=True),
-    Column("plugin_id", Text, nullable=True),
-    Column("source_hash", Text, nullable=True),
-    Column("created_at", Float, nullable=False),
-    Column("updated_at", Float, nullable=False),
-    Index("idx_hooks_plugin_id", "plugin_id"),
-)
-
-hook_runs = Table(
-    "hook_runs",
-    metadata,
-    Column("id", Text, primary_key=True),
-    Column("hook_id", Text, ForeignKey("hooks.id"), nullable=False),
-    Column("project_id", Text, nullable=False),
-    Column("trigger_reason", Text, nullable=False),
-    Column("event_data", Text, nullable=True),
-    Column("context_results", Text, nullable=True),
-    Column("prompt_sent", Text, nullable=True),
-    Column("llm_response", Text, nullable=True),
-    Column("actions_taken", Text, nullable=True),
-    Column("skipped_reason", Text, nullable=True),
-    Column("tokens_used", Integer, nullable=False, server_default="0"),
-    Column("status", Text, nullable=False, server_default="'running'"),
-    Column("started_at", Float, nullable=False),
-    Column("completed_at", Float, nullable=True),
-)
+# hooks and hook_runs tables removed (playbooks spec §13 Phase 3).
+# Migration drops these tables from existing databases.
 
 agent_profiles = Table(
     "agent_profiles",
@@ -322,9 +292,26 @@ archived_tasks = Table(
     Column("preferred_workspace_id", Text, nullable=True),
     Column("attachments", Text, nullable=True, server_default="'[]'"),
     Column("auto_approve_plan", Integer, nullable=False, server_default="0"),
+    Column("skip_verification", Integer, nullable=False, server_default="0"),
+    Column("workflow_id", Text, nullable=True),
+    Column("agent_type", Text, nullable=True),
+    Column("affinity_agent_id", Text, nullable=True),
+    Column("affinity_reason", Text, nullable=True),
+    Column("workspace_mode", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("archived_at", Float, nullable=False),
+)
+
+project_constraints = Table(
+    "project_constraints",
+    metadata,
+    Column("project_id", Text, ForeignKey("projects.id"), primary_key=True),
+    Column("exclusive", Integer, nullable=False, server_default="0"),
+    Column("max_agents_by_type", Text, nullable=False, server_default="'{}'"),
+    Column("pause_scheduling", Integer, nullable=False, server_default="0"),
+    Column("created_by", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
 )
 
 plugins = Table(
@@ -352,4 +339,64 @@ plugin_data = Table(
     Column("value", Text, nullable=False, server_default="'{}'"),
     Column("updated_at", Float, nullable=False),
     Index("idx_plugin_data_plugin_id", "plugin_id"),
+)
+
+playbook_runs = Table(
+    "playbook_runs",
+    metadata,
+    Column("run_id", Text, primary_key=True),
+    Column("playbook_id", Text, nullable=False),
+    Column("playbook_version", Integer, nullable=False),
+    Column("trigger_event", Text, nullable=False, server_default="'{}'"),
+    Column(
+        "status",
+        Text,
+        nullable=False,
+        server_default="'running'",
+    ),
+    Column("current_node", Text, nullable=True),
+    Column("conversation_history", Text, nullable=False, server_default="'[]'"),
+    Column("node_trace", Text, nullable=False, server_default="'[]'"),
+    Column("tokens_used", Integer, nullable=False, server_default="0"),
+    Column("started_at", Float, nullable=False),
+    Column("completed_at", Float, nullable=True),
+    Column("error", Text, nullable=True),
+    Column("pinned_graph", Text, nullable=True),
+    Column("paused_at", Float, nullable=True),
+    Column("waiting_for_event", Text, nullable=True),
+    CheckConstraint(
+        "status IN ('running', 'paused', 'completed', 'failed', 'timed_out')",
+        name="ck_playbook_runs_status",
+    ),
+    Index("idx_playbook_runs_playbook_id", "playbook_id"),
+    Index("idx_playbook_runs_status", "status"),
+)
+
+workflows = Table(
+    "workflows",
+    metadata,
+    Column("workflow_id", Text, primary_key=True),
+    Column("playbook_id", Text, nullable=False),
+    Column("playbook_run_id", Text, ForeignKey("playbook_runs.run_id"), nullable=False),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column(
+        "status",
+        Text,
+        nullable=False,
+        server_default="'running'",
+    ),
+    Column("current_stage", Text, nullable=True),
+    Column("task_ids", Text, nullable=False, server_default="'[]'"),
+    Column("agent_affinity", Text, nullable=False, server_default="'{}'"),
+    Column("stages", Text, nullable=False, server_default="'[]'"),
+    Column("created_at", Float, nullable=False),
+    Column("completed_at", Float, nullable=True),
+    CheckConstraint(
+        "status IN ('running', 'paused', 'completed', 'failed')",
+        name="ck_workflows_status",
+    ),
+    Index("idx_workflows_playbook_id", "playbook_id"),
+    Index("idx_workflows_project_id", "project_id"),
+    Index("idx_workflows_status", "status"),
+    Index("idx_workflows_playbook_run_id", "playbook_run_id"),
 )

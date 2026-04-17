@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -34,7 +35,9 @@ def _make_config(**overrides) -> AppConfig:
         per_project_chats={"proj1": "-100888"},
         use_topics=True,
     )
-    config = AppConfig(messaging_platform="telegram", telegram=tg)
+    config = AppConfig(
+        data_dir=tempfile.mkdtemp(), messaging_platform="telegram", telegram=tg
+    )
     for k, v in overrides.items():
         setattr(config, k, v)
     return config

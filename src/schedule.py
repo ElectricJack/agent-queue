@@ -43,13 +43,12 @@ Supported cron features:
 - ``N,M,O`` (list)
 - ``N`` (exact value)
 
-See ``specs/hooks.md`` for the periodic hook trigger specification.
+See ``docs/specs/design/playbooks.md`` for the playbook-based automation specification.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -403,7 +402,6 @@ def format_next_run(dt: datetime | None) -> str:
     """
     if dt is None:
         return "no upcoming run"
-    from datetime import timedelta
 
     now = datetime.now(timezone.utc)
     delta = dt - now

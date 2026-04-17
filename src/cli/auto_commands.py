@@ -9,7 +9,7 @@ Category prefixes are stripped from command names for cleaner UX:
 ``git_commit`` becomes ``aq git commit``, ``memory_search`` becomes
 ``aq memory search``.
 
-Tool definitions are imported from ``src.tool_registry._ALL_TOOL_DEFINITIONS``
+Tool definitions are imported from ``src.tools.definitions._ALL_TOOL_DEFINITIONS``
 (a pure data structure, no heavy deps) so commands appear in ``--help``
 even when the daemon is down.  Execution still goes through the REST API.
 """
@@ -21,7 +21,7 @@ from collections import defaultdict
 import click
 from rich.console import Console
 
-from src.tool_registry import (
+from src.tools import (
     CATEGORIES,
     _ALL_TOOL_DEFINITIONS,
     _CLI_CATEGORY_OVERRIDES,
@@ -62,8 +62,7 @@ EXCLUDED = {
     "restart_daemon",
     "update_and_restart",
     "run_command",
-    "browse_tools",
-    "load_tools",
+    "load_tools",  # supervisor-internal meta-tool
     # Core messaging tools — not useful from CLI
     "send_message",
     "reply_to_user",
@@ -75,7 +74,6 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "task": "task",
     "project": "project",
     "agent": "agent",
-    "hooks": "hook",
     "plugin": "plugin",
     "git": "git",
     "memory": "memory",

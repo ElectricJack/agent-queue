@@ -305,12 +305,8 @@ class TestFormatterCompatibility:
 
     def test_format_status_overview(self):
         projects = [project_proxy({"id": "p", "name": "P", "status": "ACTIVE"})]
-        agents = [
-            agent_proxy({"workspace_id": "ws-1", "state": "busy"}),
-            agent_proxy({"workspace_id": "ws-2", "state": "idle"}),
-        ]
         task_counts = {"IN_PROGRESS": 2, "READY": 5, "COMPLETED": 10}
-        panel = format_status_overview(projects, agents, task_counts)
+        panel = format_status_overview(projects, task_counts)
         assert panel is not None
 
 
@@ -546,7 +542,7 @@ class TestAutoCommands:
             "file",
             "system",
             "task",
-            "hook",
+            "rules",
             "agent",
             "project",
             "plugin",

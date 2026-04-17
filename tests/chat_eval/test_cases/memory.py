@@ -1,29 +1,30 @@
 """Test cases for memory tools (supervisor evaluation).
 
-Covers: memory_search, memory_stats, memory_reindex, compact_memory.
+Covers: memory_store, memory_recall, memory_delete.
 
-11 test cases: verified against current supervisor-based architecture.
-memory_search is a core tool (always loaded); other memory tools are on-demand.
+These are the three agent-facing memory tools. All other memory operations
+(search, stats, reindex, compact, health, etc.) are internal/admin only.
 
-Updated: supervisor refactor review — all tests confirmed relevant; no outdated patterns.
+Updated: simplified memory interface — only memory_store, memory_recall,
+memory_delete are agent-facing tools.
 """
 
 from tests.chat_eval.test_cases._types import TestCase, Turn, ExpectedTool, Difficulty
 
 CASES: list[TestCase] = [
-    # --- memory_search ---
+    # --- memory_recall ---
     TestCase(
-        id="memory-search-basic",
-        description="Search project memory with explicit project and query",
+        id="memory-recall-basic",
+        description="Recall project memory with explicit project and query",
         category="memory",
         difficulty=Difficulty.EASY,
-        tags=["memory_search"],
+        tags=["memory_recall"],
         turns=[
             Turn(
                 user_message="search memory in test-project for 'authentication'",
                 expected_tools=[
                     ExpectedTool(
-                        name="memory_search",
+                        name="memory_recall",
                         args={"project_id": "test-project", "query": "authentication"},
                     ),
                 ],
@@ -31,17 +32,17 @@ CASES: list[TestCase] = [
         ],
     ),
     TestCase(
-        id="memory-search-natural",
-        description="Search memory with natural phrasing",
+        id="memory-recall-natural",
+        description="Recall memory with natural phrasing",
         category="memory",
         difficulty=Difficulty.MEDIUM,
-        tags=["memory_search"],
+        tags=["memory_recall"],
         turns=[
             Turn(
                 user_message="what do we know about the database migration in project backend?",
                 expected_tools=[
                     ExpectedTool(
-                        name="memory_search",
+                        name="memory_recall",
                         args={"project_id": "backend"},
                     ),
                 ],
@@ -49,151 +50,78 @@ CASES: list[TestCase] = [
         ],
     ),
     TestCase(
-        id="memory-search-active-project",
-        description="Search memory using active project context",
+        id="memory-recall-active-project",
+        description="Recall memory using active project context",
         category="memory",
         difficulty=Difficulty.EASY,
-        tags=["memory_search"],
+        tags=["memory_recall"],
         active_project="my-app",
         turns=[
             Turn(
                 user_message="search memory for 'API rate limiting'",
                 expected_tools=[
                     ExpectedTool(
-                        name="memory_search",
+                        name="memory_recall",
                         args={"project_id": "my-app", "query": "API rate limiting"},
                     ),
                 ],
             ),
         ],
     ),
+    # --- memory_store ---
     TestCase(
-        id="memory-search-with-top-k",
-        description="Search memory specifying number of results",
-        category="memory",
-        difficulty=Difficulty.MEDIUM,
-        tags=["memory_search"],
-        turns=[
-            Turn(
-                user_message="find the top 3 memories about testing in project webapp",
-                expected_tools=[
-                    ExpectedTool(
-                        name="memory_search",
-                        args={"project_id": "webapp", "top_k": 3},
-                    ),
-                ],
-            ),
-        ],
-    ),
-    # --- memory_stats ---
-    TestCase(
-        id="memory-stats-basic",
-        description="Show memory stats for a project",
-        category="memory",
-        difficulty=Difficulty.TRIVIAL,
-        tags=["memory_stats"],
-        turns=[
-            Turn(
-                user_message="show memory stats for test-project",
-                expected_tools=[
-                    ExpectedTool(
-                        name="memory_stats",
-                        args={"project_id": "test-project"},
-                    ),
-                ],
-            ),
-        ],
-    ),
-    TestCase(
-        id="memory-stats-natural",
-        description="Ask about memory status naturally",
+        id="memory-store-basic",
+        description="Store an insight in project memory",
         category="memory",
         difficulty=Difficulty.EASY,
-        tags=["memory_stats"],
-        active_project="backend",
-        turns=[
-            Turn(
-                user_message="how's the memory index looking?",
-                expected_tools=[
-                    ExpectedTool(
-                        name="memory_stats",
-                        args={"project_id": "backend"},
-                    ),
-                ],
-            ),
-        ],
-    ),
-    # --- memory_reindex ---
-    TestCase(
-        id="memory-reindex-basic",
-        description="Force reindex of project memory",
-        category="memory",
-        difficulty=Difficulty.EASY,
-        tags=["memory_reindex"],
-        turns=[
-            Turn(
-                user_message="reindex memory for project my-app",
-                expected_tools=[
-                    ExpectedTool(
-                        name="memory_reindex",
-                        args={"project_id": "my-app"},
-                    ),
-                ],
-            ),
-        ],
-    ),
-    TestCase(
-        id="memory-reindex-natural",
-        description="Rebuild memory index with natural phrasing",
-        category="memory",
-        difficulty=Difficulty.MEDIUM,
-        tags=["memory_reindex"],
-        active_project="webapp",
-        turns=[
-            Turn(
-                user_message="rebuild the memory index, it seems out of date",
-                expected_tools=[
-                    ExpectedTool(
-                        name="memory_reindex",
-                        args={"project_id": "webapp"},
-                    ),
-                ],
-            ),
-        ],
-    ),
-    # --- compact_memory ---
-    TestCase(
-        id="memory-compact-basic",
-        description="Compact memory for a specific project",
-        category="memory",
-        difficulty=Difficulty.EASY,
-        tags=["compact_memory"],
-        turns=[
-            Turn(
-                user_message="compact memory for project backend",
-                expected_tools=[
-                    ExpectedTool(
-                        name="compact_memory",
-                        args={"project_id": "backend"},
-                    ),
-                ],
-            ),
-        ],
-    ),
-    TestCase(
-        id="memory-compact-active-project",
-        description="Compact memory using active project context",
-        category="memory",
-        difficulty=Difficulty.EASY,
-        tags=["compact_memory"],
+        tags=["memory_store"],
         active_project="my-app",
         turns=[
             Turn(
-                user_message="compact the memory, it's getting large",
+                user_message="remember that the test framework is pytest with asyncio mode",
                 expected_tools=[
                     ExpectedTool(
-                        name="compact_memory",
+                        name="memory_store",
                         args={"project_id": "my-app"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    TestCase(
+        id="memory-store-natural",
+        description="Store knowledge naturally",
+        category="memory",
+        difficulty=Difficulty.MEDIUM,
+        tags=["memory_store"],
+        active_project="backend",
+        turns=[
+            Turn(
+                user_message="save to memory: database migrations must run before deploying",
+                expected_tools=[
+                    ExpectedTool(
+                        name="memory_store",
+                        args={"project_id": "backend"},
+                    ),
+                ],
+            ),
+        ],
+    ),
+    # --- memory_delete ---
+    TestCase(
+        id="memory-delete-basic",
+        description="Delete a memory entry by hash",
+        category="memory",
+        difficulty=Difficulty.EASY,
+        tags=["memory_delete"],
+        active_project="my-app",
+        turns=[
+            Turn(
+                user_message="delete memory entry abc123def",
+                expected_tools=[
+                    ExpectedTool(
+                        name="memory_delete",
+                        args={"chunk_hash": "abc123def"},
                     ),
                 ],
             ),
@@ -201,27 +129,27 @@ CASES: list[TestCase] = [
     ),
     # --- multi-turn memory usage ---
     TestCase(
-        id="memory-search-then-stats",
-        description="Search memory then check stats in a multi-turn conversation",
+        id="memory-recall-then-store",
+        description="Recall memory then store new insight in a multi-turn conversation",
         category="memory",
         difficulty=Difficulty.MEDIUM,
-        tags=["memory_search", "memory_stats"],
+        tags=["memory_recall", "memory_store"],
         active_project="my-app",
         turns=[
             Turn(
                 user_message="search memory for 'deployment pipeline'",
                 expected_tools=[
                     ExpectedTool(
-                        name="memory_search",
+                        name="memory_recall",
                         args={"project_id": "my-app", "query": "deployment pipeline"},
                     ),
                 ],
             ),
             Turn(
-                user_message="how many memories are indexed?",
+                user_message="save this insight: deployment requires running migrations first",
                 expected_tools=[
                     ExpectedTool(
-                        name="memory_stats",
+                        name="memory_store",
                         args={"project_id": "my-app"},
                     ),
                 ],

@@ -365,38 +365,12 @@ def plugin_config(name: str, key_values: tuple[str, ...]) -> None:
 @click.argument("name")
 @click.option("--limit", default=20, help="Number of recent runs to show")
 def plugin_logs(name: str, limit: int) -> None:
-    """View plugin hook execution history."""
-    from .formatters import format_hook_run_table
-
-    async def _run_logs():
-        async with _get_plugin_client() as client:
-            p = await client.get_plugin(name)
-            if not p:
-                raise ValueError(f"Plugin '{name}' not found.")
-            hooks = await client.list_hooks()
-            plugin_hooks = [h for h in hooks if getattr(h, "plugin_id", None) == name]
-            all_runs = []
-            for h in plugin_hooks:
-                runs = await client.list_hook_runs(h.id, limit=limit)
-                all_runs.extend(runs)
-            all_runs.sort(
-                key=lambda r: getattr(r, "started_at", 0) or 0,
-                reverse=True,
-            )
-            return all_runs[:limit]
-
-    try:
-        runs = _run(_run_logs())
-    except Exception as e:
-        console.print(f"[bold red]Error:[/] {e}")
-        raise SystemExit(1)
-
-    if not runs:
-        console.print(f"[dim]No hook runs found for plugin '{name}'.[/dim]")
-        return
-
-    table = format_hook_run_table(runs)
-    console.print(table)
+    """View plugin execution history (deprecated — hooks have been removed)."""
+    console.print(
+        "[yellow]Plugin hook execution logs are no longer available.[/]\n"
+        "The hook engine has been removed. Automation is now handled by playbooks.\n"
+        "Use [bold]aq playbook list[/] to view playbook-based automation."
+    )
 
 
 @plugin.command("prompts")

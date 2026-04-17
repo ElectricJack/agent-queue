@@ -1,3 +1,7 @@
+---
+tags: [spec, tools, context-management]
+---
+
 # Tiered Tool System
 
 ## Purpose
@@ -5,7 +9,7 @@
 Reduce the LLM's per-interaction context by presenting only ~11 core tools by default.
 All other tools are organized into 6 named categories that can be loaded on demand.
 This affects only which tool **definitions** the LLM sees -- the execution path through
-CommandHandler is unchanged.
+[[specs/command-handler|CommandHandler]] is unchanged.
 
 ## Concepts
 
@@ -85,8 +89,8 @@ The tool schemas themselves are NOT in this response -- they are injected into t
 ## Source Files
 
 - `src/tool_registry.py` -- ToolRegistry class, category metadata, all tool definitions
-- `src/chat_agent.py` -- chat() uses mutable tool set; TOOLS is backward-compat alias
-- `src/command_handler.py` -- browse_tools, load_tools, send_message, rule stubs
+- `src/chat_agent.py` -- chat() uses mutable tool set; TOOLS is backward-compat alias (see [[specs/supervisor]])
+- `src/command_handler.py` -- browse_tools, load_tools, send_message, rule stubs (see [[specs/command-handler]])
 
 ## Core Tool List
 
@@ -100,7 +104,7 @@ The following tools are always available (not assigned to any category):
 - `load_tools` -- load a tool category
 - `memory_search` -- search project memory
 - `send_message` -- post to Discord channel
-- `browse_rules` -- list rules (Phase 2 stub)
-- `load_rule` -- load rule detail (Phase 2 stub)
-- `save_rule` -- create/update rule (Phase 2 stub)
-- `delete_rule` -- remove rule (Phase 2 stub)
+- `browse_rules` -- list rules (deprecated, redirects to playbooks)
+- `load_rule` -- load rule detail (deprecated, redirects to playbooks)
+- `save_rule` -- create/update rule (deprecated, redirects to playbooks)
+- `delete_rule` -- remove rule (deprecated, redirects to playbooks)

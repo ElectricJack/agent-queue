@@ -77,18 +77,20 @@ def _run_alembic_upgrade(sync_connection) -> None:
     command.upgrade(alembic_cfg, "head")
 
 
-def _stamp_alembic_head(sync_connection) -> None:
-    """Stamp an existing database as being at the latest migration.
+def _stamp_alembic_baseline(sync_connection) -> None:
+    """Stamp an existing database at the baseline migration.
 
-    Used for pre-Alembic databases that already have the full schema
-    but no ``alembic_version`` table.
+    Used for pre-Alembic databases that already have the core schema
+    but no ``alembic_version`` table.  By stamping at the baseline
+    (instead of head), any post-baseline migrations (e.g. new tables
+    like ``task_metadata``) are applied on the subsequent upgrade call.
     """
     from alembic import command
     from alembic.config import Config
 
     alembic_cfg = Config(str(_ALEMBIC_INI))
     alembic_cfg.attributes["connection"] = sync_connection
-    command.stamp(alembic_cfg, "head")
+    command.stamp(alembic_cfg, "311e98c39ffa")
 
 
 async def run_schema_setup(engine: AsyncEngine) -> None:
@@ -96,7 +98,8 @@ async def run_schema_setup(engine: AsyncEngine) -> None:
 
     For new databases, this runs all migrations from scratch.
     For existing pre-Alembic databases (have tables but no
-    ``alembic_version``), it stamps them at head first.
+    ``alembic_version``), it stamps them at the baseline revision
+    and then runs any newer migrations to bring the schema up to date.
     """
     async with engine.begin() as conn:
         # Check if this is a pre-Alembic database (has tables but no alembic_version)
@@ -107,9 +110,11 @@ async def run_schema_setup(engine: AsyncEngine) -> None:
             has_data_tables = bool(existing_tables - {"alembic_version"})
 
             if has_data_tables and not has_alembic:
-                # Existing DB from before Alembic — stamp as current
-                logger.info("Pre-Alembic database detected, stamping at head")
-                _stamp_alembic_head(sync_conn)
+                # Existing DB from before Alembic — stamp at baseline,
+                # then upgrade so post-baseline migrations are applied.
+                logger.info("Pre-Alembic database detected, stamping at baseline")
+                _stamp_alembic_baseline(sync_conn)
+                _run_alembic_upgrade(sync_conn)
             else:
                 # New DB or already-Alembic DB — run migrations normally
                 _run_alembic_upgrade(sync_conn)
@@ -126,6 +131,7 @@ async def run_startup_data_migrations(engine: AsyncEngine) -> None:
         await _migrate_repos_to_projects(conn)
         await _normalize_workspace_paths(conn)
         await _drop_legacy_agent_workspaces(conn)
+        await _drop_legacy_workspace_locks(conn)
 
 
 async def _migrate_repos_to_projects(conn) -> None:
@@ -165,6 +171,18 @@ async def _drop_legacy_agent_workspaces(conn) -> None:
         await conn.execute(text("DROP TABLE IF EXISTS agent_workspaces"))
     except Exception as e:
         logger.debug("Drop agent_workspaces (benign): %s", e)
+
+
+async def _drop_legacy_workspace_locks(conn) -> None:
+    """Drop the legacy workspace_locks table if it still exists.
+
+    This table has FK constraints to tasks.id that can block task deletion.
+    The codebase uses workspaces.locked_by_task_id instead.
+    """
+    try:
+        await conn.execute(text("DROP TABLE IF EXISTS workspace_locks"))
+    except Exception as e:
+        logger.debug("Drop workspace_locks (benign): %s", e)
 
 
 async def _normalize_workspace_paths(conn) -> None:

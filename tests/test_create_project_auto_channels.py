@@ -11,7 +11,7 @@ Covers:
 
 import pytest
 from src.config import AppConfig, DiscordConfig, PerProjectChannelsConfig
-from src.command_handler import CommandHandler
+from src.commands.handler import CommandHandler
 from src.database import Database
 from src.orchestrator import Orchestrator
 
@@ -35,6 +35,7 @@ def config_auto_create_off(tmp_path):
         ),
         workspace_dir=str(tmp_path / "workspaces"),
         database_path=str(tmp_path / "test.db"),
+        data_dir=str(tmp_path / "data"),
     )
 
 
@@ -49,6 +50,7 @@ def config_auto_create_on(tmp_path):
         ),
         workspace_dir=str(tmp_path / "workspaces"),
         database_path=str(tmp_path / "test.db"),
+        data_dir=str(tmp_path / "data"),
     )
 
 

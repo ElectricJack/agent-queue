@@ -1,5 +1,5 @@
 site_name: Agent Queue Documentation
-site_description: Documentation for Agent Queue — a task queue and orchestrator for AI coding agents
+site_description: Documentation for Agent Queue — a self-improving orchestration platform for AI coding agents
 site_url: https://electricjack.github.io/agent-queue/
 repo_url: https://github.com/ElectricJack/agent-queue
 repo_name: ElectricJack/agent-queue
@@ -72,6 +72,17 @@ nav:
       - Git Sync:
           - Current State: git-sync-current-state.md
           - Identified Gaps: git-sync-gaps.md
+  - Design:
+      - Overview: specs/design/README.md
+      - Guiding Principles: specs/design/guiding-design-principles.md
+      - Playbooks: specs/design/playbooks.md
+      - Memory Plugin: specs/design/memory-plugin.md
+      - Memory Scoping: specs/design/memory-scoping.md
+      - Self-Improvement: specs/design/self-improvement.md
+      - Agent Coordination: specs/design/agent-coordination.md
+      - Vault: specs/design/vault.md
+      - Profiles: specs/design/profiles.md
+      - Roadmap: specs/design/roadmap.md
   - Specifications:
       - Core:
           - Models & State Machine: specs/models-and-state-machine.md
@@ -87,10 +98,8 @@ nav:
           - Plan Parser: specs/plan-parser.md
           - Prompt Builder: specs/prompt-builder.md
           - Reflection: specs/reflection.md
-          - Rule System: specs/rule-system.md
           - Tiered Tools: specs/tiered-tools.md
           - Chat Observer: specs/chat-observer.md
-          - Hooks: specs/hooks.md
           - Event Bus: specs/event-bus.md
       - Interfaces:
           - Supervisor (Chat Agent): specs/chat-agent.md

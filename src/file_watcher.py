@@ -39,21 +39,17 @@ Watch rules are stored in the database as JSON in the hook's trigger config::
     }
 
 Integration:
-    The FileWatcher is created by HookEngine at ``initialize()`` and scans
-    watches on each ``tick()`` call.  It holds a reference to the EventBus
-    for emitting change events.  The orchestrator's existing tick loop
-    drives the polling cycle.
-
-See ``specs/hooks.md`` for the file/folder watch trigger specification.
+    The FileWatcher scans watches on each ``tick()`` call.  It holds a
+    reference to the EventBus for emitting change events.  The
+    orchestrator's existing tick loop drives the polling cycle.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from src.event_bus import EventBus
 
@@ -169,8 +165,8 @@ class FileWatcher:
     async def check(self) -> None:
         """Poll all watch rules for changes.
 
-        Called by HookEngine.tick() on each orchestrator cycle.  Respects
-        ``poll_interval`` to avoid excessive filesystem access.
+        Called on each orchestrator cycle.  Respects ``poll_interval``
+        to avoid excessive filesystem access.
         """
         now = time.time()
         if now - self._last_poll < self.poll_interval:

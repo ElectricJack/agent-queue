@@ -1,7 +1,7 @@
 """Chat provider abstraction for the LLM control plane.
 
 This package is used by the ChatAgent (Discord chat interface) and the
-HookEngine (automated event-driven hooks) -- NOT by agent execution, which
+PlaybookExecutor (automated playbook runs) -- NOT by agent execution, which
 goes through the separate AgentAdapter layer in ``src/adapters/``.
 
 The factory function ``create_chat_provider`` selects between Anthropic
@@ -34,6 +34,15 @@ def create_chat_provider(config: ChatProviderConfig) -> ChatProvider | None:
             base_url=config.base_url or "http://localhost:11434/v1",
             keep_alive=config.keep_alive or "1h",
             num_ctx=config.num_ctx or 0,
+        )
+
+    if config.provider == "gemini":
+        from .gemini import GeminiChatProvider
+
+        return GeminiChatProvider(
+            model=config.model or "gemini-2.5-flash",
+            api_key=config.api_key,
+            thinking_budget=config.thinking_budget,
         )
 
     # Default: anthropic

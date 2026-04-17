@@ -11,17 +11,28 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.13",
     "discord.py>=2.6.0",
-    "claude-agent-sdk>=0.1.55",
-    "pyyaml>=6.0",
+    "claude_agent_sdk>=0.1.55",
+    "PyYAML>=6.0",
     "fastapi>=0.135.0",
+    "pydantic>=2.0",
+    "starlette>=0.27.0",
     "structlog>=25.1.0",
     "rich>=13.9",
     "pygments>=2.20.0",
 ]
 
 [project.optional-dependencies]
+anthropic = [
+    "anthropic>=0.42.0",
+]
+gemini = [
+    "google-genai>=1.0.0",
+]
 postgresql = [
     "asyncpg>=0.29.0",
+]
+ollama = [
+    "openai>=1.0.0",
 ]
 telegram = [
     "python-telegram-bot[ext]>=20.0",
@@ -41,7 +52,7 @@ dev = [
     "pre-commit>=3.5.0",
 ]
 memory = [
-    "memsearch>=0.1.0",
+    "memsearch @ file:packages/memsearch",
 ]
 docs = [
     "mkdocs>=1.6",

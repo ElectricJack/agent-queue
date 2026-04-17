@@ -209,6 +209,224 @@ class TaskThreadCloseEvent(NotifyEvent):
 # ---------------------------------------------------------------------------
 
 
+class ProfileSyncFailedEvent(NotifyEvent):
+    """Emitted when a profile.md sync to the database fails.
+
+    Common causes include invalid JSON in structured sections, missing
+    profile ID, or database errors.  The previous DB config remains active.
+    """
+
+    event_type: str = "notify.profile_sync_failed"
+    severity: str = "error"
+    category: str = "system"
+    profile_id: str = ""
+    source_path: str = ""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+
+# ---------------------------------------------------------------------------
+# README summary events
+# ---------------------------------------------------------------------------
+
+
+class ReadmeSummaryUpdatedEvent(NotifyEvent):
+    """Emitted when a project README change triggers an orchestrator summary update.
+
+    The orchestrator watches ``vault/projects/*/README.md`` files and
+    generates/updates structured summaries in
+    ``vault/orchestrator/memory/project-{id}.md``.  This event fires on
+    every successful create, update, or removal so hooks, dashboards, and
+    other subsystems can react.
+
+    See ``docs/specs/design/self-improvement.md`` Section 5 — Orchestrator
+    Memory.
+    """
+
+    event_type: str = "notify.readme_summary_updated"
+    category: str = "system"
+    action: str = ""  # "created", "updated", "removed"
+    source_path: str = ""
+    summary_path: str = ""
+
+
+class ReadmeSummaryFailedEvent(NotifyEvent):
+    """Emitted when a README summary generation fails.
+
+    Covers file-read errors, write errors, and path-resolution failures.
+    The orchestrator's existing summary (if any) remains unchanged.
+    """
+
+    event_type: str = "notify.readme_summary_failed"
+    severity: str = "error"
+    category: str = "system"
+    source_path: str = ""
+    errors: list[str] = []
+
+
+# ---------------------------------------------------------------------------
+# Playbook compilation events
+# ---------------------------------------------------------------------------
+
+
+class PlaybookCompilationFailedEvent(NotifyEvent):
+    """Emitted when playbook markdown compilation fails.
+
+    The previous compiled version (if any) remains active for event
+    matching and execution.  The error notification includes the file
+    path and all LLM/validation error details so operators can diagnose
+    and fix the markdown.
+
+    See ``docs/specs/design/playbooks.md`` Section 4 — Authoring Model.
+    """
+
+    event_type: str = "notify.playbook_compilation_failed"
+    severity: str = "error"
+    category: str = "system"
+    playbook_id: str = ""
+    source_path: str = ""
+    errors: list[str] = []
+    previous_version: int | None = None
+    source_hash: str = ""
+    retries_used: int = 0
+
+
+class PlaybookCompilationSucceededEvent(NotifyEvent):
+    """Emitted when playbook markdown is successfully compiled.
+
+    Provides observability into playbook compilation — useful for
+    dashboards and audit logs.
+    """
+
+    event_type: str = "notify.playbook_compilation_succeeded"
+    severity: str = "info"
+    category: str = "system"
+    playbook_id: str = ""
+    source_path: str = ""
+    version: int = 0
+    source_hash: str = ""
+    node_count: int = 0
+    retries_used: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Playbook run lifecycle events
+# ---------------------------------------------------------------------------
+
+
+class PlaybookRunCompletedEvent(NotifyEvent):
+    """Emitted when a playbook run completes successfully.
+
+    Provides observability into playbook execution outcomes — useful for
+    dashboards, audit logs, and cross-playbook composition (roadmap 5.3.11).
+
+    See ``docs/specs/design/playbooks.md`` Section 7 — Event System.
+    """
+
+    event_type: str = "notify.playbook_run_completed"
+    category: str = "system"
+    playbook_id: str = ""
+    run_id: str = ""
+    final_context: str | None = None
+    tokens_used: int = 0
+    duration_seconds: float = 0.0
+
+
+class PlaybookRunFailedEvent(NotifyEvent):
+    """Emitted when a playbook run fails.
+
+    Includes the node where execution failed and the error details for
+    operator diagnosis and meta-monitoring.
+
+    See ``docs/specs/design/playbooks.md`` Section 7 — Event System.
+    """
+
+    event_type: str = "notify.playbook_run_failed"
+    severity: str = "error"
+    category: str = "system"
+    playbook_id: str = ""
+    run_id: str = ""
+    failed_at_node: str = ""
+    error: str = ""
+    tokens_used: int = 0
+    duration_seconds: float = 0.0
+
+
+class PlaybookRunPausedEvent(NotifyEvent):
+    """Emitted when a playbook run pauses at a ``wait_for_human`` node.
+
+    Surfaces the review request to human operators via Discord, Telegram, or
+    other notification transports.  The ``last_response`` field contains the
+    last assistant message (capped at 2000 chars) so the reviewer has
+    immediate context about what the playbook has done and why human input
+    is needed.
+
+    See ``docs/specs/design/playbooks.md`` Section 9 — Human-in-the-Loop.
+    Roadmap 5.4.2.
+    """
+
+    event_type: str = "notify.playbook_run_paused"
+    category: str = "interaction"
+    playbook_id: str = ""
+    run_id: str = ""
+    node_id: str = ""
+    last_response: str = ""
+    running_seconds: float = 0.0
+    tokens_used: int = 0
+    paused_at: float = 0.0
+
+
+class PlaybookRunResumedEvent(NotifyEvent):
+    """Emitted when a paused playbook run is resumed after human review.
+
+    Confirms that a previously paused run has been resumed with the human's
+    input, allowing notification transports to inform the team.  The
+    ``decision`` field contains the human's review response (capped at
+    2000 chars).
+
+    See ``docs/specs/design/playbooks.md`` Section 9 — Human-in-the-Loop.
+    Roadmap 5.4.3.
+    """
+
+    event_type: str = "notify.playbook_run_resumed"
+    category: str = "interaction"
+    playbook_id: str = ""
+    run_id: str = ""
+    node_id: str = ""
+    decision: str = ""
+
+
+class PlaybookRunTimedOutEvent(NotifyEvent):
+    """Emitted when a paused playbook run exceeds its configured pause timeout.
+
+    Routes to the same notification channel as the original
+    ``PlaybookRunPausedEvent`` so the human reviewer is informed in-context
+    that the review window has closed.
+
+    If the run transitioned to an ``on_timeout`` node instead of failing,
+    ``transitioned_to`` contains the target node ID.
+
+    See ``docs/specs/design/playbooks.md`` Section 9 — Human-in-the-Loop.
+    Roadmap 5.4.4 / 5.4.7.
+    """
+
+    event_type: str = "notify.playbook_run_timed_out"
+    severity: str = "warning"
+    category: str = "interaction"
+    playbook_id: str = ""
+    run_id: str = ""
+    node_id: str = ""
+    timeout_seconds: int = 0
+    waited_seconds: float = 0.0
+    tokens_used: int = 0
+    transitioned_to: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Generic text notification (catch-all for simple messages)
+# ---------------------------------------------------------------------------
+
+
 class TextNotifyEvent(NotifyEvent):
     """Plain-text notification for messages that don't warrant a typed event."""
 

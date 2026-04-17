@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.command_handler import (
+from src.commands.handler import (
     _count_subtree,
     _count_subtree_by_status,
     _format_status_summary,

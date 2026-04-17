@@ -42,6 +42,7 @@ def build_task_detail(task: Task) -> TaskDetail:
         parent_task_id=task.parent_task_id,
         profile_id=task.profile_id,
         auto_approve_plan=task.auto_approve_plan,
+        skip_verification=task.skip_verification,
         pr_url=task.pr_url,
     )
 

@@ -249,92 +249,6 @@ def format_agent_table(agents: list[Any]) -> Table:
 
 
 # ---------------------------------------------------------------------------
-# Hook formatters
-# ---------------------------------------------------------------------------
-
-
-def format_hook_table(hooks: list[Any]) -> Table:
-    """Format hooks as a Rich table."""
-    table = Table(
-        title="Hooks",
-        title_style="bold bright_white",
-        border_style="bright_black",
-        expand=True,
-    )
-
-    table.add_column("ID", style="bold bright_cyan", no_wrap=True, max_width=16)
-    table.add_column("Name", style="white")
-    table.add_column("Project", style="bold bright_magenta", max_width=16)
-    table.add_column("Enabled", justify="center")
-    table.add_column("Trigger", style="dim")
-    table.add_column("Last Fired", style="dim")
-    table.add_column("Cooldown", justify="right", style="dim")
-
-    for hook in hooks:
-        enabled = Text("✅", style="green") if hook.enabled else Text("❌", style="red")
-
-        # Parse trigger for display
-        try:
-            trigger = json.loads(hook.trigger) if isinstance(hook.trigger, str) else hook.trigger
-            trigger_type = (
-                trigger.get("type", "unknown") if isinstance(trigger, dict) else str(trigger)
-            )
-        except (json.JSONDecodeError, TypeError):
-            trigger_type = str(hook.trigger)[:20]
-
-        cooldown = f"{hook.cooldown_seconds}s" if hook.cooldown_seconds else "—"
-
-        table.add_row(
-            hook.id[:16],
-            hook.name,
-            hook.project_id,
-            enabled,
-            trigger_type,
-            _relative_time(hook.last_triggered_at),
-            cooldown,
-        )
-
-    return table
-
-
-def format_hook_run_table(runs: list[Any]) -> Table:
-    """Format hook execution history."""
-    table = Table(
-        title="Hook Runs",
-        title_style="bold bright_white",
-        border_style="bright_black",
-        expand=True,
-    )
-
-    table.add_column("ID", style="dim", no_wrap=True, max_width=12)
-    table.add_column("Status", no_wrap=True)
-    table.add_column("Trigger", style="dim")
-    table.add_column("Tokens", justify="right")
-    table.add_column("Started", style="dim")
-
-    status_map = {
-        "completed": ("✅", "green"),
-        "failed": ("❌", "red"),
-        "running": ("⚡", "yellow"),
-        "skipped": ("⏭️", "dim"),
-    }
-
-    for run in runs:
-        icon, style = status_map.get(run.status, ("❓", "white"))
-        status_text = Text(f"{icon} {run.status}", style=style)
-
-        table.add_row(
-            run.id[:12],
-            status_text,
-            run.trigger_reason,
-            f"{run.tokens_used:,}" if run.tokens_used else "—",
-            _relative_time(run.started_at),
-        )
-
-    return table
-
-
-# ---------------------------------------------------------------------------
 # Project formatters
 # ---------------------------------------------------------------------------
 
@@ -379,7 +293,6 @@ def format_project_table(projects: list[Any]) -> Table:
 
 def format_status_overview(
     projects: list[Any],
-    agents: list[Any],
     task_counts: dict[str, int],
 ) -> Panel:
     """Format a system status overview panel."""
@@ -410,13 +323,6 @@ def format_status_overview(
             line.append(str(count))
             lines.append(line)
         lines.append("")
-
-    # Agent summary
-    busy_agents = sum(1 for a in agents if (a.state or "").upper() == "BUSY")
-    idle_agents = sum(1 for a in agents if (a.state or "").upper() == "IDLE")
-    lines.append(Text("🤖 Agents", style="bold bright_white"))
-    lines.append(Text(f"  Total: {len(agents)}  Busy: {busy_agents}  Idle: {idle_agents}"))
-    lines.append("")
 
     # Project summary
     active_projects = sum(1 for p in projects if (p.status or "").upper() == "ACTIVE")

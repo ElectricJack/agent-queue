@@ -155,15 +155,23 @@ def _print_full_help(ctx: click.Context) -> None:
     default=False,
     help="Print complete help for all commands (for LLM ingestion).",
 )
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=False,
+    help="Output raw JSON instead of formatted tables.",
+)
 @click.version_option(version="0.1.0", prog_name="aq")
 @click.pass_context
-def cli(ctx: click.Context, api_url: str | None, help_all: bool) -> None:
+def cli(ctx: click.Context, api_url: str | None, help_all: bool, output_json: bool) -> None:
     """AgentQueue CLI — Modern terminal interface for task management.
 
     Connects to the agent-queue daemon via its REST API.
     """
     ctx.ensure_object(dict)
     ctx.obj["api_url"] = api_url
+    ctx.obj["json"] = output_json
 
     if help_all:
         _print_full_help(ctx)
@@ -184,8 +192,8 @@ def cli(ctx: click.Context, api_url: str | None, help_all: bool) -> None:
 @_handle_errors
 def status(ctx: click.Context) -> None:
     """Show system status overview."""
-    from .adapters import agent_proxy, project_proxy
-    from .formatters import format_agent_table, format_status_overview
+    from .adapters import project_proxy
+    from .formatters import format_status_overview
 
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
@@ -196,9 +204,15 @@ def status(ctx: click.Context) -> None:
 
     result = _run(_run_status())
 
+    # --json: emit raw result and return
+    if ctx.obj.get("json"):
+        json_data = result.to_dict() if hasattr(result, "to_dict") else result
+        console.print_json(data=json_data)
+        return
+
     # Adapt get_status response for format_status_overview.
-    # The formatter expects (projects: list, agents: list, task_counts: dict).
-    # get_status returns {"agents": [...], "tasks": {"by_status": {...}}, ...}
+    # The formatter expects (projects: list, task_counts: dict).
+    # get_status returns {"tasks": {"by_status": {...}}, "projects": int, ...}
     # get_status may return a typed object or a dict depending on the dispatch path.
     def _get(obj, key, default=None):
         if isinstance(obj, dict):
@@ -208,8 +222,6 @@ def status(ctx: click.Context) -> None:
             return default
         return val
 
-    raw_agents = _get(result, "agents", [])
-    agents = [agent_proxy(a) for a in raw_agents]
     tasks_section = _get(result, "tasks", {})
     if isinstance(tasks_section, dict):
         task_counts = tasks_section.get("by_status", {})
@@ -219,15 +231,15 @@ def status(ctx: click.Context) -> None:
     task_counts = {k.upper(): v for k, v in task_counts.items()}
 
     # format_status_overview needs project list — but get_status only returns
-    # a count.  We'll create minimal proxies from the agent data.
-    project_ids = {_get(a, "project_id") for a in raw_agents if _get(a, "project_id")}
-    proj_list = [project_proxy({"id": pid, "name": pid, "status": "ACTIVE"}) for pid in project_ids]
+    # a count.  Build minimal proxies from the project count.
+    num_projects = _get(result, "projects", 0)
+    proj_list = [
+        project_proxy({"id": f"project-{i}", "name": f"project-{i}", "status": "ACTIVE"})
+        for i in range(num_projects)
+    ]
 
-    panel = format_status_overview(proj_list, agents, task_counts)
+    panel = format_status_overview(proj_list, task_counts)
     console.print(panel)
-
-    if agents:
-        console.print(format_agent_table(agents))
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +251,7 @@ from . import logs  # noqa: E402, F401
 from . import tasks  # noqa: E402, F401
 from . import projects  # noqa: E402, F401
 from . import plugins  # noqa: E402, F401
+from . import vault  # noqa: E402, F401
 
 
 # ---------------------------------------------------------------------------

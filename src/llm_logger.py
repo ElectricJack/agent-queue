@@ -34,7 +34,6 @@ import json
 import logging
 import os
 import shutil
-import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -145,7 +144,6 @@ class LLMLogger:
         if not self._enabled:
             return
 
-        # Extract tool names only (schemas are large and static)
         tool_names = [t.get("name", "") for t in tools] if tools else []
 
         # Build response summary
@@ -160,9 +158,7 @@ class LLMLogger:
                 resp_summary["tool_uses"] = [
                     {
                         "name": getattr(tu, "name", ""),
-                        "input_keys": list(getattr(tu, "input", {}).keys())
-                        if isinstance(getattr(tu, "input", None), dict)
-                        else [],
+                        "input": getattr(tu, "input", {}),
                     }
                     for tu in tool_uses
                 ]
@@ -188,9 +184,9 @@ class LLMLogger:
             "duration_ms": duration_ms,
             "prompt_fingerprint": prompt_fingerprint,
             "input": {
-                "system_prompt_length": len(system),
-                "message_count": len(messages),
-                "messages": self._summarize_messages(messages),
+                "system": system,
+                "messages": messages,
+                "tools": tools or [],
                 "tool_names": tool_names,
                 "max_tokens": max_tokens,
                 "input_tokens_est": input_tokens_est,

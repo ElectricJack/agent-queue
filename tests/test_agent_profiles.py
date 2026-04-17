@@ -261,6 +261,7 @@ class TestProfileResolution:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         o = Orchestrator(config)
         await o.initialize()
@@ -478,6 +479,7 @@ agent_profiles:
 class TestProfileSyncFromConfig:
     async def test_sync_creates_profiles(self, tmp_path):
         config = AppConfig(
+            data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
@@ -499,6 +501,7 @@ class TestProfileSyncFromConfig:
 
     async def test_sync_updates_existing_profiles(self, tmp_path):
         config = AppConfig(
+            data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
@@ -511,6 +514,7 @@ class TestProfileSyncFromConfig:
 
         # Second startup with updated profile
         config2 = AppConfig(
+            data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
@@ -532,11 +536,12 @@ class TestProfileSyncFromConfig:
 class TestProfileCommands:
     @pytest.fixture
     async def handler(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -862,6 +867,7 @@ class TestProfileEnforcement:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -970,11 +976,12 @@ class TestProfileEnforcement:
 
 class TestToolValidation:
     async def test_create_profile_with_valid_tools_no_warnings(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -992,11 +999,12 @@ class TestToolValidation:
         await orch.db.close()
 
     async def test_create_profile_with_unknown_tools_has_warnings(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1015,11 +1023,12 @@ class TestToolValidation:
         await orch.db.close()
 
     async def test_edit_profile_with_unknown_tools_has_warnings(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1045,11 +1054,12 @@ class TestToolValidation:
 
 class TestListAvailableTools:
     async def test_list_available_tools(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1071,11 +1081,12 @@ class TestListAvailableTools:
 
 class TestCheckProfile:
     async def test_check_profile_empty_manifest(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1094,11 +1105,12 @@ class TestCheckProfile:
         await orch.db.close()
 
     async def test_check_profile_missing_command(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1118,11 +1130,12 @@ class TestCheckProfile:
         await orch.db.close()
 
     async def test_check_nonexistent_profile(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1139,11 +1152,12 @@ class TestCheckProfile:
 
 class TestExportImport:
     async def test_export_profile_yaml(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1164,11 +1178,12 @@ class TestExportImport:
         await orch.db.close()
 
     async def test_import_profile_from_yaml(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1191,11 +1206,12 @@ agent_profile:
         await orch.db.close()
 
     async def test_export_import_roundtrip(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1232,11 +1248,12 @@ agent_profile:
         await orch.db.close()
 
     async def test_import_profile_with_install_reports_readiness(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1255,11 +1272,12 @@ agent_profile:
         await orch.db.close()
 
     async def test_import_duplicate_fails_without_overwrite(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()
@@ -1276,11 +1294,12 @@ agent_profile:
         await orch.db.close()
 
     async def test_import_with_overwrite(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config)
         await orch.initialize()

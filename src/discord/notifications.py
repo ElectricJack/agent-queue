@@ -270,6 +270,42 @@ def format_stuck_defined_task(
     )
 
 
+def format_failed_blocked_report(
+    failed_tasks: list[Task],
+    blocked_tasks: list[Task],
+) -> str:
+    """Format a periodic summary of all tasks currently in FAILED or BLOCKED status.
+
+    Produces a concise markdown message listing tasks that need attention,
+    grouped by status, with actionable commands for each.
+    """
+    total = len(failed_tasks) + len(blocked_tasks)
+    lines = [
+        f"📊 **Attention Required — {total} task{'s' if total != 1 else ''} "
+        f"need{'s' if total == 1 else ''} intervention**",
+    ]
+
+    if failed_tasks:
+        lines.append(f"\n**Failed ({len(failed_tasks)}):**")
+        for t in failed_tasks[:10]:
+            lines.append(
+                f"• `{t.id}` — {t.title} "
+                f"(project: `{t.project_id}`, retries: {t.retry_count}/{t.max_retries})"
+            )
+        if len(failed_tasks) > 10:
+            lines.append(f"  +{len(failed_tasks) - 10} more")
+
+    if blocked_tasks:
+        lines.append(f"\n**Blocked ({len(blocked_tasks)}):**")
+        for t in blocked_tasks[:10]:
+            lines.append(f"• `{t.id}` — {t.title} (project: `{t.project_id}`)")
+        if len(blocked_tasks) > 10:
+            lines.append(f"  +{len(blocked_tasks) - 10} more")
+
+    lines.append("\n_Use `/restart-task` to retry or `/skip-task` to unblock dependents._")
+    return "\n".join(lines)
+
+
 def format_budget_warning(project_name: str, usage: int, limit: int) -> str:
     pct = (usage / limit * 100) if limit > 0 else 0
     return (
@@ -540,6 +576,52 @@ def format_stuck_defined_task_embed(
         description=f"DEFINED for {stuck_hours:.1f}h, waiting on dependencies.",
         fields=fields,
     )
+
+
+def format_failed_blocked_report_embed(
+    failed_tasks: list[Task],
+    blocked_tasks: list[Task],
+) -> discord.Embed:
+    """Rich embed version of :func:`format_failed_blocked_report`.
+
+    Uses a critical (dark red) embed with structured fields grouping tasks
+    by status, giving operators an at-a-glance view of everything needing
+    manual intervention.
+    """
+    total = len(failed_tasks) + len(blocked_tasks)
+    description = (
+        f"{total} task{'s' if total != 1 else ''} "
+        f"currently {'require' if total != 1 else 'requires'} manual intervention."
+    )
+
+    fields: list[tuple[str, str, bool]] = [
+        ("Failed", str(len(failed_tasks)), True),
+        ("Blocked", str(len(blocked_tasks)), True),
+    ]
+
+    if failed_tasks:
+        task_lines = "\n".join(
+            f"\u2022 `{t.id}` \u2014 {t.title} ({t.retry_count}/{t.max_retries})"
+            for t in failed_tasks[:8]
+        )
+        if len(failed_tasks) > 8:
+            task_lines += f"\n+{len(failed_tasks) - 8} more"
+        fields.append(("Failed Tasks", truncate(task_lines, LIMIT_FIELD_VALUE), False))
+
+    if blocked_tasks:
+        task_lines = "\n".join(f"\u2022 `{t.id}` \u2014 {t.title}" for t in blocked_tasks[:8])
+        if len(blocked_tasks) > 8:
+            task_lines += f"\n+{len(blocked_tasks) - 8} more"
+        fields.append(("Blocked Tasks", truncate(task_lines, LIMIT_FIELD_VALUE), False))
+
+    fields.append(
+        (
+            "Actions",
+            "`/restart-task <id>` to retry \u2022 `/skip-task <id>` to unblock dependents",
+            False,
+        )
+    )
+    return critical_embed("Attention Required", description=description, fields=fields)
 
 
 def format_budget_warning_embed(
@@ -1072,73 +1154,6 @@ class TaskApprovalView(discord.ui.View):
                 pass
 
 
-class AgentReplyModal(discord.ui.Modal, title="Reply to Agent"):
-    """Modal dialog for replying to an agent's question.
-
-    Opens a text input where the user can type their response.  On submit
-    the reply is forwarded via ``CommandHandler.execute("provide_input", …)``
-    so the agent's next execution cycle receives the user's answer.
-    """
-
-    response_input = discord.ui.TextInput(
-        label="Your reply",
-        style=discord.TextStyle.long,
-        placeholder="Type your response to the agent…",
-        required=True,
-        max_length=2000,
-    )
-
-    def __init__(self, task_id: str, handler=None) -> None:
-        super().__init__()
-        self.task_id = task_id
-        self._handler = handler
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        if not self._handler:
-            await interaction.response.send_message("Handler not available.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        result = await self._handler.execute(
-            "provide_input",
-            {"task_id": self.task_id, "input": self.response_input.value},
-        )
-        if "error" in result:
-            await interaction.followup.send(
-                f"Could not send reply: {result['error']}", ephemeral=True
-            )
-        else:
-            await interaction.followup.send(
-                f"💬 Reply sent for task `{self.task_id}`.",
-                ephemeral=True,
-            )
-
-
-class AgentQuestionView(discord.ui.View):
-    """Action button attached to agent question notifications.
-
-    Provides a "Reply" button that opens a :class:`AgentReplyModal` so the
-    user can respond to an agent's question directly from the notification
-    embed without needing to use a slash command or navigate to the task
-    thread.
-    """
-
-    def __init__(self, task_id: str, handler=None) -> None:
-        super().__init__(timeout=3600)  # 1 hour
-        self.task_id = task_id
-        self._handler = handler
-
-    @discord.ui.button(
-        label="Reply",
-        style=discord.ButtonStyle.primary,
-        emoji="💬",
-    )
-    async def reply_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        modal = AgentReplyModal(self.task_id, handler=self._handler)
-        await interaction.response.send_modal(modal)
-
-
 class TaskBlockedView(discord.ui.View):
     """Action buttons for blocked task notifications.
 
@@ -1556,6 +1571,294 @@ def format_plan_approval_embed(
     )
 
     return embed
+
+
+# ---------------------------------------------------------------------------
+# Playbook human-in-the-loop notifications (roadmap 5.4.2)
+# ---------------------------------------------------------------------------
+
+
+def format_playbook_paused(
+    *,
+    playbook_id: str,
+    run_id: str,
+    node_id: str,
+) -> str:
+    """Plain-text fallback for a playbook pausing at a wait_for_human node."""
+    return (
+        f"⏸️ **Playbook paused for human review:** `{playbook_id}` "
+        f"(run `{run_id}`) at node `{node_id}`\n"
+        f"Use `/resume-playbook {run_id}` to provide your input."
+    )
+
+
+def format_playbook_paused_embed(
+    *,
+    playbook_id: str,
+    run_id: str,
+    node_id: str,
+    last_response: str = "",
+    running_seconds: float = 0.0,
+    tokens_used: int = 0,
+) -> "discord.Embed":
+    """Rich embed for a playbook paused at a ``wait_for_human`` node.
+
+    Displays the accumulated context summary (the last assistant response)
+    so the human reviewer can understand what the playbook has done and
+    make an informed decision without having to look up additional details.
+
+    See ``docs/specs/design/playbooks.md`` Section 9 — Human-in-the-Loop.
+    """
+    # --- Description: context summary ---
+    desc_lines = [
+        f"Playbook `{playbook_id}` has paused at node `{node_id}` and is awaiting human review.",
+        "",
+    ]
+
+    if last_response:
+        # Show the context summary (the last assistant message)
+        context_preview = last_response
+        if len(context_preview) > 1800:
+            # Truncate at a newline boundary for readability
+            cut = context_preview[:1800].rfind("\n")
+            if cut > 600:
+                context_preview = context_preview[:cut] + "\n…"
+            else:
+                context_preview = context_preview[:1800] + "…"
+        desc_lines.append("**Context Summary:**")
+        desc_lines.append(f"```\n{context_preview}\n```")
+    else:
+        desc_lines.append("_No context summary available._")
+
+    description = "\n".join(desc_lines)
+
+    # --- Fields ---
+    fields: list[tuple[str, str, bool]] = [
+        ("Playbook", f"`{playbook_id}`", True),
+        ("Run ID", f"`{run_id}`", True),
+        ("Paused at Node", f"`{node_id}`", True),
+    ]
+
+    if running_seconds > 0:
+        if running_seconds >= 60:
+            mins = int(running_seconds // 60)
+            secs = int(running_seconds % 60)
+            duration_str = f"{mins}m {secs}s"
+        else:
+            duration_str = f"{running_seconds:.1f}s"
+        fields.append(("Running Time", duration_str, True))
+
+    if tokens_used > 0:
+        fields.append(("Tokens Used", f"{tokens_used:,}", True))
+
+    fields.append(
+        (
+            "Resume",
+            f"Use `/resume-playbook {run_id}` or click the button below.",
+            False,
+        )
+    )
+
+    _PAUSED_COLOR = 0x9B59B6  # purple — stands out as "needs human attention"
+
+    embed = make_embed(
+        EmbedStyle.WARNING,
+        "⏸️ Playbook Awaiting Human Review",
+        description=truncate(description, LIMIT_DESCRIPTION),
+        fields=fields,
+        color_override=_PAUSED_COLOR,
+    )
+
+    return embed
+
+
+def format_playbook_timed_out(
+    *,
+    playbook_id: str,
+    run_id: str,
+    node_id: str,
+    transitioned_to: str | None = None,
+) -> str:
+    """Plain-text message for a playbook pause timeout (roadmap 5.4.7 case f)."""
+    if transitioned_to:
+        return (
+            f"⏰ **Playbook Timeout** — `{playbook_id}` "
+            f"(run `{run_id}`) timed out at node `{node_id}` "
+            f"and transitioned to `{transitioned_to}`."
+        )
+    return (
+        f"⏰ **Playbook Timeout** — `{playbook_id}` (run `{run_id}`) timed out at node `{node_id}`."
+    )
+
+
+def format_playbook_timed_out_embed(
+    *,
+    playbook_id: str,
+    run_id: str,
+    node_id: str,
+    timeout_seconds: int = 0,
+    waited_seconds: float = 0.0,
+    tokens_used: int = 0,
+    transitioned_to: str | None = None,
+) -> "discord.Embed":
+    """Rich embed for a playbook pause timeout notification.
+
+    Mirrors :func:`format_playbook_paused_embed` and routes to the same
+    channel so the human reviewer sees timeout context alongside the
+    original pause notification (roadmap 5.4.7 case f).
+    """
+    if transitioned_to:
+        description = (
+            f"Playbook `{playbook_id}` timed out at node `{node_id}` "
+            f"and execution has continued at node `{transitioned_to}`."
+        )
+    else:
+        description = (
+            f"Playbook `{playbook_id}` timed out at node `{node_id}`. "
+            f"The run has been marked as **timed_out**."
+        )
+
+    fields: list[tuple[str, str, bool]] = [
+        ("Playbook", f"`{playbook_id}`", True),
+        ("Run ID", f"`{run_id}`", True),
+        ("Timed Out at Node", f"`{node_id}`", True),
+    ]
+
+    if timeout_seconds > 0:
+        if timeout_seconds >= 3600:
+            hours = timeout_seconds / 3600
+            timeout_str = f"{hours:.1f}h"
+        elif timeout_seconds >= 60:
+            mins = timeout_seconds // 60
+            timeout_str = f"{mins}m"
+        else:
+            timeout_str = f"{timeout_seconds}s"
+        fields.append(("Timeout", timeout_str, True))
+
+    if waited_seconds > 0:
+        if waited_seconds >= 3600:
+            waited_str = f"{waited_seconds / 3600:.1f}h"
+        elif waited_seconds >= 60:
+            waited_str = f"{int(waited_seconds // 60)}m {int(waited_seconds % 60)}s"
+        else:
+            waited_str = f"{waited_seconds:.1f}s"
+        fields.append(("Waited", waited_str, True))
+
+    if tokens_used > 0:
+        fields.append(("Tokens Used", f"{tokens_used:,}", True))
+
+    if transitioned_to:
+        fields.append(("Transitioned To", f"`{transitioned_to}`", False))
+
+    _TIMEOUT_COLOR = 0xE67E22  # orange — attention, but not as urgent as red
+
+    embed = make_embed(
+        EmbedStyle.WARNING,
+        "⏰ Playbook Pause Timeout",
+        description=truncate(description, LIMIT_DESCRIPTION),
+        fields=fields,
+        color_override=_TIMEOUT_COLOR,
+    )
+
+    return embed
+
+
+class PlaybookResumeModal(discord.ui.Modal, title="Resume Playbook"):
+    """Modal dialog for providing human input to resume a paused playbook run.
+
+    Opens when the user clicks the "Resume" button on a playbook-paused
+    notification.  On submit, calls ``CommandHandler.execute("resume_playbook", ...)``
+    to transition the run from PAUSED → RUNNING with the human's decision.
+    """
+
+    human_input = discord.ui.TextInput(
+        label="Your decision / input",
+        style=discord.TextStyle.long,
+        placeholder="Provide your review decision or instructions for the playbook…",
+        required=True,
+        max_length=2000,
+    )
+
+    def __init__(self, run_id: str, handler=None) -> None:
+        super().__init__()
+        self.run_id = run_id
+        self._handler = handler
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not self._handler:
+            await interaction.response.send_message("Handler not available.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "resume_playbook",
+            {"run_id": self.run_id, "human_input": self.human_input.value},
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not resume playbook: {result['error']}", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"▶️ Playbook run `{self.run_id}` resumed with your input.",
+                ephemeral=True,
+            )
+
+
+class PlaybookResumeView(discord.ui.View):
+    """Action buttons attached to playbook-paused notifications.
+
+    Provides a "Resume" button that opens a modal for the human to enter
+    their review decision, and a "List Runs" informational hint.
+    """
+
+    def __init__(self, run_id: str, handler=None) -> None:
+        super().__init__(timeout=86400)  # 24 hours (matches pause timeout)
+        self.run_id = run_id
+        self._handler = handler
+
+    @discord.ui.button(
+        label="Resume Playbook",
+        style=discord.ButtonStyle.success,
+        emoji="▶️",
+    )
+    async def resume_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        modal = PlaybookResumeModal(self.run_id, handler=self._handler)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(
+        label="List Paused Runs",
+        style=discord.ButtonStyle.secondary,
+        emoji="📋",
+    )
+    async def list_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._handler:
+            await interaction.response.send_message("Handler not available.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._handler.execute(
+            "list_playbook_runs", {"status": "paused", "limit": 10}
+        )
+        if "error" in result:
+            await interaction.followup.send(
+                f"Could not list runs: {result['error']}",
+                ephemeral=True,
+            )
+        else:
+            runs = result.get("runs", [])
+            if not runs:
+                await interaction.followup.send("No paused playbook runs found.", ephemeral=True)
+            else:
+                lines = [f"**Paused Playbook Runs** ({len(runs)}):"]
+                for r in runs:
+                    lines.append(
+                        f"• `{r.get('run_id', '?')}` — "
+                        f"{r.get('playbook_id', '?')} at `{r.get('current_node', '?')}`"
+                    )
+                await interaction.followup.send("\n".join(lines), ephemeral=True)
 
 
 # ---------------------------------------------------------------------------

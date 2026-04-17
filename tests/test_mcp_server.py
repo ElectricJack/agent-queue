@@ -32,7 +32,7 @@ from src.models import (
     TaskType,
     Workspace,
 )
-from src.tool_registry import _ALL_TOOL_DEFINITIONS
+from src.tools import _ALL_TOOL_DEFINITIONS
 from src.mcp_interfaces import (
     ResourceScheme,
     agent_to_dict,
@@ -485,10 +485,18 @@ class TestDriftDetection:
         # Known auto-discovered commands (have _cmd_* methods but no
         # explicit tool definitions yet).
         known_auto_discovered = {
-            "plugin_config", "plugin_disable", "plugin_enable",
-            "plugin_info", "plugin_install", "plugin_list",
-            "plugin_prompts", "plugin_reload", "plugin_remove",
-            "plugin_reset_prompts", "plugin_update",
+            "fire_hook",
+            "plugin_config",
+            "plugin_disable",
+            "plugin_enable",
+            "plugin_info",
+            "plugin_install",
+            "plugin_list",
+            "plugin_prompts",
+            "plugin_reload",
+            "plugin_remove",
+            "plugin_reset_prompts",
+            "plugin_update",
         }
         tools = await mcp_server.list_tools()
         extra = {t.name for t in tools} - {d["name"] for d in _ALL_TOOL_DEFINITIONS}
@@ -503,7 +511,9 @@ class TestDriftDetection:
 
         tools = await mcp_server.list_tools()
         # Total expected = explicit definitions + auto-discovered, minus excluded
-        all_commands = set(_discover_all_commands().keys()) | {d["name"] for d in _ALL_TOOL_DEFINITIONS}
+        all_commands = set(_discover_all_commands().keys()) | {
+            d["name"] for d in _ALL_TOOL_DEFINITIONS
+        }
         expected = len(all_commands) - len(DEFAULT_EXCLUDED_COMMANDS & all_commands)
         assert len(tools) == expected
 
@@ -520,10 +530,18 @@ class TestDriftDetection:
         # Known auto-discovered commands (have _cmd_* methods but no
         # explicit tool definitions yet).
         known_auto_discovered = {
-            "plugin_config", "plugin_disable", "plugin_enable",
-            "plugin_info", "plugin_install", "plugin_list",
-            "plugin_prompts", "plugin_reload", "plugin_remove",
-            "plugin_reset_prompts", "plugin_update",
+            "fire_hook",
+            "plugin_config",
+            "plugin_disable",
+            "plugin_enable",
+            "plugin_info",
+            "plugin_install",
+            "plugin_list",
+            "plugin_prompts",
+            "plugin_reload",
+            "plugin_remove",
+            "plugin_reset_prompts",
+            "plugin_update",
         }
         all_commands = _discover_all_commands()
         explicit = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
@@ -560,7 +578,7 @@ class TestDriftDetection:
         """
         import inspect
         import re
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         source = inspect.getsource(CommandHandler)
         method_names = re.findall(r"async def (_cmd_\w+)\(self", source)
@@ -571,3 +589,354 @@ class TestDriftDetection:
             f"Duplicate _cmd_* methods in CommandHandler: {dupes}. "
             f"The second definition silently shadows the first in Python."
         )
+
+
+# ---------------------------------------------------------------------------
+# Plugin tools MCP exposure
+# ---------------------------------------------------------------------------
+
+
+def _build_test_mcp_with_plugin_tools(populated_db, mock_context, plugin_tools):
+    """Build a test MCP server with plugin-contributed tool definitions."""
+    from mcp.server import FastMCP
+    from src.mcp_registration import (
+        DEFAULT_EXCLUDED_COMMANDS,
+        register_command_tools,
+        register_resources,
+        register_prompts,
+    )
+
+    server = FastMCP(name="test-agent-queue-plugins")
+    register_command_tools(server, excluded=DEFAULT_EXCLUDED_COMMANDS, plugin_tools=plugin_tools)
+    register_resources(server)
+    register_prompts(server)
+    server.get_context = lambda: mock_context
+    return server
+
+
+class TestPluginToolRegistration:
+    """Tests for the plugin tools pass (pass 2) in MCP registration."""
+
+    async def test_plugin_tools_registered(self, populated_db):
+        """Plugin-contributed tool definitions are exposed as MCP tools."""
+        from src.event_bus import EventBus
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        plugin_tools = [
+            {
+                "name": "my_plugin_scan",
+                "description": "Scan something.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string", "description": "What to scan"},
+                    },
+                    "required": ["target"],
+                },
+            },
+        ]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, plugin_tools)
+        tools = await server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "my_plugin_scan" in tool_names
+
+    async def test_plugin_tools_have_rich_schemas(self, populated_db):
+        """Plugin tools are registered with their full input_schema, not basic stubs."""
+        from src.event_bus import EventBus
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        plugin_tools = [
+            {
+                "name": "my_plugin_scan",
+                "description": "Scan something.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string", "description": "What to scan"},
+                    },
+                    "required": ["target"],
+                },
+            },
+        ]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, plugin_tools)
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        assert "my_plugin_scan" in tool_map
+        schema = tool_map["my_plugin_scan"].inputSchema
+        assert "target" in schema["properties"]
+        assert schema["required"] == ["target"]
+
+    async def test_plugin_tools_do_not_override_explicit(self, populated_db):
+        """Plugin tools cannot shadow _ALL_TOOL_DEFINITIONS entries."""
+        from src.event_bus import EventBus
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        # Try to register a plugin tool with the same name as an explicit tool
+        plugin_tools = [
+            {
+                "name": "create_task",
+                "description": "SHOULD NOT APPEAR — explicit def wins.",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, plugin_tools)
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        assert "create_task" in tool_map
+        # The explicit definition should win, not the plugin one
+        assert "SHOULD NOT APPEAR" not in tool_map["create_task"].description
+
+    async def test_excluded_plugin_tools_not_registered(self, populated_db):
+        """Excluded commands are skipped even when contributed by plugins."""
+        from src.event_bus import EventBus
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        plugin_tools = [
+            {
+                "name": "shutdown",
+                "description": "Should be excluded.",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, plugin_tools)
+        tools = await server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "shutdown" not in tool_names
+
+    async def test_no_plugin_tools_is_safe(self, populated_db):
+        """Passing None or empty plugin_tools is a no-op."""
+        from src.event_bus import EventBus
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        server_none = _build_test_mcp_with_plugin_tools(populated_db, ctx, None)
+        server_empty = _build_test_mcp_with_plugin_tools(populated_db, ctx, [])
+        tools_none = await server_none.list_tools()
+        tools_empty = await server_empty.list_tools()
+        assert len(tools_none) == len(tools_empty)
+
+
+class TestMemoryRecallMCPTool:
+    """Tests for memory_recall exposure as an MCP tool.
+
+    Verifies that memory_recall is available via MCP with the unified smart
+    recall schema (KV exact match first, semantic search fallback).
+    """
+
+    async def test_memory_recall_tool_definition_exists(self):
+        """memory_recall has a tool definition registered."""
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool_names = {t["name"] for t in TOOL_DEFINITIONS}
+        assert "memory_recall" in tool_names
+
+    async def test_memory_recall_in_v2_only_tools(self):
+        """memory_recall is listed in V2_ONLY_TOOLS (agent-facing)."""
+        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+
+        assert "memory_recall" in V2_ONLY_TOOLS
+
+    async def test_memory_recall_registered_as_mcp_tool(self, populated_db):
+        """memory_recall appears as an MCP tool when v2 plugin tools are passed."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+
+        # Simulate what embedded_mcp.py does: pass plugin tool definitions
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "memory_recall" in tool_names
+
+    async def test_memory_recall_schema_has_query_required(self, populated_db):
+        """memory_recall MCP tool schema requires 'query' parameter."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        schema = tool_map["memory_recall"].inputSchema
+        assert "query" in schema.get("required", [])
+
+    async def test_memory_recall_schema_has_expected_params(self, populated_db):
+        """memory_recall MCP tool schema exposes project_id, agent_type, namespace, topic, top_k."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        props = tool_map["memory_recall"].inputSchema["properties"]
+        assert "project_id" in props
+        assert "agent_type" in props
+        assert "namespace" in props
+        assert "topic" in props
+        assert "top_k" in props
+
+    async def test_memory_recall_delegates_to_command_handler(self, populated_db):
+        """memory_recall MCP tool delegates to CommandHandler.execute()."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        mock_handler = AsyncMock()
+        mock_handler.execute.return_value = {
+            "success": True,
+            "source": "semantic",
+            "query": "authentication patterns",
+            "count": 2,
+            "results": [
+                {
+                    "content": "OAuth best practices",
+                    "score": 0.92,
+                    "topic": "authentication",
+                    "scope": "project",
+                },
+            ],
+        }
+        ctx = _make_mock_context(populated_db, test_bus, mock_handler)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        result = await server.call_tool(
+            "memory_recall",
+            {
+                "query": "authentication patterns",
+                "project_id": "test-project",
+                "topic": "authentication",
+            },
+        )
+        data = json.loads(result[0].text)
+        mock_handler.execute.assert_called_once_with(
+            "memory_recall",
+            {
+                "query": "authentication patterns",
+                "project_id": "test-project",
+                "topic": "authentication",
+            },
+        )
+        assert data["success"] is True
+        assert data["count"] == 2
+
+
+class TestMemoryStoreMCPTool:
+    """Tests for memory_store exposure as an MCP tool.
+
+    Verifies that memory_store is available via MCP with the unified write
+    schema (auto-classification, deduplication, vector indexing).
+    """
+
+    async def test_memory_store_tool_definition_exists(self):
+        """memory_store has a tool definition registered."""
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+
+        tool_names = {t["name"] for t in TOOL_DEFINITIONS}
+        assert "memory_store" in tool_names
+
+    async def test_memory_store_in_v2_only_tools(self):
+        """memory_store is listed in V2_ONLY_TOOLS (agent-facing)."""
+        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+
+        assert "memory_store" in V2_ONLY_TOOLS
+
+    async def test_memory_store_registered_as_mcp_tool(self, populated_db):
+        """memory_store appears as an MCP tool when v2 plugin tools are passed."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_names = {t.name for t in tools}
+        assert "memory_store" in tool_names
+
+    async def test_memory_store_schema_has_content_required(self, populated_db):
+        """memory_store MCP tool schema requires 'content' parameter."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        schema = tool_map["memory_store"].inputSchema
+        assert "content" in schema.get("required", [])
+
+    async def test_memory_store_schema_has_expected_params(self, populated_db):
+        """memory_store MCP tool schema exposes tags, topic, scope, source_task, source_playbook."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        ctx = _make_mock_context(populated_db, test_bus)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        tools = await server.list_tools()
+        tool_map = {t.name: t for t in tools}
+        props = tool_map["memory_store"].inputSchema["properties"]
+        assert "tags" in props
+        assert "topic" in props
+        assert "scope" in props
+        assert "source_task" in props
+        assert "source_playbook" in props
+
+    async def test_memory_store_delegates_to_command_handler(self, populated_db):
+        """memory_store MCP tool delegates to CommandHandler.execute()."""
+        from src.event_bus import EventBus
+        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+
+        test_bus = EventBus()
+        mock_handler = AsyncMock()
+        mock_handler.execute.return_value = {
+            "success": True,
+            "stored": True,
+            "classification": "semantic",
+            "topic": "testing",
+            "chunk_hash": "abc123",
+        }
+        ctx = _make_mock_context(populated_db, test_bus, mock_handler)
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
+
+        result = await server.call_tool(
+            "memory_store",
+            {
+                "content": "The test framework is pytest",
+                "topic": "testing",
+            },
+        )
+        data = json.loads(result[0].text)
+        mock_handler.execute.assert_called_once_with(
+            "memory_store",
+            {
+                "content": "The test framework is pytest",
+                "topic": "testing",
+            },
+        )
+        assert data["success"] is True
+        assert data["stored"] is True

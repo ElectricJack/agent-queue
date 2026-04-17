@@ -257,6 +257,7 @@ class _FakeOrchestrator:
 
     def __init__(self, git: GitManager):
         self.git = git
+        self.bus = MagicMock()
         self._notifications: list[str] = []
 
     async def _notify_channel(self, message: str, *, project_id: str | None = None):
@@ -297,11 +298,10 @@ class TestCreatePrForTaskForceWithLease:
 
         result = await orch._create_pr_for_task(task, repo, "/workspace")
 
-        git.apush_branch.assert_called_once_with(
-            "/workspace",
-            "task/test-branch",
-            force_with_lease=True,
-        )
+        git.apush_branch.assert_called_once()
+        call_args = git.apush_branch.call_args
+        assert call_args[0] == ("/workspace", "task/test-branch")
+        assert call_args[1].get("force_with_lease") is True
         assert result == "https://github.com/test/repo/pull/42"
 
     @pytest.mark.asyncio
@@ -342,11 +342,10 @@ class TestCreatePrForTaskForceWithLease:
 
         result = await orch._create_pr_for_task(task, repo, "/workspace")
 
-        git.apush_branch.assert_called_once_with(
-            "/workspace",
-            "task/test-branch",
-            force_with_lease=True,
-        )
+        git.apush_branch.assert_called_once()
+        call_args = git.apush_branch.call_args
+        assert call_args[0] == ("/workspace", "task/test-branch")
+        assert call_args[1].get("force_with_lease") is True
         git.acreate_pr.assert_called_once()
         call_kwargs = git.acreate_pr.call_args
         assert call_kwargs[1]["base"] == "develop" or call_kwargs[0][3] == "develop"

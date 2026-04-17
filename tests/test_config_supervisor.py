@@ -45,10 +45,10 @@ def test_supervisor_config_defaults():
     assert cfg.reflection.level == "full"
 
 
-def test_supervisor_config_in_app_config():
+def test_supervisor_config_in_app_config(tmp_path):
     from src.config import AppConfig, SupervisorConfig
 
-    app = AppConfig()
+    app = AppConfig(data_dir=str(tmp_path / "data"))
     assert hasattr(app, "supervisor")
     assert isinstance(app.supervisor, SupervisorConfig)
 
@@ -111,10 +111,10 @@ def test_observation_config_from_yaml():
     assert cfg.observation.stage1_keywords == ["deploy", "hotfix"]
 
 
-def test_check_deprecations_returns_empty():
+def test_check_deprecations_returns_empty(tmp_path):
     """check_deprecations returns empty list when no deprecated config is present."""
     from src.config import AppConfig
 
-    app = AppConfig()
+    app = AppConfig(data_dir=str(tmp_path / "data"))
     warnings = app.check_deprecations()
     assert len(warnings) == 0

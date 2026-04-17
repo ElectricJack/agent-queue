@@ -137,6 +137,7 @@ class TestToolEnforcement:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -229,6 +230,7 @@ class TestMCPEnforcement:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -335,6 +337,7 @@ class TestProfileIsolation:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -410,6 +413,7 @@ class TestMultiProfileIsolation:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -490,12 +494,13 @@ class TestInstallCheckIntegration:
 
     @pytest.fixture
     async def handler(self, tmp_path):
-        from src.command_handler import CommandHandler
+        from src.commands.handler import CommandHandler
 
         factory = CapturingAdapterFactory()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -571,6 +576,7 @@ class TestProjectDefaultProfileEnforcement:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -696,6 +702,7 @@ class TestMCPAutoInjection:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
             mcp_server=McpServerConfig(enabled=True, host="127.0.0.1", port=8082),
         )
         orch = Orchestrator(config, adapter_factory=factory)
@@ -712,6 +719,7 @@ class TestMCPAutoInjection:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
             mcp_server=McpServerConfig(enabled=False),
         )
         orch = Orchestrator(config, adapter_factory=factory)
@@ -728,6 +736,7 @@ class TestMCPAutoInjection:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
             mcp_server=McpServerConfig(
                 enabled=True,
                 host="127.0.0.1",
@@ -875,6 +884,7 @@ class TestModelOverrideEnforcement:
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()

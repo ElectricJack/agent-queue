@@ -531,16 +531,16 @@ CASES: list[TestCase] = [
         tags=["task", "reopen", "feedback", "supervisor-workflow", "context-carry"],
         difficulty=Difficulty.MEDIUM,
     ),
-    # --- Search memory then create task from findings ---
+    # --- Recall memory then create task from findings ---
     TestCase(
         id="multi-memory-search-then-task",
-        description="Search memory for context, then create a task based on findings",
+        description="Recall memory for context, then create a task based on findings",
         setup_commands=[("create_project", {"name": "MemProj"})],
         active_project="p-1",
         turns=[
             Turn(
                 user_message="search memory for recent test failures",
-                expected_tools=[ExpectedTool(name="memory_search")],
+                expected_tools=[ExpectedTool(name="memory_recall")],
             ),
             Turn(
                 user_message="ok, create a task to fix those test failures",

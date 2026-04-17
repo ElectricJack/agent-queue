@@ -64,7 +64,7 @@ class CachedMessage:
     attachment_paths: list[str] | None = None  # local paths to downloaded attachments
     reference_id: int | None = None  # message ID this is replying to (Discord reply)
     reference_author: str | None = None  # author of the referenced message
-    reference_snippet: str | None = None  # first ~120 chars of the referenced message
+    reference_snippet: str | None = None  # full content of the referenced message
 
 
 class AgentQueueBot(commands.Bot):
@@ -88,9 +88,7 @@ class AgentQueueBot(commands.Bot):
         # Register a callback so that project deletions (from any caller)
         # automatically purge the bot's in-memory channel caches.
         self.agent.handler._on_project_deleted = self.clear_project_channels
-        # Wire Supervisor into HookEngine for LLM invocations
-        if hasattr(self.orchestrator, "hooks") and self.orchestrator.hooks:
-            self.orchestrator.hooks.set_supervisor(self.agent)
+        # HookEngine removed (playbooks spec §13 Phase 3).
         # Discord invalid-request rate guard — tracks 401/403/429 responses
         # in a 10-minute sliding window to prevent Cloudflare IP bans.
         from src.discord.rate_guard import configure_tracker
@@ -130,13 +128,16 @@ class AgentQueueBot(commands.Bot):
         # Task thread tracking — maps thread_id ↔ task_id so the bot can
         # detect when a user types into a task thread and route the message
         # appropriately (reopen completed tasks, acknowledge in-progress ones).
+        # IDs of transient "thinking" indicator messages that should not
+        # appear in conversation history.  Populated when the thinking msg
+        # is sent, cleared when it is deleted or replaced by the final reply.
+        self._thinking_msg_ids: set[int] = set()
         self._task_threads: dict[int, str] = {}  # thread_id -> task_id
         self._task_thread_objects: dict[str, discord.Thread] = {}  # task_id -> Thread
         self._task_root_messages: dict[str, discord.Message] = {}  # task_id -> root msg
         # Wire up the note-written callback
         self.agent.handler.on_note_written = self._handle_note_written
-        # Reconciliation is now lock-protected in RuleManager — no need
-        # for a task guard here.
+        # RuleManager removed (playbooks spec §13 Phase 3).
         # Chat observer for passive channel observation (Phase 5)
         self._chat_observer: ChatObserver | None = None
         if config.supervisor.observation.enabled:
@@ -513,19 +514,29 @@ class AgentQueueBot(commands.Bot):
         # Reattach persistent NotesView buttons on existing messages
         await self._reattach_notes_views()
 
-        # Reconcile rules → hooks in the background now that supervisor is available.
-        # RuleManager._reconcile_lock prevents concurrent runs, so we can
-        # safely fire-and-forget on every reconnect without a task guard.
-        asyncio.create_task(self._reconcile_rules())
+        # RuleManager removed (playbooks spec §13 Phase 3).
+        # Playbook compilation is handled by the VaultWatcher.
 
         # Start periodic buffer cleanup (evicts idle channel buffers)
         asyncio.create_task(self._periodic_buffer_cleanup())
 
-        # Notify Discord that the server is back online
-        await self._send_message(
-            format_server_started(),
-            embed=format_server_started_embed(),
-        )
+        # Notify all transports that the server is back online via the
+        # event bus.  The Discord notification handler subscribes to this
+        # event and formats the message + embed.  Also send directly as a
+        # fallback in case the notification handler isn't subscribed yet.
+        try:
+            from src.notifications.events import SystemOnlineEvent
+
+            await self.orchestrator.bus.emit(
+                "notify.system_online",
+                SystemOnlineEvent().model_dump(mode="json"),
+            )
+        except Exception:
+            # Fallback: send directly if event bus emit fails
+            await self._send_message(
+                format_server_started(),
+                embed=format_server_started_embed(),
+            )
 
     class ThinkingView(discord.ui.View):
         """Attached to the thinking indicator message with a Cancel button.
@@ -573,9 +584,11 @@ class AgentQueueBot(commands.Bot):
                 except Exception:
                     pass
 
-    @staticmethod
-    async def _delete_thinking_msg(msg: discord.Message | None) -> None:
+    async def _delete_thinking_msg(self, msg: discord.Message | None) -> None:
         """Silently delete a thinking indicator message.
+
+        Also removes the message from ``_thinking_msg_ids`` and the channel
+        buffer so it never appears in subsequent conversation history.
 
         Fail-open: if the message was already deleted or any Discord error
         occurs, we swallow the exception so the main response flow is never
@@ -583,6 +596,14 @@ class AgentQueueBot(commands.Bot):
         """
         if msg is None:
             return
+        self._thinking_msg_ids.discard(msg.id)
+        # Remove from channel buffer so it won't appear in history
+        buf = self._channel_buffers.get(msg.channel.id)
+        if buf:
+            try:
+                buf[:] = [m for m in buf if m.id != msg.id]
+            except Exception:
+                pass
         try:
             await msg.delete()
         except discord.NotFound:
@@ -906,18 +927,13 @@ class AgentQueueBot(commands.Bot):
         await channel.send(embed=embed, view=view)
 
     async def _store_observation_memory(self, project_id: str, content: str) -> None:
-        """Store observation content in project memory."""
-        if not content:
-            return
-        try:
-            if hasattr(self.orchestrator, "memory_manager") and self.orchestrator.memory_manager:
-                await self.orchestrator.memory_manager.add_memory(
-                    project_id=project_id,
-                    content=f"[Observed] {content}",
-                    source="chat_observation",
-                )
-        except Exception as e:
-            logger.error("Error storing observation memory: %s", e)
+        """Store observation content in project memory.
+
+        V1 MemoryManager integration removed (roadmap 8.6).
+        Observation storage should be wired to MemoryV2Plugin's save_document.
+        """
+        # TODO: wire to MemoryV2Plugin save_document via event bus
+        pass
 
     def _build_project_profiles(self) -> dict[str, set[str]]:
         """Build keyword sets from registered projects for the ChatObserver."""
@@ -1317,6 +1333,37 @@ class AgentQueueBot(commands.Bot):
                 return m
         return None
 
+    def _build_thread_context(
+        self, channel_id: int, before_msg: discord.Message, limit: int = 8,
+    ) -> str | None:
+        """Build a compact text block of recent thread messages for system prompt.
+
+        Returns a formatted string of the last ``limit`` messages before
+        ``before_msg``, or None if no recent messages exist.  Thinking
+        indicator messages are excluded.
+        """
+        buf = self._channel_buffers.get(channel_id)
+        if not buf:
+            return None
+
+        before_ts = before_msg.created_at.timestamp()
+        recent = [
+            m for m in buf
+            if m.created_at < before_ts and m.id not in self._thinking_msg_ids
+        ][-limit:]
+
+        if not recent:
+            return None
+
+        lines = []
+        for msg in recent:
+            content = msg.content
+            if len(content) > 300:
+                content = content[:297] + "..."
+            lines.append(f"[{msg.author_name}]: {content}")
+
+        return "\n".join(lines)
+
     def _maybe_trigger_summarization(self, channel_id: int) -> None:
         """Start a background summarization task if none is already running."""
         existing = self._summarization_tasks.get(channel_id)
@@ -1403,7 +1450,7 @@ class AgentQueueBot(commands.Bot):
                 ref_msg = self._find_cached_message(channel_id, ref_id)
                 if ref_msg:
                     ref_author = ref_msg.author_name
-                    ref_snippet = ref_msg.content[:120]
+                    ref_snippet = ref_msg.content
                 elif message.reference.resolved and isinstance(
                     message.reference.resolved, discord.Message
                 ):
@@ -1414,7 +1461,7 @@ class AgentQueueBot(commands.Bot):
                         if resolved.author == self.user
                         else resolved.author.display_name
                     )
-                    ref_snippet = resolved.content[:120] if resolved.content else None
+                    ref_snippet = resolved.content if resolved.content else None
             self._append_to_buffer(
                 channel_id,
                 CachedMessage(
@@ -1571,12 +1618,10 @@ class AgentQueueBot(commands.Bot):
                         )
                         return
 
-                    # Prepend project context for project channels and notes threads
+                    # Build context dict for system prompt injection (not prepended to user message)
                     user_text = text
+                    llm_context: dict[str, str] = {}
                     if project_channel_id and not is_bot_channel:
-                        # List other projects so the LLM can route tasks
-                        # to the correct project when the user's request
-                        # is about a different project than the channel's.
                         other_projects = [
                             pid for pid in self._project_channels if pid != project_channel_id
                         ]
@@ -1588,22 +1633,56 @@ class AgentQueueBot(commands.Bot):
                                 f"If the user's request is clearly about a "
                                 f"different project, set project_id explicitly."
                             )
-                        user_text = (
-                            f"[Context: this is the channel for project "
+                        llm_context["channel_context"] = (
+                            f"This is the channel for project "
                             f"`{project_channel_id}`. Default to using "
                             f"project_id='{project_channel_id}' for all project-scoped "
-                            f"commands.{cross_project_hint}]\n{text}"
+                            f"commands.{cross_project_hint}"
                         )
                     elif is_notes_thread and not is_bot_channel:
-                        user_text = (
-                            f"[NOTES MODE for project '{notes_project_id}'. "
+                        llm_context["channel_context"] = (
+                            f"NOTES MODE for project '{notes_project_id}'. "
                             f"BEHAVIOR: The user will type stream-of-consciousness thoughts. "
                             f"1. Call list_notes to see existing notes. "
                             f"2. Categorize input — decide which note it belongs to or create new. "
                             f"3. Use append_note to add to existing, or write_note for new. "
                             f"4. Respond with BRIEF confirmation: which note updated + 1-line summary. "
                             f"5. For browsing/management/comparison requests, use appropriate tools. "
-                            f"Default project_id='{notes_project_id}'.]\n{text}"
+                            f"Default project_id='{notes_project_id}'."
+                        )
+
+                    # Include replied-to message in user request
+                    if message.reference and message.reference.message_id:
+                        ref_id = message.reference.message_id
+                        ref_msg = self._find_cached_message(message.channel.id, ref_id)
+                        if ref_msg:
+                            user_text = (
+                                f'[Replying to {ref_msg.author_name}: '
+                                f'"{ref_msg.content}"]\n{user_text}'
+                            )
+                        elif (
+                            message.reference.resolved
+                            and isinstance(message.reference.resolved, discord.Message)
+                        ):
+                            resolved = message.reference.resolved
+                            ref_author = (
+                                "AgentQueue"
+                                if resolved.author == self.user
+                                else resolved.author.display_name
+                            )
+                            user_text = (
+                                f'[Replying to {ref_author}: '
+                                f'"{resolved.content}"]\n{user_text}'
+                            )
+
+                    # Include recent thread messages right before the user request
+                    thread_ctx = self._build_thread_context(
+                        message.channel.id, message,
+                    )
+                    if thread_ctx:
+                        user_text = (
+                            f"## Recent Thread Messages\n\n{thread_ctx}"
+                            f"\n\n## User Request\n\n{user_text}"
                         )
 
                     # Set active project from channel context so that git
@@ -1628,6 +1707,7 @@ class AgentQueueBot(commands.Bot):
                         "💭 Thinking...",
                         view=thinking_view,
                     )
+                    self._thinking_msg_ids.add(thinking_msg.id)
                     tool_names_used: list[str] = []
 
                     async def _on_progress(event: str, detail: str | None) -> None:
@@ -1681,11 +1761,18 @@ class AgentQueueBot(commands.Bot):
                             message.author.display_name,
                             history=history,
                             on_progress=_on_progress,
+                            context=llm_context or None,
                         )
                     except Exception as e:
-                        import anthropic
+                        _is_auth_error = False
+                        try:
+                            import anthropic
 
-                        if isinstance(e, anthropic.AuthenticationError):
+                            _is_auth_error = isinstance(e, anthropic.AuthenticationError)
+                        except ModuleNotFoundError:
+                            pass
+
+                        if _is_auth_error:
                             # Token may have been refreshed — reload and retry once
                             logger.warning("Auth error, reloading credentials: %s", e)
                             if self.agent.reload_credentials():
@@ -1694,6 +1781,7 @@ class AgentQueueBot(commands.Bot):
                                     message.author.display_name,
                                     history=history,
                                     on_progress=_on_progress,
+                                    context=llm_context or None,
                                 )
                             else:
                                 response = (
@@ -1766,9 +1854,12 @@ class AgentQueueBot(commands.Bot):
             return []
 
         # Warm path — read from local buffer
-        # Snapshot and filter to messages before the trigger message
+        # Snapshot and filter to messages before the trigger message.
+        # Exclude transient thinking indicator messages so they never
+        # appear in conversation history sent to the LLM.
         before_ts = before.created_at.timestamp()
-        snapshot = [m for m in buf if m.created_at < before_ts]
+        thinking_ids = self._thinking_msg_ids
+        snapshot = [m for m in buf if m.created_at < before_ts and m.id not in thinking_ids]
         # Keep only the most recent MAX_HISTORY_MESSAGES
         snapshot = snapshot[-MAX_HISTORY_MESSAGES:]
 
@@ -1815,7 +1906,7 @@ class AgentQueueBot(commands.Bot):
                     # Reference exists but content not cached — try buffer lookup
                     ref = self._find_cached_message(channel_id, msg.reference_id)
                     if ref:
-                        reply_prefix = f'[replying to {ref.author_name}: "{ref.content[:120]}"]\n'
+                        reply_prefix = f'[replying to {ref.author_name}: "{ref.content}"]\n'
                     else:
                         reply_prefix = "[replying to an earlier message]\n"
 
@@ -1930,26 +2021,6 @@ class AgentQueueBot(commands.Bot):
     # ------------------------------------------------------------------
     # Periodic buffer cleanup
     # ------------------------------------------------------------------
-
-    async def _reconcile_rules(self) -> None:
-        """Reconcile rules → hooks now that the supervisor is available.
-
-        Runs once at startup as a background task.  Each active rule gets
-        its hooks regenerated (with LLM prompt expansion if possible).
-        """
-        rm = getattr(self.orchestrator, "rule_manager", None)
-        if not rm:
-            return
-        try:
-            stats = await rm.reconcile()
-            scanned = stats.get("rules_scanned", 0)
-            regen = stats.get("hooks_regenerated", 0)
-            if scanned > 0:
-                logger.info(
-                    "Rule reconciliation: %d rules scanned, %d hooks regenerated", scanned, regen
-                )
-        except Exception as e:
-            logger.error("Rule reconciliation failed: %s", e)
 
     async def _periodic_buffer_cleanup(self) -> None:
         """Background loop that evicts idle channel buffers every 10 minutes."""

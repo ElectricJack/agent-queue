@@ -65,9 +65,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.event_bus import EventBus
+
+logger = logging.getLogger(__name__)
 
 
 class GitError(Exception):
@@ -89,6 +97,31 @@ class GitManager:
     # Default timeout (seconds) for git operations.  Clone/fetch can be slow
     # on large repos so we allow a generous window, but never infinite.
     _GIT_TIMEOUT = 120
+
+    # Git subcommands that modify shared repository state (pack files,
+    # object store) and must be serialized when multiple worktrees share
+    # the same underlying repository.  ``pull`` includes an implicit
+    # ``fetch`` and therefore also needs serialization.
+    _SERIALIZED_SUBCOMMANDS: frozenset[str] = frozenset({"fetch", "gc", "pull"})
+
+    def __init__(self) -> None:
+        # Optional lock provider for serializing shared git operations
+        # across branch-isolated worktrees.  When set, ``_arun`` acquires
+        # the returned lock before executing serialized subcommands.
+        self._lock_provider: Callable[[str], asyncio.Lock | None] | None = None
+
+    def set_lock_provider(
+        self,
+        provider: Callable[[str], asyncio.Lock | None] | None,
+    ) -> None:
+        """Register a callback that resolves a workspace path to a shared lock.
+
+        The provider receives the ``cwd`` argument from ``_arun`` and should
+        return an :class:`asyncio.Lock` if the path belongs to a shared
+        repository (e.g. a branch-isolated workspace or one of its
+        worktrees), or ``None`` if no serialization is needed.
+        """
+        self._lock_provider = provider
 
     def _run(self, args: list[str], cwd: str | None = None, timeout: int | None = None) -> str:
         try:
@@ -116,6 +149,32 @@ class GitManager:
 
         Does not block the event loop — suitable for use from the orchestrator
         and Discord bot coroutines.
+
+        When a :meth:`set_lock_provider` callback is registered and the git
+        subcommand is in :attr:`_SERIALIZED_SUBCOMMANDS`, the returned lock
+        is acquired before the subprocess executes.  This serializes shared
+        operations (fetch, gc, pull) across branch-isolated worktrees that
+        share the same underlying git object store.
+        """
+        lock: asyncio.Lock | None = None
+        if self._lock_provider and cwd and args and args[0] in self._SERIALIZED_SUBCOMMANDS:
+            lock = self._lock_provider(cwd)
+
+        if lock is not None:
+            async with lock:
+                return await self._arun_unlocked(args, cwd, timeout)
+        return await self._arun_unlocked(args, cwd, timeout)
+
+    async def _arun_unlocked(
+        self, args: list[str], cwd: str | None = None, timeout: int | None = None
+    ) -> str:
+        """Execute a git command without lock acquisition.
+
+        This is the raw subprocess implementation.  Most callers should use
+        :meth:`_arun` which adds automatic serialization for shared git
+        operations.  Use ``_arun_unlocked`` only when the caller has already
+        acquired the appropriate lock (e.g. for compound operations that need
+        a single lock scope spanning multiple git commands).
         """
         effective_timeout = timeout or self._GIT_TIMEOUT
         try:
@@ -758,7 +817,14 @@ class GitManager:
         "plan.md",
     ]
 
-    def commit_all(self, checkout_path: str, message: str) -> bool:
+    def commit_all(
+        self,
+        checkout_path: str,
+        message: str,
+        *,
+        exclude_plans: bool = True,
+        no_verify: bool = False,
+    ) -> bool:
         """Stage all changes and commit. Returns True if a commit was made, False if nothing to commit.
 
         Uses add-all-then-check-staged pattern: ``git add -A`` stages
@@ -769,15 +835,23 @@ class GitManager:
 
         Plan files (``.claude/plan.md``, ``plan.md``, ``.claude/plans/``)
         are automatically unstaged to prevent them from being committed to
-        target repos.
+        target repos unless *exclude_plans* is ``False``.  System-level
+        operations (auto-remediation, plan archival, workspace cleanup)
+        should pass ``exclude_plans=False`` to ensure all changes are
+        committed.
+
+        Pass ``no_verify=True`` to skip pre-commit hooks (``--no-verify``).
+        This is intended for system-level auto-remediation commits where
+        hook failures would prevent workspace cleanup.
         """
         self._run(["add", "-A"], cwd=checkout_path)
         # Unstage plan files so they never reach target repo history.
-        for pattern in self._PLAN_FILE_EXCLUDES:
-            try:
-                self._run(["reset", "HEAD", "--", pattern], cwd=checkout_path)
-            except GitError:
-                pass  # Not staged or doesn't exist — fine
+        if exclude_plans:
+            for pattern in self._PLAN_FILE_EXCLUDES:
+                try:
+                    self._run(["reset", "HEAD", "--", pattern], cwd=checkout_path)
+                except GitError:
+                    pass  # Not staged or doesn't exist — fine
         # git diff --cached --quiet exits 1 if there are staged changes
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
@@ -788,7 +862,10 @@ class GitManager:
         )
         if result.returncode == 0:
             return False  # Nothing to commit
-        self._run(["commit", "-m", message], cwd=checkout_path)
+        commit_args = ["commit", "-m", message]
+        if no_verify:
+            commit_args.append("--no-verify")
+        self._run(commit_args, cwd=checkout_path)
         return True
 
     def create_pr(
@@ -984,7 +1061,7 @@ class GitManager:
     def get_recent_commits(self, checkout_path: str, count: int = 5) -> str:
         """Return recent commit log (one-line format)."""
         try:
-            return self._run(["log", f"--oneline", f"-{count}"], cwd=checkout_path)
+            return self._run(["log", "--oneline", f"-{count}"], cwd=checkout_path)
         except GitError:
             return ""
 
@@ -1043,7 +1120,7 @@ class GitManager:
                 timeout=60,
             )
         except subprocess.TimeoutExpired:
-            raise GitError(f"gh repo create timed out after 60s (possible auth prompt)")
+            raise GitError("gh repo create timed out after 60s (possible auth prompt)")
         if result.returncode != 0:
             raise GitError(f"gh repo create failed: {result.stderr.strip()}")
         # gh repo create prints the repo URL to stdout, but may also include
@@ -1104,6 +1181,14 @@ class GitManager:
             return True
         except GitError:
             return False
+
+    async def aget_remote_url(self, checkout_path: str, remote: str = "origin") -> str | None:
+        """Return the URL for *remote*, or ``None`` if no remote is configured."""
+        try:
+            url = await self._arun(["remote", "get-url", remote], cwd=checkout_path)
+            return url.strip() if url and url.strip() else None
+        except GitError:
+            return None
 
     async def acreate_branch(self, checkout_path: str, branch_name: str) -> None:
         try:
@@ -1263,11 +1348,54 @@ class GitManager:
         branch_name: str,
         *,
         force_with_lease: bool = False,
+        event_bus: EventBus | None = None,
+        project_id: str | None = None,
     ) -> None:
+        # Capture the remote ref before pushing so we can compute commit_range.
+        remote_ref_before: str | None = None
+        if event_bus is not None:
+            try:
+                remote_ref_before = await self._arun(
+                    ["rev-parse", f"origin/{branch_name}"],
+                    cwd=checkout_path,
+                )
+            except GitError:
+                # Remote branch doesn't exist yet (first push).
+                remote_ref_before = None
+
         args = ["push", "origin", branch_name]
         if force_with_lease:
             args.insert(2, "--force-with-lease")
         await self._arun(args, cwd=checkout_path)
+
+        # Emit git.push event on success
+        if event_bus is not None:
+            try:
+                local_ref = await self._arun(
+                    ["rev-parse", branch_name],
+                    cwd=checkout_path,
+                )
+                if remote_ref_before:
+                    commit_range = f"{remote_ref_before}..{local_ref}"
+                else:
+                    commit_range = local_ref
+                await event_bus.emit(
+                    "git.push",
+                    {
+                        "branch": branch_name,
+                        "remote": "origin",
+                        "commit_range": commit_range,
+                        "project_id": project_id,
+                    },
+                )
+            except Exception:
+                # Event emission is best-effort; never fail the push
+                # because we couldn't emit the event.
+                logger.debug(
+                    "Failed to emit git.push event for %s",
+                    checkout_path,
+                    exc_info=True,
+                )
 
     async def arebase_onto(
         self,
@@ -1429,14 +1557,38 @@ class GitManager:
         except GitError:
             return []
 
-    async def acommit_all(self, checkout_path: str, message: str) -> bool:
-        """Async version of :meth:`commit_all`."""
+    async def acommit_all(
+        self,
+        checkout_path: str,
+        message: str,
+        *,
+        exclude_plans: bool = True,
+        no_verify: bool = False,
+        event_bus: EventBus | None = None,
+        project_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> bool:
+        """Async version of :meth:`commit_all`.
+
+        See :meth:`commit_all` for parameter docs.  Pass
+        ``exclude_plans=False`` for system-level operations that need
+        to commit all changes including plan files.
+
+        Pass ``no_verify=True`` to skip pre-commit hooks (``--no-verify``).
+        This is intended for system-level auto-remediation commits where
+        hook failures would prevent workspace cleanup.
+
+        When *event_bus* is provided, a ``git.commit`` event is emitted
+        after a successful commit with the commit hash, branch, changed
+        files, message, and optional *project_id* / *agent_id*.
+        """
         await self._arun(["add", "-A"], cwd=checkout_path)
-        for pattern in self._PLAN_FILE_EXCLUDES:
-            try:
-                await self._arun(["reset", "HEAD", "--", pattern], cwd=checkout_path)
-            except GitError:
-                pass
+        if exclude_plans:
+            for pattern in self._PLAN_FILE_EXCLUDES:
+                try:
+                    await self._arun(["reset", "HEAD", "--", pattern], cwd=checkout_path)
+                except GitError:
+                    pass
         result = await self._arun_subprocess(
             ["git", "diff", "--cached", "--quiet"],
             cwd=checkout_path,
@@ -1444,7 +1596,42 @@ class GitManager:
         )
         if result.returncode == 0:
             return False
-        await self._arun(["commit", "-m", message], cwd=checkout_path)
+        commit_args = ["commit", "-m", message]
+        if no_verify:
+            commit_args.append("--no-verify")
+        await self._arun(commit_args, cwd=checkout_path)
+
+        # Emit git.commit event on success
+        if event_bus is not None:
+            try:
+                commit_hash = await self._arun(["rev-parse", "HEAD"], cwd=checkout_path)
+                branch = await self._arun(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path)
+                # Get the list of files changed in the commit we just made
+                changed_output = await self._arun(
+                    ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+                    cwd=checkout_path,
+                )
+                changed_files = [f for f in changed_output.splitlines() if f]
+                await event_bus.emit(
+                    "git.commit",
+                    {
+                        "commit_hash": commit_hash,
+                        "branch": branch,
+                        "changed_files": changed_files,
+                        "message": message,
+                        "project_id": project_id,
+                        "agent_id": agent_id,
+                    },
+                )
+            except Exception:
+                # Event emission is best-effort; never fail the commit
+                # because we couldn't emit the event.
+                logger.debug(
+                    "Failed to emit git.commit event for %s",
+                    checkout_path,
+                    exc_info=True,
+                )
+
         return True
 
     async def acreate_pr(
@@ -1454,6 +1641,8 @@ class GitManager:
         title: str,
         body: str,
         base: str = "main",
+        event_bus: EventBus | None = None,
+        project_id: str | None = None,
     ) -> str:
         try:
             result = await self._arun_subprocess(
@@ -1477,7 +1666,28 @@ class GitManager:
             raise GitError("gh pr create timed out (possible auth prompt)")
         if result.returncode != 0:
             raise GitError(f"gh pr create failed: {result.stderr.strip()}")
-        return result.stdout.strip()
+        pr_url = result.stdout.strip()
+
+        # Emit git.pr.created event on success
+        if event_bus is not None:
+            try:
+                await event_bus.emit(
+                    "git.pr.created",
+                    {
+                        "pr_url": pr_url,
+                        "branch": branch,
+                        "title": title,
+                        "project_id": project_id,
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to emit git.pr.created event for %s",
+                    checkout_path,
+                    exc_info=True,
+                )
+
+        return pr_url
 
     async def acheck_pr_merged(self, checkout_path: str, pr_url: str) -> bool | None:
         try:
@@ -1521,6 +1731,72 @@ class GitManager:
             return bool(output.stdout and output.stdout.strip())
         except Exception:
             return False
+
+    async def aabort_in_progress_operations(self, checkout_path: str) -> None:
+        """Abort any in-progress merge, rebase, or cherry-pick.
+
+        Also removes stale ``.git/index.lock`` files left by crashed
+        processes (e.g. a killed agent) that would block all subsequent
+        git operations.
+
+        This is a best-effort method — individual failures are silently
+        ignored because not all operations may be in progress.
+        """
+        # Remove stale git lock files that block all operations
+        git_dir = os.path.join(checkout_path, ".git")
+        for lock_name in ("index.lock", "shallow.lock", "refs/heads.lock"):
+            lock_path = os.path.join(git_dir, lock_name)
+            try:
+                if os.path.exists(lock_path):
+                    os.remove(lock_path)
+            except OSError:
+                pass
+
+        # Abort in-progress merge
+        try:
+            await self._arun(["merge", "--abort"], cwd=checkout_path)
+        except GitError:
+            pass
+
+        # Abort in-progress rebase
+        try:
+            await self._arun(["rebase", "--abort"], cwd=checkout_path)
+        except GitError:
+            pass
+
+        # Abort in-progress cherry-pick
+        try:
+            await self._arun(["cherry-pick", "--abort"], cwd=checkout_path)
+        except GitError:
+            pass
+
+    async def aforce_clean_workspace(self, checkout_path: str) -> bool:
+        """Force the workspace into a clean state using the most aggressive
+        git operations available.
+
+        This is the nuclear option — it resets the index and working tree
+        to HEAD, removes all untracked files (including those in
+        ``.gitignore``), and aborts any in-progress operations first.
+
+        Returns True if the workspace is clean after all attempts,
+        False if cleanup failed (extremely unlikely).
+        """
+        # Step 1: Abort any in-progress operations
+        await self.aabort_in_progress_operations(checkout_path)
+
+        # Step 2: Hard-reset index and working tree to HEAD
+        try:
+            await self._arun(["reset", "--hard", "HEAD"], cwd=checkout_path)
+        except GitError:
+            pass
+
+        # Step 3: Remove all untracked files including ignored ones
+        try:
+            await self._arun(["clean", "-fdx"], cwd=checkout_path)
+        except GitError:
+            pass
+
+        return not await self.ahas_uncommitted_changes(checkout_path)
 
     async def afind_open_pr(
         self,
@@ -1666,7 +1942,7 @@ class GitManager:
         try:
             result = await self._arun_subprocess(cmd, timeout=60)
         except subprocess.TimeoutExpired:
-            raise GitError(f"gh repo create timed out after 60s (possible auth prompt)")
+            raise GitError("gh repo create timed out after 60s (possible auth prompt)")
         if result.returncode != 0:
             raise GitError(f"gh repo create failed: {result.stderr.strip()}")
         url = ""

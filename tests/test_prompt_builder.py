@@ -282,7 +282,7 @@ def test_supervisor_identity_with_active_project():
     from src.prompt_builder import PromptBuilder
 
     builder = PromptBuilder(prompts_dir=_DEFAULT_PROMPTS_DIR)
-    builder.set_identity("chat-agent-system", {"workspace_dir": "/home/user/.agent-queue"})
+    builder.set_identity("supervisor-system", {"workspace_dir": "/home/user/.agent-queue"})
     builder.add_context(
         "active_project",
         "ACTIVE PROJECT: `my-game`. Use this as the default project_id for all tools "
@@ -290,7 +290,7 @@ def test_supervisor_identity_with_active_project():
     )
     system_prompt, _ = builder.build()
 
-    assert "/home/user/.agent-queue" in system_prompt
+    assert "Supervisor" in system_prompt
     assert "ACTIVE PROJECT: `my-game`" in system_prompt
 
 
@@ -299,10 +299,10 @@ def test_supervisor_identity_without_project():
     from src.prompt_builder import PromptBuilder
 
     builder = PromptBuilder(prompts_dir=_DEFAULT_PROMPTS_DIR)
-    builder.set_identity("chat-agent-system", {"workspace_dir": "/home/user/.agent-queue"})
+    builder.set_identity("supervisor-system", {"workspace_dir": "/home/user/.agent-queue"})
     system_prompt, _ = builder.build()
 
-    assert "/home/user/.agent-queue" in system_prompt
+    assert "Supervisor" in system_prompt
     assert "ACTIVE PROJECT" not in system_prompt
 
 
@@ -394,58 +394,374 @@ def test_task_agent_assembly_ordering(prompts_dir):
 
 
 # ------------------------------------------------------------------
-# Rule loading via RuleManager (Phase 2)
+# Rule loading — deprecated (playbooks spec §13 Phase 3)
+# load_relevant_rules is now a no-op, retained for API compatibility.
 # ------------------------------------------------------------------
 
 
-def test_load_relevant_rules_from_rule_manager(tmp_path, prompts_dir):
-    """load_relevant_rules populates Layer 3 from RuleManager."""
+def test_load_relevant_rules_is_noop(prompts_dir):
+    """load_relevant_rules is a no-op after rule manager removal."""
     import asyncio
     from src.prompt_builder import PromptBuilder
-    from src.rule_manager import RuleManager
-
-    rm = RuleManager(storage_root=str(tmp_path))
-    rm.save_rule(
-        "rule-style",
-        "proj",
-        "passive",
-        "# Code Style\n\n## Intent\nUse black formatter.",
-    )
-    rm.save_rule(
-        "rule-global",
-        None,
-        "passive",
-        "# Global\n\n## Intent\nBe nice.",
-    )
 
     builder = PromptBuilder(
         project_id="proj",
-        rule_manager=rm,
-        prompts_dir=prompts_dir,
-    )
-    builder.set_identity("simple")
-    asyncio.run(builder.load_relevant_rules("code formatting"))
-    system_prompt, _ = builder.build()
-
-    assert "Code Style" in system_prompt
-    assert "Global" in system_prompt
-    assert "Applicable Rules" in system_prompt
-
-
-def test_load_relevant_rules_empty_when_no_rules(prompts_dir):
-    """load_relevant_rules produces no output when no rules exist."""
-    import asyncio
-    from src.prompt_builder import PromptBuilder
-    from src.rule_manager import RuleManager
-
-    rm = RuleManager(storage_root="/nonexistent")
-    builder = PromptBuilder(
-        project_id="proj",
-        rule_manager=rm,
         prompts_dir=prompts_dir,
     )
     builder.set_identity("simple")
     asyncio.run(builder.load_relevant_rules("anything"))
     system_prompt, _ = builder.build()
 
+    # No rules section should appear — load_relevant_rules is a no-op
     assert "Applicable Rules" not in system_prompt
+
+
+# ------------------------------------------------------------------
+# L0 Identity tier — role extraction and injection
+# ------------------------------------------------------------------
+
+
+def test_extract_section_finds_role():
+    """extract_section returns content under ## Role."""
+    from src.prompt_builder import extract_section
+
+    md = textwrap.dedent("""\
+        # Coding Agent
+
+        ## Role
+        You are a software engineering agent. You write, modify, and debug code
+        within a project workspace.
+
+        ## Config
+        ```json
+        {"model": "claude-sonnet-4-6"}
+        ```
+    """)
+
+    result = extract_section(md, "Role")
+    assert result is not None
+    assert "software engineering agent" in result
+    assert "Config" not in result
+
+
+def test_extract_section_returns_none_when_missing():
+    """extract_section returns None when heading is not found."""
+    from src.prompt_builder import extract_section
+
+    md = "# Agent\n\n## Config\nSome config."
+    assert extract_section(md, "Role") is None
+
+
+def test_extract_section_case_insensitive():
+    """extract_section matches headings case-insensitively."""
+    from src.prompt_builder import extract_section
+
+    md = "## role\nYou are a test agent."
+    result = extract_section(md, "Role")
+    assert result == "You are a test agent."
+
+
+def test_extract_section_at_end_of_file():
+    """extract_section handles section at end of file (no next heading)."""
+    from src.prompt_builder import extract_section
+
+    md = "## Overview\nSome overview.\n\n## Role\nYou are the last section."
+    result = extract_section(md, "Role")
+    assert result == "You are the last section."
+
+
+def test_extract_section_empty_body():
+    """extract_section returns None for headings with empty body."""
+    from src.prompt_builder import extract_section
+
+    md = "## Role\n\n## Config\nStuff."
+    assert extract_section(md, "Role") is None
+
+
+def test_set_l0_role(prompts_dir):
+    """set_l0_role injects text at the very start of the prompt."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("You are a coding agent.")
+    builder.set_identity("simple")
+    builder.add_context("task", "Fix a bug.")
+
+    prompt = builder.build_task_prompt()
+
+    # L0 role appears before identity and context
+    role_pos = prompt.index("You are a coding agent.")
+    identity_pos = prompt.index("No variables here.")
+    task_pos = prompt.index("Fix a bug.")
+    assert role_pos < identity_pos < task_pos
+
+
+def test_set_l0_role_empty_noop(prompts_dir):
+    """set_l0_role with empty string does not add to prompt."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("")
+    builder.set_l0_role("   ")
+    builder.set_identity("simple")
+
+    prompt = builder.build_task_prompt()
+    assert prompt.strip() == "No variables here."
+
+
+def test_set_l0_role_from_markdown(prompts_dir):
+    """set_l0_role_from_markdown extracts ## Role and injects it."""
+    from src.prompt_builder import PromptBuilder
+
+    profile_md = textwrap.dedent("""\
+        ---
+        id: coding
+        name: Coding Agent
+        ---
+
+        # Coding Agent
+
+        ## Role
+        You are a software engineering agent. You write clean code.
+
+        ## Rules
+        - Always run tests before committing
+    """)
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    found = builder.set_l0_role_from_markdown(profile_md)
+    assert found is True
+
+    prompt = builder.build_task_prompt()
+    assert "software engineering agent" in prompt
+    assert "Always run tests" not in prompt  # Rules section excluded
+
+
+def test_set_l0_role_from_markdown_no_role(prompts_dir):
+    """set_l0_role_from_markdown returns False when no ## Role exists."""
+    from src.prompt_builder import PromptBuilder
+
+    profile_md = "# Agent\n\n## Config\nSome config."
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    found = builder.set_l0_role_from_markdown(profile_md)
+    assert found is False
+
+
+def test_l0_role_ordering_in_full_assembly(prompts_dir):
+    """L0 role appears before all other layers in full assembly."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("You are a QA agent.")
+    builder.set_identity("simple")
+    builder.add_context("system_context", "## System Context\n- Workspace: /home")
+    builder.add_context("task", "## Task\nRun tests.")
+
+    prompt = builder.build_task_prompt()
+
+    role_pos = prompt.index("You are a QA agent.")
+    sys_pos = prompt.index("System Context")
+    task_pos = prompt.index("Run tests.")
+    assert role_pos < sys_pos < task_pos
+
+
+# ------------------------------------------------------------------
+# Override content — project-specific overrides (§5)
+# ------------------------------------------------------------------
+
+
+def test_set_override_content(prompts_dir):
+    """set_override_content injects override text after L0 role."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("You are a coding agent.")
+    builder.set_override_content("Use composition over inheritance.")
+    builder.set_identity("simple")
+    builder.add_context("task", "Fix a bug.")
+
+    prompt = builder.build_task_prompt()
+
+    assert "Use composition over inheritance." in prompt
+    # Override appears between L0 role and identity
+    role_pos = prompt.index("You are a coding agent.")
+    override_pos = prompt.index("Use composition over inheritance.")
+    identity_pos = prompt.index("No variables here.")
+    task_pos = prompt.index("Fix a bug.")
+    assert role_pos < override_pos < identity_pos < task_pos
+
+
+def test_set_override_content_strips_frontmatter(prompts_dir):
+    """set_override_content strips YAML frontmatter from override files."""
+    from src.prompt_builder import PromptBuilder
+
+    override_md = textwrap.dedent("""\
+        ---
+        tags: [override, coding, mech-fighters]
+        agent_type: coding
+        ---
+
+        # Coding Agent Overrides — Mech Fighters
+
+        Use composition over inheritance.
+    """)
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_override_content(override_md)
+
+    prompt = builder.build_task_prompt()
+
+    assert "Coding Agent Overrides" in prompt
+    assert "Use composition over inheritance." in prompt
+    # Frontmatter should be stripped
+    assert "tags:" not in prompt
+    assert "agent_type: coding" not in prompt
+
+
+def test_set_override_content_empty_noop(prompts_dir):
+    """set_override_content with empty string does not add to prompt."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_override_content("")
+    builder.set_override_content("   ")
+    builder.set_identity("simple")
+
+    prompt = builder.build_task_prompt()
+    assert prompt.strip() == "No variables here."
+
+
+def test_set_override_content_without_l0_role(prompts_dir):
+    """set_override_content works even without L0 role set."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_override_content("Use ECS framework only.")
+    builder.set_identity("simple")
+    builder.add_context("task", "Add a feature.")
+
+    prompt = builder.build_task_prompt()
+
+    assert "Use ECS framework only." in prompt
+    # Override appears before identity and context
+    override_pos = prompt.index("Use ECS framework only.")
+    identity_pos = prompt.index("No variables here.")
+    task_pos = prompt.index("Add a feature.")
+    assert override_pos < identity_pos < task_pos
+
+
+def test_override_content_full_assembly_ordering(prompts_dir):
+    """Override content sits between L0 role and identity in full assembly."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("You are a QA agent.")
+    builder.set_override_content("# Project Overrides\nPrefer integration tests.")
+    builder.set_identity("simple")
+    builder.add_context("system_context", "## System Context\n- Workspace: /home")
+    builder.add_context("task", "## Task\nRun tests.")
+
+    prompt = builder.build_task_prompt()
+
+    role_pos = prompt.index("You are a QA agent.")
+    override_pos = prompt.index("Prefer integration tests.")
+    identity_pos = prompt.index("No variables here.")
+    sys_pos = prompt.index("System Context")
+    task_pos = prompt.index("Run tests.")
+    assert role_pos < override_pos < identity_pos < sys_pos < task_pos
+
+
+def test_set_override_content_frontmatter_only(prompts_dir):
+    """Override file with only frontmatter and no body is treated as empty."""
+    from src.prompt_builder import PromptBuilder
+
+    override_md = "---\ntags: [override]\n---\n"
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_override_content(override_md)
+    builder.set_identity("simple")
+
+    prompt = builder.build_task_prompt()
+    assert prompt.strip() == "No variables here."
+
+
+# ------------------------------------------------------------------
+# L1 Critical Facts tier — KV facts injection
+# ------------------------------------------------------------------
+
+
+def test_set_l1_facts(prompts_dir):
+    """set_l1_facts injects text after L0 role and before identity."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("You are a coding agent.")
+    builder.set_l1_facts("## Critical Facts\n- tech_stack: Python\n- test_command: pytest")
+    builder.set_identity("simple")
+    builder.add_context("task", "Fix a bug.")
+
+    prompt = builder.build_task_prompt()
+
+    # All sections present
+    assert "You are a coding agent." in prompt
+    assert "Critical Facts" in prompt
+    assert "tech_stack: Python" in prompt
+    assert "test_command: pytest" in prompt
+    assert "No variables here." in prompt
+    assert "Fix a bug." in prompt
+
+    # L0 < L1 < identity < context
+    role_pos = prompt.index("You are a coding agent.")
+    facts_pos = prompt.index("Critical Facts")
+    identity_pos = prompt.index("No variables here.")
+    task_pos = prompt.index("Fix a bug.")
+    assert role_pos < facts_pos < identity_pos < task_pos
+
+
+def test_set_l1_facts_empty_noop(prompts_dir):
+    """set_l1_facts with empty string does not add to prompt."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l1_facts("")
+    builder.set_l1_facts("   ")
+    builder.set_identity("simple")
+
+    prompt = builder.build_task_prompt()
+    assert "Critical Facts" not in prompt
+    assert prompt.strip() == "No variables here."
+
+
+def test_set_l1_facts_without_l0(prompts_dir):
+    """L1 facts work even when L0 role is not set."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l1_facts("## Critical Facts\n- deploy_branch: main")
+    builder.set_identity("simple")
+
+    prompt = builder.build_task_prompt()
+
+    facts_pos = prompt.index("Critical Facts")
+    identity_pos = prompt.index("No variables here.")
+    assert facts_pos < identity_pos
+
+
+def test_l1_facts_ordering_in_full_assembly(prompts_dir):
+    """L1 facts appear after L0 role and override, before all other layers."""
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    builder.set_l0_role("You are a QA agent.")
+    builder.set_l1_facts("## Critical Facts\n- lang: Python")
+    builder.set_identity("simple")
+    builder.add_context("system_context", "## System Context\n- Workspace: /home")
+    builder.add_context("task", "## Task\nRun tests.")
+
+    prompt = builder.build_task_prompt()
+
+    role_pos = prompt.index("You are a QA agent.")
+    facts_pos = prompt.index("Critical Facts")
+    identity_pos = prompt.index("No variables here.")
+    sys_pos = prompt.index("System Context")
+    task_pos = prompt.index("Run tests.")
+    assert role_pos < facts_pos < identity_pos < sys_pos < task_pos

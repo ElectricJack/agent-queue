@@ -1,8 +1,12 @@
+---
+tags: [spec, prompts, context]
+---
+
 # Prompt Builder
 
 ## Purpose
 
-Single entry point for all prompt assembly in the system. Replaces scattered string concatenation across orchestrator, adapters, chat agent, hooks, and agent_prompting.
+Single entry point for all prompt assembly in the system. Replaces scattered string concatenation across orchestrator, [[specs/adapters/claude]], chat agent, and agent_prompting.
 
 ## Concepts
 
@@ -11,16 +15,16 @@ Single entry point for all prompt assembly in the system. Replaces scattered str
 Every prompt is assembled from up to 5 ordered layers:
 
 1. **Identity** — Who is the LLM acting as? Loaded from a prompt template file in `src/prompts/`.
-   - `supervisor` — the Discord-facing Supervisor (from `chat_agent_system.md`)
+   - `supervisor` — the Discord-facing [[specs/supervisor|Supervisor]] (from `chat_agent_system.md`)
    - `task-agent` — a Claude Code agent executing a task
-   - `hook-executor` — the Supervisor reasoning about a hook result (from `hook_context.md`)
+   - `hook-executor` — the [[specs/supervisor|Supervisor]] reasoning about a hook result (from `hook_context.md`)
 
 2. **Project Context** — What project is this for? Pulled from the memory system:
    - Project profile (from `profile.md`)
    - Project documentation (CLAUDE.md, README.md)
    - Falls back to empty string if memory unavailable
 
-3. **Relevant Rules** — What rules apply to this action? Loaded from `RuleManager` via `load_relevant_rules(query)`. Without memsearch, loads ALL rules for the current project plus globals. With memsearch (future), uses semantic search against the query for relevance filtering. Rules are formatted as a single markdown block under `## Applicable Rules` with each rule's content included, prefixed with `[Active]` or `[Passive]`.
+3. **Relevant Rules** — Deprecated. Previously loaded from `RuleManager` via `load_relevant_rules(query)`. Rules have been replaced by playbooks and vault memory. `load_relevant_rules()` is now a no-op.
 
 4. **Specific Context** — What is the LLM doing right now? Arbitrary named context blocks:
    - `task` — task description
