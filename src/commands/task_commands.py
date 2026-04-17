@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import datetime
-import json
+import asyncio
 import logging
 import os
-import time
 
 from src.models import (
     Task,
@@ -23,17 +21,11 @@ from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge
 from src.task_names import generate_task_id
 
 from src.commands.helpers import (
-    _build_archive_note,
     _collect_tree_task_ids,
     _collect_tree_tasks,
-    _count_by,
     _count_subtree,
     _count_subtree_by_status,
-    _dep_annotation,
-    _format_status_summary,
     _format_task_tree,
-    _parse_delay,
-    _format_interval,
     format_dependency_list,
 )
 from src.task_summary import write_task_summary
@@ -188,7 +180,7 @@ class TaskCommandsMixin:
         str
             Multi-line formatted text ready for display.
         """
-        return "\n".join(CommandHandler.format_task_with_dependencies(t) for t in tasks)
+        return "\n".join(TaskCommandsMixin.format_task_with_dependencies(t) for t in tasks)
 
     async def _cmd_list_tasks(self, args: dict) -> dict:
         """List tasks with configurable display mode.
@@ -366,6 +358,8 @@ class TaskCommandsMixin:
                 "task_type": t.task_type.value if t.task_type else None,
                 "pr_url": t.pr_url,
                 "requires_approval": t.requires_approval,
+                "created_at": t.created_at,
+                "updated_at": t.updated_at,
             }
             if include_project:
                 d["project_id"] = t.project_id
@@ -654,6 +648,8 @@ class TaskCommandsMixin:
             "task_type": t.task_type.value if t.task_type else None,
             "pr_url": t.pr_url,
             "requires_approval": t.requires_approval,
+            "created_at": t.created_at,
+            "updated_at": t.updated_at,
         }
 
     async def _cmd_get_task_tree(self, args: dict) -> dict:
@@ -934,6 +930,8 @@ class TaskCommandsMixin:
             "affinity_agent_id": task.affinity_agent_id,
             "affinity_reason": task.affinity_reason,
             "workspace_mode": task.workspace_mode.value if task.workspace_mode else None,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
         }
         if task.pr_url:
             info["pr_url"] = task.pr_url
@@ -1445,9 +1443,7 @@ class TaskCommandsMixin:
 
         tasks_to_archive: list = []
         for status in statuses_to_archive:
-            tasks_to_archive.extend(
-                await self.db.list_tasks(project_id=project_id, status=status)
-            )
+            tasks_to_archive.extend(await self.db.list_tasks(project_id=project_id, status=status))
 
         if not tasks_to_archive:
             scope = f" in project `{project_id}`" if project_id else ""
@@ -2678,4 +2674,3 @@ class TaskCommandsMixin:
             info["agent_summary"] = summary[:1000]
 
         return info
-

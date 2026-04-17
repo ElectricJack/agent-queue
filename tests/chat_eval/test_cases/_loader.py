@@ -17,7 +17,6 @@ CATEGORY_MODULES = [
     "workspaces",
     "git",
     "notes",
-    "hooks",
     "system",
     "files",
     "archive",
