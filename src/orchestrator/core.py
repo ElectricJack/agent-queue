@@ -73,6 +73,7 @@ import asyncio
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 from src.config import AppConfig, ConfigWatcher
@@ -96,7 +97,6 @@ from src.models import (
     RepoSourceType,
     Task,
     TaskStatus,
-    Workspace,
 )
 from src.scheduler import AssignAction, Scheduler, SchedulerState
 from src.tokens.budget import BudgetManager
@@ -359,14 +359,21 @@ class Orchestrator(
                 tools: list[dict] | None = None,
             ) -> str:
                 if model or provider:
+                    import dataclasses
                     from src.chat_providers import create_chat_provider
-                    from src.config import ChatProviderConfig
 
-                    cfg = ChatProviderConfig(
-                        provider=provider or self.config.chat_provider.provider,
-                        model=model or self.config.chat_provider.model,
+                    sys_cfg = self.config.chat_provider
+                    cfg = dataclasses.replace(
+                        sys_cfg,
+                        provider=provider or sys_cfg.provider,
+                        model=model or sys_cfg.model,
                     )
                     one_shot = create_chat_provider(cfg)
+                    if one_shot is None:
+                        raise RuntimeError(
+                            f"Plugin {plugin_name}: chat provider '{cfg.provider}' "
+                            "is not configured (missing credentials)"
+                        )
                     resp = await one_shot.create_message(
                         messages=[{"role": "user", "content": prompt}],
                         system=f"You are a helper for plugin:{plugin_name}.",
@@ -1001,10 +1008,9 @@ class Orchestrator(
         # register_facts_handlers() is idempotent (same handler IDs are
         # reused), so this is safe.
         self._memory_v2_service = None
-        mem_v2_plugin = (
-            self.plugin_registry.get_plugin_instance("aq-memory_v2")
-            or self.plugin_registry.get_plugin_instance("memory_v2")
-        )
+        mem_v2_plugin = self.plugin_registry.get_plugin_instance(
+            "aq-memory_v2"
+        ) or self.plugin_registry.get_plugin_instance("memory_v2")
         if mem_v2_plugin:
             svc = getattr(mem_v2_plugin, "service", None)
             if svc and getattr(svc, "available", False):
@@ -1522,8 +1528,6 @@ class Orchestrator(
         except Exception:
             logger.error("Scheduler cycle error", exc_info=True)
 
-
-
     async def _on_config_reloaded(self, data: dict) -> None:
         """Handle config.reloaded events from the ConfigWatcher.
 
@@ -1641,23 +1645,6 @@ class Orchestrator(
 
         return Scheduler.schedule(state)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     _NO_PR_REMINDER_INTERVAL: int = 3600  # 1 hour
     # After this many seconds without approval, escalate the notification
     # tone from "awaiting review" to "stuck task" with stronger language.
@@ -1669,14 +1656,3 @@ class Orchestrator(
     # after.  Without the grace period, we might auto-complete a task that
     # was about to get a PR URL.
     _NO_PR_AUTO_COMPLETE_GRACE: int = 120  # 2 minutes
-
-
-
-
-
-
-
-
-
-
-
