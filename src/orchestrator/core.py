@@ -357,8 +357,9 @@ class Orchestrator(
                 model: str | None = None,
                 provider: str | None = None,
                 tools: list[dict] | None = None,
+                thinking_budget: int | None = None,
             ) -> str:
-                if model or provider:
+                if model or provider or thinking_budget is not None:
                     import dataclasses
                     from src.chat_providers import create_chat_provider
 
@@ -367,6 +368,11 @@ class Orchestrator(
                         sys_cfg,
                         provider=provider or sys_cfg.provider,
                         model=model or sys_cfg.model,
+                        thinking_budget=(
+                            thinking_budget
+                            if thinking_budget is not None
+                            else sys_cfg.thinking_budget
+                        ),
                     )
                     one_shot = create_chat_provider(cfg)
                     if one_shot is None:

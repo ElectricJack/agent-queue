@@ -410,6 +410,7 @@ class PluginContext:
         model: str | None = None,
         provider: str | None = None,
         tools: list[dict] | None = None,
+        thinking_budget: int | None = None,
     ) -> str:
         """Invoke the LLM with a prompt and return the response text.
 
@@ -425,6 +426,10 @@ class PluginContext:
             provider: Optional provider override (``"anthropic"`` or ``"ollama"``).
                       Defaults to the system-configured provider.
             tools: Optional tool definitions for a tool-use loop.
+            thinking_budget: Optional per-call thinking/reasoning token budget
+                             (Gemini/Anthropic). Pass ``0`` to disable thinking
+                             for cheap classification calls. Defaults to the
+                             system-configured budget.
 
         Returns:
             The LLM's response text.
@@ -440,6 +445,7 @@ class PluginContext:
             model=model,
             provider=provider,
             tools=tools,
+            thinking_budget=thinking_budget,
         )
 
     # --- Configuration ---
