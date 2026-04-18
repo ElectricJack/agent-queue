@@ -378,7 +378,7 @@ class Orchestrator(
                         messages=[{"role": "user", "content": prompt}],
                         system=f"You are a helper for plugin:{plugin_name}.",
                     )
-                    return resp.text
+                    return "".join(resp.text_parts())
                 # Default: use the supervisor (has tool loop)
                 return await supervisor.chat(
                     prompt,
