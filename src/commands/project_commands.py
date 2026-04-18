@@ -81,10 +81,13 @@ class ProjectCommandsMixin:
         return {"projects": result}
 
     async def _cmd_create_project(self, args: dict) -> dict:
-        project_id = args["name"].lower().replace(" ", "-")
+        name = args.get("name") or args.get("project_id")
+        if not name:
+            return {"error": "'name' is required to create a project"}
+        project_id = name.lower().replace(" ", "-")
         project = Project(
             id=project_id,
-            name=args["name"],
+            name=name,
             credit_weight=args.get("credit_weight", 1.0),
             max_concurrent_agents=args.get("max_concurrent_agents", 2),
             repo_url=args.get("repo_url", ""),
@@ -110,6 +113,15 @@ class ProjectCommandsMixin:
         else:
             ppc = self.config.discord.per_project_channels
             should_auto_create = ppc.auto_create
+
+        # Notify listeners (e.g. Discord bot) so they can create channels.
+        if self._on_project_created:
+            try:
+                await self._on_project_created(project_id, should_auto_create)
+            except Exception:
+                logger.warning(
+                    "on_project_created callback failed for %s", project_id, exc_info=True,
+                )
 
         return {
             "created": project_id,
@@ -290,6 +302,17 @@ class ProjectCommandsMixin:
                 if not profile:
                     return {"error": f"Profile '{dpid}' not found"}
             updates["default_profile_id"] = dpid  # None clears it
+        if "default_agent_type" in args:
+            dat = args["default_agent_type"]
+            if isinstance(dat, str) and dat.strip().lower() in ("none", "null", ""):
+                dat = None
+            if dat is not None:
+                if not isinstance(dat, str):
+                    return {"error": "default_agent_type must be a string"}
+                dat = dat.strip()
+                if not dat:
+                    return {"error": "default_agent_type cannot be empty"}
+            updates["default_agent_type"] = dat  # None clears it
         if "repo_default_branch" in args:
             updates["repo_default_branch"] = args["repo_default_branch"]
         if not updates:
@@ -297,7 +320,7 @@ class ProjectCommandsMixin:
                 "error": (
                     "No fields to update. Provide name, credit_weight, "
                     "max_concurrent_agents, budget_limit, discord_channel_id, "
-                    "default_profile_id, or repo_default_branch."
+                    "default_profile_id, default_agent_type, or repo_default_branch."
                 )
             }
         await self.db.update_project(pid, **updates)
@@ -464,6 +487,8 @@ class ProjectCommandsMixin:
             info["discord_channel_id"] = project.discord_channel_id
         if project.default_profile_id:
             info["default_profile_id"] = project.default_profile_id
+        if project.default_agent_type:
+            info["default_agent_type"] = project.default_agent_type
         return info
 
     async def _cmd_get_project_channels(self, args: dict) -> dict:

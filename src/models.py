@@ -239,6 +239,7 @@ class Project:
     repo_url: str = ""
     repo_default_branch: str = "main"
     default_profile_id: str | None = None  # fallback profile for tasks in this project
+    default_agent_type: str | None = None  # default agent_type for new tasks (selects project-scoped profile)
 
 
 @dataclass

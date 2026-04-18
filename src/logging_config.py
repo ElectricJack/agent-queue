@@ -386,3 +386,7 @@ def setup_logging(
     # Avoid duplicate handlers on repeated setup_logging() calls
     if not any(isinstance(h, DiscordHTTPLogHandler) for h in discord_http_logger.handlers):
         discord_http_logger.addHandler(DiscordHTTPLogHandler(get_tracker()))
+
+    # We don't use Discord voice — suppress the PyNaCl/davey "not
+    # installed" warnings emitted from discord.client at startup.
+    logging.getLogger("discord.client").setLevel(logging.ERROR)

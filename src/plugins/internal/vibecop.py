@@ -853,9 +853,13 @@ class VibeCopPlugin(InternalPlugin):
         for tool_def in TOOL_DEFINITIONS:
             ctx.register_tool(dict(tool_def), category="vibecop")
 
-        # Rule injection: remind agents to run vibecop before task completion
-        if merged.get("enforce_vibecop_checkout", True):
-            await self._inject_pre_complete_rule(ctx)
+        # Rule injection: remind agents to run vibecop before task completion.
+        # Deferred until the command handler callback is wired — at
+        # initialize() time, ctx.execute_command falls through to the
+        # "Command execution not available" path because the orchestrator
+        # only sets the callback after set_supervisor().  The registry
+        # invokes on_command_handler_ready when it wires the callback.
+        self._enforce_rule = bool(merged.get("enforce_vibecop_checkout", True))
 
         # Event types
         ctx.register_event_type("vibecop.scan_completed")
@@ -871,6 +875,17 @@ class VibeCopPlugin(InternalPlugin):
         self._runner = None
         self._ctx = None
         logger.info("VibeCopPlugin shut down")
+
+    async def on_command_handler_ready(self, ctx: PluginContext) -> None:
+        """Inject the pre-complete rule once the command handler is wired.
+
+        Called by PluginRegistry.set_execute_command_callback after it
+        attaches the callback to all loaded plugin contexts.  This is the
+        earliest point at which ctx.execute_command("save_rule", ...)
+        can actually reach the command handler.
+        """
+        if getattr(self, "_enforce_rule", False):
+            await self._inject_pre_complete_rule(ctx)
 
     async def on_config_changed(self, ctx: PluginContext, config: dict) -> None:
         merged = {**_DEFAULT_CONFIG, **config}

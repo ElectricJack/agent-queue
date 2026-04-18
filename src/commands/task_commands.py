@@ -774,6 +774,12 @@ class TaskCommandsMixin:
             agent_type = agent_type.strip()
             if not agent_type:
                 return {"error": "agent_type cannot be empty"}
+        # Note: we intentionally do NOT inherit project.default_agent_type
+        # into task.agent_type here.  task.agent_type is a scheduler filter
+        # (must match agent.agent_type like "claude"/"codex"), not a profile
+        # selector.  Profile resolution already consults
+        # project.default_agent_type via Orchestrator._resolve_profile, so
+        # tasks with no explicit agent_type still pick up the scoped profile.
 
         # Validate optional affinity_agent_id
         affinity_agent_id = args.get("affinity_agent_id")

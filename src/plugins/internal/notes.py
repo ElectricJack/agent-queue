@@ -269,7 +269,13 @@ class NotesPlugin(InternalPlugin):
         self._ctx = ctx
         self._ws = ctx.get_service("workspace")
         self._db = ctx.get_service("db")
-        self._mem = ctx.get_service("memory")  # may be None (v1 removed, roadmap 8.6)
+        # Use memory_v2 — v1 was removed in roadmap 8.6 and the 'memory'
+        # service no longer exists.  When v2 is unavailable (degraded mode,
+        # missing milvus), note-promotion features no-op instead of erroring.
+        try:
+            self._memv2 = ctx.get_service("memory_v2")
+        except ValueError:
+            self._memv2 = None
         self._git = ctx.get_service("git")
         self._cfg = ctx.get_service("config")
 
@@ -301,16 +307,26 @@ class NotesPlugin(InternalPlugin):
         note_filename: str,
         note_content: str,
     ) -> None:
-        if not self._mem or not getattr(self._mem, "notes_inform_profile", False):
+        """Store the note content into memory_v2 so it becomes searchable.
+
+        Memory V1 used to LLM-rewrite the project profile from the note;
+        V2's semantic store is a better fit for free-form note content —
+        the extractor will classify it as an insight/fact and index it.
+        """
+        if not self._memv2 or not getattr(self._memv2, "available", False):
             return
         try:
-            workspace = await self._db.get_project_workspace_path(project_id)
-            if not workspace:
-                return
-            await self._mem.promote_note(project_id, note_filename, note_content, workspace)
+            await self._ctx.execute_command(
+                "memory_store",
+                {
+                    "project_id": project_id,
+                    "content": note_content,
+                    "source": f"note:{note_filename}",
+                },
+            )
         except Exception as e:
             self._ctx.logger.warning(
-                "Profile revision after note write failed for project %s: %s",
+                "memory_store after note write failed for project %s: %s",
                 project_id,
                 e,
             )
@@ -504,31 +520,35 @@ class NotesPlugin(InternalPlugin):
 
         note_filename = os.path.basename(fpath)
 
-        if not self._mem:
+        if not self._memv2 or not getattr(self._memv2, "available", False):
             return {
-                "error": "Memory service not available (v1 removed). "
-                "Note promotion requires the memory system."
+                "error": "memory_v2 service is not available; cannot promote note."
             }
         try:
-            new_profile = await self._mem.promote_note(
-                project_id, note_filename, note_content, workspace
+            result = await self._ctx.execute_command(
+                "memory_store",
+                {
+                    "project_id": project_id,
+                    "content": note_content,
+                    "source": f"note:{note_filename}",
+                },
             )
         except Exception as e:
             return {"error": f"Note promotion failed: {e}"}
 
-        if not new_profile:
-            return {
-                "project_id": project_id,
-                "status": "no_change",
-                "message": "Could not promote note into profile. Profiles may be disabled or the LLM call failed.",
-            }
+        if not isinstance(result, dict) or result.get("error"):
+            err = result.get("error") if isinstance(result, dict) else str(result)
+            return {"error": f"memory_store failed: {err}"}
 
         return {
             "project_id": project_id,
             "note": note_filename,
             "status": "promoted",
-            "message": f"Note '{note_filename}' has been incorporated into the project profile.",
-            "profile_preview": new_profile[:500] + ("..." if len(new_profile) > 500 else ""),
+            "message": (
+                f"Note '{note_filename}' indexed into project memory "
+                f"(memory_v2). It will surface in future semantic searches."
+            ),
+            "memory_result": result,
         }
 
     async def cmd_compare_specs_notes(self, args: dict) -> dict:

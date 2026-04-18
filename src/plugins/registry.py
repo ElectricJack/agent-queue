@@ -1103,10 +1103,33 @@ class PluginRegistry:
             loaded.context._notify_callback = callback
 
     def set_execute_command_callback(self, callback: Callable) -> None:
-        """Set the command execution callback for all plugin contexts."""
+        """Set the command execution callback for all plugin contexts.
+
+        Also invokes the optional ``on_command_handler_ready`` hook on each
+        loaded plugin so plugins which need ``ctx.execute_command`` during
+        bootstrap (e.g. vibecop's rule injection) can defer that work until
+        the callback is available.  Hook exceptions are logged and
+        swallowed — a misbehaving plugin shouldn't break the wiring.
+        """
+        import asyncio
+
         self._execute_command_callback = callback
         for loaded in self._plugins.values():
             loaded.context._execute_command_callback = callback
+            hook = getattr(loaded.instance, "on_command_handler_ready", None)
+            if callable(hook):
+                try:
+                    result = hook(loaded.context)
+                    if asyncio.iscoroutine(result):
+                        asyncio.create_task(
+                            result,
+                            name=f"plugin:{loaded.instance.__class__.__name__}:post_cmd_ready",
+                        )
+                except Exception:
+                    logger.exception(
+                        "on_command_handler_ready hook failed for plugin %s",
+                        loaded.instance.__class__.__name__,
+                    )
 
     def set_invoke_llm_callback(self, callback: Callable) -> None:
         """Set the LLM invocation callback for all plugin contexts."""

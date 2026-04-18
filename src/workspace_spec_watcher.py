@@ -41,6 +41,7 @@ See ``docs/specs/design/vault.md`` Section 4 for the full specification.
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import hashlib
 import logging
@@ -519,7 +520,13 @@ class WorkspaceSpecWatcher:
                 if not os.path.isdir(workspace.workspace_path):
                     continue
 
-                changes = self._scan_workspace(project.id, workspace.workspace_path)
+                # Run the file-system scan in a thread — os.walk over a
+                # large workspace (especially on WSL-backed filesystems)
+                # can take 10+ seconds per cycle, which otherwise blocks
+                # the asyncio loop and stalls the Discord heartbeat.
+                changes = await asyncio.to_thread(
+                    self._scan_workspace, project.id, workspace.workspace_path
+                )
                 if changes:
                     all_changes.extend(changes)
                     # Write stubs and emit events
