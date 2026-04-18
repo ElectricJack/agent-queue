@@ -88,6 +88,9 @@ class AgentQueueBot(commands.Bot):
         # Register a callback so that project deletions (from any caller)
         # automatically purge the bot's in-memory channel caches.
         self.agent.handler._on_project_deleted = self.clear_project_channels
+        # Register a callback so that project creations (from any caller —
+        # supervisor, CLI, API) auto-create a dedicated Discord channel.
+        self.agent.handler._on_project_created = self._on_project_created
         # HookEngine removed (playbooks spec §13 Phase 3).
         # Discord invalid-request rate guard — tracks 401/403/429 responses
         # in a 10-minute sliding window to prevent Cloudflare IP bans.
@@ -350,6 +353,62 @@ class AgentQueueBot(commands.Bot):
             task = self._summarization_tasks.pop(cid, None)
             if task and not task.done():
                 task.cancel()
+
+    async def _on_project_created(self, project_id: str, auto_create_channels: bool) -> None:
+        """Auto-create a Discord channel for a newly created project.
+
+        Registered as the ``_on_project_created`` callback on the
+        CommandHandler so that channel creation happens regardless of
+        whether the project was created via the wizard, supervisor, CLI,
+        or API.
+        """
+        if not auto_create_channels:
+            return
+
+        guild = getattr(self, "_guild", None)
+        if guild is None:
+            logger.debug("No guild available — skipping channel creation for %s", project_id)
+            return
+
+        ppc = self.config.discord.per_project_channels
+        channel_name = ppc.naming_convention.format(project_id=project_id)
+
+        # Look up optional category
+        target_category = None
+        if ppc.category_name:
+            target_category = discord.utils.get(guild.categories, name=ppc.category_name)
+
+        # Make the channel private: deny @everyone, allow the bot
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            guild.me: discord.PermissionOverwrite(
+                read_messages=True,
+                send_messages=True,
+                manage_channels=True,
+                manage_messages=True,
+            ),
+        }
+
+        try:
+            new_channel = await guild.create_text_channel(
+                name=channel_name,
+                category=target_category,
+                topic=f"Agent Queue channel for project: {project_id}",
+                overwrites=overwrites,
+                reason=f"AgentQueue: channel for project {project_id}",
+            )
+
+            # Link channel to project in the database
+            await self.agent.handler.execute(
+                "set_project_channel",
+                {"project_id": project_id, "channel_id": str(new_channel.id)},
+            )
+
+            # Update bot's in-memory channel cache
+            self.update_project_channel(project_id, new_channel)
+            logger.info("Created Discord channel %s for project %s", channel_name, project_id)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning("Failed to create Discord channel for %s: %s", project_id, exc)
 
     def get_project_for_channel(self, channel_id: int) -> str | None:
         """Return the project_id associated with a Discord channel, or ``None``.

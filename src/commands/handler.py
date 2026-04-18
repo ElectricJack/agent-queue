@@ -153,6 +153,10 @@ class CommandHandler(
         # Signature: callback(project_id: str) -> None
         # The Discord bot registers this to clean in-memory channel caches.
         self._on_project_deleted: Callable[[str], None] | None = None
+        # Optional async callback invoked after a project is created.
+        # Signature: async callback(project_id: str, auto_create_channels: bool) -> None
+        # The Discord bot registers this to auto-create per-project channels.
+        self._on_project_created: Callable | None = None
         # Optional callback invoked after a note is written or appended.
         # Signature: async callback(project_id, note_filename, note_path) -> None
         # The Discord bot registers this to auto-refresh viewed notes.
@@ -231,17 +235,16 @@ class CommandHandler(
     async def _resolve_project_id_in_args(self, args: dict) -> None:
         """Normalise ``project_id`` in a command args dict in-place.
 
-        If the active project is set, it always takes precedence (the LLM
-        often guesses wrong).  Otherwise, attempts fuzzy resolution of the
-        LLM-provided value.
+        If the caller provided an explicit ``project_id``, attempt fuzzy
+        resolution (channel-name patterns, case-insensitive name matching).
+        If no ``project_id`` was provided (empty or missing), fall back to
+        the active project.
         """
-        if self._active_project_id:
-            args["project_id"] = self._active_project_id
-            return
-
         raw = args.get("project_id")
         if raw and isinstance(raw, str):
             args["project_id"] = await self.resolve_project_id(raw)
+        elif self._active_project_id:
+            args["project_id"] = self._active_project_id
 
     async def _validate_path(self, path: str) -> str | None:
         """Validate that a path resolves within an allowed directory.
