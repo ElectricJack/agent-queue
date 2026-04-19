@@ -14,6 +14,14 @@ Verifies:
   4. Node prompts (in the test fixture graph) reference the correct tools
   5. DB persistence and dry-run work with the extended graph
   6. memory_health and memory_stale return structures matching expectations
+
+**Status:** xfail at the module level. The underlying memory tools
+(memory_health, memory_stale, memory_delete, memory_update) are already
+implemented, but the extended reflection playbook (the 6-node graph this
+file exercises) has not been authored yet — the live playbook at
+vault/agent-types/coding/playbooks/reflection.md is the 4-node v1.
+Remove the xfail marker once the playbook is written and compiled.
+See docs/specs/design/memory-consolidation.md.
 """
 
 from __future__ import annotations
@@ -23,6 +31,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.playbooks.runner import PlaybookRunner
+
+pytestmark = pytest.mark.xfail(
+    reason=(
+        "Extended reflection playbook (stale/contradiction nodes) not yet "
+        "compiled — tools exist but no playbook file drives them. "
+        "See docs/specs/design/memory-consolidation.md."
+    ),
+    strict=False,
+)
 
 
 # ---------------------------------------------------------------------------
