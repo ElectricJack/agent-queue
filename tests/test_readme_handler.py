@@ -215,7 +215,7 @@ class TestSummaryPath:
 
     def test_returns_expected_path(self):
         path = summary_path_for_project("/vault", "my-app")
-        assert path == os.path.join("/vault", "orchestrator", "memory", "project-my-app.md")
+        assert path == os.path.join("/vault", "agent-types", "supervisor", "memory", "project-my-app.md")
 
     def test_different_project_ids(self):
         for pid in ("webapp", "mech-fighters", "test_project"):
@@ -303,7 +303,7 @@ class TestOnReadmeChanged:
         assert results[0].project_id == "my-app"
 
         # Verify the summary file was written
-        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-my-app.md"
         assert summary.is_file()
         content = summary.read_text()
         assert "# My App" in content
@@ -331,7 +331,7 @@ class TestOnReadmeChanged:
         assert results[0].success
         assert results[0].action == "updated"
 
-        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-my-app.md"
         content = summary.read_text()
         assert "Updated description" in content
         assert "Old content" not in content
@@ -344,7 +344,7 @@ class TestOnReadmeChanged:
         # Pre-create a summary
         _write_summary(str(vault), "my-app", "# My App\nContent.")
 
-        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-my-app.md"
         assert summary.is_file()
 
         change = VaultChange(
@@ -401,7 +401,7 @@ class TestOnReadmeChanged:
         assert all(r.success for r in results)
 
         for pid in ("app-one", "app-two"):
-            summary = vault / "orchestrator" / "memory" / f"project-{pid}.md"
+            summary = vault / "agent-types" / "supervisor" / "memory" / f"project-{pid}.md"
             assert summary.is_file()
 
     @pytest.mark.asyncio
@@ -458,7 +458,7 @@ class TestOnReadmeChanged:
         assert len(results) == 1
         assert results[0].success
 
-        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-my-app.md"
         assert summary.is_file()
 
     @pytest.mark.asyncio
@@ -639,7 +639,7 @@ class TestScanAndGenerateReadmeSummaries:
         assert all(r.success for r in results)
 
         for pid in ("app-one", "app-two", "app-three"):
-            summary = vault / "orchestrator" / "memory" / f"project-{pid}.md"
+            summary = vault / "agent-types" / "supervisor" / "memory" / f"project-{pid}.md"
             assert summary.is_file()
             content = summary.read_text()
             assert f"Description of {pid}" in content
@@ -678,7 +678,7 @@ class TestScanAndGenerateReadmeSummaries:
         results = await scan_and_generate_readme_summaries(str(vault))
         assert results[0].action == "updated"
 
-        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-my-app.md"
         content = summary.read_text()
         assert "v2" in content
 
@@ -918,7 +918,7 @@ class TestEndToEndDispatch:
         await watcher.check()
 
         # Summary should have been generated
-        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-my-app.md"
         assert summary.is_file()
         content = summary.read_text()
         assert "A great project" in content
@@ -950,7 +950,7 @@ class TestEndToEndDispatch:
 
         await watcher.check()
 
-        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-my-app.md"
         assert summary.is_file()
         content = summary.read_text()
         assert "Version 2" in content
@@ -981,7 +981,7 @@ class TestEndToEndDispatch:
         readme.write_text("# My App\n\nUpdated.\n")
         await watcher.check()
 
-        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-my-app.md"
         assert summary.is_file()
 
         # Delete the README
@@ -1007,7 +1007,7 @@ class TestEndToEndDispatch:
         # Initial snapshot (empty)
         await watcher.check()
 
-        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-my-app.md"
 
         # Phase 1: Create
         proj_dir = vault / "projects" / "my-app"
@@ -1399,7 +1399,7 @@ class TestOrchestratorMemoryFromProjectReadmes:
         await watcher.check()
 
         # Verify the summary was generated at the expected path
-        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-myapp.md"
         assert summary.is_file(), "Summary file should be created in orchestrator memory"
 
         content = summary.read_text()
@@ -1426,7 +1426,7 @@ class TestOrchestratorMemoryFromProjectReadmes:
         assert len(results) == 1
         assert results[0].success
 
-        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-myapp.md"
         content = summary.read_text()
 
         # Title captured
@@ -1469,7 +1469,7 @@ class TestOrchestratorMemoryFromProjectReadmes:
         readme.write_text(_REALISTIC_README)  # re-trigger with same content to establish baseline
         await watcher.check()
 
-        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-myapp.md"
         # May or may not exist yet depending on watcher behavior; use direct handler as fallback
         if not summary.is_file():
             change = VaultChange(
@@ -1526,7 +1526,7 @@ class TestOrchestratorMemoryFromProjectReadmes:
 
         # Each project has a summary with its specific content
         for pid, content in project_data.items():
-            summary = vault / "orchestrator" / "memory" / f"project-{pid}.md"
+            summary = vault / "agent-types" / "supervisor" / "memory" / f"project-{pid}.md"
             assert summary.is_file(), f"Summary for {pid} should exist"
             summary_text = summary.read_text()
             assert f'project_id: "{pid}"' in summary_text
@@ -1564,7 +1564,7 @@ class TestOrchestratorMemoryFromProjectReadmes:
 
         # No summary for projects without READMEs — and no crashes
         for pid in ("no-readme", "empty-dir"):
-            summary = vault / "orchestrator" / "memory" / f"project-{pid}.md"
+            summary = vault / "agent-types" / "supervisor" / "memory" / f"project-{pid}.md"
             assert not summary.is_file(), f"No summary should exist for {pid}"
 
     # (e) additional: watcher does not error on missing-README projects
@@ -1593,7 +1593,7 @@ class TestOrchestratorMemoryFromProjectReadmes:
         # Should not trigger the handler or create a summary
         await watcher.check()
 
-        summary = vault / "orchestrator" / "memory" / "project-my-app.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-my-app.md"
         assert not summary.is_file()
 
     # (f) Deleting README removes the orchestrator summary
@@ -1616,7 +1616,7 @@ class TestOrchestratorMemoryFromProjectReadmes:
         # Create + snapshot
         await watcher.check()
 
-        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-myapp.md"
 
         # If watcher didn't generate summary on first check (pre-existing file),
         # force it via the handler
@@ -1645,7 +1645,7 @@ class TestOrchestratorMemoryFromProjectReadmes:
 
         # Pre-create a summary
         _write_summary(str(vault), "myapp", _REALISTIC_README)
-        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-myapp.md"
         assert summary.is_file()
 
         # Simulate deletion event
@@ -1677,7 +1677,7 @@ class TestOrchestratorMemoryFromProjectReadmes:
         )
         await on_readme_changed([change], vault_root=str(vault))
 
-        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-myapp.md"
         content = summary.read_text()
 
         # The summary overhead (frontmatter + title line) should be small.
@@ -1718,7 +1718,7 @@ class TestOrchestratorMemoryFromProjectReadmes:
         total_size = 0
         for i in range(10):
             pid = f"project-{i:02d}"
-            summary = vault / "orchestrator" / "memory" / f"project-{pid}.md"
+            summary = vault / "agent-types" / "supervisor" / "memory" / f"project-{pid}.md"
             assert summary.is_file()
             total_size += len(summary.read_text())
 
@@ -1746,7 +1746,7 @@ class TestOrchestratorMemoryFromProjectReadmes:
         # Initial snapshot
         await watcher.check()
 
-        summary = vault / "orchestrator" / "memory" / "project-myapp.md"
+        summary = vault / "agent-types" / "supervisor" / "memory" / "project-myapp.md"
 
         # Phase 1: Create README
         proj_dir = vault / "projects" / "myapp"

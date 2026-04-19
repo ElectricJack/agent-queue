@@ -64,6 +64,10 @@ class TestDeepMerge:
 
 class TestProfileLoading:
     def _write_config(self, config_dir, data, filename="config.yaml"):
+        # Config validator now requires database.url. Inject a sqlite default
+        # unless the test explicitly supplies one.
+        data = {**data}
+        data.setdefault("database", {"url": "sqlite:///:memory:"})
         path = config_dir / filename
         path.write_text(yaml.dump(data))
         return str(path)

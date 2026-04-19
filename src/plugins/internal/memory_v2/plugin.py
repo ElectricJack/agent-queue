@@ -1269,8 +1269,9 @@ class MemoryV2Plugin(InternalPlugin):
         guesses project IDs incorrectly (e.g. underscores instead of
         hyphens).  The active project ID from the system is authoritative.
         """
-        active = self._ctx.active_project_id
-        if active:
+        ctx = getattr(self, "_ctx", None)
+        active = getattr(ctx, "active_project_id", None) if ctx is not None else None
+        if isinstance(active, str) and active:
             args["project_id"] = active
             return active
         return args.get("project_id")

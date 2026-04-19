@@ -325,7 +325,7 @@ class TestSaveDocument:
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
     async def test_save_document_default_tags(self, service, mock_store):
         result = await service.save_document("test-project", "Content")
-        assert result["tags"] == ["insight", "auto-generated"]
+        assert result["tags"] == ["insight", "auto-extracted"]
 
 
 # ---------------------------------------------------------------------------

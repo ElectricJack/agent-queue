@@ -2014,7 +2014,11 @@ class MemoryV2Service:
         escaped = _escape_filter_value(tag)
         filter_expr = f'tags like "%{escaped}%"'
         try:
-            results = await asyncio.to_thread(store.query, filter_expr=filter_expr)
+            # track=False: this is a diagnostic count, not a retrieval —
+            # shouldn't inflate per-entry last_retrieved timestamps.
+            results = await asyncio.to_thread(
+                store.query, filter_expr=filter_expr, track=False
+            )
             return len(results)
         except Exception:
             logger.debug("count_by_tag query failed for tag=%s", tag, exc_info=True)

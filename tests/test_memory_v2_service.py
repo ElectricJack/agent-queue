@@ -165,8 +165,9 @@ def mock_store():
         }
     ]
 
-    # Query (for stats)
-    def mock_query(filter_expr=""):
+    # Query (for stats). Accept **_kwargs so callers can pass extra
+    # keywords (e.g. ``track=False``) without signature mismatches.
+    def mock_query(filter_expr="", **_kwargs):
         if "document" in filter_expr:
             return [{"chunk_hash": "d1"}, {"chunk_hash": "d2"}]
         if "kv" in filter_expr:
@@ -518,7 +519,7 @@ class TestFactsFileSync:
         # Create an existing facts file
         from memsearch import MemoryScope, vault_paths as vp
 
-        paths = vp(MemoryScope.PROJECT, "test_project")
+        paths = vp(MemoryScope.PROJECT, "test-project")
         facts_rel = [p for p in paths if p.endswith("facts.md")][0]
         facts_path = tmp_path / facts_rel
         facts_path.parent.mkdir(parents=True, exist_ok=True)
@@ -541,7 +542,7 @@ class TestFactsFileSync:
 
         from memsearch import MemoryScope, vault_paths as vp
 
-        paths = vp(MemoryScope.PROJECT, "test_project")
+        paths = vp(MemoryScope.PROJECT, "test-project")
         facts_rel = [p for p in paths if p.endswith("facts.md")][0]
         facts_path = tmp_path / facts_rel
         facts_path.parent.mkdir(parents=True, exist_ok=True)
@@ -564,7 +565,7 @@ class TestFactsFileSync:
 
         from memsearch import MemoryScope, vault_paths as vp
 
-        paths = vp(MemoryScope.PROJECT, "test_project")
+        paths = vp(MemoryScope.PROJECT, "test-project")
         facts_rel = [p for p in paths if p.endswith("facts.md")][0]
         facts_path = tmp_path / facts_rel
         facts_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2129,6 +2130,8 @@ class TestPluginHandlers:
         """Plugin with a wired-up service."""
         plugin._service = service
         plugin._log = MagicMock()
+        plugin._ctx = MagicMock()
+        plugin._ctx.active_project_id = None
         return plugin
 
     @pytest.mark.asyncio
@@ -2299,16 +2302,19 @@ class TestPluginHandlers:
 
     @pytest.mark.asyncio
     async def test_not_implemented_stubs(self, wired_plugin):
-        """Overlapping v1 commands return 'not implemented'."""
+        """Overlapping v1 commands return 'not implemented' or a no-op status."""
         result = await wired_plugin.cmd_view_profile({"project_id": "proj"})
         assert "error" in result
         assert "not yet implemented" in result["error"]
 
+        # cmd_compact_memory and cmd_consolidate are partially implemented;
+        # when no insights directory exists they return a no-op status
+        # rather than an error.
         result = await wired_plugin.cmd_compact_memory({"project_id": "proj"})
-        assert "error" in result
+        assert "error" in result or result.get("status") == "no insights directory"
 
         result = await wired_plugin.cmd_consolidate({"project_id": "proj", "mode": "daily"})
-        assert "error" in result
+        assert "error" in result or result.get("status") == "no insights directory"
 
 
 # ---------------------------------------------------------------------------

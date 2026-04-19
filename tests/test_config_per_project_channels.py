@@ -14,6 +14,13 @@ import yaml
 from src.config import load_config, PerProjectChannelsConfig
 
 
+def _with_db(cfg):
+    """Inject a dummy database section so the validator passes."""
+    cfg = dict(cfg)
+    cfg.setdefault("database", {"url": "sqlite:///:memory:"})
+    return cfg
+
+
 @pytest.fixture
 def config_dir(tmp_path):
     return tmp_path
@@ -33,12 +40,12 @@ class TestPerProjectChannelsDefaults:
         config_file = config_dir / "config.yaml"
         config_file.write_text(
             yaml.dump(
-                {
+                _with_db({
                     "discord": {
                         "bot_token": "test-token",
                         "guild_id": "123",
-                    }
-                }
+                    },
+                })
             )
         )
         config = load_config(str(config_file))
@@ -56,7 +63,7 @@ class TestPerProjectChannelsFromYAML:
         config_file = config_dir / "config.yaml"
         config_file.write_text(
             yaml.dump(
-                {
+                _with_db({
                     "discord": {
                         "bot_token": "test-token",
                         "guild_id": "123",
@@ -65,8 +72,8 @@ class TestPerProjectChannelsFromYAML:
                             "naming_convention": "aq-{project_id}",
                             "category_name": "Agent Queue Projects",
                         },
-                    }
-                }
+                    },
+                })
             )
         )
         config = load_config(str(config_file))
@@ -80,15 +87,15 @@ class TestPerProjectChannelsFromYAML:
         config_file = config_dir / "config.yaml"
         config_file.write_text(
             yaml.dump(
-                {
+                _with_db({
                     "discord": {
                         "bot_token": "test-token",
                         "guild_id": "123",
                         "per_project_channels": {
                             "auto_create": True,
                         },
-                    }
-                }
+                    },
+                })
             )
         )
         config = load_config(str(config_file))
@@ -103,7 +110,7 @@ class TestPerProjectChannelsFromYAML:
         config_file = config_dir / "config.yaml"
         config_file.write_text(
             yaml.dump(
-                {
+                _with_db({
                     "discord": {
                         "bot_token": "test-token",
                         "guild_id": "123",
@@ -111,8 +118,8 @@ class TestPerProjectChannelsFromYAML:
                             "auto_create": False,
                             "naming_convention": "{project_id}-notify",
                         },
-                    }
-                }
+                    },
+                })
             )
         )
         config = load_config(str(config_file))
@@ -125,13 +132,13 @@ class TestPerProjectChannelsFromYAML:
         config_file = config_dir / "config.yaml"
         config_file.write_text(
             yaml.dump(
-                {
+                _with_db({
                     "discord": {
                         "bot_token": "test-token",
                         "guild_id": "123",
                         "per_project_channels": {},
-                    }
-                }
+                    },
+                })
             )
         )
         config = load_config(str(config_file))
