@@ -575,30 +575,6 @@ class TestArchiveQueries:
         assert len(archived) == 1
         assert archived[0]["id"] == "t-1"
 
-    @pytest.mark.xfail(
-        reason=(
-            "db.restore_archived_task was removed; only delete_archived_task "
-            "remains. Re-enable if task-restore is reintroduced."
-        ),
-        strict=False,
-    )
-    async def test_restore_archived_task(self, db):
-        await _make_project(db)
-        await db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="done",
-                description="d",
-                status=TaskStatus.COMPLETED,
-            )
-        )
-        await db.archive_task("t-1")
-        result = await db.restore_archived_task("t-1")
-        assert result is True
-        t = await db.get_task("t-1")
-        assert t is not None
-        assert t.status == TaskStatus.DEFINED
 
     async def test_count_archived(self, db):
         await _make_project(db)

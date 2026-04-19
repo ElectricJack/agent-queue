@@ -846,36 +846,6 @@ class TestCoordinationParamsDbRoundTrip:
         assert archived["affinity_reason"] == "type"
         assert archived["workspace_mode"] == "branch-isolated"
 
-    @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        reason=(
-            "db.restore_archived_task was removed. Re-enable if archive "
-            "restore is reintroduced."
-        ),
-        strict=False,
-    )
-    async def test_restore_preserves_coordination_params(self, testdb):
-        task = Task(
-            id="t-5",
-            project_id="p-1",
-            title="Restorable task",
-            description="test",
-            status=TaskStatus.COMPLETED,
-            agent_type="coding",
-            affinity_agent_id="agent-1",
-            affinity_reason="context",
-            workspace_mode=WorkspaceMode.EXCLUSIVE,
-        )
-        await testdb.create_task(task)
-        await testdb.archive_task("t-5")
-        await testdb.restore_archived_task("t-5")
-
-        restored = await testdb.get_task("t-5")
-        assert restored is not None
-        assert restored.agent_type == "coding"
-        assert restored.affinity_agent_id == "agent-1"
-        assert restored.affinity_reason == "context"
-        assert restored.workspace_mode == WorkspaceMode.EXCLUSIVE
 
     @pytest.mark.asyncio
     async def test_workspace_mode_enum_values(self, testdb):

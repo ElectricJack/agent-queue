@@ -235,12 +235,10 @@ class TestPlaybookNode:
             goto="next",
             timeout_seconds=120,
             llm_config=LlmConfig(model="fast-model"),
-            summarize_before=True,
         )
         d = node.to_dict()
         assert d["timeout_seconds"] == 120
         assert d["llm_config"] == {"model": "fast-model"}
-        assert d["summarize_before"] is True
 
     def test_round_trip(self):
         node = PlaybookNode(
@@ -249,7 +247,6 @@ class TestPlaybookNode:
             transitions=[PlaybookTransition(goto="end", when="done")],
             timeout_seconds=60,
             llm_config=LlmConfig(provider="anthropic"),
-            summarize_before=True,
         )
         restored = PlaybookNode.from_dict(node.to_dict())
         assert restored.prompt == node.prompt
@@ -258,7 +255,6 @@ class TestPlaybookNode:
         assert restored.timeout_seconds == 60
         assert restored.llm_config is not None
         assert restored.llm_config.provider == "anthropic"
-        assert restored.summarize_before is True
 
     def test_defaults(self):
         node = PlaybookNode()
@@ -271,7 +267,6 @@ class TestPlaybookNode:
         assert node.timeout_seconds is None
         assert node.llm_config is None
         assert node.transition_llm_config is None
-        assert node.summarize_before is False
 
     def test_transition_llm_config(self):
         node = PlaybookNode(

@@ -100,11 +100,6 @@
           "description": "Focused instruction for the LLM at this step. Required for non-terminal nodes.",
           "type": "string"
         },
-        "summarize_before": {
-          "default": false,
-          "description": "DEPRECATED.",
-          "type": "boolean"
-        },
         "terminal": {
           "default": false,
           "description": "If true, execution ends at this node.",

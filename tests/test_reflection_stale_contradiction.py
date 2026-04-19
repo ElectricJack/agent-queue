@@ -32,11 +32,16 @@ import pytest
 
 from src.playbooks.runner import PlaybookRunner
 
-pytestmark = pytest.mark.xfail(
+# The graph-walking tests below need the 6-node extended reflection playbook.
+# The playbook file at vault/agent-types/coding/playbooks/reflection.md is
+# only 4 nodes, so classes that exercise the extended graph end up failing
+# at runtime. Underlying memory tools (memory_health, memory_stale,
+# memory_delete, memory_update) are all implemented, so the response-shape
+# and dry-run classes pass unmarked.
+_EXTENDED_GRAPH_XFAIL = pytest.mark.xfail(
     reason=(
         "Extended reflection playbook (stale/contradiction nodes) not yet "
-        "compiled — tools exist but no playbook file drives them. "
-        "See docs/specs/design/memory-consolidation.md."
+        "authored — see docs/specs/design/memory-consolidation.md."
     ),
     strict=False,
 )
@@ -396,6 +401,7 @@ class TestReflectionPlaybookStaleContradictionTemplate:
 # ---------------------------------------------------------------------------
 
 
+@_EXTENDED_GRAPH_XFAIL
 class TestExtendedReflectionGraphWalk:
     """Verify PlaybookRunner walks the extended graph with stale + contradiction nodes."""
 
@@ -460,6 +466,7 @@ class TestExtendedReflectionGraphWalk:
 # ---------------------------------------------------------------------------
 
 
+@_EXTENDED_GRAPH_XFAIL
 class TestStaleContradictionToolCallPatterns:
     """Verify the expected tool-call patterns in the new nodes."""
 
@@ -590,6 +597,7 @@ class TestStaleContradictionToolCallPatterns:
 # ---------------------------------------------------------------------------
 
 
+@_EXTENDED_GRAPH_XFAIL
 class TestStaleContradictionSkipBehaviour:
     """Verify nodes handle empty results gracefully."""
 
@@ -664,6 +672,7 @@ class TestStaleContradictionSkipBehaviour:
 # ---------------------------------------------------------------------------
 
 
+@_EXTENDED_GRAPH_XFAIL
 class TestNodePromptsReferenceTools:
     """Verify node prompts contain references to the expected tools."""
 
@@ -733,6 +742,7 @@ class TestNodePromptsReferenceTools:
 # ---------------------------------------------------------------------------
 
 
+@_EXTENDED_GRAPH_XFAIL
 class TestExtendedReflectionDBPersistence:
     """Verify run state includes the new nodes when persisted."""
 

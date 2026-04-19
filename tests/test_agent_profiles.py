@@ -503,17 +503,14 @@ class TestProfileSyncFromConfig:
         assert profile.allowed_tools == ["Read", "Glob"]
         await orch.db.close()
 
-    @pytest.mark.xfail(
-        reason=(
-            "Vault markdown is now the source of truth for profile config. "
-            "First startup writes vault/agent-types/reviewer/profile.md from YAML; "
-            "on second startup the vault-to-DB sync (profiles/sync.py) runs after "
-            "_sync_profiles_from_config and re-asserts the v1 values, so YAML "
-            "edits only take effect if the vault markdown is also regenerated."
-        ),
-        strict=False,
-    )
-    async def test_sync_updates_existing_profiles(self, tmp_path):
+    async def test_vault_markdown_is_source_of_truth_across_restarts(self, tmp_path):
+        """Vault markdown wins over subsequent YAML edits.
+
+        First startup writes vault/agent-types/reviewer/profile.md from YAML;
+        on second startup the vault-to-DB sync (profiles/sync.py) runs after
+        _sync_profiles_from_config and reasserts the vault values, so YAML
+        edits only take effect if the vault markdown is also updated.
+        """
         config = AppConfig(
             data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
@@ -526,7 +523,7 @@ class TestProfileSyncFromConfig:
         await orch.initialize()
         await orch.db.close()
 
-        # Second startup with updated profile
+        # Second startup with updated YAML but untouched vault markdown.
         config2 = AppConfig(
             data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
@@ -538,7 +535,9 @@ class TestProfileSyncFromConfig:
         orch2 = Orchestrator(config2)
         await orch2.initialize()
         profile = await orch2.db.get_profile("reviewer")
-        assert profile.name == "Reviewer v2"
+        # Vault markdown, written on first startup, still says "Reviewer v1",
+        # and the vault sync runs after YAML sync — so vault wins.
+        assert profile.name == "Reviewer v1"
         await orch2.db.close()
 
 
