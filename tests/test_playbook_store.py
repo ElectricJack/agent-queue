@@ -96,9 +96,15 @@ class TestPathResolution:
         path = store.compiled_path("my-playbook", "system")
         assert path == os.path.join(compiled_root, "system", "my-playbook.compiled.json")
 
-    def test_orchestrator_scope(self, store, compiled_root):
-        path = store.compiled_path("task-routing", "orchestrator")
-        assert path == os.path.join(compiled_root, "orchestrator", "task-routing.compiled.json")
+    def test_supervisor_scope(self, store, compiled_root):
+        # 'orchestrator' scope was merged into 'supervisor' (see vault_manager.py:44).
+        path = store.compiled_path("task-routing", "supervisor")
+        assert path == os.path.join(
+            compiled_root,
+            "agent-types",
+            "supervisor",
+            "task-routing.compiled.json",
+        )
 
     def test_agent_type_scope(self, store, compiled_root):
         path = store.compiled_path("quality-gate", "agent_type", "coding")
@@ -369,12 +375,16 @@ class TestListPlaybooks:
 
     def test_list_does_not_cross_scopes(self, store):
         store.save(_make_playbook(playbook_id="sys-pb"), "system")
-        store.save(_make_playbook(playbook_id="orch-pb"), "orchestrator")
+        store.save(
+            _make_playbook(playbook_id="coding-pb", scope="agent-type:coding"),
+            "agent_type",
+            "coding",
+        )
 
         sys_pbs = store.list_playbooks("system")
-        orch_pbs = store.list_playbooks("orchestrator")
+        coding_pbs = store.list_playbooks("agent_type", "coding")
         assert [pb.id for pb in sys_pbs] == ["sys-pb"]
-        assert [pb.id for pb in orch_pbs] == ["orch-pb"]
+        assert [pb.id for pb in coding_pbs] == ["coding-pb"]
 
     def test_list_skips_non_compiled_files(self, store, compiled_root):
         store.save(_make_playbook(playbook_id="valid"), "system")
@@ -433,9 +443,8 @@ class TestListAll:
 
     def test_list_all_aggregates_scopes(self, store):
         store.save(_make_playbook(playbook_id="sys-health"), "system")
-        store.save(_make_playbook(playbook_id="task-route"), "orchestrator")
         store.save(
-            _make_playbook(playbook_id="code-gate"),
+            _make_playbook(playbook_id="code-gate", scope="agent-type:coding"),
             "agent_type",
             "coding",
         )
@@ -446,11 +455,10 @@ class TestListAll:
         )
 
         results = store.list_all()
-        assert len(results) == 4
+        assert len(results) == 3
 
         scopes_and_ids = [(scope, ident, pb.id) for scope, ident, pb in results]
         assert ("system", None, "sys-health") in scopes_and_ids
-        assert ("orchestrator", None, "task-route") in scopes_and_ids
         assert ("agent_type", "coding", "code-gate") in scopes_and_ids
         assert ("project", "frontend", "ci-check") in scopes_and_ids
 
@@ -630,13 +638,14 @@ class TestRoundTrip:
         assert loaded is not None
         assert loaded.scope == "agent-type:coding"
 
-    def test_orchestrator_scope_round_trip(self, store):
+    def test_supervisor_scope_round_trip(self, store):
+        # 'orchestrator' scope was merged into 'supervisor' (vault_manager.py:44).
         pb = _make_playbook(
             playbook_id="task-assignment",
             scope="system",
         )
-        store.save(pb, "orchestrator")
-        loaded = store.load("task-assignment", "orchestrator")
+        store.save(pb, "supervisor")
+        loaded = store.load("task-assignment", "supervisor")
 
         assert loaded is not None
         assert loaded.id == "task-assignment"
