@@ -70,6 +70,8 @@ def _make_supervisor(
     config.chat_provider.api_key = ""
     config.chat_provider.keep_alive = "1h"
     config.chat_provider.num_ctx = 0
+    # Supervisor reads config.chat_provider.max_tokens as the default budget.
+    config.chat_provider.max_tokens = 1024
     config.supervisor = MagicMock()
     config.supervisor.reflection = MagicMock()
     config.supervisor.reflection.level = "full"
