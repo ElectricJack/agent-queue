@@ -1,7 +1,6 @@
 """Tests for creative agent name generation."""
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 from src.agent_names import (
     generate_agent_name,
@@ -172,8 +171,6 @@ class TestGenerateUniqueAgentName:
         db.get_agent = mock_get_agent
 
         name = await generate_unique_agent_name(db)
-        # The returned name should NOT be one of the colliding ones
-        agent_id = name.lower().replace(" ", "-")
         # It either found a non-colliding name or appended a suffix
         assert name is not None
         assert len(name) > 0
@@ -290,5 +287,40 @@ class TestCommandHandlerIntegration:
 
             assert "error" in result
             assert "no longer supported" in result["error"]
+        finally:
+            await orchestrator.db.close()
+
+    async def test_add_workspace_init_generates_path_and_inits_repo(self, tmp_path):
+        """source=init should auto-generate a path and run ``git init``."""
+        import os
+
+        from src.commands.handler import CommandHandler
+        from src.config import AppConfig
+        from src.orchestrator import Orchestrator
+
+        config = AppConfig(
+            database_path=str(tmp_path / "test.db"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
+        )
+        orchestrator = Orchestrator(config)
+        await orchestrator.db.initialize()
+
+        try:
+            handler = CommandHandler(orchestrator, config)
+            create_result = await handler.execute(
+                "create_project", {"name": "init-repro", "project_id": "init-repro"}
+            )
+            assert "error" not in create_result, create_result
+
+            result = await handler.execute(
+                "add_workspace",
+                {"project_id": "init-repro", "source": "init"},
+            )
+            assert "error" not in result, result
+            assert result["source_type"] == "init"
+            assert result["workspace_path"]
+            assert os.path.isdir(result["workspace_path"])
+            assert os.path.isdir(os.path.join(result["workspace_path"], ".git"))
         finally:
             await orchestrator.db.close()
