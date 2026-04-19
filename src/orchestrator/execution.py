@@ -26,12 +26,9 @@ from src.notifications.events import (
 from src.models import (
     AgentResult,
     AgentState,
-    PhaseResult,
     PipelineContext,
-    ProjectStatus,
     RepoConfig,
     RepoSourceType,
-    Task,
     TaskContext,
     TaskStatus,
     TaskType,
@@ -467,9 +464,72 @@ class ExecutionMixin:
         # Merge MCP servers: start with the daemon's own MCP server (if
         # inject_into_tasks is enabled), then layer profile-specific servers
         # on top.  Profile servers win on name collisions.
-        task_mcp: dict[str, dict] = dict(self.config.mcp_server.task_mcp_entry())
-        if profile and profile.mcp_servers:
-            task_mcp.update(profile.mcp_servers)
+        injected_mcp: dict[str, dict] = dict(self.config.mcp_server.task_mcp_entry())
+        profile_mcp: dict[str, dict] = (
+            dict(profile.mcp_servers) if profile and profile.mcp_servers else {}
+        )
+        task_mcp: dict[str, dict] = dict(injected_mcp)
+        task_mcp.update(profile_mcp)
+
+        # Log the merged MCP server view so operators can see which servers
+        # came from auto-injection vs the profile, and what the agent will
+        # actually try to connect to.
+        def _mcp_summary(servers: dict[str, dict]) -> str:
+            parts: list[str] = []
+            for sname, sconf in servers.items():
+                if isinstance(sconf, dict):
+                    if sconf.get("type") == "http":
+                        parts.append(f"{sname}=http({sconf.get('url', '?')})")
+                    elif sconf.get("type") == "sdk":
+                        parts.append(f"{sname}=sdk-instance")
+                    elif "command" in sconf:
+                        cmd = sconf.get("command", "?")
+                        parts.append(f"{sname}=subprocess[{cmd}]")
+                    else:
+                        parts.append(f"{sname}=?")
+                else:
+                    parts.append(f"{sname}=<non-dict>")
+            return ", ".join(parts) if parts else "(none)"
+
+        logger.info(
+            "Task %s MCP servers resolved: injected=[%s] profile=[%s] final=[%s]",
+            task.id,
+            _mcp_summary(injected_mcp),
+            _mcp_summary(profile_mcp),
+            _mcp_summary(task_mcp),
+        )
+
+        # Validation: warn if the profile's allowed_tools references
+        # ``mcp__{server}__*`` patterns for servers that aren't in the final
+        # task_mcp dict. This catches hyphen/underscore mismatches and typos
+        # that otherwise surface only as "agent says it has no tools".
+        if profile and profile.allowed_tools:
+            import re
+
+            pat = re.compile(r"^mcp__([^_]+(?:[-_][^_]+)*)__")
+            mcp_server_names = set(task_mcp.keys())
+            missing: list[tuple[str, str]] = []
+            for tool in profile.allowed_tools:
+                m = pat.match(tool)
+                if not m:
+                    continue
+                declared_server = m.group(1)
+                if declared_server not in mcp_server_names:
+                    missing.append((tool, declared_server))
+            if missing:
+                candidates = ", ".join(sorted(mcp_server_names)) or "(none)"
+                details = "; ".join(
+                    f"{tool} → server '{srv}' not in task_mcp" for tool, srv in missing[:4]
+                )
+                logger.warning(
+                    "Task %s profile='%s' allowed_tools references %d MCP server(s) not "
+                    "in task_mcp: %s. Available servers: %s",
+                    task.id,
+                    profile.id,
+                    len(missing),
+                    details,
+                    candidates,
+                )
 
         ctx = TaskContext(
             task_id=task.id,
@@ -507,9 +567,12 @@ class ExecutionMixin:
         # commits the agent made (git log pre_sha..HEAD).
         if workspace and await self.git.avalidate_checkout(workspace):
             try:
-                pre_sha = (await self.git._arun(
-                    ["rev-parse", "HEAD"], cwd=workspace,
-                )).strip()
+                pre_sha = (
+                    await self.git._arun(
+                        ["rev-parse", "HEAD"],
+                        cwd=workspace,
+                    )
+                ).strip()
                 if pre_sha:
                     self._task_pre_exec_sha[action.task_id] = pre_sha
             except Exception:
@@ -693,6 +756,23 @@ class ExecutionMixin:
 
         # Track the final root text for updating the thread root message
         _final_root_content: str | None = None
+
+        # Log the agent's final output so "what did the agent actually say"
+        # is visible in daemon.log for every task, not buried in Discord.
+        try:
+            _final_text = getattr(output, "final_text", None) or getattr(output, "text", None)
+            _err_text = getattr(output, "error_message", None)
+            _preview = _final_text or _err_text or "(no text)"
+            if isinstance(_preview, str) and len(_preview) > 600:
+                _preview = _preview[:600] + "…"
+            logger.info(
+                "Task %s agent output: result=%s preview=%s",
+                task.id,
+                getattr(output.result, "name", str(output.result)),
+                _preview,
+            )
+        except Exception:
+            pass
 
         if output.result == AgentResult.COMPLETED:
             # Build pipeline context
@@ -971,7 +1051,8 @@ class ExecutionMixin:
                 except Exception:
                     logger.warning(
                         "Task %s: completion notification failed (state is COMPLETED)",
-                        task.id, exc_info=True,
+                        task.id,
+                        exc_info=True,
                     )
                 await self.bus.emit(
                     "task.completed",
@@ -1013,7 +1094,10 @@ class ExecutionMixin:
                         except Exception:
                             pass  # git log failure is non-critical
                     write_task_summary(
-                        self.config.vault_root, task, result_dict, commits=commits,
+                        self.config.vault_root,
+                        task,
+                        result_dict,
+                        commits=commits,
                     )
                 except Exception as e:
                     logger.warning("Failed to write task summary for %s: %s", task.id, e)

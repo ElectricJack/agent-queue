@@ -94,6 +94,7 @@ from src.git.manager import GitManager
 from src.models import (
     AgentProfile,
     AgentState,
+    ProjectStatus,
     RepoSourceType,
     Task,
     TaskStatus,
@@ -1742,7 +1743,116 @@ class Orchestrator(
             affinity_wait_seconds=self.config.scheduling.affinity_wait_seconds,
         )
 
-        return Scheduler.schedule(state)
+        actions = Scheduler.schedule(state)
+        # Log *why* READY tasks didn't get assigned, but only when the set of
+        # unassignable reasons changes. Silent scheduler no-ops previously
+        # left tasks stuck in READY forever with zero log signal.
+        self._log_scheduler_blockers(state, actions, workspace_counts)
+        return actions
+
+    # Per-task reason cache to dedupe scheduler-blocker logs across ticks.
+    # Maps task_id → last-emitted blocker string; logs only when the reason
+    # changes (including clears via removal).
+    _scheduler_blocker_reasons: dict[str, str] = {}
+
+    def _log_scheduler_blockers(
+        self,
+        state: "SchedulerState",
+        actions: list,
+        workspace_counts: dict[str, int],
+    ) -> None:
+        """Log changes in which READY tasks can't be scheduled and why.
+
+        Called after every scheduler tick. Dedupes via
+        ``_scheduler_blocker_reasons`` so an unassignable task logs once, not
+        every 5s. Logs again if the *reason* changes, and logs a "cleared"
+        line when the task finally assigns or otherwise leaves READY.
+        """
+        assigned_task_ids = {a.task_id for a in actions}
+        ready_tasks = [t for t in state.tasks if t.status == TaskStatus.READY]
+
+        # Build a per-project view of idle agents so each task reason is
+        # concrete ("0 idle agents on project foo" vs generic).
+        idle_by_project: dict[str, int] = {}
+        for agent in state.agents:
+            if agent.state != AgentState.IDLE:
+                continue
+            # An agent is associated with a project via its locked workspace;
+            # idle agents have no current task but still belong to a project.
+            pid = getattr(agent, "project_id", None)
+            if pid:
+                idle_by_project[pid] = idle_by_project.get(pid, 0) + 1
+
+        current_reasons: dict[str, str] = {}
+        for task in ready_tasks:
+            if task.id in assigned_task_ids:
+                continue  # assigned this tick, not stuck
+            reason = self._describe_task_blocker(task, state, workspace_counts, idle_by_project)
+            if reason:
+                current_reasons[task.id] = reason
+
+        # Emit diffs: newly blocked, reason-changed, or newly unblocked.
+        for task_id, reason in current_reasons.items():
+            if self._scheduler_blocker_reasons.get(task_id) != reason:
+                logger.info("scheduler blocked task=%s reason=%s", task_id, reason)
+                self._scheduler_blocker_reasons[task_id] = reason
+
+        # Clear any tasks that used to be blocked but aren't anymore.
+        cleared = set(self._scheduler_blocker_reasons) - set(current_reasons)
+        for task_id in cleared:
+            logger.info(
+                "scheduler unblocked task=%s (prev=%s)",
+                task_id,
+                self._scheduler_blocker_reasons[task_id],
+            )
+            del self._scheduler_blocker_reasons[task_id]
+
+    def _describe_task_blocker(
+        self,
+        task,
+        state: "SchedulerState",
+        workspace_counts: dict[str, int],
+        idle_by_project: dict[str, int],
+    ) -> str | None:
+        """Best-effort reason string for why *task* wasn't scheduled this tick.
+
+        Returns ``None`` if the task didn't need to be scheduled (e.g. it's
+        just waiting on its project to be active). The reasons are heuristic
+        and rank-ordered from most specific to least; the caller only uses
+        the first match.
+        """
+        # Project-level gates
+        project = next((p for p in state.projects if p.id == task.project_id), None)
+        if not project:
+            return f"project '{task.project_id}' not found"
+        if project.status != ProjectStatus.ACTIVE:
+            return f"project '{task.project_id}' status={project.status.value}"
+        pc = state.project_constraints.get(task.project_id) if state.project_constraints else None
+        if pc and pc.pause_scheduling:
+            return f"project '{task.project_id}' pause_scheduling=True"
+        # Workspace availability
+        avail = workspace_counts.get(task.project_id, 0)
+        if avail == 0:
+            return f"no available workspace on project '{task.project_id}'"
+        # Idle-agent availability (the classic failure mode)
+        idle = idle_by_project.get(task.project_id, 0)
+        if idle == 0:
+            return f"no idle agent on project '{task.project_id}'"
+        # Global budget
+        if state.global_budget is not None and state.global_tokens_used >= state.global_budget:
+            return (
+                f"global token budget exhausted ({state.global_tokens_used}/{state.global_budget})"
+            )
+        # Provider cooldown
+        for agent in state.agents:
+            if (
+                agent.state == AgentState.IDLE
+                and getattr(agent, "project_id", None) == task.project_id
+            ):
+                cool = state.provider_cooldowns.get(agent.agent_type, 0)
+                if cool > state.now:
+                    return f"provider '{agent.agent_type}' in cooldown for {int(cool - state.now)}s"
+        return "ready but not picked this tick (capacity/priority ordering)"
 
     _NO_PR_REMINDER_INTERVAL: int = 3600  # 1 hour
     # After this many seconds without approval, escalate the notification

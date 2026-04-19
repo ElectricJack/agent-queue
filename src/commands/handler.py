@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 
 # Re-export helper functions from helpers module for backward compatibility
-from src.commands.helpers import (  # noqa: F401
+from src.commands.helpers import (  # noqa: E402, F401
     _build_archive_note,
     _collect_tree_task_ids,
     _collect_tree_tasks,
@@ -209,7 +209,7 @@ class CommandHandler(
         # Strip common prefixes the LLM adds
         for prefix in ("project-", "project_"):
             if raw.startswith(prefix):
-                stripped = raw[len(prefix):]
+                stripped = raw[len(prefix) :]
                 if stripped in ids:
                     return stripped
 
@@ -270,6 +270,41 @@ class CommandHandler(
                 return real
         return None
 
+    # Commands whose full args/result payloads are logged at INFO (mutating
+    # operations). Everything else logs at DEBUG so routine reads don't spam.
+    _MUTATING_CMD_PREFIXES: tuple[str, ...] = (
+        "create_",
+        "update_",
+        "edit_",
+        "delete_",
+        "add_",
+        "assign_",
+        "approve_",
+        "reject_",
+        "archive_",
+        "resume_",
+        "pause_",
+        "stop_",
+        "transition_",
+    )
+
+    @staticmethod
+    def _is_mutating(name: str) -> bool:
+        return any(name.startswith(p) for p in CommandHandler._MUTATING_CMD_PREFIXES)
+
+    @staticmethod
+    def _preview(obj: object, limit: int = 600) -> str:
+        """Render obj for a log line; truncate long descriptions/prompts."""
+        try:
+            import json as _json
+
+            s = _json.dumps(obj, default=str)
+        except Exception:
+            s = repr(obj)
+        if len(s) > limit:
+            s = s[:limit] + f"…<truncated {len(s) - limit} chars>"
+        return s
+
     async def execute(self, name: str, args: dict) -> dict:
         """Execute a command by name and return a structured result dict.
 
@@ -277,6 +312,11 @@ class CommandHandler(
         Both Discord slash commands and chat agent LLM tools call this method.
         """
         with CorrelationContext(command=name, component="command_handler"):
+            mutating = self._is_mutating(name)
+            if mutating:
+                logger.info("cmd %s args=%s", name, self._preview(args))
+            else:
+                logger.debug("cmd %s args=%s", name, self._preview(args))
             try:
                 # Normalise project_id in args before dispatching.
                 # LLMs frequently guess wrong (channel names, underscores,
@@ -286,7 +326,10 @@ class CommandHandler(
 
                 handler = getattr(self, f"_cmd_{name}", None)
                 if handler:
-                    return await handler(args)
+                    result = await handler(args)
+                    if mutating:
+                        logger.info("cmd %s result=%s", name, self._preview(result))
+                    return result
 
                 # Fallback to plugin registry
                 if (
@@ -300,17 +343,35 @@ class CommandHandler(
                             with CorrelationContext(plugin=plugin_name):
                                 result = await plugin_handler(args)
                             self.orchestrator.plugin_registry.record_success(plugin_name)
+                            if mutating:
+                                logger.info(
+                                    "cmd %s (plugin=%s) result=%s",
+                                    name,
+                                    plugin_name,
+                                    self._preview(result),
+                                )
                             return result
                         except Exception as e:
                             await self.orchestrator.plugin_registry.record_failure(
                                 plugin_name, str(e)
                             )
-                            logger.error("Plugin command %s failed: %s", name, e, exc_info=True)
+                            logger.error(
+                                "Plugin command %s failed: args=%s err=%s",
+                                name,
+                                self._preview(args),
+                                e,
+                                exc_info=True,
+                            )
                             return {"error": f"Plugin command failed: {e}"}
 
-                logger.warning("Unknown command requested: %s", name)
+                logger.warning("Unknown command requested: %s args=%s", name, self._preview(args))
                 return {"error": f"Unknown command: {name}"}
             except Exception as e:
-                logger.error("Command %s failed: %s", name, e, exc_info=True)
+                logger.error(
+                    "Command %s failed: args=%s err=%s",
+                    name,
+                    self._preview(args),
+                    e,
+                    exc_info=True,
+                )
                 return {"error": str(e)}
-
