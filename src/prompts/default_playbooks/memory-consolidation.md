@@ -19,17 +19,18 @@ List projects with at least one insight written in the last 30 days
 (query the memory service or `list_projects`). Skip archived/paused
 projects.
 
-## Step 2 — Read the consolidation marker
+## Step 2 — Read each project's consolidation marker
 
-Read `~/.agent-queue/vault/agent-types/supervisor/memory/consolidation.md`.
-Its frontmatter maps project ids to the ISO timestamp of the last
-completed consolidation pass. If the file does not exist, treat every
+The marker is **per-project**, not shared. For each active project read
+`~/.agent-queue/vault/projects/{project_id}/memory/consolidation.md`.
+Its frontmatter carries this project's `last_consolidated` ISO
+timestamp and last-run stats. If the file does not exist, treat the
 project as never-consolidated.
 
 ## Step 3 — Churn check
 
 For each active project, count the number of insights whose `updated`
-timestamp is newer than that project's `last_consolidated` entry. Use
+timestamp is newer than this project's `last_consolidated`. Use
 `memory_search` with `top_k: 500` and filter results by `updated_at`
 against the marker's epoch, or fall back to listing the
 `memory/insights/` directory and counting files with a newer mtime.

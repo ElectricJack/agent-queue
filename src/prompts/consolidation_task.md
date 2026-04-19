@@ -118,26 +118,29 @@ tags applied automatically.
 
 ### 6. Update the consolidation marker
 
-Write an updated entry under
-`vault/agent-types/supervisor/memory/consolidation.md` for this
-project. Use `memory_store` or a direct file write; the marker frontmatter
-should map this project id to the ISO-8601 timestamp of this run and
-record the counts:
+Write the marker for **this** project at
+`vault/projects/{project_id}/memory/consolidation.md`. The file is
+project-scoped (one per project — do not touch any other project's
+marker). Use a direct file write; the frontmatter should carry the
+ISO-8601 timestamp of this run and the run's counts:
 
 ```yaml
 ---
-last_consolidated:
-  {project_id}: "<current-iso-timestamp>"
+last_consolidated: "<current-iso-timestamp>"
 consolidation_stats:
-  {project_id}:
-    last_kept: <int>
-    last_promoted: <int>
-    last_deleted: <int>
-    last_merged: <int>
+  last_kept: <int>
+  last_promoted: <int>
+  last_deleted: <int>
+  last_merged: <int>
 ---
+
+# Memory Consolidation Log — {project_name}
+
+- <current-iso-timestamp>: kept=<int> promoted=<int> deleted=<int> merged=<int>
 ```
 
-Keep any existing entries for other projects intact.
+Append the new log line below any existing ones so run history is
+preserved. Overwrite the frontmatter in place.
 
 ## Judgement notes
 
