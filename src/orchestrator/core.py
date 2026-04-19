@@ -919,9 +919,7 @@ class Orchestrator(
         # this, events fire but playbooks never auto-run.
         self.playbook_manager.on_trigger = self._on_playbook_trigger
         subscribed = self.playbook_manager.subscribe_to_events()
-        logger.info(
-            "Subscribed to %d playbook trigger event(s)", subscribed
-        )
+        logger.info("Subscribed to %d playbook trigger event(s)", subscribed)
 
         register_playbook_handlers(
             self.vault_watcher,
@@ -937,6 +935,7 @@ class Orchestrator(
         self.timer_service = TimerService(
             event_bus=self.bus,
             playbook_manager=self.playbook_manager,
+            state_path=os.path.join(self.config.data_dir, "timer_state.json"),
         )
         self.timer_service.start()
 
