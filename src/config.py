@@ -169,9 +169,7 @@ class SchedulingConfig:
         if self.rolling_window_hours <= 0:
             errors.append(ConfigError("scheduling", "rolling_window_hours", "must be > 0"))
         if self.affinity_wait_seconds < 0:
-            errors.append(
-                ConfigError("scheduling", "affinity_wait_seconds", "must be >= 0")
-            )
+            errors.append(ConfigError("scheduling", "affinity_wait_seconds", "must be >= 0"))
         return errors
 
 
@@ -779,20 +777,24 @@ class AppConfig:
     max_daily_playbook_tokens: int | None = None
     max_concurrent_playbook_runs: int = 2
     rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
-    memory_extractor: dict = field(default_factory=lambda: {
-        "enabled": True,
-        "batch_window_seconds": 30,
-        "max_buffer_size": 1,
-        "max_facts_per_batch": 10,
-        "max_input_chars": 8000,
-    })
-    inbox: dict = field(default_factory=lambda: {
-        "enabled": False,
-        "projects": [],
-        "oauth_token_path": "~/.config/google-docs-mcp/token.json",
-        "client_secret": "$GOOGLE_CLIENT_SECRET",
-        "mark_read_on_emit": True,
-    })
+    memory_extractor: dict = field(
+        default_factory=lambda: {
+            "enabled": True,
+            "batch_window_seconds": 30,
+            "max_buffer_size": 1,
+            "max_facts_per_batch": 10,
+            "max_input_chars": 8000,
+        }
+    )
+    inbox: dict = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "projects": [],
+            "oauth_token_path": "~/.config/google-docs-mcp/token.json",
+            "client_secret": "$GOOGLE_CLIENT_SECRET",
+            "mark_read_on_emit": True,
+        }
+    )
     _config_path: str = field(default="", repr=False)
 
     # -- Vault path properties (derived from data_dir) -----------------------
@@ -1559,7 +1561,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             host=ms.get("host", "127.0.0.1"),
             port=ms.get("port", 8081),
             excluded_commands=ms.get("excluded_commands", []),
-            inject_into_tasks=ms.get("inject_into_tasks", None),
+            inject_into_tasks=ms.get("inject_into_tasks", True),
         )
 
     if "llm_logging" in raw:

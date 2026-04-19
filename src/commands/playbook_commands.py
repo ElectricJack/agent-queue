@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 
 logger = logging.getLogger(__name__)
@@ -497,17 +496,62 @@ class PlaybookCommandsMixin:
 
         Args:
             markdown: Full playbook markdown including YAML frontmatter.
-                      Either this or ``path`` must be provided.
+                      Either this, ``path``, or ``playbook_id`` must be provided.
             path: Absolute path to a playbook ``.md`` file on disk.
                   If provided, the file is read and used as the markdown.
+            playbook_id: ID of an already-known playbook. Resolves to its
+                  source path via the playbook manager, then re-reads and
+                  recompiles it.
             force: Force recompilation even if unchanged (default ``True``
                    for manual trigger).
         """
         markdown = args.get("markdown", "").strip()
         path = args.get("path", "").strip()
+        playbook_id = args.get("playbook_id", "").strip()
         force = args.get("force", True)  # default True for manual trigger
         if isinstance(force, str):
             force = force.lower() in ("true", "1", "yes")
+
+        # Resolve playbook_id → source path. Try the manager's in-memory map
+        # first (populated when this process compiled the playbook), then fall
+        # back to a vault scan for `<id>.md` (covers the case where the
+        # playbook was loaded from compiled JSON at startup).
+        if playbook_id and not path and not markdown:
+            pm = getattr(self.orchestrator, "playbook_manager", None)
+            if pm is None:
+                return {"error": "Playbook manager is not initialised"}
+            resolved = pm._source_paths.get(playbook_id)
+            if not resolved:
+                import pathlib
+
+                name = f"{playbook_id}.md"
+                search_dirs = [
+                    pathlib.Path(self.config.data_dir) / "vault" / "system" / "playbooks",
+                    pathlib.Path(self.config.data_dir)
+                    / "vault"
+                    / "agent-types"
+                    / "supervisor"
+                    / "playbooks",
+                ]
+                projects_dir = pathlib.Path(self.config.data_dir) / "vault" / "projects"
+                if projects_dir.is_dir():
+                    for proj in projects_dir.iterdir():
+                        pb_dir = proj / "playbooks"
+                        if pb_dir.is_dir():
+                            search_dirs.append(pb_dir)
+                for d in search_dirs:
+                    candidate = d / name
+                    if candidate.is_file():
+                        resolved = str(candidate)
+                        break
+            if not resolved:
+                return {
+                    "error": (
+                        f"Unknown playbook_id '{playbook_id}'. Use 'list_playbooks' "
+                        "to see compiled playbooks, or pass 'path' instead."
+                    )
+                }
+            path = resolved
 
         # Resolve markdown from path if provided
         if path and not markdown:
@@ -520,7 +564,11 @@ class PlaybookCommandsMixin:
                 name = path if path.endswith(".md") else f"{path}.md"
                 search_dirs = [
                     pathlib.Path(self.config.data_dir) / "vault" / "system" / "playbooks",
-                    pathlib.Path(self.config.data_dir) / "vault" / "agent-types" / "supervisor" / "playbooks",
+                    pathlib.Path(self.config.data_dir)
+                    / "vault"
+                    / "agent-types"
+                    / "supervisor"
+                    / "playbooks",
                 ]
                 # Also search per-project playbook dirs
                 projects_dir = pathlib.Path(self.config.data_dir) / "vault" / "projects"
@@ -543,7 +591,7 @@ class PlaybookCommandsMixin:
                 return {"error": f"Failed to read file: {exc}"}
 
         if not markdown:
-            return {"error": "Either 'markdown' or 'path' is required"}
+            return {"error": "Either 'markdown', 'path', or 'playbook_id' is required"}
 
         # Ensure playbook manager is available
         pm = getattr(self.orchestrator, "playbook_manager", None)
@@ -1024,7 +1072,6 @@ class PlaybookCommandsMixin:
         result["success"] = True
         return result
 
-
     @staticmethod
     def _get_paused_at(db_run) -> float | None:
         """Extract the timestamp when a run was paused.
@@ -1146,4 +1193,3 @@ class PlaybookCommandsMixin:
                     pass
 
         return results
-

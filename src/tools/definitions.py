@@ -953,15 +953,13 @@ _ALL_TOOL_DEFINITIONS = [
                 "task_id": {
                     "type": "string",
                     "description": (
-                        "Archive a single task by ID "
-                        "(must be COMPLETED, FAILED, or BLOCKED)"
+                        "Archive a single task by ID (must be COMPLETED, FAILED, or BLOCKED)"
                     ),
                 },
                 "project_id": {
                     "type": "string",
                     "description": (
-                        "Bulk-archive all completed tasks in this project "
-                        "(alternative to task_id)"
+                        "Bulk-archive all completed tasks in this project (alternative to task_id)"
                     ),
                 },
                 "include_failed": {
@@ -1972,9 +1970,7 @@ _ALL_TOOL_DEFINITIONS = [
             "properties": {
                 "description": {
                     "type": "string",
-                    "description": (
-                        "Natural language description of what you want to do"
-                    ),
+                    "description": ("Natural language description of what you want to do"),
                 },
                 "top_k": {
                     "type": "integer",
@@ -2003,16 +1999,25 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": (
                         "Full playbook markdown content including YAML frontmatter. "
                         "Frontmatter must include: id, triggers (list), scope "
-                        "(system|project|agent-type:xxx). Either this or 'path' "
-                        "is required."
+                        "(system|project|agent-type:xxx). One of 'markdown', "
+                        "'path', or 'playbook_id' is required."
                     ),
                 },
                 "path": {
                     "type": "string",
                     "description": (
                         "Absolute path to a playbook .md file on disk. "
-                        "If provided, the file is read and used as the markdown. "
-                        "Either this or 'markdown' is required."
+                        "If provided, the file is read and used as the markdown."
+                    ),
+                },
+                "playbook_id": {
+                    "type": "string",
+                    "description": (
+                        "ID of an already-compiled playbook. Resolves to its "
+                        "source path via the playbook manager and recompiles it. "
+                        "Use this to recompile by ID without remembering the "
+                        "vault path. One of 'markdown', 'path', or 'playbook_id' "
+                        "is required."
                     ),
                 },
                 "force": {

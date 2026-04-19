@@ -465,6 +465,14 @@ class ExecutionMixin:
         # inject_into_tasks is enabled), then layer profile-specific servers
         # on top.  Profile servers win on name collisions.
         injected_mcp: dict[str, dict] = dict(self.config.mcp_server.task_mcp_entry())
+        if not injected_mcp:
+            ms = self.config.mcp_server
+            logger.info(
+                "Task %s: agent-queue MCP auto-injection skipped (enabled=%s inject_into_tasks=%s)",
+                task.id,
+                ms.enabled,
+                ms.inject_into_tasks,
+            )
         profile_mcp: dict[str, dict] = (
             dict(profile.mcp_servers) if profile and profile.mcp_servers else {}
         )
