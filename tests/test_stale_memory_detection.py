@@ -527,9 +527,12 @@ class TestCmdMemoryStale:
 
         ctx = MagicMock()
         ctx.get_service = MagicMock(return_value=service)
+        ctx.active_project_id = None
         plugin = MemoryV2Plugin.__new__(MemoryV2Plugin)
         plugin._service = service
         plugin._log = MagicMock()
+        # cmd_memory_stale → _resolve_project_id reads self._ctx.active_project_id.
+        plugin._ctx = ctx
         return plugin
 
     async def test_requires_project_id(self, plugin):
