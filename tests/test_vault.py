@@ -925,7 +925,7 @@ def test_starter_knowledge_covers_expected_types():
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_default_playbooks_installs_all_four(tmp_path):
+def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     """A clean install creates all default playbooks with correct result dict."""
     result = ensure_default_playbooks(str(tmp_path))
 
@@ -933,16 +933,17 @@ def test_ensure_default_playbooks_installs_all_four(tmp_path):
     expected_files = [
         "codebase-inspector.md",
         "dependency-audit.md",
+        "memory-consolidation.md",
         "system-health-check.md",
         "task-outcome.md",
         "vibecop-weekly-scan.md",
     ]
 
-    # All four files must exist on disk
+    # All expected files must exist on disk
     for filename in expected_files:
         assert (playbooks_dir / filename).is_file(), f"{filename} not installed"
 
-    # All four must appear in result["created"]
+    # All must appear in result["created"]
     assert sorted(result["created"]) == expected_files
     assert result["skipped"] == []
 

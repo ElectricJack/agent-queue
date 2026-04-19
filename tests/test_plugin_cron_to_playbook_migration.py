@@ -322,10 +322,10 @@ class TestVaultInstallation:
         """All default playbooks should be installed, including the new one."""
         result = ensure_default_playbooks(str(tmp_path))
 
-        # The five default playbooks
         expected = {
             "codebase-inspector.md",
             "dependency-audit.md",
+            "memory-consolidation.md",
             "system-health-check.md",
             "task-outcome.md",
             "vibecop-weekly-scan.md",
