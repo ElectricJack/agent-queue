@@ -6,7 +6,6 @@ Tests the core execution model from docs/specs/design/playbooks.md §6:
 - Unconditional ``goto`` transitions
 - Conditional transitions via LLM classification
 - Token budget enforcement
-- Context summarization (``summarize_before``)
 - Human-in-the-loop pause and resume
 - Per-node LLM config overrides
 - Error handling (missing nodes, failed LLM calls)

@@ -179,30 +179,6 @@ def _make_timeout_playbook() -> CompiledPlaybook:
     )
 
 
-def _make_summarize_playbook() -> CompiledPlaybook:
-    """A playbook with a summarize_before node."""
-    return CompiledPlaybook(
-        id="summarize-test",
-        version=1,
-        source_hash="summ0000",
-        triggers=["manual"],
-        scope="system",
-        nodes={
-            "start": PlaybookNode(
-                entry=True,
-                prompt="Begin long process",
-                goto="recap",
-            ),
-            "recap": PlaybookNode(
-                prompt="Do the next thing with fresh context",
-                summarize_before=True,
-                goto="done",
-            ),
-            "done": PlaybookNode(terminal=True),
-        },
-    )
-
-
 # ===================================================================
 # Node classification tests
 # ===================================================================
@@ -504,11 +480,6 @@ class TestRenderAscii:
         output = render_ascii(pb)
         assert "human review" in output
 
-    def test_summarize_before_annotation(self):
-        pb = _make_summarize_playbook()
-        output = render_ascii(pb)
-        assert "summarize" in output.lower()
-
     def test_node_type_labels(self):
         pb = _make_branching_playbook()
         output = render_ascii(pb)
@@ -652,7 +623,6 @@ class TestRenderRobustness:
             "single_node",
             "empty",
             "timeout",
-            "summarize",
         ]
     )
     def playbook(self, request):
@@ -663,7 +633,6 @@ class TestRenderRobustness:
             "single_node": _make_single_node_playbook,
             "empty": _make_empty_playbook,
             "timeout": _make_timeout_playbook,
-            "summarize": _make_summarize_playbook,
         }
         return factories[request.param]()
 

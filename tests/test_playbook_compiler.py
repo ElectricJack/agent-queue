@@ -947,7 +947,6 @@ HAPPY_PATH_LLM_NODES: dict = {
                 "Run vibecop_check on the files changed in this commit. "
                 "Scope the scan to only the changed files."
             ),
-            "summarize_before": True,
             "llm_config": {"provider": "anthropic", "model": "claude-sonnet-4-20250514"},
             "transitions": [
                 {"when": "no findings", "goto": "done"},
@@ -1080,12 +1079,11 @@ class TestCompilationHappyPath:
         pb = result.playbook
         assert pb is not None
 
-        # scan node: prompt, llm_config, summarize_before
+        # scan node: prompt, llm_config
         scan = pb.nodes["scan"]
         assert scan.prompt.startswith("Run vibecop_check")
         assert scan.entry is True
         assert scan.terminal is False
-        assert scan.summarize_before is True
         assert scan.llm_config is not None
         assert scan.llm_config.provider == "anthropic"
         assert scan.llm_config.model == "claude-sonnet-4-20250514"
@@ -1096,7 +1094,6 @@ class TestCompilationHappyPath:
         assert ct.timeout_seconds == 120
         assert ct.entry is False
         assert ct.terminal is False
-        assert ct.summarize_before is False
         assert ct.llm_config is None
 
         # done node: terminal, no prompt required
@@ -1105,7 +1102,6 @@ class TestCompilationHappyPath:
         assert done.prompt == ""
         assert done.wait_for_human is False
         assert done.llm_config is None
-        assert done.summarize_before is False
 
     # -- (d) Transition fields -----------------------------------------------
 
