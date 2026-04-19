@@ -1815,6 +1815,16 @@ class PlaybookResumeView(discord.ui.View):
         super().__init__(timeout=86400)  # 24 hours (matches pause timeout)
         self.run_id = run_id
         self._handler = handler
+        self._message: discord.Message | None = None
+
+    def set_message(self, message: discord.Message | None) -> None:
+        """Store the Discord message this view is attached to.
+
+        Called by the notification handler after ``_send_message`` returns
+        so the view can later edit the message (e.g. disable buttons after
+        the run resumes).
+        """
+        self._message = message
 
     @discord.ui.button(
         label="Resume Playbook",

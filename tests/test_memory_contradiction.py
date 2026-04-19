@@ -141,7 +141,7 @@ class TestStatsContestedCount:
         """stats() contested_memories reflects actual tagged entries."""
         call_count = 0
 
-        def query_side_effect(*, filter_expr=""):
+        def query_side_effect(*, filter_expr="", **_kwargs):
             nonlocal call_count
             call_count += 1
             # The 4th call is for contested tag count (after doc, kv, temporal)

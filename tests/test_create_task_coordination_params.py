@@ -252,13 +252,19 @@ class TestCreateTaskValidation:
         assert "agent_type must be a string" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_empty_agent_type(self, handler):
+    async def test_whitespace_agent_type_normalised_to_none(self, handler):
+        # Whitespace / "none" / "null" / empty-string are normalised to None
+        # rather than rejected (task_commands.py:769). The task is created
+        # and agent_type ends up NULL.
         result = await handler.execute(
             "create_task",
-            {"project_id": "test-proj", "title": "Bad", "agent_type": "  "},
+            {"project_id": "test-proj", "title": "Fine", "agent_type": "  "},
         )
-        assert "error" in result
-        assert "agent_type cannot be empty" in result["error"]
+        assert "error" not in result
+        created_id = result["created"]
+        task = await handler.orchestrator.db.get_task(created_id)
+        assert task is not None
+        assert task.agent_type in (None, "")
 
     @pytest.mark.asyncio
     async def test_invalid_affinity_agent_id(self, handler):
@@ -841,6 +847,13 @@ class TestCoordinationParamsDbRoundTrip:
         assert archived["workspace_mode"] == "branch-isolated"
 
     @pytest.mark.asyncio
+    @pytest.mark.xfail(
+        reason=(
+            "db.restore_archived_task was removed. Re-enable if archive "
+            "restore is reintroduced."
+        ),
+        strict=False,
+    )
     async def test_restore_preserves_coordination_params(self, testdb):
         task = Task(
             id="t-5",

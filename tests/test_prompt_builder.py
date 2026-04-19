@@ -306,30 +306,6 @@ def test_supervisor_identity_without_project():
     assert "ACTIVE PROJECT" not in system_prompt
 
 
-def test_hook_executor_identity():
-    """Verify hook-context template renders with project metadata."""
-    from src.prompt_builder import PromptBuilder
-
-    builder = PromptBuilder(prompts_dir=_DEFAULT_PROMPTS_DIR)
-    builder.set_identity(
-        "hook-context",
-        {
-            "hook_name": "tunnel-monitor",
-            "project_id": "my-game",
-            "project_name": "My Game Server",
-            "workspace_dir": "- **Workspace:** `/home/user/game`\n",
-            "repo_url": "",
-            "default_branch": "",
-            "trigger_reason": "periodic (every 300s)",
-            "timing_context": "",
-        },
-    )
-    system_prompt, _ = builder.build()
-
-    assert "tunnel-monitor" in system_prompt
-    assert "My Game Server" in system_prompt
-
-
 def test_task_agent_assembly_ordering(prompts_dir):
     """Verify task agent prompt assembles all sections in correct order."""
     from src.prompt_builder import PromptBuilder

@@ -575,6 +575,13 @@ class TestArchiveQueries:
         assert len(archived) == 1
         assert archived[0]["id"] == "t-1"
 
+    @pytest.mark.xfail(
+        reason=(
+            "db.restore_archived_task was removed; only delete_archived_task "
+            "remains. Re-enable if task-restore is reintroduced."
+        ),
+        strict=False,
+    )
     async def test_restore_archived_task(self, db):
         await _make_project(db)
         await db.create_task(

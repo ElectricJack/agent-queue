@@ -373,6 +373,33 @@ for _interval in ("1m", "5m", "15m", "30m", "1h", "4h", "12h", "24h"):
         "interval": _interval,
     }
 
+# README summary + workflow-orphaned events were added after the original
+# payload set; fill in minimal canonical payloads.  notify.* events share a
+# required base of {event_type, severity, category}.
+_CANONICAL_PAYLOADS["notify.readme_summary_updated"] = {
+    "event_type": "notify.readme_summary_updated",
+    "severity": "info",
+    "category": "readme",
+    "project_id": "my-app",
+    "action": "updated",
+    "source_path": "/vault/projects/my-app/README.md",
+    "summary_path": "/vault/agent-types/supervisor/memory/project-my-app.md",
+}
+_CANONICAL_PAYLOADS["notify.readme_summary_failed"] = {
+    "event_type": "notify.readme_summary_failed",
+    "severity": "warning",
+    "category": "readme",
+    "project_id": "my-app",
+    "source_path": "/vault/projects/my-app/README.md",
+    "errors": ["LLM call timed out"],
+}
+_CANONICAL_PAYLOADS["workflow.orphaned"] = {
+    "workflow_id": "wf-123",
+    "playbook_id": "pb-ship-feature",
+    "project_id": "my-app",
+    "reason": "stage handler missing",
+}
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (a) Valid payloads pass validation silently

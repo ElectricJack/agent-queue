@@ -1149,16 +1149,18 @@ class TestAllPlaybookCommandsRegistered:
             )
 
     def test_tool_registry_category_has_correct_count(self):
-        """The playbook category in ToolRegistry contains exactly 7 tools."""
-        from src.tools import ToolRegistry, _ALL_TOOL_DEFINITIONS
+        """The playbook category in ToolRegistry is populated."""
+        from src.tools import ToolRegistry, _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
         registry = ToolRegistry(_ALL_TOOL_DEFINITIONS)
         tool_names = registry.get_category_tool_names("playbook")
 
         assert tool_names is not None, "Playbook category not found in registry"
-        assert len(tool_names) == 7, (
-            f"Expected 7 playbook tools, got {len(tool_names)}: {tool_names}"
-        )
+        # The category count must match what's declared in _TOOL_CATEGORIES
+        # (currently 11 — was 7 before run_playbook, recover_workflow,
+        # playbook_health, and playbook_graph_view were added).
+        expected = {n for n, c in _TOOL_CATEGORIES.items() if c == "playbook"}
+        assert set(tool_names) == expected
 
     async def test_unknown_command_returns_error(self):
         """execute() with a nonexistent command returns an error dict."""
