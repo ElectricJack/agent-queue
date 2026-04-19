@@ -310,9 +310,11 @@ def test_live_migration_creates_vault_structure(tmp_path):
     """Live migration creates the vault directory structure."""
     report = run_vault_migration(str(tmp_path))
 
-    assert (tmp_path / "vault" / "system" / "playbooks").is_dir()
-    assert (tmp_path / "vault" / "system" / "memory").is_dir()
-    assert (tmp_path / "vault" / "orchestrator" / "playbooks").is_dir()
+    # system/supervisor scopes were merged: supervisor now holds the
+    # playbooks and memory dirs; system/ remains as a stub.
+    assert (tmp_path / "vault" / "system").is_dir()
+    assert (tmp_path / "vault" / "agent-types" / "supervisor" / "playbooks").is_dir()
+    assert (tmp_path / "vault" / "agent-types" / "supervisor" / "memory").is_dir()
     assert (tmp_path / "vault" / "templates").is_dir()
     assert report["summary"]["total_errors"] == 0
 

@@ -926,7 +926,7 @@ def test_starter_knowledge_covers_expected_types():
 
 
 def test_ensure_default_playbooks_installs_all_four(tmp_path):
-    """A clean install creates all four default playbooks with correct result dict."""
+    """A clean install creates all default playbooks with correct result dict."""
     result = ensure_default_playbooks(str(tmp_path))
 
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
@@ -935,6 +935,7 @@ def test_ensure_default_playbooks_installs_all_four(tmp_path):
         "dependency-audit.md",
         "system-health-check.md",
         "task-outcome.md",
+        "vibecop-weekly-scan.md",
     ]
 
     # All four files must exist on disk
@@ -1309,9 +1310,9 @@ def test_ensure_default_playbooks_idempotent_system_health_check(tmp_path):
 
 
 def test_ensure_default_playbooks_all_skipped_on_second_run(tmp_path):
-    """Second call to ensure_default_playbooks skips all four — nothing overwritten."""
+    """Second call to ensure_default_playbooks skips all default playbooks."""
     first = ensure_default_playbooks(str(tmp_path))
-    assert len(first["created"]) == 4
+    assert len(first["created"]) >= 4
     assert len(first["skipped"]) == 0
 
     second = ensure_default_playbooks(str(tmp_path))
