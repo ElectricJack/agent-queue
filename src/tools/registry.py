@@ -1,12 +1,12 @@
 """Tiered tool registry for on-demand tool loading.
 
 Splits the monolithic TOOLS list into core tools (always loaded) and
-named categories (loaded on demand via ``browse_tools``/``load_tools``).
+named categories (loaded on demand via ``load_tools``).
 This keeps the LLM's initial context window small — only ~10 core tools
 are loaded at conversation start.  When the LLM needs specialised tools
-(git, hooks, memory, etc.) it calls ``browse_tools`` to discover categories,
-then ``load_tools`` to inject that category's definitions into the active
-tool set for subsequent turns.
+(git, memory, etc.) it inspects the Tool Index in its system prompt,
+then calls ``load_tools`` to inject that category's definitions into
+the active tool set for subsequent turns.
 
 The registry only manages tool *definitions* (JSON Schema dicts that
 describe each tool's name, description, and input schema).  Execution
@@ -16,8 +16,8 @@ purely an attention/context optimisation.
 
 Key components:
 
-- ``CATEGORIES`` — named groups (git, project, agent, hooks, memory,
-  files, system) with human-readable descriptions.
+- ``CATEGORIES`` — named groups (git, project, agent, memory, notes,
+  files, task, playbook, plugin, system) with human-readable descriptions.
 - ``_TOOL_CATEGORIES`` — mapping of tool name → category.  Tools not
   listed here are "core" (always loaded).
 - ``_ALL_TOOL_DEFINITIONS`` — the master list of ~80 tool JSON Schema
@@ -66,13 +66,6 @@ CATEGORIES: dict[str, CategoryMeta] = {
     "agent": CategoryMeta(
         name="agent",
         description=("Agent management, agent profiles, profile import/export"),
-    ),
-    "rules": CategoryMeta(
-        name="rules",
-        description=(
-            "DEPRECATED — rules have been replaced by playbooks. "
-            "Use the playbooks category instead."
-        ),
     ),
     "memory": CategoryMeta(
         name="memory",

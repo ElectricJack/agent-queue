@@ -100,9 +100,10 @@ def test_registry_has_core_tools(registry):
     assert "list_tasks" in core_names
     assert "edit_task" in core_names
     assert "get_task" in core_names
-    assert "browse_tools" in core_names
+    # Navigation/core meta-tools synthesized by ToolRegistry._ensure_navigation_tools.
     assert "load_tools" in core_names
     assert "send_message" in core_names
+    assert "reply_to_user" in core_names
 
 
 def test_registry_has_categories(registry):
@@ -113,7 +114,6 @@ def test_registry_has_categories(registry):
         "git",
         "project",
         "agent",
-        "rules",
         "memory",
         "notes",
         "system",
@@ -164,7 +164,7 @@ def test_no_duplicate_tool_names(registry):
 def test_category_tool_count_matches(registry):
     categories = registry.get_categories()
     for cat in categories:
-        tools = registry.get_category_tools(cat["name"])
+        tools = registry.get_category_tools(cat["name"]) or []
         assert len(tools) == cat["tool_count"], (
             f"Category {cat['name']}: metadata says "
             f"{cat['tool_count']} tools but get_category_tools "
@@ -204,19 +204,6 @@ def _make_handler():
     config = MagicMock()
     config.workspace_dir = "/tmp/test"
     return CommandHandler(orch, config)
-
-
-def test_cmd_browse_tools():
-    handler = _make_handler()
-    result = asyncio.run(handler.execute("browse_tools", {}))
-
-    assert "categories" in result
-    cat_names = {c["name"] for c in result["categories"]}
-    assert "git" in cat_names
-    assert "project" in cat_names
-    for cat in result["categories"]:
-        assert "description" in cat
-        assert "tool_count" in cat
 
 
 def test_cmd_load_tools_valid_category():
@@ -312,7 +299,6 @@ def test_total_tool_count_preserved():
 
     # These are the navigation tools added by the registry
     expected_new_tools = {
-        "browse_tools",
         "load_tools",
         "send_message",
         "reply_to_user",
@@ -350,9 +336,9 @@ def test_core_tools_are_compact(registry):
     core = registry.get_core_tools()
     all_tools = registry.get_all_tools()
 
-    # Core should be roughly 10-15 tools
-    assert len(core) <= 20, f"Core has {len(core)} tools -- should be ~11"
-    assert len(core) >= 8, f"Core has {len(core)} tools -- too few"
+    # Core should be roughly 7-15 tools (4 task tools + navigation meta-tools).
+    assert len(core) <= 20, f"Core has {len(core)} tools -- should be ~7"
+    assert len(core) >= 5, f"Core has {len(core)} tools -- too few"
     # Core should be < 25% of all tools
     assert len(core) < len(all_tools) * 0.25
 
@@ -422,19 +408,14 @@ def test_search_relevant_categories_project_query():
 
 
 def test_search_relevant_categories_files_query():
-    """File-related queries should return the files category."""
+    """File-related queries should include the files category."""
     registry = _real_registry()
-    cats = registry.search_relevant_categories("read the file and grep for errors")
+    # Use a higher cap since read_logs and compile_playbook also strongly
+    # match "read ... file ... errors" — files ranks slightly below them.
+    cats = registry.search_relevant_categories(
+        "read the file and grep for errors", max_categories=5
+    )
     assert "files" in cats
-
-
-def test_search_relevant_categories_rules_query():
-    """Rule-related queries should return the rules category (deprecated but still present)."""
-    registry = _real_registry()
-    cats = registry.search_relevant_categories("create a rule that fires on schedule")
-    # Rules category still exists (deprecated) — may or may not match depending on scoring
-    # The important thing is the function doesn't crash
-    assert isinstance(cats, list)
 
 
 def test_search_relevant_categories_memory_query():
@@ -593,12 +574,16 @@ class TestCompressToolSchema:
 # Canonical list of playbook commands from spec §15.
 _PLAYBOOK_COMMANDS = [
     "compile_playbook",
+    "run_playbook",
     "dry_run_playbook",
     "show_playbook_graph",
     "list_playbooks",
     "list_playbook_runs",
     "inspect_playbook_run",
     "resume_playbook",
+    "recover_workflow",
+    "playbook_health",
+    "playbook_graph_view",
 ]
 
 
@@ -753,16 +738,6 @@ class TestPlaybookToolRegistration:
         handler = _make_handler()
         result = asyncio.run(handler.execute("nonexistent_playbook_cmd", {}))
         assert "error" in result
-
-    def test_browse_tools_includes_playbook_category(self):
-        """browse_tools returns the playbook category with tool count."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("browse_tools", {}))
-        assert "categories" in result
-        cat_names = {c["name"] for c in result["categories"]}
-        assert "playbook" in cat_names
-        playbook_cat = next(c for c in result["categories"] if c["name"] == "playbook")
-        assert playbook_cat["tool_count"] == len(_PLAYBOOK_COMMANDS)
 
     def test_load_tools_playbook_category(self):
         """load_tools('playbook') returns all playbook tool definitions."""
