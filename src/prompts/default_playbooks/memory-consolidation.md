@@ -13,53 +13,107 @@ consolidation task. If so, create one supervisor task per project. Do
 not perform the consolidation itself in this playbook — the supervisor
 task does the judgement work with full tool access.
 
+Each step must end with a **single JSON object** in the response so the
+runner can extract structured output for downstream `for_each` loops.
+Prose reasoning before the JSON is fine, but the final line must be
+pure JSON (no code fence).
+
 ## Step 1 — Enumerate active projects
 
-List projects with at least one insight written in the last 30 days
-(query the memory service or `list_projects`). Skip archived/paused
-projects.
+Call `list_projects`. Filter to projects whose status is `ACTIVE` (skip
+`ARCHIVED`, `PAUSED`). For each remaining project, call
+`memory_search` with the project id to confirm it has at least one
+insight — skip projects with zero insights.
+
+End the step with a JSON object of shape:
+
+```json
+{"projects": [{"id": "<project_id>", "name": "<project_name>"}, ...]}
+```
+
+If no projects qualify, emit `{"projects": []}` and the playbook will
+end cleanly.
 
 ## Step 2 — Read each project's consolidation marker
 
-The marker is **per-project**, not shared. For each active project read
-`~/.agent-queue/vault/projects/{project_id}/memory/consolidation.md`.
-Its frontmatter carries this project's `last_consolidated` ISO
-timestamp and last-run stats. If the file does not exist, treat the
-project as never-consolidated.
+For each project in `projects`, read
+`~/.agent-queue/vault/projects/<project_id>/memory/consolidation.md`.
+Parse the frontmatter. If the file is missing, treat
+`last_consolidated` as `null`.
+
+End this step with a JSON object of shape:
+
+```json
+{"projects_with_consolidation_data": [
+  {
+    "id": "<project_id>",
+    "name": "<project_name>",
+    "last_consolidated": "<iso-timestamp-or-null>"
+  },
+  ...
+]}
+```
 
 ## Step 3 — Churn check
 
-For each active project, count the number of insights whose `updated`
-timestamp is newer than this project's `last_consolidated`. Use
-`memory_search` with `top_k: 500` and filter results by `updated_at`
-against the marker's epoch, or fall back to listing the
-`memory/insights/` directory and counting files with a newer mtime.
+For each entry in `projects_with_consolidation_data`, count the
+insights whose `updated` timestamp is newer than `last_consolidated`.
+Use `memory_search` with `top_k: 500` scoped to the project, or fall
+back to listing `vault/projects/<project_id>/memory/insights/` and
+counting files with a newer mtime.
 
-Skip projects where:
-- fewer than **10** insights have changed since the last run, AND
-- the last run was less than **7 days** ago.
+Mark a project as qualifying when **either** of these is true:
 
-For never-consolidated projects with 5 or more existing insights, always
-run — the first pass is the highest-value one.
+- `churn_count >= 10` AND `last_consolidated` is older than 7 days (or
+  null).
+- `last_consolidated` is `null` and the project has at least 5
+  insights total — the first pass is the most valuable one.
+
+End this step with:
+
+```json
+{"qualifying_projects": [
+  {
+    "id": "<project_id>",
+    "name": "<project_name>",
+    "last_consolidated": "<iso-or-null>",
+    "churn_count": <int>
+  },
+  ...
+]}
+```
+
+If `qualifying_projects` is empty, the playbook ends cleanly at the
+next node.
 
 ## Step 4 — Create one consolidation task per qualifying project
 
-For each qualifying project, read
-`src/prompts/consolidation_task.md` from the repository, substitute the
-placeholders `{project_id}`, `{project_name}`, `{insights_dir}`,
-`{knowledge_dir}`, `{last_consolidated}`, `{churn_count}`, then call
-`create_task` with:
+For **each** entry in `qualifying_projects`, call `create_task` **once**
+with:
 
-- `agent_type`: `supervisor`
+- `project_id`: the project's id
+- `agent_type`: `"supervisor"`
 - `priority`: `40`
 - `title`: `Consolidate memory: <project_name>`
-- `description`: the formatted template from above
-- `project_id`: the project id
-- `task_type`: `maintenance` if available, else leave unset
+- `description`: read
+  `/mnt/d/Dev/agent-queue2/src/prompts/consolidation_task.md` via the
+  `read_file` tool and substitute the placeholders
+  `{project_id}`, `{project_name}`,
+  `{insights_dir}` (→ `~/.agent-queue/vault/projects/<project_id>/memory/insights`),
+  `{knowledge_dir}` (→ `~/.agent-queue/vault/projects/<project_id>/memory/knowledge`),
+  `{last_consolidated}` (→ the value from Step 3 or `never`),
+  `{churn_count}` (→ the value from Step 3).
 
-Do not pre-delete anything — the task is responsible for all writes.
+Do **not** pre-delete anything — the consolidation task is responsible
+for all vault writes.
 
-## Step 5 — No-op when nothing qualifies
+End this step with:
 
-If no projects qualify on this tick, record a single log line and end
-cleanly. Do not create empty summary notes or otherwise spam memory.
+```json
+{"tasks_created": [{"project_id": "<id>", "task_id": "<task-id>"}, ...]}
+```
+
+## Step 5 — No-op terminal
+
+Log a single line summarising how many tasks were created. End the
+playbook.
