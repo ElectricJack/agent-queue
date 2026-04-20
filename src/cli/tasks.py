@@ -37,6 +37,18 @@ def task() -> None:
 @click.option("--priority", default=None, type=int, help="Priority (1-300)")
 @click.option("--type", "task_type", default=None, help="Task type")
 @click.option("--approval/--no-approval", default=False, help="Require approval")
+@click.option(
+    "-P",
+    "--profile",
+    "profile_id",
+    default=None,
+    help="Agent profile id (e.g. claude-opus, claude-sonnet, claude-code)",
+)
+@click.option(
+    "--agent-type",
+    default=None,
+    help="Agent type override (cascade falls back to the global profile of this name)",
+)
 @click.pass_context
 @_handle_errors
 def task_create(
@@ -47,8 +59,15 @@ def task_create(
     priority: int | None,
     task_type: str | None,
     approval: bool,
+    profile_id: str | None,
+    agent_type: str | None,
 ) -> None:
-    """Create a new task (interactive wizard or via flags)."""
+    """Create a new task (interactive wizard or via flags).
+
+    Use ``--profile`` / ``-P`` to pin a specific agent profile (model +
+    tools + system prompt). Use ``--agent-type`` to pick the scope the
+    task runs under when no explicit profile is given.
+    """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
     if project and title and description:
@@ -60,6 +79,10 @@ def task_create(
             "task_type": task_type,
             "requires_approval": approval,
         }
+        if profile_id:
+            params["profile_id"] = profile_id
+        if agent_type:
+            params["agent_type"] = agent_type
     else:
         from .menus import task_creation_wizard
 
@@ -74,6 +97,12 @@ def task_create(
         if not params:
             console.print("[dim]Task creation cancelled.[/]")
             return
+        # CLI flag overrides persist through the wizard if the caller
+        # mixed interactive + flag usage.
+        if profile_id and "profile_id" not in params:
+            params["profile_id"] = profile_id
+        if agent_type and "agent_type" not in params:
+            params["agent_type"] = agent_type
 
     async def _create():
         async with _get_client(api_url) as client:
