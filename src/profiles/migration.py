@@ -350,6 +350,31 @@ async def migrate_db_profiles_to_vault(
 
     # 2. Process each profile
     for profile in profiles:
+        # Guard: ``orchestrator`` is the deprecated name for the singleton
+        # supervisor scope.  A stray DB row with id=="orchestrator" (leftover
+        # from an older install) would otherwise cause us to recreate the
+        # stale vault/agent-types/orchestrator/ tree on every startup.  Skip
+        # it loudly so the operator can clean up the DB row.
+        if profile.id == "orchestrator":
+            result = ProfileMigrationResult(
+                profile_id=profile.id,
+                name=profile.name,
+                action="skipped",
+                reason="deprecated profile id — use 'supervisor' instead",
+            )
+            report.skipped += 1
+            report.results.append(result)
+            report.details.append(
+                f"  SKIP {profile.id} ({profile.name}): deprecated id — "
+                "delete this DB row (use 'supervisor' scope instead)"
+            )
+            logger.warning(
+                "Profile migration: skipping deprecated 'orchestrator' "
+                "profile row — delete it from the DB; supervisor is the "
+                "singleton agent-type now."
+            )
+            continue
+
         vault_path = _vault_profile_path(data_dir, profile.id)
 
         # Check if vault file already exists
