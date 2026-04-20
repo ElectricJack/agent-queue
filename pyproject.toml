@@ -26,6 +26,11 @@ dependencies = [
     # when processing crafted zip files in zipp.Path operations). Older
     # zipp comes in as a transitive dep of importlib-metadata.
     "zipp>=3.19.1",
+    # Pin cryptography to >=46.0.7 to address CVE-2026-39892 (buffer
+    # overflows when non-contiguous buffers are passed to Hash.update()
+    # and similar APIs accepting Python buffers). cryptography comes in
+    # transitively via google-auth (inbox extras).
+    "cryptography>=46.0.7",
 ]
 
 [project.optional-dependencies]
