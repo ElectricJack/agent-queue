@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 import os
 
@@ -135,6 +135,21 @@ class AgentCommandsMixin:
                     await self.orchestrator.git.acreate_checkout(project.repo_url, path)
                 except Exception as e:
                     return {"error": f"Clone failed: {e}"}
+        elif source_type == RepoSourceType.INIT:
+            if not path:
+                ws_dir_name = name or ws_id
+                path = os.path.join(
+                    self.config.workspace_dir,
+                    project_id,
+                    ws_dir_name,
+                )
+            path = os.path.realpath(path)
+            try:
+                await self.orchestrator.git.ainit_repo(path)
+            except Exception as e:
+                return {"error": f"git init failed: {e}"}
+        else:
+            return {"error": f"Unsupported workspace source_type '{source}'"}
         workspace = Workspace(
             id=ws_id,
             project_id=project_id,
@@ -456,7 +471,6 @@ class AgentCommandsMixin:
         - A SYNC task already exists for this project (READY/ASSIGNED/IN_PROGRESS).
         - All workspaces are already on the default branch with no feature branches.
         """
-        from src.task_names import generate_task_id
 
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:

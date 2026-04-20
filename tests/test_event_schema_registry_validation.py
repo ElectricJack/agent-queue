@@ -373,6 +373,13 @@ for _interval in ("1m", "5m", "15m", "30m", "1h", "4h", "12h", "24h"):
         "interval": _interval,
     }
 
+# Cron schemas share TIMER_SCHEMA's shape but carry the HH:MM target as `interval`.
+for _hhmm in ("07:00", "08:00", "09:00", "12:00", "17:00", "20:00"):
+    _CANONICAL_PAYLOADS[f"cron.{_hhmm}"] = {
+        "tick_time": "2026-01-15T10:00:00Z",
+        "interval": _hhmm,
+    }
+
 # README summary + workflow-orphaned events were added after the original
 # payload set; fill in minimal canonical payloads.  notify.* events share a
 # required base of {event_type, severity, category}.

@@ -447,6 +447,24 @@ _TIMER_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Cron events (synthetic events emitted by the timer service for daily
+# wall-clock triggers: ``cron.HH:MM``). Same payload shape as timer events —
+# ``interval`` carries the ``HH:MM`` target so handlers that introspect the
+# payload see a meaningful label. ``get_schema()`` falls back to ``CRON_SCHEMA``
+# for any unregistered ``cron.*`` type.
+# ---------------------------------------------------------------------------
+
+CRON_SCHEMA: EventSchema = {
+    "required": ["tick_time", "interval"],
+    "optional": [],
+}
+"""Canonical schema shared by all ``cron.*`` events."""
+
+_CRON_SCHEMAS: dict[str, EventSchema] = {
+    f"cron.{hhmm}": CRON_SCHEMA for hhmm in ("07:00", "08:00", "09:00", "12:00", "17:00", "20:00")
+}
+
+# ---------------------------------------------------------------------------
 # Combined registry
 # ---------------------------------------------------------------------------
 
@@ -463,6 +481,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_HUMAN_SCHEMAS,
     **_WORKFLOW_SCHEMAS,
     **_TIMER_SCHEMAS,
+    **_CRON_SCHEMAS,
 }
 """Master registry of all event schemas.
 
@@ -482,6 +501,8 @@ def get_schema(event_type: str) -> EventSchema | None:
     schema = EVENT_SCHEMAS.get(event_type)
     if schema is None and event_type.startswith("timer."):
         return TIMER_SCHEMA
+    if schema is None and event_type.startswith("cron."):
+        return CRON_SCHEMA
     return schema
 
 

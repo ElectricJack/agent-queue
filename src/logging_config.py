@@ -281,6 +281,27 @@ def _get_console_processors(
     return processors
 
 
+# ── Auto-attach traceback to error logs inside except blocks ───────────
+
+
+class _AutoExcInfoFilter(logging.Filter):
+    """Fill in ``exc_info`` on ERROR+ records when an exception is active.
+
+    If ``logger.error(...)`` is called from inside an ``except`` block
+    without ``exc_info=True``, the traceback would normally be dropped.
+    This filter inspects ``sys.exc_info()`` and attaches the live
+    exception so the handler prints a full stack.  No effect when no
+    exception is active or when the caller already set ``exc_info``.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR and not record.exc_info:
+            exc = sys.exc_info()
+            if exc[0] is not None:
+                record.exc_info = exc
+        return True
+
+
 # ── Setup function ──────────────────────────────────────────────────────
 
 
@@ -372,6 +393,12 @@ def setup_logging(
         root.addHandler(file_handler)
 
     root.setLevel(log_level)
+
+    # Auto-attach sys.exc_info() to any ERROR record raised inside an
+    # except block, so callers that did `logger.error("...", e)` without
+    # exc_info=True still get the full traceback in the log.
+    if not any(isinstance(f, _AutoExcInfoFilter) for f in root.filters):
+        root.addFilter(_AutoExcInfoFilter())
 
     # Quiet down noisy third-party loggers
     for noisy in ("discord", "discord.http", "discord.gateway", "aiohttp", "uvicorn"):

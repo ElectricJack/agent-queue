@@ -330,10 +330,29 @@ class ClaudeAdapter(AgentAdapter):
             # Without this, the SDK's ProcessError only says "Check stderr
             # output for details" which is useless for debugging.
             _stderr_lines: list[str] = []
+            _STDERR_ALERT_PATTERNS = (
+                "error",
+                "enoent",
+                "failed",
+                "cannot find",
+                "no such",
+                "permission denied",
+                "refused",
+                "timed out",
+                "timeout",
+                "traceback",
+            )
 
             def _capture_stderr(line: str) -> None:
                 _stderr_lines.append(line)
-                logger.debug("Claude CLI stderr: %s", line)
+                low = line.lower()
+                # Promote likely-important lines to INFO so they land in
+                # daemon.log without requiring DEBUG. Keeps routine stderr
+                # (progress bars, etc.) quiet at DEBUG.
+                if any(p in low for p in _STDERR_ALERT_PATTERNS):
+                    logger.info("Claude CLI stderr (alert): %s", line.rstrip())
+                else:
+                    logger.debug("Claude CLI stderr: %s", line)
 
             options = ClaudeAgentOptions(
                 allowed_tools=allowed,
@@ -347,6 +366,38 @@ class ClaudeAdapter(AgentAdapter):
                 options.model = self._config.model
             if self._task.mcp_servers:
                 options.mcp_servers = self._task.mcp_servers
+
+            # Log the full launch surface: exactly which MCP servers the
+            # Claude subprocess will try to connect to, and which tool names
+            # are allowed. Makes "agent says it can't find tool X" debuggable
+            # from daemon.log alone.
+            def _summarize_mcp(mcp_servers: dict | None) -> list[str]:
+                if not mcp_servers:
+                    return []
+                out: list[str] = []
+                for sname, sconf in mcp_servers.items():
+                    if isinstance(sconf, dict):
+                        t = sconf.get("type")
+                        if t == "http":
+                            out.append(f"{sname}=http({sconf.get('url', '?')})")
+                        elif t == "sdk":
+                            out.append(f"{sname}=sdk-instance")
+                        elif "command" in sconf:
+                            out.append(f"{sname}=subprocess[{sconf['command']}]")
+                        else:
+                            out.append(f"{sname}=?")
+                    else:
+                        out.append(f"{sname}=<non-dict>")
+                return out
+
+            logger.info(
+                "Claude adapter launch surface: task=%s cwd=%s model=%s mcp_servers=[%s] allowed_tools=%s",
+                getattr(self._task, "task_id", "?"),
+                options.cwd,
+                options.model,
+                ", ".join(_summarize_mcp(options.mcp_servers)) or "(none)",
+                allowed,
+            )
 
             # Track whether the original options included a resume request.
             # This flag survives even if `options` is replaced during retry,
@@ -545,9 +596,9 @@ class ClaudeAdapter(AgentAdapter):
                         result = _classify_error_result(classify_input)
                         output = AgentOutput(
                             result=result,
-                            error_message=full_error if result == AgentResult.FAILED else (
-                                cli_error or error_msg
-                            ),
+                            error_message=full_error
+                            if result == AgentResult.FAILED
+                            else (cli_error or error_msg),
                         )
                         self._log_session(current_prompt, output, _wait_start, _time)
                         return output
