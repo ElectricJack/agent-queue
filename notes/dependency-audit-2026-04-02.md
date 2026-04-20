@@ -13,7 +13,7 @@
 | pygments | 2.19.2 | 2.20.0 | CVE-2026-4539 |
 | pyjwt | 2.11.0 | 2.12.1 | CVE-2026-32597 |
 | requests | 2.32.5 | 2.33.1 | CVE-2026-25645 |
-| setuptools | 74.1.3 | 82.0.1 | PYSEC-2025-49 |
+| setuptools | 74.1.3 | 78.1.1 | PYSEC-2025-49 / CVE-2025-47273 |
 
 ## Direct Dependency Updates
 
@@ -37,3 +37,19 @@ These packages have updates available but are not urgent:
 ## Test Results
 
 1924 passed, 30 skipped, 1 pre-existing failure (unrelated `test_tool_registry.py::test_total_tool_count_preserved`).
+
+## Reconciliation Notes (2026-04-20)
+
+- **setuptools target adjusted to 78.1.1 (was 82.0.1).** The original 2026-04-02
+  audit listed 82.0.1 as the upgrade target, but the only known security
+  vulnerability in this range is PYSEC-2025-49 / CVE-2025-47273 (path traversal
+  in `PackageIndex._download_url`), which is fixed in 78.1.1. Task `swift-falcon`
+  pinned `setuptools>=78.1.1` in both `pyproject.toml` and
+  `packages/memsearch/pyproject.toml` as the minimum version that resolves this
+  CVE. The 82.0.1 figure in the original table reflected the latest available
+  release at audit time, not a security-required floor — pinning to 82.0.1 would
+  have been an over-target with no additional security benefit. `pip-audit`
+  reports no remaining setuptools vulnerabilities at 78.1.1. The `>=` pin still
+  permits 82.0.1+ to be installed when desired or pulled in by other packages.
+- `docs/specs/plugin-system.md` already references `setuptools>=78.1.1` and
+  remains in sync with the implemented pin.
