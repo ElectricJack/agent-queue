@@ -31,6 +31,11 @@ dependencies = [
     # and similar APIs accepting Python buffers). cryptography comes in
     # transitively via google-auth (inbox extras).
     "cryptography>=46.0.7",
+    # Pin python-multipart to >=0.0.26 to address CVE-2026-40347 (DoS via
+    # crafted multipart/form-data requests with large preamble or epilogue
+    # sections — inefficient parsing paths consume excessive CPU). Comes in
+    # as a transitive dep of fastapi/starlette for form parsing.
+    "python-multipart>=0.0.26",
 ]
 
 [project.optional-dependencies]
