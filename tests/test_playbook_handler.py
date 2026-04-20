@@ -911,3 +911,43 @@ class TestEndToEndCompilation:
         # LLM should not be called — hash matches loaded version
         provider2.create_message.assert_not_called()
         assert manager2.get_playbook("deploy").version == 1
+
+    @pytest.mark.asyncio
+    async def test_project_scoped_playbook_records_project_identifier(self, tmp_path):
+        """Project-scoped playbooks compiled via the watcher must record the
+        project_id from their vault path, so that _matches_scope can reject
+        events from other projects.  Regression for the bug where the handler
+        dropped `scope_identifier` on the floor and every project-scoped
+        playbook fired on events from all projects.
+        """
+        from src.playbooks.manager import PlaybookManager
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path / "data"),
+        )
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+        register_playbook_handlers(watcher, playbook_manager=manager)
+
+        await watcher.check()
+
+        playbook_dir = vault / "projects" / "my-app" / "playbooks"
+        playbook_dir.mkdir(parents=True)
+        playbook_file = playbook_dir / "review.md"
+        playbook_file.write_text(
+            _make_playbook_md(playbook_id="review", scope="project")
+        )
+
+        await watcher.check()
+
+        assert manager.get_playbook("review") is not None
+        assert manager.get_scope_identifier("review") == "my-app"

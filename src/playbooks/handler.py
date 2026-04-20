@@ -208,6 +208,7 @@ async def on_playbook_changed(
             markdown,
             source_path=change.path,
             rel_path=change.rel_path,
+            scope_identifier=identifier,
         )
 
         if result.success:
