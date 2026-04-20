@@ -920,12 +920,23 @@ class Orchestrator(
         # This catches default playbooks freshly installed by
         # ``ensure_vault_layout`` — the vault watcher's initial snapshot would
         # otherwise treat them as pre-existing and never emit a created event.
+        vault_root = os.path.join(self.config.data_dir, "vault")
         try:
-            vault_root = os.path.join(self.config.data_dir, "vault")
             await self.playbook_manager.reconcile_compilations(vault_root)
         except Exception:
             logger.warning(
                 "Playbook compilation reconcile failed", exc_info=True
+            )
+
+        # Prune orphans: compiled ``.json`` entries whose source ``.md`` is
+        # gone (manual `rm`, git checkout, etc.). Without this, they stay in
+        # the active registry after load_from_disk and keep firing triggers
+        # for a playbook that no longer exists in the vault.
+        try:
+            await self.playbook_manager.prune_orphan_compilations(vault_root)
+        except Exception:
+            logger.warning(
+                "Orphan compiled-playbook prune failed", exc_info=True
             )
 
         # Wire trigger dispatch: when a playbook's trigger event fires on

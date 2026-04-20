@@ -1375,6 +1375,111 @@ class PlaybookManager:
 
         return False
 
+    def playbook_id_by_source_path(self, source_path: str) -> str | None:
+        """Find the active playbook id whose source .md sits at *source_path*.
+
+        Used by vault-delete handlers to resolve the correct id even when
+        the .md's frontmatter ``id`` doesn't match its filename stem
+        (the handler's fallback-id heuristic).  Returns ``None`` when no
+        match is found.
+        """
+        target = os.path.normpath(source_path)
+        for pid, path in self._source_paths.items():
+            if os.path.normpath(path) == target:
+                return pid
+        return None
+
+    async def prune_orphan_compilations(self, vault_root: str) -> dict:
+        """Delete compiled JSON for playbooks whose source .md is gone.
+
+        Fixes the gap where a .md file deleted out-of-band (outside the
+        vault-watcher lifecycle, e.g. manual `rm`, git checkout between
+        daemon runs) leaves its compiled JSON behind.  The orphan
+        silently loads on startup and keeps firing triggers for a
+        playbook that no longer exists in the vault.
+
+        Walks ``{data_dir}/playbooks/compiled/*.json``; for each compiled
+        entry confirms that at least one `.md` file under *vault_root*
+        carries a matching frontmatter id.  Anything without a backing
+        `.md` is removed from disk and from the active registry.
+
+        Parameters
+        ----------
+        vault_root:
+            Absolute path to the vault root (typically
+            ``{data_dir}/vault``).
+
+        Returns
+        -------
+        dict
+            Summary with ``pruned`` (list of ids removed) and
+            ``checked`` (total compiled entries inspected).
+        """
+        compiled_dir = self._compiled_dir()
+        result: dict = {"pruned": [], "checked": 0}
+        if compiled_dir is None or not compiled_dir.is_dir():
+            return result
+        if not os.path.isdir(vault_root):
+            return result
+
+        # Build the set of ids currently present in the vault.
+        from src.playbooks.handler import PLAYBOOK_PATTERNS
+        import fnmatch
+
+        vault_ids: set[str] = set()
+        for dirpath, _dirnames, filenames in os.walk(vault_root):
+            for filename in filenames:
+                if not filename.endswith(".md"):
+                    continue
+                abs_path = os.path.join(dirpath, filename)
+                rel_path = os.path.relpath(abs_path, vault_root).replace("\\", "/")
+                if not any(fnmatch.fnmatch(rel_path, p) for p in PLAYBOOK_PATTERNS):
+                    continue
+                try:
+                    with open(abs_path, encoding="utf-8") as f:
+                        frontmatter, _ = PlaybookCompiler._parse_frontmatter(f.read())
+                except Exception:
+                    continue
+                pid = (frontmatter.get("id") or "").strip()
+                if pid:
+                    vault_ids.add(pid)
+
+        # Inspect each compiled JSON and drop orphans.
+        for json_path in sorted(compiled_dir.glob("*.json")):
+            result["checked"] += 1
+            compiled_id = json_path.stem
+            if compiled_id in vault_ids:
+                continue
+            logger.info(
+                "Pruning orphan compiled playbook %r — no matching .md in vault",
+                compiled_id,
+            )
+            active = self._active.pop(compiled_id, None)
+            self._source_paths.pop(compiled_id, None)
+            self._scope_identifiers.pop(compiled_id, None)
+            if active is not None:
+                self._unindex_triggers(active)
+                self.clear_cooldown(compiled_id)
+            try:
+                json_path.unlink()
+            except OSError:
+                logger.warning(
+                    "Failed to unlink orphan compiled playbook %s",
+                    json_path,
+                    exc_info=True,
+                )
+                continue
+            result["pruned"].append(compiled_id)
+
+        if result["pruned"]:
+            self._refresh_subscriptions()
+            logger.info(
+                "Pruned %d orphan compiled playbook(s): %s",
+                len(result["pruned"]),
+                ", ".join(result["pruned"]),
+            )
+        return result
+
     # -- trigger mapping -----------------------------------------------------
 
     def _index_triggers(self, playbook: CompiledPlaybook) -> None:
