@@ -996,6 +996,141 @@ After completing work, consider:
 """
 
 
+# Opus / Sonnet model-specific default profiles.  Both share a single
+# ``memory_scope_id: claude`` so insights extracted from tasks running
+# under either model pool into one ``agenttype_claude`` collection +
+# ``vault/agent-types/claude/memory/`` directory.
+
+CLAUDE_OPUS_PROFILE = """\
+---
+id: claude-opus
+name: Claude Opus (Architecture & Judgment)
+tags: [profile, claude, opus]
+memory_scope_id: claude
+---
+
+# Claude Opus
+
+## Role
+You are a judgment-heavy reasoning agent backed by Claude Opus. Take on
+tasks that reward deep analysis: architectural decisions, tricky design
+trade-offs, root-cause debugging, and synthesis across broad context.
+
+You share memory with the `claude-sonnet` profile — insights you save
+are visible to Sonnet tasks and vice-versa. Reserve this profile for
+the subset of work that genuinely benefits from Opus-level reasoning;
+route mechanical or pattern-following work to `claude-sonnet` or
+`claude-code`.
+
+## Config
+```json
+{
+  "model": "claude-opus-4-7",
+  "permission_mode": "auto"
+}
+```
+
+## Tools
+```json
+{
+  "allowed": [],
+  "denied": []
+}
+```
+
+## MCP Servers
+```json
+{}
+```
+
+## Rules
+- Use this profile when the task's value comes from judgment, not speed
+- Be willing to change approach mid-task if exploration reveals a simpler path
+- When uncertain, state the alternatives and the trade-off rather than picking blindly
+- Memory shared with claude-sonnet — tag insights with #opus when specific to deep reasoning
+
+## Reflection
+After completing work, consider:
+- Was Opus the right tool, or could this have been done with Sonnet?
+- Did the judgment calls generalise — worth saving as shared insights?
+- Were there edge cases or trade-offs worth flagging for future tasks?
+
+## Install
+```json
+{
+  "npm": [],
+  "pip": [],
+  "commands": []
+}
+```
+"""
+
+
+CLAUDE_SONNET_PROFILE = """\
+---
+id: claude-sonnet
+name: Claude Sonnet (Pattern-Following & Scaffolding)
+tags: [profile, claude, sonnet]
+memory_scope_id: claude
+---
+
+# Claude Sonnet
+
+## Role
+You are a pattern-following agent backed by Claude Sonnet. Take on
+tasks that reward quick, accurate execution of well-understood patterns:
+adding features to an existing design, writing boilerplate, scaffolding
+tests, or following a spec closely.
+
+You share memory with the `claude-opus` profile — insights you save
+are visible to Opus tasks and vice-versa. Prefer this profile over
+Opus when the task is well-specified and the rubric is clear; escalate
+to Opus only when the work genuinely requires deeper reasoning.
+
+## Config
+```json
+{
+  "model": "claude-sonnet-4-6",
+  "permission_mode": "auto"
+}
+```
+
+## Tools
+```json
+{
+  "allowed": [],
+  "denied": []
+}
+```
+
+## MCP Servers
+```json
+{}
+```
+
+## Rules
+- Prefer this profile for mechanical or well-specified work
+- When the task brief is ambiguous, surface the question rather than guessing
+- Memory shared with claude-opus — tag insights with #sonnet when specific to scaffolding
+- Escalate to claude-opus when a task needs Opus-level judgment instead
+
+## Reflection
+After completing work, consider:
+- Did the pattern match the task, or was escalation needed mid-task?
+- Are there conventions worth saving as shared insights?
+- Did any generated boilerplate drift from the spec?
+
+## Install
+```json
+{
+  "npm": [],
+  "pip": [],
+  "commands": []
+}
+```
+"""
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: Migrate passive rules to vault memory files (playbooks spec §13)
 # ---------------------------------------------------------------------------
@@ -1190,6 +1325,9 @@ def ensure_vault_layout(data_dir: str) -> None:
     ensure_default_agent_type_playbooks(data_dir)
     ensure_supervisor_profile(data_dir)
     ensure_claude_code_profile(data_dir)
+    ensure_claude_opus_profile(data_dir)
+    ensure_claude_sonnet_profile(data_dir)
+    ensure_shared_claude_memory_dir(data_dir)
 
     # Generate vault hub files for Obsidian graph tree structure
     try:
@@ -1464,6 +1602,86 @@ def ensure_claude_code_profile(data_dir: str) -> bool:
 
     ensure_vault_profile_dirs(data_dir, "claude-code")
     logger.info("Created Claude Code profile: %s", profile_path)
+    return True
+
+
+def ensure_claude_opus_profile(data_dir: str) -> bool:
+    """Write the claude-opus profile to ``vault/agent-types/claude-opus/profile.md`` if absent.
+
+    Auto-installed default for judgment-heavy tasks. The shipped template
+    sets ``memory_scope_id: claude`` in frontmatter so insights pool with
+    the ``claude-sonnet`` profile under a single ``agenttype_claude``
+    scope.
+
+    Idempotent: existing files are preserved for user customisation.
+    """
+    profile_path = os.path.join(
+        data_dir, "vault", "agent-types", "claude-opus", "profile.md"
+    )
+    if os.path.exists(profile_path):
+        logger.debug("Claude Opus profile already exists, skipping: %s", profile_path)
+        return False
+
+    os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+    with open(profile_path, "w", encoding="utf-8") as f:
+        f.write(CLAUDE_OPUS_PROFILE)
+
+    # Intentionally skip ensure_vault_profile_dirs — the shared ``claude``
+    # scope owns the memory dir, so we don't create a per-profile
+    # ``memory/`` subdir here.  We do need ``playbooks/`` though.
+    os.makedirs(
+        os.path.join(data_dir, "vault", "agent-types", "claude-opus", "playbooks"),
+        exist_ok=True,
+    )
+    logger.info("Created Claude Opus profile: %s", profile_path)
+    return True
+
+
+def ensure_claude_sonnet_profile(data_dir: str) -> bool:
+    """Write the claude-sonnet profile to ``vault/agent-types/claude-sonnet/profile.md`` if absent.
+
+    Auto-installed default for pattern-following / scaffolding tasks. The
+    shipped template sets ``memory_scope_id: claude`` so insights pool
+    with the ``claude-opus`` profile under a single ``agenttype_claude``
+    scope.
+
+    Idempotent: existing files are preserved for user customisation.
+    """
+    profile_path = os.path.join(
+        data_dir, "vault", "agent-types", "claude-sonnet", "profile.md"
+    )
+    if os.path.exists(profile_path):
+        logger.debug("Claude Sonnet profile already exists, skipping: %s", profile_path)
+        return False
+
+    os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+    with open(profile_path, "w", encoding="utf-8") as f:
+        f.write(CLAUDE_SONNET_PROFILE)
+
+    # Skip per-profile memory/ — shared ``claude`` scope owns it.
+    os.makedirs(
+        os.path.join(data_dir, "vault", "agent-types", "claude-sonnet", "playbooks"),
+        exist_ok=True,
+    )
+    logger.info("Created Claude Sonnet profile: %s", profile_path)
+    return True
+
+
+def ensure_shared_claude_memory_dir(data_dir: str) -> bool:
+    """Create ``vault/agent-types/claude/memory/`` for the shared Claude scope.
+
+    This is the physical home for memories saved by any profile that sets
+    ``memory_scope_id: claude`` (currently ``claude-opus`` and
+    ``claude-sonnet``).  No ``profile.md`` lives here — the directory
+    only holds memory and is profile-less by design.
+
+    Idempotent.
+    """
+    memory_dir = os.path.join(data_dir, "vault", "agent-types", "claude", "memory")
+    if os.path.isdir(memory_dir):
+        return False
+    os.makedirs(memory_dir, exist_ok=True)
+    logger.info("Created shared Claude memory directory: %s", memory_dir)
     return True
 
 

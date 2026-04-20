@@ -13,8 +13,11 @@ from src.vault import (
     _STARTER_KNOWLEDGE,
     copy_project_memory_to_vault,
     copy_starter_knowledge,
+    ensure_claude_opus_profile,
+    ensure_claude_sonnet_profile,
     ensure_default_playbooks,
     ensure_default_templates,
+    ensure_shared_claude_memory_dir,
     ensure_supervisor_profile,
     ensure_vault_layout,
     ensure_vault_profile_dirs,
@@ -1514,3 +1517,98 @@ def test_starter_tag_removable_by_user(tmp_path):
     result = copy_starter_knowledge(str(tmp_path), "coding")
     assert len(result["copied"]) == 1, "Only the deleted file should be re-copied"
     assert len(result["skipped"]) == 1, "The remaining file should be skipped"
+
+
+# ---------------------------------------------------------------------------
+# Claude Opus / Sonnet default profile installers (shared `claude` scope)
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_claude_opus_profile_creates_file(tmp_path):
+    """Writes profile.md with memory_scope_id frontmatter on clean install."""
+    import yaml
+
+    created = ensure_claude_opus_profile(str(tmp_path))
+    assert created is True
+
+    profile_path = (
+        tmp_path / "vault" / "agent-types" / "claude-opus" / "profile.md"
+    )
+    assert profile_path.is_file()
+
+    content = profile_path.read_text()
+    parts = content.split("---", 2)
+    fm = yaml.safe_load(parts[1])
+    assert fm["id"] == "claude-opus"
+    assert fm["memory_scope_id"] == "claude"
+
+    # Playbooks subdir exists; memory/ subdir is NOT created (shared scope owns it).
+    playbooks_dir = (
+        tmp_path / "vault" / "agent-types" / "claude-opus" / "playbooks"
+    )
+    memory_dir = tmp_path / "vault" / "agent-types" / "claude-opus" / "memory"
+    assert playbooks_dir.is_dir()
+    assert not memory_dir.exists()
+
+
+def test_ensure_claude_sonnet_profile_creates_file(tmp_path):
+    """Writes profile.md with memory_scope_id frontmatter on clean install."""
+    import yaml
+
+    created = ensure_claude_sonnet_profile(str(tmp_path))
+    assert created is True
+
+    profile_path = (
+        tmp_path / "vault" / "agent-types" / "claude-sonnet" / "profile.md"
+    )
+    assert profile_path.is_file()
+
+    content = profile_path.read_text()
+    parts = content.split("---", 2)
+    fm = yaml.safe_load(parts[1])
+    assert fm["id"] == "claude-sonnet"
+    assert fm["memory_scope_id"] == "claude"
+
+
+def test_ensure_claude_opus_profile_idempotent(tmp_path):
+    """Existing claude-opus profile.md is not overwritten."""
+    first = ensure_claude_opus_profile(str(tmp_path))
+    assert first is True
+
+    profile_path = (
+        tmp_path / "vault" / "agent-types" / "claude-opus" / "profile.md"
+    )
+    custom = "# user customisation\n"
+    profile_path.write_text(custom)
+
+    second = ensure_claude_opus_profile(str(tmp_path))
+    assert second is False
+    assert profile_path.read_text() == custom
+
+
+def test_ensure_shared_claude_memory_dir(tmp_path):
+    """The shared Claude memory dir is created with no profile.md inside."""
+    created = ensure_shared_claude_memory_dir(str(tmp_path))
+    assert created is True
+
+    memory_dir = tmp_path / "vault" / "agent-types" / "claude" / "memory"
+    assert memory_dir.is_dir()
+    # Profile-less: no profile.md at the claude/ level.
+    assert not (tmp_path / "vault" / "agent-types" / "claude" / "profile.md").exists()
+
+    # Second call is a no-op.
+    again = ensure_shared_claude_memory_dir(str(tmp_path))
+    assert again is False
+
+
+def test_ensure_vault_layout_creates_all_claude_profiles(tmp_path):
+    """Full layout call installs claude-code, claude-opus, claude-sonnet, and shared claude/memory."""
+    ensure_vault_layout(str(tmp_path))
+
+    agent_types = tmp_path / "vault" / "agent-types"
+    assert (agent_types / "claude-code" / "profile.md").is_file()
+    assert (agent_types / "claude-opus" / "profile.md").is_file()
+    assert (agent_types / "claude-sonnet" / "profile.md").is_file()
+    assert (agent_types / "claude" / "memory").is_dir()
+    # The shared claude/ dir has no profile.md — it's memory-only.
+    assert not (agent_types / "claude" / "profile.md").exists()
