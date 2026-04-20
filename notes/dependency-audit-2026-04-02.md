@@ -53,3 +53,26 @@ These packages have updates available but are not urgent:
   permits 82.0.1+ to be installed when desired or pulled in by other packages.
 - `docs/specs/plugin-system.md` already references `setuptools>=78.1.1` and
   remains in sync with the implemented pin.
+- **oauthlib pinned to `>=3.2.1` (not in original 2026-04-02 table).** Task
+  `sound-quest` (commit `608b38f3`) added an explicit lower-bound pin
+  `oauthlib>=3.2.1` in `[project].dependencies` of `pyproject.toml` to address
+  PYSEC-2022-269 / CVE-2022-36087 / GHSA-3pgj-pg6c-r5p7 — a denial-of-service
+  vulnerability via malicious redirect URIs in oauthlib's OAuth2 provider
+  support and `uri_validate`. oauthlib is a transitive dependency brought in
+  via `google-auth-oauthlib` / `requests-oauthlib` under the `inbox` extras,
+  which is why it was not listed in the original 2026-04-02 audit table — that
+  audit run did not surface it. A subsequent `pip-audit` run flagged oauthlib
+  3.2.0 as vulnerable (PYSEC feed `fix_versions: ["3.2.1"]`) and `sound-quest`
+  addressed it with a direct pin. The rationale for pinning directly (rather
+  than relying on `google-auth-oauthlib` / `requests-oauthlib`) is to ensure
+  that installs of the `inbox` extras pull a patched oauthlib even when
+  upstream does not tighten its own lower bound. `pip-audit` against
+  `oauthlib==3.2.2` and `oauthlib==3.3.1` (both permitted by the `>=3.2.1`
+  pin, and 3.3.1 is what pip's resolver will actually install today) reports
+  no remaining vulnerabilities. Note: a live `pip-audit` run against
+  `oauthlib==3.2.1` still reports CVE-2022-36087 with `fix_versions: ["3.2.2"]`
+  via the OSV/GHSA feed — this is an advisory-database discrepancy between the
+  PYSEC feed (which lists 3.2.1 as the fix, matching the sound-quest pin) and
+  the OSV/GHSA feed (which lists 3.2.2). In practice the resolver will pull
+  3.3.1, so the pin is effectively safe; a future tightening to `>=3.2.2`
+  could be considered for belt-and-braces coverage of the GHSA feed.
