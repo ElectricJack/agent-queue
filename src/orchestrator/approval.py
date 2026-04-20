@@ -7,6 +7,7 @@ from typing import Any
 
 from src.git.manager import GitError
 from src.task_summary import write_task_summary
+from src.profiles.sync import underlying_agent_type
 from src.models import (
     PhaseResult,
     PipelineContext,
@@ -214,7 +215,7 @@ class ApprovalMixin:
                 task,
                 "pr_closed",
                 error="PR was closed without merging",
-                agent_type=profile.id if profile else None,
+                agent_type=underlying_agent_type(profile.id) if profile else None,
             )
             await self._emit_text_notify(
                 f"**PR Closed:** Task `{task.id}` — {task.title} "

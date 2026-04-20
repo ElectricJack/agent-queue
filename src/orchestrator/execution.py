@@ -23,6 +23,7 @@ from src.notifications.events import (
     TaskThreadCloseEvent,
     TaskThreadOpenEvent,
 )
+from src.profiles.sync import underlying_agent_type
 from src.models import (
     AgentResult,
     AgentState,
@@ -122,7 +123,7 @@ class ExecutionMixin:
                     "timeout",
                     error=f"Task execution timed out after {timeout}s",
                     agent_id=action.agent_id,
-                    agent_type=profile.id if profile else None,
+                    agent_type=underlying_agent_type(profile.id) if profile else None,
                 )
             await self._emit_text_notify(
                 f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED.",
@@ -432,7 +433,7 @@ class ExecutionMixin:
             try:
                 l1_text = await self._memory_v2_service.load_l1_facts(
                     project_id=task.project_id,
-                    agent_type=profile.id if profile else None,
+                    agent_type=underlying_agent_type(profile.id) if profile else None,
                 )
                 if l1_text:
                     l1_facts = l1_text
@@ -442,7 +443,7 @@ class ExecutionMixin:
             try:
                 l1_guid = await self._memory_v2_service.load_l1_guidance(
                     project_id=task.project_id,
-                    agent_type=profile.id if profile else None,
+                    agent_type=underlying_agent_type(profile.id) if profile else None,
                 )
                 if l1_guid:
                     l1_guidance = l1_guid
@@ -1171,7 +1172,7 @@ class ExecutionMixin:
                     "verification_failed",
                     error="Post-task verification failed, max retries exhausted",
                     agent_id=action.agent_id,
-                    agent_type=profile.id if profile else None,
+                    agent_type=underlying_agent_type(profile.id) if profile else None,
                 )
                 await _post(
                     f"**Verification failed** for `{task.id}` — "
@@ -1214,7 +1215,7 @@ class ExecutionMixin:
                     "max_retries",
                     error=f"Max retries ({task.max_retries}) exhausted",
                     agent_id=action.agent_id,
-                    agent_type=profile.id if profile else None,
+                    agent_type=underlying_agent_type(profile.id) if profile else None,
                 )
                 brief = (
                     f"🚫 Task blocked: {task.title} (`{task.id}`) — "

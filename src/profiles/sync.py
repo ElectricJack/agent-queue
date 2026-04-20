@@ -58,6 +58,30 @@ def project_scoped_profile_id(project_id: str, agent_type: str) -> str:
     return f"project:{project_id}:{agent_type}"
 
 
+def underlying_agent_type(profile_id: str | None) -> str | None:
+    """Extract the underlying agent-type segment from a profile id.
+
+    Project-scoped profile ids use the ``project:{project_id}:{type}``
+    form; callers that emit agent-type metadata on events (e.g. the
+    task executor passing ``agent_type`` on ``task.completed`` /
+    ``task.failed``) must strip the scoping prefix so downstream
+    consumers (the memory extractor, schedulers) see a plain agent-type
+    string rather than the full profile id.
+
+    For a non-scoped id (e.g. ``"claude-code"``), the input is
+    returned unchanged.  For ``None`` or the empty string, returns
+    ``None``.
+    """
+    if not profile_id:
+        return None
+    if profile_id.startswith("project:"):
+        # Expected format: project:<project_id>:<agent_type>
+        parts = profile_id.split(":", 2)
+        if len(parts) == 3 and parts[2]:
+            return parts[2]
+    return profile_id
+
+
 @dataclass(frozen=True)
 class ProfileSyncResult:
     """Result of a profile-to-DB sync operation.
