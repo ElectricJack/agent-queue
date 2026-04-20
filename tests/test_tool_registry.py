@@ -100,9 +100,10 @@ def test_registry_has_core_tools(registry):
     assert "list_tasks" in core_names
     assert "edit_task" in core_names
     assert "get_task" in core_names
-    assert "browse_tools" in core_names
+    # Navigation/core meta-tools synthesized by ToolRegistry._ensure_navigation_tools.
     assert "load_tools" in core_names
     assert "send_message" in core_names
+    assert "reply_to_user" in core_names
 
 
 def test_registry_has_categories(registry):
@@ -113,7 +114,6 @@ def test_registry_has_categories(registry):
         "git",
         "project",
         "agent",
-        "rules",
         "memory",
         "notes",
         "system",
@@ -164,7 +164,7 @@ def test_no_duplicate_tool_names(registry):
 def test_category_tool_count_matches(registry):
     categories = registry.get_categories()
     for cat in categories:
-        tools = registry.get_category_tools(cat["name"])
+        tools = registry.get_category_tools(cat["name"]) or []
         assert len(tools) == cat["tool_count"], (
             f"Category {cat['name']}: metadata says "
             f"{cat['tool_count']} tools but get_category_tools "
@@ -206,19 +206,6 @@ def _make_handler():
     return CommandHandler(orch, config)
 
 
-def test_cmd_browse_tools():
-    handler = _make_handler()
-    result = asyncio.run(handler.execute("browse_tools", {}))
-
-    assert "categories" in result
-    cat_names = {c["name"] for c in result["categories"]}
-    assert "git" in cat_names
-    assert "project" in cat_names
-    for cat in result["categories"]:
-        assert "description" in cat
-        assert "tool_count" in cat
-
-
 def test_cmd_load_tools_valid_category():
     handler = _make_handler()
     result = asyncio.run(handler.execute("load_tools", {"category": "git"}))
@@ -248,20 +235,6 @@ def test_cmd_send_message_stub():
     )
     # send_message needs Discord bot reference; without it, error
     assert "error" in result or "success" in result
-
-
-def test_cmd_browse_rules_deprecated():
-    handler = _make_handler()
-    result = asyncio.run(handler.execute("browse_rules", {}))
-    # browse_rules now redirects to list_playbooks with deprecation notice
-    assert "_deprecated" in result
-
-
-def test_cmd_save_rule_deprecated():
-    handler = _make_handler()
-    result = asyncio.run(handler.execute("save_rule", {"type": "active", "content": "test"}))
-    # save_rule now returns deprecation notice
-    assert "_deprecated" in result
 
 
 # -------------------------------------------------------------------
@@ -326,7 +299,6 @@ def test_total_tool_count_preserved():
 
     # These are the navigation tools added by the registry
     expected_new_tools = {
-        "browse_tools",
         "load_tools",
         "send_message",
         "reply_to_user",
@@ -364,9 +336,9 @@ def test_core_tools_are_compact(registry):
     core = registry.get_core_tools()
     all_tools = registry.get_all_tools()
 
-    # Core should be roughly 10-15 tools
-    assert len(core) <= 20, f"Core has {len(core)} tools -- should be ~11"
-    assert len(core) >= 8, f"Core has {len(core)} tools -- too few"
+    # Core should be roughly 7-15 tools (4 task tools + navigation meta-tools).
+    assert len(core) <= 20, f"Core has {len(core)} tools -- should be ~7"
+    assert len(core) >= 5, f"Core has {len(core)} tools -- too few"
     # Core should be < 25% of all tools
     assert len(core) < len(all_tools) * 0.25
 
@@ -436,19 +408,14 @@ def test_search_relevant_categories_project_query():
 
 
 def test_search_relevant_categories_files_query():
-    """File-related queries should return the files category."""
+    """File-related queries should include the files category."""
     registry = _real_registry()
-    cats = registry.search_relevant_categories("read the file and grep for errors")
+    # Use a higher cap since read_logs and compile_playbook also strongly
+    # match "read ... file ... errors" — files ranks slightly below them.
+    cats = registry.search_relevant_categories(
+        "read the file and grep for errors", max_categories=5
+    )
     assert "files" in cats
-
-
-def test_search_relevant_categories_rules_query():
-    """Rule-related queries should return the rules category (deprecated but still present)."""
-    registry = _real_registry()
-    cats = registry.search_relevant_categories("create a rule that fires on schedule")
-    # Rules category still exists (deprecated) — may or may not match depending on scoring
-    # The important thing is the function doesn't crash
-    assert isinstance(cats, list)
 
 
 def test_search_relevant_categories_memory_query():
@@ -607,12 +574,16 @@ class TestCompressToolSchema:
 # Canonical list of playbook commands from spec §15.
 _PLAYBOOK_COMMANDS = [
     "compile_playbook",
+    "run_playbook",
     "dry_run_playbook",
     "show_playbook_graph",
     "list_playbooks",
     "list_playbook_runs",
     "inspect_playbook_run",
     "resume_playbook",
+    "recover_workflow",
+    "playbook_health",
+    "playbook_graph_view",
 ]
 
 
@@ -768,16 +739,6 @@ class TestPlaybookToolRegistration:
         result = asyncio.run(handler.execute("nonexistent_playbook_cmd", {}))
         assert "error" in result
 
-    def test_browse_tools_includes_playbook_category(self):
-        """browse_tools returns the playbook category with tool count."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("browse_tools", {}))
-        assert "categories" in result
-        cat_names = {c["name"] for c in result["categories"]}
-        assert "playbook" in cat_names
-        playbook_cat = next(c for c in result["categories"] if c["name"] == "playbook")
-        assert playbook_cat["tool_count"] == len(_PLAYBOOK_COMMANDS)
-
     def test_load_tools_playbook_category(self):
         """load_tools('playbook') returns all playbook tool definitions."""
         handler = _make_handler()
@@ -790,193 +751,3 @@ class TestPlaybookToolRegistration:
         )
 
 
-# -------------------------------------------------------------------
-# Deprecated hook → playbook/rule redirect tests (Roadmap 8.3)
-# -------------------------------------------------------------------
-
-
-class TestDeprecatedHookAndRuleCommands:
-    """Verify hook and rule commands return deprecation notices (Phase 3)."""
-
-    # -- Hook commands return deprecation errors ----------------------------
-
-    def test_fire_hook_returns_deprecation(self):
-        """fire_hook returns a deprecation error pointing to compile_playbook."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("fire_hook", {"hook_id": "test-hook"}))
-        assert "error" in result
-        assert "_deprecated" in result
-        assert "compile_playbook" in result["_deprecated"]
-        assert "replacements" in result
-
-    def test_create_hook_returns_deprecation(self):
-        """create_hook returns a deprecation error pointing to compile_playbook."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("create_hook", {}))
-        assert "error" in result
-        assert "_deprecated" in result
-        assert "compile_playbook" in result["_deprecated"]
-        assert "replacements" in result
-
-    def test_edit_hook_returns_deprecation(self):
-        """edit_hook returns a deprecation error pointing to compile_playbook."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("edit_hook", {}))
-        assert "error" in result
-        assert "_deprecated" in result
-        assert "compile_playbook" in result["_deprecated"]
-        assert "replacements" in result
-
-    def test_delete_hook_returns_deprecation(self):
-        """delete_hook returns a deprecation error."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("delete_hook", {}))
-        assert "error" in result
-        assert "_deprecated" in result
-        assert "replacements" in result
-
-    def test_refresh_hooks_returns_deprecation(self):
-        """refresh_hooks returns a deprecation error."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("refresh_hooks", {}))
-        assert "error" in result
-        assert "_deprecated" in result
-
-    # -- Hook commands that redirect and return results ---------------------
-
-    def test_list_hooks_redirects_to_list_playbooks(self):
-        """list_hooks delegates to list_playbooks and adds deprecation notice."""
-        handler = _make_handler()
-        handler.orchestrator.playbook_manager = None
-        result = asyncio.run(handler.execute("list_hooks", {}))
-        assert "_deprecated" in result
-        assert "list_playbooks" in result["_deprecated"]
-
-    def test_list_hook_runs_redirects_to_list_playbook_runs(self):
-        """list_hook_runs delegates to list_playbook_runs and adds deprecation notice."""
-        handler = _make_handler()
-        handler.orchestrator.db.list_playbook_runs = AsyncMock(return_value=[])
-        result = asyncio.run(handler.execute("list_hook_runs", {}))
-        assert "_deprecated" in result
-        assert "list_playbook_runs" in result["_deprecated"]
-
-    # -- Rule commands return deprecation errors ----------------------------
-
-    def test_save_rule_returns_deprecation(self):
-        """save_rule returns a deprecation error pointing to compile_playbook."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("save_rule", {"type": "active", "content": "x"}))
-        assert "error" in result
-        assert "_deprecated" in result
-        assert "compile_playbook" in result["_deprecated"]
-
-    def test_delete_rule_returns_deprecation(self):
-        """delete_rule returns a deprecation error."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("delete_rule", {"id": "test-rule"}))
-        assert "error" in result
-        assert "_deprecated" in result
-
-    def test_browse_rules_redirects_to_list_playbooks(self):
-        """browse_rules delegates to list_playbooks with deprecation notice."""
-        handler = _make_handler()
-        handler.orchestrator.playbook_manager = None
-        result = asyncio.run(handler.execute("browse_rules", {}))
-        assert "_deprecated" in result
-        assert "list_playbooks" in result["_deprecated"]
-
-    def test_load_rule_returns_deprecation(self):
-        """load_rule returns a deprecation error."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("load_rule", {"id": "test-rule"}))
-        assert "error" in result
-        assert "_deprecated" in result
-
-    def test_fire_rule_returns_deprecation(self):
-        """fire_rule returns a deprecation error pointing to dry_run_playbook."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("fire_rule", {"id": "test-rule"}))
-        assert "error" in result
-        assert "_deprecated" in result
-        assert "dry_run_playbook" in result["_deprecated"]
-
-    def test_toggle_rule_returns_deprecation(self):
-        """toggle_rule returns a deprecation error."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("toggle_rule", {"id": "r", "enabled": True}))
-        assert "error" in result
-        assert "_deprecated" in result
-
-    def test_refresh_rules_returns_deprecation(self):
-        """refresh_rules returns a deprecation error."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("refresh_rules", {}))
-        assert "error" in result
-        assert "_deprecated" in result
-
-    def test_migrate_rules_to_playbooks_returns_deprecation(self):
-        """migrate_rules_to_playbooks returns deprecation notice."""
-        handler = _make_handler()
-        result = asyncio.run(handler.execute("migrate_rules_to_playbooks", {}))
-        assert "error" in result
-        assert "_deprecated" in result
-
-    # -- Handler method existence ------------------------------------------
-
-    def test_all_deprecated_commands_have_handler_methods(self):
-        """Every deprecated hook/rule command has a _cmd_* method."""
-        handler = _make_handler()
-        deprecated_commands = [
-            "fire_hook",
-            "list_hooks",
-            "create_hook",
-            "edit_hook",
-            "delete_hook",
-            "list_hook_runs",
-            "refresh_hooks",
-            "save_rule",
-            "delete_rule",
-            "browse_rules",
-            "list_rules",
-            "load_rule",
-            "fire_rule",
-            "rule_runs",
-            "toggle_rule",
-            "refresh_rules",
-            "migrate_rules_to_playbooks",
-        ]
-        for cmd in deprecated_commands:
-            method = getattr(handler, f"_cmd_{cmd}", None)
-            assert method is not None, f"Missing _cmd_{cmd}"
-            assert callable(method), f"_cmd_{cmd} is not callable"
-
-    # -- Tool registry deprecation notices ----------------------------------
-
-    def test_refresh_hooks_tool_definition_marked_deprecated(self):
-        """The refresh_hooks tool definition includes 'DEPRECATED' in description."""
-        reg = _real_registry()
-        all_tools = reg.get_all_tools()
-        rh = next((t for t in all_tools if t["name"] == "refresh_hooks"), None)
-        assert rh is not None, "refresh_hooks tool not found"
-        assert "DEPRECATED" in rh["description"]
-
-    def test_rule_tool_definitions_marked_deprecated(self):
-        """All rule tool definitions include 'DEPRECATED' in description."""
-        reg = _real_registry()
-        all_tools = reg.get_all_tools()
-        rule_tool_names = [
-            "list_rules",
-            "save_rule",
-            "browse_rules",
-            "fire_rule",
-            "load_rule",
-            "delete_rule",
-            "rule_runs",
-            "toggle_rule",
-            "refresh_rules",
-            "migrate_rules_to_playbooks",
-        ]
-        for name in rule_tool_names:
-            tool = next((t for t in all_tools if t["name"] == name), None)
-            assert tool is not None, f"{name} tool not found"
-            assert "DEPRECATED" in tool["description"], f"{name} missing DEPRECATED notice"

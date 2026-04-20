@@ -759,6 +759,11 @@ class TestL0L1ProfileWithoutProjectFacts:
         facts = "## Critical Facts\n- key: value"
         mock_mem = AsyncMock()
         mock_mem.load_l1_facts = AsyncMock(return_value=facts)
+        # Execution path also calls load_l1_guidance and load_l2_context —
+        # return empty string so AsyncMock auto-attrs don't leak coroutines
+        # or MagicMocks into the assembled prompt.
+        mock_mem.load_l1_guidance = AsyncMock(return_value="")
+        mock_mem.load_l2_context = AsyncMock(return_value="")
         orch._memory_v2_service = mock_mem
 
         profile = AgentProfile(

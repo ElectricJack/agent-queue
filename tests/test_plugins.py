@@ -1078,6 +1078,7 @@ class TestInvokeLLM:
             model=None,
             provider=None,
             tools=None,
+            thinking_budget=None,
         )
 
     @pytest.mark.asyncio
@@ -1106,6 +1107,7 @@ class TestInvokeLLM:
             model="claude-opus-4-20250514",
             provider="anthropic",
             tools=[{"name": "t"}],
+            thinking_budget=None,
         )
 
     @pytest.mark.asyncio

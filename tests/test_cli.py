@@ -15,8 +15,6 @@ from click.testing import CliRunner
 from src.cli.adapters import (
     DictProxy,
     agent_proxy,
-    hook_proxy,
-    hook_run_proxy,
     project_proxy,
     task_proxy,
 )
@@ -25,8 +23,6 @@ from src.cli.client import CLIClient
 from src.cli.exceptions import CommandError, DaemonNotRunningError
 from src.cli.formatters import (
     format_agent_table,
-    format_hook_run_table,
-    format_hook_table,
     format_project_table,
     format_status_overview,
     format_task_detail,
@@ -162,23 +158,6 @@ class TestAgentProxy:
         assert a.agent_type == "claude"
 
 
-class TestHookProxy:
-    def test_trigger_dict_to_string(self):
-        """Formatters check isinstance(hook.trigger, str)."""
-        h = hook_proxy({"trigger": {"type": "cron", "cron": "0 8 * * *"}})
-        assert isinstance(h.trigger, str)
-        parsed = json.loads(h.trigger)
-        assert parsed["type"] == "cron"
-
-    def test_trigger_already_string(self):
-        h = hook_proxy({"trigger": '{"type": "cron"}'})
-        assert isinstance(h.trigger, str)
-
-    def test_defaults(self):
-        h = hook_proxy({})
-        assert h.last_triggered_at is None
-
-
 # ---------------------------------------------------------------------------
 # Formatter compatibility tests (proxied dicts through real formatters)
 # ---------------------------------------------------------------------------
@@ -257,37 +236,6 @@ class TestFormatterCompatibility:
         table = format_agent_table(agents)
         assert table is not None
 
-    def test_format_hook_table(self):
-        hooks = [
-            hook_proxy(
-                {
-                    "id": "hook-abc123def456",
-                    "name": "Test Hook",
-                    "project_id": "proj",
-                    "enabled": True,
-                    "trigger": {"type": "event", "event": "task_completed"},
-                    "cooldown_seconds": 300,
-                }
-            ),
-        ]
-        table = format_hook_table(hooks)
-        assert table is not None
-
-    def test_format_hook_run_table(self):
-        runs = [
-            hook_run_proxy(
-                {
-                    "id": "run-abcdef123456",
-                    "status": "completed",
-                    "trigger_reason": "Manual trigger",
-                    "tokens_used": 1234,
-                    "started_at": 1700000000.0,
-                }
-            ),
-        ]
-        table = format_hook_run_table(runs)
-        assert table is not None
-
     def test_format_project_table(self):
         projects = [
             project_proxy(
@@ -323,8 +271,6 @@ class TestFormatterRegistry:
             "list_tasks",
             "get_task",
             "list_agents",
-            "list_hooks",
-            "list_hook_runs",
             "list_projects",
         }
         assert expected.issubset(set(FORMATTERS.keys()))
@@ -542,7 +488,6 @@ class TestAutoCommands:
             "file",
             "system",
             "task",
-            "rules",
             "agent",
             "project",
             "plugin",

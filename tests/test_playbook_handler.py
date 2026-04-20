@@ -422,14 +422,16 @@ class TestEndToEndDispatch:
         (vault / "agent-types" / "coder" / "playbooks").mkdir(parents=True)
         (vault / "agent-types" / "coder" / "playbooks" / "gate.md").write_text("# Gate\n")
 
-        (vault / "orchestrator" / "playbooks").mkdir(parents=True)
-        (vault / "orchestrator" / "playbooks" / "route.md").write_text("# Route\n")
+        # orchestrator/ scope was merged into agent-types/supervisor/.
+        (vault / "agent-types" / "supervisor" / "playbooks").mkdir(parents=True)
+        (vault / "agent-types" / "supervisor" / "playbooks" / "route.md").write_text("# Route\n")
 
         # Detect and dispatch
         with caplog.at_level(logging.INFO, logger="src.playbooks.handler"):
             await watcher.check()
 
-        # The stub handler should have logged all 4
+        # The stub handler should have logged all 4 (system, project, agent-type
+        # coder, agent-type supervisor).
         handler_logs = [
             r for r in caplog.records if "Playbook" in r.message and "created" in r.message
         ]

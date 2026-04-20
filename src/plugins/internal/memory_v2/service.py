@@ -1180,13 +1180,17 @@ class MemoryV2Service:
         source_playbook: str | None = None,
         filename: str | None = None,
         created: str | None = None,
+        subdir: str = "insights",
     ) -> Path:
         """Write a markdown file with frontmatter to the vault.
 
         Parameters
         ----------
         vault_dir:
-            Target directory (e.g. ``vault/projects/{id}/memory/insights/``).
+            Target directory (e.g. ``vault/projects/{id}/memory/``).
+        subdir:
+            Subdirectory under *vault_dir* to write into — ``"insights"``
+            by default, ``"knowledge"`` for promoted entries.
         content:
             Summary / main content.
         original:
@@ -1211,8 +1215,8 @@ class MemoryV2Service:
         Path
             The path to the written file.
         """
-        insights_dir = vault_dir / "insights"
-        insights_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = vault_dir / subdir
+        target_dir.mkdir(parents=True, exist_ok=True)
 
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if not filename:
@@ -1223,7 +1227,7 @@ class MemoryV2Service:
             short_hash = hashlib.sha256(content.encode()).hexdigest()[:6]
             filename = f"{slug}-{short_hash}"
 
-        filepath = insights_dir / f"{filename}.md"
+        filepath = target_dir / f"{filename}.md"
 
         # Build frontmatter
         fm_lines = ["---"]
@@ -1468,6 +1472,7 @@ class MemoryV2Service:
         source_task: str | None = None,
         source_playbook: str | None = None,
         scope: str | None = None,
+        subdir: str = "insights",
     ) -> dict[str, Any]:
         """Save a new document entry to vault + Milvus.
 
@@ -1508,7 +1513,7 @@ class MemoryV2Service:
         if not self.available:
             raise RuntimeError("MemoryV2Service not available")
 
-        tags = tags or ["insight", "auto-generated"]
+        tags = tags or ["insight", "auto-extracted"]
         indexed_content = summary or content
         stored_original = original or (content if summary else content)
 
@@ -1528,6 +1533,7 @@ class MemoryV2Service:
             topic=topic,
             source_task=source_task,
             source_playbook=source_playbook,
+            subdir=subdir,
         )
 
         # Compute embedding for the summary/content
@@ -1891,11 +1897,14 @@ class MemoryV2Service:
         # Delete from Milvus
         await asyncio.to_thread(store.delete_by_hashes, [chunk_hash])
 
-        # Delete vault file if it exists and is a standalone insight file
+        # Delete vault file if it exists and is a standalone insight or
+        # knowledge file (consolidation promotes insights into knowledge/).
         deleted_vault = False
         if vault_path:
             vp = Path(vault_path)
-            if vp.exists() and "/insights/" in str(vp):
+            if vp.exists() and (
+                "/insights/" in str(vp) or "/knowledge/" in str(vp)
+            ):
                 vp.unlink()
                 deleted_vault = True
 
@@ -2005,7 +2014,11 @@ class MemoryV2Service:
         escaped = _escape_filter_value(tag)
         filter_expr = f'tags like "%{escaped}%"'
         try:
-            results = await asyncio.to_thread(store.query, filter_expr=filter_expr)
+            # track=False: this is a diagnostic count, not a retrieval —
+            # shouldn't inflate per-entry last_retrieved timestamps.
+            results = await asyncio.to_thread(
+                store.query, filter_expr=filter_expr, track=False
+            )
             return len(results)
         except Exception:
             logger.debug("count_by_tag query failed for tag=%s", tag, exc_info=True)

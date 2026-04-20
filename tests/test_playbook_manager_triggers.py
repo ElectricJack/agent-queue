@@ -539,10 +539,13 @@ class TestLoadFromStore:
             triggers=["git.commit"],
             scope="system",
         )
-        pb_orch = _make_playbook(
-            playbook_id="orch-pb",
+        # 'orchestrator' was merged into 'supervisor', which aliases 'system'.
+        # Use 'agent_type' for a truly distinct scope so the test still
+        # exercises multi-scope aggregation.
+        pb_agent = _make_playbook(
+            playbook_id="coding-pb",
             triggers=["task.completed"],
-            scope="system",  # scope in model is just a string
+            scope="agent-type:coding",
         )
         pb_proj = _make_playbook(
             playbook_id="proj-pb",
@@ -551,7 +554,7 @@ class TestLoadFromStore:
         )
 
         store.save(pb_sys, "system")
-        store.save(pb_orch, "orchestrator")
+        store.save(pb_agent, "agent_type", "coding")
         store.save(pb_proj, "project", "my-app")
 
         manager = PlaybookManager(store=store)
@@ -563,7 +566,7 @@ class TestLoadFromStore:
         # Verify trigger mapping aggregates correctly
         tmap = manager.trigger_map
         assert set(tmap["git.commit"]) == {"sys-pb", "proj-pb"}
-        assert tmap["task.completed"] == ["orch-pb"]
+        assert tmap["task.completed"] == ["coding-pb"]
         assert tmap["git.push"] == ["proj-pb"]
 
     @pytest.mark.asyncio

@@ -925,23 +925,25 @@ def test_starter_knowledge_covers_expected_types():
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_default_playbooks_installs_all_four(tmp_path):
-    """A clean install creates all four default playbooks with correct result dict."""
+def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
+    """A clean install creates all default playbooks with correct result dict."""
     result = ensure_default_playbooks(str(tmp_path))
 
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
     expected_files = [
         "codebase-inspector.md",
         "dependency-audit.md",
+        "memory-consolidation.md",
         "system-health-check.md",
         "task-outcome.md",
+        "vibecop-weekly-scan.md",
     ]
 
-    # All four files must exist on disk
+    # All expected files must exist on disk
     for filename in expected_files:
         assert (playbooks_dir / filename).is_file(), f"{filename} not installed"
 
-    # All four must appear in result["created"]
+    # All must appear in result["created"]
     assert sorted(result["created"]) == expected_files
     assert result["skipped"] == []
 
@@ -1309,9 +1311,9 @@ def test_ensure_default_playbooks_idempotent_system_health_check(tmp_path):
 
 
 def test_ensure_default_playbooks_all_skipped_on_second_run(tmp_path):
-    """Second call to ensure_default_playbooks skips all four — nothing overwritten."""
+    """Second call to ensure_default_playbooks skips all default playbooks."""
     first = ensure_default_playbooks(str(tmp_path))
-    assert len(first["created"]) == 4
+    assert len(first["created"]) >= 4
     assert len(first["skipped"]) == 0
 
     second = ensure_default_playbooks(str(tmp_path))

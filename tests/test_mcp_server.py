@@ -485,7 +485,7 @@ class TestDriftDetection:
         # Known auto-discovered commands (have _cmd_* methods but no
         # explicit tool definitions yet).
         known_auto_discovered = {
-            "fire_hook",
+            # Plugin subsystem commands.
             "plugin_config",
             "plugin_disable",
             "plugin_enable",
@@ -497,6 +497,18 @@ class TestDriftDetection:
             "plugin_remove",
             "plugin_reset_prompts",
             "plugin_update",
+            # Workflow coordination commands (auto-discovered).
+            "advance_workflow_stage",
+            "create_workflow",
+            "get_workflow",
+            "list_workflows",
+            "workflow_pipeline_view",
+            # Migration / maintenance commands.
+            "migrate_profiles",
+            "vault_rebuild_index",
+            # Navigation meta-tool synthesised by ToolRegistry — covered by
+            # _discover_all_commands but doesn't need an _ALL_TOOL_DEFINITIONS entry.
+            "load_tools",
         }
         tools = await mcp_server.list_tools()
         extra = {t.name for t in tools} - {d["name"] for d in _ALL_TOOL_DEFINITIONS}
@@ -530,7 +542,7 @@ class TestDriftDetection:
         # Known auto-discovered commands (have _cmd_* methods but no
         # explicit tool definitions yet).
         known_auto_discovered = {
-            "fire_hook",
+            # Plugin subsystem commands.
             "plugin_config",
             "plugin_disable",
             "plugin_enable",
@@ -542,6 +554,18 @@ class TestDriftDetection:
             "plugin_remove",
             "plugin_reset_prompts",
             "plugin_update",
+            # Workflow coordination commands (auto-discovered).
+            "advance_workflow_stage",
+            "create_workflow",
+            "get_workflow",
+            "list_workflows",
+            "workflow_pipeline_view",
+            # Migration / maintenance commands.
+            "migrate_profiles",
+            "vault_rebuild_index",
+            # Navigation meta-tool synthesised by ToolRegistry — covered by
+            # _discover_all_commands but doesn't need an _ALL_TOOL_DEFINITIONS entry.
+            "load_tools",
         }
         all_commands = _discover_all_commands()
         explicit = {d["name"] for d in _ALL_TOOL_DEFINITIONS}

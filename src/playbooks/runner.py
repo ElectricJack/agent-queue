@@ -604,13 +604,20 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         runner._status = PlaybookRunStatus.PAUSED
         runner._transition(PlaybookRunEvent.HUMAN_RESUMED)
 
-        # Inject human input into conversation
+        # Inject human input into conversation — both the persistence log
+        # (for DB/audit) and the paused node's output (so the fresh per-node
+        # context builder surfaces it to downstream nodes via the
+        # "Prior Step Results" block).
         runner.messages.append(
             {
                 "role": "user",
                 "content": f"[Human review response]: {human_input}",
             }
         )
+        if db_run.current_node:
+            runner.node_outputs[f"{db_run.current_node}__human_review"] = (
+                f"[Human review response]: {human_input}"
+            )
 
         # Update DB status to running
         if db:
@@ -1646,87 +1653,6 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             self.node_outputs[collect_name] = collected
 
         return f"Completed {len(items)} iterations of {node_id}"
-
-    # ------------------------------------------------------------------
-    # Internal: context summarization
-    # ------------------------------------------------------------------
-
-    # -- Playbook-specific summarization prompts -------------------------
-
-    _SUMMARIZE_SYSTEM = (
-        "You are a concise technical summarizer for multi-step playbook executions. "
-        "Produce a brief summary that a downstream LLM step can use as context."
-    )
-
-    _SUMMARIZE_INSTRUCTION = (
-        "Summarize the following playbook execution transcript concisely (~500 tokens). "
-        "Preserve:\n"
-        "- Key outputs, decisions, and conclusions from each completed step\n"
-        "- File paths, code changes, or tool results that downstream steps may need\n"
-        "- Any errors, warnings, or unresolved issues\n"
-        "Omit step-by-step narration — focus on *what was accomplished* and "
-        "*what matters going forward*."
-    )
-
-    async def _summarize_history(self) -> None:
-        """Compress conversation history into a summary to manage context size.
-
-        Replaces all messages except the seed (first message) with a single
-        summary message.  Uses the Supervisor's summarize capability with a
-        playbook-specific prompt that focuses on preserving technical outputs
-        and decisions rather than conversational details.
-
-        Token cost of the summarization call itself is tracked and counted
-        toward the run's budget.  A ``node_summarizing`` progress event is
-        emitted so callers can observe when compression happens.
-        """
-        if len(self.messages) <= 2:
-            return  # Nothing worth summarizing
-
-        if self.on_progress:
-            await self.on_progress("node_summarizing", self._playbook_id)
-
-        # Build a transcript of the conversation so far
-        original_count = len(self.messages)
-        transcript_parts: list[str] = []
-        for msg in self.messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if isinstance(content, str) and content.strip():
-                transcript_parts.append(f"**{role}:** {content}")
-
-        transcript = "\n\n".join(transcript_parts)
-
-        summary = await self.supervisor.summarize(
-            transcript,
-            system_prompt=self._SUMMARIZE_SYSTEM,
-            instruction=self._SUMMARIZE_INSTRUCTION,
-        )
-        if not summary:
-            logger.warning("History summarization returned empty — keeping full history")
-            return
-
-        # Track the token cost of the summarization LLM call itself
-        summarize_tokens = _estimate_tokens(transcript, summary)
-        self.tokens_used += summarize_tokens
-
-        # Replace history with seed + summary
-        seed = self.messages[0]
-        self.messages = [
-            seed,
-            {
-                "role": "user",
-                "content": ("[Context summary of prior steps]\n\n" + summary),
-            },
-        ]
-
-        logger.debug(
-            "Summarized %d messages into condensed context for playbook '%s' "
-            "(~%d tokens for summarization call)",
-            original_count,
-            self._playbook_id,
-            summarize_tokens,
-        )
 
     # ------------------------------------------------------------------
     # Internal: graph navigation helpers

@@ -298,8 +298,6 @@ def build_nodes(
             node_data["timeout_seconds"] = node.timeout_seconds
         if node.on_timeout:
             node_data["on_timeout"] = node.on_timeout
-        if node.summarize_before:
-            node_data["summarize_before"] = True
 
         # Transition count for sizing hint
         out_edges = len(node.transitions) + (1 if node.goto else 0)

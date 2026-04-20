@@ -653,7 +653,7 @@ class TestStubFilenameMatchesSource:
             operation="created",
             content_hash="abc123",
         )
-        asyncio.get_event_loop().run_until_complete(watcher._emit_event(change))
+        asyncio.new_event_loop().run_until_complete(watcher._emit_event(change))
 
         call_args = bus.emit.call_args
         event_data = call_args[0][1]

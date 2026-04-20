@@ -17,7 +17,17 @@ import pytest
 from src.adapters import AdapterFactory
 from src.adapters.base import AgentAdapter
 from src.adapters.claude import ClaudeAdapterConfig
-from src.config import AppConfig
+from src.config import AppConfig, McpServerConfig
+
+
+def _no_inject_mcp() -> McpServerConfig:
+    """MCP server config that does NOT auto-inject into task contexts.
+
+    Most tests in this file are about profile-driven mcp_servers; the
+    separate agent-queue MCP auto-injection defaults to True and
+    would muddy those assertions.
+    """
+    return McpServerConfig(enabled=True, inject_into_tasks=False)
 from src.database import Database
 from src.models import (
     Agent,
@@ -138,6 +148,7 @@ class TestToolEnforcement:
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
+            mcp_server=_no_inject_mcp(),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -231,6 +242,7 @@ class TestMCPEnforcement:
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
+            mcp_server=_no_inject_mcp(),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -338,6 +350,7 @@ class TestProfileIsolation:
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
+            mcp_server=_no_inject_mcp(),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -414,6 +427,7 @@ class TestMultiProfileIsolation:
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
+            mcp_server=_no_inject_mcp(),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -501,6 +515,7 @@ class TestInstallCheckIntegration:
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
+            mcp_server=_no_inject_mcp(),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -577,6 +592,7 @@ class TestProjectDefaultProfileEnforcement:
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
+            mcp_server=_no_inject_mcp(),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()
@@ -885,6 +901,7 @@ class TestModelOverrideEnforcement:
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
+            mcp_server=_no_inject_mcp(),
         )
         orch = Orchestrator(config, adapter_factory=factory)
         await orch.initialize()

@@ -298,7 +298,6 @@ class PlaybookNode:
     on_timeout: str | None = None  # Node ID to transition to on pause timeout (spec §9)
     llm_config: LlmConfig | None = None
     transition_llm_config: LlmConfig | None = None
-    summarize_before: bool = False
     for_each: dict[str, Any] | None = None
     output: dict[str, Any] | None = None
 
@@ -328,8 +327,6 @@ class PlaybookNode:
             d["llm_config"] = self.llm_config.to_dict()
         if self.transition_llm_config is not None:
             d["transition_llm_config"] = self.transition_llm_config.to_dict()
-        if self.summarize_before:
-            d["summarize_before"] = True
         if self.for_each is not None:
             d["for_each"] = self.for_each
         if self.output is not None:
@@ -357,7 +354,6 @@ class PlaybookNode:
             on_timeout=data.get("on_timeout"),
             llm_config=llm_cfg,
             transition_llm_config=trans_cfg,
-            summarize_before=data.get("summarize_before", False),
             for_each=data.get("for_each"),
             output=data.get("output"),
         )
@@ -1056,11 +1052,6 @@ def generate_json_schema() -> dict[str, Any]:
                             "transition_llm_config, then node llm_config, then "
                             "playbook llm_config."
                         ),
-                    },
-                    "summarize_before": {
-                        "type": "boolean",
-                        "description": "DEPRECATED.",
-                        "default": False,
                     },
                     "for_each": {
                         "type": "object",

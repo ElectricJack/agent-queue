@@ -219,8 +219,6 @@ def render_ascii(
             box_lines.append("  ⏸ waits for human review")
         if node.timeout_seconds:
             box_lines.append(f"  ⏱ timeout: {node.timeout_seconds}s")
-        if node.summarize_before:
-            box_lines.append("  📝 summarize before")
 
         # Compute box width
         content_width = max(len(line) for line in box_lines)

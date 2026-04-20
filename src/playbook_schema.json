@@ -1,220 +1,34 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-queue.dev/schemas/compiled-playbook.json",
-  "title": "Compiled Playbook",
-  "description": "Runtime artifact produced by LLM compilation of a playbook markdown file. Defines a directed graph of LLM decision points (nodes) connected by conditional transitions (edges). See docs/specs/design/playbooks.md \u00a75.",
-  "type": "object",
-  "required": [
-    "id",
-    "version",
-    "source_hash",
-    "triggers",
-    "scope",
-    "nodes"
-  ],
-  "additionalProperties": false,
-  "properties": {
-    "id": {
-      "type": "string",
-      "description": "Unique playbook identifier.",
-      "minLength": 1
-    },
-    "version": {
-      "type": "integer",
-      "description": "Auto-incremented on each recompilation.",
-      "minimum": 1
-    },
-    "source_hash": {
-      "type": "string",
-      "description": "Hash of source markdown for change detection.",
-      "minLength": 1
-    },
-    "triggers": {
-      "type": "array",
-      "description": "Event triggers that start this playbook. Each item is either a string (event type, matches all events of that type) or an object with 'event_type' and optional 'filter' for payload filtering (see spec \u00a710 Composability).",
-      "items": {
-        "oneOf": [
-          {
-            "type": "string",
-            "minLength": 1
-          },
-          {
-            "type": "object",
-            "required": [
-              "event_type"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "event_type": {
-                "type": "string",
-                "minLength": 1,
-                "description": "The event type to trigger on."
-              },
-              "filter": {
-                "type": "object",
-                "description": "Payload filter \u2014 all key/value pairs must match fields in the event data."
-              }
-            }
-          }
-        ]
-      },
-      "minItems": 1
-    },
-    "scope": {
-      "type": "string",
-      "description": "Where this playbook applies: 'system', 'project', or 'agent-type:{type}'.",
-      "pattern": "^(system|project|agent-type:.+)$"
-    },
-    "cooldown_seconds": {
-      "type": "integer",
-      "description": "Minimum seconds between executions.",
-      "minimum": 0
-    },
-    "max_tokens": {
-      "type": "integer",
-      "description": "Token budget for the entire run. Run fails if exceeded.",
-      "minimum": 1
-    },
-    "compiled_at": {
-      "type": "string",
-      "description": "ISO-8601 UTC timestamp of when this version was compiled."
-    },
-    "llm_config": {
-      "$ref": "#/$defs/llm_config"
-    },
-    "transition_llm_config": {
-      "$ref": "#/$defs/llm_config",
-      "description": "Default LLM config for transition classification calls. Allows routing transitions to a cheaper/faster model while keeping node execution on a capable model."
-    },
-    "nodes": {
-      "type": "object",
-      "description": "Map of node ID to node definition. Must contain exactly one entry node and at least one terminal node.",
-      "minProperties": 1,
-      "additionalProperties": {
-        "$ref": "#/$defs/node"
-      }
-    }
-  },
   "$defs": {
     "llm_config": {
-      "type": "object",
-      "description": "LLM provider/model override.",
       "additionalProperties": false,
+      "description": "LLM provider/model override.",
       "properties": {
-        "provider": {
-          "type": "string",
-          "description": "Chat provider name (e.g. 'anthropic', 'google')."
+        "max_tokens": {
+          "description": "Maximum response tokens per LLM call.",
+          "minimum": 1,
+          "type": "integer"
         },
         "model": {
-          "type": "string",
-          "description": "Model identifier (e.g. 'claude-sonnet-4-20250514')."
+          "description": "Model identifier (e.g. 'claude-sonnet-4-20250514').",
+          "type": "string"
         },
-        "max_tokens": {
-          "type": "integer",
-          "description": "Maximum response tokens per LLM call.",
-          "minimum": 1
+        "provider": {
+          "description": "Chat provider name (e.g. 'anthropic', 'google').",
+          "type": "string"
         },
         "temperature": {
-          "type": "number",
           "description": "Sampling temperature (0.0-1.0).",
+          "maximum": 1.0,
           "minimum": 0.0,
-          "maximum": 1.0
-        }
-      }
-    },
-    "node": {
-      "type": "object",
-      "description": "A single step in the playbook graph. Either an action node (has prompt + transitions/goto), a terminal node (terminal=true), or a human-gate node (wait_for_human=true).",
-      "additionalProperties": false,
-      "properties": {
-        "entry": {
-          "type": "boolean",
-          "description": "If true, this is the starting node. Exactly one per playbook.",
-          "default": false
-        },
-        "prompt": {
-          "type": "string",
-          "description": "Focused instruction for the LLM at this step. Required for non-terminal nodes."
-        },
-        "transitions": {
-          "type": "array",
-          "description": "Conditional edges. Mutually exclusive with 'goto'. Evaluated by a separate LLM call or structured check.",
-          "items": {
-            "$ref": "#/$defs/transition"
-          },
-          "minItems": 1
-        },
-        "goto": {
-          "type": "string",
-          "description": "Unconditional next node ID. Mutually exclusive with 'transitions'."
-        },
-        "terminal": {
-          "type": "boolean",
-          "description": "If true, execution ends at this node.",
-          "default": false
-        },
-        "wait_for_human": {
-          "type": "boolean",
-          "description": "If true, pause execution and surface for human review.",
-          "default": false
-        },
-        "timeout_seconds": {
-          "type": "integer",
-          "description": "Max time for this node's LLM call before failing.",
-          "minimum": 1
-        },
-        "llm_config": {
-          "$ref": "#/$defs/llm_config"
-        },
-        "transition_llm_config": {
-          "$ref": "#/$defs/llm_config",
-          "description": "LLM config override for transition classification calls from this node. Falls back to playbook-level transition_llm_config, then node llm_config, then playbook llm_config."
-        },
-        "summarize_before": {
-          "type": "boolean",
-          "description": "DEPRECATED — context is now managed per-node automatically.",
-          "default": false
-        },
-        "for_each": {
-          "type": "object",
-          "description": "Iterate over an array from a prior node's output. The node's prompt executes once per item. Results are optionally collected into a named array.",
-          "required": ["source", "as"],
-          "additionalProperties": false,
-          "properties": {
-            "source": {
-              "type": "string",
-              "description": "Dot-path to an array in node_outputs (e.g. 'discover_projects.active_projects')."
-            },
-            "as": {
-              "type": "string",
-              "description": "Variable name for the current item, available in the prompt via {{name}}."
-            },
-            "collect": {
-              "type": "string",
-              "description": "Name to collect all iteration results into an array in node_outputs."
-            },
-            "filter": {
-              "type": "string",
-              "description": "Expression to filter items before iteration. Items where the expression is falsy are skipped."
-            }
-          }
-        },
-        "output": {
-          "type": "object",
-          "description": "Extract structured data from this node's tool results and store it in node_outputs for downstream nodes.",
-          "additionalProperties": false,
-          "properties": {
-            "extract": {
-              "type": "string",
-              "description": "JSON key to extract from the last tool result (e.g. 'findings', 'projects'). Dot-paths supported."
-            },
-            "as": {
-              "type": "string",
-              "description": "Name to store the extracted value under in node_outputs. If omitted, uses the node ID."
-            }
-          }
+          "type": "number"
         }
       },
+      "type": "object"
+    },
+    "node": {
+      "additionalProperties": false,
+      "description": "A single step in the playbook graph. Either an action node (has prompt + transitions/goto), a terminal node (terminal=true), or a human-gate node (wait_for_human=true).",
       "if": {
         "not": {
           "properties": {
@@ -227,44 +41,103 @@
           ]
         }
       },
+      "properties": {
+        "entry": {
+          "default": false,
+          "description": "If true, this is the starting node. Exactly one per playbook.",
+          "type": "boolean"
+        },
+        "for_each": {
+          "additionalProperties": false,
+          "description": "Iterate over an array from a prior node's output. The node's prompt executes once per item with {{as_variable}} available in the template. Results are optionally collected into a named array.",
+          "properties": {
+            "as": {
+              "description": "Variable name for the current item, available in the prompt via {{name}} or {{name.field}}.",
+              "type": "string"
+            },
+            "collect": {
+              "description": "Name to store all iteration results as an array in node_outputs for downstream nodes.",
+              "type": "string"
+            },
+            "filter": {
+              "description": "Expression to filter items. Only items where the expression is truthy are included. Use 'item.field == value' syntax.",
+              "type": "string"
+            },
+            "source": {
+              "description": "Dot-path to an array in node_outputs (e.g. 'discover_projects.active_projects').",
+              "type": "string"
+            }
+          },
+          "required": [
+            "source",
+            "as"
+          ],
+          "type": "object"
+        },
+        "goto": {
+          "description": "Unconditional next node ID. Mutually exclusive with 'transitions'.",
+          "type": "string"
+        },
+        "llm_config": {
+          "$ref": "#/$defs/llm_config"
+        },
+        "output": {
+          "additionalProperties": false,
+          "description": "Extract structured data from tool results and store in node_outputs for downstream nodes. Without this, the node's text response is stored.",
+          "properties": {
+            "as": {
+              "description": "Name to store under in node_outputs. Defaults to the node ID if omitted.",
+              "type": "string"
+            },
+            "extract": {
+              "description": "JSON key to extract from the last tool result (e.g. 'findings', 'projects'). Dot-paths supported.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "prompt": {
+          "description": "Focused instruction for the LLM at this step. Required for non-terminal nodes.",
+          "type": "string"
+        },
+        "terminal": {
+          "default": false,
+          "description": "If true, execution ends at this node.",
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "description": "Max time for this node's LLM call before failing.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "transition_llm_config": {
+          "$ref": "#/$defs/llm_config",
+          "description": "LLM config override for transition classification calls from this node. Falls back to playbook-level transition_llm_config, then node llm_config, then playbook llm_config."
+        },
+        "transitions": {
+          "description": "Conditional edges. Mutually exclusive with 'goto'. Evaluated by a separate LLM call or structured check.",
+          "items": {
+            "$ref": "#/$defs/transition"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "wait_for_human": {
+          "default": false,
+          "description": "If true, pause execution and surface for human review.",
+          "type": "boolean"
+        }
+      },
       "then": {
         "required": [
           "prompt"
         ]
-      }
+      },
+      "type": "object"
     },
     "transition": {
-      "type": "object",
-      "description": "A conditional edge connecting two nodes. Must have either 'when' (condition) or 'otherwise' (default fallback).",
-      "required": [
-        "goto"
-      ],
       "additionalProperties": false,
-      "properties": {
-        "when": {
-          "description": "Natural language condition (string) OR structured function-call expression (object) evaluated to determine if this transition should be followed.",
-          "oneOf": [
-            {
-              "type": "string",
-              "minLength": 1
-            },
-            {
-              "type": "object",
-              "description": "Structured expression for deterministic evaluation without an LLM call."
-            }
-          ]
-        },
-        "goto": {
-          "type": "string",
-          "description": "Target node ID.",
-          "minLength": 1
-        },
-        "otherwise": {
-          "type": "boolean",
-          "description": "If true, this is the default/fallback transition when no other 'when' condition matches.",
-          "const": true
-        }
-      },
+      "description": "A conditional edge connecting two nodes. Must have either 'when' (condition) or 'otherwise' (default fallback).",
       "oneOf": [
         {
           "required": [
@@ -278,7 +151,132 @@
             "goto"
           ]
         }
-      ]
+      ],
+      "properties": {
+        "goto": {
+          "description": "Target node ID.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "otherwise": {
+          "const": true,
+          "description": "If true, this is the default/fallback transition when no other 'when' condition matches.",
+          "type": "boolean"
+        },
+        "when": {
+          "description": "Natural language condition (string) OR structured function-call expression (object) evaluated to determine if this transition should be followed.",
+          "oneOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "description": "Structured expression for deterministic evaluation without an LLM call.",
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "required": [
+        "goto"
+      ],
+      "type": "object"
     }
-  }
+  },
+  "$id": "https://agent-queue.dev/schemas/compiled-playbook.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Runtime artifact produced by LLM compilation of a playbook markdown file. Defines a directed graph of LLM decision points (nodes) connected by conditional transitions (edges). See docs/specs/design/playbooks.md \u00a75.",
+  "properties": {
+    "compiled_at": {
+      "description": "ISO-8601 UTC timestamp of when this version was compiled.",
+      "type": "string"
+    },
+    "cooldown_seconds": {
+      "description": "Minimum seconds between executions.",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "id": {
+      "description": "Unique playbook identifier.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "llm_config": {
+      "$ref": "#/$defs/llm_config"
+    },
+    "max_tokens": {
+      "description": "Token budget for the entire run. Run fails if exceeded.",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "nodes": {
+      "additionalProperties": {
+        "$ref": "#/$defs/node"
+      },
+      "description": "Map of node ID to node definition. Must contain exactly one entry node and at least one terminal node.",
+      "minProperties": 1,
+      "type": "object"
+    },
+    "scope": {
+      "description": "Where this playbook applies: 'system', 'project', or 'agent-type:{type}'.",
+      "pattern": "^(system|project|agent-type:.+)$",
+      "type": "string"
+    },
+    "source_hash": {
+      "description": "Hash of source markdown for change detection.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "transition_llm_config": {
+      "$ref": "#/$defs/llm_config",
+      "description": "Default LLM config for transition classification calls. Allows routing transitions to a cheaper/faster model while keeping node execution on a capable model."
+    },
+    "triggers": {
+      "description": "Event triggers that start this playbook. Each item is either a string (event type, matches all events of that type) or an object with 'event_type' and optional 'filter' for payload filtering (see spec \u00a710 Composability).",
+      "items": {
+        "oneOf": [
+          {
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "event_type": {
+                "description": "The event type to trigger on.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "filter": {
+                "description": "Payload filter \u2014 all key/value pairs must match fields in the event data.",
+                "type": "object"
+              }
+            },
+            "required": [
+              "event_type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "version": {
+      "description": "Auto-incremented on each recompilation.",
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "version",
+    "source_hash",
+    "triggers",
+    "scope",
+    "nodes"
+  ],
+  "title": "Compiled Playbook",
+  "type": "object"
 }

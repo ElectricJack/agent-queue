@@ -576,7 +576,7 @@ class TestNoDuplicationWithL1L2:
                 return_value=(MemoryScope.SYSTEM, None),
             ):
                 with patch(
-                    "src.memory_v2_service.collection_name",
+                    "src.plugins.internal.memory_v2.service.collection_name",
                     return_value="aq_system",
                 ):
                     results = await service.search("myapp", "query", scope="system")
@@ -931,7 +931,7 @@ class TestRetrievalTracking:
                 return_value=(MemoryScope.PROJECT, "myapp"),
             ):
                 with patch(
-                    "src.memory_v2_service.collection_name",
+                    "src.plugins.internal.memory_v2.service.collection_name",
                     return_value="aq_project_myapp",
                 ):
                     results = await service.search("myapp", "query", scope="project_myapp")

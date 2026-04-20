@@ -113,6 +113,10 @@ def wired_plugin(plugin, service):
     plugin._log = MagicMock()
     plugin._ctx = MagicMock()
     plugin._ctx.invoke_llm = AsyncMock(return_value="LLM generated summary")
+    # Must be None, not a MagicMock auto-attribute — downstream string
+    # handling in _resolve_project_id otherwise raises "expected string or
+    # bytes-like object, got 'MagicMock'".
+    plugin._ctx.active_project_id = None
     return plugin
 
 
