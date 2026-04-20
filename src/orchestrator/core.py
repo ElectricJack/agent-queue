@@ -915,6 +915,19 @@ class Orchestrator(
         # can skip recompilation of unchanged files (roadmap 5.1.5).
         await self.playbook_manager.load_from_disk()
 
+        # Reconcile vault playbooks with the compiled registry: compile any
+        # ``.md`` that's present on disk but not yet in the active registry.
+        # This catches default playbooks freshly installed by
+        # ``ensure_vault_layout`` — the vault watcher's initial snapshot would
+        # otherwise treat them as pre-existing and never emit a created event.
+        try:
+            vault_root = os.path.join(self.config.data_dir, "vault")
+            await self.playbook_manager.reconcile_compilations(vault_root)
+        except Exception:
+            logger.warning(
+                "Playbook compilation reconcile failed", exc_info=True
+            )
+
         # Wire trigger dispatch: when a playbook's trigger event fires on
         # the bus, create a PlaybookRunner and execute the graph.  Without
         # this, events fire but playbooks never auto-run.

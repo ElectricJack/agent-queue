@@ -1187,6 +1187,7 @@ def ensure_vault_layout(data_dir: str) -> None:
 
     ensure_default_templates(data_dir)
     ensure_default_playbooks(data_dir)
+    ensure_default_agent_type_playbooks(data_dir)
     ensure_supervisor_profile(data_dir)
     ensure_claude_code_profile(data_dir)
 
@@ -1328,6 +1329,74 @@ def ensure_default_playbooks(data_dir: str) -> dict:
             "Installed %d default playbook(s) to %s: %s",
             len(result["created"]),
             playbooks_dir,
+            ", ".join(result["created"]),
+        )
+
+    return result
+
+
+def ensure_default_agent_type_playbooks(data_dir: str) -> dict:
+    """Install bundled agent-type playbooks into ``vault/agent-types/{type}/playbooks/``.
+
+    Mirrors :func:`ensure_default_playbooks` but for playbooks scoped to a
+    specific agent type (supervisor, coding, etc.).  Sources live at
+    ``src/prompts/default_agent_type_playbooks/{type}/*.md`` and are copied
+    to ``vault/agent-types/{type}/playbooks/`` on every startup.
+
+    The operation is **idempotent**: files already present at the destination
+    are never overwritten, so users can customise playbooks without losing
+    changes on restart.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+
+    Returns:
+        Dict with ``created`` (list of ``"{agent_type}/{filename}"`` strings
+        written) and ``skipped`` (list of relative paths that already existed).
+    """
+    defaults_root = os.path.join(
+        os.path.dirname(__file__), "prompts", "default_agent_type_playbooks"
+    )
+    result: dict = {"created": [], "skipped": []}
+
+    if not os.path.isdir(defaults_root):
+        logger.debug(
+            "No default agent-type playbooks directory found at %s", defaults_root
+        )
+        return result
+
+    for agent_type in sorted(os.listdir(defaults_root)):
+        src_type_dir = os.path.join(defaults_root, agent_type)
+        if not os.path.isdir(src_type_dir):
+            continue
+
+        dst_type_dir = os.path.join(
+            data_dir, "vault", "agent-types", agent_type, "playbooks"
+        )
+        os.makedirs(dst_type_dir, exist_ok=True)
+
+        for filename in sorted(os.listdir(src_type_dir)):
+            if not filename.endswith(".md"):
+                continue
+            src_path = os.path.join(src_type_dir, filename)
+            dst_path = os.path.join(dst_type_dir, filename)
+            rel = f"{agent_type}/{filename}"
+
+            if os.path.exists(dst_path):
+                result["skipped"].append(rel)
+                logger.debug(
+                    "Default agent-type playbook already exists, skipping: %s", rel
+                )
+                continue
+
+            shutil.copy2(src_path, dst_path)
+            result["created"].append(rel)
+            logger.debug("Installed default agent-type playbook: %s", rel)
+
+    if result["created"]:
+        logger.info(
+            "Installed %d default agent-type playbook(s): %s",
+            len(result["created"]),
             ", ".join(result["created"]),
         )
 

@@ -27,7 +27,14 @@ from src.playbooks.runner import PlaybookRunner
 # Constants
 # ---------------------------------------------------------------------------
 
-PLAYBOOK_PATH = Path(__file__).parent.parent / "vault" / "agent-types" / "supervisor" / "playbooks" / "log-analysis.md"
+PLAYBOOK_PATH = (
+    Path(__file__).parent.parent
+    / "src"
+    / "prompts"
+    / "default_agent_type_playbooks"
+    / "supervisor"
+    / "log-analysis.md"
+)
 
 # Tags the playbook should reference (from the playbook's "Write operational
 # insights to memory" section)

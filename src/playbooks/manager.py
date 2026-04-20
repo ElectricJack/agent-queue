@@ -73,6 +73,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -1082,6 +1083,117 @@ class PlaybookManager:
             logger.info("Loaded %d compiled playbook(s) from store across all scopes", loaded)
             self._refresh_subscriptions()
         return loaded
+
+    async def reconcile_compilations(
+        self,
+        vault_root: str,
+    ) -> dict:
+        """Walk the vault for playbook markdown files and compile any that
+        aren't already active in the in-memory registry.
+
+        Fixes the gap where freshly-installed playbook files never trigger
+        initial compilation: the vault watcher takes its initial snapshot
+        after :func:`~src.vault.ensure_vault_layout` has copied default
+        playbooks in, so those files appear "already present" and never
+        emit a ``created`` event.
+
+        This method is idempotent — already-compiled playbooks are
+        skipped based on their frontmatter ``id`` matching an entry in
+        :attr:`_active`.
+
+        Parameters
+        ----------
+        vault_root:
+            Absolute path to the vault root (typically
+            ``{data_dir}/vault``).
+
+        Returns
+        -------
+        dict
+            Summary with ``compiled`` (ids newly compiled),
+            ``skipped`` (ids already active), and ``errors``
+            (``[(source_path, [msgs])]``).
+        """
+        from src.playbooks.handler import PLAYBOOK_PATTERNS
+        import fnmatch
+
+        result: dict = {"compiled": [], "skipped": [], "errors": []}
+
+        if not os.path.isdir(vault_root):
+            return result
+
+        # Walk every .md file under vault_root and match against the
+        # playbook path patterns.  Using os.walk plus fnmatch keeps this
+        # dependency-free — no need to pull the VaultWatcher in here.
+        for dirpath, _dirnames, filenames in os.walk(vault_root):
+            for filename in filenames:
+                if not filename.endswith(".md"):
+                    continue
+                abs_path = os.path.join(dirpath, filename)
+                rel_path = os.path.relpath(abs_path, vault_root).replace("\\", "/")
+
+                if not any(
+                    fnmatch.fnmatch(rel_path, pattern) for pattern in PLAYBOOK_PATTERNS
+                ):
+                    continue
+
+                try:
+                    with open(abs_path, encoding="utf-8") as f:
+                        markdown = f.read()
+                except Exception as exc:
+                    result["errors"].append((rel_path, [f"read failed: {exc}"]))
+                    continue
+
+                frontmatter, _ = PlaybookCompiler._parse_frontmatter(markdown)
+                playbook_id = frontmatter.get("id", "").strip()
+                if not playbook_id:
+                    result["errors"].append(
+                        (rel_path, ["missing or empty frontmatter `id`"])
+                    )
+                    continue
+
+                if playbook_id in self._active:
+                    result["skipped"].append(playbook_id)
+                    continue
+
+                logger.info(
+                    "Reconcile: compiling uncompiled playbook %r (%s)",
+                    playbook_id,
+                    rel_path,
+                )
+                try:
+                    from src.playbooks.handler import derive_playbook_scope
+
+                    _, scope_identifier = derive_playbook_scope(rel_path)
+                    compile_result = await self.compile_playbook(
+                        markdown,
+                        source_path=abs_path,
+                        rel_path=rel_path,
+                        scope_identifier=scope_identifier,
+                    )
+                    if compile_result.success:
+                        result["compiled"].append(playbook_id)
+                    else:
+                        result["errors"].append((rel_path, list(compile_result.errors)))
+                except Exception as exc:
+                    logger.warning(
+                        "Reconcile: compilation failed for %s", rel_path, exc_info=True
+                    )
+                    result["errors"].append((rel_path, [str(exc)]))
+
+        if result["compiled"]:
+            logger.info(
+                "Reconcile: compiled %d uncompiled playbook(s): %s",
+                len(result["compiled"]),
+                ", ".join(result["compiled"]),
+            )
+        elif result["errors"]:
+            logger.warning(
+                "Reconcile: %d playbook(s) failed to compile",
+                len(result["errors"]),
+            )
+
+        return result
 
     async def compile_playbook(
         self,
