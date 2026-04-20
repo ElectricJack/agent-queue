@@ -41,6 +41,13 @@ dependencies = [
     # uri_validate). oauthlib comes in transitively via
     # google-auth-oauthlib / requests-oauthlib (inbox extras).
     "oauthlib>=3.2.1",
+    # Pin setuptools to >=78.1.1 to address PYSEC-2025-49 / CVE-2025-47273
+    # (path traversal in PackageIndex._download_url via insufficiently
+    # sanitized URL-derived filenames — os.path.join discards tmpdir when
+    # the second arg begins with a slash or drive letter, allowing writes
+    # to arbitrary filesystem locations and potential RCE). Comes in as a
+    # transitive dep (notably via memsearch for the memory extras).
+    "setuptools>=78.1.1",
 ]
 
 [project.optional-dependencies]

@@ -20,7 +20,11 @@ dependencies = [
     "milvus-lite>=2.5.0; sys_platform != 'win32'",
     "click>=8.1",
     "watchdog>=4.0",
-    "setuptools<75",
+    # PYSEC-2025-49 (CVE-2025-47273): setuptools <78.1.1 has a path
+    # traversal vulnerability in PackageIndex._download_url that allows
+    # writing files to arbitrary locations on the filesystem, which can
+    # escalate to remote code execution. Pin to the fixed release.
+    "setuptools>=78.1.1",
     "tomli_w>=1.0",
     "tomli>=2.0; python_version < '3.11'",
     "openai>=1.0",
