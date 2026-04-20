@@ -1602,13 +1602,22 @@ def test_ensure_shared_claude_memory_dir(tmp_path):
 
 
 def test_ensure_vault_layout_creates_all_claude_profiles(tmp_path):
-    """Full layout call installs claude-code, claude-opus, claude-sonnet, and shared claude/memory."""
+    """Full layout installs claude-opus + claude-sonnet + shared claude/memory.
+
+    Both profiles drive the same Claude Code CLI; they differ only in
+    the model selected and both share the ``claude`` memory scope so
+    insights pool across model choices.  The older model-agnostic
+    ``claude-code`` profile template still exists but is no longer
+    auto-installed — users opt in via the CLAUDE_CODE_PROFILE constant
+    if they want it.
+    """
     ensure_vault_layout(str(tmp_path))
 
     agent_types = tmp_path / "vault" / "agent-types"
-    assert (agent_types / "claude-code" / "profile.md").is_file()
     assert (agent_types / "claude-opus" / "profile.md").is_file()
     assert (agent_types / "claude-sonnet" / "profile.md").is_file()
     assert (agent_types / "claude" / "memory").is_dir()
     # The shared claude/ dir has no profile.md — it's memory-only.
     assert not (agent_types / "claude" / "profile.md").exists()
+    # claude-code is no longer auto-installed.
+    assert not (agent_types / "claude-code" / "profile.md").exists()

@@ -1324,7 +1324,13 @@ def ensure_vault_layout(data_dir: str) -> None:
     ensure_default_playbooks(data_dir)
     ensure_default_agent_type_playbooks(data_dir)
     ensure_supervisor_profile(data_dir)
-    ensure_claude_code_profile(data_dir)
+    # Two bundled Claude Code profiles — same CLI, different models + a
+    # shared ``claude`` memory scope (see ``memory_scope_id`` in each
+    # profile's frontmatter).  Tasks pick the model per-task via
+    # ``aq task create --profile {claude-opus|claude-sonnet}``.  The
+    # older model-agnostic ``claude-code`` profile (CLAUDE_CODE_PROFILE
+    # constant) is kept as an opt-in template but no longer
+    # auto-installed.
     ensure_claude_opus_profile(data_dir)
     ensure_claude_sonnet_profile(data_dir)
     ensure_shared_claude_memory_dir(data_dir)
