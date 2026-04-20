@@ -76,3 +76,26 @@ These packages have updates available but are not urgent:
   the OSV/GHSA feed (which lists 3.2.2). In practice the resolver will pull
   3.3.1, so the pin is effectively safe; a future tightening to `>=3.2.2`
   could be considered for belt-and-braces coverage of the GHSA feed.
+- **python-multipart pinned to `>=0.0.26` (not in original 2026-04-02 table).**
+  Task `steady-meadow` (commit `97717f0d`) added an explicit lower-bound pin
+  `python-multipart>=0.0.26` in `[project].dependencies` of `pyproject.toml`
+  to address CVE-2026-40347 — a denial-of-service vulnerability where crafted
+  `multipart/form-data` requests with large preamble or epilogue sections
+  drive the parser into inefficient paths that consume excessive CPU,
+  degrading request-handling availability. `pip-audit` lists
+  `fix_versions: ["0.0.26"]` for this advisory; the same pin also covers
+  CVE-2026-24486 (`fix_versions: ["0.0.22"]`), which was flagged against the
+  previously installed `python-multipart==0.0.20`. python-multipart is a
+  transitive dependency of fastapi/starlette for form parsing, which is why
+  it was not listed in the original 2026-04-02 audit table — that audit run
+  did not surface it (similar to the oauthlib case above). A subsequent
+  `pip-audit` run flagged it, and `steady-meadow` addressed it with a direct
+  pin. The rationale for pinning directly (rather than waiting for an
+  upstream fastapi/starlette lower-bound bump) is to guarantee every install
+  pulls a patched python-multipart regardless of what fastapi/starlette
+  currently require, mirroring the same pattern used for `zipp>=3.19.1`,
+  `oauthlib>=3.2.1`, and `cryptography>=46.0.7`. A fresh `pip-audit` run
+  (see `pip-audit-results.json` at the repo root) confirms no remaining
+  python-multipart vulnerabilities at the installed version satisfying
+  `>=0.0.26`. The `>=` pin still permits later patch releases to be
+  installed when available.
