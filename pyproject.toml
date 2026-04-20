@@ -10,7 +10,10 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.13",
-    "discord.py>=2.6.0",
+    # 2.6+ imports the Python 3.14-only `annotationlib` stdlib module
+    # (via discord.ext.commands.flags) which breaks on 3.12/3.13. Pin to
+    # the last 2.5.x until we raise requires-python to >=3.14.
+    "discord.py>=2.5.2,<2.6",
     "claude_agent_sdk>=0.1.55",
     "PyYAML>=6.0",
     "fastapi>=0.135.0",

@@ -1,7 +1,7 @@
 """Tests for the default agent-type playbook installer.
 
-Verifies ``ensure_default_agent_type_playbooks`` copies bundled supervisor
-and coding playbooks from ``src/prompts/default_agent_type_playbooks/`` into
+Verifies ``ensure_default_agent_type_playbooks`` copies bundled agent-type
+playbooks from ``src/prompts/default_agent_type_playbooks/`` into
 ``{data_dir}/vault/agent-types/{type}/playbooks/`` on startup, and is
 idempotent (skips existing files).
 """
@@ -20,48 +20,35 @@ SRC_ROOT = (
     / "default_agent_type_playbooks"
 )
 
-EXPECTED_SUPERVISOR_FILES = {
-    "bugfix-pipeline.md",
-    "exploration.md",
-    "feature-pipeline.md",
-    "log-analysis.md",
-    "review-cycle.md",
-}
-
-EXPECTED_CODING_FILES = {
+EXPECTED_CLAUDE_CODE_FILES = {
     "reflection.md",
 }
 
 
 def test_source_tree_has_expected_playbooks() -> None:
     """Sanity check: the bundled source files exist at the expected path."""
-    supervisor_dir = SRC_ROOT / "supervisor"
-    coding_dir = SRC_ROOT / "coding"
-    assert supervisor_dir.is_dir()
-    assert coding_dir.is_dir()
+    claude_code_dir = SRC_ROOT / "claude-code"
+    assert claude_code_dir.is_dir()
 
-    supervisor_files = {
-        p.name for p in supervisor_dir.iterdir() if p.suffix == ".md"
+    claude_code_files = {
+        p.name for p in claude_code_dir.iterdir() if p.suffix == ".md"
     }
-    coding_files = {p.name for p in coding_dir.iterdir() if p.suffix == ".md"}
-    assert supervisor_files == EXPECTED_SUPERVISOR_FILES
-    assert coding_files == EXPECTED_CODING_FILES
+    assert claude_code_files == EXPECTED_CLAUDE_CODE_FILES
+
+    # No legacy subdirs — supervisor and coding scopes were retired.
+    assert not (SRC_ROOT / "supervisor").exists()
+    assert not (SRC_ROOT / "coding").exists()
 
 
 def test_clean_install_creates_all_playbooks(tmp_path):
     result = ensure_default_agent_type_playbooks(str(tmp_path))
 
-    supervisor_dir = tmp_path / "vault" / "agent-types" / "supervisor" / "playbooks"
-    coding_dir = tmp_path / "vault" / "agent-types" / "coding" / "playbooks"
+    claude_code_dir = tmp_path / "vault" / "agent-types" / "claude-code" / "playbooks"
 
-    for name in EXPECTED_SUPERVISOR_FILES:
-        assert (supervisor_dir / name).is_file()
-    for name in EXPECTED_CODING_FILES:
-        assert (coding_dir / name).is_file()
+    for name in EXPECTED_CLAUDE_CODE_FILES:
+        assert (claude_code_dir / name).is_file()
 
-    expected_created = {
-        f"supervisor/{name}" for name in EXPECTED_SUPERVISOR_FILES
-    } | {f"coding/{name}" for name in EXPECTED_CODING_FILES}
+    expected_created = {f"claude-code/{name}" for name in EXPECTED_CLAUDE_CODE_FILES}
     assert set(result["created"]) == expected_created
     assert result["skipped"] == []
 
@@ -77,9 +64,9 @@ def test_idempotent_on_second_install(tmp_path):
 
 def test_user_customisations_preserved(tmp_path):
     """Existing files in the vault are never overwritten by the installer."""
-    supervisor_dir = tmp_path / "vault" / "agent-types" / "supervisor" / "playbooks"
-    supervisor_dir.mkdir(parents=True)
-    customised = supervisor_dir / "log-analysis.md"
+    target_dir = tmp_path / "vault" / "agent-types" / "claude-code" / "playbooks"
+    target_dir.mkdir(parents=True)
+    customised = target_dir / "reflection.md"
     customised.write_text("user-customised content\n", encoding="utf-8")
 
     ensure_default_agent_type_playbooks(str(tmp_path))

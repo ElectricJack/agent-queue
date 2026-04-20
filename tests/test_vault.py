@@ -926,18 +926,17 @@ def test_starter_knowledge_covers_expected_types():
 
 
 def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
-    """A clean install creates all default playbooks with correct result dict."""
+    """A clean install creates the minimal default playbook set.
+
+    Only `memory-consolidation.md` is globally useful enough to ship
+    installed by default.  Other playbooks that used to auto-install have
+    been moved to ``src/prompts/example_playbooks/`` as opt-in reference
+    material.
+    """
     result = ensure_default_playbooks(str(tmp_path))
 
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
-    expected_files = [
-        "codebase-inspector.md",
-        "dependency-audit.md",
-        "memory-consolidation.md",
-        "system-health-check.md",
-        "task-outcome.md",
-        "vibecop-weekly-scan.md",
-    ]
+    expected_files = ["memory-consolidation.md"]
 
     # All expected files must exist on disk
     for filename in expected_files:
@@ -952,13 +951,13 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     assert installed == expected_files
 
 
-def test_ensure_default_playbooks_creates_task_outcome(tmp_path):
-    """ensure_default_playbooks installs task-outcome.md to vault/system/playbooks/."""
+def test_ensure_default_playbooks_creates_memory_consolidation(tmp_path):
+    """ensure_default_playbooks installs memory-consolidation.md — the only default."""
     result = ensure_default_playbooks(str(tmp_path))
 
-    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "task-outcome.md"
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "memory-consolidation.md"
     assert playbook_path.is_file()
-    assert "task-outcome.md" in result["created"]
+    assert "memory-consolidation.md" in result["created"]
     assert len(result["skipped"]) == 0
 
 
@@ -966,37 +965,38 @@ def test_ensure_default_playbooks_idempotent(tmp_path):
     """Calling ensure_default_playbooks twice does not overwrite existing files."""
     ensure_default_playbooks(str(tmp_path))
 
-    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "task-outcome.md"
-    custom_content = "---\nid: task-outcome\ntriggers:\n  - task.completed\nscope: system\n---\n"
+    playbook_path = (
+        tmp_path / "vault" / "system" / "playbooks" / "memory-consolidation.md"
+    )
+    custom_content = (
+        "---\nid: memory-consolidation\ntriggers:\n"
+        "  - timer.24h\nscope: system\n---\n# user-customised\n"
+    )
     playbook_path.write_text(custom_content)
 
     result = ensure_default_playbooks(str(tmp_path))
 
     assert playbook_path.read_text() == custom_content
-    assert "task-outcome.md" in result["skipped"]
+    assert "memory-consolidation.md" in result["skipped"]
 
 
 def test_ensure_default_playbooks_partial_existing(tmp_path):
-    """Only missing playbooks are installed; existing ones are skipped."""
+    """Existing playbooks are skipped, not overwritten."""
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
     playbooks_dir.mkdir(parents=True)
 
-    # Pre-create the task-outcome playbook
-    existing = playbooks_dir / "task-outcome.md"
+    # Pre-create the memory-consolidation playbook with custom content
+    existing = playbooks_dir / "memory-consolidation.md"
     existing.write_text("# customised\n")
 
     result = ensure_default_playbooks(str(tmp_path))
 
-    assert "task-outcome.md" in result["skipped"]
+    assert "memory-consolidation.md" in result["skipped"]
     assert existing.read_text() == "# customised\n"
-    # All other playbooks should still be created since they didn't exist
-    assert "codebase-inspector.md" in result["created"]
-    assert "dependency-audit.md" in result["created"]
-    assert "system-health-check.md" in result["created"]
 
 
-def test_task_outcome_playbook_has_valid_frontmatter():
-    """The bundled task-outcome.md has valid YAML frontmatter with required fields."""
+def test_memory_consolidation_playbook_has_valid_frontmatter():
+    """The bundled memory-consolidation.md has valid YAML frontmatter."""
     import os
 
     import yaml
@@ -1006,314 +1006,26 @@ def test_task_outcome_playbook_has_valid_frontmatter():
         "src",
         "prompts",
         "default_playbooks",
-        "task-outcome.md",
+        "memory-consolidation.md",
     )
     content = open(playbook_path).read()
 
-    # Must start with YAML frontmatter
     assert content.startswith("---")
     lines = content.strip().splitlines()
     end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
     fm_text = "\n".join(lines[1:end_idx])
     fm = yaml.safe_load(fm_text)
 
-    assert fm["id"] == "task-outcome"
-    assert isinstance(fm["triggers"], list)
-    assert "task.completed" in fm["triggers"]
-    assert "task.failed" in fm["triggers"]
-    assert fm["scope"] == "system"
-
-
-def test_task_outcome_playbook_consolidates_three_concerns():
-    """The task-outcome playbook body addresses reflection, spec-drift, and error-recovery."""
-    import os
-
-    playbook_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "src",
-        "prompts",
-        "default_playbooks",
-        "task-outcome.md",
-    )
-    content = open(playbook_path).read()
-
-    # Extract body (after frontmatter)
-    parts = content.split("---", 2)
-    body = parts[2].strip()
-
-    # Reflection concerns: acceptance criteria review
-    assert "acceptance criteria" in body.lower()
-
-    # Spec-drift concerns: spec divergence detection
-    assert "spec" in body.lower()
-
-    # Error-recovery concerns: transient errors, retry, fix tasks
-    assert "retry" in body.lower()
-    assert "transient" in body.lower() or "rate limit" in body.lower()
-    assert "fix task" in body.lower() or "create" in body.lower()
-
-
-def test_ensure_default_playbooks_creates_codebase_inspector(tmp_path):
-    """ensure_default_playbooks installs codebase-inspector.md to vault/system/playbooks/."""
-    result = ensure_default_playbooks(str(tmp_path))
-
-    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "codebase-inspector.md"
-    assert playbook_path.is_file()
-    assert "codebase-inspector.md" in result["created"]
-
-
-def test_codebase_inspector_playbook_has_valid_frontmatter():
-    """The bundled codebase-inspector.md has valid YAML frontmatter with required fields."""
-    import os
-
-    import yaml
-
-    playbook_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "src",
-        "prompts",
-        "default_playbooks",
-        "codebase-inspector.md",
-    )
-    content = open(playbook_path).read()
-
-    # Must start with YAML frontmatter
-    assert content.startswith("---")
-    lines = content.strip().splitlines()
-    end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
-    fm_text = "\n".join(lines[1:end_idx])
-    fm = yaml.safe_load(fm_text)
-
-    assert fm["id"] == "codebase-inspector"
-    assert isinstance(fm["triggers"], list)
-    assert "timer.4h" in fm["triggers"]
-    assert fm["scope"] == "system"
-
-
-def test_codebase_inspector_playbook_covers_key_concerns():
-    """The codebase-inspector playbook body covers weighted selection and dedup."""
-    import os
-
-    playbook_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "src",
-        "prompts",
-        "default_playbooks",
-        "codebase-inspector.md",
-    )
-    content = open(playbook_path).read()
-
-    # Extract body (after frontmatter)
-    parts = content.split("---", 2)
-    body = parts[2].strip().lower()
-
-    # Weighted selection categories from spec
-    assert "source" in body
-    assert "spec" in body
-    assert "test" in body
-    assert "config" in body
-    assert "recent" in body
-
-    # Quality concerns
-    assert "quality" in body
-    assert "security" in body
-    assert "documentation" in body or "doc" in body
-
-    # Inspection history dedup
-    assert "inspection history" in body or "re-inspect" in body
-
-    # Actionable findings only
-    assert "actionable" in body
-
-    # Consolidation with health check
-    assert "health check" in body or "consolidate" in body
-    assert "duplicate" in body
-
-
-def test_ensure_default_playbooks_idempotent_codebase_inspector(tmp_path):
-    """Calling ensure_default_playbooks twice does not overwrite codebase-inspector.md."""
-    ensure_default_playbooks(str(tmp_path))
-
-    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "codebase-inspector.md"
-    custom_content = "---\nid: codebase-inspector\ntriggers:\n  - timer.4h\nscope: system\n---\n"
-    playbook_path.write_text(custom_content)
-
-    result = ensure_default_playbooks(str(tmp_path))
-
-    assert playbook_path.read_text() == custom_content
-    assert "codebase-inspector.md" in result["skipped"]
-
-
-def test_ensure_default_playbooks_creates_dependency_audit(tmp_path):
-    """ensure_default_playbooks installs dependency-audit.md to vault/system/playbooks/."""
-    result = ensure_default_playbooks(str(tmp_path))
-
-    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "dependency-audit.md"
-    assert playbook_path.is_file()
-    assert "dependency-audit.md" in result["created"]
-
-
-def test_dependency_audit_playbook_has_valid_frontmatter():
-    """The bundled dependency-audit.md has valid YAML frontmatter with required fields."""
-    import os
-
-    import yaml
-
-    playbook_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "src",
-        "prompts",
-        "default_playbooks",
-        "dependency-audit.md",
-    )
-    content = open(playbook_path).read()
-
-    # Must start with YAML frontmatter
-    assert content.startswith("---")
-    lines = content.strip().splitlines()
-    end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
-    fm_text = "\n".join(lines[1:end_idx])
-    fm = yaml.safe_load(fm_text)
-
-    assert fm["id"] == "dependency-audit"
+    assert fm["id"] == "memory-consolidation"
     assert isinstance(fm["triggers"], list)
     assert "timer.24h" in fm["triggers"]
     assert fm["scope"] == "system"
 
 
-def test_dependency_audit_playbook_covers_key_concerns():
-    """The dependency-audit playbook body covers pip-audit, check-outdated-deps, and triage."""
-    import os
-
-    playbook_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "src",
-        "prompts",
-        "default_playbooks",
-        "dependency-audit.md",
-    )
-    content = open(playbook_path).read()
-
-    # Extract body (after frontmatter)
-    parts = content.split("---", 2)
-    body = parts[2].strip().lower()
-
-    # Audit tooling
-    assert "pip-audit" in body
-    assert "check-outdated-deps" in body
-
-    # Triage: critical vs non-critical
-    assert "critical" in body
-    assert "high-priority" in body or "high priority" in body
-    assert "task" in body  # create task for critical
-    assert "note" in body  # summary note for non-critical
-
-    # Skip when nothing found
-    assert "skip" in body
-
-
-def test_ensure_default_playbooks_idempotent_dependency_audit(tmp_path):
-    """Calling ensure_default_playbooks twice does not overwrite dependency-audit.md."""
-    ensure_default_playbooks(str(tmp_path))
-
-    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "dependency-audit.md"
-    custom_content = "---\nid: dependency-audit\ntriggers:\n  - timer.24h\nscope: system\n---\n"
-    playbook_path.write_text(custom_content)
-
-    result = ensure_default_playbooks(str(tmp_path))
-
-    assert playbook_path.read_text() == custom_content
-    assert "dependency-audit.md" in result["skipped"]
-
-
-def test_ensure_default_playbooks_creates_system_health_check(tmp_path):
-    """ensure_default_playbooks installs system-health-check.md to vault/system/playbooks/."""
-    result = ensure_default_playbooks(str(tmp_path))
-
-    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "system-health-check.md"
-    assert playbook_path.is_file()
-    assert "system-health-check.md" in result["created"]
-
-
-def test_default_system_health_check_frontmatter_valid():
-    """system-health-check.md has valid YAML frontmatter with required fields."""
-    import os
-
-    import yaml
-
-    playbook_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "src",
-        "prompts",
-        "default_playbooks",
-        "system-health-check.md",
-    )
-    content = open(playbook_path).read()
-
-    # Must start with YAML frontmatter
-    assert content.startswith("---")
-    lines = content.strip().splitlines()
-    end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
-    fm_text = "\n".join(lines[1:end_idx])
-    fm = yaml.safe_load(fm_text)
-
-    assert fm["id"] == "system-health-check"
-    assert isinstance(fm["triggers"], list)
-    assert "timer.30m" in fm["triggers"]
-    assert fm["scope"] == "system"
-
-
-def test_default_system_health_check_body_covers_spec():
-    """system-health-check.md body covers all areas from the spec."""
-    import os
-
-    playbook_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "src",
-        "prompts",
-        "default_playbooks",
-        "system-health-check.md",
-    )
-    content = open(playbook_path).read()
-
-    # Extract body (after frontmatter)
-    parts = content.split("---", 2)
-    body = parts[2].lower()
-
-    # Stuck tasks
-    assert "stuck" in body
-    assert "assigned" in body or "in_progress" in body
-
-    # Blocked tasks
-    assert "blocked" in body
-    assert "resolution" in body or "unblock" in body
-
-    # Summary posting
-    assert "summary" in body
-    assert "healthy" in body or "nothing" in body or "skip" in body
-
-    # Memory integration (cross-playbook awareness)
-    assert "memory" in body
-
-
-def test_ensure_default_playbooks_idempotent_system_health_check(tmp_path):
-    """Calling ensure_default_playbooks twice does not overwrite system-health-check.md."""
-    ensure_default_playbooks(str(tmp_path))
-
-    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "system-health-check.md"
-    custom_content = "---\nid: system-health-check\ntriggers:\n  - timer.30m\nscope: system\n---\n"
-    playbook_path.write_text(custom_content)
-
-    result = ensure_default_playbooks(str(tmp_path))
-
-    assert playbook_path.read_text() == custom_content
-    assert "system-health-check.md" in result["skipped"]
-
-
 def test_ensure_default_playbooks_all_skipped_on_second_run(tmp_path):
-    """Second call to ensure_default_playbooks skips all default playbooks."""
+    """Second call to ensure_default_playbooks skips what the first created."""
     first = ensure_default_playbooks(str(tmp_path))
-    assert len(first["created"]) >= 4
+    assert len(first["created"]) >= 1
     assert len(first["skipped"]) == 0
 
     second = ensure_default_playbooks(str(tmp_path))
@@ -1322,21 +1034,22 @@ def test_ensure_default_playbooks_all_skipped_on_second_run(tmp_path):
 
 
 def test_ensure_vault_layout_installs_default_playbooks(tmp_path):
-    """ensure_vault_layout installs default playbooks as part of the layout."""
+    """ensure_vault_layout installs the minimal default playbook set."""
     ensure_vault_layout(str(tmp_path))
 
-    assert (tmp_path / "vault" / "system" / "playbooks" / "task-outcome.md").is_file()
-    assert (tmp_path / "vault" / "system" / "playbooks" / "codebase-inspector.md").is_file()
-    assert (tmp_path / "vault" / "system" / "playbooks" / "dependency-audit.md").is_file()
-    assert (tmp_path / "vault" / "system" / "playbooks" / "system-health-check.md").is_file()
+    assert (
+        tmp_path / "vault" / "system" / "playbooks" / "memory-consolidation.md"
+    ).is_file()
 
 
 def test_ensure_vault_layout_preserves_custom_playbooks(tmp_path):
     """ensure_vault_layout does not overwrite user-customised playbooks."""
     ensure_vault_layout(str(tmp_path))
 
-    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "task-outcome.md"
-    custom = "# User's custom task-outcome playbook\n"
+    playbook_path = (
+        tmp_path / "vault" / "system" / "playbooks" / "memory-consolidation.md"
+    )
+    custom = "# User's custom memory-consolidation playbook\n"
     playbook_path.write_text(custom)
 
     ensure_vault_layout(str(tmp_path))

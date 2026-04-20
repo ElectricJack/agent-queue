@@ -41,7 +41,10 @@ from src.vault import ensure_default_playbooks
 # ---------------------------------------------------------------------------
 
 _SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src")
-_PLAYBOOKS_DIR = os.path.join(_SRC_DIR, "prompts", "default_playbooks")
+# vibecop-weekly-scan.md is no longer auto-installed; it lives with the
+# other example playbooks under src/prompts/example_playbooks/ so users
+# can opt in by copying it into their vault.
+_PLAYBOOKS_DIR = os.path.join(_SRC_DIR, "prompts", "example_playbooks")
 _PLUGINS_DIR = os.path.join(_SRC_DIR, "plugins", "internal")
 
 
@@ -284,52 +287,22 @@ class TestLogicCoverage:
 
 
 class TestVaultInstallation:
-    """Verify the playbook installs correctly via ensure_default_playbooks."""
+    """Verify ensure_default_playbooks produces the minimal default set.
 
-    def test_playbook_installed_to_vault(self, tmp_path):
-        """ensure_default_playbooks should copy vibecop-weekly-scan.md to vault."""
-        result = ensure_default_playbooks(str(tmp_path))
-
-        assert "vibecop-weekly-scan.md" in result["created"]
-
-        installed_path = tmp_path / "vault" / "system" / "playbooks" / "vibecop-weekly-scan.md"
-        assert installed_path.is_file()
-
-    def test_playbook_not_overwritten_if_exists(self, tmp_path):
-        """Should not overwrite user-customized playbook."""
-        # Install once
-        ensure_default_playbooks(str(tmp_path))
-
-        # Modify the installed file
-        installed_path = tmp_path / "vault" / "system" / "playbooks" / "vibecop-weekly-scan.md"
-        installed_path.write_text("custom content")
-
-        # Install again
-        result = ensure_default_playbooks(str(tmp_path))
-
-        assert "vibecop-weekly-scan.md" in result["skipped"]
-        assert installed_path.read_text() == "custom content"
-
-    def test_playbook_content_matches_source(self, tmp_path):
-        """Installed content should match the source template."""
-        ensure_default_playbooks(str(tmp_path))
-
-        installed_path = tmp_path / "vault" / "system" / "playbooks" / "vibecop-weekly-scan.md"
-        source_content = _read(_PLAYBOOKS_DIR, "vibecop-weekly-scan.md")
-        assert installed_path.read_text() == source_content
+    Note: vibecop-weekly-scan.md is no longer an auto-installed default.
+    It lives under ``src/prompts/example_playbooks/`` and users opt in by
+    copying it into their vault manually.
+    """
 
     def test_all_default_playbooks_installed(self, tmp_path):
-        """All default playbooks should be installed, including the new one."""
+        """Only the minimal default playbook set is auto-installed.
+
+        Everything else now lives under ``src/prompts/example_playbooks/``
+        as opt-in reference material.
+        """
         result = ensure_default_playbooks(str(tmp_path))
 
-        expected = {
-            "codebase-inspector.md",
-            "dependency-audit.md",
-            "memory-consolidation.md",
-            "system-health-check.md",
-            "task-outcome.md",
-            "vibecop-weekly-scan.md",
-        }
+        expected = {"memory-consolidation.md"}
         installed = set(result["created"])
         assert expected == installed, (
             f"Missing playbooks: {expected - installed}, "
