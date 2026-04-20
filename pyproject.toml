@@ -36,6 +36,11 @@ dependencies = [
     # sections — inefficient parsing paths consume excessive CPU). Comes in
     # as a transitive dep of fastapi/starlette for form parsing.
     "python-multipart>=0.0.26",
+    # Pin oauthlib to >=3.2.1 to address PYSEC-2022-269 / CVE-2022-36087
+    # (DoS via malicious redirect URIs in OAuth2 provider support and
+    # uri_validate). oauthlib comes in transitively via
+    # google-auth-oauthlib / requests-oauthlib (inbox extras).
+    "oauthlib>=3.2.1",
 ]
 
 [project.optional-dependencies]
