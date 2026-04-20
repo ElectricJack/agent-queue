@@ -22,6 +22,10 @@ dependencies = [
     "structlog>=25.1.0",
     "rich>=13.9",
     "pygments>=2.20.0",
+    # Pin zipp to >=3.19.1 to address CVE-2024-5569 (DoS via infinite loop
+    # when processing crafted zip files in zipp.Path operations). Older
+    # zipp comes in as a transitive dep of importlib-metadata.
+    "zipp>=3.19.1",
 ]
 
 [project.optional-dependencies]
