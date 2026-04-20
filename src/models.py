@@ -401,6 +401,11 @@ class AgentProfile:
     mcp_servers: dict[str, dict] = field(default_factory=dict)  # name -> server config
     system_prompt_suffix: str = ""  # appended to agent instructions
     install: dict = field(default_factory=dict)  # auto-install manifest (future)
+    # Optional override: when set, agent-type memory for this profile lives at
+    # ``agenttype_{memory_scope_id}`` instead of ``agenttype_{id}``.  Lets
+    # multiple profiles share one memory scope (e.g. claude-opus and
+    # claude-sonnet both set ``memory_scope_id='claude'``).  None = use id.
+    memory_scope_id: str | None = None
 
 
 @dataclass

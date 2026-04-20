@@ -732,6 +732,10 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     # Description lives in frontmatter.extra (not a dedicated field)
     if parsed.frontmatter.extra.get("description"):
         result["description"] = str(parsed.frontmatter.extra["description"])
+    # memory_scope_id — when present, redirects the profile's agent-type
+    # memory scope so multiple profiles can share one pool.
+    if parsed.frontmatter.extra.get("memory_scope_id"):
+        result["memory_scope_id"] = str(parsed.frontmatter.extra["memory_scope_id"])
 
     # Config → model, permission_mode
     if parsed.config.get("model"):

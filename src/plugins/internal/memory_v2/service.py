@@ -116,6 +116,11 @@ class MemoryV2Service:
         self._embedder: Any = None  # EmbeddingProvider
         self._router: Any = None  # CollectionRouter
         self._initialized = False
+        # Profile-to-shared-scope alias map.  Populated by
+        # :meth:`set_scope_alias_map` (typically from the plugin layer after
+        # loading agent_profiles rows).  Keyed by profile id, value is the
+        # shared ``memory_scope_id`` the profile redirects to.
+        self._scope_alias_map: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -194,6 +199,28 @@ class MemoryV2Service:
     # Scope resolution
     # ------------------------------------------------------------------
 
+    def set_scope_alias_map(self, aliases: dict[str, str]) -> None:
+        """Install the ``profile_id -> memory_scope_id`` alias map.
+
+        When an ``agenttype_{profile_id}`` scope resolves, the service
+        checks this map first: if a profile declares an alias, reads and
+        writes redirect to the aliased scope instead of its own id.  This
+        lets multiple profiles share a single memory collection and vault
+        directory (e.g. ``claude-opus`` and ``claude-sonnet`` both set
+        ``memory_scope_id='claude'`` so they pool insights).
+
+        An empty dict (or never-called) means 1:1 profile-to-scope,
+        preserving the original behaviour.
+
+        Parameters
+        ----------
+        aliases:
+            Mapping of profile id (as used in ``agenttype_{id}`` strings)
+            to target scope id.  Entries where value equals key are
+            stored but have no effect.
+        """
+        self._scope_alias_map = dict(aliases)
+
     def _resolve_scope(
         self,
         project_id: str,
@@ -223,6 +250,13 @@ class MemoryV2Service:
             return (MemoryScope.SUPERVISOR, None)
         if scope.startswith("agenttype_"):
             agent_type = scope.removeprefix("agenttype_")
+            # Honour a profile-level memory alias when present.  When
+            # ``claude-opus`` declares ``memory_scope_id='claude'``, a
+            # caller asking for ``agenttype_claude-opus`` transparently
+            # reads/writes from ``agenttype_claude`` instead.
+            aliased = self._scope_alias_map.get(agent_type)
+            if aliased and aliased != agent_type:
+                return (MemoryScope.AGENT_TYPE, aliased)
             return (MemoryScope.AGENT_TYPE, agent_type)
         if scope.startswith("project_"):
             pid = scope.removeprefix("project_")

@@ -1428,6 +1428,12 @@ class MemoryV2Plugin(InternalPlugin):
 
             if self._service.available:
                 self._log.info("MemoryV2Service backend connected")
+                # Populate the profile-to-shared-scope alias map so
+                # ``agenttype_{id}`` lookups redirect when a profile
+                # declares ``memory_scope_id``.  Done once at startup;
+                # profile changes require a daemon restart or an explicit
+                # ``refresh_memory_scope_aliases`` call to propagate.
+                await self._refresh_memory_scope_aliases(ctx)
                 # Start vault file watchers for auto-indexing
                 self._start_vault_watchers(config_svc, memory_cfg)
             else:
@@ -1440,6 +1446,40 @@ class MemoryV2Plugin(InternalPlugin):
                 exc_info=True,
             )
             self._service = None
+
+    async def _refresh_memory_scope_aliases(self, ctx: Any) -> None:
+        """Rebuild the service's profile-to-shared-scope alias map.
+
+        Reads all ``agent_profiles`` rows and forwards the subset that
+        declare ``memory_scope_id`` to ``MemoryV2Service.set_scope_alias_map``.
+        Silently no-ops when the DB is not reachable or the service is
+        unavailable.
+        """
+        if not self._service or not self._service.available:
+            return
+        try:
+            db_svc = ctx.get_service("db")
+        except Exception:
+            return
+        try:
+            profiles = await db_svc.list_profiles()
+        except Exception:
+            self._log.debug(
+                "Failed to load profiles for scope alias map", exc_info=True
+            )
+            return
+        aliases: dict[str, str] = {
+            p.id: p.memory_scope_id
+            for p in profiles
+            if getattr(p, "memory_scope_id", None)
+        }
+        self._service.set_scope_alias_map(aliases)
+        if aliases:
+            self._log.info(
+                "Memory scope alias map loaded (%d profile(s)): %s",
+                len(aliases),
+                ", ".join(f"{k}->{v}" for k, v in sorted(aliases.items())),
+            )
 
     def _get_memory_config(self, config_svc: Any) -> dict[str, Any]:
         """Extract memory configuration as a dict.

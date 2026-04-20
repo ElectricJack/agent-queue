@@ -29,6 +29,7 @@ class ProfileQueryMixin:
                     mcp_servers=json.dumps(profile.mcp_servers),
                     system_prompt_suffix=profile.system_prompt_suffix,
                     install=json.dumps(profile.install),
+                    memory_scope_id=profile.memory_scope_id,
                     created_at=now,
                     updated_at=now,
                 )
@@ -90,6 +91,7 @@ class ProfileQueryMixin:
                 mcp_servers=profile.mcp_servers,
                 system_prompt_suffix=profile.system_prompt_suffix,
                 install=profile.install,
+                memory_scope_id=profile.memory_scope_id,
             )
             return "updated"
         else:
@@ -122,4 +124,5 @@ class ProfileQueryMixin:
             mcp_servers=json.loads(row["mcp_servers"]),
             system_prompt_suffix=row["system_prompt_suffix"],
             install=json.loads(row["install"]),
+            memory_scope_id=row.get("memory_scope_id"),
         )
