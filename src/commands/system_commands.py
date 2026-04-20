@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import json
 import os
 import signal
 from pathlib import Path
@@ -446,8 +445,12 @@ class SystemCommandsMixin:
     # _cmd_read_file → moved to src/plugins/internal/files.py (aq-files plugin)
 
     async def _cmd_run_command(self, args: dict) -> dict:
-        command = args["command"]
-        working_dir = args["working_dir"]
+        command = args.get("command")
+        working_dir = args.get("working_dir")
+        if not command:
+            return {"error": "command is required"}
+        if not working_dir:
+            return {"error": "working_dir is required"}
         timeout = min(args.get("timeout", 30), 120)
 
         if not os.path.isabs(working_dir):
