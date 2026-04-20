@@ -19,7 +19,7 @@ Validation on sync (per spec Section 3):
 
 Patterns watched:
     - ``agent-types/*/profile.md`` -- per-agent-type profile definitions (includes supervisor)
-    - ``orchestrator/profile.md`` -- orchestrator profile definition
+    - ``projects/*/agent-types/*/profile.md`` -- per-project agent-type overrides
 
 See ``docs/specs/design/profiles.md`` Section 3 for the full sync model.
 """
@@ -42,10 +42,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Glob patterns for profile files (relative to vault root)
+# Glob patterns for profile files (relative to vault root).  The legacy
+# ``orchestrator/profile.md`` path was retired — ``supervisor`` is now
+# the singleton scope.  If stale files remain on disk the vault
+# structure migration handles them; we no longer match the pattern so
+# the profile row can't be resurrected via vault sync.
 PROFILE_PATTERNS: list[str] = [
     "agent-types/*/profile.md",
-    "orchestrator/profile.md",
     "projects/*/agent-types/*/profile.md",
 ]
 
@@ -101,7 +104,6 @@ def derive_profile_id(rel_path: str) -> str | None:
 
     - ``agent-types/coding/profile.md`` -> ``"coding"``
     - ``agent-types/supervisor/profile.md`` -> ``"supervisor"``
-    - ``orchestrator/profile.md`` -> ``"orchestrator"``
 
     Parameters
     ----------
@@ -129,9 +131,9 @@ def derive_profile_id(rel_path: str) -> str | None:
     if len(parts) >= 3 and parts[0] == "agent-types" and parts[-1] == "profile.md":
         return parts[1]
 
-    # orchestrator/profile.md -> orchestrator
-    if len(parts) == 2 and parts[0] == "orchestrator" and parts[-1] == "profile.md":
-        return "orchestrator"
+    # Legacy ``orchestrator/profile.md`` path was retired (supervisor is
+    # the singleton scope now).  Return None so any stale file there
+    # can't produce a DB row.
 
     return None
 

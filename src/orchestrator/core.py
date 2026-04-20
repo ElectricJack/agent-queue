@@ -915,29 +915,35 @@ class Orchestrator(
         # can skip recompilation of unchanged files (roadmap 5.1.5).
         await self.playbook_manager.load_from_disk()
 
-        # Reconcile vault playbooks with the compiled registry: compile any
-        # ``.md`` that's present on disk but not yet in the active registry.
-        # This catches default playbooks freshly installed by
-        # ``ensure_vault_layout`` — the vault watcher's initial snapshot would
-        # otherwise treat them as pre-existing and never emit a created event.
         vault_root = os.path.join(self.config.data_dir, "vault")
-        try:
-            await self.playbook_manager.reconcile_compilations(vault_root)
-        except Exception:
-            logger.warning(
-                "Playbook compilation reconcile failed", exc_info=True
-            )
 
-        # Prune orphans: compiled ``.json`` entries whose source ``.md`` is
-        # gone (manual `rm`, git checkout, etc.). Without this, they stay in
-        # the active registry after load_from_disk and keep firing triggers
-        # for a playbook that no longer exists in the vault.
+        # Prune orphans synchronously — this is a fast file-scan with no LLM
+        # calls, and we want orphan compiled JSONs out of ``_active`` before
+        # trigger dispatch wires up.
         try:
             await self.playbook_manager.prune_orphan_compilations(vault_root)
         except Exception:
             logger.warning(
                 "Orphan compiled-playbook prune failed", exc_info=True
             )
+
+        # Reconcile vault playbooks with the compiled registry: compile any
+        # ``.md`` that's present on disk but not yet in the active registry.
+        # Runs as a background task because each uncompiled playbook costs
+        # ~30s of LLM latency; blocking startup on a fresh vault full of
+        # defaults would delay profile sync, Discord bot init, and the HTTP
+        # server by many minutes.  Tasks that need a specific playbook
+        # should wait for its compile event or rely on the vault-watcher
+        # create-event path.
+        async def _reconcile_in_background() -> None:
+            try:
+                await self.playbook_manager.reconcile_compilations(vault_root)
+            except Exception:
+                logger.warning(
+                    "Playbook compilation reconcile failed", exc_info=True
+                )
+
+        asyncio.create_task(_reconcile_in_background())
 
         # Wire trigger dispatch: when a playbook's trigger event fires on
         # the bus, create a PlaybookRunner and execute the graph.  Without
