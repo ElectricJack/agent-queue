@@ -1337,6 +1337,7 @@ class MemoryV2Service:
         tags: list[str] | None = None,
         source_task: str | None = None,
         source_playbook: str | None = None,
+        replace_tags: bool = False,
     ) -> None:
         """Update an existing vault markdown file.
 
@@ -1345,6 +1346,13 @@ class MemoryV2Service:
         *content* is provided the file body is replaced.  If *original*
         is also provided, the body includes both the summary content and
         the original text under an ``## Original`` heading (per spec §9).
+
+        When ``replace_tags`` is True and ``tags`` is provided, the vault
+        ``tags:`` frontmatter entry is REPLACED outright (used by the
+        ``memory_update`` CLI tool where the caller's tag list is
+        authoritative). When False (default), tags are merged into the
+        existing list — the behavior needed by the dedup/merge flows that
+        want to accumulate provenance.
         """
         import json as _json
 
@@ -1399,19 +1407,22 @@ class MemoryV2Service:
                         f"{anchor.group(0)}\nsource_playbook: {source_playbook}",
                     )
 
-        # Merge tags if provided
-        if tags:
+        # Merge or replace tags if provided
+        if tags is not None:
             existing_tags_match = re.search(r"^tags:\s*(\[.*?\])$", text, flags=re.MULTILINE)
             if existing_tags_match:
-                try:
-                    existing = _json.loads(existing_tags_match.group(1))
-                    merged = list(dict.fromkeys(existing + tags))
-                    text = text.replace(
-                        existing_tags_match.group(0),
-                        f"tags: {_json.dumps(merged)}",
-                    )
-                except _json.JSONDecodeError:
-                    pass
+                if replace_tags:
+                    new_tags = list(tags)
+                else:
+                    try:
+                        existing = _json.loads(existing_tags_match.group(1))
+                        new_tags = list(dict.fromkeys(existing + tags))
+                    except _json.JSONDecodeError:
+                        new_tags = list(tags)
+                text = text.replace(
+                    existing_tags_match.group(0),
+                    f"tags: {_json.dumps(new_tags)}",
+                )
 
         # Replace body if new content provided
         if content:
@@ -1840,7 +1851,9 @@ class MemoryV2Service:
         entry["updated_at"] = now_ts
         await asyncio.to_thread(store.upsert, [entry])
 
-        # Update vault file if it exists
+        # Update vault file if it exists.  Tags are REPLACED here (not
+        # merged) — the caller of memory_update supplies the authoritative
+        # tag list and expects it to overwrite the stored set.
         source = entry.get("source", "")
         if source:
             vault_file = Path(source)
@@ -1849,10 +1862,17 @@ class MemoryV2Service:
                     vault_file,
                     content=content,
                     tags=tags,
+                    replace_tags=True,
                 )
                 # Update topic in vault frontmatter if changed
                 if topic is not None:
                     self._update_vault_topic(vault_file, topic)
+            else:
+                logger.warning(
+                    "update_document: vault file %s does not exist; "
+                    "Milvus entry updated but markdown is out of sync",
+                    source,
+                )
 
         mem_scope, scope_id = self._resolve_scope(project_id, scope)
         coll_name = collection_name(mem_scope, scope_id)
@@ -1933,14 +1953,32 @@ class MemoryV2Service:
 
         # Delete vault file if it exists and is a standalone insight or
         # knowledge file (consolidation promotes insights into knowledge/).
+        # Log a warning when the Milvus entry had a source path but the
+        # file wasn't actually unlinked — operators have reported orphaned
+        # markdown after delete_document, and silent skips made this hard
+        # to diagnose.
         deleted_vault = False
         if vault_path:
             vp = Path(vault_path)
-            if vp.exists() and (
-                "/insights/" in str(vp) or "/knowledge/" in str(vp)
-            ):
+            path_str = str(vp)
+            in_guard = "/insights/" in path_str or "/knowledge/" in path_str
+            if not vp.exists():
+                logger.warning(
+                    "delete_document: source path %s does not exist on disk; "
+                    "Milvus entry removed but no vault file to unlink",
+                    path_str,
+                )
+            elif not in_guard:
+                logger.warning(
+                    "delete_document: source path %s is outside the "
+                    "insights/knowledge safety guard; vault file not deleted. "
+                    "Remove it manually if intended.",
+                    path_str,
+                )
+            else:
                 vp.unlink()
                 deleted_vault = True
+                logger.info("delete_document: removed vault file %s", path_str)
 
         mem_scope, scope_id = self._resolve_scope(project_id, scope)
         coll_name = collection_name(mem_scope, scope_id)
