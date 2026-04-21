@@ -9,6 +9,7 @@ app.py        Entry point, shared helpers (_run, _get_client, console), status c
 tasks.py      aq task {list,details,create,approve,stop,restart,search,select}
 agents.py     aq agent {list,details}
 hooks.py      aq hook {list,runs,details}
+logs.py       aq logs — tail/filter JSONL log file directly (no daemon needed)
 projects.py   aq project {list,details,set}
 plugins.py    aq plugin {list,info,install,remove,enable,disable,update,config,logs,prompts,...}
 client.py     CLIClient — async DB wrapper for CLI operations (no running daemon needed)
