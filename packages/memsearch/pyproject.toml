@@ -24,7 +24,15 @@ dependencies = [
     # traversal vulnerability in PackageIndex._download_url that allows
     # writing files to arbitrary locations on the filesystem, which can
     # escalate to remote code execution. Pin to the fixed release.
-    "setuptools>=78.1.1",
+    #
+    # Upper bound: setuptools 82 dropped `pkg_resources`, exposing older
+    # system-packaged `pkg_resources` (Ubuntu 22.04 ships 59.6.0) that
+    # references the removed `pkgutil.ImpImporter` on Python 3.12 — this
+    # breaks `milvus_lite.__init__` (which imports `pkg_resources` at
+    # module load) and cascades into vault-watcher startup, memory_recall,
+    # memory_store, and MemoryExtractor. Keep pkg_resources available
+    # locally until milvus_lite migrates to importlib.metadata.
+    "setuptools>=78.1.1,<82",
     "tomli_w>=1.0",
     "tomli>=2.0; python_version < '3.11'",
     "openai>=1.0",

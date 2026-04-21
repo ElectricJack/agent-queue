@@ -6,7 +6,41 @@ and used across the application without circular dependencies.
 
 from __future__ import annotations
 
+import logging
+
 import discord
+
+logger = logging.getLogger(__name__)
+
+# Discord interaction-token error code emitted when a user clicks a button
+# on a message whose interaction token has expired (~3s for the initial
+# response, 15m for follow-ups). Surfacing these at ERROR level spams the
+# log with unactionable noise; the view's on_error swallows just this code.
+_UNKNOWN_INTERACTION_CODE = 10062
+
+
+class ExpiredInteractionTolerantView(discord.ui.View):
+    """discord.ui.View that silently drops expired-interaction errors.
+
+    Any other failure in a child-item callback falls through to the
+    default discord.py handler, preserving its ERROR-level traceback.
+    """
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        if (
+            isinstance(error, discord.NotFound)
+            and getattr(error, "code", None) == _UNKNOWN_INTERACTION_CODE
+        ):
+            logger.debug(
+                "Ignoring expired interaction on %s: %s", item, error
+            )
+            return
+        await super().on_error(interaction, error, item)
 
 # ---------------------------------------------------------------------------
 # Constants

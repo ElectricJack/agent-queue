@@ -34,6 +34,7 @@ from src.discord.embeds import (
     LIMIT_FIELD_VALUE,
 )
 from src.discord.project_wizard import ProjectInfoModal
+from src.discord.views import ExpiredInteractionTolerantView
 
 logger = logging.getLogger(__name__)
 
@@ -1843,7 +1844,7 @@ def setup_commands(bot: commands.Bot) -> None:
     # StatusReportView removed — /status now uses TaskReportView with
     # orchestrator state in header_lines for a consolidated view.
 
-    class TaskReportView(discord.ui.View):
+    class TaskReportView(ExpiredInteractionTolerantView):
         """Grouped task report with collapsible status sections and detail select.
 
         Displays tasks grouped by status with tree-view for parent/subtask
