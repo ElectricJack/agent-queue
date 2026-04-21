@@ -3,6 +3,12 @@ id: memory-consolidation
 triggers:
   - timer.24h
 scope: system
+llm_config:
+  provider: gemini
+  model: gemini-2.5-pro
+transition_llm_config:
+  provider: gemini
+  model: gemini-2.5-flash
 ---
 
 # Memory Consolidation
