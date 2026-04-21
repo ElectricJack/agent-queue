@@ -878,10 +878,21 @@ project details, read the project README or delegate to a project-aware agent.
 ## Config
 ```json
 {
-  "model": "claude-sonnet-4-6",
-  "permission_mode": "auto"
+  "provider": "gemini",
+  "model": "gemini-2.5-flash",
+  "max_tokens": 2048,
+  "playbook_max_tokens": 4096,
+  "thinking_budget": 8192
 }
 ```
+
+The supervisor runs a lightweight chat-provider LLM (not a Claude Code
+agent), so fields like ``permission_mode`` and Claude-specific settings
+do not apply here.  The supervisor reads ``provider``, ``model``,
+``max_tokens``, ``playbook_max_tokens`` and ``thinking_budget`` from
+this block at startup; anything not set here falls back to
+``config.chat_provider`` in ``~/.agent-queue/config.yaml`` (which also
+supplies environment-specific values like ``api_key`` / ``base_url``).
 
 ## Tools
 ```json

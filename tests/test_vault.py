@@ -1165,13 +1165,23 @@ def test_supervisor_profile_frontmatter():
 
 
 def test_supervisor_profile_config():
-    """The supervisor profile Config block has valid model and permission_mode."""
+    """The supervisor profile Config block has the chat-provider fields the supervisor reads at startup.
+
+    Supervisor reads ``provider``, ``model``, ``max_tokens``,
+    ``playbook_max_tokens``, and ``thinking_budget`` from this block —
+    see ``Supervisor._merge_profile_into_chat_config``.  Claude-specific
+    fields like ``permission_mode`` don't apply to the supervisor
+    (it's a chat-provider LLM, not a Claude Code agent).
+    """
     from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
     assert result.config is not None
+    assert "provider" in result.config
     assert "model" in result.config
-    assert "permission_mode" in result.config
+    assert "max_tokens" in result.config
+    assert "playbook_max_tokens" in result.config
+    assert "thinking_budget" in result.config
 
 
 def test_supervisor_profile_tools_deny_code_editing():
