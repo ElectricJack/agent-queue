@@ -6,6 +6,8 @@ import json
 import logging
 import time
 
+from src.logging_config import CorrelationContext
+
 logger = logging.getLogger(__name__)
 
 
@@ -359,13 +361,14 @@ class PlaybookCommandsMixin:
                     supervisor = None
 
             try:
-                result = await PlaybookRunner.handle_timeout(
-                    db_run=db_run,
-                    graph=timeout_graph or {},
-                    supervisor=supervisor,
-                    db=self.db,
-                    event_bus=event_bus,
-                )
+                with CorrelationContext(run_id=db_run.run_id):
+                    result = await PlaybookRunner.handle_timeout(
+                        db_run=db_run,
+                        graph=timeout_graph or {},
+                        supervisor=supervisor,
+                        db=self.db,
+                        event_bus=event_bus,
+                    )
             except Exception as exc:
                 logger.error("Timeout handling failed for run %s: %s", run_id, exc, exc_info=True)
                 await self.db.update_playbook_run(
@@ -430,14 +433,15 @@ class PlaybookCommandsMixin:
         from src.playbooks.runner import PlaybookRunner
 
         try:
-            result = await PlaybookRunner.resume(
-                db_run=db_run,
-                graph=graph,
-                supervisor=supervisor,
-                human_input=human_input,
-                db=self.db,
-                event_bus=event_bus,
-            )
+            with CorrelationContext(run_id=db_run.run_id):
+                result = await PlaybookRunner.resume(
+                    db_run=db_run,
+                    graph=graph,
+                    supervisor=supervisor,
+                    human_input=human_input,
+                    db=self.db,
+                    event_bus=event_bus,
+                )
         except Exception as exc:
             logger.error("Playbook resume failed for run %s: %s", run_id, exc, exc_info=True)
             return {"error": f"Resume failed: {exc}"}
@@ -797,7 +801,8 @@ class PlaybookCommandsMixin:
         )
 
         try:
-            result = await runner.run()
+            with CorrelationContext(run_id=runner.run_id):
+                result = await runner.run()
         except Exception as exc:
             logger.error(
                 "Manual playbook run failed for '%s': %s",
@@ -1503,13 +1508,14 @@ class PlaybookCommandsMixin:
             event_bus = getattr(self.orchestrator, "bus", None)
 
             try:
-                result = await PlaybookRunner.handle_timeout(
-                    db_run=db_run,
-                    graph=graph,
-                    supervisor=supervisor,
-                    db=self.db,
-                    event_bus=event_bus,
-                )
+                with CorrelationContext(run_id=db_run.run_id):
+                    result = await PlaybookRunner.handle_timeout(
+                        db_run=db_run,
+                        graph=graph,
+                        supervisor=supervisor,
+                        db=self.db,
+                        event_bus=event_bus,
+                    )
                 results.append(
                     {
                         "run_id": db_run.run_id,

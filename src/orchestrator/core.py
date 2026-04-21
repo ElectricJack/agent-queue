@@ -78,6 +78,7 @@ from typing import Any
 
 from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
+from src.logging_config import CorrelationContext
 from src.database import create_database
 from src.notifications.builder import build_task_detail
 from src.notifications.events import (
@@ -554,14 +555,15 @@ class Orchestrator(
             )
 
             async def _run() -> None:
-                try:
-                    await runner.run()
-                except Exception:
-                    logger.exception(
-                        "Playbook '%s' run failed (trigger event=%s)",
-                        playbook.id,
-                        event_data.get("type") or event_data.get("_event_type"),
-                    )
+                with CorrelationContext(run_id=runner.run_id):
+                    try:
+                        await runner.run()
+                    except Exception:
+                        logger.exception(
+                            "Playbook '%s' run failed (trigger event=%s)",
+                            playbook.id,
+                            event_data.get("type") or event_data.get("_event_type"),
+                        )
 
             # Detach so the EventBus dispatch loop isn't blocked on the run.
             asyncio.create_task(
@@ -925,9 +927,7 @@ class Orchestrator(
         try:
             await self.playbook_manager.prune_orphan_compilations(vault_root)
         except Exception:
-            logger.warning(
-                "Orphan compiled-playbook prune failed", exc_info=True
-            )
+            logger.warning("Orphan compiled-playbook prune failed", exc_info=True)
 
         # Reconcile vault playbooks with the compiled registry: compile any
         # ``.md`` that's present on disk but not yet in the active registry.
@@ -941,9 +941,7 @@ class Orchestrator(
             try:
                 await self.playbook_manager.reconcile_compilations(vault_root)
             except Exception:
-                logger.warning(
-                    "Playbook compilation reconcile failed", exc_info=True
-                )
+                logger.warning("Playbook compilation reconcile failed", exc_info=True)
 
         asyncio.create_task(_reconcile_in_background())
 
