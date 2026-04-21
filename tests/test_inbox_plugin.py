@@ -338,12 +338,17 @@ async def test_poller_emits_correct_event_types(tmp_path):
                     "threadId": "thr-1",
                     "snippet": "hello",
                     "internalDate": "1700000000000",
-                    "payload": {"headers": [
-                        {"name": "From", "value": "Jack <jack@example.com>"},
-                        {"name": "Subject", "value": "hi"},
-                        {"name": "Authentication-Results",
-                         "value": "mx.google.com; dkim=pass header.d=example.com; spf=pass; dmarc=pass"},
-                    ]},
+                    # base64url("hello world\nfull body here") = "aGVsbG8gd29ybGQKZnVsbCBib2R5IGhlcmU="
+                    "payload": {
+                        "mimeType": "text/plain",
+                        "headers": [
+                            {"name": "From", "value": "Jack <jack@example.com>"},
+                            {"name": "Subject", "value": "hi"},
+                            {"name": "Authentication-Results",
+                             "value": "mx.google.com; dkim=pass header.d=example.com; spf=pass; dmarc=pass"},
+                        ],
+                        "body": {"data": "aGVsbG8gd29ybGQKZnVsbCBib2R5IGhlcmU="},
+                    },
                 },
                 "msg-stranger": {
                     "threadId": "thr-2",
@@ -384,7 +389,7 @@ async def test_poller_emits_correct_event_types(tmp_path):
         def list_new_message_ids(self, *, history_id, query):
             return list(self._messages.keys()), "999"
 
-        def get_message_metadata(self, msg_id):
+        def get_message(self, msg_id):
             return self._messages[msg_id]
 
         def mark_read(self, msg_id):
@@ -413,6 +418,7 @@ async def test_poller_emits_correct_event_types(tmp_path):
     assert t == EVENT_ALLOWLISTED
     assert p["classification_reasons"] == []
     assert p["from"] == "jack@example.com"
+    assert p["full_body"] == "hello world\nfull body here"
 
     # Stranger: authenticated but not in allowlist.
     t, p = events_by_msg["msg-stranger"]
