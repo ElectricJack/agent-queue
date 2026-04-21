@@ -361,6 +361,13 @@ class ClaudeAdapter(AgentAdapter):
                 cwd=self._task.checkout_path or None,
                 cli_path=system_claude,  # None → falls back to bundled binary
                 stderr=_capture_stderr,
+                # Isolate the agent from the host's Claude CLI config. Without this,
+                # user-level claude.ai connectors (Gmail/Drive/Calendar) bleed into
+                # every agent — including ones in a broken "needs-auth" state, which
+                # then show up as tools the agent can see but never call successfully.
+                # Agent-queue owns the tool surface via --mcp-config; nothing else
+                # should leak in.
+                extra_args={"strict-mcp-config": None},
             )
             if self._config.model:
                 options.model = self._config.model
@@ -895,6 +902,11 @@ class ClaudeAdapter(AgentAdapter):
         # L0 Identity tier — agent role (~50 tokens, always present at task start)
         if self._task.l0_role:
             builder.set_l0_role(self._task.l0_role)
+
+        # Project-scoped profile's role — appended after L0 so the agent sees
+        # base agent-type identity followed by project specialisation.
+        if self._task.project_override_role:
+            builder.set_override_content(self._task.project_override_role)
 
         # L1 Critical Facts tier — project/agent-type KV entries (~200 tokens)
         if self._task.l1_facts:

@@ -422,9 +422,30 @@ class ExecutionMixin:
         # ------------------------------------------------------------------ #
         # L0 Identity tier and L1 Critical Facts tier.
         # ------------------------------------------------------------------ #
+        # Profile chain: the global agent-type profile (e.g. claude-opus)
+        # provides the base Role; the project-scoped profile (e.g. Meredith
+        # Oxalis) supplies a project specialisation on top.  We expose them
+        # as two separate tiers so the prompt builder keeps them ordered:
+        # l0_role → project_override_role → L1 facts → ...  Before this
+        # chain existed, the scoped profile fully replaced the base, so any
+        # role guidance from the agent-type was silently dropped.
         l0_role = ""
+        project_override_role = ""
         if profile and profile.system_prompt_suffix:
-            l0_role = profile.system_prompt_suffix.strip()
+            scoped_suffix = profile.system_prompt_suffix.strip()
+            base_agent_type = underlying_agent_type(profile.id)
+            is_scoped = profile.id.startswith("project:")
+            if is_scoped and base_agent_type:
+                global_profile = await self.db.get_profile(base_agent_type)
+                if global_profile and global_profile.system_prompt_suffix:
+                    l0_role = global_profile.system_prompt_suffix.strip()
+                    project_override_role = scoped_suffix
+                else:
+                    # No global parent — fall back to scoped suffix as the
+                    # only role source.  Keeps single-profile projects working.
+                    l0_role = scoped_suffix
+            else:
+                l0_role = scoped_suffix
 
         l1_facts = ""
         l1_guidance = ""
@@ -544,6 +565,7 @@ class ExecutionMixin:
             task_id=task.id,
             description=full_description,
             l0_role=l0_role,
+            project_override_role=project_override_role,
             l1_facts=l1_facts,
             l1_guidance=l1_guidance,
             l2_context=l2_context,

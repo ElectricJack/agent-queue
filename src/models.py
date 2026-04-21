@@ -422,6 +422,10 @@ class TaskContext:
     description: str
     task_id: str = ""
     l0_role: str = ""  # L0 Identity tier (~50 tokens, always present at task start)
+    # Project-specific role override, applied AFTER l0_role. Sourced from the
+    # scoped profile's system_prompt_suffix so the agent sees: base agent-type
+    # role (l0_role) + project specialisation (project_override_role).
+    project_override_role: str = ""
     l1_facts: str = ""  # L1 Critical Facts tier (~200 tokens, always present at task start)
     l1_guidance: str = ""  # L1 Guidance tier (~300 tokens, deterministic behavioral rules)
     l2_context: str = ""  # L2 Topic Context tier (~500 tokens, semantic search results)
