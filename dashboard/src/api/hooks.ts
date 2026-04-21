@@ -211,3 +211,125 @@ export function useCreateTask() {
 export function useProvideInput() {
   return useTaskMutation<{ task_id: string; input: string }>("/system/provide-input");
 }
+
+// --- Playbooks ---
+
+export interface PlaybookLastRun {
+  run_id: string;
+  status: string;
+  started_at?: number;
+  completed_at?: number | null;
+  tokens_used?: number;
+}
+
+export interface PlaybookSummary {
+  id: string;
+  scope: string;
+  triggers: string[];
+  version: number;
+  compiled_at?: number;
+  node_count: number;
+  status: string;
+  running_count: number;
+  scope_identifier?: string;
+  agent_type?: string;
+  cooldown_seconds?: number;
+  cooldown_remaining?: number;
+  max_tokens?: number;
+  last_run?: PlaybookLastRun;
+}
+
+export interface PlaybookRunSummary {
+  run_id: string;
+  playbook_id: string;
+  playbook_version: number;
+  status: string;
+  current_node?: string | null;
+  tokens_used?: number;
+  started_at?: number;
+  completed_at?: number | null;
+  path?: Array<{ node_id: string; status: string }>;
+  duration_seconds?: number;
+  error?: string;
+}
+
+export interface PlaybookSource {
+  playbook_id: string;
+  path: string;
+  markdown: string;
+  source_hash: string;
+}
+
+export interface PlaybookUpdateResult {
+  playbook_id: string;
+  source_hash: string;
+  compiled: boolean;
+  version?: number;
+  node_count?: number;
+  scope?: string;
+  triggers?: string[];
+  errors?: string[];
+  retries_used?: number;
+  // Conflict response
+  error?: string;
+  reason?: string;
+  current_source_hash?: string;
+  expected_source_hash?: string;
+}
+
+export function usePlaybooks(scope?: string) {
+  return useQuery({
+    queryKey: ["playbooks", scope ?? "all"],
+    queryFn: async () => {
+      const body: Record<string, unknown> = {};
+      if (scope) body.scope = scope;
+      const data = await apiPost<{ playbooks: PlaybookSummary[]; count: number }>(
+        "/playbook/list",
+        body,
+      );
+      return data.playbooks ?? [];
+    },
+    refetchInterval: 30_000,
+  });
+}
+
+export function usePlaybookSource(playbookId: string) {
+  return useQuery({
+    queryKey: ["playbook-source", playbookId],
+    queryFn: () => apiPost<PlaybookSource>("/playbook/get-source", { playbook_id: playbookId }),
+    enabled: !!playbookId,
+  });
+}
+
+export function usePlaybookRuns(playbookId?: string, status?: string, limit = 20) {
+  return useQuery({
+    queryKey: ["playbook-runs", playbookId ?? "all", status ?? "any", limit],
+    queryFn: async () => {
+      const body: Record<string, unknown> = { limit };
+      if (playbookId) body.playbook_id = playbookId;
+      if (status) body.status = status;
+      const data = await apiPost<{ runs: PlaybookRunSummary[]; count: number }>(
+        "/playbook/list-runs",
+        body,
+      );
+      return data.runs ?? [];
+    },
+    refetchInterval: 30_000,
+    enabled: !!playbookId || playbookId === undefined,
+  });
+}
+
+export function useUpdatePlaybookSource() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      playbook_id: string;
+      markdown: string;
+      expected_source_hash?: string;
+    }) => apiPost<PlaybookUpdateResult>("/playbook/update-source", input),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["playbook-source", variables.playbook_id] });
+      queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+    },
+  });
+}
