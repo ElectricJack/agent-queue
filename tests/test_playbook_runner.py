@@ -8707,6 +8707,51 @@ class TestForEachCollectsParsedJson:
         assert isinstance(results, list) and len(results) == 2
         assert all(isinstance(r, str) for r in results)
 
+    async def test_event_accessible_via_template(
+        self, mock_supervisor, event_data
+    ):
+        """The trigger event is accessible in node prompts as `{{event.*}}`.
+
+        Regression for the email-allowlisted playbook run (3f1d7750-7d0):
+        the prompt used `{{event.thread_id}}` and `{{event.from.email}}`,
+        but `event` was not exposed to templates — it lived only on the
+        runner. The LLM got `{{UNRESOLVED:event.thread_id}}` in its prompt
+        and hallucinated task creation without actually calling create_task.
+        """
+        captured_prompts: list[str] = []
+
+        async def chat_side_effect(*args, **kwargs):
+            captured_prompts.append(kwargs["text"])
+            return "Done."
+
+        mock_supervisor.chat.side_effect = chat_side_effect
+
+        graph = {
+            "id": "test-pb",
+            "version": 1,
+            "nodes": {
+                "act": {
+                    "entry": True,
+                    "prompt": (
+                        "Type: {{event.type}}, "
+                        "project: {{event.project_id}}, "
+                        "commit: {{event.commit_hash}}"
+                    ),
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        assert len(captured_prompts) == 1
+        rendered = captured_prompts[0]
+        assert "UNRESOLVED" not in rendered, f"Unresolved vars: {rendered}"
+        assert "test-proj" in rendered
+        assert "abc123" in rendered
+        assert "git.commit" in rendered
+
     async def test_json_with_trailing_prose_parsed(
         self, mock_supervisor, event_data
     ):

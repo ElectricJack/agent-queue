@@ -118,7 +118,17 @@ class ContextMixin:
         """
         raw = node.get("prompt", "")
         if "{{" in raw:
-            return self._render_template(raw, extra_vars)
+            # Inject the trigger event as `event` so playbooks can reference
+            # `{{event.field}}` from any node (e.g. email playbooks use
+            # `{{event.thread_id}}` to reply to the original thread). Per-node
+            # extra_vars still override in case of collision.
+            merged: dict[str, Any] = {}
+            trigger_event = getattr(self, "event", None)
+            if trigger_event is not None:
+                merged["event"] = trigger_event
+            if extra_vars:
+                merged.update(extra_vars)
+            return self._render_template(raw, merged)
         return raw
 
     def _build_node_context(self) -> list[dict]:
@@ -178,6 +188,15 @@ class ContextMixin:
 
             val = self._resolve_output_var(expr, extra_vars)
             if val is None:
+                logger.warning(
+                    "Template variable '%s' did not resolve — prompt will "
+                    "contain {{UNRESOLVED:%s}}. Available node_outputs: %s; "
+                    "extra_vars: %s",
+                    expr,
+                    expr,
+                    sorted(self.node_outputs.keys()),
+                    sorted(extra_vars.keys()) if extra_vars else [],
+                )
                 return f"{{{{UNRESOLVED:{expr}}}}}"
             if isinstance(val, (dict, list)):
                 return json.dumps(val)
