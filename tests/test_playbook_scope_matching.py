@@ -157,18 +157,14 @@ class TestMatchesScope:
         mgr = _make_manager()
         pb = _make_playbook(playbook_id="coding-pb", scope="agent-type:coding")
         mgr._active[pb.id] = pb
-        assert mgr._matches_scope(
-            pb, {"project_id": "myapp", "agent_type": "coding"}
-        ) is True
+        assert mgr._matches_scope(pb, {"project_id": "myapp", "agent_type": "coding"}) is True
 
     def test_agent_type_scope_skips_event_with_wrong_type(self) -> None:
         """Agent-type playbooks skip events with a different agent_type."""
         mgr = _make_manager()
         pb = _make_playbook(playbook_id="coding-pb", scope="agent-type:coding")
         mgr._active[pb.id] = pb
-        assert mgr._matches_scope(
-            pb, {"project_id": "myapp", "agent_type": "review"}
-        ) is False
+        assert mgr._matches_scope(pb, {"project_id": "myapp", "agent_type": "review"}) is False
 
     def test_agent_type_scope_skips_event_without_agent_type(self) -> None:
         """Agent-type playbooks skip events that have no agent_type field."""
@@ -185,18 +181,14 @@ class TestMatchesScope:
         mgr = _make_manager()
         pb = _make_playbook(playbook_id="coding-pb", scope="agent-type:coding")
         mgr._active[pb.id] = pb
-        assert mgr._matches_scope(
-            pb, {"agent_type": "coding"}
-        ) is False
+        assert mgr._matches_scope(pb, {"agent_type": "coding"}) is False
 
     def test_agent_type_scope_with_null_project_id(self) -> None:
         """Agent-type playbooks skip events where project_id is explicitly None."""
         mgr = _make_manager()
         pb = _make_playbook(playbook_id="coding-pb", scope="agent-type:coding")
         mgr._active[pb.id] = pb
-        assert mgr._matches_scope(
-            pb, {"project_id": None, "agent_type": "coding"}
-        ) is False
+        assert mgr._matches_scope(pb, {"project_id": None, "agent_type": "coding"}) is False
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +285,7 @@ class TestScopeMatchingEventBusIntegration:
     def on_trigger(self, trigger_log: list):
         async def callback(playbook: CompiledPlaybook, data: dict) -> None:
             trigger_log.append((playbook.id, data))
+
         return callback
 
     async def test_system_playbook_fires_for_project_event(
@@ -366,19 +359,19 @@ class TestScopeMatchingEventBusIntegration:
     async def test_project_playbook_skips_no_project(
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
-        """Project-scoped playbook does NOT fire for events without project_id."""
+        """Project-scoped playbook does NOT fire for non-timer events without project_id."""
         mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_playbook(
             playbook_id="quality-gate",
             scope="project",
-            triggers=["timer.30m"],
+            triggers=["config.reloaded"],
         )
         mgr._active[pb.id] = pb
         mgr._index_triggers(pb)
         mgr._scope_identifiers[pb.id] = "myapp"
         mgr.subscribe_to_events()
 
-        await event_bus.emit("timer.30m", {"tick_time": "2026-01-01T00:00:00Z"})
+        await event_bus.emit("config.reloaded", {})
 
         assert len(trigger_log) == 0
 
@@ -532,12 +525,14 @@ class TestScopeMatchingEventBusIntegration:
         assert len(trigger_log) == 1
         assert trigger_log[0][0] == "sys-pb"
 
-    async def test_timer_event_is_system_only(
+    async def test_timer_event_fires_project_scoped_playbook(
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
-        """Timer events (no project_id) only trigger system-scoped playbooks.
+        """Timer events fire both system- and project-scoped playbooks.
 
-        Per spec: timer events carry project_id=null — inherently system-scoped.
+        Per spec §7 timer/cron events are system-level (project_id=null),
+        but project-scoped playbooks still fire as if the tick had been
+        scoped to the playbook's own project.
         """
         mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
 
@@ -561,8 +556,62 @@ class TestScopeMatchingEventBusIntegration:
 
         await event_bus.emit("timer.30m", {"tick_time": "2026-01-01", "interval": "30m"})
 
+        triggered = {entry[0]: entry[1] for entry in trigger_log}
+        assert "sys-timer" in triggered
+        assert "proj-timer" in triggered
+        assert triggered["proj-timer"]["project_id"] == "myapp"
+        assert len(trigger_log) == 2
+
+    async def test_cron_event_fires_project_scoped_playbook(
+        self, event_bus: EventBus, trigger_log: list, on_trigger
+    ) -> None:
+        """Cron events fire project-scoped playbooks with injected project_id.
+
+        Regression: a project-scoped playbook with `cron.08:00` trigger was
+        silently dropped because the timer service emits cron events with
+        project_id=null.
+        """
+        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+
+        pb = _make_playbook(
+            playbook_id="morning-outfit",
+            scope="project",
+            triggers=["cron.08:00"],
+        )
+        mgr._active[pb.id] = pb
+        mgr._index_triggers(pb)
+        mgr._scope_identifiers[pb.id] = "my-playbooks"
+        mgr.subscribe_to_events()
+
+        await event_bus.emit(
+            "cron.08:00", {"tick_time": "2026-04-21T08:00:00", "interval": "08:00"}
+        )
+
         assert len(trigger_log) == 1
-        assert trigger_log[0][0] == "sys-timer"
+        assert trigger_log[0][0] == "morning-outfit"
+        assert trigger_log[0][1]["project_id"] == "my-playbooks"
+
+    async def test_timer_event_skips_project_scoped_without_identifier(
+        self, event_bus: EventBus, trigger_log: list, on_trigger
+    ) -> None:
+        """Project-scoped playbook with no scope_identifier falls back to
+        the old behavior: timer events without project_id are skipped.
+        """
+        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+
+        pb = _make_playbook(
+            playbook_id="orphan-pb",
+            scope="project",
+            triggers=["timer.30m"],
+        )
+        mgr._active[pb.id] = pb
+        mgr._index_triggers(pb)
+        # No scope_identifier set — no project to inject
+        mgr.subscribe_to_events()
+
+        await event_bus.emit("timer.30m", {"tick_time": "2026-01-01", "interval": "30m"})
+
+        assert len(trigger_log) == 0
 
     # -------------------------------------------------------------------
     # Roadmap 5.3.8 — dedicated test cases (a)-(g)
