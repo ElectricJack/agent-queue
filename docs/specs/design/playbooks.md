@@ -608,8 +608,10 @@ synthetic `timer.*` and `cron.*` events.
    scheduling; playbooks are the target use case.
 
 Timer/cron events carry `project_id: null` — they are inherently system-scoped.
-A project-scoped playbook can trigger on them, but each fires once globally, not
-once per project.
+A project-scoped playbook can still trigger on them: the executor injects the
+playbook's own `project_id` before scope matching, so the run is scoped to that
+project. Each (playbook, trigger) pair fires once per tick — the same cron
+tick fires each subscribing playbook once, scoped to whichever project owns it.
 
 ### Event-to-Scope Matching
 
@@ -622,10 +624,14 @@ file/folder events, note events. These match:
 - Project-scoped playbooks for the matching project
 - Agent-type playbooks matching the originating agent's type
 
-**Events without `project_id`:** Timer events, config events, plugin events,
+**Events without `project_id`:** Config events, plugin events,
 `playbook.run.completed` from system-scoped playbooks. These match:
 - System-scoped playbooks only
 - Project-scoped playbooks are skipped (no project to match)
+
+**Timer/cron events** are a special case: emitted by the system-level scheduler
+without a `project_id`, but project-scoped subscribers still fire with their
+own `project_id` auto-injected by the executor (see above).
 
 **Enforcement:** All events emitted by the orchestrator and git manager MUST include
 `project_id` when the operation is project-scoped. The EventBus does not enforce this

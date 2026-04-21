@@ -34,6 +34,8 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from src.logging_config import CorrelationContext
+
 if TYPE_CHECKING:
     from src.database.base import DatabaseBackend
     from src.event_bus import EventBus
@@ -276,14 +278,15 @@ class WorkflowStageResumeHandler:
             # Strip internal fields from event data before passing to the runner
             clean_data = {k: v for k, v in event_data.items() if not k.startswith("_")}
 
-            result = await PlaybookRunner.resume_from_event(
-                db_run=db_run,
-                graph=graph,
-                supervisor=supervisor,
-                event_data=clean_data,
-                db=self._db,
-                event_bus=self._bus,
-            )
+            with CorrelationContext(run_id=db_run.run_id):
+                result = await PlaybookRunner.resume_from_event(
+                    db_run=db_run,
+                    graph=graph,
+                    supervisor=supervisor,
+                    event_data=clean_data,
+                    db=self._db,
+                    event_bus=self._bus,
+                )
 
             logger.info(
                 "Run '%s' resumed via workflow.stage.completed: status=%s, tokens=%d",

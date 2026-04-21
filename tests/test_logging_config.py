@@ -53,6 +53,15 @@ class TestCorrelationContext:
             }
         assert get_correlation_context() == {}
 
+    def test_run_id_via_extra_kwargs(self):
+        # run_id isn't a named parameter but flows through **extra — used by
+        # playbook runner call sites to tag logs with the playbook run id.
+        with CorrelationContext(run_id="bb8e481e-7df", task_id="t-1"):
+            ctx = get_correlation_context()
+            assert ctx["run_id"] == "bb8e481e-7df"
+            assert ctx["task_id"] == "t-1"
+        assert "run_id" not in get_correlation_context()
+
     def test_nested_context(self):
         with CorrelationContext(task_id="outer", project_id="proj"):
             with CorrelationContext(task_id="inner"):

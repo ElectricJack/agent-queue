@@ -797,6 +797,19 @@ class PlaybookManager:
         # Events with project_id match system + matching project + matching
         # agent-type.  Events without project_id match system only.
         # See spec §7 "Event-to-Scope Matching".
+        #
+        # Timer/cron events carry project_id=null because they originate from
+        # a system-level scheduler, but per spec §7 project-scoped playbooks
+        # still fire on them — "as if" the tick had been scoped to the
+        # playbook's own project. Inject that project_id ahead of the scope
+        # check so _matches_scope accepts it.
+        if data.get("project_id") is None and trigger.event_type.startswith(("timer.", "cron.")):
+            scope_enum, _ = playbook.parse_scope()
+            if scope_enum == PlaybookScope.PROJECT:
+                scope_id = self._scope_identifiers.get(playbook_id)
+                if scope_id:
+                    data = {**data, "project_id": scope_id}
+
         if not self._matches_scope(playbook, data):
             return
 
@@ -1132,9 +1145,7 @@ class PlaybookManager:
                 abs_path = os.path.join(dirpath, filename)
                 rel_path = os.path.relpath(abs_path, vault_root).replace("\\", "/")
 
-                if not any(
-                    fnmatch.fnmatch(rel_path, pattern) for pattern in PLAYBOOK_PATTERNS
-                ):
+                if not any(fnmatch.fnmatch(rel_path, pattern) for pattern in PLAYBOOK_PATTERNS):
                     continue
 
                 try:
@@ -1147,9 +1158,7 @@ class PlaybookManager:
                 frontmatter, _ = PlaybookCompiler._parse_frontmatter(markdown)
                 playbook_id = frontmatter.get("id", "").strip()
                 if not playbook_id:
-                    result["errors"].append(
-                        (rel_path, ["missing or empty frontmatter `id`"])
-                    )
+                    result["errors"].append((rel_path, ["missing or empty frontmatter `id`"]))
                     continue
 
                 if playbook_id in self._active:
@@ -1176,9 +1185,7 @@ class PlaybookManager:
                     else:
                         result["errors"].append((rel_path, list(compile_result.errors)))
                 except Exception as exc:
-                    logger.warning(
-                        "Reconcile: compilation failed for %s", rel_path, exc_info=True
-                    )
+                    logger.warning("Reconcile: compilation failed for %s", rel_path, exc_info=True)
                     result["errors"].append((rel_path, [str(exc)]))
 
         if result["compiled"]:
