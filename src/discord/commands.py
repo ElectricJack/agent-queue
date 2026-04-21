@@ -3864,8 +3864,22 @@ def setup_commands(bot: commands.Bot) -> None:
         playbook_id: str,
     ):
         await interaction.response.defer()
+
+        # Carry the invoking channel into the event so system-scoped playbooks
+        # can tell apart "run from a project channel → act on that project"
+        # from "run from the system channel → act on everything". Without this
+        # a user running `/playbook-run` in a project channel had no way to
+        # scope the playbook to that project.
+        event: dict = {"type": "manual"}
+        channel_id = getattr(interaction, "channel_id", None)
+        if channel_id:
+            event["channel_id"] = str(channel_id)
+            project_id = bot.get_project_for_channel(channel_id)
+            if project_id:
+                event["project_id"] = project_id
+
         result = await handler.execute(
-            "run_playbook", {"playbook_id": playbook_id, "event": {"type": "manual"}}
+            "run_playbook", {"playbook_id": playbook_id, "event": event}
         )
         if "error" in result and "run_id" not in result:
             await _send_error(interaction, result["error"], followup=True)

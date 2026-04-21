@@ -13,89 +13,67 @@ transition_llm_config:
 
 # Memory Consolidation
 
-Nightly pass: for each active project, decide whether its
-`memory/insights/` vault directory has changed enough to warrant a
-consolidation task. If so, create one supervisor task per project. Do
-not perform the consolidation itself in this playbook — the supervisor
-task does the judgement work with full tool access.
+Decide which projects need a consolidation pass, then create one
+supervisor task per target project. **Do not** perform the
+consolidation itself — the supervisor task does that with full tool
+access.
 
 Each step must end with a **single JSON object** in the response so the
 runner can extract structured output for downstream `for_each` loops.
 Prose reasoning before the JSON is fine, but the final line must be
 pure JSON (no code fence).
 
-## Step 1 — Enumerate active projects
+## Step 1 — Pick the target projects
 
-Call `list_projects`. Filter to projects whose status is `ACTIVE` (skip
-`ARCHIVED`, `PAUSED`). For each remaining project, call
-`memory_search` with the project id to confirm it has at least one
-insight — skip projects with zero insights.
+Branch on the incoming event:
 
-End the step with a JSON object of shape:
+1. **Project-scoped manual run** — `event.project_id` is set.
+   The user invoked this from a specific project's channel. Emit
+   exactly that one project. Skip every other rule. This path never
+   applies churn thresholds — if the user asked, they want a task.
 
-```json
-{"projects": [{"id": "<project_id>", "name": "<project_name>"}, ...]}
-```
+2. **System-wide manual run** — `event.type == "manual"` and no
+   `project_id`. The user invoked from the system channel and wants a
+   pass for every active project. Call `list_projects`, keep only
+   those with `status == "ACTIVE"`, and emit all of them. Again, no
+   churn thresholds — manual intent wins.
 
-If no projects qualify, emit `{"projects": []}` and the playbook will
-end cleanly.
+3. **Timer run** — `event.type == "timer.24h"` (or any
+   non-manual type). Call `list_projects`, filter to `ACTIVE`, then
+   for each one read
+   `~/.agent-queue/vault/projects/<project_id>/memory/consolidation.md`
+   (treat missing file as `last_consolidated: null`) and count the
+   insight files under
+   `~/.agent-queue/vault/projects/<project_id>/memory/insights/`
+   whose mtime is newer than `last_consolidated` (use `null` ⇒ count
+   all files). Keep projects where **either**:
+   - `churn_count >= 5` and `last_consolidated` is null or older than
+     3 days, or
+   - `last_consolidated` is null and the project has at least 3
+     insights total (bootstrap the first pass).
 
-## Step 2 — Read each project's consolidation marker
-
-For each project in `projects`, read
-`~/.agent-queue/vault/projects/<project_id>/memory/consolidation.md`.
-Parse the frontmatter. If the file is missing, treat
-`last_consolidated` as `null`.
-
-End this step with a JSON object of shape:
-
-```json
-{"projects_with_consolidation_data": [
-  {
-    "id": "<project_id>",
-    "name": "<project_name>",
-    "last_consolidated": "<iso-timestamp-or-null>"
-  },
-  ...
-]}
-```
-
-## Step 3 — Churn check
-
-For each entry in `projects_with_consolidation_data`, count the
-insights whose `updated` timestamp is newer than `last_consolidated`.
-Use `memory_search` with `top_k: 500` scoped to the project, or fall
-back to listing `vault/projects/<project_id>/memory/insights/` and
-counting files with a newer mtime.
-
-Mark a project as qualifying when **either** of these is true:
-
-- `churn_count >= 10` AND `last_consolidated` is older than 7 days (or
-  null).
-- `last_consolidated` is `null` and the project has at least 5
-  insights total — the first pass is the most valuable one.
-
-End this step with:
+End the step with:
 
 ```json
-{"qualifying_projects": [
+{"targets": [
   {
     "id": "<project_id>",
     "name": "<project_name>",
     "last_consolidated": "<iso-or-null>",
-    "churn_count": <int>
+    "churn_count": <int-or-null>
   },
   ...
 ]}
 ```
 
-If `qualifying_projects` is empty, the playbook ends cleanly at the
-next node.
+`last_consolidated` and `churn_count` may be `null` on the manual
+paths — the supervisor task can recompute them. If `targets` is empty
+(timer run with no qualifying projects), the playbook ends cleanly at
+the next node.
 
-## Step 4 — Create one consolidation task per qualifying project
+## Step 2 — Create one consolidation task per target
 
-For **each** entry in `qualifying_projects`, call `create_task` **once**
-with:
+For **each** entry in `targets`, call `create_task` **once** with:
 
 - `project_id`: the project's id
 - `agent_type`: `"supervisor"`
@@ -107,19 +85,19 @@ with:
   `{project_id}`, `{project_name}`,
   `{insights_dir}` (→ `~/.agent-queue/vault/projects/<project_id>/memory/insights`),
   `{knowledge_dir}` (→ `~/.agent-queue/vault/projects/<project_id>/memory/knowledge`),
-  `{last_consolidated}` (→ the value from Step 3 or `never`),
-  `{churn_count}` (→ the value from Step 3).
+  `{last_consolidated}` (→ value from Step 1, or `never` if null),
+  `{churn_count}` (→ value from Step 1, or `unknown` if null).
 
-Do **not** pre-delete anything — the consolidation task is responsible
-for all vault writes.
+Do **not** pre-delete anything — the consolidation task owns all vault
+writes.
 
-End this step with:
+End the step with:
 
 ```json
 {"tasks_created": [{"project_id": "<id>", "task_id": "<task-id>"}, ...]}
 ```
 
-## Step 5 — No-op terminal
+## Step 3 — No-op terminal
 
 Log a single line summarising how many tasks were created. End the
 playbook.

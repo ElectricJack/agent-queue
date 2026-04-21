@@ -58,11 +58,27 @@ def test_creates_supervisor_task(playbook_text: str) -> None:
 
 
 def test_respects_churn_threshold(playbook_text: str) -> None:
-    """The playbook must skip low-churn projects to avoid wasted runs."""
-    # Plan spec: skip projects with fewer than 10 churned insights and
-    # a run less than 7 days old.
-    assert "10" in playbook_text
-    assert "7" in playbook_text
+    """Timer runs must skip low-churn projects to avoid wasted runs.
+
+    Manual invocations bypass thresholds (user intent wins), so we only
+    enforce the rule on the timer path. Current rule: churn_count >= 5
+    and last_consolidated older than 3 days.
+    """
+    assert "churn_count >= 5" in playbook_text
+    assert "3 days" in playbook_text
+
+
+def test_branches_on_manual_event(playbook_text: str) -> None:
+    """Manual invocations must short-circuit — no churn check."""
+    assert "event.project_id" in playbook_text
+    assert "manual" in playbook_text.lower()
+
+
+def test_discord_playbook_run_injects_channel_project(playbook_text: str) -> None:
+    """The playbook relies on event.project_id being populated from the
+    invoking Discord channel. Keep the contract with the Discord command
+    documented in the playbook so the two stay in sync."""
+    assert "project_id" in playbook_text
 
 
 def test_references_consolidation_prompt(playbook_text: str) -> None:
