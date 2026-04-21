@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from src.models import PlaybookRun, PlaybookRunEvent, PlaybookRunStatus
-from src.playbooks.runner_context import ContextMixin
+from src.playbooks.runner_context import ContextMixin, _parse_json_from_text
 from src.playbooks.runner_events import EventsMixin
 from src.playbooks.runner_transitions import TransitionMixin, _event_to_fallback_status
 from src.playbooks.state_machine import (
@@ -1646,7 +1646,16 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             output_spec = node.get("output")
             iter_node_id = f"{node_id}[{i}]"
             stored_key = (output_spec.get("as") if output_spec else None) or iter_node_id
-            collected.append(self.node_outputs.pop(stored_key, response))
+            item_result = self.node_outputs.pop(stored_key, response)
+            # Auto-upgrade raw text to parsed JSON when the iteration response
+            # is a structured object (common: the LLM returned JSON in text,
+            # and the node had no `output.extract` to parse it). Downstream
+            # `{{item.field}}` templates need dicts, not strings.
+            if isinstance(item_result, str):
+                parsed = _parse_json_from_text(item_result)
+                if isinstance(parsed, (dict, list)):
+                    item_result = parsed
+            collected.append(item_result)
 
         # Store collected results
         if collect_name:

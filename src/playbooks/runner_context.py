@@ -224,9 +224,16 @@ class ContextMixin:
         """Extract structured output from a node's execution.
 
         When the node has an ``output.extract`` directive, search for the
-        key first in the last ``tool_result`` of ``supervisor._last_messages``,
-        then fall back to parsing JSON from the assistant's text response.
-        When neither yields the key, the raw text response is returned.
+        key first in the assistant's text response (that is the LLM's
+        *conclusion* after any filtering/transformation), then fall back
+        to the last ``tool_result`` in ``supervisor._last_messages`` (raw
+        tool input).  When neither yields the key, the raw text response
+        is returned.
+
+        Text-first priority prevents a common class of bug: when a node's
+        prompt asks the LLM to filter or transform a tool result, the raw
+        tool result is still present in ``_last_messages`` but it is *not*
+        what the playbook author intends to propagate downstream.
         """
         output_spec = node.get("output")
         if not output_spec or "extract" not in output_spec:
@@ -234,11 +241,27 @@ class ContextMixin:
 
         extract_path = output_spec["extract"]
 
-        # 1. Prefer the last matching tool_result.
+        # 1. Prefer the assistant's text response — it represents the LLM's
+        #    conclusion, including any filtering or transformation applied.
+        parsed_text = _parse_json_from_text(response)
+        if isinstance(parsed_text, dict):
+            val = _dot_extract(parsed_text, extract_path)
+            if val is not None:
+                logger.info(
+                    "_extract_output: extracted '%s' from text response → %s (%d items)"
+                    if isinstance(val, list)
+                    else "_extract_output: extracted '%s' from text response → %s",
+                    extract_path,
+                    type(val).__name__,
+                    len(val) if isinstance(val, list) else 0,
+                )
+                return val
+
+        # 2. Fall back to the last matching tool_result.
         last_messages = getattr(self.supervisor, "_last_messages", None) or []
         if last_messages:
             logger.info(
-                "_extract_output: searching %d messages for key '%s'",
+                "_extract_output: searching %d messages for key '%s' (text fallback)",
                 len(last_messages),
                 extract_path,
             )
@@ -268,23 +291,8 @@ class ContextMixin:
                     )
                     return val
 
-        # 2. Fall back to parsing JSON from the assistant's text response.
-        parsed_text = _parse_json_from_text(response)
-        if isinstance(parsed_text, dict):
-            val = _dot_extract(parsed_text, extract_path)
-            if val is not None:
-                logger.info(
-                    "_extract_output: extracted '%s' from text response → %s (%d items)"
-                    if isinstance(val, list)
-                    else "_extract_output: extracted '%s' from text response → %s",
-                    extract_path,
-                    type(val).__name__,
-                    len(val) if isinstance(val, list) else 0,
-                )
-                return val
-
         logger.warning(
-            "_extract_output: key '%s' not found in tool results or text response",
+            "_extract_output: key '%s' not found in text response or tool results",
             extract_path,
         )
         return response

@@ -8444,8 +8444,16 @@ class TestExtractOutputTextFallback:
         ctx = _TestContext()
         assert ctx._extract_output({}, "plain text") == "plain text"
 
-    def test_tool_result_priority_over_text(self):
-        """A matching tool_result is preferred over the text response."""
+    def test_text_priority_over_tool_result(self):
+        """The assistant's text response is preferred when it contains the key.
+
+        Regression for the 2026-04-20 run where step 1 asked the LLM to
+        filter `list_projects` output down to ACTIVE projects. The LLM
+        correctly produced a filtered JSON response in text, but the
+        extractor walked back to the raw `list_projects` tool_result
+        (all projects, including PAUSED ones). Text is the LLM's
+        *conclusion* — it should win over raw tool inputs.
+        """
         ctx = _TestContext([
             {"role": "user", "content": [
                 {"type": "tool_result", "content": '{"projects": [1, 2, 3]}'}
@@ -8453,6 +8461,18 @@ class TestExtractOutputTextFallback:
         ])
         node = {"output": {"extract": "projects"}}
         result = ctx._extract_output(node, '{"projects": [99]}')
+        assert result == [99]
+
+    def test_tool_result_fallback_when_text_has_no_key(self):
+        """Tool result is still used when the text doesn't contain the key."""
+        ctx = _TestContext([
+            {"role": "user", "content": [
+                {"type": "tool_result", "content": '{"projects": [1, 2, 3]}'}
+            ]}
+        ])
+        node = {"output": {"extract": "projects"}}
+        # Text is pure prose — no JSON object in it
+        result = ctx._extract_output(node, "I found three projects.")
         assert result == [1, 2, 3]
 
     def test_text_fallback_bare_json(self):
@@ -8522,6 +8542,34 @@ class TestExtractOutputTextFallback:
         )
         assert ctx._extract_output(node, text) == ["real"]
 
+    def test_memory_consolidation_regression_cascading(self):
+        """End-to-end regression for the 2026-04-20 cascading failure.
+
+        Two stacked bugs surfaced in the same run: (a) the extractor walked
+        back to the raw `list_projects` tool_result (6 projects) instead of
+        using the LLM's filtered text response (2 projects), and (b)
+        for_each iterations stored raw text instead of parsed dicts, so
+        `{{project_data.id}}` rendered as `{{UNRESOLVED:project_data.id}}`.
+
+        This test exercises only (a) — the text-first extract priority.
+        The iteration-collection auto-parse for (b) is covered separately
+        by TestForEachCollectsParsedJson.
+        """
+        ctx = _TestContext([
+            {"role": "user", "content": [
+                {"type": "tool_result", "content": (
+                    '{"projects": [{"id": "p1", "status": "ACTIVE"}, '
+                    '{"id": "p2", "status": "PAUSED"}]}'
+                )}
+            ]}
+        ])
+        node = {"output": {"extract": "projects", "as": "active_projects"}}
+        text = '{"projects": [{"id": "p1", "status": "ACTIVE"}]}'  # filtered
+        result = ctx._extract_output(node, text)
+        assert isinstance(result, list)
+        assert len(result) == 1, f"expected filtered to 1, got {len(result)}"
+        assert result[0]["id"] == "p1"
+
     def test_memory_consolidation_regression(self):
         """End-to-end regression for the 2026-04-20 run.
 
@@ -8544,3 +8592,160 @@ class TestExtractOutputTextFallback:
         assert isinstance(result, list)
         assert len(result) == 2
         assert result[0]["id"] == "skinnable-imgui"
+
+
+# ---------------------------------------------------------------------------
+# for_each auto-parse of string items (Bug B from 2026-04-20 run)
+# ---------------------------------------------------------------------------
+
+
+class TestForEachCollectsParsedJson:
+    """Collected for_each items are auto-parsed when the iteration returns JSON.
+
+    Regression for the 2026-04-20 memory-consolidation run where intermediate
+    iteration nodes (no `output.extract` spec) returned JSON-as-text. The
+    collected array held raw strings, so downstream `{{project_data.id}}`
+    template references rendered as `{{UNRESOLVED:...}}` and the LLM
+    hallucinated project names, creating 6 duplicate tasks for a project
+    that wasn't even in the active list.
+
+    Fix: the for_each collection step attempts to parse each string item
+    as JSON (via `_parse_json_from_text`). If parsing yields a dict/list,
+    the parsed value is stored instead of the raw text.
+    """
+
+    async def test_string_iteration_results_upgrade_to_dicts(
+        self, mock_supervisor, event_data
+    ):
+        """Iteration returning bare JSON text is stored as a dict."""
+        iter_responses = [
+            '{"id": "a", "name": "Alpha"}',
+            '{"id": "b", "name": "Beta"}',
+        ]
+
+        # First call: entry node response ignored; subsequent: iter responses.
+        call_count = {"n": 0}
+
+        async def chat_side_effect(*args, **kwargs):
+            idx = call_count["n"]
+            call_count["n"] += 1
+            if idx == 0:
+                return '{"items": [{"id": "a"}, {"id": "b"}]}'
+            return iter_responses[idx - 1]
+
+        mock_supervisor.chat.side_effect = chat_side_effect
+
+        graph = {
+            "id": "test-pb",
+            "version": 1,
+            "nodes": {
+                "enumerate": {
+                    "entry": True,
+                    "prompt": "list",
+                    "goto": "iter",
+                    "output": {"extract": "items", "as": "items"},
+                },
+                "iter": {
+                    "prompt": "Process",
+                    "goto": "done",
+                    "for_each": {
+                        "source": "items",
+                        "as": "item",
+                        "collect": "processed",
+                    },
+                },
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        processed = runner.node_outputs.get("processed")
+        assert isinstance(processed, list)
+        assert len(processed) == 2
+        assert processed[0] == {"id": "a", "name": "Alpha"}
+        assert processed[1] == {"id": "b", "name": "Beta"}
+
+    async def test_non_json_iteration_results_stay_as_strings(
+        self, mock_supervisor, event_data
+    ):
+        """Iteration returning pure prose stays as text (no false upgrade)."""
+
+        call_count = {"n": 0}
+
+        async def chat_side_effect(*args, **kwargs):
+            idx = call_count["n"]
+            call_count["n"] += 1
+            if idx == 0:
+                return '{"items": [{"id": "a"}, {"id": "b"}]}'
+            return "This is just natural language commentary."
+
+        mock_supervisor.chat.side_effect = chat_side_effect
+
+        graph = {
+            "id": "test-pb",
+            "version": 1,
+            "nodes": {
+                "enumerate": {
+                    "entry": True, "prompt": "list", "goto": "iter",
+                    "output": {"extract": "items", "as": "items"},
+                },
+                "iter": {
+                    "prompt": "Describe",
+                    "goto": "done",
+                    "for_each": {
+                        "source": "items", "as": "item", "collect": "results",
+                    },
+                },
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        results = runner.node_outputs.get("results")
+        assert isinstance(results, list) and len(results) == 2
+        assert all(isinstance(r, str) for r in results)
+
+    async def test_json_with_trailing_prose_parsed(
+        self, mock_supervisor, event_data
+    ):
+        """JSON object with leading/trailing prose is recovered."""
+
+        call_count = {"n": 0}
+
+        async def chat_side_effect(*args, **kwargs):
+            idx = call_count["n"]
+            call_count["n"] += 1
+            if idx == 0:
+                return '{"items": [{"id": "a"}]}'
+            return (
+                "I analyzed the project and here is the result:\n\n"
+                '{"id": "a", "churn_count": 42}\n'
+            )
+
+        mock_supervisor.chat.side_effect = chat_side_effect
+
+        graph = {
+            "id": "test-pb",
+            "version": 1,
+            "nodes": {
+                "enumerate": {
+                    "entry": True, "prompt": "list", "goto": "iter",
+                    "output": {"extract": "items", "as": "items"},
+                },
+                "iter": {
+                    "prompt": "Analyze",
+                    "goto": "done",
+                    "for_each": {
+                        "source": "items", "as": "item", "collect": "analyzed",
+                    },
+                },
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        analyzed = runner.node_outputs.get("analyzed")
+        assert analyzed == [{"id": "a", "churn_count": 42}]
