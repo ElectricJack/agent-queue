@@ -24,8 +24,8 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 ```bash
 pip install -e ".[dev,cli]"
 pip install -e packages/aq-client      # typed API client (generated)
-pytest tests/                          # all tests
-pytest tests/test_orchestrator.py -v   # specific
+pytest tests/ -n auto                  # all tests (parallel via pytest-xdist; ~5× faster)
+pytest tests/test_orchestrator.py -v   # specific file — sequential is fine for single-file runs
 ./run.sh start                         # start daemon
 ```
 
