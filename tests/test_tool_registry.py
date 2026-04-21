@@ -584,6 +584,10 @@ _PLAYBOOK_COMMANDS = [
     "recover_workflow",
     "playbook_health",
     "playbook_graph_view",
+    "get_playbook_source",
+    "update_playbook_source",
+    "create_playbook",
+    "delete_playbook",
 ]
 
 
