@@ -3775,7 +3775,16 @@ def setup_commands(bot: commands.Bot) -> None:
             args["force"] = True
         result = await handler.execute("compile_playbook", args)
         if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
+            detail = result["error"]
+            validation_errors = result.get("errors") or []
+            if validation_errors:
+                retries = result.get("retries_used", 0)
+                bullets = "\n".join(f"• {e}" for e in validation_errors)
+                detail = f"{detail} (after {retries} retry/retries)\n\n{bullets}"
+            # Discord embed descriptions are capped at 4096 chars
+            if len(detail) > 3900:
+                detail = detail[:3900] + "\n…(truncated)"
+            await _send_error(interaction, detail, followup=True)
             return
 
         playbook_id = result.get("playbook_id", "?")

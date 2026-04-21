@@ -444,21 +444,43 @@ class PlaybookCompiler:
             "10. Do NOT include the `id`, `version`, `source_hash`, `triggers`, "
             "or `scope` fields in your output — those are injected from the "
             "playbook's YAML frontmatter automatically.\n"
-            "11. Use `for_each` on nodes that iterate over a list from a prior "
-            "step. The `source` is a dot-path to an array in a prior node's "
-            "output (e.g. `discover.active_projects`). The `as` names the "
-            "loop variable. Use `collect` to gather results into a named "
-            "array. The node prompt can use `{{variable}}` or "
-            "`{{variable.field}}` templates.\n"
+            "11. **Storage model — read this carefully, it is the #1 source "
+            "of compile errors.** Every node's result is stored under ONE "
+            "top-level key in `node_outputs`. The key is determined by:\n"
+            "    - `output.as` (if set) — stored at that name.\n"
+            "    - `for_each.collect` (if set) — the collected array is "
+            "stored at that name.\n"
+            "    - Otherwise — stored at the node_id.\n"
+            "    **`for_each.source` MUST be a BARE top-level key that some "
+            "node produces. NEVER use `<node_id>.<inner_key>` unless the "
+            "upstream node has no `as`/`collect` AND its output value is "
+            "a dict.**\n"
+            "    ✅ CORRECT:\n"
+            '       `enum`: `{"output": {"extract": "projects", "as": '
+            '"projects"}}`\n'
+            '       `iter`: `{"for_each": {"source": "projects", "as": "p"}}`\n'
+            "    ❌ WRONG (the validator will reject this):\n"
+            '       `iter`: `{"for_each": {"source": "enum.projects", "as": '
+            '"p"}}` — because `enum` doesn\'t exist as a key when `as` is set\n'
+            "    If the upstream node uses `for_each.collect`, the source of "
+            "the NEXT iterator is that bare collect name, not "
+            "`<upstream_id>.<collect>`.\n"
             "12. Use `output` on nodes whose tool results should be available "
             "to downstream nodes as structured data. Set `extract` to the "
             "JSON key to pull from the tool result (e.g. `projects`, "
-            "`findings`), and `as` to name the stored value.\n"
+            "`findings`), and `as` to name the stored value. The `as` name "
+            "is what downstream `for_each.source` and `{{template}}` "
+            "variables must reference.\n"
             "13. Prefer `for_each` + `output` over asking the LLM to iterate "
             "in a single prompt. One LLM call per item is more reliable than "
             "asking the LLM to loop.\n"
             "14. Terminal nodes CAN have prompts — they execute before the "
             "playbook ends. Use this for summary/reporting steps.\n"
+            "15. Template variables: `{{name}}` resolves the same way as "
+            "`for_each.source` — `name` must be a top-level key that some "
+            "upstream node produces, OR a `for_each.as` variable from the "
+            "enclosing for_each node. Dot-paths like `{{p.id}}` are only "
+            "valid when the resolved value is a dict.\n"
         )
 
     @staticmethod
@@ -493,9 +515,21 @@ class PlaybookCompiler:
     def _build_retry_message(errors: list[str]) -> str:
         """Build a follow-up message requesting fixes for validation errors."""
         error_list = "\n".join(f"- {e}" for e in errors)
+        hints: list[str] = []
+        if any("for_each.source" in e for e in errors):
+            hints.append(
+                "**for_each.source hint:** the `source` field must be a BARE "
+                "top-level key that matches either an upstream node's "
+                "`output.as` value, an upstream `for_each.collect` value, or "
+                "an upstream node_id (only if that node has no `output.as`). "
+                "Do NOT write `<node_id>.<inner>` when the upstream node "
+                "declares `output.as` — drop the node_id prefix and use just "
+                "the `as` name."
+            )
+        hint_block = ("\n\n" + "\n\n".join(hints)) if hints else ""
         return (
             "The JSON you produced has validation errors:\n\n"
-            f"{error_list}\n\n"
+            f"{error_list}{hint_block}\n\n"
             "Please fix these errors and output the corrected JSON inside "
             "a ```json code block. Remember the rules from the system prompt."
         )
