@@ -1089,27 +1089,35 @@ class TestShowPlaybookGraphNodeCorrectness:
 
 
 # ===========================================================================
-# Integration: All 7 commands exist as _cmd_* methods on CommandHandler
+# Integration: All playbook commands are wired up in CommandHandler and registry
 # ===========================================================================
 
 
 class TestAllPlaybookCommandsRegistered:
-    """Verify that all 7 spec §15 playbook commands are wired up in
-    CommandHandler and the tool registry.
+    """Verify that every playbook command is wired up in CommandHandler and
+    the tool registry.  Update EXPECTED_COMMANDS when adding a new one.
     """
 
     EXPECTED_COMMANDS = [
         "compile_playbook",
+        "run_playbook",
         "dry_run_playbook",
         "show_playbook_graph",
         "list_playbooks",
         "list_playbook_runs",
         "inspect_playbook_run",
         "resume_playbook",
+        "recover_workflow",
+        "playbook_health",
+        "playbook_graph_view",
+        "get_playbook_source",
+        "update_playbook_source",
+        "create_playbook",
+        "delete_playbook",
     ]
 
     def test_all_cmd_methods_exist(self):
-        """All 7 _cmd_* methods exist on CommandHandler."""
+        """All _cmd_* methods exist on CommandHandler."""
         for cmd in self.EXPECTED_COMMANDS:
             method_name = f"_cmd_{cmd}"
             assert hasattr(CommandHandler, method_name), (
@@ -1120,7 +1128,7 @@ class TestAllPlaybookCommandsRegistered:
             )
 
     def test_all_in_tool_categories(self):
-        """All 7 commands are mapped to the 'playbook' category."""
+        """All commands are mapped to the 'playbook' category."""
         from src.tools import _TOOL_CATEGORIES
 
         for cmd in self.EXPECTED_COMMANDS:
@@ -1130,7 +1138,7 @@ class TestAllPlaybookCommandsRegistered:
             )
 
     def test_all_have_tool_definitions(self):
-        """All 7 commands have tool definitions with descriptions and schemas."""
+        """All commands have tool definitions with descriptions and schemas."""
         from src.tools import _ALL_TOOL_DEFINITIONS
 
         tool_map = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
@@ -1148,16 +1156,18 @@ class TestAllPlaybookCommandsRegistered:
                 f"{cmd} input_schema type is {schema.get('type')!r}, expected 'object'"
             )
 
-    def test_tool_registry_category_has_correct_count(self):
-        """The playbook category in ToolRegistry contains exactly 7 tools."""
+    def test_tool_registry_category_matches_expected_commands(self):
+        """The playbook category in ToolRegistry contains exactly the expected commands."""
         from src.tools import ToolRegistry, _ALL_TOOL_DEFINITIONS
 
         registry = ToolRegistry(_ALL_TOOL_DEFINITIONS)
         tool_names = registry.get_category_tool_names("playbook")
 
         assert tool_names is not None, "Playbook category not found in registry"
-        assert len(tool_names) == 7, (
-            f"Expected 7 playbook tools, got {len(tool_names)}: {tool_names}"
+        assert set(tool_names) == set(self.EXPECTED_COMMANDS), (
+            f"Playbook category tools mismatch:\n"
+            f"  extra in registry: {set(tool_names) - set(self.EXPECTED_COMMANDS)}\n"
+            f"  missing from registry: {set(self.EXPECTED_COMMANDS) - set(tool_names)}"
         )
 
     async def test_unknown_command_returns_error(self):
