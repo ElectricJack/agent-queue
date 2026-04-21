@@ -2875,23 +2875,12 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result["error"])
             return
         task_id = result["created"]
-        desc_preview = truncate(description, LIMIT_FIELD_VALUE)
-        embed = success_embed(
-            "Task Added",
-            fields=[
-                ("ID", f"`{task_id}`", True),
-                ("Project", f"`{result['project_id']}`", True),
-                ("Status", "🔵 READY", True),
-                ("Description", desc_preview, False),
-            ],
+        # The public "Task Added" embed is now posted by the notify.task_added
+        # handler (routes to the project channel or system channel by scope).
+        # Here we just ack the interaction privately so the user sees it landed.
+        await interaction.response.send_message(
+            f"✅ Task queued: `{task_id}`", ephemeral=True
         )
-        await interaction.response.send_message(embed=embed)
-        # Track the message so the orchestrator can delete it when the task starts
-        try:
-            msg = await interaction.original_response()
-            handler.orchestrator._task_added_messages[task_id] = msg
-        except Exception:
-            pass  # Non-critical — message just won't be auto-deleted
 
     @bot.tree.command(name="edit-task", description="Edit a task's properties")
     @app_commands.describe(

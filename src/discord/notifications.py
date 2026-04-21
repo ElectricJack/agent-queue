@@ -157,6 +157,50 @@ def classify_error(error_message: str | None) -> tuple[str, str]:
     return "Unexpected error", "Check daemon logs (`~/.agent-queue/daemon.log`) for full details."
 
 
+def format_task_added(task: Task) -> str:
+    """Plain-text line for a newly added task (before an agent picks it up)."""
+    lines = [
+        f"📝 **Task Added:** `{task.id}` — {task.title}",
+        f"Project: `{task.project_id}`",
+    ]
+    if getattr(task, "priority", None) is not None:
+        lines.append(f"Priority: {task.priority}")
+    return "\n".join(lines)
+
+
+def format_task_added_embed(task: Task, *, source: str = "") -> "discord.Embed":
+    """Rich embed for a newly added task notification."""
+    fields: list[tuple[str, str, bool]] = [
+        ("ID", f"`{task.id}`", True),
+        ("Project", f"`{task.project_id}`", True),
+    ]
+    if getattr(task, "priority", None) is not None:
+        fields.append(("Priority", str(task.priority), True))
+    agent_type = getattr(task, "agent_type", None)
+    if agent_type:
+        fields.append(("Agent Type", f"`{agent_type}`", True))
+    task_type = getattr(task, "task_type", None)
+    if task_type:
+        # task_type may be an enum or a string depending on the proxy
+        value = task_type.value if hasattr(task_type, "value") else str(task_type)
+        fields.append(("Task Type", f"`{value}`", True))
+    if source:
+        fields.append(("Source", f"`{source}`", True))
+
+    description = getattr(task, "description", "") or ""
+    if description:
+        description = truncate(description, 400)
+    else:
+        description = task.title or ""
+
+    return make_embed(
+        EmbedStyle.INFO,
+        f"📝 Task Added: {task.title}",
+        description=truncate(description, LIMIT_DESCRIPTION),
+        fields=fields,
+    )
+
+
 def format_task_started(task: Task, agent: Agent, workspace: Workspace | None = None) -> str:
     lines = [
         f"**Task Started:** `{task.id}` — {task.title}",

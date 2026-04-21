@@ -33,6 +33,23 @@ class NotifyEvent(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class TaskAddedEvent(NotifyEvent):
+    """Emitted whenever a new task is created, via any path.
+
+    Fires for Discord slash commands, playbook-driven creation, MCP clients,
+    and the REST API. Routes to the project's Discord channel when
+    ``project_id`` has one; otherwise to the global/system channel. Pause
+    status does NOT suppress the notification — operators want visibility
+    into task creation regardless of whether the project is accepting
+    scheduling right now.
+    """
+
+    event_type: str = "notify.task_added"
+    category: str = "task_lifecycle"
+    task: TaskDetail
+    source: str = ""  # "discord_slash", "playbook", "mcp", "api", etc.
+
+
 class TaskStartedEvent(NotifyEvent):
     event_type: str = "notify.task_started"
     category: str = "task_lifecycle"

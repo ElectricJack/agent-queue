@@ -29,6 +29,7 @@ from src.notifications.events import (
     PRCreatedEvent,
     PushFailedEvent,
     StuckDefinedTaskEvent,
+    TaskAddedEvent,
     TaskBlockedEvent,
     TaskCompletedEvent,
     TaskFailedEvent,
@@ -123,6 +124,7 @@ class DiscordNotificationHandler:
 
         # Subscribe to all notification events
         events = [
+            ("notify.task_added", self._on_task_added),
             ("notify.task_started", self._on_task_started),
             ("notify.task_completed", self._on_task_completed),
             ("notify.task_failed", self._on_task_failed),
@@ -168,6 +170,28 @@ class DiscordNotificationHandler:
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
+
+    async def _on_task_added(self, data: dict) -> None:
+        event = TaskAddedEvent(**{k: v for k, v in data.items() if k != "_event_type"})
+
+        from src.discord.notifications import (
+            format_task_added,
+            format_task_added_embed,
+        )
+
+        task_p = _task_proxy(event.task)
+        embed = format_task_added_embed(task_p, source=event.source)
+        msg = await self.bot._send_message(
+            format_task_added(task_p),
+            project_id=event.project_id,
+            embed=embed,
+        )
+        # Track the sent message so it can be auto-deleted when the task
+        # transitions to task_started (reduces channel clutter).
+        if msg is not None:
+            orch = self.bot.orchestrator
+            if hasattr(orch, "_task_added_messages"):
+                orch._task_added_messages[event.task.id] = msg
 
     async def _on_task_started(self, data: dict) -> None:
         event = TaskStartedEvent(**{k: v for k, v in data.items() if k != "_event_type"})

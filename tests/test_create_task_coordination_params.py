@@ -862,3 +862,60 @@ class TestCoordinationParamsDbRoundTrip:
             await testdb.create_task(task)
             loaded = await testdb.get_task(tid)
             assert loaded.workspace_mode == mode, f"Round-trip failed for {mode}"
+
+
+# ── notify.task_added emission ──────────────────────────────────────
+
+
+class TestTaskAddedNotification:
+    """Every create_task path emits notify.task_added (regardless of project status).
+
+    Previously only the Discord /add-task slash command posted a "Task Added"
+    message; tasks created by playbooks, MCP clients, and the API were silent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_emits_notify_task_added_for_active_project(self, handler, db):
+        emitted: list[dict] = []
+
+        async def capture(payload: dict) -> None:
+            emitted.append(payload)
+
+        handler.orchestrator.bus.subscribe("notify.task_added", capture)
+
+        result = await handler.execute(
+            "create_task",
+            {"project_id": "test-proj", "title": "A job", "description": "do it"},
+        )
+        assert "error" not in result
+
+        assert len(emitted) == 1, f"Expected one task_added event, got: {emitted}"
+        payload = emitted[0]
+        assert payload["project_id"] == "test-proj"
+        assert payload["task"]["id"] == result["created"]
+        assert payload["task"]["title"] == "A job"
+
+    @pytest.mark.asyncio
+    async def test_emits_notify_task_added_for_paused_project(self, handler, db):
+        """Tasks added to a paused project still fire the notification."""
+        # Pause the project via constraint
+        from src.models import ProjectConstraint
+
+        await db.set_project_constraint(
+            ProjectConstraint(project_id="test-proj", pause_scheduling=True)
+        )
+
+        emitted: list[dict] = []
+
+        async def capture(payload: dict) -> None:
+            emitted.append(payload)
+
+        handler.orchestrator.bus.subscribe("notify.task_added", capture)
+
+        result = await handler.execute(
+            "create_task",
+            {"project_id": "test-proj", "title": "Paused job"},
+        )
+        assert "error" not in result
+        assert len(emitted) == 1
+        assert emitted[0]["project_id"] == "test-proj"
