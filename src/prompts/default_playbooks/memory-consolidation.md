@@ -76,12 +76,20 @@ the next node.
 For **each** entry in `targets`, call `create_task` **once** with:
 
 - `project_id`: the project's id
-- `agent_type`: `"supervisor"`
 - `priority`: `40`
 - `title`: `Consolidate memory: <project_name>`
+
+Do **not** pass `agent_type`. The scheduler's `agent_type` field is a
+hard filter for workspace-bound agent instances (e.g. `"claude"`,
+`"codex"`) — setting it to `"supervisor"` leaves the task forever
+READY because no workspace agent advertises that type. The project's
+default profile already gives the executing agent the `memory_*`
+tools it needs via the agent-queue MCP.
 - `description`: read
   `/mnt/d/Dev/agent-queue2/src/prompts/consolidation_task.md` via the
-  `read_file` tool and substitute the placeholders
+  `read_file` tool and substitute the placeholders (the full prompt
+  instructs the executing agent to use the `memory_*` MCP commands
+  — no extra agent type routing needed)
   `{project_id}`, `{project_name}`,
   `{insights_dir}` (→ `~/.agent-queue/vault/projects/<project_id>/memory/insights`),
   `{knowledge_dir}` (→ `~/.agent-queue/vault/projects/<project_id>/memory/knowledge`),
