@@ -373,6 +373,12 @@ class ClaudeAdapter(AgentAdapter):
                 options.model = self._config.model
             if self._task.mcp_servers:
                 options.mcp_servers = self._task.mcp_servers
+            if self._task.add_dirs:
+                # Translates to --add-dir <path> flags on the Claude CLI, so
+                # the agent can Read/Edit/Write files outside cwd. Used by
+                # the orchestrator to expose the project's vault memory
+                # directory (insights, knowledge, facts) to every task.
+                options.add_dirs = list(self._task.add_dirs)
 
             # Log the full launch surface: exactly which MCP servers the
             # Claude subprocess will try to connect to, and which tool names
@@ -398,12 +404,14 @@ class ClaudeAdapter(AgentAdapter):
                 return out
 
             logger.info(
-                "Claude adapter launch surface: task=%s cwd=%s model=%s mcp_servers=[%s] allowed_tools=%s",
+                "Claude adapter launch surface: task=%s cwd=%s model=%s "
+                "mcp_servers=[%s] allowed_tools=%s add_dirs=%s",
                 getattr(self._task, "task_id", "?"),
                 options.cwd,
                 options.model,
                 ", ".join(_summarize_mcp(options.mcp_servers)) or "(none)",
                 allowed,
+                options.add_dirs or "[]",
             )
 
             # Track whether the original options included a resume request.

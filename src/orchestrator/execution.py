@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any
 
@@ -561,6 +562,19 @@ class ExecutionMixin:
                     candidates,
                 )
 
+        # Give the agent read/write access to its own memory in the vault.
+        # The workspace (cwd) is the project's git repo; the vault lives
+        # under ~/.agent-queue/vault/projects/<id>/ which is outside cwd, so
+        # without this the Claude CLI's filesystem sandbox rejects Edit/Write
+        # calls on insight files — breaking any task that edits memory
+        # directly (consolidation, note-taking, self-improvement).
+        extra_dirs: list[str] = []
+        if task.project_id:
+            vault_project_dir = os.path.join(
+                self.config.vault_root, "projects", task.project_id
+            )
+            extra_dirs.append(vault_project_dir)
+
         ctx = TaskContext(
             task_id=task.id,
             description=full_description,
@@ -573,6 +587,7 @@ class ExecutionMixin:
             branch_name=task.branch_name or "",
             image_paths=task.attachments if task.attachments else [],
             mcp_servers=task_mcp,
+            add_dirs=extra_dirs,
         )
 
         # On reopened tasks, pass the previous session ID so the adapter can

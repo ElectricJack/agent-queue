@@ -438,6 +438,11 @@ class TaskContext:
         default_factory=list
     )  # absolute paths to images the agent should examine
     mcp_servers: dict[str, dict] = field(default_factory=dict)
+    # Extra directories the agent is allowed to read/write outside of its
+    # primary workspace (cwd). Typically includes the project's vault
+    # memory directory so consolidation and memory-aware tasks can edit
+    # their own knowledge without needing a separate MCP indirection.
+    add_dirs: list[str] = field(default_factory=list)
     resume_session_id: str | None = None  # fork from this session on reopen
 
 
