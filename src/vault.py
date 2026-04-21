@@ -894,14 +894,6 @@ this block at startup; anything not set here falls back to
 ``config.chat_provider`` in ``~/.agent-queue/config.yaml`` (which also
 supplies environment-specific values like ``api_key`` / ``base_url``).
 
-## Tools
-```json
-{
-  "allowed": [],
-  "denied": ["file_write", "file_edit", "shell"]
-}
-```
-
 ## MCP Servers
 ```json
 {}

@@ -1135,7 +1135,12 @@ def test_supervisor_profile_parses_without_errors():
 
 
 def test_supervisor_profile_has_all_sections():
-    """The supervisor profile includes all 7 documented sections."""
+    """The supervisor profile includes the documented sections.
+
+    Supervisor does not enforce a tool whitelist (it's a chat-provider
+    LLM with access to every registered plugin tool), so no ``## Tools``
+    block is present.  Claude Code agent profiles still ship one.
+    """
     from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
@@ -1143,9 +1148,10 @@ def test_supervisor_profile_has_all_sections():
 
     # Structured sections
     assert "config" in result.sections
-    assert "tools" in result.sections
     assert "mcp servers" in result.sections
     assert "install" in result.sections
+    # No Tools block — the supervisor doesn't honour a whitelist.
+    assert "tools" not in result.sections
 
     # Prompt sections
     assert "role" in result.sections
@@ -1184,17 +1190,21 @@ def test_supervisor_profile_config():
     assert "thinking_budget" in result.config
 
 
-def test_supervisor_profile_tools_deny_code_editing():
-    """The supervisor profile denies direct code-editing tools."""
+def test_supervisor_profile_has_no_tools_block():
+    """The supervisor profile intentionally omits the ``## Tools`` section.
+
+    The supervisor is a chat-provider LLM that exposes every registered
+    plugin tool via its tool registry; an ``allowed``/``denied`` list in
+    the profile would be documentation-only since no code currently
+    enforces it.  Rather than ship misleading config, the template
+    omits the block entirely.
+    """
     from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
-    assert result.tools is not None
-    denied = result.tools.get("denied", [])
-    # Orchestrator should not have access to direct code editing
-    assert "file_write" in denied
-    assert "file_edit" in denied
-    assert "shell" in denied
+    assert "tools" not in result.sections
+    # Tools attribute defaults to an empty dict — no whitelist, no denylist.
+    assert result.tools == {}
 
 
 def test_supervisor_profile_role_mentions_coordination():
