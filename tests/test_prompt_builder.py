@@ -486,7 +486,13 @@ def test_set_l0_role_empty_noop(prompts_dir):
 
 
 def test_set_l0_role_from_markdown(prompts_dir):
-    """set_l0_role_from_markdown extracts ## Role and injects it."""
+    """set_l0_role_from_markdown concatenates Role + Rules + Reflection.
+
+    Section headings are preserved so the LLM can distinguish identity
+    (Role) from behavioural constraints (Rules) from post-task
+    guidance (Reflection).  Matches the ``system_prompt_suffix``
+    format produced by the profile parser for Claude Code agents.
+    """
     from src.prompt_builder import PromptBuilder
 
     profile_md = textwrap.dedent("""\
@@ -502,6 +508,9 @@ def test_set_l0_role_from_markdown(prompts_dir):
 
         ## Rules
         - Always run tests before committing
+
+        ## Reflection
+        After each task, note what worked and what didn't.
     """)
 
     builder = PromptBuilder(prompts_dir=prompts_dir)
@@ -509,12 +518,36 @@ def test_set_l0_role_from_markdown(prompts_dir):
     assert found is True
 
     prompt = builder.build_task_prompt()
+    # All three sections flow into the prompt, with their headings.
+    assert "## Role" in prompt
+    assert "## Rules" in prompt
+    assert "## Reflection" in prompt
     assert "software engineering agent" in prompt
-    assert "Always run tests" not in prompt  # Rules section excluded
+    assert "Always run tests" in prompt
+    assert "what worked and what didn't" in prompt
+
+
+def test_set_l0_role_from_markdown_rules_only(prompts_dir):
+    """Returns True when Rules is present even if Role is missing."""
+    from src.prompt_builder import PromptBuilder
+
+    profile_md = textwrap.dedent("""\
+        # Agent
+
+        ## Rules
+        - Rule only
+    """)
+    builder = PromptBuilder(prompts_dir=prompts_dir)
+    found = builder.set_l0_role_from_markdown(profile_md)
+    assert found is True
+
+    prompt = builder.build_task_prompt()
+    assert "## Rules" in prompt
+    assert "Rule only" in prompt
 
 
 def test_set_l0_role_from_markdown_no_role(prompts_dir):
-    """set_l0_role_from_markdown returns False when no ## Role exists."""
+    """set_l0_role_from_markdown returns False when none of the three sections exist."""
     from src.prompt_builder import PromptBuilder
 
     profile_md = "# Agent\n\n## Config\nSome config."
