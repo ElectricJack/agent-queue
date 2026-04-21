@@ -160,6 +160,88 @@ export interface StuckDefinedTaskEvent extends BaseEvent {
   stuck_hours: number;
 }
 
+// --- Playbook lifecycle ---
+
+export interface PlaybookRunStartedEvent extends BaseEvent {
+  event_type: "notify.playbook_run_started";
+  playbook_id: string;
+  run_id: string;
+  playbook_version: number;
+  trigger_event_type: string;
+  scope: string;
+  started_at: number;
+}
+
+export interface PlaybookRunCompletedEvent extends BaseEvent {
+  event_type: "notify.playbook_run_completed";
+  playbook_id: string;
+  run_id: string;
+  final_context: string | null;
+  tokens_used: number;
+  duration_seconds: number;
+  node_count: number;
+}
+
+export interface PlaybookRunFailedEvent extends BaseEvent {
+  event_type: "notify.playbook_run_failed";
+  playbook_id: string;
+  run_id: string;
+  failed_at_node: string;
+  error: string;
+  tokens_used: number;
+  duration_seconds: number;
+}
+
+export interface PlaybookRunPausedEvent extends BaseEvent {
+  event_type: "notify.playbook_run_paused";
+  playbook_id: string;
+  run_id: string;
+  node_id: string;
+  last_response: string;
+  running_seconds: number;
+  tokens_used: number;
+  paused_at: number;
+}
+
+export interface PlaybookRunResumedEvent extends BaseEvent {
+  event_type: "notify.playbook_run_resumed";
+  playbook_id: string;
+  run_id: string;
+  node_id: string;
+  decision: string;
+}
+
+export interface PlaybookRunTimedOutEvent extends BaseEvent {
+  event_type: "notify.playbook_run_timed_out";
+  playbook_id: string;
+  run_id: string;
+  node_id: string;
+  timeout_seconds: number;
+  waited_seconds: number;
+  tokens_used: number;
+  transitioned_to: string | null;
+}
+
+export interface PlaybookCompilationSucceededEvent extends BaseEvent {
+  event_type: "notify.playbook_compilation_succeeded";
+  playbook_id: string;
+  source_path: string;
+  version: number;
+  source_hash: string;
+  node_count: number;
+  retries_used: number;
+}
+
+export interface PlaybookCompilationFailedEvent extends BaseEvent {
+  event_type: "notify.playbook_compilation_failed";
+  playbook_id: string;
+  source_path: string;
+  errors: string[];
+  previous_version: number | null;
+  source_hash: string;
+  retries_used: number;
+}
+
 // --- Union type ---
 
 export type NotifyEvent =
@@ -180,4 +262,12 @@ export type NotifyEvent =
   | TaskThreadCloseEvent
   | TextNotifyEvent
   | ChainStuckEvent
-  | StuckDefinedTaskEvent;
+  | StuckDefinedTaskEvent
+  | PlaybookRunStartedEvent
+  | PlaybookRunCompletedEvent
+  | PlaybookRunFailedEvent
+  | PlaybookRunPausedEvent
+  | PlaybookRunResumedEvent
+  | PlaybookRunTimedOutEvent
+  | PlaybookCompilationSucceededEvent
+  | PlaybookCompilationFailedEvent;
