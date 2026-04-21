@@ -51,10 +51,23 @@ def test_id_is_memory_consolidation(frontmatter: dict) -> None:
     assert frontmatter.get("id") == "memory-consolidation"
 
 
-def test_creates_supervisor_task(playbook_text: str) -> None:
-    """The playbook must delegate work to a supervisor task, not do it itself."""
+def test_delegates_via_create_task(playbook_text: str) -> None:
+    """The playbook must delegate work to a created task, not do it itself."""
     assert "create_task" in playbook_text
-    assert "supervisor" in playbook_text
+
+
+def test_does_not_filter_task_to_supervisor_agent_type(playbook_text: str) -> None:
+    """Consolidation tasks must NOT set agent_type=supervisor.
+
+    task.agent_type is a hard scheduler filter against workspace-bound
+    agent instances (e.g. "claude"). Setting it to "supervisor" leaves
+    the task stuck in READY because no workspace agent advertises that
+    type. The executing workspace agent can run the consolidation
+    prompt unchanged using Read/Edit/Write/Bash on the vault files.
+    """
+    assert 'agent_type": "supervisor"' not in playbook_text
+    assert "agent_type: \"supervisor\"" not in playbook_text
+    assert "`agent_type`: `\"supervisor\"`" not in playbook_text
 
 
 def test_respects_churn_threshold(playbook_text: str) -> None:
@@ -90,16 +103,29 @@ def test_consolidation_prompt_exists() -> None:
     assert CONSOLIDATION_PROMPT_PATH.exists()
 
 
-def test_consolidation_prompt_references_required_tools() -> None:
+def test_consolidation_prompt_uses_direct_filesystem_tools() -> None:
+    """The consolidation task edits vault markdown files directly.
+
+    We deliberately avoid the memory_* MCP commands — they wrap Milvus,
+    which drifts from whatever the agent does to the files, and the
+    vault watcher re-indexes what's left behind. The prompt must lean
+    on the default Claude toolset instead.
+    """
     text = CONSOLIDATION_PROMPT_PATH.read_text(encoding="utf-8")
-    # The supervisor task needs these tools for the six-step workflow.
-    for tool in (
+    for tool in ("Glob", "Read", "Edit", "Write", "Bash"):
+        assert tool in text, f"consolidation prompt missing tool reference: {tool}"
+    # Guard against regression to the old MCP-tool wording.
+    for banned in (
         "memory_search",
         "memory_update",
         "memory_delete",
         "memory_promote_to_knowledge",
+        "memory_store",
     ):
-        assert tool in text, f"consolidation prompt missing tool: {tool}"
+        assert banned not in text, (
+            f"consolidation prompt should not reference the {banned} MCP "
+            "command — edit the vault files directly instead."
+        )
 
 
 def test_consolidation_prompt_has_placeholders() -> None:

@@ -16,36 +16,58 @@ curated `knowledge/` subdirectory.
 Budget: prioritize high-churn topics first. Stop cleanly if you run out of
 context; partial progress is fine — the next nightly run continues the work.
 
-## Tools you will use
+## How you work
 
-- `memory_search` — semantic search within this project's scope. Use empty
-  or broad queries with topic filters to enumerate clusters.
-- `memory_update` — rewrite content, tags, or topic of an existing entry
-  by `chunk_hash`. Use to make a cluster's canonical version clearer or
-  more complete before deleting the siblings.
-- `memory_delete` — remove an insight from both Milvus and the vault file.
-  Use for garbage entries and for non-canonical cluster siblings after
-  their content is merged into the canonical entry.
-- `memory_promote_to_knowledge` — move a stable insight into the
-  `knowledge/` subdirectory with the `knowledge` tag. Optionally rewrite
-  the content when promoting (useful for merging a cluster into one
-  canonical knowledge entry).
-- `memory_store` — for creating the consolidation marker update (or any
-  brand-new knowledge entry not derived from an existing insight).
+Edit the markdown files in the vault directly. Do **not** reach for the
+`memory_*` MCP commands — they're a thin wrapper around Milvus that will
+drift from whatever you do to the files, and the vault watcher re-indexes
+what you leave behind. Your toolkit:
+
+- `Glob` / `Bash ls` to enumerate insight files.
+- `Read` to inspect a file's frontmatter + body.
+- `Edit` (or `Write` for a full rewrite) to change content, tags, topic,
+  or append a `## See Also` section.
+- `Bash rm` to delete garbage or non-canonical sibling files.
+- `Bash mv` to promote a file from `insights/` to `knowledge/`, followed
+  by `Edit` to tidy its frontmatter.
+- `Write` for brand-new knowledge entries and the consolidation marker.
+
+Each insight file follows this shape:
+
+```markdown
+---
+tags: ["auto-extracted", "insight", "<topic-tag>"]
+topic: <topic_slug>
+source_task: <task-id-or-chat-id>
+source_playbook: memory-extractor
+created: <iso-date>
+updated: <iso-date>
+last_retrieved: <iso-date>
+retrieval_count: <int>
+---
+<body content>
+```
+
+Filenames use the pattern `<slug>-<hash>.md` — keep the hash suffix stable
+when you edit in place so vault-watcher diffs stay small.
 
 ## Steps — do these in order
 
 ### 1. Inventory
 
-Run broad `memory_search` queries to enumerate insights. Group by the
-`topic` field where present. For each topic-cluster, hold the list of
-`chunk_hash` + `content` + `tags` + `retrieval_count` + `source_task`
-fields so you can reason about the cluster as a whole.
+Glob `{insights_dir}/*.md`. Read each file's frontmatter and body. Group
+by the `topic` field where present. For each topic-cluster, hold the
+list of filenames + body preview + tags + `retrieval_count` +
+`source_task` so you can reason about the cluster as a whole.
+
+If the directory is huge, process the highest-churn topics first (files
+with recent `updated` timestamps) and stop cleanly when budget is tight
+— the next run continues.
 
 ### 2. Cull garbage
 
-An insight is garbage if any of the following apply. **Delete it
-(`memory_delete`) without merging.**
+An insight is garbage if any of the following apply. **Delete the file
+(`Bash rm <path>`) without merging.**
 
 - Starts with a greeting (`Hi …,`, `Hello …,`, `Hey …,`, `Dear …,`) —
   these are reply bodies that leaked through extraction.
@@ -58,21 +80,22 @@ An insight is garbage if any of the following apply. **Delete it
   `the agent responded…`).
 
 Log each deletion with the reason in your own working notes so the
-marker file's `deleted_reasons` can summarize them.
+marker file's log line can summarize them.
 
 ### 3. Dedup within clusters
 
 For each topic-cluster with multiple similar insights:
 
-1. Pick a canonical `chunk_hash` — prefer the entry with the highest
-   `retrieval_count`, else the longest non-garbage content, else the
-   most recently updated.
-2. If needed, `memory_update` the canonical entry to incorporate any
-   specific wording from siblings (e.g. more precise field names like
-   `gmail_thread_id`, explicit thresholds like `priority: 100`).
-3. Concatenate siblings' `source_task` values into the canonical
-   entry's `source_task` so provenance is preserved.
-4. `memory_delete` each non-canonical sibling.
+1. Pick a canonical file — prefer the entry with the highest
+   `retrieval_count`, else the longest non-garbage body, else the most
+   recently updated.
+2. If needed, `Edit` the canonical file to incorporate specific wording
+   from siblings (more precise field names like `gmail_thread_id`,
+   explicit thresholds like `priority: 100`).
+3. Append siblings' `source_task` values into the canonical file's
+   `source_task` frontmatter field (comma-separated) so provenance is
+   preserved.
+4. `Bash rm` each non-canonical sibling file.
 
 Treat "near-duplicates" generously: wording variations that restate the
 same rule are duplicates. Don't preserve a sibling just because it
@@ -81,8 +104,8 @@ phrased things differently.
 ### 4. Add cross-links
 
 For each remaining insight that relates to another insight or a
-knowledge entry, append or update a `## See Also` section in the file
-body with `[[wiki-link]]` references. Example:
+knowledge entry, append or update a `## See Also` section in the body
+with `[[wiki-link]]` references. Example:
 
 ```markdown
 ## See Also
@@ -90,7 +113,8 @@ body with `[[wiki-link]]` references. Example:
 - [[projects/{project_id}/memory/insights/<sibling-slug>-<hash>|Sibling insight title]]
 ```
 
-Use `memory_update` to save the rewritten content.
+Use `Edit` to append — don't rewrite the whole file when a single
+section change suffices.
 
 ### 5. Promote stable insights to knowledge
 
@@ -102,27 +126,30 @@ An insight is stable enough to promote when:
 - It represents a durable project truth (a rule, a business fact, a
   convention) — not a transient observation.
 
-For promotion, `memory_promote_to_knowledge` with:
-- `chunk_hash` of the source insight
-- `topic` set to the canonical cluster topic (e.g. `email-task-creation`,
-  `compliance-filings`, `document-naming`)
-- Optionally `content` rewritten to merge the canonical insight plus any
-  related insights into one clean knowledge statement
+To promote:
 
-When you promote a merged cluster, delete the non-merged siblings first
-(step 3) so the final knowledge entry is truly canonical.
-
-The promoted entry lands at
-`{knowledge_dir}/<slug>-<hash>.md` with the `knowledge` and `curated`
-tags applied automatically.
+1. `Bash mv {insights_dir}/<slug>-<hash>.md {knowledge_dir}/<slug>-<hash>.md`
+   (create `{knowledge_dir}` first with `mkdir -p` if needed).
+2. `Edit` the moved file to update its frontmatter:
+   - Add `knowledge` and `curated` to the `tags` list.
+   - Set `topic` to a canonical cluster slug (e.g.
+     `email-task-creation`, `compliance-filings`, `document-naming`).
+   - Optionally rewrite the body to merge the canonical insight plus
+     related insights into one clean knowledge statement.
+3. If you merged a cluster into the promoted file, delete the
+   non-merged siblings first (step 3 above) so the final knowledge
+   entry is truly canonical.
 
 ### 6. Update the consolidation marker
 
 Write the marker for **this** project at
-`vault/projects/{project_id}/memory/consolidation.md`. The file is
+`{insights_dir}/../consolidation.md` (i.e.
+`vault/projects/{project_id}/memory/consolidation.md`). The file is
 project-scoped (one per project — do not touch any other project's
-marker). Use a direct file write; the frontmatter should carry the
-ISO-8601 timestamp of this run and the run's counts:
+marker). Use `Write` if it does not exist, `Edit` to append a new log
+line and update the frontmatter timestamp if it does.
+
+Frontmatter:
 
 ```yaml
 ---

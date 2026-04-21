@@ -88,8 +88,9 @@ tools it needs via the agent-queue MCP.
 - `description`: read
   `/mnt/d/Dev/agent-queue2/src/prompts/consolidation_task.md` via the
   `read_file` tool and substitute the placeholders (the full prompt
-  instructs the executing agent to use the `memory_*` MCP commands
-  — no extra agent type routing needed)
+  instructs the executing agent to edit the vault markdown files
+  directly with Read/Edit/Write/Bash — no extra tools required beyond
+  the default Claude toolset)
   `{project_id}`, `{project_name}`,
   `{insights_dir}` (→ `~/.agent-queue/vault/projects/<project_id>/memory/insights`),
   `{knowledge_dir}` (→ `~/.agent-queue/vault/projects/<project_id>/memory/knowledge`),
