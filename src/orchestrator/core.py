@@ -727,13 +727,15 @@ class Orchestrator(
             await self.db.update_agent(agent_id, state=AgentState.IDLE, current_task_id=None)
             self._adapters.pop(agent_id, None)
 
+        from src.profiles.sync import underlying_agent_type
+
         profile = await self._resolve_profile(task)
         await self._emit_task_failure(
             task,
             "stop_task",
             error="Manually stopped by user",
             agent_id=agent_id,
-            agent_type=profile.id if profile else None,
+            agent_type=underlying_agent_type(profile.id) if profile else None,
         )
         await self._emit_notify(
             "notify.task_stopped",
