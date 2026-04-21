@@ -404,9 +404,15 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                     try:
                         response = await self._execute_node(current_node_id, node, db_run)
                         final_response = response
-                    except Exception:
+                    except Exception as exc:
                         logger.exception("Terminal node '%s' execution failed", current_node_id)
-                        # Don't fail the run — terminal node errors are non-fatal
+                        return await self._fail(
+                            db_run,
+                            f"Terminal node '{current_node_id}' failed: {exc}",
+                            started_at,
+                            current_node=current_node_id,
+                            event=PlaybookRunEvent.NODE_FAILED,
+                        )
                 if self.on_progress:
                     await self.on_progress("node_terminal", current_node_id)
                 break
