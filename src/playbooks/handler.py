@@ -153,27 +153,30 @@ async def on_playbook_changed(
             continue
 
         if change.operation == "deleted":
-            # Remove from active registry.  Use the filename stem as the
-            # playbook ID — this is a best-effort match.  If the ID doesn't
-            # match (because the frontmatter ID differed from the filename),
-            # the old compiled version stays in the registry until the manager
-            # is restarted or the file is recreated.
+            # Prefer looking up the playbook id by source-path (exact
+            # match against ``_source_paths``) — this works even when the
+            # deleted file's frontmatter id differed from its filename
+            # stem.  Fall back to the filename-stem heuristic if the
+            # source-path isn't tracked (e.g. manager was restarted
+            # between compile and delete).
+            path_id = playbook_manager.playbook_id_by_source_path(change.path)
             fallback_id = _derive_playbook_id_from_path(change.rel_path)
-            if fallback_id:
-                removed = await playbook_manager.remove_playbook(fallback_id)
+            target_id = path_id or fallback_id
+            if target_id:
+                removed = await playbook_manager.remove_playbook(target_id)
                 if removed:
                     logger.info(
                         "Playbook deleted in scope %s: %s (removed '%s' from registry)",
                         scope_label,
                         change.rel_path,
-                        fallback_id,
+                        target_id,
                     )
                 else:
                     logger.info(
                         "Playbook deleted in scope %s: %s (id '%s' not in registry)",
                         scope_label,
                         change.rel_path,
-                        fallback_id,
+                        target_id,
                     )
             else:
                 logger.warning(
@@ -205,6 +208,7 @@ async def on_playbook_changed(
             markdown,
             source_path=change.path,
             rel_path=change.rel_path,
+            scope_identifier=identifier,
         )
 
         if result.success:

@@ -145,7 +145,6 @@ def _complex_playbook() -> CompiledPlaybook:
             ),
             "analyze": PlaybookNode(
                 prompt="Deep analysis of results",
-                summarize_before=True,
                 transitions=[
                     PlaybookTransition(goto="success", when="analysis passes"),
                     PlaybookTransition(goto="failure", otherwise=True),
@@ -459,15 +458,6 @@ class TestBuildNodes:
         start = next(n for n in nodes if n["id"] == "start")
         assert start["timeout_seconds"] == 300
         assert start["on_timeout"] == "timeout_handler"
-
-    def test_summarize_before_metadata(self):
-        pb = _complex_playbook()
-        positions = _compute_layout(pb)
-        nodes = build_nodes(pb, positions)
-
-        analyze = next(n for n in nodes if n["id"] == "analyze")
-        assert analyze.get("summarize_before") is True
-
 
 # ===========================================================================
 # Build edges tests

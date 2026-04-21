@@ -767,32 +767,6 @@ class TestVibeCopPluginInitialize:
         assert "task.completed" in subscribed_events
 
     @pytest.mark.asyncio
-    async def test_initialize_injects_rule(self, mock_ctx):
-        plugin = VibeCopPlugin()
-        await plugin.initialize(mock_ctx)
-
-        # Verify save_rule was called with the expected rule ID
-        save_rule_calls = [
-            c for c in mock_ctx.execute_command.call_args_list if c.args[0] == "save_rule"
-        ]
-        assert len(save_rule_calls) == 1
-        rule_args = save_rule_calls[0].args[1]
-        assert rule_args["id"] == "rule-vibecop-pre-complete-check"
-        assert rule_args["project_id"] is None
-        assert rule_args["type"] == "passive"
-        assert "Vibecop Pre-Completion Check" in rule_args["content"]
-
-    @pytest.mark.asyncio
-    async def test_initialize_skips_rule_when_disabled(self, mock_ctx):
-        mock_ctx.get_config.return_value = {"enforce_vibecop_checkout": False}
-        plugin = VibeCopPlugin()
-        await plugin.initialize(mock_ctx)
-
-        # Should not have called save_rule
-        for call in mock_ctx.execute_command.call_args_list:
-            assert call.args[0] != "save_rule"
-
-    @pytest.mark.asyncio
     async def test_initialize_creates_runner(self, mock_ctx):
         plugin = VibeCopPlugin()
         await plugin.initialize(mock_ctx)

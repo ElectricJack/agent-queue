@@ -157,6 +157,50 @@ def classify_error(error_message: str | None) -> tuple[str, str]:
     return "Unexpected error", "Check daemon logs (`~/.agent-queue/daemon.log`) for full details."
 
 
+def format_task_added(task: Task) -> str:
+    """Plain-text line for a newly added task (before an agent picks it up)."""
+    lines = [
+        f"📝 **Task Added:** `{task.id}` — {task.title}",
+        f"Project: `{task.project_id}`",
+    ]
+    if getattr(task, "priority", None) is not None:
+        lines.append(f"Priority: {task.priority}")
+    return "\n".join(lines)
+
+
+def format_task_added_embed(task: Task, *, source: str = "") -> "discord.Embed":
+    """Rich embed for a newly added task notification."""
+    fields: list[tuple[str, str, bool]] = [
+        ("ID", f"`{task.id}`", True),
+        ("Project", f"`{task.project_id}`", True),
+    ]
+    if getattr(task, "priority", None) is not None:
+        fields.append(("Priority", str(task.priority), True))
+    agent_type = getattr(task, "agent_type", None)
+    if agent_type:
+        fields.append(("Agent Type", f"`{agent_type}`", True))
+    task_type = getattr(task, "task_type", None)
+    if task_type:
+        # task_type may be an enum or a string depending on the proxy
+        value = task_type.value if hasattr(task_type, "value") else str(task_type)
+        fields.append(("Task Type", f"`{value}`", True))
+    if source:
+        fields.append(("Source", f"`{source}`", True))
+
+    description = getattr(task, "description", "") or ""
+    if description:
+        description = truncate(description, 400)
+    else:
+        description = task.title or ""
+
+    return make_embed(
+        EmbedStyle.INFO,
+        f"📝 Task Added: {task.title}",
+        description=truncate(description, LIMIT_DESCRIPTION),
+        fields=fields,
+    )
+
+
 def format_task_started(task: Task, agent: Agent, workspace: Workspace | None = None) -> str:
     lines = [
         f"**Task Started:** `{task.id}` — {task.title}",
@@ -1763,6 +1807,137 @@ def format_playbook_timed_out_embed(
     return embed
 
 
+# ---------------------------------------------------------------------------
+# Playbook run lifecycle (start / complete / fail) — routed per scope
+# ---------------------------------------------------------------------------
+
+
+def format_playbook_started(*, playbook_id: str, run_id: str) -> str:
+    """Plain-text line for a playbook run start."""
+    return f"▶️ **Playbook Started** — `{playbook_id}` (run `{run_id}`)"
+
+
+def format_playbook_started_embed(
+    *,
+    playbook_id: str,
+    run_id: str,
+    trigger_event_type: str = "",
+    scope: str = "system",
+) -> "discord.Embed":
+    """Rich embed for a playbook run start."""
+    fields: list[tuple[str, str, bool]] = [
+        ("Playbook", f"`{playbook_id}`", True),
+        ("Run ID", f"`{run_id}`", True),
+        ("Scope", f"`{scope}`", True),
+    ]
+    if trigger_event_type:
+        fields.append(("Trigger", f"`{trigger_event_type}`", False))
+
+    return make_embed(
+        EmbedStyle.INFO,
+        "▶️ Playbook Started",
+        description=f"Playbook `{playbook_id}` is now running.",
+        fields=fields,
+    )
+
+
+def format_playbook_completed(
+    *, playbook_id: str, run_id: str, duration_seconds: float = 0.0
+) -> str:
+    """Plain-text line for a playbook run completion."""
+    if duration_seconds > 0:
+        return (
+            f"✅ **Playbook Completed** — `{playbook_id}` "
+            f"(run `{run_id}`) in {_fmt_duration(duration_seconds)}"
+        )
+    return f"✅ **Playbook Completed** — `{playbook_id}` (run `{run_id}`)"
+
+
+def format_playbook_completed_embed(
+    *,
+    playbook_id: str,
+    run_id: str,
+    duration_seconds: float = 0.0,
+    tokens_used: int = 0,
+    node_count: int = 0,
+    final_context: str | None = None,
+) -> "discord.Embed":
+    """Rich embed for a playbook run completion."""
+    fields: list[tuple[str, str, bool]] = [
+        ("Playbook", f"`{playbook_id}`", True),
+        ("Run ID", f"`{run_id}`", True),
+    ]
+    if duration_seconds > 0:
+        fields.append(("Duration", _fmt_duration(duration_seconds), True))
+    if node_count > 0:
+        fields.append(("Nodes", str(node_count), True))
+    if tokens_used > 0:
+        fields.append(("Tokens", f"{tokens_used:,}", True))
+
+    description = f"Playbook `{playbook_id}` completed successfully."
+    if final_context:
+        snippet = truncate(final_context, 500)
+        description = f"{description}\n\n{snippet}"
+
+    return make_embed(
+        EmbedStyle.SUCCESS,
+        "✅ Playbook Completed",
+        description=truncate(description, LIMIT_DESCRIPTION),
+        fields=fields,
+    )
+
+
+def format_playbook_run_failed(
+    *, playbook_id: str, run_id: str, failed_at_node: str
+) -> str:
+    """Plain-text line for a playbook run failure."""
+    return (
+        f"❌ **Playbook Failed** — `{playbook_id}` (run `{run_id}`) "
+        f"at node `{failed_at_node}`"
+    )
+
+
+def format_playbook_run_failed_embed(
+    *,
+    playbook_id: str,
+    run_id: str,
+    failed_at_node: str,
+    error: str = "",
+    duration_seconds: float = 0.0,
+    tokens_used: int = 0,
+) -> "discord.Embed":
+    """Rich embed for a playbook run failure."""
+    fields: list[tuple[str, str, bool]] = [
+        ("Playbook", f"`{playbook_id}`", True),
+        ("Run ID", f"`{run_id}`", True),
+        ("Failed at Node", f"`{failed_at_node}`", True),
+    ]
+    if duration_seconds > 0:
+        fields.append(("Duration", _fmt_duration(duration_seconds), True))
+    if tokens_used > 0:
+        fields.append(("Tokens", f"{tokens_used:,}", True))
+
+    description = f"Playbook `{playbook_id}` failed at node `{failed_at_node}`."
+    if error:
+        description = f"{description}\n\n```\n{truncate(error, 1500)}\n```"
+
+    return make_embed(
+        EmbedStyle.ERROR,
+        "❌ Playbook Failed",
+        description=truncate(description, LIMIT_DESCRIPTION),
+        fields=fields,
+    )
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Human-friendly duration formatter shared by the lifecycle embeds."""
+    if seconds >= 3600:
+        return f"{seconds / 3600:.1f}h"
+    if seconds >= 60:
+        return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+    return f"{seconds:.1f}s"
+
+
 class PlaybookResumeModal(discord.ui.Modal, title="Resume Playbook"):
     """Modal dialog for providing human input to resume a paused playbook run.
 
@@ -1815,6 +1990,16 @@ class PlaybookResumeView(discord.ui.View):
         super().__init__(timeout=86400)  # 24 hours (matches pause timeout)
         self.run_id = run_id
         self._handler = handler
+        self._message: discord.Message | None = None
+
+    def set_message(self, message: discord.Message | None) -> None:
+        """Store the Discord message this view is attached to.
+
+        Called by the notification handler after ``_send_message`` returns
+        so the view can later edit the message (e.g. disable buttons after
+        the run resumes).
+        """
+        self._message = message
 
     @discord.ui.button(
         label="Resume Playbook",

@@ -116,6 +116,11 @@ class MemoryV2Service:
         self._embedder: Any = None  # EmbeddingProvider
         self._router: Any = None  # CollectionRouter
         self._initialized = False
+        # Profile-to-shared-scope alias map.  Populated by
+        # :meth:`set_scope_alias_map` (typically from the plugin layer after
+        # loading agent_profiles rows).  Keyed by profile id, value is the
+        # shared ``memory_scope_id`` the profile redirects to.
+        self._scope_alias_map: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -194,6 +199,28 @@ class MemoryV2Service:
     # Scope resolution
     # ------------------------------------------------------------------
 
+    def set_scope_alias_map(self, aliases: dict[str, str]) -> None:
+        """Install the ``profile_id -> memory_scope_id`` alias map.
+
+        When an ``agenttype_{profile_id}`` scope resolves, the service
+        checks this map first: if a profile declares an alias, reads and
+        writes redirect to the aliased scope instead of its own id.  This
+        lets multiple profiles share a single memory collection and vault
+        directory (e.g. ``claude-opus`` and ``claude-sonnet`` both set
+        ``memory_scope_id='claude'`` so they pool insights).
+
+        An empty dict (or never-called) means 1:1 profile-to-scope,
+        preserving the original behaviour.
+
+        Parameters
+        ----------
+        aliases:
+            Mapping of profile id (as used in ``agenttype_{id}`` strings)
+            to target scope id.  Entries where value equals key are
+            stored but have no effect.
+        """
+        self._scope_alias_map = dict(aliases)
+
     def _resolve_scope(
         self,
         project_id: str,
@@ -223,6 +250,13 @@ class MemoryV2Service:
             return (MemoryScope.SUPERVISOR, None)
         if scope.startswith("agenttype_"):
             agent_type = scope.removeprefix("agenttype_")
+            # Honour a profile-level memory alias when present.  When
+            # ``claude-opus`` declares ``memory_scope_id='claude'``, a
+            # caller asking for ``agenttype_claude-opus`` transparently
+            # reads/writes from ``agenttype_claude`` instead.
+            aliased = self._scope_alias_map.get(agent_type)
+            if aliased and aliased != agent_type:
+                return (MemoryScope.AGENT_TYPE, aliased)
             return (MemoryScope.AGENT_TYPE, agent_type)
         if scope.startswith("project_"):
             pid = scope.removeprefix("project_")
@@ -1180,13 +1214,17 @@ class MemoryV2Service:
         source_playbook: str | None = None,
         filename: str | None = None,
         created: str | None = None,
+        subdir: str = "insights",
     ) -> Path:
         """Write a markdown file with frontmatter to the vault.
 
         Parameters
         ----------
         vault_dir:
-            Target directory (e.g. ``vault/projects/{id}/memory/insights/``).
+            Target directory (e.g. ``vault/projects/{id}/memory/``).
+        subdir:
+            Subdirectory under *vault_dir* to write into — ``"insights"``
+            by default, ``"knowledge"`` for promoted entries.
         content:
             Summary / main content.
         original:
@@ -1211,8 +1249,8 @@ class MemoryV2Service:
         Path
             The path to the written file.
         """
-        insights_dir = vault_dir / "insights"
-        insights_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = vault_dir / subdir
+        target_dir.mkdir(parents=True, exist_ok=True)
 
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if not filename:
@@ -1223,7 +1261,7 @@ class MemoryV2Service:
             short_hash = hashlib.sha256(content.encode()).hexdigest()[:6]
             filename = f"{slug}-{short_hash}"
 
-        filepath = insights_dir / f"{filename}.md"
+        filepath = target_dir / f"{filename}.md"
 
         # Build frontmatter
         fm_lines = ["---"]
@@ -1299,6 +1337,7 @@ class MemoryV2Service:
         tags: list[str] | None = None,
         source_task: str | None = None,
         source_playbook: str | None = None,
+        replace_tags: bool = False,
     ) -> None:
         """Update an existing vault markdown file.
 
@@ -1307,6 +1346,13 @@ class MemoryV2Service:
         *content* is provided the file body is replaced.  If *original*
         is also provided, the body includes both the summary content and
         the original text under an ``## Original`` heading (per spec §9).
+
+        When ``replace_tags`` is True and ``tags`` is provided, the vault
+        ``tags:`` frontmatter entry is REPLACED outright (used by the
+        ``memory_update`` CLI tool where the caller's tag list is
+        authoritative). When False (default), tags are merged into the
+        existing list — the behavior needed by the dedup/merge flows that
+        want to accumulate provenance.
         """
         import json as _json
 
@@ -1361,19 +1407,22 @@ class MemoryV2Service:
                         f"{anchor.group(0)}\nsource_playbook: {source_playbook}",
                     )
 
-        # Merge tags if provided
-        if tags:
+        # Merge or replace tags if provided
+        if tags is not None:
             existing_tags_match = re.search(r"^tags:\s*(\[.*?\])$", text, flags=re.MULTILINE)
             if existing_tags_match:
-                try:
-                    existing = _json.loads(existing_tags_match.group(1))
-                    merged = list(dict.fromkeys(existing + tags))
-                    text = text.replace(
-                        existing_tags_match.group(0),
-                        f"tags: {_json.dumps(merged)}",
-                    )
-                except _json.JSONDecodeError:
-                    pass
+                if replace_tags:
+                    new_tags = list(tags)
+                else:
+                    try:
+                        existing = _json.loads(existing_tags_match.group(1))
+                        new_tags = list(dict.fromkeys(existing + tags))
+                    except _json.JSONDecodeError:
+                        new_tags = list(tags)
+                text = text.replace(
+                    existing_tags_match.group(0),
+                    f"tags: {_json.dumps(new_tags)}",
+                )
 
         # Replace body if new content provided
         if content:
@@ -1468,6 +1517,7 @@ class MemoryV2Service:
         source_task: str | None = None,
         source_playbook: str | None = None,
         scope: str | None = None,
+        subdir: str = "insights",
     ) -> dict[str, Any]:
         """Save a new document entry to vault + Milvus.
 
@@ -1508,7 +1558,7 @@ class MemoryV2Service:
         if not self.available:
             raise RuntimeError("MemoryV2Service not available")
 
-        tags = tags or ["insight", "auto-generated"]
+        tags = tags or ["insight", "auto-extracted"]
         indexed_content = summary or content
         stored_original = original or (content if summary else content)
 
@@ -1528,6 +1578,7 @@ class MemoryV2Service:
             topic=topic,
             source_task=source_task,
             source_playbook=source_playbook,
+            subdir=subdir,
         )
 
         # Compute embedding for the summary/content
@@ -1800,7 +1851,9 @@ class MemoryV2Service:
         entry["updated_at"] = now_ts
         await asyncio.to_thread(store.upsert, [entry])
 
-        # Update vault file if it exists
+        # Update vault file if it exists.  Tags are REPLACED here (not
+        # merged) — the caller of memory_update supplies the authoritative
+        # tag list and expects it to overwrite the stored set.
         source = entry.get("source", "")
         if source:
             vault_file = Path(source)
@@ -1809,10 +1862,17 @@ class MemoryV2Service:
                     vault_file,
                     content=content,
                     tags=tags,
+                    replace_tags=True,
                 )
                 # Update topic in vault frontmatter if changed
                 if topic is not None:
                     self._update_vault_topic(vault_file, topic)
+            else:
+                logger.warning(
+                    "update_document: vault file %s does not exist; "
+                    "Milvus entry updated but markdown is out of sync",
+                    source,
+                )
 
         mem_scope, scope_id = self._resolve_scope(project_id, scope)
         coll_name = collection_name(mem_scope, scope_id)
@@ -1891,13 +1951,34 @@ class MemoryV2Service:
         # Delete from Milvus
         await asyncio.to_thread(store.delete_by_hashes, [chunk_hash])
 
-        # Delete vault file if it exists and is a standalone insight file
+        # Delete vault file if it exists and is a standalone insight or
+        # knowledge file (consolidation promotes insights into knowledge/).
+        # Log a warning when the Milvus entry had a source path but the
+        # file wasn't actually unlinked — operators have reported orphaned
+        # markdown after delete_document, and silent skips made this hard
+        # to diagnose.
         deleted_vault = False
         if vault_path:
             vp = Path(vault_path)
-            if vp.exists() and "/insights/" in str(vp):
+            path_str = str(vp)
+            in_guard = "/insights/" in path_str or "/knowledge/" in path_str
+            if not vp.exists():
+                logger.warning(
+                    "delete_document: source path %s does not exist on disk; "
+                    "Milvus entry removed but no vault file to unlink",
+                    path_str,
+                )
+            elif not in_guard:
+                logger.warning(
+                    "delete_document: source path %s is outside the "
+                    "insights/knowledge safety guard; vault file not deleted. "
+                    "Remove it manually if intended.",
+                    path_str,
+                )
+            else:
                 vp.unlink()
                 deleted_vault = True
+                logger.info("delete_document: removed vault file %s", path_str)
 
         mem_scope, scope_id = self._resolve_scope(project_id, scope)
         coll_name = collection_name(mem_scope, scope_id)
@@ -2005,7 +2086,11 @@ class MemoryV2Service:
         escaped = _escape_filter_value(tag)
         filter_expr = f'tags like "%{escaped}%"'
         try:
-            results = await asyncio.to_thread(store.query, filter_expr=filter_expr)
+            # track=False: this is a diagnostic count, not a retrieval —
+            # shouldn't inflate per-entry last_retrieved timestamps.
+            results = await asyncio.to_thread(
+                store.query, filter_expr=filter_expr, track=False
+            )
             return len(results)
         except Exception:
             logger.debug("count_by_tag query failed for tag=%s", tag, exc_info=True)

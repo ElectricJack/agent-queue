@@ -534,8 +534,9 @@ class TestStatsNoTracking:
 
         await service.stats("test-project")
 
-        # stats() makes 3 queries (doc, kv, temporal)
-        assert mock_store.query.call_count == 3
+        # stats() makes 4 queries (doc, kv, temporal, contested count via
+        # count_by_tag). All diagnostic — none should bump retrieval counts.
+        assert mock_store.query.call_count == 4
         for call in mock_store.query.call_args_list:
             assert call.kwargs.get("track") is False
 

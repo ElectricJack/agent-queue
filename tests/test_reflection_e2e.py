@@ -251,6 +251,13 @@ class ReflectionMockSupervisor:
             "Always set max_retries with jitter to avoid thundering herd",
         ]
         self._call_index = 0
+        # PlaybookRunner reads supervisor.config.chat_provider.playbook_max_tokens
+        # (runner.py:1537) — provide a minimal stand-in.
+        from types import SimpleNamespace
+
+        self.config = SimpleNamespace(
+            chat_provider=SimpleNamespace(playbook_max_tokens=2048)
+        )
 
     async def chat(self, **kwargs) -> str:
         """Record the call and return a simulated response."""
@@ -326,6 +333,13 @@ class ToolTrackingSupervisor:
     def __init__(self):
         self.chat_calls: list[dict] = []
         self.tool_calls: list[dict] = []
+        # PlaybookRunner reads supervisor.config.chat_provider.playbook_max_tokens
+        # (runner.py:1537) — provide a minimal stand-in.
+        from types import SimpleNamespace
+
+        self.config = SimpleNamespace(
+            chat_provider=SimpleNamespace(playbook_max_tokens=2048)
+        )
         self._node_tool_mapping: dict[str, list[dict]] = {
             "review_task": [
                 {"tool": "get_task", "args": {"task_id": "t-100"}},
@@ -554,7 +568,13 @@ class TestReflectionRunnerGraphWalk:
         ]
 
     async def test_each_node_receives_accumulated_history(self) -> None:
-        """Each subsequent node sees the full conversation from prior nodes."""
+        """Subsequent nodes see prior-node outputs in a structured summary.
+
+        Post-refactor the runner builds fresh per-node context rather than
+        accumulating the raw transcript: every non-entry node gets
+        ``[seed, prior-step-results, ack]`` regardless of how far along the
+        graph is.  The ``prior-step-results`` block grows as more nodes run.
+        """
         supervisor = ReflectionMockSupervisor()
         graph = _make_reflection_graph()
         event = _task_completed_event()
@@ -562,25 +582,26 @@ class TestReflectionRunnerGraphWalk:
         runner = PlaybookRunner(graph, event, supervisor)
         await runner.run()
 
-        # Should have 4 chat calls (one per non-terminal node)
+        # Should have 4 chat calls (one per non-terminal node).
         assert len(supervisor.chat_calls) == 4
 
-        # First call: history = [seed message]
+        # Entry node: history = [seed message]
         first_history = supervisor.chat_calls[0]["history"]
         assert len(first_history) == 1
         assert "Event received" in first_history[0]["content"]
 
-        # Second call: history = seed + review prompt + review response
-        second_history = supervisor.chat_calls[1]["history"]
-        assert len(second_history) == 3
+        # Every subsequent node: history = [seed, prior-results, ack]
+        for call in supervisor.chat_calls[1:]:
+            history = call["history"]
+            assert len(history) == 3
+            assert "Prior Step Results" in history[1]["content"]
+            assert history[2]["role"] == "assistant"
 
-        # Third call: history grows by 2 more (extract prompt + response)
-        third_history = supervisor.chat_calls[2]["history"]
-        assert len(third_history) == 5
-
-        # Fourth call: history grows by 2 more (write prompt + response)
-        fourth_history = supervisor.chat_calls[3]["history"]
-        assert len(fourth_history) == 7
+        # Prior-results block grows as nodes complete.
+        second_results = supervisor.chat_calls[1]["history"][1]["content"]
+        third_results = supervisor.chat_calls[2]["history"][1]["content"]
+        fourth_results = supervisor.chat_calls[3]["history"][1]["content"]
+        assert len(second_results) < len(third_results) < len(fourth_results)
 
     async def test_event_data_propagated_through_graph(self) -> None:
         """The trigger event data (task_id, project_id, agent_type) is in the seed."""
@@ -890,10 +911,12 @@ class TestReflectionConversationContext:
         )
         await runner.run()
 
-        # The second call (extract_insights) should have the review response
+        # The runner builds fresh per-node context rather than accumulating
+        # the raw transcript: prior outputs land in a structured "Prior Step
+        # Results" block at history[1]. See runner_context._build_node_context.
         extract_history = supervisor.chat_calls[1]["history"]
-        review_response = extract_history[2]["content"]  # seed, review_prompt, review_response
-        assert "reviewed task" in review_response.lower() or "t-100" in review_response
+        prior_results = extract_history[1]["content"]
+        assert "reviewed task" in prior_results.lower() or "t-100" in prior_results
 
     async def test_extract_response_carries_to_write_node(self) -> None:
         """The write_insights node sees extracted insights in its history."""

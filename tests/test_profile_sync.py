@@ -40,6 +40,7 @@ from src.profiles.sync import (
     scan_and_sync_existing_profiles,
     sync_profile_text_to_db,
     sync_profile_to_db,
+    underlying_agent_type,
 )
 from src.vault_watcher import VaultChange, VaultWatcher
 
@@ -205,8 +206,9 @@ class TestDeriveProfileId:
     def test_agent_type_qa(self):
         assert derive_profile_id("agent-types/qa/profile.md") == "qa"
 
-    def test_orchestrator(self):
-        assert derive_profile_id("orchestrator/profile.md") == "orchestrator"
+    def test_orchestrator_legacy_path_not_recognised(self):
+        """Legacy ``orchestrator/profile.md`` path was retired — supervisor is the singleton scope now."""
+        assert derive_profile_id("orchestrator/profile.md") is None
 
     def test_unrecognized_path(self):
         assert derive_profile_id("other/profile.md") is None
@@ -730,8 +732,13 @@ class TestOnProfileChanged:
         await on_profile_changed([], db=db)
 
     @pytest.mark.asyncio
-    async def test_orchestrator_profile(self, db, tmp_path):
-        """orchestrator/profile.md is synced with path-derived ID."""
+    async def test_legacy_orchestrator_path_ignored(self, db, tmp_path):
+        """Legacy ``orchestrator/profile.md`` can't resurrect the deprecated profile.
+
+        The ``orchestrator`` scope was retired in favour of ``supervisor``;
+        the path no longer maps to a recognised profile id so the sync
+        becomes a no-op.
+        """
         text = """\
 ---
 name: Orchestrator Profile
@@ -750,9 +757,9 @@ You coordinate agents.
         )
         await on_profile_changed([change], db=db)
 
-        profile = await db.get_profile("orchestrator")
-        assert profile is not None
-        assert profile.name == "Orchestrator Profile"
+        # The sync should refuse to materialise a DB row for the
+        # deprecated profile id.
+        assert await db.get_profile("orchestrator") is None
 
 
 # ---------------------------------------------------------------------------
@@ -800,8 +807,9 @@ class TestRegisterProfileHandlers:
     def test_patterns_include_agent_types(self):
         assert "agent-types/*/profile.md" in PROFILE_PATTERNS
 
-    def test_patterns_include_orchestrator(self):
-        assert "orchestrator/profile.md" in PROFILE_PATTERNS
+    def test_patterns_exclude_legacy_orchestrator(self):
+        """Legacy ``orchestrator/profile.md`` glob was retired."""
+        assert "orchestrator/profile.md" not in PROFILE_PATTERNS
 
 
 # ---------------------------------------------------------------------------
@@ -947,8 +955,12 @@ name: {agent_type.title()} Agent
             assert profile is not None, f"Profile {agent_type} not found in DB"
 
     @pytest.mark.asyncio
-    async def test_orchestrator_profile_synced(self, db, tmp_path):
-        """orchestrator/profile.md is synced to DB."""
+    async def test_legacy_orchestrator_path_not_synced(self, db, tmp_path):
+        """A file at legacy ``orchestrator/profile.md`` does not produce a DB row.
+
+        The vault watcher glob no longer matches that path, so the sync
+        is never invoked.  Supervisor is the singleton scope now.
+        """
         vault = tmp_path / "vault"
         vault.mkdir()
 
@@ -970,9 +982,8 @@ You coordinate agents.
 
         await watcher.check()
 
-        profile = await db.get_profile("orchestrator")
-        assert profile is not None
-        assert profile.name == "Orchestrator"
+        # Legacy path is no longer watched.
+        assert await db.get_profile("orchestrator") is None
 
     @pytest.mark.asyncio
     async def test_no_db_mode(self, tmp_path):
@@ -2927,14 +2938,14 @@ class TestFindProfileFiles:
         assert "agent-types/coding/profile.md" in rel_paths
         assert "agent-types/review/profile.md" in rel_paths
 
-    def test_finds_orchestrator_profile(self, tmp_path):
-        """Discovers orchestrator/profile.md."""
+    def test_ignores_legacy_orchestrator_profile(self, tmp_path):
+        """Legacy ``orchestrator/profile.md`` path is no longer discovered."""
         vault = tmp_path / "vault"
         _create_file(str(vault / "orchestrator" / "profile.md"), MINIMAL_PROFILE)
 
         found = _find_profile_files(str(vault))
         rel_paths = {r for _, r in found}
-        assert "orchestrator/profile.md" in rel_paths
+        assert "orchestrator/profile.md" not in rel_paths
 
     def test_ignores_non_matching_files(self, tmp_path):
         """Ignores files that don't match any profile pattern."""
@@ -3052,8 +3063,8 @@ name: {agent_type.title()} Agent
             assert profile is not None, f"Profile {agent_type} not found"
 
     @pytest.mark.asyncio
-    async def test_syncs_orchestrator_profile(self, db, tmp_path):
-        """orchestrator/profile.md is synced on startup scan."""
+    async def test_ignores_legacy_orchestrator_profile_on_startup(self, db, tmp_path):
+        """Legacy ``orchestrator/profile.md`` is skipped by the startup scan."""
         vault = tmp_path / "vault"
         text = """\
 ---
@@ -3068,13 +3079,9 @@ You coordinate agents.
 
         results = await scan_and_sync_existing_profiles(str(vault), db)
 
-        assert len(results) == 1
-        assert results[0].success
-        assert results[0].profile_id == "orchestrator"
-
-        profile = await db.get_profile("orchestrator")
-        assert profile is not None
-        assert profile.name == "Orchestrator"
+        # Path isn't matched by PROFILE_PATTERNS any more.
+        assert results == []
+        assert await db.get_profile("orchestrator") is None
 
     @pytest.mark.asyncio
     async def test_returns_empty_for_no_profiles(self, db, tmp_path):
@@ -3741,8 +3748,8 @@ ID will be derived from path.
         assert profile.name == "Inferred Agent"
 
     @pytest.mark.asyncio
-    async def test_d_new_orchestrator_profile_creation(self, db, tmp_path):
-        """(d) Creating orchestrator/profile.md triggers DB row creation."""
+    async def test_d_legacy_orchestrator_profile_not_created(self, db, tmp_path):
+        """(d) Creating legacy ``orchestrator/profile.md`` does NOT produce a DB row."""
         vault = tmp_path / "vault"
         vault.mkdir()
 
@@ -3763,13 +3770,10 @@ You coordinate and supervise other agents.
 """,
         )
 
-        changes = await watcher.check()
-        assert any(c.operation == "created" for c in changes)
-
-        profile = await db.get_profile("orchestrator")
-        assert profile is not None
-        assert profile.name == "Orchestrator"
-        assert "coordinate" in profile.system_prompt_suffix
+        # The legacy path isn't matched by PROFILE_PATTERNS any more, so
+        # no change is fired and no DB row is created.
+        await watcher.check()
+        assert await db.get_profile("orchestrator") is None
 
     # -------------------------------------------------------------------
     # (e) Deleting profile.md does NOT delete DB row (preserves last
@@ -4132,11 +4136,17 @@ name: Alpha Changed
         assert profile_b.model == "beta-model"
 
     @pytest.mark.asyncio
-    async def test_f_concurrent_with_orchestrator_and_agent(self, db, tmp_path):
-        """(f) Agent-type and orchestrator profiles sync independently."""
+    async def test_f_agent_and_supervisor_profiles_sync_independently(self, db, tmp_path):
+        """(f) Two ``agent-types/`` profiles sync independently.
+
+        Originally this test coupled an agent-type profile with a
+        legacy ``orchestrator/profile.md``; the orchestrator path was
+        retired in favour of the supervisor agent-type.  Use two
+        agent-type profiles to exercise the same independence property.
+        """
         vault = tmp_path / "vault"
         agent_path = vault / "agent-types" / "coding" / "profile.md"
-        orch_path = vault / "orchestrator" / "profile.md"
+        sup_path = vault / "agent-types" / "supervisor" / "profile.md"
 
         _create_file(
             str(agent_path),
@@ -4153,16 +4163,16 @@ name: Coding Agent
 """,
         )
         _create_file(
-            str(orch_path),
+            str(sup_path),
             """\
 ---
-id: orchestrator
-name: Orchestrator
+id: supervisor
+name: Supervisor
 ---
 
 ## Config
 ```json
-{"model": "orchestrator-model"}
+{"model": "supervisor-model"}
 ```
 """,
         )
@@ -4171,16 +4181,16 @@ name: Orchestrator
         register_profile_handlers(watcher, db=db)
         await watcher.check()
         _touch(str(agent_path))
-        _touch(str(orch_path))
+        _touch(str(sup_path))
         await watcher.check()
 
         # Both synced independently
         coding = await db.get_profile("coding")
-        orch = await db.get_profile("orchestrator")
+        sup = await db.get_profile("supervisor")
         assert coding is not None
-        assert orch is not None
+        assert sup is not None
         assert coding.model == "agent-model"
-        assert orch.model == "orchestrator-model"
+        assert sup.model == "supervisor-model"
 
         # Edit both simultaneously
         with open(str(agent_path), "w") as f:
@@ -4197,28 +4207,28 @@ name: Coding Agent v2
 """)
         _touch(str(agent_path))
 
-        with open(str(orch_path), "w") as f:
+        with open(str(sup_path), "w") as f:
             f.write("""\
 ---
-id: orchestrator
-name: Orchestrator v2
+id: supervisor
+name: Supervisor v2
 ---
 
 ## Config
 ```json
-{"model": "orchestrator-model-v2"}
+{"model": "supervisor-model-v2"}
 ```
 """)
-        _touch(str(orch_path))
+        _touch(str(sup_path))
 
         await watcher.check()
 
         coding = await db.get_profile("coding")
-        orch = await db.get_profile("orchestrator")
+        sup = await db.get_profile("supervisor")
         assert coding.name == "Coding Agent v2"
         assert coding.model == "agent-model-v2"
-        assert orch.name == "Orchestrator v2"
-        assert orch.model == "orchestrator-model-v2"
+        assert sup.name == "Supervisor v2"
+        assert sup.model == "supervisor-model-v2"
 
     @pytest.mark.asyncio
     async def test_f_concurrent_debounced_edits(self, db, tmp_path):
@@ -4783,3 +4793,50 @@ name: Code Review Agent
         assert "starter_knowledge" in result, "Result should include starter_knowledge list"
         assert "common-pitfalls.md" in result["starter_knowledge"]
         assert "git-conventions.md" in result["starter_knowledge"]
+
+
+# ---------------------------------------------------------------------------
+# underlying_agent_type
+# ---------------------------------------------------------------------------
+
+
+class TestUnderlyingAgentType:
+    """Project-scoped profile ids must strip to the underlying type.
+
+    Task events emit ``agent_type`` used by the memory extractor to
+    route guidance duplicates to ``agenttype_{agent_type}`` scope.  For
+    a profile id like ``project:moss-and-spade:claude-code``, passing
+    the raw id would create ``vault/agent-types/project:moss-and-spade:
+    claude-code/memory/`` — a mangled path.  The helper strips the
+    ``project:<project_id>:`` prefix so guidance lands alongside the
+    global ``claude-code`` agent-type scope.
+    """
+
+    def test_non_scoped_id_returned_unchanged(self):
+        assert underlying_agent_type("claude-code") == "claude-code"
+        assert underlying_agent_type("supervisor") == "supervisor"
+        assert underlying_agent_type("claude-opus") == "claude-opus"
+
+    def test_project_scoped_id_strips_prefix(self):
+        assert (
+            underlying_agent_type("project:moss-and-spade:claude-code")
+            == "claude-code"
+        )
+        assert (
+            underlying_agent_type("project:agent-queue:coding") == "coding"
+        )
+
+    def test_none_returns_none(self):
+        assert underlying_agent_type(None) is None
+
+    def test_empty_string_returns_none(self):
+        assert underlying_agent_type("") is None
+
+    def test_malformed_scoped_id_returned_as_is(self):
+        # Missing the type segment — don't silently mangle, just pass through.
+        assert underlying_agent_type("project:only-two-parts") == "project:only-two-parts"
+        # Empty type segment.
+        assert (
+            underlying_agent_type("project:proj:")
+            == "project:proj:"
+        )

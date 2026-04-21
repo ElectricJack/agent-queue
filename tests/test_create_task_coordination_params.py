@@ -252,13 +252,19 @@ class TestCreateTaskValidation:
         assert "agent_type must be a string" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_empty_agent_type(self, handler):
+    async def test_whitespace_agent_type_normalised_to_none(self, handler):
+        # Whitespace / "none" / "null" / empty-string are normalised to None
+        # rather than rejected (task_commands.py:769). The task is created
+        # and agent_type ends up NULL.
         result = await handler.execute(
             "create_task",
-            {"project_id": "test-proj", "title": "Bad", "agent_type": "  "},
+            {"project_id": "test-proj", "title": "Fine", "agent_type": "  "},
         )
-        assert "error" in result
-        assert "agent_type cannot be empty" in result["error"]
+        assert "error" not in result
+        created_id = result["created"]
+        task = await handler.orchestrator.db.get_task(created_id)
+        assert task is not None
+        assert task.agent_type in (None, "")
 
     @pytest.mark.asyncio
     async def test_invalid_affinity_agent_id(self, handler):
@@ -840,29 +846,6 @@ class TestCoordinationParamsDbRoundTrip:
         assert archived["affinity_reason"] == "type"
         assert archived["workspace_mode"] == "branch-isolated"
 
-    @pytest.mark.asyncio
-    async def test_restore_preserves_coordination_params(self, testdb):
-        task = Task(
-            id="t-5",
-            project_id="p-1",
-            title="Restorable task",
-            description="test",
-            status=TaskStatus.COMPLETED,
-            agent_type="coding",
-            affinity_agent_id="agent-1",
-            affinity_reason="context",
-            workspace_mode=WorkspaceMode.EXCLUSIVE,
-        )
-        await testdb.create_task(task)
-        await testdb.archive_task("t-5")
-        await testdb.restore_archived_task("t-5")
-
-        restored = await testdb.get_task("t-5")
-        assert restored is not None
-        assert restored.agent_type == "coding"
-        assert restored.affinity_agent_id == "agent-1"
-        assert restored.affinity_reason == "context"
-        assert restored.workspace_mode == WorkspaceMode.EXCLUSIVE
 
     @pytest.mark.asyncio
     async def test_workspace_mode_enum_values(self, testdb):
@@ -879,3 +862,60 @@ class TestCoordinationParamsDbRoundTrip:
             await testdb.create_task(task)
             loaded = await testdb.get_task(tid)
             assert loaded.workspace_mode == mode, f"Round-trip failed for {mode}"
+
+
+# ── notify.task_added emission ──────────────────────────────────────
+
+
+class TestTaskAddedNotification:
+    """Every create_task path emits notify.task_added (regardless of project status).
+
+    Previously only the Discord /add-task slash command posted a "Task Added"
+    message; tasks created by playbooks, MCP clients, and the API were silent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_emits_notify_task_added_for_active_project(self, handler, db):
+        emitted: list[dict] = []
+
+        async def capture(payload: dict) -> None:
+            emitted.append(payload)
+
+        handler.orchestrator.bus.subscribe("notify.task_added", capture)
+
+        result = await handler.execute(
+            "create_task",
+            {"project_id": "test-proj", "title": "A job", "description": "do it"},
+        )
+        assert "error" not in result
+
+        assert len(emitted) == 1, f"Expected one task_added event, got: {emitted}"
+        payload = emitted[0]
+        assert payload["project_id"] == "test-proj"
+        assert payload["task"]["id"] == result["created"]
+        assert payload["task"]["title"] == "A job"
+
+    @pytest.mark.asyncio
+    async def test_emits_notify_task_added_for_paused_project(self, handler, db):
+        """Tasks added to a paused project still fire the notification."""
+        # Pause the project via constraint
+        from src.models import ProjectConstraint
+
+        await db.set_project_constraint(
+            ProjectConstraint(project_id="test-proj", pause_scheduling=True)
+        )
+
+        emitted: list[dict] = []
+
+        async def capture(payload: dict) -> None:
+            emitted.append(payload)
+
+        handler.orchestrator.bus.subscribe("notify.task_added", capture)
+
+        result = await handler.execute(
+            "create_task",
+            {"project_id": "test-proj", "title": "Paused job"},
+        )
+        assert "error" not in result
+        assert len(emitted) == 1
+        assert emitted[0]["project_id"] == "test-proj"

@@ -281,9 +281,9 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
     # -- README summary notifications (self-improvement spec §5) --
     "notify.readme_summary_updated": {
         "required": [*_NOTIFY_BASE_FIELDS],
+        # _NOTIFY_BASE_OPTIONAL already includes "project_id".
         "optional": [
             *_NOTIFY_BASE_OPTIONAL,
-            "project_id",
             "action",
             "source_path",
             "summary_path",
@@ -291,7 +291,8 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
     },
     "notify.readme_summary_failed": {
         "required": [*_NOTIFY_BASE_FIELDS],
-        "optional": [*_NOTIFY_BASE_OPTIONAL, "project_id", "source_path", "errors"],
+        # _NOTIFY_BASE_OPTIONAL already includes "project_id".
+        "optional": [*_NOTIFY_BASE_OPTIONAL, "source_path", "errors"],
     },
     # -- Playbook run lifecycle notifications --
     "notify.playbook_run_started": {

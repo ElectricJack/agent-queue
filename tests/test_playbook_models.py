@@ -235,12 +235,10 @@ class TestPlaybookNode:
             goto="next",
             timeout_seconds=120,
             llm_config=LlmConfig(model="fast-model"),
-            summarize_before=True,
         )
         d = node.to_dict()
         assert d["timeout_seconds"] == 120
         assert d["llm_config"] == {"model": "fast-model"}
-        assert d["summarize_before"] is True
 
     def test_round_trip(self):
         node = PlaybookNode(
@@ -249,7 +247,6 @@ class TestPlaybookNode:
             transitions=[PlaybookTransition(goto="end", when="done")],
             timeout_seconds=60,
             llm_config=LlmConfig(provider="anthropic"),
-            summarize_before=True,
         )
         restored = PlaybookNode.from_dict(node.to_dict())
         assert restored.prompt == node.prompt
@@ -258,7 +255,6 @@ class TestPlaybookNode:
         assert restored.timeout_seconds == 60
         assert restored.llm_config is not None
         assert restored.llm_config.provider == "anthropic"
-        assert restored.summarize_before is True
 
     def test_defaults(self):
         node = PlaybookNode()
@@ -271,7 +267,6 @@ class TestPlaybookNode:
         assert node.timeout_seconds is None
         assert node.llm_config is None
         assert node.transition_llm_config is None
-        assert node.summarize_before is False
 
     def test_transition_llm_config(self):
         node = PlaybookNode(
@@ -1693,3 +1688,165 @@ class TestJsonSchema:
         assert on_disk == generated, (
             "playbook_schema.json is out of sync with generate_json_schema(). Regenerate it."
         )
+
+
+# ---------------------------------------------------------------------------
+# for_each source validation (Bug 1 from 2026-04-20 memory-consolidation run)
+# ---------------------------------------------------------------------------
+
+
+class TestForEachSourceValidation:
+    """`for_each.source` must reference a key actually produced upstream.
+
+    The root segment of the source path must match one of:
+    - an upstream node's `output.as` (when `as` is set, output stores under that name)
+    - an upstream node's `for_each.collect` (the collected array lives there)
+    - an upstream node's bare `node_id` (when no `output.as` is set, output stores
+      under node_id)
+
+    Mismatches produce empty for_each iterations at runtime without raising —
+    this caught bug 1 from the 2026-04-20 memory-consolidation run where the
+    compiler emitted `source: "enumerate_projects.projects"` for a node whose
+    storage key was `projects` (because `output.as: "projects"` was set).
+    """
+
+    def test_source_as_alias_is_valid(self):
+        """Source referencing an upstream `output.as` key passes validation."""
+        pb = CompiledPlaybook(
+            id="t", version=1, source_hash="h", triggers=["x"], scope="system",
+            nodes={
+                "enum": PlaybookNode(
+                    entry=True, prompt="list projects", goto="iter",
+                    output={"extract": "projects", "as": "projects"},
+                ),
+                "iter": PlaybookNode(
+                    prompt="For {{p.id}}", goto="done",
+                    for_each={"source": "projects", "as": "p"},
+                ),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert not any("for_each" in e and "source" in e for e in errors), errors
+
+    def test_source_node_id_is_valid_when_no_as(self):
+        """Source referencing a bare node_id is valid when that node has no `as`."""
+        pb = CompiledPlaybook(
+            id="t", version=1, source_hash="h", triggers=["x"], scope="system",
+            nodes={
+                "enum": PlaybookNode(
+                    entry=True, prompt="list", goto="iter",
+                    output={"extract": "projects"},  # no `as` → stores under "enum"
+                ),
+                "iter": PlaybookNode(
+                    prompt="For {{p}}", goto="done",
+                    for_each={"source": "enum", "as": "p"},
+                ),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert not any("for_each" in e and "source" in e for e in errors), errors
+
+    def test_source_collect_alias_is_valid(self):
+        """Source referencing an upstream `for_each.collect` key is valid."""
+        pb = CompiledPlaybook(
+            id="t", version=1, source_hash="h", triggers=["x"], scope="system",
+            nodes={
+                "enum": PlaybookNode(
+                    entry=True, prompt="list", goto="enrich",
+                    output={"extract": "projects", "as": "projects"},
+                ),
+                "enrich": PlaybookNode(
+                    prompt="enrich {{p.id}}", goto="report",
+                    for_each={"source": "projects", "as": "p", "collect": "enriched"},
+                ),
+                "report": PlaybookNode(
+                    prompt="report {{e.id}}", goto="done",
+                    for_each={"source": "enriched", "as": "e"},
+                ),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert not any("for_each" in e and "source" in e for e in errors), errors
+
+    def test_source_root_unknown_is_invalid(self):
+        """Source whose root doesn't match any stored key fails validation.
+
+        Regression for the 2026-04-20 memory-consolidation bug: the compiler
+        emitted `source: "enumerate_projects.projects"` but the enum node
+        stored its output under `projects` (via `output.as`), not under
+        `enumerate_projects`. The dot-path resolved to None at runtime.
+        """
+        pb = CompiledPlaybook(
+            id="t", version=1, source_hash="h", triggers=["x"], scope="system",
+            nodes={
+                "enumerate_projects": PlaybookNode(
+                    entry=True, prompt="list", goto="iter",
+                    output={"extract": "projects", "as": "projects"},  # stores at "projects"
+                ),
+                "iter": PlaybookNode(
+                    prompt="For {{p.id}}", goto="done",
+                    for_each={"source": "enumerate_projects.projects", "as": "p"},
+                ),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any(
+            "for_each" in e and "enumerate_projects" in e
+            for e in errors
+        ), f"Expected for_each source error; got: {errors}"
+
+    def test_source_dot_path_with_valid_root(self):
+        """Dot-path sources pass validation when the root key exists.
+
+        Deeper path resolution is runtime — the validator only checks that the
+        root segment maps to a produced key.
+        """
+        pb = CompiledPlaybook(
+            id="t", version=1, source_hash="h", triggers=["x"], scope="system",
+            nodes={
+                "enum": PlaybookNode(
+                    entry=True, prompt="...", goto="iter",
+                    output={"extract": "data"},  # no `as` → stores under "enum"
+                ),
+                "iter": PlaybookNode(
+                    prompt="...{{p}}...", goto="done",
+                    for_each={"source": "enum.items", "as": "p"},
+                ),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert not any("for_each" in e and "source" in e for e in errors), errors
+
+    def test_foreach_node_without_collect_doesnt_expose_key(self):
+        """A for_each node with no `collect` produces no visible key downstream."""
+        pb = CompiledPlaybook(
+            id="t", version=1, source_hash="h", triggers=["x"], scope="system",
+            nodes={
+                "enum": PlaybookNode(
+                    entry=True, prompt="list", goto="iter1",
+                    output={"extract": "projects", "as": "projects"},
+                ),
+                "iter1": PlaybookNode(
+                    prompt="...{{p.id}}...", goto="iter2",
+                    # no `collect` — the iteration results are not stored
+                    for_each={"source": "projects", "as": "p"},
+                ),
+                "iter2": PlaybookNode(
+                    prompt="...{{x}}...", goto="done",
+                    # referencing iter1 — invalid because iter1 has no collect
+                    # and for_each iterations pop their per-iteration keys
+                    for_each={"source": "iter1", "as": "x"},
+                ),
+                "done": PlaybookNode(terminal=True),
+            },
+        )
+        errors = pb.validate()
+        assert any(
+            "for_each" in e and "iter1" in e
+            for e in errors
+        ), f"Expected for_each source error for iter1; got: {errors}"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any
 
@@ -23,6 +24,7 @@ from src.notifications.events import (
     TaskThreadCloseEvent,
     TaskThreadOpenEvent,
 )
+from src.profiles.sync import underlying_agent_type
 from src.models import (
     AgentResult,
     AgentState,
@@ -122,7 +124,7 @@ class ExecutionMixin:
                     "timeout",
                     error=f"Task execution timed out after {timeout}s",
                     agent_id=action.agent_id,
-                    agent_type=profile.id if profile else None,
+                    agent_type=underlying_agent_type(profile.id) if profile else None,
                 )
             await self._emit_text_notify(
                 f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED.",
@@ -421,9 +423,30 @@ class ExecutionMixin:
         # ------------------------------------------------------------------ #
         # L0 Identity tier and L1 Critical Facts tier.
         # ------------------------------------------------------------------ #
+        # Profile chain: the global agent-type profile (e.g. claude-opus)
+        # provides the base Role; the project-scoped profile (e.g. Meredith
+        # Oxalis) supplies a project specialisation on top.  We expose them
+        # as two separate tiers so the prompt builder keeps them ordered:
+        # l0_role → project_override_role → L1 facts → ...  Before this
+        # chain existed, the scoped profile fully replaced the base, so any
+        # role guidance from the agent-type was silently dropped.
         l0_role = ""
+        project_override_role = ""
         if profile and profile.system_prompt_suffix:
-            l0_role = profile.system_prompt_suffix.strip()
+            scoped_suffix = profile.system_prompt_suffix.strip()
+            base_agent_type = underlying_agent_type(profile.id)
+            is_scoped = profile.id.startswith("project:")
+            if is_scoped and base_agent_type:
+                global_profile = await self.db.get_profile(base_agent_type)
+                if global_profile and global_profile.system_prompt_suffix:
+                    l0_role = global_profile.system_prompt_suffix.strip()
+                    project_override_role = scoped_suffix
+                else:
+                    # No global parent — fall back to scoped suffix as the
+                    # only role source.  Keeps single-profile projects working.
+                    l0_role = scoped_suffix
+            else:
+                l0_role = scoped_suffix
 
         l1_facts = ""
         l1_guidance = ""
@@ -432,7 +455,7 @@ class ExecutionMixin:
             try:
                 l1_text = await self._memory_v2_service.load_l1_facts(
                     project_id=task.project_id,
-                    agent_type=profile.id if profile else None,
+                    agent_type=underlying_agent_type(profile.id) if profile else None,
                 )
                 if l1_text:
                     l1_facts = l1_text
@@ -442,7 +465,7 @@ class ExecutionMixin:
             try:
                 l1_guid = await self._memory_v2_service.load_l1_guidance(
                     project_id=task.project_id,
-                    agent_type=profile.id if profile else None,
+                    agent_type=underlying_agent_type(profile.id) if profile else None,
                 )
                 if l1_guid:
                     l1_guidance = l1_guid
@@ -539,10 +562,24 @@ class ExecutionMixin:
                     candidates,
                 )
 
+        # Give the agent read/write access to its own memory in the vault.
+        # The workspace (cwd) is the project's git repo; the vault lives
+        # under ~/.agent-queue/vault/projects/<id>/ which is outside cwd, so
+        # without this the Claude CLI's filesystem sandbox rejects Edit/Write
+        # calls on insight files — breaking any task that edits memory
+        # directly (consolidation, note-taking, self-improvement).
+        extra_dirs: list[str] = []
+        if task.project_id:
+            vault_project_dir = os.path.join(
+                self.config.vault_root, "projects", task.project_id
+            )
+            extra_dirs.append(vault_project_dir)
+
         ctx = TaskContext(
             task_id=task.id,
             description=full_description,
             l0_role=l0_role,
+            project_override_role=project_override_role,
             l1_facts=l1_facts,
             l1_guidance=l1_guidance,
             l2_context=l2_context,
@@ -550,6 +587,7 @@ class ExecutionMixin:
             branch_name=task.branch_name or "",
             image_paths=task.attachments if task.attachments else [],
             mcp_servers=task_mcp,
+            add_dirs=extra_dirs,
         )
 
         # On reopened tasks, pass the previous session ID so the adapter can
@@ -1171,7 +1209,7 @@ class ExecutionMixin:
                     "verification_failed",
                     error="Post-task verification failed, max retries exhausted",
                     agent_id=action.agent_id,
-                    agent_type=profile.id if profile else None,
+                    agent_type=underlying_agent_type(profile.id) if profile else None,
                 )
                 await _post(
                     f"**Verification failed** for `{task.id}` — "
@@ -1214,7 +1252,7 @@ class ExecutionMixin:
                     "max_retries",
                     error=f"Max retries ({task.max_retries}) exhausted",
                     agent_id=action.agent_id,
-                    agent_type=profile.id if profile else None,
+                    agent_type=underlying_agent_type(profile.id) if profile else None,
                 )
                 brief = (
                     f"🚫 Task blocked: {task.title} (`{task.id}`) — "

@@ -561,12 +561,13 @@ class TestArchiveMarkdownNotes:
         vault_root = handler.config.vault_root
         note = self._find_note(vault_root, "p-1", "t-meta")
         assert note is not None
-        # Feature tasks go into the "feature" category directory
-        assert "/tasks/feature/" in note
+        # Notes now use a flat per-project tasks/ layout (no task-type subdirs).
+        assert "/tasks/" in note
         with open(note) as f:
             content = f.read()
 
-        assert "feature" in content
+        # task_type is no longer rendered in the archive note body;
+        # branch and PR URL still are.
         assert "`feat/metadata-task`" in content
         assert "https://github.com/org/repo/pull/42" in content
 

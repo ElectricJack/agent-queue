@@ -630,11 +630,16 @@ class TestEndToEndPausedNotification:
 
         assert result.status == "paused"
 
-        # The Discord bot should have received a message with the context
-        bot._send_message.assert_called_once()
-        call_kwargs = bot._send_message.call_args
-        assert call_kwargs.kwargs.get("project_id") == "proj-1"
-        assert call_kwargs.kwargs.get("embed") is not None
-        assert "review-playbook" in call_kwargs.args[0]
+        # The Discord bot should have received two messages: one for the run
+        # starting, one for the pause for human review.
+        assert bot._send_message.call_count == 2
+        start_call, paused_call = bot._send_message.call_args_list
+        assert start_call.kwargs.get("project_id") == "proj-1"
+        assert "Started" in start_call.args[0] or "review-playbook" in start_call.args[0]
+
+        # The pause message carries the context embed the reviewer needs.
+        assert paused_call.kwargs.get("project_id") == "proj-1"
+        assert paused_call.kwargs.get("embed") is not None
+        assert "review-playbook" in paused_call.args[0]
 
         handler.shutdown()

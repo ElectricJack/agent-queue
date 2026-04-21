@@ -725,7 +725,8 @@ class TestNotificationEventModels:
         assert evt.category == "system"
         assert evt.severity == "info"
         assert evt.playbook_version == 0
-        assert evt.trigger_type == ""
+        assert evt.trigger_event_type == ""
+        assert evt.scope == "system"
         assert evt.started_at == 0.0
 
 
@@ -758,7 +759,7 @@ class TestNotifyPlaybookRunEvents:
         assert payload["event_type"] == "notify.playbook_run_started"
         assert payload["playbook_id"] == "test-playbook"
         assert payload["run_id"] == runner.run_id
-        assert payload["trigger_type"] == "git.commit"
+        assert payload["trigger_event_type"] == "git.commit"
         # version is always present on the typed event (defaults to 0 if absent)
         assert "playbook_version" in payload
         # project_id is forwarded from the trigger event

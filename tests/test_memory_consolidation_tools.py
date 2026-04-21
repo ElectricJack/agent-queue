@@ -713,3 +713,119 @@ class TestReflectionPlaybookContent:
         assert "memory_delete" in text
         assert "memory_store" in text
         assert "memory_recall" in text
+
+
+# ---------------------------------------------------------------------------
+# Vault-file sync for memory mutations (Issue raised 2026-04-20)
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryMutationsUpdateVaultFiles:
+    """When a memory is deleted or updated, the vault markdown must follow.
+
+    Previously `memory_update` skipped the topic field entirely and merged
+    tags instead of replacing them; `memory_delete` silently succeeded
+    when the vault path didn't match the `/insights/`/`/knowledge/` guard,
+    leaving orphaned markdown files.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_update_document_syncs_topic_to_vault(self, service, mock_store, tmp_data_dir):
+        """Changing topic via memory_update writes it into the vault frontmatter."""
+        insights_dir = Path(tmp_data_dir) / "vault" / "projects" / "p" / "memory" / "insights"
+        insights_dir.mkdir(parents=True)
+        vault_file = insights_dir / "x.md"
+        vault_file.write_text(
+            '---\ntags: ["insight"]\ntopic: old-topic\nupdated: 2020-01-01\n---\nBody\n'
+        )
+        mock_store.get.return_value = {
+            **mock_store.get.return_value,
+            "source": str(vault_file),
+            "tags": '["insight"]',
+            "topic": "old-topic",
+        }
+
+        await service.update_document("p", "existing_hash", topic="new-topic")
+
+        text = vault_file.read_text()
+        assert "topic: new-topic" in text
+        assert "topic: old-topic" not in text
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_update_document_replaces_tags_in_vault(self, service, mock_store, tmp_data_dir):
+        """memory_update(tags=...) REPLACES the vault tags, not merges."""
+        insights_dir = Path(tmp_data_dir) / "vault" / "projects" / "p" / "memory" / "insights"
+        insights_dir.mkdir(parents=True)
+        vault_file = insights_dir / "x.md"
+        vault_file.write_text(
+            '---\ntags: ["insight", "stale", "deprecated"]\nupdated: 2020-01-01\n---\nBody\n'
+        )
+        mock_store.get.return_value = {
+            **mock_store.get.return_value,
+            "source": str(vault_file),
+            "tags": '["insight", "stale", "deprecated"]',
+        }
+
+        await service.update_document("p", "existing_hash", tags=["insight", "verified"])
+
+        text = vault_file.read_text()
+        # New tags present, old ones removed.
+        assert '"verified"' in text
+        assert "stale" not in text
+        assert "deprecated" not in text
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_delete_document_logs_when_guard_blocks(
+        self, service, mock_store, tmp_data_dir, caplog
+    ):
+        """If the stored source is outside the safety guard, log a warning.
+
+        Previously the method silently reported vault_deleted=False with no
+        indication to the caller that the markdown file still exists.
+        """
+        import logging
+
+        # Path outside /insights/ and /knowledge/ — silently skipped before
+        other_dir = Path(tmp_data_dir) / "vault" / "projects" / "p" / "memory" / "facts"
+        other_dir.mkdir(parents=True)
+        orphan = other_dir / "stray.md"
+        orphan.write_text("some markdown")
+        mock_store.get.return_value = {
+            **mock_store.get.return_value,
+            "source": str(orphan),
+        }
+
+        with caplog.at_level(logging.WARNING, logger="src.plugins.internal.memory_v2.service"):
+            result = await service.delete_document("p", "existing_hash")
+
+        assert result["vault_deleted"] is False
+        assert any(
+            "outside the insights/knowledge safety guard" in rec.message
+            or "not deleted" in rec.message.lower()
+            for rec in caplog.records
+        ), f"Expected warning log; got: {[r.message for r in caplog.records]}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
+    async def test_delete_document_logs_when_source_missing(
+        self, service, mock_store, caplog
+    ):
+        """If the source path doesn't exist on disk, log a warning."""
+        import logging
+
+        mock_store.get.return_value = {
+            **mock_store.get.return_value,
+            "source": "/nonexistent/path/insights/gone.md",
+        }
+
+        with caplog.at_level(logging.WARNING, logger="src.plugins.internal.memory_v2.service"):
+            result = await service.delete_document("p", "existing_hash")
+
+        assert result["vault_deleted"] is False
+        assert any(
+            "does not exist" in rec.message.lower() or "missing" in rec.message.lower()
+            for rec in caplog.records
+        ), f"Expected warning log; got: {[r.message for r in caplog.records]}"

@@ -18,6 +18,7 @@ import logging
 import re
 import time
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +27,8 @@ if TYPE_CHECKING:
     from src.database.base import DatabaseBackend
     from src.event_bus import EventBus
     from src.plugins.internal.memory_v2.service import MemoryV2Service
+
+SaveCallback = Callable[..., Awaitable[dict[str, Any]]]
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,66 @@ _TRIVIAL_ERRORS = frozenset({
     "timeout", "rate_limit", "rate limit", "cancelled", "context deadline",
 })
 
+# ---------------------------------------------------------------------------
+# Garbage detection for extracted items
+# ---------------------------------------------------------------------------
+#
+# The extractor LLM sometimes echoes raw chat/email bodies or JSON payloads
+# instead of abstracting them.  These checks reject such content before it
+# reaches the vault.  Rejection reasons are logged at INFO so the filters
+# can be tuned without code changes.
+
+_GREETING_RE = re.compile(r"^\s*(hi|hello|hey|dear)\s+\w+[,!:]", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://\S+")
+_HTML_ENTITY_RE = re.compile(r"&#\d+;|&\w{2,6};")
+_MIN_WORDS = 8
+_MAX_WORDS = 400
+
+
+def _looks_like_garbage(content: str) -> str | None:
+    """Return a rejection reason if *content* shouldn't be stored as memory.
+
+    Returns ``None`` if the content passes all checks.
+    """
+    text = (content or "").strip()
+    if not text:
+        return "empty"
+
+    # Greeting-style openers — these are reply bodies, not facts.
+    if _GREETING_RE.match(text):
+        return "greeting-start"
+
+    # Raw JSON payloads (object or array) — not abstracted knowledge.
+    if (text.startswith("{") and text.endswith("}")) or (
+        text.startswith("[") and text.endswith("]")
+    ):
+        try:
+            json.loads(text)
+            return "raw-json"
+        except Exception:
+            pass
+
+    # HTML entity noise — leftover from unprocessed email/HTML bodies.
+    entities = _HTML_ENTITY_RE.findall(text)
+    if len(entities) >= 3:
+        return "html-entity-noise"
+
+    # URL-heavy content (mostly a link with a few words around it).
+    urls = _URL_RE.findall(text)
+    non_url = _URL_RE.sub("", text).strip()
+    if urls and len(non_url.split()) < 8:
+        return "url-with-no-content"
+
+    # Length bounds — too short to be a standalone fact, or too long to
+    # be an abstraction (likely a quoted chunk).
+    words = text.split()
+    if len(words) < _MIN_WORDS:
+        return f"too-short ({len(words)} words)"
+    if len(words) > _MAX_WORDS:
+        return f"too-long ({len(words)} words)"
+
+    return None
+
 
 # ---------------------------------------------------------------------------
 # MemoryExtractor
@@ -111,12 +174,20 @@ class MemoryExtractor:
         memory_service: MemoryV2Service,
         config: dict[str, Any],
         chat_provider_config: Any,
+        save_callback: SaveCallback | None = None,
     ):
         self._bus = bus
         self._db = db
         self._memory = memory_service
         self._config = config
         self._chat_provider_config = chat_provider_config
+        # When provided, insights/knowledge/guidance are routed through this
+        # callback instead of ``memory_service.save_document`` directly.  The
+        # plugin wires this to ``_do_memory_save`` so the extractor benefits
+        # from the same identical/merge/new dedup logic used by the
+        # ``memory_save`` tool.  If ``None``, falls back to direct save
+        # (used by tests and degraded modes).
+        self._save_callback = save_callback
 
         # Buffers: project_id → list of BufferedEvent
         self._buffers: dict[str, list[BufferedEvent]] = defaultdict(list)
@@ -496,51 +567,43 @@ class MemoryExtractor:
             if not content:
                 return
 
-            # Dedup check: search for similar existing memories
-            try:
-                existing = await self._memory.search(
-                    project_id=project_id,
-                    query=content,
-                    top_k=1,
+            reason = _looks_like_garbage(content)
+            if reason:
+                logger.info(
+                    "MemoryExtractor: rejected extracted item (%s): %s",
+                    reason, content[:80].replace("\n", " "),
                 )
-                if existing:
-                    best = existing[0]
-                    similarity = best.get("score", 0)
-                    if similarity > 0.85:
-                        logger.info(
-                            "MemoryExtractor: skipping duplicate (%.2f similarity): %s",
-                            similarity, content[:80],
-                        )
-                        return
-            except Exception:
-                pass  # search failed, save anyway
+                return
 
             topic = item.get("topic")
             tags = ["auto-extracted", item_type]
             if topic:
                 tags.append(topic)
 
-            # Always save to project scope
-            await self._memory.save_document(
+            # Always save to project scope.  Route through the plugin's
+            # ``_do_memory_save`` (via save_callback) when available so the
+            # extractor participates in the same identical/merge/new dedup
+            # logic used by the ``memory_save`` tool.  Fallback: direct
+            # ``save_document`` with no dedup (degraded mode / legacy tests).
+            await self._save_document(
                 project_id=project_id,
                 content=content,
                 tags=tags,
                 topic=topic,
                 source_task=source_refs,
-                source_playbook="memory-extractor",
+                scope=None,
             )
 
             # Also save guidance items to agent-type scope so agent-type
             # memory accumulates across projects.
             if agent_type and item_type == "guidance":
                 try:
-                    await self._memory.save_document(
+                    await self._save_document(
                         project_id=project_id,
                         content=content,
                         tags=tags,
                         topic=topic,
                         source_task=source_refs,
-                        source_playbook="memory-extractor",
                         scope=f"agenttype_{agent_type}",
                     )
                 except Exception:
@@ -548,6 +611,38 @@ class MemoryExtractor:
                         "MemoryExtractor: failed to save guidance to agent-type scope %s",
                         agent_type, exc_info=True,
                     )
+
+    async def _save_document(
+        self,
+        *,
+        project_id: str,
+        content: str,
+        tags: list[str],
+        topic: str | None,
+        source_task: str,
+        scope: str | None,
+    ) -> None:
+        """Persist an extracted item, preferring the dedup-aware callback."""
+        if self._save_callback is not None:
+            await self._save_callback(
+                project_id=project_id,
+                content=content,
+                tags=tags,
+                topic=topic,
+                source_task=source_task,
+                source_playbook="memory-extractor",
+                scope=scope,
+            )
+        else:
+            await self._memory.save_document(
+                project_id=project_id,
+                content=content,
+                tags=tags,
+                topic=topic,
+                source_task=source_task,
+                source_playbook="memory-extractor",
+                scope=scope,
+            )
 
     def _parse_response(self, text: str) -> list[dict]:
         """Parse LLM response into list of extracted items."""

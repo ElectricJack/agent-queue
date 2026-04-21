@@ -853,6 +853,26 @@ class TaskCommandsMixin:
                 content=self._current_conversation_context,
             )
 
+        # Emit notify.task_added so the Discord layer (and other transports)
+        # can post a "Task Added" notification to the project's channel — or
+        # the system/global channel when the project has no dedicated one.
+        # Fires for every creation path (slash command, playbook, MCP, API)
+        # and is NOT suppressed by project pause/archive status.
+        try:
+            from src.notifications.builder import build_task_detail
+            from src.notifications.events import TaskAddedEvent
+
+            await self.orchestrator._emit_notify(
+                "notify.task_added",
+                TaskAddedEvent(
+                    task=build_task_detail(task),
+                    source=args.get("_source", ""),
+                    project_id=task.project_id,
+                ),
+            )
+        except Exception as e:
+            logger.warning("create_task: failed to emit notify.task_added: %s", e)
+
         result = {
             "created": task_id,
             "title": task.title,

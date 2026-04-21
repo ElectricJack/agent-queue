@@ -6,7 +6,6 @@ Tests the core execution model from docs/specs/design/playbooks.md §6:
 - Unconditional ``goto`` transitions
 - Conditional transitions via LLM classification
 - Token budget enforcement
-- Context summarization (``summarize_before``)
 - Human-in-the-loop pause and resume
 - Per-node LLM config overrides
 - Error handling (missing nodes, failed LLM calls)
@@ -49,9 +48,16 @@ from src.playbooks.runner import (
 @pytest.fixture
 def mock_supervisor():
     """A mock Supervisor with a controllable chat() return value."""
+    from types import SimpleNamespace
+
     supervisor = AsyncMock()
     supervisor.chat = AsyncMock(return_value="Done.")
     supervisor.summarize = AsyncMock(return_value="Summary of prior steps.")
+    # PlaybookRunner reads supervisor.config.chat_provider.playbook_max_tokens
+    # at runner.py:1537 to default each node's max_tokens.
+    supervisor.config = SimpleNamespace(
+        chat_provider=SimpleNamespace(playbook_max_tokens=2048)
+    )
     return supervisor
 
 
@@ -1054,320 +1060,6 @@ class TestTokenBudget:
 
 
 # ---------------------------------------------------------------------------
-# Summarization
-# ---------------------------------------------------------------------------
-
-
-class TestSummarization:
-    async def test_summarize_before_compresses_history(self, mock_supervisor, event_data):
-        """summarize_before triggers compression and supervisor.summarize is called."""
-        graph = {
-            "id": "summarize-test",
-            "version": 1,
-            "nodes": {
-                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
-                "b": {"prompt": "Step B", "goto": "c"},
-                "c": {
-                    "prompt": "Step C",
-                    "summarize_before": True,
-                    "goto": "done",
-                },
-                "done": {"terminal": True},
-            },
-        }
-
-        mock_supervisor.chat.return_value = "Done."
-        mock_supervisor.summarize.return_value = "Prior: A and B completed."
-
-        runner = PlaybookRunner(graph, event_data, mock_supervisor)
-        result = await runner.run()
-
-        assert result.status == "completed"
-        # Summarize should have been called once (before node C)
-        mock_supervisor.summarize.assert_called_once()
-
-    async def test_summarize_preserves_seed(self, mock_supervisor, event_data):
-        """After summarization, the seed message should still be present."""
-        graph = {
-            "id": "seed-test",
-            "version": 1,
-            "nodes": {
-                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
-                "b": {
-                    "prompt": "Step B",
-                    "summarize_before": True,
-                    "goto": "done",
-                },
-                "done": {"terminal": True},
-            },
-        }
-
-        mock_supervisor.chat.return_value = "Done."
-        mock_supervisor.summarize.return_value = "Prior steps summary."
-
-        runner = PlaybookRunner(graph, event_data, mock_supervisor)
-        await runner.run()
-
-        # After summarization + node B execution, we should have:
-        # seed, summary, node B prompt, node B response
-        # Check that first message is still the seed
-        assert "Event received" in runner.messages[0]["content"]
-
-    async def test_summarize_replaces_history_with_summary(self, mock_supervisor, event_data):
-        """After summarization, history contains seed + summary + subsequent node msgs."""
-        graph = {
-            "id": "replace-test",
-            "version": 1,
-            "nodes": {
-                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
-                "b": {"prompt": "Step B", "goto": "c"},
-                "c": {
-                    "prompt": "Step C",
-                    "summarize_before": True,
-                    "goto": "done",
-                },
-                "done": {"terminal": True},
-            },
-        }
-
-        mock_supervisor.chat.return_value = "Done."
-        mock_supervisor.summarize.return_value = "Summary: steps A and B done."
-
-        runner = PlaybookRunner(graph, event_data, mock_supervisor)
-        await runner.run()
-
-        # After run: seed, summary, node-C prompt, node-C response = 4 messages
-        assert len(runner.messages) == 4
-        assert runner.messages[0]["role"] == "user"
-        assert "Event received" in runner.messages[0]["content"]
-        assert "[Context summary of prior steps]" in runner.messages[1]["content"]
-        assert "Summary: steps A and B done." in runner.messages[1]["content"]
-        assert runner.messages[2]["content"] == "Step C"
-        assert runner.messages[3]["content"] == "Done."
-
-    async def test_summarize_failure_preserves_full_history(self, mock_supervisor, event_data):
-        """When supervisor.summarize returns None, full history is kept."""
-        graph = {
-            "id": "fail-test",
-            "version": 1,
-            "nodes": {
-                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
-                "b": {
-                    "prompt": "Step B",
-                    "summarize_before": True,
-                    "goto": "done",
-                },
-                "done": {"terminal": True},
-            },
-        }
-
-        mock_supervisor.chat.return_value = "Done."
-        mock_supervisor.summarize.return_value = None  # Simulate failure
-
-        runner = PlaybookRunner(graph, event_data, mock_supervisor)
-        result = await runner.run()
-
-        assert result.status == "completed"
-        # Full history preserved: seed + (A prompt, A response) + (B prompt, B response) = 5
-        assert len(runner.messages) == 5
-        # No summary message injected
-        assert not any(
-            "[Context summary of prior steps]" in m.get("content", "") for m in runner.messages
-        )
-
-    async def test_summarize_skipped_when_insufficient_history(self, mock_supervisor, event_data):
-        """summarize_before on a node with ≤2 messages is a no-op."""
-        graph = {
-            "id": "skip-test",
-            "version": 1,
-            "nodes": {
-                "a": {
-                    "entry": True,
-                    "prompt": "Step A",
-                    "summarize_before": True,  # Only seed exists — should be skipped
-                    "goto": "done",
-                },
-                "done": {"terminal": True},
-            },
-        }
-
-        mock_supervisor.chat.return_value = "Done."
-        runner = PlaybookRunner(graph, event_data, mock_supervisor)
-        await runner.run()
-
-        # summarize should NOT have been called (only 1 message = seed)
-        mock_supervisor.summarize.assert_not_called()
-
-    async def test_summarize_uses_playbook_specific_prompts(self, mock_supervisor, event_data):
-        """Summarization passes playbook-specific system_prompt and instruction."""
-        graph = {
-            "id": "prompt-test",
-            "version": 1,
-            "nodes": {
-                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
-                "b": {
-                    "prompt": "Step B",
-                    "summarize_before": True,
-                    "goto": "done",
-                },
-                "done": {"terminal": True},
-            },
-        }
-
-        mock_supervisor.chat.return_value = "Done."
-        mock_supervisor.summarize.return_value = "Summary."
-
-        runner = PlaybookRunner(graph, event_data, mock_supervisor)
-        await runner.run()
-
-        # Verify summarize was called with keyword args for custom prompts
-        call_kwargs = mock_supervisor.summarize.call_args
-        assert "system_prompt" in call_kwargs.kwargs
-        assert "instruction" in call_kwargs.kwargs
-        # The playbook-specific instruction should mention "playbook" or "step"
-        assert "playbook" in call_kwargs.kwargs["system_prompt"].lower()
-        assert "step" in call_kwargs.kwargs["instruction"].lower()
-
-    async def test_summarize_tracks_token_cost(self, mock_supervisor, event_data):
-        """Token cost of the summarization LLM call is added to tokens_used."""
-        graph = {
-            "id": "token-test",
-            "version": 1,
-            "nodes": {
-                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
-                "b": {
-                    "prompt": "Step B",
-                    "summarize_before": True,
-                    "goto": "done",
-                },
-                "done": {"terminal": True},
-            },
-        }
-
-        mock_supervisor.chat.return_value = "Done."
-        mock_supervisor.summarize.return_value = "Summary."
-
-        runner = PlaybookRunner(graph, event_data, mock_supervisor)
-        result = await runner.run()
-
-        # tokens_used should be > 0 and include summarization overhead
-        assert result.tokens_used > 0
-        # Run without summarization for comparison
-        graph_no_sum = {
-            "id": "token-test-nosumm",
-            "version": 1,
-            "nodes": {
-                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
-                "b": {"prompt": "Step B", "goto": "done"},
-                "done": {"terminal": True},
-            },
-        }
-        runner2 = PlaybookRunner(graph_no_sum, event_data, mock_supervisor)
-        result2 = await runner2.run()
-
-        # With summarization should use more tokens (summarization transcript + summary)
-        assert result.tokens_used > result2.tokens_used
-
-    async def test_summarize_fires_progress_callback(self, mock_supervisor, event_data):
-        """A node_summarizing progress event is emitted during summarization."""
-        graph = {
-            "id": "progress-test",
-            "version": 1,
-            "nodes": {
-                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
-                "b": {
-                    "prompt": "Step B",
-                    "summarize_before": True,
-                    "goto": "done",
-                },
-                "done": {"terminal": True},
-            },
-        }
-
-        mock_supervisor.chat.return_value = "Done."
-        mock_supervisor.summarize.return_value = "Summary."
-
-        progress_events: list[tuple[str, str]] = []
-
-        async def capture_progress(event_type: str, detail: str):
-            progress_events.append((event_type, detail))
-
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, on_progress=capture_progress)
-        await runner.run()
-
-        # There should be a node_summarizing event
-        summarizing_events = [e for e in progress_events if e[0] == "node_summarizing"]
-        assert len(summarizing_events) == 1
-
-    async def test_summarize_transcript_includes_all_messages(self, mock_supervisor, event_data):
-        """The transcript passed to summarize includes content from all prior messages."""
-        graph = {
-            "id": "transcript-test",
-            "version": 1,
-            "nodes": {
-                "a": {"entry": True, "prompt": "Step A prompt", "goto": "b"},
-                "b": {"prompt": "Step B prompt", "goto": "c"},
-                "c": {
-                    "prompt": "Step C prompt",
-                    "summarize_before": True,
-                    "goto": "done",
-                },
-                "done": {"terminal": True},
-            },
-        }
-
-        responses = iter(["Response from A", "Response from B", "Response from C"])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
-        mock_supervisor.summarize.return_value = "Condensed summary."
-
-        runner = PlaybookRunner(graph, event_data, mock_supervisor)
-        await runner.run()
-
-        # Grab the transcript that was passed to summarize
-        transcript_arg = mock_supervisor.summarize.call_args.args[0]
-        # Transcript should contain content from seed, step A, and step B
-        assert "Event received" in transcript_arg
-        assert "Step A prompt" in transcript_arg
-        assert "Response from A" in transcript_arg
-        assert "Step B prompt" in transcript_arg
-        assert "Response from B" in transcript_arg
-
-    async def test_multiple_summarize_before_nodes(self, mock_supervisor, event_data):
-        """Multiple nodes with summarize_before each trigger their own compression."""
-        graph = {
-            "id": "multi-summarize",
-            "version": 1,
-            "nodes": {
-                "a": {"entry": True, "prompt": "Step A", "goto": "b"},
-                "b": {
-                    "prompt": "Step B",
-                    "summarize_before": True,
-                    "goto": "c",
-                },
-                "c": {"prompt": "Step C", "goto": "d"},
-                "d": {
-                    "prompt": "Step D",
-                    "summarize_before": True,
-                    "goto": "done",
-                },
-                "done": {"terminal": True},
-            },
-        }
-
-        mock_supervisor.chat.return_value = "Done."
-        mock_supervisor.summarize.side_effect = [
-            "Summary after A.",
-            "Summary after A-C.",
-        ]
-
-        runner = PlaybookRunner(graph, event_data, mock_supervisor)
-        result = await runner.run()
-
-        assert result.status == "completed"
-        assert mock_supervisor.summarize.call_count == 2
-
-
-# ---------------------------------------------------------------------------
 # Human-in-the-loop
 # ---------------------------------------------------------------------------
 
@@ -1490,10 +1182,10 @@ class TestLLMConfigOverrides:
         await runner.run()
 
         call_kwargs = mock_supervisor.chat.call_args.kwargs
-        assert call_kwargs["llm_config"] == {
-            "model": "gemini-2.5-flash",
-            "provider": "gemini",
-        }
+        # Runner always injects max_tokens from config.chat_provider.playbook_max_tokens.
+        assert call_kwargs["llm_config"]["model"] == "gemini-2.5-flash"
+        assert call_kwargs["llm_config"]["provider"] == "gemini"
+        assert "max_tokens" in call_kwargs["llm_config"]
 
     async def test_node_level_llm_config_overrides_playbook(self, mock_supervisor, event_data):
         graph = {
@@ -1516,8 +1208,9 @@ class TestLLMConfigOverrides:
         await runner.run()
 
         call_kwargs = mock_supervisor.chat.call_args.kwargs
-        # Node-level config should override playbook-level
-        assert call_kwargs["llm_config"] == {"model": "claude-sonnet-4-20250514"}
+        # Node-level config should override playbook-level.
+        # max_tokens is auto-injected by the runner from config.
+        assert call_kwargs["llm_config"]["model"] == "claude-sonnet-4-20250514"
 
     async def test_llm_config_with_max_tokens_and_temperature(self, mock_supervisor, event_data):
         """max_tokens and temperature in llm_config are passed through to supervisor."""
@@ -1572,11 +1265,11 @@ class TestLLMConfigOverrides:
         runner = PlaybookRunner(graph, event_data, mock_supervisor)
         await runner.run()
 
-        # First call (node execution) uses playbook llm_config
+        # First call (node execution) uses playbook llm_config.
         node_call = mock_supervisor.chat.call_args_list[0]
-        assert node_call.kwargs["llm_config"] == {"model": "sonnet"}
+        assert node_call.kwargs["llm_config"]["model"] == "sonnet"
 
-        # Second call (transition) uses transition_llm_config
+        # Second call (transition) uses transition_llm_config.
         transition_call = mock_supervisor.chat.call_args_list[1]
         assert transition_call.kwargs["llm_config"] == {"model": "haiku"}
 
@@ -1624,7 +1317,9 @@ class TestLLMConfigOverrides:
         await runner.run()
 
         call_kwargs = mock_supervisor.chat.call_args.kwargs
-        assert call_kwargs["llm_config"] is None
+        # With no graph-supplied config, the runner still passes a config dict
+        # with max_tokens defaulted from config.chat_provider.playbook_max_tokens.
+        assert call_kwargs["llm_config"] == {"max_tokens": 2048}
 
 
 # ---------------------------------------------------------------------------
@@ -2443,7 +2138,9 @@ class TestPromptBuilding:
         assert "context-test" in seed["content"]
 
     async def test_accumulated_history_includes_all_prior_nodes(self, mock_supervisor, event_data):
-        """At node C, the history should include seed + node A + node B exchanges."""
+        """Post-refactor each subsequent node gets a fresh [seed, prior-results, ack]
+        context rather than the raw accumulated transcript.  The prior-results
+        block should list every completed node's output."""
         graph = {
             "id": "accumulation-test",
             "version": 1,
@@ -2463,14 +2160,15 @@ class TestPromptBuilding:
         calls = mock_supervisor.chat.call_args_list
         assert len(calls) == 3
 
-        # Node C (third call) should get seed + A prompt + A response + B prompt + B response
+        # Node C (third call): [seed, prior-results, ack]
         third_history = calls[2].kwargs["history"]
-        assert len(third_history) == 5  # seed, A prompt, A response, B prompt, B response
+        assert len(third_history) == 3
         assert third_history[0]["role"] == "user"  # seed
-        assert third_history[1]["content"] == "Step A"
-        assert third_history[2]["content"] == "Result A"
-        assert third_history[3]["content"] == "Step B"
-        assert third_history[4]["content"] == "Result B"
+        prior = third_history[1]["content"]
+        assert "Prior Step Results" in prior
+        assert "Result A" in prior
+        assert "Result B" in prior
+        assert third_history[2]["role"] == "assistant"
 
 
 # ---------------------------------------------------------------------------
@@ -3258,14 +2956,13 @@ class TestBranchingTransitionEvaluation:
 
         calls = mock_supervisor.chat.call_args_list
 
-        # First call (node execution) — uses main llm_config (Sonnet)
+        # First call (node execution) — uses main llm_config (Sonnet).
+        # Runner auto-injects max_tokens from config.chat_provider.playbook_max_tokens.
         node_call = calls[0]
-        assert node_call.kwargs["llm_config"] == {
-            "model": "claude-sonnet-4-20250514",
-            "provider": "anthropic",
-        }
+        assert node_call.kwargs["llm_config"]["model"] == "claude-sonnet-4-20250514"
+        assert node_call.kwargs["llm_config"]["provider"] == "anthropic"
 
-        # Second call (transition classification) — uses transition_llm_config (Haiku)
+        # Second call (transition classification) — uses transition_llm_config (Haiku).
         transition_call = calls[1]
         assert transition_call.kwargs["llm_config"] == {
             "model": "claude-haiku-4-20250414",
@@ -4887,11 +4584,12 @@ class TestTransitionLLMConfig:
         runner = PlaybookRunner(graph, event_data, mock_supervisor)
         await runner.run()
 
-        # Node call should use playbook-level llm_config (sonnet)
+        # Node call should use playbook-level llm_config (sonnet).
+        # max_tokens is auto-injected by the runner from config.
         node_call = mock_supervisor.chat.call_args_list[0]
-        assert node_call.kwargs["llm_config"] == {"model": "sonnet"}
+        assert node_call.kwargs["llm_config"]["model"] == "sonnet"
 
-        # Transition call should use transition_llm_config (haiku)
+        # Transition call should use transition_llm_config (haiku).
         transition_call = mock_supervisor.chat.call_args_list[1]
         assert transition_call.kwargs["llm_config"] == {
             "model": "haiku",
@@ -5111,11 +4809,12 @@ class TestPlaybookExecutionHappyPath:
         for trace_entry in result.node_trace:
             assert trace_entry["status"] == "completed"
 
-    # (b) Each node receives accumulated conversation history from prior nodes
+    # (b) Each node receives a fresh structured context with prior-step results
     async def test_each_node_receives_accumulated_history(
         self, mock_supervisor, three_node_graph, event_data
     ):
-        """(b) History grows: start sees seed; middle sees seed+start; end sees seed+start+middle."""
+        """(b) Fresh-context model: subsequent nodes get [seed, prior-results, ack];
+        the prior-results block grows as more nodes complete."""
         responses = iter(["Result from start.", "Result from middle.", "Result from end."])
         mock_supervisor.chat.side_effect = lambda **kw: next(responses)
 
@@ -5125,36 +4824,26 @@ class TestPlaybookExecutionHappyPath:
         calls = mock_supervisor.chat.call_args_list
         assert len(calls) == 3
 
-        # Node "start" receives only the seed message
+        # Entry node "start" receives only the seed message.
         start_history = calls[0].kwargs["history"]
         assert len(start_history) == 1
         assert start_history[0]["role"] == "user"
         assert "Event received" in start_history[0]["content"]
 
-        # Node "middle" receives seed + start prompt + start response
+        # Node "middle" receives [seed, prior-results, ack].
         middle_history = calls[1].kwargs["history"]
         assert len(middle_history) == 3
         assert middle_history[0]["role"] == "user"  # seed
-        assert middle_history[1] == {
-            "role": "user",
-            "content": "Begin the analysis of the codebase.",
-        }
-        assert middle_history[2] == {
-            "role": "assistant",
-            "content": "Result from start.",
-        }
+        assert "Prior Step Results" in middle_history[1]["content"]
+        assert "Result from start." in middle_history[1]["content"]
+        assert middle_history[2]["role"] == "assistant"
 
-        # Node "end" receives seed + start exchange + middle exchange
+        # Node "end" also has 3 entries, but the prior-results block is larger.
         end_history = calls[2].kwargs["history"]
-        assert len(end_history) == 5
-        assert end_history[3] == {
-            "role": "user",
-            "content": "Based on the analysis above, group findings by severity.",
-        }
-        assert end_history[4] == {
-            "role": "assistant",
-            "content": "Result from middle.",
-        }
+        assert len(end_history) == 3
+        assert "Result from start." in end_history[1]["content"]
+        assert "Result from middle." in end_history[1]["content"]
+        assert len(end_history[1]["content"]) > len(middle_history[1]["content"])
 
     # (c) Each node's prompt is built with correct context (task data, event context)
     async def test_node_prompt_built_with_correct_context(
@@ -8713,3 +8402,485 @@ class TestPauseTimeoutSpec:
         )
         assert "handle_timeout" in msg
         assert "transitioned" in msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# _extract_output — text response fallback (Bug 2 from 2026-04-20 run)
+# ---------------------------------------------------------------------------
+
+
+class _StubSupervisor:
+    """Minimal stand-in exposing `_last_messages` for ContextMixin tests."""
+
+    def __init__(self, last_messages: list[dict] | None = None) -> None:
+        self._last_messages = last_messages or []
+
+
+class _TestContext:
+    """Construct a ContextMixin instance with minimal fixtures."""
+
+    def __new__(cls, last_messages: list[dict] | None = None):
+        from src.playbooks.runner_context import ContextMixin
+
+        instance = object.__new__(type("_Ctx", (ContextMixin,), {}))
+        instance.supervisor = _StubSupervisor(last_messages)
+        instance.node_outputs = {}
+        instance.on_progress = None
+        instance._seed_message = ""
+        instance._llm_config = None
+        return instance
+
+
+class TestExtractOutputTextFallback:
+    """Fallback to parse JSON from the assistant's text response.
+
+    Regression for Bug 2 from the 2026-04-20 memory-consolidation run: when
+    the LLM emits its structured output as a final JSON object in the text
+    response (instead of a tool call), `output.extract` should still pull
+    the key rather than returning the raw text.
+    """
+
+    def test_no_output_spec_returns_text(self):
+        ctx = _TestContext()
+        assert ctx._extract_output({}, "plain text") == "plain text"
+
+    def test_text_priority_over_tool_result(self):
+        """The assistant's text response is preferred when it contains the key.
+
+        Regression for the 2026-04-20 run where step 1 asked the LLM to
+        filter `list_projects` output down to ACTIVE projects. The LLM
+        correctly produced a filtered JSON response in text, but the
+        extractor walked back to the raw `list_projects` tool_result
+        (all projects, including PAUSED ones). Text is the LLM's
+        *conclusion* — it should win over raw tool inputs.
+        """
+        ctx = _TestContext([
+            {"role": "user", "content": [
+                {"type": "tool_result", "content": '{"projects": [1, 2, 3]}'}
+            ]}
+        ])
+        node = {"output": {"extract": "projects"}}
+        result = ctx._extract_output(node, '{"projects": [99]}')
+        assert result == [99]
+
+    def test_tool_result_fallback_when_text_has_no_key(self):
+        """Tool result is still used when the text doesn't contain the key."""
+        ctx = _TestContext([
+            {"role": "user", "content": [
+                {"type": "tool_result", "content": '{"projects": [1, 2, 3]}'}
+            ]}
+        ])
+        node = {"output": {"extract": "projects"}}
+        # Text is pure prose — no JSON object in it
+        result = ctx._extract_output(node, "I found three projects.")
+        assert result == [1, 2, 3]
+
+    def test_text_fallback_bare_json(self):
+        """Text response that IS a JSON object yields the extracted key."""
+        ctx = _TestContext()
+        node = {"output": {"extract": "projects"}}
+        text = '{"projects": ["a", "b"]}'
+        assert ctx._extract_output(node, text) == ["a", "b"]
+
+    def test_text_fallback_fenced_json_block(self):
+        """Fenced ```json blocks in the text response are parsed."""
+        ctx = _TestContext()
+        node = {"output": {"extract": "projects"}}
+        text = 'Here is the result:\n\n```json\n{"projects": [1, 2]}\n```\n'
+        assert ctx._extract_output(node, text) == [1, 2]
+
+    def test_text_fallback_json_after_prose(self):
+        """JSON object appearing at end of prose is recovered."""
+        ctx = _TestContext()
+        node = {"output": {"extract": "projects"}}
+        text = 'I identified these projects:\n\n{"projects": ["alpha", "beta"]}'
+        assert ctx._extract_output(node, text) == ["alpha", "beta"]
+
+    def test_text_fallback_dot_path_extraction(self):
+        """Dot-path extraction works against text-parsed JSON."""
+        ctx = _TestContext()
+        node = {"output": {"extract": "data.items"}}
+        text = '{"data": {"items": [1, 2, 3]}}'
+        assert ctx._extract_output(node, text) == [1, 2, 3]
+
+    def test_non_json_text_returns_raw(self):
+        """Prose without JSON falls through to the raw response string."""
+        ctx = _TestContext()
+        node = {"output": {"extract": "projects"}}
+        text = "I could not find any projects."
+        assert ctx._extract_output(node, text) == text
+
+    def test_json_missing_key_returns_raw(self):
+        """JSON that parses but lacks the key falls through."""
+        ctx = _TestContext()
+        node = {"output": {"extract": "projects"}}
+        text = '{"other": "value"}'
+        assert ctx._extract_output(node, text) == text
+
+    def test_tool_result_lacking_key_falls_back_to_text(self):
+        """Unrelated tool_result doesn't block text-response parsing."""
+        ctx = _TestContext([
+            {"role": "user", "content": [
+                {"type": "tool_result", "content": '{"unrelated": "x"}'}
+            ]}
+        ])
+        node = {"output": {"extract": "projects"}}
+        text = '{"projects": [7]}'
+        assert ctx._extract_output(node, text) == [7]
+
+    def test_text_fallback_last_object_wins(self):
+        """When multiple JSON objects appear, the last complete one wins.
+
+        LLMs often show intermediate examples in prose, then produce the
+        real output at the end.
+        """
+        ctx = _TestContext()
+        node = {"output": {"extract": "projects"}}
+        text = (
+            "The schema is {\"projects\": []}.\n\n"
+            "Final result: {\"projects\": [\"real\"]}"
+        )
+        assert ctx._extract_output(node, text) == ["real"]
+
+    def test_memory_consolidation_regression_cascading(self):
+        """End-to-end regression for the 2026-04-20 cascading failure.
+
+        Two stacked bugs surfaced in the same run: (a) the extractor walked
+        back to the raw `list_projects` tool_result (6 projects) instead of
+        using the LLM's filtered text response (2 projects), and (b)
+        for_each iterations stored raw text instead of parsed dicts, so
+        `{{project_data.id}}` rendered as `{{UNRESOLVED:project_data.id}}`.
+
+        This test exercises only (a) — the text-first extract priority.
+        The iteration-collection auto-parse for (b) is covered separately
+        by TestForEachCollectsParsedJson.
+        """
+        ctx = _TestContext([
+            {"role": "user", "content": [
+                {"type": "tool_result", "content": (
+                    '{"projects": [{"id": "p1", "status": "ACTIVE"}, '
+                    '{"id": "p2", "status": "PAUSED"}]}'
+                )}
+            ]}
+        ])
+        node = {"output": {"extract": "projects", "as": "active_projects"}}
+        text = '{"projects": [{"id": "p1", "status": "ACTIVE"}]}'  # filtered
+        result = ctx._extract_output(node, text)
+        assert isinstance(result, list)
+        assert len(result) == 1, f"expected filtered to 1, got {len(result)}"
+        assert result[0]["id"] == "p1"
+
+    def test_memory_consolidation_regression(self):
+        """End-to-end regression for the 2026-04-20 run.
+
+        The enum step's text response was a valid JSON object matching the
+        schema spec in the playbook; fallback should extract the projects
+        list even though `_last_messages` has no matching tool_result.
+        """
+        ctx = _TestContext([
+            {"role": "user", "content": [
+                {"type": "tool_result", "content": '{"top_k": 1}'}
+            ]}
+        ])
+        node = {"output": {"extract": "projects", "as": "projects"}}
+        text = (
+            '{"projects": [{"id": "skinnable-imgui", "name": "skinnable-imgui"}, '
+            '{"id": "jack-kern-personal-assistant", '
+            '"name": "jack-kern-personal-assistant"}]}'
+        )
+        result = ctx._extract_output(node, text)
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["id"] == "skinnable-imgui"
+
+
+# ---------------------------------------------------------------------------
+# for_each auto-parse of string items (Bug B from 2026-04-20 run)
+# ---------------------------------------------------------------------------
+
+
+class TestForEachCollectsParsedJson:
+    """Collected for_each items are auto-parsed when the iteration returns JSON.
+
+    Regression for the 2026-04-20 memory-consolidation run where intermediate
+    iteration nodes (no `output.extract` spec) returned JSON-as-text. The
+    collected array held raw strings, so downstream `{{project_data.id}}`
+    template references rendered as `{{UNRESOLVED:...}}` and the LLM
+    hallucinated project names, creating 6 duplicate tasks for a project
+    that wasn't even in the active list.
+
+    Fix: the for_each collection step attempts to parse each string item
+    as JSON (via `_parse_json_from_text`). If parsing yields a dict/list,
+    the parsed value is stored instead of the raw text.
+    """
+
+    async def test_string_iteration_results_upgrade_to_dicts(
+        self, mock_supervisor, event_data
+    ):
+        """Iteration returning bare JSON text is stored as a dict."""
+        iter_responses = [
+            '{"id": "a", "name": "Alpha"}',
+            '{"id": "b", "name": "Beta"}',
+        ]
+
+        # First call: entry node response ignored; subsequent: iter responses.
+        call_count = {"n": 0}
+
+        async def chat_side_effect(*args, **kwargs):
+            idx = call_count["n"]
+            call_count["n"] += 1
+            if idx == 0:
+                return '{"items": [{"id": "a"}, {"id": "b"}]}'
+            return iter_responses[idx - 1]
+
+        mock_supervisor.chat.side_effect = chat_side_effect
+
+        graph = {
+            "id": "test-pb",
+            "version": 1,
+            "nodes": {
+                "enumerate": {
+                    "entry": True,
+                    "prompt": "list",
+                    "goto": "iter",
+                    "output": {"extract": "items", "as": "items"},
+                },
+                "iter": {
+                    "prompt": "Process",
+                    "goto": "done",
+                    "for_each": {
+                        "source": "items",
+                        "as": "item",
+                        "collect": "processed",
+                    },
+                },
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        processed = runner.node_outputs.get("processed")
+        assert isinstance(processed, list)
+        assert len(processed) == 2
+        assert processed[0] == {"id": "a", "name": "Alpha"}
+        assert processed[1] == {"id": "b", "name": "Beta"}
+
+    async def test_non_json_iteration_results_stay_as_strings(
+        self, mock_supervisor, event_data
+    ):
+        """Iteration returning pure prose stays as text (no false upgrade)."""
+
+        call_count = {"n": 0}
+
+        async def chat_side_effect(*args, **kwargs):
+            idx = call_count["n"]
+            call_count["n"] += 1
+            if idx == 0:
+                return '{"items": [{"id": "a"}, {"id": "b"}]}'
+            return "This is just natural language commentary."
+
+        mock_supervisor.chat.side_effect = chat_side_effect
+
+        graph = {
+            "id": "test-pb",
+            "version": 1,
+            "nodes": {
+                "enumerate": {
+                    "entry": True, "prompt": "list", "goto": "iter",
+                    "output": {"extract": "items", "as": "items"},
+                },
+                "iter": {
+                    "prompt": "Describe",
+                    "goto": "done",
+                    "for_each": {
+                        "source": "items", "as": "item", "collect": "results",
+                    },
+                },
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        results = runner.node_outputs.get("results")
+        assert isinstance(results, list) and len(results) == 2
+        assert all(isinstance(r, str) for r in results)
+
+    async def test_run_lifecycle_notifications_system_scope(
+        self, mock_supervisor, event_data
+    ):
+        """System-scope runs emit notify.playbook_run_started/completed with project_id=None.
+
+        The trigger event has no `project_id` for system playbooks, so the
+        emitted notification should have ``project_id`` = None (which Discord
+        routes to the global/system channel).
+        """
+        from unittest.mock import AsyncMock
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        system_event = {"type": "timer.24h"}  # no project_id
+        graph = {
+            "id": "sys-pb",
+            "version": 1,
+            "nodes": {
+                "act": {"entry": True, "prompt": "Go", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, system_event, mock_supervisor, event_bus=event_bus)
+        await runner.run()
+
+        emitted = {c.args[0]: c.args[1] for c in event_bus.emit.call_args_list}
+        assert "notify.playbook_run_started" in emitted
+        assert "notify.playbook_run_completed" in emitted
+        # Both should be routable to the system channel
+        started = emitted["notify.playbook_run_started"]
+        completed = emitted["notify.playbook_run_completed"]
+        assert started.get("project_id") is None
+        assert completed.get("project_id") is None
+        assert started["playbook_id"] == "sys-pb"
+        assert completed["playbook_id"] == "sys-pb"
+        assert completed["run_id"] == started["run_id"]
+
+    async def test_run_lifecycle_notifications_project_scope(
+        self, mock_supervisor, event_data
+    ):
+        """Project-scope runs propagate project_id to Discord routing."""
+        from unittest.mock import AsyncMock
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        proj_event = {"type": "email.received", "project_id": "my-proj"}
+        graph = {
+            "id": "proj-pb",
+            "version": 1,
+            "nodes": {
+                "act": {"entry": True, "prompt": "Go", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, proj_event, mock_supervisor, event_bus=event_bus)
+        await runner.run()
+
+        emitted = {c.args[0]: c.args[1] for c in event_bus.emit.call_args_list}
+        assert emitted["notify.playbook_run_started"]["project_id"] == "my-proj"
+        assert emitted["notify.playbook_run_completed"]["project_id"] == "my-proj"
+
+    async def test_run_failure_emits_notify_failed(
+        self, mock_supervisor, event_data
+    ):
+        """A run that fails emits notify.playbook_run_failed, not completed."""
+        from unittest.mock import AsyncMock
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        mock_supervisor.chat.side_effect = RuntimeError("boom")
+
+        graph = {
+            "id": "err-pb",
+            "version": 1,
+            "nodes": {
+                "act": {"entry": True, "prompt": "Go", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, event_bus=event_bus)
+        await runner.run()
+
+        emitted = {c.args[0] for c in event_bus.emit.call_args_list}
+        assert "notify.playbook_run_started" in emitted
+        assert "notify.playbook_run_failed" in emitted
+        assert "notify.playbook_run_completed" not in emitted
+
+    async def test_event_accessible_via_template(
+        self, mock_supervisor, event_data
+    ):
+        """The trigger event is accessible in node prompts as `{{event.*}}`.
+
+        Regression for the email-allowlisted playbook run (3f1d7750-7d0):
+        the prompt used `{{event.thread_id}}` and `{{event.from.email}}`,
+        but `event` was not exposed to templates — it lived only on the
+        runner. The LLM got `{{UNRESOLVED:event.thread_id}}` in its prompt
+        and hallucinated task creation without actually calling create_task.
+        """
+        captured_prompts: list[str] = []
+
+        async def chat_side_effect(*args, **kwargs):
+            captured_prompts.append(kwargs["text"])
+            return "Done."
+
+        mock_supervisor.chat.side_effect = chat_side_effect
+
+        graph = {
+            "id": "test-pb",
+            "version": 1,
+            "nodes": {
+                "act": {
+                    "entry": True,
+                    "prompt": (
+                        "Type: {{event.type}}, "
+                        "project: {{event.project_id}}, "
+                        "commit: {{event.commit_hash}}"
+                    ),
+                    "goto": "done",
+                },
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        assert len(captured_prompts) == 1
+        rendered = captured_prompts[0]
+        assert "UNRESOLVED" not in rendered, f"Unresolved vars: {rendered}"
+        assert "test-proj" in rendered
+        assert "abc123" in rendered
+        assert "git.commit" in rendered
+
+    async def test_json_with_trailing_prose_parsed(
+        self, mock_supervisor, event_data
+    ):
+        """JSON object with leading/trailing prose is recovered."""
+
+        call_count = {"n": 0}
+
+        async def chat_side_effect(*args, **kwargs):
+            idx = call_count["n"]
+            call_count["n"] += 1
+            if idx == 0:
+                return '{"items": [{"id": "a"}]}'
+            return (
+                "I analyzed the project and here is the result:\n\n"
+                '{"id": "a", "churn_count": 42}\n'
+            )
+
+        mock_supervisor.chat.side_effect = chat_side_effect
+
+        graph = {
+            "id": "test-pb",
+            "version": 1,
+            "nodes": {
+                "enumerate": {
+                    "entry": True, "prompt": "list", "goto": "iter",
+                    "output": {"extract": "items", "as": "items"},
+                },
+                "iter": {
+                    "prompt": "Analyze",
+                    "goto": "done",
+                    "for_each": {
+                        "source": "items", "as": "item", "collect": "analyzed",
+                    },
+                },
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        await runner.run()
+
+        analyzed = runner.node_outputs.get("analyzed")
+        assert analyzed == [{"id": "a", "churn_count": 42}]

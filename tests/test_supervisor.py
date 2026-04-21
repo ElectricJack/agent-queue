@@ -156,8 +156,10 @@ def test_chat_reply_to_user_with_other_tools():
     assert "Created task" in result
 
 
-def test_chat_nudges_llm_when_no_reply_to_user():
-    """When LLM stops without reply_to_user after tools, it gets nudged."""
+def test_chat_auto_delivers_text_after_tool_use():
+    """When the LLM emits text after a tool call without wrapping it in
+    reply_to_user, the supervisor auto-delivers that text as the response
+    (saves a full LLM round-trip — see supervisor.py:903-908)."""
     sup = _make_supervisor()
     sup._provider = MagicMock()
 
@@ -167,28 +169,21 @@ def test_chat_nudges_llm_when_no_reply_to_user():
             _make_tool_use("memory_search", {"query": "test"}, "tu-1"),
         ]
     )
-
-    # Round 2: LLM returns text without reply_to_user (gets nudged)
+    # Round 2: LLM returns bare text — auto-delivered as the reply.
     resp2 = _make_resp(text_parts=["Done. Actions taken: memory_search"])
 
-    # Round 3: LLM calls reply_to_user after nudge
-    resp3 = _make_resp(
-        tool_uses=[
-            _make_reply_tool_use("I searched memory and found relevant results."),
-        ]
-    )
-
-    sup._provider.create_message = AsyncMock(side_effect=[resp1, resp2, resp3])
+    sup._provider.create_message = AsyncMock(side_effect=[resp1, resp2])
     sup.handler.execute = AsyncMock(return_value={"results": []})
 
     result = asyncio.run(sup.chat("Search for test", "testuser"))
-    assert "searched memory" in result.lower()
-    # At least 3 calls: tool use, nudged text, reply (+ possible reflection)
-    assert sup._provider.create_message.call_count >= 3
+    assert result == "Done. Actions taken: memory_search"
+    # Two primary rounds (tool use + text); reflection may add one more.
+    assert sup._provider.create_message.call_count <= 3
 
 
-def test_chat_max_nudges_then_returns():
-    """After max nudges, returns the text response directly."""
+def test_chat_nudges_when_llm_returns_empty_text_after_tool_use():
+    """Empty text after a tool call triggers a single nudge round before
+    giving up (supervisor.py:955-972)."""
     sup = _make_supervisor()
     sup._provider = MagicMock()
 
@@ -198,21 +193,24 @@ def test_chat_max_nudges_then_returns():
             _make_tool_use("memory_search", {"query": "test"}, "tu-1"),
         ]
     )
-
-    # Rounds 2, 3: text without reply_to_user (nudged twice)
-    resp_text1 = _make_resp(text_parts=["Some text"])
-    resp_text2 = _make_resp(text_parts=["More text"])
-
-    # Round 4: still text (max nudges exceeded, returns directly)
-    resp_text3 = _make_resp(text_parts=["Final text answer"])
+    # Round 2: empty text — supervisor nudges once.
+    resp_empty = _make_resp(text_parts=[""])
+    # Round 3: LLM obliges and calls reply_to_user with a real response.
+    resp_reply = _make_resp(
+        tool_uses=[
+            _make_reply_tool_use("I searched memory and found relevant results."),
+        ]
+    )
 
     sup._provider.create_message = AsyncMock(
-        side_effect=[resp_tool, resp_text1, resp_text2, resp_text3]
+        side_effect=[resp_tool, resp_empty, resp_reply]
     )
     sup.handler.execute = AsyncMock(return_value={"results": []})
 
     result = asyncio.run(sup.chat("Search for test", "testuser"))
-    assert result == "Final text answer"
+    assert "searched memory" in result.lower()
+    # 3 provider calls: tool use, empty-text nudge, reply.
+    assert sup._provider.create_message.call_count >= 3
 
 
 def test_chat_triggers_reflection_on_reply():

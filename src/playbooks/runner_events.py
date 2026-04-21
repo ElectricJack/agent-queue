@@ -31,10 +31,12 @@ class EventsMixin:
     # Attributes expected from PlaybookRunner (for type checking purposes)
     event_bus: EventBus | None
     event: dict
+    graph: dict
     run_id: str
     _playbook_id: str
     tokens_used: int
     messages: list[dict]
+    node_trace: list
 
     async def _emit_bus_event(self, event_type: str, payload: dict) -> None:
         """Emit an event on the EventBus if one is configured.
@@ -66,35 +68,39 @@ class EventsMixin:
         playbook_version: int,
         started_at: float,
     ) -> None:
-        """Emit ``playbook.run.started`` on the EventBus.
+        """Emit ``playbook.run.started`` and ``notify.playbook_run_started``.
 
-        Also emits ``notify.playbook_run_started`` (typed) so dashboards
-        and other WS subscribers can update their live-runs panel as soon
-        as a run begins.
+        Fires once when the runner begins executing the entry node. The raw
+        ``playbook.run.started`` event is for EventBus composition hooks; the
+        typed ``notify.*`` variant drives dashboard WS updates and the
+        Discord/Telegram notification transports.
         """
+        trigger_event_type = self.event.get("_event_type", self.event.get("type", ""))
         payload: dict[str, Any] = {
             "playbook_id": self._playbook_id,
             "run_id": self.run_id,
             "playbook_version": playbook_version,
-            "trigger_type": self.event.get("type", ""),
+            "trigger_event_type": trigger_event_type,
             "started_at": started_at,
         }
         await self._emit_bus_event("playbook.run.started", payload)
-        await self._emit_started_notification(payload)
 
-    async def _emit_started_notification(self, raw_payload: dict[str, Any]) -> None:
-        """Emit ``notify.playbook_run_started`` for dashboard WS subscribers."""
+        # Typed notification for Discord/Telegram transports + dashboard WS.
         from src.notifications.events import PlaybookRunStartedEvent
 
-        event = PlaybookRunStartedEvent(
-            playbook_id=raw_payload.get("playbook_id", ""),
-            run_id=raw_payload.get("run_id", ""),
-            playbook_version=raw_payload.get("playbook_version", 0),
-            trigger_type=raw_payload.get("trigger_type", ""),
-            started_at=raw_payload.get("started_at", 0.0),
-            project_id=raw_payload.get("project_id"),
+        scope = self.graph.get("scope", "system") if hasattr(self, "graph") else "system"
+        notify_event = PlaybookRunStartedEvent(
+            playbook_id=self._playbook_id,
+            run_id=self.run_id,
+            playbook_version=playbook_version,
+            trigger_event_type=trigger_event_type,
+            scope=scope,
+            started_at=started_at,
+            project_id=self.event.get("project_id"),
         )
-        await self._emit_bus_event("notify.playbook_run_started", event.model_dump(mode="json"))
+        await self._emit_bus_event(
+            "notify.playbook_run_started", notify_event.model_dump(mode="json")
+        )
 
     async def _emit_completed_event(
         self,
@@ -102,7 +108,7 @@ class EventsMixin:
         final_context: str | None = None,
         started_at: float | None = None,
     ) -> None:
-        """Emit ``playbook.run.completed`` on the EventBus.
+        """Emit ``playbook.run.completed`` and ``notify.playbook_run_completed``.
 
         See ``docs/specs/design/playbooks.md`` Section 7 — Event System.
         Also emits ``notify.playbook_run_completed`` for dashboard WS
@@ -117,11 +123,13 @@ class EventsMixin:
         if started_at is not None:
             payload["duration_seconds"] = round(time.time() - started_at, 2)
         payload["tokens_used"] = self.tokens_used
+        payload["node_count"] = len(self.node_trace) if hasattr(self, "node_trace") else 0
         await self._emit_bus_event("playbook.run.completed", payload)
         await self._emit_completed_notification(payload)
 
     async def _emit_completed_notification(self, raw_payload: dict[str, Any]) -> None:
-        """Emit ``notify.playbook_run_completed`` for dashboard WS subscribers."""
+        """Emit ``notify.playbook_run_completed`` for dashboard WS subscribers and
+        Discord/Telegram notification transports."""
         from src.notifications.events import PlaybookRunCompletedEvent
 
         event = PlaybookRunCompletedEvent(
@@ -130,6 +138,7 @@ class EventsMixin:
             final_context=raw_payload.get("final_context"),
             tokens_used=raw_payload.get("tokens_used", 0),
             duration_seconds=raw_payload.get("duration_seconds", 0.0),
+            node_count=raw_payload.get("node_count", 0),
             project_id=raw_payload.get("project_id"),
         )
         await self._emit_bus_event("notify.playbook_run_completed", event.model_dump(mode="json"))
@@ -166,7 +175,8 @@ class EventsMixin:
         await self._emit_failed_notification(payload)
 
     async def _emit_failed_notification(self, raw_payload: dict[str, Any]) -> None:
-        """Emit ``notify.playbook_run_failed`` for dashboard WS subscribers."""
+        """Emit ``notify.playbook_run_failed`` for dashboard WS subscribers and
+        Discord/Telegram notification transports."""
         from src.notifications.events import PlaybookRunFailedEvent
 
         event = PlaybookRunFailedEvent(

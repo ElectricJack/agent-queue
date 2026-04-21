@@ -878,18 +878,21 @@ project details, read the project README or delegate to a project-aware agent.
 ## Config
 ```json
 {
-  "model": "claude-sonnet-4-6",
-  "permission_mode": "auto"
+  "provider": "gemini",
+  "model": "gemini-2.5-flash",
+  "max_tokens": 2048,
+  "playbook_max_tokens": 4096,
+  "thinking_budget": 8192
 }
 ```
 
-## Tools
-```json
-{
-  "allowed": [],
-  "denied": ["file_write", "file_edit", "shell"]
-}
-```
+The supervisor runs a lightweight chat-provider LLM (not a Claude Code
+agent), so fields like ``permission_mode`` and Claude-specific settings
+do not apply here.  The supervisor reads ``provider``, ``model``,
+``max_tokens``, ``playbook_max_tokens`` and ``thinking_budget`` from
+this block at startup; anything not set here falls back to
+``config.chat_provider`` in ``~/.agent-queue/config.yaml`` (which also
+supplies environment-specific values like ``api_key`` / ``base_url``).
 
 ## MCP Servers
 ```json
@@ -984,6 +987,141 @@ After completing work, consider:
 - Did I follow existing project conventions?
 - Were tests adequate for the changes made?
 - Is there anything the supervisor should know for future tasks?
+
+## Install
+```json
+{
+  "npm": [],
+  "pip": [],
+  "commands": []
+}
+```
+"""
+
+
+# Opus / Sonnet model-specific default profiles.  Both share a single
+# ``memory_scope_id: claude`` so insights extracted from tasks running
+# under either model pool into one ``agenttype_claude`` collection +
+# ``vault/agent-types/claude/memory/`` directory.
+
+CLAUDE_OPUS_PROFILE = """\
+---
+id: claude-opus
+name: Claude Opus (Architecture & Judgment)
+tags: [profile, claude, opus]
+memory_scope_id: claude
+---
+
+# Claude Opus
+
+## Role
+You are a judgment-heavy reasoning agent backed by Claude Opus. Take on
+tasks that reward deep analysis: architectural decisions, tricky design
+trade-offs, root-cause debugging, and synthesis across broad context.
+
+You share memory with the `claude-sonnet` profile — insights you save
+are visible to Sonnet tasks and vice-versa. Reserve this profile for
+the subset of work that genuinely benefits from Opus-level reasoning;
+route mechanical or pattern-following work to `claude-sonnet` or
+`claude-code`.
+
+## Config
+```json
+{
+  "model": "claude-opus-4-7",
+  "permission_mode": "auto"
+}
+```
+
+## Tools
+```json
+{
+  "allowed": [],
+  "denied": []
+}
+```
+
+## MCP Servers
+```json
+{}
+```
+
+## Rules
+- Use this profile when the task's value comes from judgment, not speed
+- Be willing to change approach mid-task if exploration reveals a simpler path
+- When uncertain, state the alternatives and the trade-off rather than picking blindly
+- Memory shared with claude-sonnet — tag insights with #opus when specific to deep reasoning
+
+## Reflection
+After completing work, consider:
+- Was Opus the right tool, or could this have been done with Sonnet?
+- Did the judgment calls generalise — worth saving as shared insights?
+- Were there edge cases or trade-offs worth flagging for future tasks?
+
+## Install
+```json
+{
+  "npm": [],
+  "pip": [],
+  "commands": []
+}
+```
+"""
+
+
+CLAUDE_SONNET_PROFILE = """\
+---
+id: claude-sonnet
+name: Claude Sonnet (Pattern-Following & Scaffolding)
+tags: [profile, claude, sonnet]
+memory_scope_id: claude
+---
+
+# Claude Sonnet
+
+## Role
+You are a pattern-following agent backed by Claude Sonnet. Take on
+tasks that reward quick, accurate execution of well-understood patterns:
+adding features to an existing design, writing boilerplate, scaffolding
+tests, or following a spec closely.
+
+You share memory with the `claude-opus` profile — insights you save
+are visible to Opus tasks and vice-versa. Prefer this profile over
+Opus when the task is well-specified and the rubric is clear; escalate
+to Opus only when the work genuinely requires deeper reasoning.
+
+## Config
+```json
+{
+  "model": "claude-sonnet-4-6",
+  "permission_mode": "auto"
+}
+```
+
+## Tools
+```json
+{
+  "allowed": [],
+  "denied": []
+}
+```
+
+## MCP Servers
+```json
+{}
+```
+
+## Rules
+- Prefer this profile for mechanical or well-specified work
+- When the task brief is ambiguous, surface the question rather than guessing
+- Memory shared with claude-opus — tag insights with #sonnet when specific to scaffolding
+- Escalate to claude-opus when a task needs Opus-level judgment instead
+
+## Reflection
+After completing work, consider:
+- Did the pattern match the task, or was escalation needed mid-task?
+- Are there conventions worth saving as shared insights?
+- Did any generated boilerplate drift from the spec?
 
 ## Install
 ```json
@@ -1187,8 +1325,18 @@ def ensure_vault_layout(data_dir: str) -> None:
 
     ensure_default_templates(data_dir)
     ensure_default_playbooks(data_dir)
+    ensure_default_agent_type_playbooks(data_dir)
     ensure_supervisor_profile(data_dir)
-    ensure_claude_code_profile(data_dir)
+    # Two bundled Claude Code profiles — same CLI, different models + a
+    # shared ``claude`` memory scope (see ``memory_scope_id`` in each
+    # profile's frontmatter).  Tasks pick the model per-task via
+    # ``aq task create --profile {claude-opus|claude-sonnet}``.  The
+    # older model-agnostic ``claude-code`` profile (CLAUDE_CODE_PROFILE
+    # constant) is kept as an opt-in template but no longer
+    # auto-installed.
+    ensure_claude_opus_profile(data_dir)
+    ensure_claude_sonnet_profile(data_dir)
+    ensure_shared_claude_memory_dir(data_dir)
 
     # Generate vault hub files for Obsidian graph tree structure
     try:
@@ -1334,6 +1482,74 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     return result
 
 
+def ensure_default_agent_type_playbooks(data_dir: str) -> dict:
+    """Install bundled agent-type playbooks into ``vault/agent-types/{type}/playbooks/``.
+
+    Mirrors :func:`ensure_default_playbooks` but for playbooks scoped to a
+    specific agent type (supervisor, coding, etc.).  Sources live at
+    ``src/prompts/default_agent_type_playbooks/{type}/*.md`` and are copied
+    to ``vault/agent-types/{type}/playbooks/`` on every startup.
+
+    The operation is **idempotent**: files already present at the destination
+    are never overwritten, so users can customise playbooks without losing
+    changes on restart.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+
+    Returns:
+        Dict with ``created`` (list of ``"{agent_type}/{filename}"`` strings
+        written) and ``skipped`` (list of relative paths that already existed).
+    """
+    defaults_root = os.path.join(
+        os.path.dirname(__file__), "prompts", "default_agent_type_playbooks"
+    )
+    result: dict = {"created": [], "skipped": []}
+
+    if not os.path.isdir(defaults_root):
+        logger.debug(
+            "No default agent-type playbooks directory found at %s", defaults_root
+        )
+        return result
+
+    for agent_type in sorted(os.listdir(defaults_root)):
+        src_type_dir = os.path.join(defaults_root, agent_type)
+        if not os.path.isdir(src_type_dir):
+            continue
+
+        dst_type_dir = os.path.join(
+            data_dir, "vault", "agent-types", agent_type, "playbooks"
+        )
+        os.makedirs(dst_type_dir, exist_ok=True)
+
+        for filename in sorted(os.listdir(src_type_dir)):
+            if not filename.endswith(".md"):
+                continue
+            src_path = os.path.join(src_type_dir, filename)
+            dst_path = os.path.join(dst_type_dir, filename)
+            rel = f"{agent_type}/{filename}"
+
+            if os.path.exists(dst_path):
+                result["skipped"].append(rel)
+                logger.debug(
+                    "Default agent-type playbook already exists, skipping: %s", rel
+                )
+                continue
+
+            shutil.copy2(src_path, dst_path)
+            result["created"].append(rel)
+            logger.debug("Installed default agent-type playbook: %s", rel)
+
+    if result["created"]:
+        logger.info(
+            "Installed %d default agent-type playbook(s): %s",
+            len(result["created"]),
+            ", ".join(result["created"]),
+        )
+
+    return result
+
+
 def ensure_supervisor_profile(data_dir: str) -> bool:
     """Write the supervisor profile to ``vault/agent-types/supervisor/profile.md`` if absent.
 
@@ -1395,6 +1611,86 @@ def ensure_claude_code_profile(data_dir: str) -> bool:
 
     ensure_vault_profile_dirs(data_dir, "claude-code")
     logger.info("Created Claude Code profile: %s", profile_path)
+    return True
+
+
+def ensure_claude_opus_profile(data_dir: str) -> bool:
+    """Write the claude-opus profile to ``vault/agent-types/claude-opus/profile.md`` if absent.
+
+    Auto-installed default for judgment-heavy tasks. The shipped template
+    sets ``memory_scope_id: claude`` in frontmatter so insights pool with
+    the ``claude-sonnet`` profile under a single ``agenttype_claude``
+    scope.
+
+    Idempotent: existing files are preserved for user customisation.
+    """
+    profile_path = os.path.join(
+        data_dir, "vault", "agent-types", "claude-opus", "profile.md"
+    )
+    if os.path.exists(profile_path):
+        logger.debug("Claude Opus profile already exists, skipping: %s", profile_path)
+        return False
+
+    os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+    with open(profile_path, "w", encoding="utf-8") as f:
+        f.write(CLAUDE_OPUS_PROFILE)
+
+    # Intentionally skip ensure_vault_profile_dirs — the shared ``claude``
+    # scope owns the memory dir, so we don't create a per-profile
+    # ``memory/`` subdir here.  We do need ``playbooks/`` though.
+    os.makedirs(
+        os.path.join(data_dir, "vault", "agent-types", "claude-opus", "playbooks"),
+        exist_ok=True,
+    )
+    logger.info("Created Claude Opus profile: %s", profile_path)
+    return True
+
+
+def ensure_claude_sonnet_profile(data_dir: str) -> bool:
+    """Write the claude-sonnet profile to ``vault/agent-types/claude-sonnet/profile.md`` if absent.
+
+    Auto-installed default for pattern-following / scaffolding tasks. The
+    shipped template sets ``memory_scope_id: claude`` so insights pool
+    with the ``claude-opus`` profile under a single ``agenttype_claude``
+    scope.
+
+    Idempotent: existing files are preserved for user customisation.
+    """
+    profile_path = os.path.join(
+        data_dir, "vault", "agent-types", "claude-sonnet", "profile.md"
+    )
+    if os.path.exists(profile_path):
+        logger.debug("Claude Sonnet profile already exists, skipping: %s", profile_path)
+        return False
+
+    os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+    with open(profile_path, "w", encoding="utf-8") as f:
+        f.write(CLAUDE_SONNET_PROFILE)
+
+    # Skip per-profile memory/ — shared ``claude`` scope owns it.
+    os.makedirs(
+        os.path.join(data_dir, "vault", "agent-types", "claude-sonnet", "playbooks"),
+        exist_ok=True,
+    )
+    logger.info("Created Claude Sonnet profile: %s", profile_path)
+    return True
+
+
+def ensure_shared_claude_memory_dir(data_dir: str) -> bool:
+    """Create ``vault/agent-types/claude/memory/`` for the shared Claude scope.
+
+    This is the physical home for memories saved by any profile that sets
+    ``memory_scope_id: claude`` (currently ``claude-opus`` and
+    ``claude-sonnet``).  No ``profile.md`` lives here — the directory
+    only holds memory and is profile-less by design.
+
+    Idempotent.
+    """
+    memory_dir = os.path.join(data_dir, "vault", "agent-types", "claude", "memory")
+    if os.path.isdir(memory_dir):
+        return False
+    os.makedirs(memory_dir, exist_ok=True)
+    logger.info("Created shared Claude memory directory: %s", memory_dir)
     return True
 
 
@@ -1735,19 +2031,23 @@ def vault_has_content(data_dir: str) -> bool:
 
 
 def vault_has_profile_markdown(data_dir: str) -> bool:
-    """Check whether the vault already has any agent-type profile markdown files.
+    """Check whether the vault already has any user-managed profile markdown files.
 
     Returns ``True`` if at least one ``vault/agent-types/*/profile.md`` file
-    exists.  This is used at startup to decide whether to auto-migrate DB
-    profiles to vault markdown (roadmap 4.2.4).  If any profile markdown
-    already exists, we skip auto-migration to avoid interfering with
-    user-managed vault content.
+    exists for a profile other than the auto-installed baseline (``supervisor``,
+    ``claude-code``).  Those two are written by ``ensure_vault_layout`` on every
+    startup, so counting them would mean auto-migration never triggers.  This is
+    used at startup to decide whether to auto-migrate DB profiles to vault
+    markdown (roadmap 4.2.4).
     """
     agent_types_dir = os.path.join(data_dir, "vault", "agent-types")
     if not os.path.isdir(agent_types_dir):
         return False
 
+    baseline_profiles = {"supervisor", "claude-code"}
     for entry in os.listdir(agent_types_dir):
+        if entry in baseline_profiles:
+            continue
         profile_md = os.path.join(agent_types_dir, entry, "profile.md")
         if os.path.isfile(profile_md):
             return True

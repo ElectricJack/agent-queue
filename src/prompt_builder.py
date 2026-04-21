@@ -266,20 +266,31 @@ class PromptBuilder:
         self._l0_role = text
 
     def set_l0_role_from_markdown(self, profile_md: str) -> bool:
-        """Extract ``## Role`` from a markdown profile and set as L0 role.
+        """Extract ``## Role`` + ``## Rules`` + ``## Reflection`` and set as L0 role.
+
+        The returned block preserves the section headings so the LLM
+        can distinguish identity (Role) from behavioural constraints
+        (Rules) from post-task guidance (Reflection).  Matches the
+        ``system_prompt_suffix`` format produced by the profile parser
+        for Claude Code agents — keeping supervisor and agent prompts
+        consistent.
 
         Args:
             profile_md: Raw markdown content of a profile file.
 
         Returns:
-            ``True`` if a ``## Role`` section was found and set,
-            ``False`` otherwise.
+            ``True`` if at least one of the three sections was found
+            and set, ``False`` when the profile has none of them.
         """
-        role = extract_section(profile_md, "Role")
-        if role:
-            self.set_l0_role(role)
-            return True
-        return False
+        parts: list[str] = []
+        for heading in ("Role", "Rules", "Reflection"):
+            body = extract_section(profile_md, heading)
+            if body:
+                parts.append(f"## {heading}\n{body}")
+        if not parts:
+            return False
+        self.set_l0_role("\n\n".join(parts))
+        return True
 
     def set_override_content(self, content: str) -> None:
         """Set project-specific override content (injected after L0 role).

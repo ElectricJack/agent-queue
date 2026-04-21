@@ -422,14 +422,16 @@ class TestEndToEndDispatch:
         (vault / "agent-types" / "coder" / "playbooks").mkdir(parents=True)
         (vault / "agent-types" / "coder" / "playbooks" / "gate.md").write_text("# Gate\n")
 
-        (vault / "orchestrator" / "playbooks").mkdir(parents=True)
-        (vault / "orchestrator" / "playbooks" / "route.md").write_text("# Route\n")
+        # orchestrator/ scope was merged into agent-types/supervisor/.
+        (vault / "agent-types" / "supervisor" / "playbooks").mkdir(parents=True)
+        (vault / "agent-types" / "supervisor" / "playbooks" / "route.md").write_text("# Route\n")
 
         # Detect and dispatch
         with caplog.at_level(logging.INFO, logger="src.playbooks.handler"):
             await watcher.check()
 
-        # The stub handler should have logged all 4
+        # The stub handler should have logged all 4 (system, project, agent-type
+        # coder, agent-type supervisor).
         handler_logs = [
             r for r in caplog.records if "Playbook" in r.message and "created" in r.message
         ]
@@ -909,3 +911,43 @@ class TestEndToEndCompilation:
         # LLM should not be called — hash matches loaded version
         provider2.create_message.assert_not_called()
         assert manager2.get_playbook("deploy").version == 1
+
+    @pytest.mark.asyncio
+    async def test_project_scoped_playbook_records_project_identifier(self, tmp_path):
+        """Project-scoped playbooks compiled via the watcher must record the
+        project_id from their vault path, so that _matches_scope can reject
+        events from other projects.  Regression for the bug where the handler
+        dropped `scope_identifier` on the floor and every project-scoped
+        playbook fired on events from all projects.
+        """
+        from src.playbooks.manager import PlaybookManager
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        provider = _make_mock_provider()
+        manager = PlaybookManager(
+            chat_provider=provider,
+            data_dir=str(tmp_path / "data"),
+        )
+
+        watcher = VaultWatcher(
+            vault_root=str(vault),
+            poll_interval=0,
+            debounce_seconds=0,
+        )
+        register_playbook_handlers(watcher, playbook_manager=manager)
+
+        await watcher.check()
+
+        playbook_dir = vault / "projects" / "my-app" / "playbooks"
+        playbook_dir.mkdir(parents=True)
+        playbook_file = playbook_dir / "review.md"
+        playbook_file.write_text(
+            _make_playbook_md(playbook_id="review", scope="project")
+        )
+
+        await watcher.check()
+
+        assert manager.get_playbook("review") is not None
+        assert manager.get_scope_identifier("review") == "my-app"

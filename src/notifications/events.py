@@ -33,6 +33,23 @@ class NotifyEvent(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class TaskAddedEvent(NotifyEvent):
+    """Emitted whenever a new task is created, via any path.
+
+    Fires for Discord slash commands, playbook-driven creation, MCP clients,
+    and the REST API. Routes to the project's Discord channel when
+    ``project_id`` has one; otherwise to the global/system channel. Pause
+    status does NOT suppress the notification — operators want visibility
+    into task creation regardless of whether the project is accepting
+    scheduling right now.
+    """
+
+    event_type: str = "notify.task_added"
+    category: str = "task_lifecycle"
+    task: TaskDetail
+    source: str = ""  # "discord_slash", "playbook", "mcp", "api", etc.
+
+
 class TaskStartedEvent(NotifyEvent):
     event_type: str = "notify.task_started"
     category: str = "task_lifecycle"
@@ -315,10 +332,12 @@ class PlaybookCompilationSucceededEvent(NotifyEvent):
 
 
 class PlaybookRunStartedEvent(NotifyEvent):
-    """Emitted when a playbook run begins executing.
+    """Emitted when a playbook run begins executing its entry node.
 
-    Used by the dashboard to populate a live-runs panel and to refresh
-    playbook registry rows when a run kicks off.
+    Drives the dashboard's live-runs panel and refreshes registry rows as
+    soon as a run kicks off. Also routes Discord/Telegram notifications to
+    the project channel (when ``project_id`` is set via the trigger event)
+    or the system channel for system-scoped playbooks.
     """
 
     event_type: str = "notify.playbook_run_started"
@@ -326,7 +345,8 @@ class PlaybookRunStartedEvent(NotifyEvent):
     playbook_id: str = ""
     playbook_version: int = 0
     run_id: str = ""
-    trigger_type: str = ""
+    trigger_event_type: str = ""
+    scope: str = "system"  # "system", "project", or "agent-type:{type}"
     started_at: float = 0.0
 
 
@@ -346,6 +366,7 @@ class PlaybookRunCompletedEvent(NotifyEvent):
     final_context: str | None = None
     tokens_used: int = 0
     duration_seconds: float = 0.0
+    node_count: int = 0
 
 
 class PlaybookRunFailedEvent(NotifyEvent):

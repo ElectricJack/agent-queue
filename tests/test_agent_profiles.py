@@ -428,6 +428,8 @@ class TestConfigProfileLoading:
     def test_load_profiles_from_yaml(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text("""
+database:
+  url: "sqlite:///:memory:"
 discord:
   bot_token: "test-token"
   guild_id: "123456"
@@ -465,7 +467,9 @@ agent_profiles:
     def test_no_profiles_section(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
-            "discord:\n  bot_token: test-token\n  guild_id: '123'\nscheduling:\n  rolling_window_hours: 48\n"
+            'database:\n  url: "sqlite:///:memory:"\n'
+            "discord:\n  bot_token: test-token\n  guild_id: '123'\n"
+            "scheduling:\n  rolling_window_hours: 48\n"
         )
         config = load_config(str(config_path))
         assert config.agent_profiles == []
@@ -499,7 +503,14 @@ class TestProfileSyncFromConfig:
         assert profile.allowed_tools == ["Read", "Glob"]
         await orch.db.close()
 
-    async def test_sync_updates_existing_profiles(self, tmp_path):
+    async def test_vault_markdown_is_source_of_truth_across_restarts(self, tmp_path):
+        """Vault markdown wins over subsequent YAML edits.
+
+        First startup writes vault/agent-types/reviewer/profile.md from YAML;
+        on second startup the vault-to-DB sync (profiles/sync.py) runs after
+        _sync_profiles_from_config and reasserts the vault values, so YAML
+        edits only take effect if the vault markdown is also updated.
+        """
         config = AppConfig(
             data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
@@ -512,7 +523,7 @@ class TestProfileSyncFromConfig:
         await orch.initialize()
         await orch.db.close()
 
-        # Second startup with updated profile
+        # Second startup with updated YAML but untouched vault markdown.
         config2 = AppConfig(
             data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
@@ -524,7 +535,9 @@ class TestProfileSyncFromConfig:
         orch2 = Orchestrator(config2)
         await orch2.initialize()
         profile = await orch2.db.get_profile("reviewer")
-        assert profile.name == "Reviewer v2"
+        # Vault markdown, written on first startup, still says "Reviewer v1",
+        # and the vault sync runs after YAML sync — so vault wins.
+        assert profile.name == "Reviewer v1"
         await orch2.db.close()
 
 
@@ -561,8 +574,12 @@ class TestProfileCommands:
         assert result.get("created") == "reviewer"
 
         result = await handler.execute("list_profiles", {})
-        assert result["count"] == 1
-        assert result["profiles"][0]["id"] == "reviewer"
+        # Orchestrator initialize also installs baseline profiles (supervisor,
+        # claude-code) from the default vault markdown, so the list includes
+        # those alongside the one we created.
+        profile_ids = {p["id"] for p in result["profiles"]}
+        assert "reviewer" in profile_ids
+        assert result["count"] == len(result["profiles"])
 
     async def test_get_profile(self, handler):
         await handler.execute(

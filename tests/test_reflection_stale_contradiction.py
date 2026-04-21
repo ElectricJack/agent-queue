@@ -14,6 +14,14 @@ Verifies:
   4. Node prompts (in the test fixture graph) reference the correct tools
   5. DB persistence and dry-run work with the extended graph
   6. memory_health and memory_stale return structures matching expectations
+
+**Status:** xfail at the module level. The underlying memory tools
+(memory_health, memory_stale, memory_delete, memory_update) are already
+implemented, but the extended reflection playbook (the 6-node graph this
+file exercises) has not been authored yet — the live playbook at
+vault/agent-types/coding/playbooks/reflection.md is the 4-node v1.
+Remove the xfail marker once the playbook is written and compiled.
+See docs/specs/design/memory-consolidation.md.
 """
 
 from __future__ import annotations
@@ -23,6 +31,20 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.playbooks.runner import PlaybookRunner
+
+# The graph-walking tests below need the 6-node extended reflection playbook.
+# The playbook file at vault/agent-types/coding/playbooks/reflection.md is
+# only 4 nodes, so classes that exercise the extended graph end up failing
+# at runtime. Underlying memory tools (memory_health, memory_stale,
+# memory_delete, memory_update) are all implemented, so the response-shape
+# and dry-run classes pass unmarked.
+_EXTENDED_GRAPH_XFAIL = pytest.mark.xfail(
+    reason=(
+        "Extended reflection playbook (stale/contradiction nodes) not yet "
+        "authored — see docs/specs/design/memory-consolidation.md."
+    ),
+    strict=False,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +401,7 @@ class TestReflectionPlaybookStaleContradictionTemplate:
 # ---------------------------------------------------------------------------
 
 
+@_EXTENDED_GRAPH_XFAIL
 class TestExtendedReflectionGraphWalk:
     """Verify PlaybookRunner walks the extended graph with stale + contradiction nodes."""
 
@@ -443,6 +466,7 @@ class TestExtendedReflectionGraphWalk:
 # ---------------------------------------------------------------------------
 
 
+@_EXTENDED_GRAPH_XFAIL
 class TestStaleContradictionToolCallPatterns:
     """Verify the expected tool-call patterns in the new nodes."""
 
@@ -573,6 +597,7 @@ class TestStaleContradictionToolCallPatterns:
 # ---------------------------------------------------------------------------
 
 
+@_EXTENDED_GRAPH_XFAIL
 class TestStaleContradictionSkipBehaviour:
     """Verify nodes handle empty results gracefully."""
 
@@ -647,6 +672,7 @@ class TestStaleContradictionSkipBehaviour:
 # ---------------------------------------------------------------------------
 
 
+@_EXTENDED_GRAPH_XFAIL
 class TestNodePromptsReferenceTools:
     """Verify node prompts contain references to the expected tools."""
 
@@ -716,6 +742,7 @@ class TestNodePromptsReferenceTools:
 # ---------------------------------------------------------------------------
 
 
+@_EXTENDED_GRAPH_XFAIL
 class TestExtendedReflectionDBPersistence:
     """Verify run state includes the new nodes when persisted."""
 

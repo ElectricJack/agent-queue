@@ -15,8 +15,6 @@ from click.testing import CliRunner
 from src.cli.adapters import (
     DictProxy,
     agent_proxy,
-    hook_proxy,
-    hook_run_proxy,
     project_proxy,
     task_proxy,
 )
@@ -25,8 +23,6 @@ from src.cli.client import CLIClient
 from src.cli.exceptions import CommandError, DaemonNotRunningError
 from src.cli.formatters import (
     format_agent_table,
-    format_hook_run_table,
-    format_hook_table,
     format_project_table,
     format_status_overview,
     format_task_detail,
@@ -162,23 +158,6 @@ class TestAgentProxy:
         assert a.agent_type == "claude"
 
 
-class TestHookProxy:
-    def test_trigger_dict_to_string(self):
-        """Formatters check isinstance(hook.trigger, str)."""
-        h = hook_proxy({"trigger": {"type": "cron", "cron": "0 8 * * *"}})
-        assert isinstance(h.trigger, str)
-        parsed = json.loads(h.trigger)
-        assert parsed["type"] == "cron"
-
-    def test_trigger_already_string(self):
-        h = hook_proxy({"trigger": '{"type": "cron"}'})
-        assert isinstance(h.trigger, str)
-
-    def test_defaults(self):
-        h = hook_proxy({})
-        assert h.last_triggered_at is None
-
-
 # ---------------------------------------------------------------------------
 # Formatter compatibility tests (proxied dicts through real formatters)
 # ---------------------------------------------------------------------------
@@ -257,37 +236,6 @@ class TestFormatterCompatibility:
         table = format_agent_table(agents)
         assert table is not None
 
-    def test_format_hook_table(self):
-        hooks = [
-            hook_proxy(
-                {
-                    "id": "hook-abc123def456",
-                    "name": "Test Hook",
-                    "project_id": "proj",
-                    "enabled": True,
-                    "trigger": {"type": "event", "event": "task_completed"},
-                    "cooldown_seconds": 300,
-                }
-            ),
-        ]
-        table = format_hook_table(hooks)
-        assert table is not None
-
-    def test_format_hook_run_table(self):
-        runs = [
-            hook_run_proxy(
-                {
-                    "id": "run-abcdef123456",
-                    "status": "completed",
-                    "trigger_reason": "Manual trigger",
-                    "tokens_used": 1234,
-                    "started_at": 1700000000.0,
-                }
-            ),
-        ]
-        table = format_hook_run_table(runs)
-        assert table is not None
-
     def test_format_project_table(self):
         projects = [
             project_proxy(
@@ -323,8 +271,6 @@ class TestFormatterRegistry:
             "list_tasks",
             "get_task",
             "list_agents",
-            "list_hooks",
-            "list_hook_runs",
             "list_projects",
         }
         assert expected.issubset(set(FORMATTERS.keys()))
@@ -542,7 +488,6 @@ class TestAutoCommands:
             "file",
             "system",
             "task",
-            "rules",
             "agent",
             "project",
             "plugin",
@@ -705,6 +650,112 @@ class TestCLICommands:
             result = runner.invoke(cli, ["task", "get", "--task-id", "task-1"])
             assert result.exit_code == 0
             assert "Test task" in result.output
+
+    def test_task_create_with_profile_flag(self, runner):
+        """--profile is passed through as profile_id in create_task args."""
+        from src.cli.app import cli
+
+        captured_args = {}
+
+        async def mock_execute(command, args=None):
+            if command == "create_task":
+                captured_args.update(args or {})
+                return {"created": "task-42", "title": args.get("title", "")}
+            return {}
+
+        mock = self._mock_client({})
+        mock.execute = AsyncMock(side_effect=mock_execute)
+
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "task",
+                    "create",
+                    "--project",
+                    "proj",
+                    "--title",
+                    "Pick a model",
+                    "--description",
+                    "test task",
+                    "--profile",
+                    "claude-opus",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_args["profile_id"] == "claude-opus"
+        assert captured_args["project_id"] == "proj"
+        assert captured_args["title"] == "Pick a model"
+
+    def test_task_create_with_agent_type_flag(self, runner):
+        """--agent-type is passed through as agent_type in create_task args."""
+        from src.cli.app import cli
+
+        captured_args = {}
+
+        async def mock_execute(command, args=None):
+            if command == "create_task":
+                captured_args.update(args or {})
+                return {"created": "task-43", "title": args.get("title", "")}
+            return {}
+
+        mock = self._mock_client({})
+        mock.execute = AsyncMock(side_effect=mock_execute)
+
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "task",
+                    "create",
+                    "--project",
+                    "proj",
+                    "--title",
+                    "T",
+                    "--description",
+                    "D",
+                    "--agent-type",
+                    "claude-code",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_args["agent_type"] == "claude-code"
+
+    def test_task_create_without_profile_flag_omits_field(self, runner):
+        """When --profile is not given, profile_id is absent from create_task args."""
+        from src.cli.app import cli
+
+        captured_args = {}
+
+        async def mock_execute(command, args=None):
+            if command == "create_task":
+                captured_args.update(args or {})
+                return {"created": "task-44", "title": args.get("title", "")}
+            return {}
+
+        mock = self._mock_client({})
+        mock.execute = AsyncMock(side_effect=mock_execute)
+
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "task",
+                    "create",
+                    "--project",
+                    "proj",
+                    "--title",
+                    "T",
+                    "--description",
+                    "D",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "profile_id" not in captured_args
+        assert "agent_type" not in captured_args
 
     def test_project_list_with_formatter(self, runner):
         """Auto-generated list_projects should use Rich formatter."""

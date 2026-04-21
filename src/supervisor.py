@@ -183,12 +183,89 @@ class Supervisor:
         self._llm_lock = asyncio.Lock()
 
     def initialize(self) -> bool:
-        """Create LLM provider. Returns True if provider is ready."""
-        provider = create_chat_provider(self.config.chat_provider)
+        """Create LLM provider. Returns True if provider is ready.
+
+        Supervisor-specific model/provider overrides live in the
+        ``supervisor`` profile at
+        ``{data_dir}/vault/agent-types/supervisor/profile.md`` — its
+        ``## Config`` JSON block can set ``provider``, ``model``,
+        ``max_tokens``, ``playbook_max_tokens``, and ``thinking_budget``.
+        Anything not set there falls back to ``config.chat_provider``,
+        which also supplies environment-specific values
+        (``api_key``, ``base_url``, ``keep_alive``, ``num_ctx``).
+        """
+        chat_cfg = self._merge_profile_into_chat_config(self.config.chat_provider)
+        provider = create_chat_provider(chat_cfg)
         if provider and self._llm_logger and self._llm_logger._enabled:
             provider = LoggedChatProvider(provider, self._llm_logger, caller="supervisor.chat")
         self._provider = provider
         return self._provider is not None
+
+    def _merge_profile_into_chat_config(
+        self, base: ChatProviderConfig
+    ) -> ChatProviderConfig:
+        """Overlay the supervisor profile's Config block on top of *base*.
+
+        Reads ``{data_dir}/vault/agent-types/supervisor/profile.md``,
+        parses its ``## Config`` JSON block, and returns a new
+        :class:`ChatProviderConfig` where fields set in the profile
+        win over *base* (which comes from ``config.yaml``).  When the
+        profile is missing, unreadable, or empty, *base* is returned
+        unchanged.
+        """
+        try:
+            from dataclasses import replace
+            from pathlib import Path
+
+            from src.profiles.parser import parse_profile
+        except ImportError:
+            return base
+
+        data_dir = getattr(self.config, "data_dir", "") or os.path.expanduser(
+            "~/.agent-queue"
+        )
+        profile_path = Path(data_dir) / "vault" / "agent-types" / "supervisor" / "profile.md"
+        if not profile_path.is_file():
+            return base
+
+        try:
+            text = profile_path.read_text(encoding="utf-8")
+            parsed = parse_profile(text)
+        except Exception:
+            logger.debug(
+                "Supervisor profile at %s could not be parsed — using config.chat_provider defaults",
+                profile_path,
+                exc_info=True,
+            )
+            return base
+
+        if not parsed.is_valid or not parsed.config:
+            return base
+
+        # Fields the profile may set — provider-semantic only.  Things
+        # like api_key and base_url are environment specific and stay
+        # in config.yaml.
+        overrides: dict = {}
+        for key in (
+            "provider",
+            "model",
+            "max_tokens",
+            "playbook_max_tokens",
+            "thinking_budget",
+            "num_ctx",
+            "keep_alive",
+        ):
+            if key in parsed.config and parsed.config[key] not in ("", None):
+                overrides[key] = parsed.config[key]
+
+        if not overrides:
+            return base
+
+        logger.info(
+            "Supervisor profile overriding chat_provider fields: %s",
+            ", ".join(f"{k}={v!r}" for k, v in overrides.items()),
+        )
+        return replace(base, **overrides)
 
     @property
     def is_ready(self) -> bool:

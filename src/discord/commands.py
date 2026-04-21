@@ -2875,23 +2875,12 @@ def setup_commands(bot: commands.Bot) -> None:
             await _send_error(interaction, result["error"])
             return
         task_id = result["created"]
-        desc_preview = truncate(description, LIMIT_FIELD_VALUE)
-        embed = success_embed(
-            "Task Added",
-            fields=[
-                ("ID", f"`{task_id}`", True),
-                ("Project", f"`{result['project_id']}`", True),
-                ("Status", "🔵 READY", True),
-                ("Description", desc_preview, False),
-            ],
+        # The public "Task Added" embed is now posted by the notify.task_added
+        # handler (routes to the project channel or system channel by scope).
+        # Here we just ack the interaction privately so the user sees it landed.
+        await interaction.response.send_message(
+            f"✅ Task queued: `{task_id}`", ephemeral=True
         )
-        await interaction.response.send_message(embed=embed)
-        # Track the message so the orchestrator can delete it when the task starts
-        try:
-            msg = await interaction.original_response()
-            handler.orchestrator._task_added_messages[task_id] = msg
-        except Exception:
-            pass  # Non-critical — message just won't be auto-deleted
 
     @bot.tree.command(name="edit-task", description="Edit a task's properties")
     @app_commands.describe(
@@ -3775,7 +3764,16 @@ def setup_commands(bot: commands.Bot) -> None:
             args["force"] = True
         result = await handler.execute("compile_playbook", args)
         if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
+            detail = result["error"]
+            validation_errors = result.get("errors") or []
+            if validation_errors:
+                retries = result.get("retries_used", 0)
+                bullets = "\n".join(f"• {e}" for e in validation_errors)
+                detail = f"{detail} (after {retries} retry/retries)\n\n{bullets}"
+            # Discord embed descriptions are capped at 4096 chars
+            if len(detail) > 3900:
+                detail = detail[:3900] + "\n…(truncated)"
+            await _send_error(interaction, detail, followup=True)
             return
 
         playbook_id = result.get("playbook_id", "?")
@@ -3866,8 +3864,22 @@ def setup_commands(bot: commands.Bot) -> None:
         playbook_id: str,
     ):
         await interaction.response.defer()
+
+        # Carry the invoking channel into the event so system-scoped playbooks
+        # can tell apart "run from a project channel → act on that project"
+        # from "run from the system channel → act on everything". Without this
+        # a user running `/playbook-run` in a project channel had no way to
+        # scope the playbook to that project.
+        event: dict = {"type": "manual"}
+        channel_id = getattr(interaction, "channel_id", None)
+        if channel_id:
+            event["channel_id"] = str(channel_id)
+            project_id = bot.get_project_for_channel(channel_id)
+            if project_id:
+                event["project_id"] = project_id
+
         result = await handler.execute(
-            "run_playbook", {"playbook_id": playbook_id, "event": {"type": "manual"}}
+            "run_playbook", {"playbook_id": playbook_id, "event": event}
         )
         if "error" in result and "run_id" not in result:
             await _send_error(interaction, result["error"], followup=True)

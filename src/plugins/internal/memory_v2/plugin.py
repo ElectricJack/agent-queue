@@ -48,6 +48,12 @@ AGENT_TOOLS: frozenset[str] = frozenset(
         "memory_recall",
         "memory_delete",
         "memory_follow",
+        # Exposed for consolidation / curation workflows so supervisor
+        # tasks can rewrite, promote, and discover memories directly.
+        "memory_update",
+        "memory_promote",
+        "memory_promote_to_knowledge",
+        "memory_search",
     }
 )
 
@@ -809,6 +815,65 @@ TOOL_DEFINITIONS: list[dict] = [
         },
     },
     {
+        "name": "memory_promote_to_knowledge",
+        "description": (
+            "Promote a stable insight into the curated 'knowledge/' "
+            "subdirectory for this scope.  The entry is rewritten under "
+            "vault/.../memory/knowledge/ with the 'knowledge' tag, "
+            "re-indexed into Milvus, and the source insight is deleted.  "
+            "Use during nightly consolidation when a fact has proven "
+            "durable (multiple retrievals, aged, representative of a "
+            "cluster).  Optionally rewrite the content/topic/tags in "
+            "place — use this to merge a cluster of near-duplicate "
+            "insights into one canonical knowledge entry."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (used for scope resolution).",
+                },
+                "chunk_hash": {
+                    "type": "string",
+                    "description": "chunk_hash of the source insight to promote.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "Optional rewritten content.  If omitted, the "
+                        "source insight's content is preserved verbatim."
+                    ),
+                },
+                "topic": {
+                    "type": "string",
+                    "description": (
+                        "Optional topic.  Defaults to the source insight's "
+                        "topic.  Set this to the canonical cluster topic "
+                        "when merging related insights."
+                    ),
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional tag list.  The 'knowledge' and 'curated' "
+                        "tags are always added; 'insight' and "
+                        "'auto-extracted' are always removed."
+                    ),
+                },
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "Optional scope override (e.g. 'project_{id}', "
+                        "'agenttype_{type}').  Defaults to the project scope."
+                    ),
+                },
+            },
+            "required": ["project_id", "chunk_hash"],
+        },
+    },
+    {
         "name": "memory_promote",
         "description": (
             "Promote a memory from a narrower scope to a broader scope.  "
@@ -1204,8 +1269,9 @@ class MemoryV2Plugin(InternalPlugin):
         guesses project IDs incorrectly (e.g. underscores instead of
         hyphens).  The active project ID from the system is authoritative.
         """
-        active = self._ctx.active_project_id
-        if active:
+        ctx = getattr(self, "_ctx", None)
+        active = getattr(ctx, "active_project_id", None) if ctx is not None else None
+        if isinstance(active, str) and active:
             args["project_id"] = active
             return active
         return args.get("project_id")
@@ -1247,6 +1313,11 @@ class MemoryV2Plugin(InternalPlugin):
             "memory_fact_set": self.cmd_memory_fact_set,
             "memory_fact_list": self.cmd_memory_fact_list,
             "memory_fact_history": self.cmd_memory_fact_history,
+            # Consolidation / curation
+            "memory_delete": self.cmd_memory_delete,
+            "memory_update": self.cmd_memory_update,
+            "memory_promote": self.cmd_memory_promote,
+            "memory_promote_to_knowledge": self.cmd_memory_promote_to_knowledge,
             # Index management
             "memory_reindex": self.cmd_memory_reindex,
             "memory_stats": self.cmd_memory_stats,
@@ -1316,6 +1387,7 @@ class MemoryV2Plugin(InternalPlugin):
                 memory_service=self._service,
                 config=extractor_cfg,
                 chat_provider_config=chat_provider_cfg,
+                save_callback=self._do_memory_save,
             )
             self._extractor.subscribe()
             await self._extractor.start()
@@ -1356,6 +1428,12 @@ class MemoryV2Plugin(InternalPlugin):
 
             if self._service.available:
                 self._log.info("MemoryV2Service backend connected")
+                # Populate the profile-to-shared-scope alias map so
+                # ``agenttype_{id}`` lookups redirect when a profile
+                # declares ``memory_scope_id``.  Done once at startup;
+                # profile changes require a daemon restart or an explicit
+                # ``refresh_memory_scope_aliases`` call to propagate.
+                await self._refresh_memory_scope_aliases(ctx)
                 # Start vault file watchers for auto-indexing
                 self._start_vault_watchers(config_svc, memory_cfg)
             else:
@@ -1368,6 +1446,40 @@ class MemoryV2Plugin(InternalPlugin):
                 exc_info=True,
             )
             self._service = None
+
+    async def _refresh_memory_scope_aliases(self, ctx: Any) -> None:
+        """Rebuild the service's profile-to-shared-scope alias map.
+
+        Reads all ``agent_profiles`` rows and forwards the subset that
+        declare ``memory_scope_id`` to ``MemoryV2Service.set_scope_alias_map``.
+        Silently no-ops when the DB is not reachable or the service is
+        unavailable.
+        """
+        if not self._service or not self._service.available:
+            return
+        try:
+            db_svc = ctx.get_service("db")
+        except Exception:
+            return
+        try:
+            profiles = await db_svc.list_profiles()
+        except Exception:
+            self._log.debug(
+                "Failed to load profiles for scope alias map", exc_info=True
+            )
+            return
+        aliases: dict[str, str] = {
+            p.id: p.memory_scope_id
+            for p in profiles
+            if getattr(p, "memory_scope_id", None)
+        }
+        self._service.set_scope_alias_map(aliases)
+        if aliases:
+            self._log.info(
+                "Memory scope alias map loaded (%d profile(s)): %s",
+                len(aliases),
+                ", ".join(f"{k}->{v}" for k, v in sorted(aliases.items())),
+            )
 
     def _get_memory_config(self, config_svc: Any) -> dict[str, Any]:
         """Extract memory configuration as a dict.
@@ -3574,6 +3686,101 @@ class MemoryV2Plugin(InternalPlugin):
         except Exception as e:
             self._log.error("memory_update failed: %s", e, exc_info=True)
             return {"error": f"Update failed: {e}"}
+
+    async def cmd_memory_promote_to_knowledge(self, args: dict) -> dict:
+        """Promote an insight into the curated ``knowledge/`` subdirectory.
+
+        Used by the nightly consolidation pass when an insight has proven
+        stable enough (retrieved multiple times, durable content) to deserve
+        a canonical, curated home.  The promoted entry:
+
+        - Is written under ``vault/projects/{id}/memory/knowledge/`` (or
+          the equivalent scope directory) instead of ``insights/``.
+        - Carries the ``knowledge`` tag for tag-filtered retrieval.
+        - Is re-indexed into Milvus with the new vault path.
+
+        The source insight is deleted (both from Milvus and the vault) so
+        consumers converge on the knowledge entry.
+
+        Required args: ``chunk_hash``.  Optional args: ``content`` (to
+        rewrite while promoting), ``topic``, ``tags`` (in addition to the
+        auto-added ``knowledge`` tag), ``scope``.
+        """
+        project_id = self._resolve_project_id(args)
+        if not project_id:
+            return {"error": "project_id is required (no active project set)"}
+        chunk_hash = args.get("chunk_hash")
+        if not chunk_hash:
+            return {"error": "chunk_hash is required"}
+
+        if not self._service or not self._service.available:
+            return self._unavailable("memory_promote_to_knowledge")
+
+        scope = args.get("scope")
+        override_content = args.get("content")
+        override_topic = args.get("topic")
+        override_tags = args.get("tags")
+
+        try:
+            store = self._service._get_store(project_id, scope)
+            import asyncio
+
+            entry = await asyncio.to_thread(store.get, chunk_hash)
+            if not entry:
+                return {"error": f"Entry not found: {chunk_hash}"}
+
+            source_content = entry.get("original") or entry.get("content", "")
+            source_tags = self._decode_tags(entry.get("tags", "[]"))
+            source_topic = entry.get("topic", "") or None
+            source_task = entry.get("source_task") or None
+
+            final_content = override_content or source_content
+            final_topic = override_topic if override_topic is not None else source_topic
+            base_tags = list(override_tags) if override_tags is not None else list(source_tags)
+            # Normalize tags: drop insight-era markers, add knowledge marker.
+            dropped = {"insight", "auto-extracted", "auto-generated"}
+            base_tags = [t for t in base_tags if t not in dropped]
+            if "knowledge" not in base_tags:
+                base_tags.insert(0, "knowledge")
+            if "curated" not in base_tags:
+                base_tags.append("curated")
+
+            # Write the knowledge entry via save_document (bypassing dedup —
+            # promotion is an explicit caller decision, not a discovery).
+            save_result = await self._service.save_document(
+                project_id,
+                final_content,
+                tags=base_tags,
+                topic=final_topic,
+                source_task=source_task,
+                source_playbook="memory-consolidation",
+                scope=scope,
+                subdir="knowledge",
+            )
+
+            # Delete the original insight entry.
+            deleted_source = False
+            try:
+                await self._service.delete_document(project_id, chunk_hash, scope=scope)
+                deleted_source = True
+            except Exception as e:
+                self._log.warning(
+                    "Failed to delete source after knowledge promote: %s", e
+                )
+
+            return {
+                "success": True,
+                "action": "promoted_to_knowledge",
+                "source_chunk_hash": chunk_hash,
+                "source_deleted": deleted_source,
+                "knowledge_chunk_hash": save_result.get("chunk_hash"),
+                "knowledge_vault_path": save_result.get("vault_path"),
+                "topic": final_topic or "",
+                "tags": base_tags,
+            }
+        except Exception as e:
+            self._log.error("memory_promote_to_knowledge failed: %s", e, exc_info=True)
+            return {"error": f"Promote to knowledge failed: {e}"}
 
     async def cmd_memory_promote(self, args: dict) -> dict:
         """Promote a memory from a narrower scope to a broader scope.

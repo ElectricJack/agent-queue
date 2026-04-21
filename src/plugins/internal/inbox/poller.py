@@ -20,7 +20,11 @@ from typing import Any
 
 from src.plugins.internal.inbox.allowlist import Allowlist
 from src.plugins.internal.inbox.auth import extract_from_address, parse_authentication_results
-from src.plugins.internal.inbox.gmail_client import GmailClient, GmailUnavailable
+from src.plugins.internal.inbox.gmail_client import (
+    GmailClient,
+    GmailUnavailable,
+    extract_plain_body,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,12 +161,13 @@ class InboxPoller:
                 )
 
     async def _process_message(self, msg_id: str) -> None:
-        meta = await asyncio.to_thread(self._gmail.get_message_metadata, msg_id)
+        meta = await asyncio.to_thread(self._gmail.get_message, msg_id)
         headers = {h["name"].lower(): h["value"] for h in meta.get("payload", {}).get("headers", [])}
         from_hdr = headers.get("from", "")
         subject = headers.get("subject", "")
         auth_raw = headers.get("authentication-results", "")
         thread_id = meta.get("threadId", "")
+        full_body = extract_plain_body(meta)
 
         auth = parse_authentication_results(auth_raw)
         from_addr = extract_from_address(from_hdr)
@@ -184,6 +189,7 @@ class InboxPoller:
             "from_header": from_hdr,
             "subject": subject,
             "snippet": meta.get("snippet", ""),
+            "full_body": full_body,
             "received_at": int(meta.get("internalDate", 0)) // 1000,
             "auth": {
                 "spf_pass": auth.spf_pass,

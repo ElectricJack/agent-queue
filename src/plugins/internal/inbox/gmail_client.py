@@ -155,8 +155,8 @@ class GmailClient:
         profile = service.users().getProfile(userId=self._config.user_id).execute()
         return msg_ids, str(profile.get("historyId", ""))
 
-    def get_message_metadata(self, message_id: str) -> dict:
-        """Fetch headers-only metadata for a message."""
+    def get_message(self, message_id: str) -> dict:
+        """Fetch a full message (headers + body parts)."""
         service = self._ensure_service()
         resp = (
             service.users()
@@ -164,15 +164,7 @@ class GmailClient:
             .get(
                 userId=self._config.user_id,
                 id=message_id,
-                format="metadata",
-                metadataHeaders=[
-                    "From",
-                    "To",
-                    "Subject",
-                    "Date",
-                    "Message-ID",
-                    "Authentication-Results",
-                ],
+                format="full",
             )
             .execute()
         )
@@ -185,6 +177,43 @@ class GmailClient:
             id=message_id,
             body={"removeLabelIds": ["UNREAD"]},
         ).execute()
+
+
+def extract_plain_body(message: dict) -> str:
+    """Walk a Gmail ``format=full`` message payload and return plain text.
+
+    Prefers ``text/plain`` parts; falls back to the first part's body.
+    Returns ``""`` when nothing decodable is found. Never raises.
+    """
+    import base64
+
+    def _walk(part: dict) -> str | None:
+        mime = part.get("mimeType", "")
+        body = part.get("body", {}) or {}
+        data = body.get("data")
+        if mime == "text/plain" and data:
+            try:
+                return base64.urlsafe_b64decode(data.encode("ascii")).decode(
+                    "utf-8", errors="replace"
+                )
+            except Exception:
+                return None
+        for sub in part.get("parts") or []:
+            found = _walk(sub)
+            if found is not None:
+                return found
+        # Fallback: any decodable body when no text/plain is present.
+        if data:
+            try:
+                return base64.urlsafe_b64decode(data.encode("ascii")).decode(
+                    "utf-8", errors="replace"
+                )
+            except Exception:
+                return None
+        return None
+
+    payload = message.get("payload") or {}
+    return _walk(payload) or ""
 
 
 def resolve_client_secret(config_value: str | None) -> str:

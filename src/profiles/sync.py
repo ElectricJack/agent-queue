@@ -19,7 +19,7 @@ Validation on sync (per spec Section 3):
 
 Patterns watched:
     - ``agent-types/*/profile.md`` -- per-agent-type profile definitions (includes supervisor)
-    - ``orchestrator/profile.md`` -- orchestrator profile definition
+    - ``projects/*/agent-types/*/profile.md`` -- per-project agent-type overrides
 
 See ``docs/specs/design/profiles.md`` Section 3 for the full sync model.
 """
@@ -42,10 +42,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Glob patterns for profile files (relative to vault root)
+# Glob patterns for profile files (relative to vault root).  The legacy
+# ``orchestrator/profile.md`` path was retired — ``supervisor`` is now
+# the singleton scope.  If stale files remain on disk the vault
+# structure migration handles them; we no longer match the pattern so
+# the profile row can't be resurrected via vault sync.
 PROFILE_PATTERNS: list[str] = [
     "agent-types/*/profile.md",
-    "orchestrator/profile.md",
     "projects/*/agent-types/*/profile.md",
 ]
 
@@ -53,6 +56,30 @@ PROFILE_PATTERNS: list[str] = [
 def project_scoped_profile_id(project_id: str, agent_type: str) -> str:
     """Format the scoped profile id for a per-project agent-type profile."""
     return f"project:{project_id}:{agent_type}"
+
+
+def underlying_agent_type(profile_id: str | None) -> str | None:
+    """Extract the underlying agent-type segment from a profile id.
+
+    Project-scoped profile ids use the ``project:{project_id}:{type}``
+    form; callers that emit agent-type metadata on events (e.g. the
+    task executor passing ``agent_type`` on ``task.completed`` /
+    ``task.failed``) must strip the scoping prefix so downstream
+    consumers (the memory extractor, schedulers) see a plain agent-type
+    string rather than the full profile id.
+
+    For a non-scoped id (e.g. ``"claude-code"``), the input is
+    returned unchanged.  For ``None`` or the empty string, returns
+    ``None``.
+    """
+    if not profile_id:
+        return None
+    if profile_id.startswith("project:"):
+        # Expected format: project:<project_id>:<agent_type>
+        parts = profile_id.split(":", 2)
+        if len(parts) == 3 and parts[2]:
+            return parts[2]
+    return profile_id
 
 
 @dataclass(frozen=True)
@@ -101,7 +128,6 @@ def derive_profile_id(rel_path: str) -> str | None:
 
     - ``agent-types/coding/profile.md`` -> ``"coding"``
     - ``agent-types/supervisor/profile.md`` -> ``"supervisor"``
-    - ``orchestrator/profile.md`` -> ``"orchestrator"``
 
     Parameters
     ----------
@@ -129,9 +155,9 @@ def derive_profile_id(rel_path: str) -> str | None:
     if len(parts) >= 3 and parts[0] == "agent-types" and parts[-1] == "profile.md":
         return parts[1]
 
-    # orchestrator/profile.md -> orchestrator
-    if len(parts) == 2 and parts[0] == "orchestrator" and parts[-1] == "profile.md":
-        return "orchestrator"
+    # Legacy ``orchestrator/profile.md`` path was retired (supervisor is
+    # the singleton scope now).  Return None so any stale file there
+    # can't produce a DB row.
 
     return None
 
@@ -208,6 +234,7 @@ async def sync_profile_to_db(
         mcp_servers=profile_dict.get("mcp_servers", {}),
         system_prompt_suffix=profile_dict.get("system_prompt_suffix", ""),
         install=profile_dict.get("install", {}),
+        memory_scope_id=profile_dict.get("memory_scope_id"),
     )
 
     # 5. Soft-validate tool names (warnings, not errors -- per spec).

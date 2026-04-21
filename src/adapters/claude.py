@@ -361,11 +361,24 @@ class ClaudeAdapter(AgentAdapter):
                 cwd=self._task.checkout_path or None,
                 cli_path=system_claude,  # None → falls back to bundled binary
                 stderr=_capture_stderr,
+                # Isolate the agent from the host's Claude CLI config. Without this,
+                # user-level claude.ai connectors (Gmail/Drive/Calendar) bleed into
+                # every agent — including ones in a broken "needs-auth" state, which
+                # then show up as tools the agent can see but never call successfully.
+                # Agent-queue owns the tool surface via --mcp-config; nothing else
+                # should leak in.
+                extra_args={"strict-mcp-config": None},
             )
             if self._config.model:
                 options.model = self._config.model
             if self._task.mcp_servers:
                 options.mcp_servers = self._task.mcp_servers
+            if self._task.add_dirs:
+                # Translates to --add-dir <path> flags on the Claude CLI, so
+                # the agent can Read/Edit/Write files outside cwd. Used by
+                # the orchestrator to expose the project's vault memory
+                # directory (insights, knowledge, facts) to every task.
+                options.add_dirs = list(self._task.add_dirs)
 
             # Log the full launch surface: exactly which MCP servers the
             # Claude subprocess will try to connect to, and which tool names
@@ -391,12 +404,14 @@ class ClaudeAdapter(AgentAdapter):
                 return out
 
             logger.info(
-                "Claude adapter launch surface: task=%s cwd=%s model=%s mcp_servers=[%s] allowed_tools=%s",
+                "Claude adapter launch surface: task=%s cwd=%s model=%s "
+                "mcp_servers=[%s] allowed_tools=%s add_dirs=%s",
                 getattr(self._task, "task_id", "?"),
                 options.cwd,
                 options.model,
                 ", ".join(_summarize_mcp(options.mcp_servers)) or "(none)",
                 allowed,
+                options.add_dirs or "[]",
             )
 
             # Track whether the original options included a resume request.
@@ -895,6 +910,11 @@ class ClaudeAdapter(AgentAdapter):
         # L0 Identity tier — agent role (~50 tokens, always present at task start)
         if self._task.l0_role:
             builder.set_l0_role(self._task.l0_role)
+
+        # Project-scoped profile's role — appended after L0 so the agent sees
+        # base agent-type identity followed by project specialisation.
+        if self._task.project_override_role:
+            builder.set_override_content(self._task.project_override_role)
 
         # L1 Critical Facts tier — project/agent-type KV entries (~200 tokens)
         if self._task.l1_facts:

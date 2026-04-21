@@ -1157,8 +1157,14 @@ class TestAllPlaybookCommandsRegistered:
             )
 
     def test_tool_registry_category_matches_expected_commands(self):
-        """The playbook category in ToolRegistry contains exactly the expected commands."""
-        from src.tools import ToolRegistry, _ALL_TOOL_DEFINITIONS
+        """The playbook category in ToolRegistry contains exactly the expected commands.
+
+        Cross-checks two sources of truth: the hand-maintained
+        ``EXPECTED_COMMANDS`` list (catches drift between the category map
+        and what has a ``_cmd_*`` method) and ``_TOOL_CATEGORIES`` (catches
+        drift between the category map and what has a tool definition).
+        """
+        from src.tools import ToolRegistry, _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
         registry = ToolRegistry(_ALL_TOOL_DEFINITIONS)
         tool_names = registry.get_category_tool_names("playbook")
@@ -1169,6 +1175,8 @@ class TestAllPlaybookCommandsRegistered:
             f"  extra in registry: {set(tool_names) - set(self.EXPECTED_COMMANDS)}\n"
             f"  missing from registry: {set(self.EXPECTED_COMMANDS) - set(tool_names)}"
         )
+        categories_expected = {n for n, c in _TOOL_CATEGORIES.items() if c == "playbook"}
+        assert set(tool_names) == categories_expected
 
     async def test_unknown_command_returns_error(self):
         """execute() with a nonexistent command returns an error dict."""

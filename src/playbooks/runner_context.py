@@ -17,10 +17,71 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _dot_extract(data: Any, path: str) -> Any:
+    """Walk a dot-path into nested dicts/lists, returning None on miss."""
+    val = data
+    for part in path.split("."):
+        if isinstance(val, dict):
+            val = val.get(part)
+        elif isinstance(val, list) and part.isdigit():
+            idx = int(part)
+            val = val[idx] if idx < len(val) else None
+        else:
+            return None
+        if val is None:
+            return None
+    return val
+
+
+_FENCED_JSON_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
+
+
+def _parse_json_from_text(text: str) -> Any:
+    """Try to recover a JSON object from an assistant's text response.
+
+    Tries in order:
+    1. Whole text as JSON.
+    2. Last fenced ``` / ```json block.
+    3. Every ``{`` position as the start of a balanced JSON object — returns
+       the LAST one that parses successfully (playbooks instruct the model
+       to put the structured result at the end, after prose).
+
+    Returns the parsed value or None if nothing parses.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+
+    try:
+        return json.loads(text.strip())
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    fenced = _FENCED_JSON_RE.findall(text)
+    if fenced:
+        for block in reversed(fenced):
+            try:
+                return json.loads(block.strip())
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+    decoder = json.JSONDecoder()
+    last_obj: Any = None
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _end = decoder.raw_decode(text[i:])
+        except json.JSONDecodeError:
+            continue
+        last_obj = obj
+    return last_obj
 
 
 class ContextMixin:
@@ -57,7 +118,17 @@ class ContextMixin:
         """
         raw = node.get("prompt", "")
         if "{{" in raw:
-            return self._render_template(raw, extra_vars)
+            # Inject the trigger event as `event` so playbooks can reference
+            # `{{event.field}}` from any node (e.g. email playbooks use
+            # `{{event.thread_id}}` to reply to the original thread). Per-node
+            # extra_vars still override in case of collision.
+            merged: dict[str, Any] = {}
+            trigger_event = getattr(self, "event", None)
+            if trigger_event is not None:
+                merged["event"] = trigger_event
+            if extra_vars:
+                merged.update(extra_vars)
+            return self._render_template(raw, merged)
         return raw
 
     def _build_node_context(self) -> list[dict]:
@@ -117,6 +188,15 @@ class ContextMixin:
 
             val = self._resolve_output_var(expr, extra_vars)
             if val is None:
+                logger.warning(
+                    "Template variable '%s' did not resolve — prompt will "
+                    "contain {{UNRESOLVED:%s}}. Available node_outputs: %s; "
+                    "extra_vars: %s",
+                    expr,
+                    expr,
+                    sorted(self.node_outputs.keys()),
+                    sorted(extra_vars.keys()) if extra_vars else [],
+                )
                 return f"{{{{UNRESOLVED:{expr}}}}}"
             if isinstance(val, (dict, list)):
                 return json.dumps(val)
@@ -162,9 +242,17 @@ class ContextMixin:
     def _extract_output(self, node: dict, response: str) -> Any:
         """Extract structured output from a node's execution.
 
-        If the node has an ``output.extract`` directive, pull that key from
-        the last tool result in supervisor._last_messages.  Otherwise return
-        the text response.
+        When the node has an ``output.extract`` directive, search for the
+        key first in the assistant's text response (that is the LLM's
+        *conclusion* after any filtering/transformation), then fall back
+        to the last ``tool_result`` in ``supervisor._last_messages`` (raw
+        tool input).  When neither yields the key, the raw text response
+        is returned.
+
+        Text-first priority prevents a common class of bug: when a node's
+        prompt asks the LLM to filter or transform a tool result, the raw
+        tool result is still present in ``_last_messages`` but it is *not*
+        what the playbook author intends to propagate downstream.
         """
         output_spec = node.get("output")
         if not output_spec or "extract" not in output_spec:
@@ -172,44 +260,60 @@ class ContextMixin:
 
         extract_path = output_spec["extract"]
 
-        # Get the last tool result from the supervisor's messages
-        last_messages = getattr(self.supervisor, "_last_messages", None)
-        if not last_messages:
-            logger.debug("_extract_output: no _last_messages available")
-            return response
-        logger.info("_extract_output: searching %d messages for key '%s'", len(last_messages), extract_path)
+        # 1. Prefer the assistant's text response — it represents the LLM's
+        #    conclusion, including any filtering or transformation applied.
+        parsed_text = _parse_json_from_text(response)
+        if isinstance(parsed_text, dict):
+            val = _dot_extract(parsed_text, extract_path)
+            if val is not None:
+                logger.info(
+                    "_extract_output: extracted '%s' from text response → %s (%d items)"
+                    if isinstance(val, list)
+                    else "_extract_output: extracted '%s' from text response → %s",
+                    extract_path,
+                    type(val).__name__,
+                    len(val) if isinstance(val, list) else 0,
+                )
+                return val
 
-        # Walk backwards to find the last tool_result
+        # 2. Fall back to the last matching tool_result.
+        last_messages = getattr(self.supervisor, "_last_messages", None) or []
+        if last_messages:
+            logger.info(
+                "_extract_output: searching %d messages for key '%s' (text fallback)",
+                len(last_messages),
+                extract_path,
+            )
         for msg in reversed(last_messages):
             content = msg.get("content")
-            if isinstance(content, list):
-                for item in reversed(content):
-                    if isinstance(item, dict) and item.get("type") == "tool_result":
-                        raw = item.get("content", "")
-                        try:
-                            parsed = json.loads(raw) if isinstance(raw, str) else raw
-                        except (json.JSONDecodeError, TypeError):
-                            continue
-                        if isinstance(parsed, dict):
-                            # Resolve dot-path extraction
-                            val = parsed
-                            for part in extract_path.split("."):
-                                if isinstance(val, dict):
-                                    val = val.get(part)
-                                else:
-                                    val = None
-                                    break
-                            if val is not None:
-                                logger.info(
-                                    "_extract_output: extracted '%s' → %s (%d items)"
-                                    if isinstance(val, list)
-                                    else "_extract_output: extracted '%s' → %s",
-                                    extract_path,
-                                    type(val).__name__,
-                                    len(val) if isinstance(val, list) else 0,
-                                )
-                                return val
-        logger.warning("_extract_output: key '%s' not found in any tool result", extract_path)
+            if not isinstance(content, list):
+                continue
+            for item in reversed(content):
+                if not (isinstance(item, dict) and item.get("type") == "tool_result"):
+                    continue
+                raw = item.get("content", "")
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                val = _dot_extract(parsed, extract_path)
+                if val is not None:
+                    logger.info(
+                        "_extract_output: extracted '%s' from tool_result → %s (%d items)"
+                        if isinstance(val, list)
+                        else "_extract_output: extracted '%s' from tool_result → %s",
+                        extract_path,
+                        type(val).__name__,
+                        len(val) if isinstance(val, list) else 0,
+                    )
+                    return val
+
+        logger.warning(
+            "_extract_output: key '%s' not found in text response or tool results",
+            extract_path,
+        )
         return response
 
     def _store_node_output(self, node_id: str, node: dict, value: Any) -> None:

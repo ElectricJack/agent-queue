@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=78.1.1"]
+requires = ["setuptools>=78.1.1", "wheel>=0.38.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,7 +10,10 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.13",
-    "discord.py>=2.6.0",
+    # 2.6+ imports the Python 3.14-only `annotationlib` stdlib module
+    # (via discord.ext.commands.flags) which breaks on 3.12/3.13. Pin to
+    # the last 2.5.x until we raise requires-python to >=3.14.
+    "discord.py>=2.5.2,<2.6",
     "claude_agent_sdk>=0.1.55",
     "PyYAML>=6.0",
     "fastapi>=0.135.0",
@@ -19,6 +22,32 @@ dependencies = [
     "structlog>=25.1.0",
     "rich>=13.9",
     "pygments>=2.20.0",
+    # Pin zipp to >=3.19.1 to address CVE-2024-5569 (DoS via infinite loop
+    # when processing crafted zip files in zipp.Path operations). Older
+    # zipp comes in as a transitive dep of importlib-metadata.
+    "zipp>=3.19.1",
+    # Pin cryptography to >=46.0.7 to address CVE-2026-39892 (buffer
+    # overflows when non-contiguous buffers are passed to Hash.update()
+    # and similar APIs accepting Python buffers). cryptography comes in
+    # transitively via google-auth (inbox extras).
+    "cryptography>=46.0.7",
+    # Pin python-multipart to >=0.0.26 to address CVE-2026-40347 (DoS via
+    # crafted multipart/form-data requests with large preamble or epilogue
+    # sections — inefficient parsing paths consume excessive CPU). Comes in
+    # as a transitive dep of fastapi/starlette for form parsing.
+    "python-multipart>=0.0.26",
+    # Pin oauthlib to >=3.2.1 to address PYSEC-2022-269 / CVE-2022-36087
+    # (DoS via malicious redirect URIs in OAuth2 provider support and
+    # uri_validate). oauthlib comes in transitively via
+    # google-auth-oauthlib / requests-oauthlib (inbox extras).
+    "oauthlib>=3.2.1",
+    # Pin setuptools to >=78.1.1 to address PYSEC-2025-49 / CVE-2025-47273
+    # (path traversal in PackageIndex._download_url via insufficiently
+    # sanitized URL-derived filenames — os.path.join discards tmpdir when
+    # the second arg begins with a slash or drive letter, allowing writes
+    # to arbitrary filesystem locations and potential RCE). Comes in as a
+    # transitive dep (notably via memsearch for the memory extras).
+    "setuptools>=78.1.1",
 ]
 
 [project.optional-dependencies]
@@ -50,10 +79,14 @@ cli = [
     "agent-queue-api-client",
 ]
 dev = [
-    "pytest>=8.0",
+    # CVE-2025-71176: pytest <9.0.3 uses predictable /tmp/pytest-of-{user}
+    # directory names, allowing local DoS or possible privilege escalation.
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.23",
     "ruff>=0.4.0",
     "pre-commit>=3.5.0",
+    # CVE-2022-40898: wheel <0.38.1 has a ReDoS in the wheel CLI
+    "wheel>=0.38.1",
 ]
 memory = [
     "memsearch @ file:packages/memsearch",

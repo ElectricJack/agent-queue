@@ -749,7 +749,8 @@ class TestReferenceStubEnricherSummarize:
         fake_provider.create_message.assert_called_once()
         call_kwargs = fake_provider.create_message.call_args.kwargs
         assert call_kwargs["system"] == SUMMARIZE_SYSTEM_PROMPT
-        assert call_kwargs["max_tokens"] == 1024
+        # max_tokens default was bumped from 1024 → 2048.
+        assert call_kwargs["max_tokens"] == 2048
         messages = call_kwargs["messages"]
         assert len(messages) == 1
         assert messages[0]["role"] == "user"

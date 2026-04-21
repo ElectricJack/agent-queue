@@ -25,10 +25,15 @@ class TestProperties:
         assert vm.vault_root == os.path.join(str(tmp_path), "vault")
 
     def test_system_dir(self, vm: VaultManager, tmp_path):
-        assert vm.system_dir == os.path.join(str(tmp_path), "vault", "system")
+        # System scope was merged into the supervisor directory.
+        assert vm.system_dir == os.path.join(
+            str(tmp_path), "vault", "agent-types", "supervisor"
+        )
 
-    def test_orchestrator_dir(self, vm: VaultManager, tmp_path):
-        assert vm.orchestrator_dir == os.path.join(str(tmp_path), "vault", "orchestrator")
+    def test_supervisor_dir(self, vm: VaultManager, tmp_path):
+        assert vm.supervisor_dir == os.path.join(
+            str(tmp_path), "vault", "agent-types", "supervisor"
+        )
 
     def test_agent_types_dir(self, vm: VaultManager, tmp_path):
         assert vm.agent_types_dir == os.path.join(str(tmp_path), "vault", "agent-types")
@@ -61,12 +66,17 @@ class TestEntityDirs:
 
 class TestScopedHelpers:
     def test_get_playbook_path_system(self, vm: VaultManager, tmp_path):
+        # System scope is merged into supervisor.
         result = vm.get_playbook_path("system")
-        assert result == os.path.join(str(tmp_path), "vault", "system", "playbooks")
+        assert result == os.path.join(
+            str(tmp_path), "vault", "agent-types", "supervisor", "playbooks"
+        )
 
-    def test_get_playbook_path_orchestrator(self, vm: VaultManager, tmp_path):
-        result = vm.get_playbook_path("orchestrator")
-        assert result == os.path.join(str(tmp_path), "vault", "orchestrator", "playbooks")
+    def test_get_playbook_path_supervisor(self, vm: VaultManager, tmp_path):
+        result = vm.get_playbook_path("supervisor")
+        assert result == os.path.join(
+            str(tmp_path), "vault", "agent-types", "supervisor", "playbooks"
+        )
 
     def test_get_playbook_path_agent_type(self, vm: VaultManager, tmp_path):
         result = vm.get_playbook_path("agent_type", "coding")
@@ -85,8 +95,11 @@ class TestScopedHelpers:
             vm.get_playbook_path("project")
 
     def test_get_memory_path_system(self, vm: VaultManager, tmp_path):
+        # System scope is merged into supervisor.
         result = vm.get_memory_path("system")
-        assert result == os.path.join(str(tmp_path), "vault", "system", "memory")
+        assert result == os.path.join(
+            str(tmp_path), "vault", "agent-types", "supervisor", "memory"
+        )
 
     def test_get_memory_path_project(self, vm: VaultManager, tmp_path):
         result = vm.get_memory_path("project", "my-app")
@@ -97,12 +110,17 @@ class TestScopedHelpers:
         assert result == os.path.join(str(tmp_path), "vault", "agent-types", "coding", "profile.md")
 
     def test_get_facts_path_system(self, vm: VaultManager, tmp_path):
+        # System scope is merged into supervisor.
         result = vm.get_facts_path("system")
-        assert result == os.path.join(str(tmp_path), "vault", "system", "memory", "facts.md")
+        assert result == os.path.join(
+            str(tmp_path), "vault", "agent-types", "supervisor", "memory", "facts.md"
+        )
 
-    def test_get_facts_path_orchestrator(self, vm: VaultManager, tmp_path):
-        result = vm.get_facts_path("orchestrator")
-        assert result == os.path.join(str(tmp_path), "vault", "orchestrator", "memory", "facts.md")
+    def test_get_facts_path_supervisor(self, vm: VaultManager, tmp_path):
+        result = vm.get_facts_path("supervisor")
+        assert result == os.path.join(
+            str(tmp_path), "vault", "agent-types", "supervisor", "memory", "facts.md"
+        )
 
     def test_get_facts_path_agent_type(self, vm: VaultManager, tmp_path):
         result = vm.get_facts_path("agent_type", "coding")
@@ -157,12 +175,13 @@ class TestDirectoryCreation:
     def test_ensure_layout_creates_static_dirs(self, vm: VaultManager, tmp_path):
         vm.ensure_layout()
 
+        # System and supervisor scopes are merged: directories live under
+        # vault/agent-types/supervisor/, plus a legacy vault/system/ stub.
         for subdir in (
             "vault/.obsidian",
-            "vault/system/playbooks",
-            "vault/system/memory",
-            "vault/orchestrator/playbooks",
-            "vault/orchestrator/memory",
+            "vault/system",
+            "vault/agent-types/supervisor/playbooks",
+            "vault/agent-types/supervisor/memory",
             "vault/agent-types",
             "vault/projects",
             "vault/templates",
@@ -172,7 +191,9 @@ class TestDirectoryCreation:
     def test_ensure_layout_idempotent(self, vm: VaultManager, tmp_path):
         vm.ensure_layout()
         vm.ensure_layout()
-        assert (tmp_path / "vault" / "system" / "playbooks").is_dir()
+        assert (
+            tmp_path / "vault" / "agent-types" / "supervisor" / "playbooks"
+        ).is_dir()
 
     def test_register_project_creates_subdirs(self, vm: VaultManager, tmp_path):
         result = vm.register_project("my-app")

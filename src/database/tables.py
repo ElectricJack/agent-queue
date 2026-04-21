@@ -246,6 +246,12 @@ agent_profiles = Table(
     Column("mcp_servers", Text, nullable=False, server_default="'{}'"),
     Column("system_prompt_suffix", Text, nullable=False, server_default="''"),
     Column("install", Text, nullable=False, server_default="'{}'"),
+    # Optional override: when set, memory reads/writes for this profile
+    # target scope ``agenttype_{memory_scope_id}`` instead of
+    # ``agenttype_{id}``.  Lets multiple profiles share one memory scope
+    # (e.g. claude-opus + claude-sonnet both set ``memory_scope_id='claude'``
+    # so insights accumulate in a single pool).
+    Column("memory_scope_id", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )

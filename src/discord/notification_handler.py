@@ -21,11 +21,15 @@ from src.notifications.events import (
     ChainStuckEvent,
     MergeConflictEvent,
     PlanAwaitingApprovalEvent,
+    PlaybookRunCompletedEvent,
+    PlaybookRunFailedEvent,
     PlaybookRunPausedEvent,
+    PlaybookRunStartedEvent,
     PlaybookRunTimedOutEvent,
     PRCreatedEvent,
     PushFailedEvent,
     StuckDefinedTaskEvent,
+    TaskAddedEvent,
     TaskBlockedEvent,
     TaskCompletedEvent,
     TaskFailedEvent,
@@ -120,6 +124,7 @@ class DiscordNotificationHandler:
 
         # Subscribe to all notification events
         events = [
+            ("notify.task_added", self._on_task_added),
             ("notify.task_started", self._on_task_started),
             ("notify.task_completed", self._on_task_completed),
             ("notify.task_failed", self._on_task_failed),
@@ -134,6 +139,9 @@ class DiscordNotificationHandler:
             ("notify.chain_stuck", self._on_chain_stuck),
             ("notify.stuck_defined_task", self._on_stuck_defined_task),
             ("notify.system_online", self._on_system_online),
+            ("notify.playbook_run_started", self._on_playbook_run_started),
+            ("notify.playbook_run_completed", self._on_playbook_run_completed),
+            ("notify.playbook_run_failed", self._on_playbook_run_failed),
             ("notify.playbook_run_paused", self._on_playbook_run_paused),
             ("notify.playbook_run_timed_out", self._on_playbook_run_timed_out),
             ("notify.task_thread_open", self._on_task_thread_open),
@@ -162,6 +170,28 @@ class DiscordNotificationHandler:
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
+
+    async def _on_task_added(self, data: dict) -> None:
+        event = TaskAddedEvent(**{k: v for k, v in data.items() if k != "_event_type"})
+
+        from src.discord.notifications import (
+            format_task_added,
+            format_task_added_embed,
+        )
+
+        task_p = _task_proxy(event.task)
+        embed = format_task_added_embed(task_p, source=event.source)
+        msg = await self.bot._send_message(
+            format_task_added(task_p),
+            project_id=event.project_id,
+            embed=embed,
+        )
+        # Track the sent message so it can be auto-deleted when the task
+        # transitions to task_started (reduces channel clutter).
+        if msg is not None:
+            orch = self.bot.orchestrator
+            if hasattr(orch, "_task_added_messages"):
+                orch._task_added_messages[event.task.id] = msg
 
     async def _on_task_started(self, data: dict) -> None:
         event = TaskStartedEvent(**{k: v for k, v in data.items() if k != "_event_type"})
@@ -601,6 +631,83 @@ class DiscordNotificationHandler:
                 run_id=event.run_id,
                 node_id=event.node_id,
                 transitioned_to=event.transitioned_to,
+            ),
+            project_id=event.project_id,
+            embed=embed,
+        )
+
+    async def _on_playbook_run_started(self, data: dict) -> None:
+        event = PlaybookRunStartedEvent(**{k: v for k, v in data.items() if k != "_event_type"})
+
+        from src.discord.notifications import (
+            format_playbook_started,
+            format_playbook_started_embed,
+        )
+
+        embed = format_playbook_started_embed(
+            playbook_id=event.playbook_id,
+            run_id=event.run_id,
+            trigger_event_type=event.trigger_event_type,
+            scope=event.scope,
+        )
+        await self.bot._send_message(
+            format_playbook_started(
+                playbook_id=event.playbook_id,
+                run_id=event.run_id,
+            ),
+            project_id=event.project_id,
+            embed=embed,
+        )
+
+    async def _on_playbook_run_completed(self, data: dict) -> None:
+        event = PlaybookRunCompletedEvent(
+            **{k: v for k, v in data.items() if k != "_event_type"}
+        )
+
+        from src.discord.notifications import (
+            format_playbook_completed,
+            format_playbook_completed_embed,
+        )
+
+        embed = format_playbook_completed_embed(
+            playbook_id=event.playbook_id,
+            run_id=event.run_id,
+            duration_seconds=event.duration_seconds,
+            tokens_used=event.tokens_used,
+            node_count=event.node_count,
+            final_context=event.final_context,
+        )
+        await self.bot._send_message(
+            format_playbook_completed(
+                playbook_id=event.playbook_id,
+                run_id=event.run_id,
+                duration_seconds=event.duration_seconds,
+            ),
+            project_id=event.project_id,
+            embed=embed,
+        )
+
+    async def _on_playbook_run_failed(self, data: dict) -> None:
+        event = PlaybookRunFailedEvent(**{k: v for k, v in data.items() if k != "_event_type"})
+
+        from src.discord.notifications import (
+            format_playbook_run_failed,
+            format_playbook_run_failed_embed,
+        )
+
+        embed = format_playbook_run_failed_embed(
+            playbook_id=event.playbook_id,
+            run_id=event.run_id,
+            failed_at_node=event.failed_at_node,
+            error=event.error,
+            duration_seconds=event.duration_seconds,
+            tokens_used=event.tokens_used,
+        )
+        await self.bot._send_message(
+            format_playbook_run_failed(
+                playbook_id=event.playbook_id,
+                run_id=event.run_id,
+                failed_at_node=event.failed_at_node,
             ),
             project_id=event.project_id,
             embed=embed,

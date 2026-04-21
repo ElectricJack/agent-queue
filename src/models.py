@@ -401,6 +401,11 @@ class AgentProfile:
     mcp_servers: dict[str, dict] = field(default_factory=dict)  # name -> server config
     system_prompt_suffix: str = ""  # appended to agent instructions
     install: dict = field(default_factory=dict)  # auto-install manifest (future)
+    # Optional override: when set, agent-type memory for this profile lives at
+    # ``agenttype_{memory_scope_id}`` instead of ``agenttype_{id}``.  Lets
+    # multiple profiles share one memory scope (e.g. claude-opus and
+    # claude-sonnet both set ``memory_scope_id='claude'``).  None = use id.
+    memory_scope_id: str | None = None
 
 
 @dataclass
@@ -417,6 +422,10 @@ class TaskContext:
     description: str
     task_id: str = ""
     l0_role: str = ""  # L0 Identity tier (~50 tokens, always present at task start)
+    # Project-specific role override, applied AFTER l0_role. Sourced from the
+    # scoped profile's system_prompt_suffix so the agent sees: base agent-type
+    # role (l0_role) + project specialisation (project_override_role).
+    project_override_role: str = ""
     l1_facts: str = ""  # L1 Critical Facts tier (~200 tokens, always present at task start)
     l1_guidance: str = ""  # L1 Guidance tier (~300 tokens, deterministic behavioral rules)
     l2_context: str = ""  # L2 Topic Context tier (~500 tokens, semantic search results)
@@ -429,6 +438,11 @@ class TaskContext:
         default_factory=list
     )  # absolute paths to images the agent should examine
     mcp_servers: dict[str, dict] = field(default_factory=dict)
+    # Extra directories the agent is allowed to read/write outside of its
+    # primary workspace (cwd). Typically includes the project's vault
+    # memory directory so consolidation and memory-aware tasks can edit
+    # their own knowledge without needing a separate MCP indirection.
+    add_dirs: list[str] = field(default_factory=list)
     resume_session_id: str | None = None  # fork from this session on reopen
 
 
