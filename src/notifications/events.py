@@ -314,6 +314,22 @@ class PlaybookCompilationSucceededEvent(NotifyEvent):
 # ---------------------------------------------------------------------------
 
 
+class PlaybookRunStartedEvent(NotifyEvent):
+    """Emitted when a playbook run begins executing.
+
+    Used by the dashboard to populate a live-runs panel and to refresh
+    playbook registry rows when a run kicks off.
+    """
+
+    event_type: str = "notify.playbook_run_started"
+    category: str = "system"
+    playbook_id: str = ""
+    playbook_version: int = 0
+    run_id: str = ""
+    trigger_type: str = ""
+    started_at: float = 0.0
+
+
 class PlaybookRunCompletedEvent(NotifyEvent):
     """Emitted when a playbook run completes successfully.
 

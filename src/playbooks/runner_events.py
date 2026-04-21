@@ -60,6 +60,42 @@ class EventsMixin:
                 exc_info=True,
             )
 
+    async def _emit_started_event(
+        self,
+        *,
+        playbook_version: int,
+        started_at: float,
+    ) -> None:
+        """Emit ``playbook.run.started`` on the EventBus.
+
+        Also emits ``notify.playbook_run_started`` (typed) so dashboards
+        and other WS subscribers can update their live-runs panel as soon
+        as a run begins.
+        """
+        payload: dict[str, Any] = {
+            "playbook_id": self._playbook_id,
+            "run_id": self.run_id,
+            "playbook_version": playbook_version,
+            "trigger_type": self.event.get("type", ""),
+            "started_at": started_at,
+        }
+        await self._emit_bus_event("playbook.run.started", payload)
+        await self._emit_started_notification(payload)
+
+    async def _emit_started_notification(self, raw_payload: dict[str, Any]) -> None:
+        """Emit ``notify.playbook_run_started`` for dashboard WS subscribers."""
+        from src.notifications.events import PlaybookRunStartedEvent
+
+        event = PlaybookRunStartedEvent(
+            playbook_id=raw_payload.get("playbook_id", ""),
+            run_id=raw_payload.get("run_id", ""),
+            playbook_version=raw_payload.get("playbook_version", 0),
+            trigger_type=raw_payload.get("trigger_type", ""),
+            started_at=raw_payload.get("started_at", 0.0),
+            project_id=raw_payload.get("project_id"),
+        )
+        await self._emit_bus_event("notify.playbook_run_started", event.model_dump(mode="json"))
+
     async def _emit_completed_event(
         self,
         *,
@@ -69,6 +105,8 @@ class EventsMixin:
         """Emit ``playbook.run.completed`` on the EventBus.
 
         See ``docs/specs/design/playbooks.md`` Section 7 — Event System.
+        Also emits ``notify.playbook_run_completed`` for dashboard WS
+        subscribers (mirrors the pause/resume/timeout notify pattern).
         """
         payload: dict[str, Any] = {
             "playbook_id": self._playbook_id,
@@ -80,6 +118,21 @@ class EventsMixin:
             payload["duration_seconds"] = round(time.time() - started_at, 2)
         payload["tokens_used"] = self.tokens_used
         await self._emit_bus_event("playbook.run.completed", payload)
+        await self._emit_completed_notification(payload)
+
+    async def _emit_completed_notification(self, raw_payload: dict[str, Any]) -> None:
+        """Emit ``notify.playbook_run_completed`` for dashboard WS subscribers."""
+        from src.notifications.events import PlaybookRunCompletedEvent
+
+        event = PlaybookRunCompletedEvent(
+            playbook_id=raw_payload.get("playbook_id", ""),
+            run_id=raw_payload.get("run_id", ""),
+            final_context=raw_payload.get("final_context"),
+            tokens_used=raw_payload.get("tokens_used", 0),
+            duration_seconds=raw_payload.get("duration_seconds", 0.0),
+            project_id=raw_payload.get("project_id"),
+        )
+        await self._emit_bus_event("notify.playbook_run_completed", event.model_dump(mode="json"))
 
     async def _emit_failed_event(
         self,
@@ -91,6 +144,8 @@ class EventsMixin:
         """Emit ``playbook.run.failed`` on the EventBus.
 
         See ``docs/specs/design/playbooks.md`` Section 7 — Event System.
+        Also emits ``notify.playbook_run_failed`` for dashboard WS
+        subscribers.
         """
         # Determine the node where failure occurred — fall back to the last
         # node in the trace, or "<unknown>" if the failure happened before
@@ -108,6 +163,22 @@ class EventsMixin:
             payload["duration_seconds"] = round(time.time() - started_at, 2)
         payload["tokens_used"] = self.tokens_used
         await self._emit_bus_event("playbook.run.failed", payload)
+        await self._emit_failed_notification(payload)
+
+    async def _emit_failed_notification(self, raw_payload: dict[str, Any]) -> None:
+        """Emit ``notify.playbook_run_failed`` for dashboard WS subscribers."""
+        from src.notifications.events import PlaybookRunFailedEvent
+
+        event = PlaybookRunFailedEvent(
+            playbook_id=raw_payload.get("playbook_id", ""),
+            run_id=raw_payload.get("run_id", ""),
+            failed_at_node=raw_payload.get("failed_at_node", ""),
+            error=raw_payload.get("error", ""),
+            tokens_used=raw_payload.get("tokens_used", 0),
+            duration_seconds=raw_payload.get("duration_seconds", 0.0),
+            project_id=raw_payload.get("project_id"),
+        )
+        await self._emit_bus_event("notify.playbook_run_failed", event.model_dump(mode="json"))
 
     async def _emit_paused_event(
         self,

@@ -716,3 +716,110 @@ class TestNotificationEventModels:
         assert data["event_type"] == "notify.playbook_run_failed"
         assert data["failed_at_node"] == "analyze"
         assert data["error"] == "Graph error"
+
+    def test_started_event_defaults(self):
+        from src.notifications.events import PlaybookRunStartedEvent
+
+        evt = PlaybookRunStartedEvent(playbook_id="pb-1", run_id="run-1")
+        assert evt.event_type == "notify.playbook_run_started"
+        assert evt.category == "system"
+        assert evt.severity == "info"
+        assert evt.playbook_version == 0
+        assert evt.trigger_type == ""
+        assert evt.started_at == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Dashboard notify.* forwarding (roadmap: WS notify.playbook.* category)
+# ---------------------------------------------------------------------------
+
+
+class TestNotifyPlaybookRunEvents:
+    """The runner emits typed notify.playbook_run_* events alongside the raw
+    playbook.run.* events so dashboards subscribed via WebSocket see lifecycle
+    changes in real time.
+    """
+
+    async def test_notify_started_emitted_on_run(
+        self, mock_supervisor, simple_graph, event_data, event_bus, mock_db
+    ):
+        """Running a playbook fires notify.playbook_run_started with version + trigger type."""
+        captured = []
+        event_bus.subscribe("notify.playbook_run_started", lambda d: captured.append(d))
+
+        runner = PlaybookRunner(
+            simple_graph, event_data, mock_supervisor, db=mock_db, event_bus=event_bus
+        )
+        await runner.run()
+
+        assert len(captured) == 1
+        payload = captured[0]
+        assert payload["_event_type"] == "notify.playbook_run_started"
+        assert payload["event_type"] == "notify.playbook_run_started"
+        assert payload["playbook_id"] == "test-playbook"
+        assert payload["run_id"] == runner.run_id
+        assert payload["trigger_type"] == "git.commit"
+        # version is always present on the typed event (defaults to 0 if absent)
+        assert "playbook_version" in payload
+        # project_id is forwarded from the trigger event
+        assert payload["project_id"] == "test-proj"
+
+    async def test_notify_started_emitted_before_completed(
+        self, mock_supervisor, simple_graph, event_data, event_bus
+    ):
+        """Started must fire before completed — the dashboard uses the order for UI state."""
+        order = []
+        event_bus.subscribe("notify.playbook_run_started", lambda d: order.append("started"))
+        event_bus.subscribe("notify.playbook_run_completed", lambda d: order.append("completed"))
+
+        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=event_bus)
+        await runner.run()
+
+        assert order == ["started", "completed"]
+
+    async def test_notify_completed_mirrors_raw_event(
+        self, mock_supervisor, simple_graph, event_data, event_bus
+    ):
+        """notify.playbook_run_completed carries the same run identity as the raw event."""
+        raw = []
+        notify = []
+        event_bus.subscribe("playbook.run.completed", lambda d: raw.append(d))
+        event_bus.subscribe("notify.playbook_run_completed", lambda d: notify.append(d))
+
+        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=event_bus)
+        await runner.run()
+
+        assert len(raw) == 1
+        assert len(notify) == 1
+        assert notify[0]["playbook_id"] == raw[0]["playbook_id"]
+        assert notify[0]["run_id"] == raw[0]["run_id"]
+        assert notify[0]["tokens_used"] == raw[0]["tokens_used"]
+        assert notify[0]["event_type"] == "notify.playbook_run_completed"
+
+    async def test_notify_failed_fires_on_missing_node(
+        self, mock_supervisor, failing_graph, event_data, event_bus
+    ):
+        """Run failures emit notify.playbook_run_failed with failed_at_node populated."""
+        captured = []
+        event_bus.subscribe("notify.playbook_run_failed", lambda d: captured.append(d))
+
+        runner = PlaybookRunner(failing_graph, event_data, mock_supervisor, event_bus=event_bus)
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert len(captured) == 1
+        payload = captured[0]
+        assert payload["event_type"] == "notify.playbook_run_failed"
+        assert payload["playbook_id"] == "fail-playbook"
+        assert payload["run_id"] == runner.run_id
+        assert payload["failed_at_node"]
+        # severity is 'error' for failures — WS clients use this to style alerts
+        assert payload["severity"] == "error"
+
+    async def test_notify_events_skip_when_no_event_bus(
+        self, mock_supervisor, simple_graph, event_data
+    ):
+        """Without an EventBus, nothing is emitted (no crashes, no captures)."""
+        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=None)
+        result = await runner.run()
+        assert result.status == "completed"

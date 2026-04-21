@@ -294,6 +294,15 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
         "optional": [*_NOTIFY_BASE_OPTIONAL, "project_id", "source_path", "errors"],
     },
     # -- Playbook run lifecycle notifications --
+    "notify.playbook_run_started": {
+        "required": [*_NOTIFY_BASE_FIELDS, "playbook_id", "run_id"],
+        "optional": [
+            *_NOTIFY_BASE_OPTIONAL,
+            "playbook_version",
+            "trigger_type",
+            "started_at",
+        ],
+    },
     "notify.playbook_run_completed": {
         "required": [*_NOTIFY_BASE_FIELDS, "playbook_id", "run_id"],
         "optional": [

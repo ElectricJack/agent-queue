@@ -328,6 +328,13 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         if self.db:
             await self.db.create_playbook_run(db_run)
 
+        # Announce the run so dashboards and notification transports can
+        # update their live-runs views immediately.
+        await self._emit_started_event(
+            playbook_version=self._playbook_version,
+            started_at=started_at,
+        )
+
         # Daily playbook token cap check (roadmap 5.2.8).
         # Query today's cumulative usage before spending any tokens.
         if self._max_daily_playbook_tokens is not None and self.db:
@@ -1622,7 +1629,9 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
 
         for i, item in enumerate(items):
             if self.on_progress:
-                item_label = item.get("id", item.get("name", str(i))) if isinstance(item, dict) else str(i)
+                item_label = (
+                    item.get("id", item.get("name", str(i))) if isinstance(item, dict) else str(i)
+                )
                 await self.on_progress("for_each_item", f"{node_id}[{item_label}]")
 
             extra_vars = {item_var: item, "_index": i, "_total": len(items)}
