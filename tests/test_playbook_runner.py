@@ -8402,3 +8402,145 @@ class TestPauseTimeoutSpec:
         )
         assert "handle_timeout" in msg
         assert "transitioned" in msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# _extract_output — text response fallback (Bug 2 from 2026-04-20 run)
+# ---------------------------------------------------------------------------
+
+
+class _StubSupervisor:
+    """Minimal stand-in exposing `_last_messages` for ContextMixin tests."""
+
+    def __init__(self, last_messages: list[dict] | None = None) -> None:
+        self._last_messages = last_messages or []
+
+
+class _TestContext:
+    """Construct a ContextMixin instance with minimal fixtures."""
+
+    def __new__(cls, last_messages: list[dict] | None = None):
+        from src.playbooks.runner_context import ContextMixin
+
+        instance = object.__new__(type("_Ctx", (ContextMixin,), {}))
+        instance.supervisor = _StubSupervisor(last_messages)
+        instance.node_outputs = {}
+        instance.on_progress = None
+        instance._seed_message = ""
+        instance._llm_config = None
+        return instance
+
+
+class TestExtractOutputTextFallback:
+    """Fallback to parse JSON from the assistant's text response.
+
+    Regression for Bug 2 from the 2026-04-20 memory-consolidation run: when
+    the LLM emits its structured output as a final JSON object in the text
+    response (instead of a tool call), `output.extract` should still pull
+    the key rather than returning the raw text.
+    """
+
+    def test_no_output_spec_returns_text(self):
+        ctx = _TestContext()
+        assert ctx._extract_output({}, "plain text") == "plain text"
+
+    def test_tool_result_priority_over_text(self):
+        """A matching tool_result is preferred over the text response."""
+        ctx = _TestContext([
+            {"role": "user", "content": [
+                {"type": "tool_result", "content": '{"projects": [1, 2, 3]}'}
+            ]}
+        ])
+        node = {"output": {"extract": "projects"}}
+        result = ctx._extract_output(node, '{"projects": [99]}')
+        assert result == [1, 2, 3]
+
+    def test_text_fallback_bare_json(self):
+        """Text response that IS a JSON object yields the extracted key."""
+        ctx = _TestContext()
+        node = {"output": {"extract": "projects"}}
+        text = '{"projects": ["a", "b"]}'
+        assert ctx._extract_output(node, text) == ["a", "b"]
+
+    def test_text_fallback_fenced_json_block(self):
+        """Fenced ```json blocks in the text response are parsed."""
+        ctx = _TestContext()
+        node = {"output": {"extract": "projects"}}
+        text = 'Here is the result:\n\n```json\n{"projects": [1, 2]}\n```\n'
+        assert ctx._extract_output(node, text) == [1, 2]
+
+    def test_text_fallback_json_after_prose(self):
+        """JSON object appearing at end of prose is recovered."""
+        ctx = _TestContext()
+        node = {"output": {"extract": "projects"}}
+        text = 'I identified these projects:\n\n{"projects": ["alpha", "beta"]}'
+        assert ctx._extract_output(node, text) == ["alpha", "beta"]
+
+    def test_text_fallback_dot_path_extraction(self):
+        """Dot-path extraction works against text-parsed JSON."""
+        ctx = _TestContext()
+        node = {"output": {"extract": "data.items"}}
+        text = '{"data": {"items": [1, 2, 3]}}'
+        assert ctx._extract_output(node, text) == [1, 2, 3]
+
+    def test_non_json_text_returns_raw(self):
+        """Prose without JSON falls through to the raw response string."""
+        ctx = _TestContext()
+        node = {"output": {"extract": "projects"}}
+        text = "I could not find any projects."
+        assert ctx._extract_output(node, text) == text
+
+    def test_json_missing_key_returns_raw(self):
+        """JSON that parses but lacks the key falls through."""
+        ctx = _TestContext()
+        node = {"output": {"extract": "projects"}}
+        text = '{"other": "value"}'
+        assert ctx._extract_output(node, text) == text
+
+    def test_tool_result_lacking_key_falls_back_to_text(self):
+        """Unrelated tool_result doesn't block text-response parsing."""
+        ctx = _TestContext([
+            {"role": "user", "content": [
+                {"type": "tool_result", "content": '{"unrelated": "x"}'}
+            ]}
+        ])
+        node = {"output": {"extract": "projects"}}
+        text = '{"projects": [7]}'
+        assert ctx._extract_output(node, text) == [7]
+
+    def test_text_fallback_last_object_wins(self):
+        """When multiple JSON objects appear, the last complete one wins.
+
+        LLMs often show intermediate examples in prose, then produce the
+        real output at the end.
+        """
+        ctx = _TestContext()
+        node = {"output": {"extract": "projects"}}
+        text = (
+            "The schema is {\"projects\": []}.\n\n"
+            "Final result: {\"projects\": [\"real\"]}"
+        )
+        assert ctx._extract_output(node, text) == ["real"]
+
+    def test_memory_consolidation_regression(self):
+        """End-to-end regression for the 2026-04-20 run.
+
+        The enum step's text response was a valid JSON object matching the
+        schema spec in the playbook; fallback should extract the projects
+        list even though `_last_messages` has no matching tool_result.
+        """
+        ctx = _TestContext([
+            {"role": "user", "content": [
+                {"type": "tool_result", "content": '{"top_k": 1}'}
+            ]}
+        ])
+        node = {"output": {"extract": "projects", "as": "projects"}}
+        text = (
+            '{"projects": [{"id": "skinnable-imgui", "name": "skinnable-imgui"}, '
+            '{"id": "jack-kern-personal-assistant", '
+            '"name": "jack-kern-personal-assistant"}]}'
+        )
+        result = ctx._extract_output(node, text)
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["id"] == "skinnable-imgui"

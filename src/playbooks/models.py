@@ -515,6 +515,31 @@ class CompiledPlaybook:
 
     # -- validation ----------------------------------------------------------
 
+    def visible_output_keys(self) -> set[str]:
+        """Keys that a ``for_each.source`` may reference.
+
+        This mirrors how ``PlaybookRunner`` writes into ``node_outputs``:
+
+        - A plain (non-``for_each``) node stores under ``output.as`` if
+          present, otherwise under its ``node_id``.
+        - A ``for_each`` node pops per-iteration keys during collection;
+          only ``for_each.collect`` (if set) persists after the node ends.
+
+        Returned set is the union of all such possible top-level keys,
+        used by :meth:`validate` to flag sources that can never resolve.
+        """
+        keys: set[str] = set()
+        for nid, node in self.nodes.items():
+            fe = node.for_each or {}
+            output_spec = node.output or {}
+            if fe:
+                collect = fe.get("collect")
+                if collect:
+                    keys.add(collect)
+            else:
+                keys.add(output_spec.get("as") or nid)
+        return keys
+
     def validate(self) -> list[str]:
         """Validate the compiled playbook structure.
 
@@ -534,6 +559,9 @@ class CompiledPlaybook:
         10. All reachable nodes have a path to at least one terminal node
             (detects cycles without exit conditions).
         11. Each node has at most one ``otherwise`` fallback transition.
+        12. ``for_each.source`` root segments resolve to a key produced by
+            some node's ``output.as``, ``for_each.collect``, or bare
+            ``node_id`` (see :meth:`visible_output_keys`).
         """
         errors: list[str] = []
 
@@ -639,6 +667,21 @@ class CompiledPlaybook:
                     f"Nodes in cycles without exit to terminal: {sorted(trapped)} "
                     "— these nodes are reachable from entry but cannot reach "
                     "any terminal node"
+                )
+
+        # 12. for_each.source must reference a produced key
+        visible = self.visible_output_keys()
+        for nid, node in self.nodes.items():
+            fe = node.for_each or {}
+            source = fe.get("source")
+            if not source:
+                continue
+            root = source.split(".", 1)[0]
+            if root not in visible:
+                errors.append(
+                    f"Node '{nid}' for_each.source '{source}': root key "
+                    f"'{root}' is not produced by any node "
+                    f"(available keys: {sorted(visible)})"
                 )
 
         return errors
