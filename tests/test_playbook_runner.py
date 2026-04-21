@@ -8707,6 +8707,96 @@ class TestForEachCollectsParsedJson:
         assert isinstance(results, list) and len(results) == 2
         assert all(isinstance(r, str) for r in results)
 
+    async def test_run_lifecycle_notifications_system_scope(
+        self, mock_supervisor, event_data
+    ):
+        """System-scope runs emit notify.playbook_run_started/completed with project_id=None.
+
+        The trigger event has no `project_id` for system playbooks, so the
+        emitted notification should have ``project_id`` = None (which Discord
+        routes to the global/system channel).
+        """
+        from unittest.mock import AsyncMock
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        system_event = {"type": "timer.24h"}  # no project_id
+        graph = {
+            "id": "sys-pb",
+            "version": 1,
+            "nodes": {
+                "act": {"entry": True, "prompt": "Go", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, system_event, mock_supervisor, event_bus=event_bus)
+        await runner.run()
+
+        emitted = {c.args[0]: c.args[1] for c in event_bus.emit.call_args_list}
+        assert "notify.playbook_run_started" in emitted
+        assert "notify.playbook_run_completed" in emitted
+        # Both should be routable to the system channel
+        started = emitted["notify.playbook_run_started"]
+        completed = emitted["notify.playbook_run_completed"]
+        assert started.get("project_id") is None
+        assert completed.get("project_id") is None
+        assert started["playbook_id"] == "sys-pb"
+        assert completed["playbook_id"] == "sys-pb"
+        assert completed["run_id"] == started["run_id"]
+
+    async def test_run_lifecycle_notifications_project_scope(
+        self, mock_supervisor, event_data
+    ):
+        """Project-scope runs propagate project_id to Discord routing."""
+        from unittest.mock import AsyncMock
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        proj_event = {"type": "email.received", "project_id": "my-proj"}
+        graph = {
+            "id": "proj-pb",
+            "version": 1,
+            "nodes": {
+                "act": {"entry": True, "prompt": "Go", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, proj_event, mock_supervisor, event_bus=event_bus)
+        await runner.run()
+
+        emitted = {c.args[0]: c.args[1] for c in event_bus.emit.call_args_list}
+        assert emitted["notify.playbook_run_started"]["project_id"] == "my-proj"
+        assert emitted["notify.playbook_run_completed"]["project_id"] == "my-proj"
+
+    async def test_run_failure_emits_notify_failed(
+        self, mock_supervisor, event_data
+    ):
+        """A run that fails emits notify.playbook_run_failed, not completed."""
+        from unittest.mock import AsyncMock
+
+        event_bus = AsyncMock()
+        event_bus.emit = AsyncMock()
+
+        mock_supervisor.chat.side_effect = RuntimeError("boom")
+
+        graph = {
+            "id": "err-pb",
+            "version": 1,
+            "nodes": {
+                "act": {"entry": True, "prompt": "Go", "goto": "done"},
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, event_bus=event_bus)
+        await runner.run()
+
+        emitted = {c.args[0] for c in event_bus.emit.call_args_list}
+        assert "notify.playbook_run_started" in emitted
+        assert "notify.playbook_run_failed" in emitted
+        assert "notify.playbook_run_completed" not in emitted
+
     async def test_event_accessible_via_template(
         self, mock_supervisor, event_data
     ):

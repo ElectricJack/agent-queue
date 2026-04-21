@@ -376,6 +376,10 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         if self.on_progress:
             await self.on_progress("playbook_started", self._playbook_id)
 
+        # Emit lifecycle start event — drives Discord/Telegram notifications
+        # routed by project_id (system playbooks land in the global channel).
+        await self._emit_started_event()
+
         # Walk the graph
         current_node_id = entry_node_id
         final_response: str | None = None

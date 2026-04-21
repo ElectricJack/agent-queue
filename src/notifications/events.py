@@ -314,6 +314,21 @@ class PlaybookCompilationSucceededEvent(NotifyEvent):
 # ---------------------------------------------------------------------------
 
 
+class PlaybookRunStartedEvent(NotifyEvent):
+    """Emitted when a playbook run begins executing its entry node.
+
+    Routes to the project channel (when ``project_id`` is set via the trigger
+    event) or the system channel (for system-scoped playbooks).
+    """
+
+    event_type: str = "notify.playbook_run_started"
+    category: str = "system"
+    playbook_id: str = ""
+    run_id: str = ""
+    trigger_event_type: str = ""
+    scope: str = "system"  # "system", "project", or "agent-type:{type}"
+
+
 class PlaybookRunCompletedEvent(NotifyEvent):
     """Emitted when a playbook run completes successfully.
 
@@ -330,6 +345,7 @@ class PlaybookRunCompletedEvent(NotifyEvent):
     final_context: str | None = None
     tokens_used: int = 0
     duration_seconds: float = 0.0
+    node_count: int = 0
 
 
 class PlaybookRunFailedEvent(NotifyEvent):
