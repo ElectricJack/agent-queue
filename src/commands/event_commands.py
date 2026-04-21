@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
+import os
 
 from src.commands.helpers import (
     _parse_relative_time,
@@ -21,6 +23,24 @@ class EventCommandsMixin:
     # Events and token usage -- observability into system activity and
     # LLM token consumption, broken down by project, task, or agent.
     # -----------------------------------------------------------------------
+
+    async def _cmd_list_event_triggers(self, args: dict) -> dict:
+        """List event types that can trigger a playbook.
+
+        Filters out ``notify.*`` (transport-only) and dynamically-generated
+        ``timer.*`` / ``cron.*`` types (callers construct those themselves
+        via a dedicated picker). Returned entries are grouped by the prefix
+        before the first dot so the UI can categorize.
+        """
+        from src.event_schemas import EVENT_SCHEMAS
+
+        events: list[dict[str, str]] = []
+        for name in sorted(EVENT_SCHEMAS.keys()):
+            if name.startswith(("notify.", "timer.", "cron.")):
+                continue
+            category, _, _ = name.partition(".")
+            events.append({"name": name, "category": category or "other"})
+        return {"events": events, "count": len(events)}
 
     async def _cmd_get_recent_events(self, args: dict) -> dict:
         limit = args.get("limit", 10)

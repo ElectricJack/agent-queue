@@ -90,6 +90,10 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "recover_workflow": "playbook",
     "playbook_health": "playbook",
     "playbook_graph_view": "playbook",
+    "get_playbook_source": "playbook",
+    "update_playbook_source": "playbook",
+    "create_playbook": "playbook",
+    "delete_playbook": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
     "plugin_info": "plugin",
@@ -105,6 +109,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # system — diagnostics, config, prompts, daemon control
     "get_status": "system",
     "get_recent_events": "system",
+    "list_event_triggers": "system",
     "read_logs": "system",
     "get_token_usage": "system",
     "token_audit": "system",
@@ -1174,6 +1179,17 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "get_status",
         "description": "Get a high-level overview of the system: projects, agents, tasks counts.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_event_triggers",
+        "description": (
+            "List event types that are valid playbook triggers, grouped by category "
+            "(e.g. 'git', 'task', 'file'). Excludes 'notify.*' transport events and "
+            "dynamically-generated 'timer.*' / 'cron.*' types (UIs should offer those "
+            "via a dedicated picker). Intended for trigger-picker components in the "
+            "dashboard and CLI."
+        ),
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -2345,6 +2361,105 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "integer",
                     "description": "Max runs in the history timeline (default 20).",
                     "default": 20,
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    {
+        "name": "get_playbook_source",
+        "description": (
+            "Return the raw markdown of a playbook plus its content hash. "
+            "Used by the dashboard to load a playbook for editing; the hash "
+            "is sent back on save for optimistic-concurrency conflict detection."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook identifier.",
+                },
+            },
+            "required": ["playbook_id"],
+        },
+    },
+    {
+        "name": "update_playbook_source",
+        "description": (
+            "Write new playbook markdown to the vault atomically and compile "
+            "synchronously. On successful compile returns the new version; on "
+            "validation failure returns 'errors' with previous compiled version "
+            "still live. If 'expected_source_hash' is supplied and does not match "
+            "the current vault copy, returns a conflict error (vault changed underneath)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook identifier.",
+                },
+                "markdown": {
+                    "type": "string",
+                    "description": "Full markdown content including YAML frontmatter.",
+                },
+                "expected_source_hash": {
+                    "type": "string",
+                    "description": (
+                        "Content hash the caller last saw (from get_playbook_source). "
+                        "When provided, the update is rejected with a conflict error if "
+                        "the vault copy has changed underneath."
+                    ),
+                },
+            },
+            "required": ["playbook_id", "markdown"],
+        },
+    },
+    {
+        "name": "create_playbook",
+        "description": (
+            "Create a new playbook markdown file in the vault at the scope-appropriate "
+            "location. Does NOT compile — authors iterate on the source and compile "
+            "explicitly via update_playbook_source (or let the vault watcher pick it up). "
+            "Fails if a playbook with the same id already exists anywhere in the vault."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The new playbook identifier (used as filename without .md).",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": (
+                        "Where the file lives on disk: 'system', 'project:<project_id>', "
+                        "or 'agent-type:<type>'. The frontmatter scope field takes the "
+                        "bare form ('system' / 'project' / 'agent-type:<type>') because "
+                        "the project id is recovered from the vault path."
+                    ),
+                },
+                "markdown": {
+                    "type": "string",
+                    "description": "Full markdown content including YAML frontmatter.",
+                },
+            },
+            "required": ["playbook_id", "scope", "markdown"],
+        },
+    },
+    {
+        "name": "delete_playbook",
+        "description": (
+            "Archive a playbook's source file to vault/trash/playbooks/ and remove it "
+            "from the active registry. Historical playbook_runs rows are preserved."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": "The playbook identifier to delete.",
                 },
             },
             "required": ["playbook_id"],

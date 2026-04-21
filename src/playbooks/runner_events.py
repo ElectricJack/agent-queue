@@ -62,28 +62,40 @@ class EventsMixin:
                 exc_info=True,
             )
 
-    async def _emit_started_event(self) -> None:
+    async def _emit_started_event(
+        self,
+        *,
+        playbook_version: int,
+        started_at: float,
+    ) -> None:
         """Emit ``playbook.run.started`` and ``notify.playbook_run_started``.
 
-        Fires once when the runner begins executing the entry node.
-        The ``notify.*`` variant drives Discord/Telegram notifications; the
-        raw ``playbook.run.started`` is for EventBus composition hooks.
+        Fires once when the runner begins executing the entry node. The raw
+        ``playbook.run.started`` event is for EventBus composition hooks; the
+        typed ``notify.*`` variant drives dashboard WS updates and the
+        Discord/Telegram notification transports.
         """
+        trigger_event_type = self.event.get("_event_type", self.event.get("type", ""))
         payload: dict[str, Any] = {
             "playbook_id": self._playbook_id,
             "run_id": self.run_id,
+            "playbook_version": playbook_version,
+            "trigger_event_type": trigger_event_type,
+            "started_at": started_at,
         }
         await self._emit_bus_event("playbook.run.started", payload)
 
-        # Typed notification for Discord/Telegram transports
+        # Typed notification for Discord/Telegram transports + dashboard WS.
         from src.notifications.events import PlaybookRunStartedEvent
 
         scope = self.graph.get("scope", "system") if hasattr(self, "graph") else "system"
         notify_event = PlaybookRunStartedEvent(
             playbook_id=self._playbook_id,
             run_id=self.run_id,
-            trigger_event_type=self.event.get("_event_type", self.event.get("type", "")),
+            playbook_version=playbook_version,
+            trigger_event_type=trigger_event_type,
             scope=scope,
+            started_at=started_at,
             project_id=self.event.get("project_id"),
         )
         await self._emit_bus_event(
@@ -99,6 +111,8 @@ class EventsMixin:
         """Emit ``playbook.run.completed`` and ``notify.playbook_run_completed``.
 
         See ``docs/specs/design/playbooks.md`` Section 7 — Event System.
+        Also emits ``notify.playbook_run_completed`` for dashboard WS
+        subscribers (mirrors the pause/resume/timeout notify pattern).
         """
         payload: dict[str, Any] = {
             "playbook_id": self._playbook_id,
@@ -109,23 +123,25 @@ class EventsMixin:
         if started_at is not None:
             payload["duration_seconds"] = round(time.time() - started_at, 2)
         payload["tokens_used"] = self.tokens_used
+        payload["node_count"] = len(self.node_trace) if hasattr(self, "node_trace") else 0
         await self._emit_bus_event("playbook.run.completed", payload)
+        await self._emit_completed_notification(payload)
 
-        # Typed notification for Discord/Telegram transports
+    async def _emit_completed_notification(self, raw_payload: dict[str, Any]) -> None:
+        """Emit ``notify.playbook_run_completed`` for dashboard WS subscribers and
+        Discord/Telegram notification transports."""
         from src.notifications.events import PlaybookRunCompletedEvent
 
-        notify_event = PlaybookRunCompletedEvent(
-            playbook_id=self._playbook_id,
-            run_id=self.run_id,
-            final_context=final_context,
-            tokens_used=self.tokens_used,
-            duration_seconds=payload.get("duration_seconds", 0.0),
-            node_count=len(self.node_trace) if hasattr(self, "node_trace") else 0,
-            project_id=self.event.get("project_id"),
+        event = PlaybookRunCompletedEvent(
+            playbook_id=raw_payload.get("playbook_id", ""),
+            run_id=raw_payload.get("run_id", ""),
+            final_context=raw_payload.get("final_context"),
+            tokens_used=raw_payload.get("tokens_used", 0),
+            duration_seconds=raw_payload.get("duration_seconds", 0.0),
+            node_count=raw_payload.get("node_count", 0),
+            project_id=raw_payload.get("project_id"),
         )
-        await self._emit_bus_event(
-            "notify.playbook_run_completed", notify_event.model_dump(mode="json")
-        )
+        await self._emit_bus_event("notify.playbook_run_completed", event.model_dump(mode="json"))
 
     async def _emit_failed_event(
         self,
@@ -137,6 +153,8 @@ class EventsMixin:
         """Emit ``playbook.run.failed`` on the EventBus.
 
         See ``docs/specs/design/playbooks.md`` Section 7 — Event System.
+        Also emits ``notify.playbook_run_failed`` for dashboard WS
+        subscribers.
         """
         # Determine the node where failure occurred — fall back to the last
         # node in the trace, or "<unknown>" if the failure happened before
@@ -154,22 +172,23 @@ class EventsMixin:
             payload["duration_seconds"] = round(time.time() - started_at, 2)
         payload["tokens_used"] = self.tokens_used
         await self._emit_bus_event("playbook.run.failed", payload)
+        await self._emit_failed_notification(payload)
 
-        # Typed notification for Discord/Telegram transports
+    async def _emit_failed_notification(self, raw_payload: dict[str, Any]) -> None:
+        """Emit ``notify.playbook_run_failed`` for dashboard WS subscribers and
+        Discord/Telegram notification transports."""
         from src.notifications.events import PlaybookRunFailedEvent
 
-        notify_event = PlaybookRunFailedEvent(
-            playbook_id=self._playbook_id,
-            run_id=self.run_id,
-            failed_at_node=failed_at_node or "<unknown>",
-            error=error or "",
-            tokens_used=self.tokens_used,
-            duration_seconds=payload.get("duration_seconds", 0.0),
-            project_id=self.event.get("project_id"),
+        event = PlaybookRunFailedEvent(
+            playbook_id=raw_payload.get("playbook_id", ""),
+            run_id=raw_payload.get("run_id", ""),
+            failed_at_node=raw_payload.get("failed_at_node", ""),
+            error=raw_payload.get("error", ""),
+            tokens_used=raw_payload.get("tokens_used", 0),
+            duration_seconds=raw_payload.get("duration_seconds", 0.0),
+            project_id=raw_payload.get("project_id"),
         )
-        await self._emit_bus_event(
-            "notify.playbook_run_failed", notify_event.model_dump(mode="json")
-        )
+        await self._emit_bus_event("notify.playbook_run_failed", event.model_dump(mode="json"))
 
     async def _emit_paused_event(
         self,

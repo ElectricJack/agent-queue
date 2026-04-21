@@ -27,6 +27,13 @@ function formatTime(d: Date): string {
   return d.toLocaleTimeString("en-US", { hour12: false });
 }
 
+function fmtDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m}m${s}s`;
+}
+
 function eventSummary(event: NotifyEvent): string {
   switch (event.event_type) {
     case "notify.task_started":
@@ -65,6 +72,37 @@ function eventSummary(event: NotifyEvent): string {
       return `Chain stuck: ${event.stuck_task_titles.join(", ")}`;
     case "notify.stuck_defined_task":
       return `Stuck task: ${event.task.title} (${event.stuck_hours.toFixed(1)}h)`;
+    case "notify.playbook_run_started": {
+      const trigger = event.trigger_event_type || "manual";
+      return `Playbook started: ${event.playbook_id} (trigger: ${trigger})`;
+    }
+    case "notify.playbook_run_completed": {
+      const stats = `${event.tokens_used} tokens · ${fmtDuration(event.duration_seconds)}`;
+      const ctx = event.final_context ? ` — ${event.final_context}` : "";
+      return `Playbook completed: ${event.playbook_id} (${stats})${ctx}`;
+    }
+    case "notify.playbook_run_failed": {
+      const where = event.failed_at_node ? ` at ${event.failed_at_node}` : "";
+      const why = event.error ? ` — ${event.error}` : "";
+      return `Playbook failed: ${event.playbook_id}${where}${why}`;
+    }
+    case "notify.playbook_run_paused":
+      return `Playbook paused: ${event.playbook_id} at ${event.node_id} — awaiting human review`;
+    case "notify.playbook_run_resumed":
+      return `Playbook resumed: ${event.playbook_id} at ${event.node_id}`;
+    case "notify.playbook_run_timed_out": {
+      const fate = event.transitioned_to
+        ? ` → transitioned to ${event.transitioned_to}`
+        : " → marked timed_out";
+      return `Playbook timed out: ${event.playbook_id} at ${event.node_id} after ${fmtDuration(event.waited_seconds)}${fate}`;
+    }
+    case "notify.playbook_compilation_succeeded":
+      return `Playbook compiled: ${event.playbook_id} v${event.version} (${event.node_count} nodes${event.retries_used ? `, ${event.retries_used} retries` : ""})`;
+    case "notify.playbook_compilation_failed": {
+      const n = event.errors?.length ?? 0;
+      const first = event.errors?.[0] ? ` — ${event.errors[0]}` : "";
+      return `Playbook compile failed: ${event.playbook_id} (${n} error${n === 1 ? "" : "s"})${first}`;
+    }
     default:
       return (event as NotifyEvent).event_type;
   }
@@ -73,6 +111,11 @@ function eventSummary(event: NotifyEvent): string {
 function eventTaskId(event: NotifyEvent): string | null {
   if ("task" in event && event.task) return event.task.id;
   if ("task_id" in event && event.task_id) return event.task_id;
+  return null;
+}
+
+function eventPlaybookId(event: NotifyEvent): string | null {
+  if ("playbook_id" in event && event.playbook_id) return event.playbook_id;
   return null;
 }
 
@@ -204,6 +247,7 @@ export default function Events() {
           <div className="divide-y divide-gray-900">
             {filteredEvents.map((entry) => {
               const taskId = eventTaskId(entry.event);
+              const playbookId = eventPlaybookId(entry.event);
               const severity = entry.event.severity ?? "info";
               const category = entry.event.category ?? "system";
               return (
@@ -233,6 +277,14 @@ export default function Events() {
                         className="text-xs text-indigo-400 hover:underline"
                       >
                         {taskId}
+                      </Link>
+                    )}
+                    {playbookId && (
+                      <Link
+                        to={`/playbooks/${encodeURIComponent(playbookId)}`}
+                        className="text-xs text-indigo-400 hover:underline"
+                      >
+                        {playbookId}
                       </Link>
                     )}
                   </div>

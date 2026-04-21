@@ -1072,6 +1072,351 @@ class PlaybookCommandsMixin:
         result["success"] = True
         return result
 
+    # ------------------------------------------------------------------
+    # Source read/write, create, delete (dashboard authoring loop)
+    # ------------------------------------------------------------------
+
+    def _vault_playbook_dirs(self) -> list:
+        """Directories where playbook markdown files may live.
+
+        Mirrors the glob patterns registered with the vault watcher
+        (see ``src/playbooks/handler.py``).
+        """
+        import pathlib
+
+        vault = pathlib.Path(self.config.data_dir) / "vault"
+        dirs = [vault / "system" / "playbooks"]
+
+        agent_types = vault / "agent-types"
+        if agent_types.is_dir():
+            for agent_type in agent_types.iterdir():
+                pb_dir = agent_type / "playbooks"
+                if pb_dir.is_dir():
+                    dirs.append(pb_dir)
+
+        projects = vault / "projects"
+        if projects.is_dir():
+            for project in projects.iterdir():
+                pb_dir = project / "playbooks"
+                if pb_dir.is_dir():
+                    dirs.append(pb_dir)
+
+        return dirs
+
+    def _resolve_playbook_source_path(self, playbook_id: str):
+        """Resolve a playbook_id to its ``.md`` path on disk.
+
+        Checks the manager's in-memory map first (populated when this
+        process compiled the playbook), then scans vault playbook dirs
+        for ``<id>.md`` — covers the case where the playbook was loaded
+        from compiled JSON at startup.
+        """
+        import pathlib
+
+        pm = getattr(self.orchestrator, "playbook_manager", None)
+        if pm is not None:
+            cached = pm._source_paths.get(playbook_id)
+            if cached and pathlib.Path(cached).is_file():
+                return pathlib.Path(cached)
+
+        name = f"{playbook_id}.md"
+        for d in self._vault_playbook_dirs():
+            candidate = d / name
+            if candidate.is_file():
+                return candidate
+        return None
+
+    @staticmethod
+    def _scope_to_vault_dir(vault_root, scope: str):
+        """Map a scope string (``system`` / ``project:<id>`` / ``agent-type:<name>``)
+        to the corresponding vault playbook directory.
+
+        Returns ``(dir_path, error)`` — ``error`` is non-empty if scope
+        is malformed.
+        """
+        if scope == "system":
+            return vault_root / "system" / "playbooks", ""
+        if scope.startswith("project:"):
+            project_id = scope[len("project:") :].strip()
+            if not project_id:
+                return None, "project scope requires an identifier (e.g. 'project:my-app')"
+            return vault_root / "projects" / project_id / "playbooks", ""
+        if scope.startswith("agent-type:"):
+            agent_type = scope[len("agent-type:") :].strip()
+            if not agent_type:
+                return None, "agent-type scope requires a type (e.g. 'agent-type:coding')"
+            return vault_root / "agent-types" / agent_type / "playbooks", ""
+        return None, (
+            f"Invalid scope '{scope}'. Valid: 'system', 'project:<id>', 'agent-type:<name>'"
+        )
+
+    async def _cmd_get_playbook_source(self, args: dict) -> dict:
+        """Return the raw playbook markdown and source hash.
+
+        The source hash is the content-addressable identifier the dashboard
+        sends back on save for optimistic concurrency.
+
+        Args:
+            playbook_id: The playbook identifier.
+        """
+        from src.playbooks.compiler import PlaybookCompiler
+
+        playbook_id = args.get("playbook_id", "").strip()
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+
+        path = self._resolve_playbook_source_path(playbook_id)
+        if path is None:
+            return {"error": f"Playbook '{playbook_id}' not found in vault"}
+
+        try:
+            markdown = path.read_text(encoding="utf-8")
+        except Exception as exc:
+            return {"error": f"Failed to read source: {exc}"}
+
+        return {
+            "playbook_id": playbook_id,
+            "path": str(path),
+            "markdown": markdown,
+            "source_hash": PlaybookCompiler._compute_source_hash(markdown),
+        }
+
+    async def _cmd_update_playbook_source(self, args: dict) -> dict:
+        """Write new playbook markdown to the vault and compile synchronously.
+
+        Implements the "save & compile" flow (dashboard option 2 — sync):
+        write atomically, then invoke the compiler with ``force=True`` and
+        surface any validation errors inline.  The file watcher will also
+        fire, but will skip recompilation because the source_hash matches.
+
+        Args:
+            playbook_id: The playbook identifier.
+            markdown: The new full markdown content (including frontmatter).
+            expected_source_hash: Optional — content hash the caller last
+                saw. If provided and the vault copy has changed underneath,
+                returns a conflict error instead of overwriting.
+        """
+        import os
+        import pathlib
+        import tempfile
+        from src.playbooks.compiler import PlaybookCompiler
+
+        playbook_id = args.get("playbook_id", "").strip()
+        markdown = args.get("markdown", "")
+        expected_hash = args.get("expected_source_hash", "").strip()
+
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+        if not markdown:
+            return {"error": "markdown is required"}
+
+        path = self._resolve_playbook_source_path(playbook_id)
+        if path is None:
+            return {"error": f"Playbook '{playbook_id}' not found in vault"}
+
+        if expected_hash:
+            try:
+                current = path.read_text(encoding="utf-8")
+                current_hash = PlaybookCompiler._compute_source_hash(current)
+            except Exception as exc:
+                return {"error": f"Failed to read current source: {exc}"}
+            if current_hash != expected_hash:
+                return {
+                    "error": "conflict",
+                    "reason": "vault_changed_underneath",
+                    "current_source_hash": current_hash,
+                    "expected_source_hash": expected_hash,
+                }
+
+        pm = getattr(self.orchestrator, "playbook_manager", None)
+        if pm is None:
+            return {"error": "Playbook manager is not initialised"}
+
+        # Atomic write: tempfile in same dir + fsync + rename
+        try:
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                prefix=f".{playbook_id}.",
+                suffix=".md.tmp",
+                dir=str(path.parent),
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    f.write(markdown)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, str(path))
+            except Exception:
+                pathlib.Path(tmp_path).unlink(missing_ok=True)
+                raise
+        except Exception as exc:
+            return {"error": f"Failed to write source: {exc}"}
+
+        try:
+            result = await pm.compile_playbook(
+                markdown,
+                source_path=str(path),
+                rel_path=str(path),
+                force=True,
+            )
+        except Exception as exc:
+            logger.error("Compile after source update failed: %s", exc, exc_info=True)
+            return {"error": f"Compilation failed: {exc}"}
+
+        resp: dict = {
+            "playbook_id": playbook_id,
+            "source_hash": result.source_hash,
+            "compiled": result.success,
+        }
+        if not result.success:
+            resp["errors"] = result.errors
+            resp["retries_used"] = result.retries_used
+            return resp
+        pb = result.playbook
+        if pb is not None:
+            resp["version"] = pb.version
+            resp["node_count"] = len(pb.nodes)
+            resp["scope"] = pb.scope
+            resp["triggers"] = [
+                t.event_type if hasattr(t, "event_type") else str(t) for t in pb.triggers
+            ]
+        return resp
+
+    async def _cmd_create_playbook(self, args: dict) -> dict:
+        """Create a new playbook ``.md`` in the vault.
+
+        Writes the file atomically at the scope-appropriate vault path and
+        returns immediately — compilation is **not** triggered synchronously
+        so authors can iterate on the source without blocking on LLM calls
+        or failing on a half-written draft. The vault file watcher will pick
+        the file up and compile it in the background; an explicit
+        ``update_playbook_source`` call from the editor also force-compiles.
+
+        Args:
+            playbook_id: The new playbook identifier (filename without ``.md``).
+            scope: Where the file lives — one of ``system``,
+                ``project:<project_id>``, or ``agent-type:<type>``.
+                Note: the **frontmatter** ``scope:`` field takes the bare
+                form (``system`` / ``project`` / ``agent-type:<type>``);
+                the project id is recovered from the vault path.
+            markdown: Full markdown content (including YAML frontmatter).
+        """
+        import os
+        import pathlib
+        import tempfile
+        from src.playbooks.compiler import PlaybookCompiler
+
+        playbook_id = args.get("playbook_id", "").strip()
+        scope = args.get("scope", "").strip()
+        markdown = args.get("markdown", "")
+
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+        if not scope:
+            return {"error": "scope is required"}
+        if not markdown:
+            return {"error": "markdown is required"}
+
+        # Reject collisions with an existing playbook (by id, anywhere in vault)
+        existing = self._resolve_playbook_source_path(playbook_id)
+        if existing is not None:
+            return {
+                "error": f"Playbook '{playbook_id}' already exists at {existing}",
+            }
+
+        vault_root = pathlib.Path(self.config.data_dir) / "vault"
+        target_dir, scope_err = self._scope_to_vault_dir(vault_root, scope)
+        if scope_err:
+            return {"error": scope_err}
+        target_path = target_dir / f"{playbook_id}.md"
+
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            return {"error": f"Failed to create scope directory: {exc}"}
+
+        try:
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                prefix=f".{playbook_id}.",
+                suffix=".md.tmp",
+                dir=str(target_dir),
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    f.write(markdown)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, str(target_path))
+            except Exception:
+                pathlib.Path(tmp_path).unlink(missing_ok=True)
+                raise
+        except Exception as exc:
+            return {"error": f"Failed to write new playbook: {exc}"}
+
+        return {
+            "created": True,
+            "playbook_id": playbook_id,
+            "path": str(target_path),
+            "source_hash": PlaybookCompiler._compute_source_hash(markdown),
+        }
+
+    async def _cmd_delete_playbook(self, args: dict) -> dict:
+        """Archive a playbook's source and remove it from the active registry.
+
+        The source markdown is moved to ``vault/trash/playbooks/`` with a
+        timestamp suffix rather than hard-deleted — historical
+        ``playbook_runs`` rows still reference the id.
+
+        Args:
+            playbook_id: The playbook identifier to delete.
+        """
+        import pathlib
+        import time as _time
+
+        playbook_id = args.get("playbook_id", "").strip()
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+
+        path = self._resolve_playbook_source_path(playbook_id)
+        if path is None:
+            return {"error": f"Playbook '{playbook_id}' not found in vault"}
+
+        vault_root = pathlib.Path(self.config.data_dir) / "vault"
+        trash_dir = vault_root / "trash" / "playbooks"
+        try:
+            trash_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            return {"error": f"Failed to create trash directory: {exc}"}
+
+        archived_path = trash_dir / f"{playbook_id}.{int(_time.time())}.md"
+        try:
+            path.rename(archived_path)
+        except Exception as exc:
+            return {"error": f"Failed to archive source: {exc}"}
+
+        pm = getattr(self.orchestrator, "playbook_manager", None)
+        removed = False
+        if pm is not None:
+            try:
+                removed = await pm.remove_playbook(playbook_id)
+            except Exception as exc:
+                logger.error(
+                    "Playbook '%s' source archived but registry remove failed: %s",
+                    playbook_id,
+                    exc,
+                    exc_info=True,
+                )
+                return {
+                    "error": f"Source archived but registry remove failed: {exc}",
+                    "archived_path": str(archived_path),
+                }
+
+        return {
+            "deleted": True,
+            "playbook_id": playbook_id,
+            "archived_path": str(archived_path),
+            "removed_from_registry": removed,
+        }
+
     @staticmethod
     def _get_paused_at(db_run) -> float | None:
         """Extract the timestamp when a run was paused.

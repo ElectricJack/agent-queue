@@ -334,16 +334,20 @@ class PlaybookCompilationSucceededEvent(NotifyEvent):
 class PlaybookRunStartedEvent(NotifyEvent):
     """Emitted when a playbook run begins executing its entry node.
 
-    Routes to the project channel (when ``project_id`` is set via the trigger
-    event) or the system channel (for system-scoped playbooks).
+    Drives the dashboard's live-runs panel and refreshes registry rows as
+    soon as a run kicks off. Also routes Discord/Telegram notifications to
+    the project channel (when ``project_id`` is set via the trigger event)
+    or the system channel for system-scoped playbooks.
     """
 
     event_type: str = "notify.playbook_run_started"
     category: str = "system"
     playbook_id: str = ""
+    playbook_version: int = 0
     run_id: str = ""
     trigger_event_type: str = ""
     scope: str = "system"  # "system", "project", or "agent-type:{type}"
+    started_at: float = 0.0
 
 
 class PlaybookRunCompletedEvent(NotifyEvent):

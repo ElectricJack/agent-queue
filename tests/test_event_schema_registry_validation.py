@@ -341,6 +341,13 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "severity": "error",
         "category": "system",
     },
+    "notify.playbook_run_started": {
+        "event_type": "notify.playbook_run_started",
+        "severity": "info",
+        "category": "system",
+        "playbook_id": "code-quality-gate",
+        "run_id": "run-001",
+    },
     "notify.playbook_run_completed": {
         "event_type": "notify.playbook_run_completed",
         "severity": "info",

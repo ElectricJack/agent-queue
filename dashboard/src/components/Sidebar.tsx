@@ -4,12 +4,14 @@ import {
   CpuChipIcon,
   ClipboardDocumentListIcon,
   SignalIcon,
+  BookOpenIcon,
 } from "@heroicons/react/24/outline";
 
 const links = [
   { to: "/", label: "Dashboard", icon: Squares2X2Icon },
   { to: "/agents", label: "Agents", icon: CpuChipIcon },
   { to: "/tasks", label: "Tasks", icon: ClipboardDocumentListIcon },
+  { to: "/playbooks", label: "Playbooks", icon: BookOpenIcon },
   { to: "/events", label: "Events", icon: SignalIcon },
 ] as const;
 

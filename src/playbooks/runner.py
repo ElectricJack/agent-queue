@@ -377,8 +377,12 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             await self.on_progress("playbook_started", self._playbook_id)
 
         # Emit lifecycle start event — drives Discord/Telegram notifications
-        # routed by project_id (system playbooks land in the global channel).
-        await self._emit_started_event()
+        # routed by project_id (system playbooks land in the global channel)
+        # and the dashboard live-runs panel via notify.playbook_run_started.
+        await self._emit_started_event(
+            playbook_version=self._playbook_version,
+            started_at=started_at,
+        )
 
         # Walk the graph
         current_node_id = entry_node_id
@@ -400,9 +404,15 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                     try:
                         response = await self._execute_node(current_node_id, node, db_run)
                         final_response = response
-                    except Exception:
+                    except Exception as exc:
                         logger.exception("Terminal node '%s' execution failed", current_node_id)
-                        # Don't fail the run — terminal node errors are non-fatal
+                        return await self._fail(
+                            db_run,
+                            f"Terminal node '{current_node_id}' failed: {exc}",
+                            started_at,
+                            current_node=current_node_id,
+                            event=PlaybookRunEvent.NODE_FAILED,
+                        )
                 if self.on_progress:
                     await self.on_progress("node_terminal", current_node_id)
                 break
@@ -1633,7 +1643,9 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
 
         for i, item in enumerate(items):
             if self.on_progress:
-                item_label = item.get("id", item.get("name", str(i))) if isinstance(item, dict) else str(i)
+                item_label = (
+                    item.get("id", item.get("name", str(i))) if isinstance(item, dict) else str(i)
+                )
                 await self.on_progress("for_each_item", f"{node_id}[{item_label}]")
 
             extra_vars = {item_var: item, "_index": i, "_total": len(items)}
