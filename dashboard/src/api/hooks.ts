@@ -333,3 +333,59 @@ export function useUpdatePlaybookSource() {
     },
   });
 }
+
+export interface PlaybookCreateResult {
+  created?: boolean;
+  playbook_id?: string;
+  path?: string;
+  source_hash?: string;
+  error?: string;
+}
+
+export interface EventTrigger {
+  name: string;
+  category: string;
+}
+
+export function useEventTriggers() {
+  return useQuery({
+    queryKey: ["event-triggers"],
+    queryFn: async () => {
+      const data = await apiPost<{ events: EventTrigger[]; count: number }>(
+        "/system/list-event-triggers",
+      );
+      return data.events ?? [];
+    },
+    staleTime: 10 * 60_000,
+  });
+}
+
+export function useCreatePlaybook() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { playbook_id: string; scope: string; markdown: string }) =>
+      apiPost<PlaybookCreateResult>("/playbook/create", input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+    },
+  });
+}
+
+export interface PlaybookDeleteResult {
+  deleted?: boolean;
+  playbook_id?: string;
+  archived_path?: string;
+  removed_from_registry?: boolean;
+  error?: string;
+}
+
+export function useDeletePlaybook() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { playbook_id: string }) =>
+      apiPost<PlaybookDeleteResult>("/playbook/delete", input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+    },
+  });
+}

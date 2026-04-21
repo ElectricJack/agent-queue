@@ -262,9 +262,22 @@ class TestCreatePlaybook:
             {"playbook_id": "new-pb", "scope": "system", "markdown": PB_MD}
         )
         assert result["created"] is True
+        assert result["source_hash"]
         target = vault / "system" / "playbooks" / "new-pb.md"
         assert target.is_file()
         assert target.read_text(encoding="utf-8") == PB_MD
+
+    async def test_create_does_not_trigger_compile(self, tmp_path):
+        """Authors want to iterate on source without the create call blocking on
+        an LLM-driven compile (or failing the create if validation errors are
+        still in the draft). Compilation happens later via update_playbook_source
+        or the vault watcher — never as a side effect of create."""
+        handler, _ = _make_handler(tmp_path)
+        result = await handler._cmd_create_playbook(
+            {"playbook_id": "draft", "scope": "system", "markdown": PB_MD}
+        )
+        assert result["created"] is True
+        handler.orchestrator.playbook_manager.compile_playbook.assert_not_awaited()
 
     async def test_project_scope_creates_intermediate_dirs(self, tmp_path):
         handler, vault = _make_handler(tmp_path)

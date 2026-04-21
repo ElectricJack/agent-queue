@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeftIcon, CheckCircleIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
+import {
+  ArrowLeftIcon,
+  CheckCircleIcon,
+  ExclamationTriangleIcon,
+  TrashIcon,
+} from "@heroicons/react/24/outline";
 import {
   usePlaybooks,
   usePlaybookSource,
@@ -9,6 +14,7 @@ import {
   type PlaybookUpdateResult,
 } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
+import DeletePlaybookModal from "../components/DeletePlaybookModal";
 
 type TabId = "source" | "compiled" | "runs";
 
@@ -22,6 +28,7 @@ export default function PlaybookDetail() {
   const { playbookId = "" } = useParams<{ playbookId: string }>();
   const id = decodeURIComponent(playbookId);
   const [tab, setTab] = useState<TabId>("source");
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data: playbooks } = usePlaybooks();
   const meta = useMemo(() => playbooks?.find((p) => p.id === id), [playbooks, id]);
@@ -35,26 +42,41 @@ export default function PlaybookDetail() {
         <ArrowLeftIcon className="h-4 w-4" /> Back to playbooks
       </Link>
 
-      <div>
-        <h1 className="text-2xl font-bold">{id}</h1>
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-gray-400">
-          {meta && (
-            <>
-              <span>{meta.scope}{meta.scope_identifier ? `:${meta.scope_identifier}` : ""}</span>
-              <span>v{meta.version}</span>
-              <span>{meta.node_count} nodes</span>
-              {meta.triggers.map((t) => (
-                <span key={t} className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-300">
-                  {t}
-                </span>
-              ))}
-              {meta.running_count > 0 && (
-                <span className="text-green-400">{meta.running_count} running</span>
-              )}
-            </>
-          )}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">{id}</h1>
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-gray-400">
+            {meta && (
+              <>
+                <span>{meta.scope}{meta.scope_identifier ? `:${meta.scope_identifier}` : ""}</span>
+                <span>v{meta.version}</span>
+                <span>{meta.node_count} nodes</span>
+                {meta.triggers.map((t) => (
+                  <span key={t} className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-300">
+                    {t}
+                  </span>
+                ))}
+                {meta.running_count > 0 && (
+                  <span className="text-green-400">{meta.running_count} running</span>
+                )}
+              </>
+            )}
+          </div>
         </div>
+        <button
+          onClick={() => setDeleteOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-md bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-red-500/20 hover:text-red-300"
+        >
+          <TrashIcon className="h-4 w-4" />
+          Delete
+        </button>
       </div>
+
+      <DeletePlaybookModal
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        playbookId={id}
+      />
 
       <div className="flex items-center gap-1 border-b border-gray-800">
         {TABS.map((t) => (

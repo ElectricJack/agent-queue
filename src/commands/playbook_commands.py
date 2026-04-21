@@ -1282,16 +1282,28 @@ class PlaybookCommandsMixin:
         return resp
 
     async def _cmd_create_playbook(self, args: dict) -> dict:
-        """Create a new playbook ``.md`` in the vault and compile it.
+        """Create a new playbook ``.md`` in the vault.
+
+        Writes the file atomically at the scope-appropriate vault path and
+        returns immediately — compilation is **not** triggered synchronously
+        so authors can iterate on the source without blocking on LLM calls
+        or failing on a half-written draft. The vault file watcher will pick
+        the file up and compile it in the background; an explicit
+        ``update_playbook_source`` call from the editor also force-compiles.
 
         Args:
             playbook_id: The new playbook identifier (filename without ``.md``).
-            scope: One of ``system``, ``project:<project_id>``, ``agent-type:<type>``.
+            scope: Where the file lives — one of ``system``,
+                ``project:<project_id>``, or ``agent-type:<type>``.
+                Note: the **frontmatter** ``scope:`` field takes the bare
+                form (``system`` / ``project`` / ``agent-type:<type>``);
+                the project id is recovered from the vault path.
             markdown: Full markdown content (including YAML frontmatter).
         """
         import os
         import pathlib
         import tempfile
+        from src.playbooks.compiler import PlaybookCompiler
 
         playbook_id = args.get("playbook_id", "").strip()
         scope = args.get("scope", "").strip()
@@ -1322,10 +1334,6 @@ class PlaybookCommandsMixin:
         except Exception as exc:
             return {"error": f"Failed to create scope directory: {exc}"}
 
-        pm = getattr(self.orchestrator, "playbook_manager", None)
-        if pm is None:
-            return {"error": "Playbook manager is not initialised"}
-
         try:
             tmp_fd, tmp_path = tempfile.mkstemp(
                 prefix=f".{playbook_id}.",
@@ -1344,36 +1352,12 @@ class PlaybookCommandsMixin:
         except Exception as exc:
             return {"error": f"Failed to write new playbook: {exc}"}
 
-        try:
-            result = await pm.compile_playbook(
-                markdown,
-                source_path=str(target_path),
-                rel_path=str(target_path),
-                force=True,
-            )
-        except Exception as exc:
-            logger.error("Compile of new playbook failed: %s", exc, exc_info=True)
-            return {
-                "error": f"Compilation failed: {exc}",
-                "path": str(target_path),
-            }
-
-        resp: dict = {
+        return {
             "created": True,
             "playbook_id": playbook_id,
             "path": str(target_path),
-            "compiled": result.success,
-            "source_hash": result.source_hash,
+            "source_hash": PlaybookCompiler._compute_source_hash(markdown),
         }
-        if not result.success:
-            resp["errors"] = result.errors
-            return resp
-        pb = result.playbook
-        if pb is not None:
-            resp["version"] = pb.version
-            resp["node_count"] = len(pb.nodes)
-            resp["scope"] = pb.scope
-        return resp
 
     async def _cmd_delete_playbook(self, args: dict) -> dict:
         """Archive a playbook's source and remove it from the active registry.

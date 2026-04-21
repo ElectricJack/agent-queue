@@ -109,6 +109,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # system — diagnostics, config, prompts, daemon control
     "get_status": "system",
     "get_recent_events": "system",
+    "list_event_triggers": "system",
     "read_logs": "system",
     "get_token_usage": "system",
     "token_audit": "system",
@@ -1178,6 +1179,17 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "get_status",
         "description": "Get a high-level overview of the system: projects, agents, tasks counts.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_event_triggers",
+        "description": (
+            "List event types that are valid playbook triggers, grouped by category "
+            "(e.g. 'git', 'task', 'file'). Excludes 'notify.*' transport events and "
+            "dynamically-generated 'timer.*' / 'cron.*' types (UIs should offer those "
+            "via a dedicated picker). Intended for trigger-picker components in the "
+            "dashboard and CLI."
+        ),
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -2408,7 +2420,9 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "create_playbook",
         "description": (
             "Create a new playbook markdown file in the vault at the scope-appropriate "
-            "location and compile it. Fails if a playbook with the same id already exists."
+            "location. Does NOT compile — authors iterate on the source and compile "
+            "explicitly via update_playbook_source (or let the vault watcher pick it up). "
+            "Fails if a playbook with the same id already exists anywhere in the vault."
         ),
         "input_schema": {
             "type": "object",
@@ -2420,8 +2434,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "scope": {
                     "type": "string",
                     "description": (
-                        "Where the playbook lives: 'system', 'project:<project_id>', "
-                        "or 'agent-type:<type>'."
+                        "Where the file lives on disk: 'system', 'project:<project_id>', "
+                        "or 'agent-type:<type>'. The frontmatter scope field takes the "
+                        "bare form ('system' / 'project' / 'agent-type:<type>') because "
+                        "the project id is recovered from the vault path."
                     ),
                 },
                 "markdown": {
