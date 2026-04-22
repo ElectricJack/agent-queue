@@ -570,9 +570,7 @@ class ExecutionMixin:
         # directly (consolidation, note-taking, self-improvement).
         extra_dirs: list[str] = []
         if task.project_id:
-            vault_project_dir = os.path.join(
-                self.config.vault_root, "projects", task.project_id
-            )
+            vault_project_dir = os.path.join(self.config.vault_root, "projects", task.project_id)
             extra_dirs.append(vault_project_dir)
 
         ctx = TaskContext(
@@ -1081,8 +1079,6 @@ class ExecutionMixin:
                 # NOT propagate — the outer except would revert the task to
                 # READY, undoing the COMPLETED transition.
                 try:
-                    brief = f"✅ Task completed: {task.title} (`{task.id}`)"
-                    await _post(brief)
                     await self._emit_notify(
                         "notify.task_completed",
                         TaskCompletedEvent(
