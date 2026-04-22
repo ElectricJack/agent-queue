@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 
 from src.logging_config import CorrelationContext
@@ -622,12 +623,28 @@ class PlaybookCommandsMixin:
         if pm is None:
             return {"error": "Playbook manager is not initialised"}
 
+        # Derive scope_identifier from the vault-relative path so project-
+        # scoped playbooks compiled via this command keep their project id.
+        scope_identifier: str | None = None
+        try:
+            from src.vault import VaultManager
+            from src.playbooks.handler import derive_playbook_scope
+
+            vault_root = VaultManager(self.config).vault_root
+            abs_path = os.path.abspath(path)
+            if abs_path.startswith(vault_root + os.sep):
+                rel = os.path.relpath(abs_path, vault_root).replace("\\", "/")
+                _, scope_identifier = derive_playbook_scope(rel)
+        except Exception:
+            pass
+
         try:
             result = await pm.compile_playbook(
                 markdown,
                 source_path=path,
                 rel_path=path,
                 force=force,
+                scope_identifier=scope_identifier,
             )
         except Exception as exc:
             logger.error("Playbook compilation failed: %s", exc, exc_info=True)

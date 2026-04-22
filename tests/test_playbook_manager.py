@@ -352,7 +352,9 @@ class TestCompilationFailureRetainsPrevious:
         assert after_data["version"] == 1  # Not overwritten
 
     @pytest.mark.asyncio
-    async def test_error_notification_includes_details_json_extraction(self, tmp_path: Path) -> None:
+    async def test_error_notification_includes_details_json_extraction(
+        self, tmp_path: Path
+    ) -> None:
         """(d) Error notification includes file path and LLM error details.
 
         When the LLM returns unparseable output (not valid JSON), the error
@@ -773,9 +775,7 @@ class TestFailureIsolation:
         good_resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
         bad_resp = ChatResponse(content=[TextBlock(text="garbage")])
         # First call for playbook A succeeds; next 3 calls for playbook B fail
-        provider.create_message = AsyncMock(
-            side_effect=[good_resp, bad_resp, bad_resp, bad_resp]
-        )
+        provider.create_message = AsyncMock(side_effect=[good_resp, bad_resp, bad_resp, bad_resp])
 
         manager = PlaybookManager(
             chat_provider=provider,
@@ -894,6 +894,42 @@ class TestDiskLoading:
         loaded = await manager.load_from_disk()
 
         assert loaded == 0
+
+    @pytest.mark.asyncio
+    async def test_load_preserves_project_scope_identifier(self, tmp_path: Path) -> None:
+        """Project-scoped playbooks keep their scope_identifier across restarts.
+
+        Regression: cron/timer events for project-scoped playbooks were
+        silently skipped after a daemon restart because the flat
+        ``compiled/*.json`` layout lost the project identifier.
+        """
+        compiled_dir = tmp_path / "playbooks" / "compiled"
+        compiled_dir.mkdir(parents=True)
+
+        playbook = _make_playbook(scope="project", triggers=["cron.08:00"])
+        payload = playbook.to_dict()
+        payload["scope_identifier"] = "my-playbooks"
+        (compiled_dir / "test-playbook.json").write_text(json.dumps(payload))
+
+        manager = PlaybookManager(data_dir=str(tmp_path))
+        loaded = await manager.load_from_disk()
+
+        assert loaded == 1
+        assert manager.get_scope_identifier("test-playbook") == "my-playbooks"
+
+    @pytest.mark.asyncio
+    async def test_persist_writes_scope_identifier(self, tmp_path: Path) -> None:
+        """Compiled JSONs include scope_identifier when known."""
+        manager = PlaybookManager(data_dir=str(tmp_path))
+        playbook = _make_playbook(scope="project", triggers=["cron.08:00"])
+        manager._active[playbook.id] = playbook
+        manager._scope_identifiers[playbook.id] = "my-playbooks"
+
+        manager._persist_compiled(playbook)
+
+        json_path = tmp_path / "playbooks" / "compiled" / f"{playbook.id}.json"
+        payload = json.loads(json_path.read_text())
+        assert payload["scope_identifier"] == "my-playbooks"
 
     @pytest.mark.asyncio
     async def test_load_no_data_dir(self) -> None:

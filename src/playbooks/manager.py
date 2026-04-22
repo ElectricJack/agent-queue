@@ -1023,11 +1023,18 @@ class PlaybookManager:
                     continue
                 self._active[playbook.id] = playbook
                 self._index_triggers(playbook)
-                # Best-effort scope identifier extraction for legacy flat dir.
-                # Agent-type identifiers live in the scope string; project
-                # identifiers are unknown here (only the store has them).
-                _, type_id = playbook.parse_scope()
-                self._scope_identifiers[playbook.id] = type_id
+                # Prefer the explicitly persisted scope_identifier (written
+                # by _persist_compiled alongside the dataclass JSON). Falls
+                # back to parse_scope() for agent-type scopes whose id is
+                # encoded in the scope string. Project-scoped playbooks rely
+                # on the persisted field — without it, dispatch can't match
+                # events to the right project.
+                persisted_identifier = data.get("scope_identifier")
+                if persisted_identifier is not None:
+                    self._scope_identifiers[playbook.id] = persisted_identifier
+                else:
+                    _, type_id = playbook.parse_scope()
+                    self._scope_identifiers[playbook.id] = type_id
                 loaded += 1
                 logger.debug(
                     "Loaded compiled playbook '%s' v%d from disk",
@@ -1161,7 +1168,25 @@ class PlaybookManager:
                     result["errors"].append((rel_path, ["missing or empty frontmatter `id`"]))
                     continue
 
+                from src.playbooks.handler import derive_playbook_scope
+
+                _, scope_identifier = derive_playbook_scope(rel_path)
+
                 if playbook_id in self._active:
+                    # Heal lost scope_identifier for already-loaded playbooks.
+                    # load_from_disk() can't know the vault path, so project
+                    # identifiers get dropped unless we re-derive here.
+                    if (
+                        scope_identifier is not None
+                        and self._scope_identifiers.get(playbook_id) != scope_identifier
+                    ):
+                        self._scope_identifiers[playbook_id] = scope_identifier
+                        logger.info(
+                            "Reconcile: healed scope_identifier for %r (%s)",
+                            playbook_id,
+                            scope_identifier,
+                        )
+                        self._persist_compiled(self._active[playbook_id])
                     result["skipped"].append(playbook_id)
                     continue
 
@@ -1171,9 +1196,6 @@ class PlaybookManager:
                     rel_path,
                 )
                 try:
-                    from src.playbooks.handler import derive_playbook_scope
-
-                    _, scope_identifier = derive_playbook_scope(rel_path)
                     compile_result = await self.compile_playbook(
                         markdown,
                         source_path=abs_path,
@@ -1302,14 +1324,18 @@ class PlaybookManager:
             self._active[result.playbook.id] = result.playbook
             self._index_triggers(result.playbook)
             self._source_paths[result.playbook.id] = source_path
-            self._persist_compiled(result.playbook)
             # Track scope identifier for event-to-scope matching (5.3.3).
-            # Prefer explicit identifier; fall back to parsing scope string.
+            # Prefer explicit identifier; otherwise preserve an existing
+            # known identifier (e.g. set by load_from_store or a prior
+            # compile); only fall back to parse_scope() when nothing is
+            # known. Persisting after this ensures the JSON reflects the
+            # final identifier.
             if scope_identifier is not None:
                 self._scope_identifiers[result.playbook.id] = scope_identifier
-            else:
+            elif result.playbook.id not in self._scope_identifiers:
                 _, type_id = result.playbook.parse_scope()
                 self._scope_identifiers[result.playbook.id] = type_id
+            self._persist_compiled(result.playbook)
 
             logger.info(
                 "Playbook '%s' v%d now active (hash=%s, nodes=%d)%s",
@@ -1543,8 +1569,12 @@ class PlaybookManager:
         try:
             compiled_dir.mkdir(parents=True, exist_ok=True)
             json_path = compiled_dir / f"{playbook.id}.json"
+            payload = playbook.to_dict()
+            identifier = self._scope_identifiers.get(playbook.id)
+            if identifier is not None:
+                payload["scope_identifier"] = identifier
             json_path.write_text(
-                json.dumps(playbook.to_dict(), indent=2) + "\n",
+                json.dumps(payload, indent=2) + "\n",
                 encoding="utf-8",
             )
             logger.debug("Persisted compiled playbook to %s", json_path)
