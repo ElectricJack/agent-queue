@@ -6,7 +6,6 @@ The REST client is mocked via httpx so no daemon is needed.
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -429,6 +428,42 @@ class TestCLIClient:
             result = await client.execute("some_command", {"x": 1})
             assert result["custom"] == "result"
             mock_http.post.assert_called_once()
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_compile_playbook_uses_long_timeout(self):
+        """compile_playbook sends a per-request timeout override.
+
+        The LLM-driven compile can run for minutes; the default 30s
+        timeout is too short and surfaces as a misleading ReadTimeout.
+        """
+        from src.cli.client import _COMMAND_TIMEOUTS, _DEFAULT_TIMEOUT
+
+        assert _COMMAND_TIMEOUTS["compile_playbook"] > _DEFAULT_TIMEOUT
+
+        mock_http = self._mock_httpx_for_typed(200, {"compiled": True})
+
+        with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
+            client = CLIClient(base_url="http://localhost:8081")
+            await client.connect()
+            await client.execute("compile_playbook", {"playbook_id": "x"})
+            _, kwargs = mock_http.post.call_args
+            assert kwargs["timeout"] == _COMMAND_TIMEOUTS["compile_playbook"]
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_default_command_uses_default_timeout(self):
+        """Commands not in the per-command map fall back to the default timeout."""
+        from src.cli.client import _DEFAULT_TIMEOUT
+
+        mock_http = self._mock_httpx_for_typed(200, {"ok": True})
+
+        with patch("src.cli.client.httpx.AsyncClient", return_value=mock_http):
+            client = CLIClient(base_url="http://localhost:8081")
+            await client.connect()
+            await client.execute("list_tasks", {})
+            _, kwargs = mock_http.post.call_args
+            assert kwargs["timeout"] == _DEFAULT_TIMEOUT
             await client.close()
 
 
