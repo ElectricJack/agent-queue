@@ -1437,8 +1437,13 @@ class MemoryV2Plugin(InternalPlugin):
                 # Start vault file watchers for auto-indexing
                 self._start_vault_watchers(config_svc, memory_cfg)
             else:
+                reason = (
+                    getattr(self._service, "unavailable_reason", None)
+                    or "unknown (check earlier log entries)"
+                )
                 self._log.warning(
-                    "MemoryV2Service initialized but not available (memsearch may not be installed)"
+                    "MemoryV2Service initialized but not available: %s",
+                    reason,
                 )
         except Exception:
             self._log.warning(
@@ -1640,13 +1645,22 @@ class MemoryV2Plugin(InternalPlugin):
         }
 
     def _unavailable(self, command: str) -> dict:
-        """Return a response for when the service is not available."""
+        """Return a response for when the service is not available.
+
+        Surfaces the concrete reason (missing ollama package, bad API
+        key, unreachable Milvus, etc.) captured during
+        :meth:`MemoryV2Service.initialize` so agents can report the
+        actual cause instead of spawning follow-up tasks that re-diagnose
+        the generic "not available" message.
+        """
+        reason = getattr(self._service, "unavailable_reason", None) if self._service else None
+        if not reason:
+            reason = (
+                "MemoryV2Service is not available. Ensure memsearch is "
+                "installed and `memory.enabled: true` in config.yaml."
+            )
         return {
-            "error": (
-                f"{command}: MemoryV2Service is not available. "
-                "Ensure memsearch is installed and memory is enabled "
-                "in config."
-            ),
+            "error": f"{command}: {reason}",
             "plugin": "memory_v2",
         }
 

@@ -116,6 +116,11 @@ class MemoryV2Service:
         self._embedder: Any = None  # EmbeddingProvider
         self._router: Any = None  # CollectionRouter
         self._initialized = False
+        # Human-readable reason why the service is unavailable.  Set when
+        # :meth:`initialize` fails or is skipped; consumed by the plugin
+        # to surface an actionable error back to agents instead of the
+        # generic "memsearch may not be installed" message.
+        self._unavailable_reason: str | None = None
         # Profile-to-shared-scope alias map.  Populated by
         # :meth:`set_scope_alias_map` (typically from the plugin layer after
         # loading agent_profiles rows).  Keyed by profile id, value is the
@@ -141,6 +146,16 @@ class MemoryV2Service:
         """The :class:`EmbeddingProvider` instance, or ``None``."""
         return self._embedder
 
+    @property
+    def unavailable_reason(self) -> str | None:
+        """Human-readable reason the service is unavailable, or ``None``.
+
+        Populated by :meth:`initialize` on failure (e.g. ``"ollama
+        package not installed"``, ``"OPENAI_API_KEY not set"``).  When the
+        service is :attr:`available`, this is ``None``.
+        """
+        return self._unavailable_reason
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -154,6 +169,10 @@ class MemoryV2Service:
             return
 
         if not MEMSEARCH_AVAILABLE:
+            self._unavailable_reason = (
+                "memsearch package is not installed "
+                "(pip install -e packages/memsearch)"
+            )
             logger.warning("memsearch package not available — MemoryV2Service disabled")
             return
 
@@ -172,6 +191,7 @@ class MemoryV2Service:
             )
 
             self._initialized = True
+            self._unavailable_reason = None
             logger.info(
                 "MemoryV2Service initialized (embedding=%s/%s, dim=%d, milvus=%s)",
                 self._embedding_provider_name,
@@ -179,9 +199,32 @@ class MemoryV2Service:
                 self._embedder.dimension,
                 self._milvus_uri,
             )
-        except Exception:
+        except ModuleNotFoundError as e:
+            # Most commonly: the embedding provider's optional dependency
+            # is missing (e.g. "ollama", "voyageai", "google-genai").
+            self._unavailable_reason = (
+                f"embedding provider '{self._embedding_provider_name}' "
+                f"requires a missing Python module: {e.name!r}. "
+                f"Install it (e.g. `pip install memsearch[{self._embedding_provider_name}]`) "
+                f"or switch `memory.embedding_provider` in config.yaml."
+            )
             logger.error(
-                "MemoryV2Service initialization failed",
+                "MemoryV2Service initialization failed: %s",
+                self._unavailable_reason,
+                exc_info=True,
+            )
+            self._initialized = False
+        except Exception as e:
+            # Surface the provider name and exception text so the cause
+            # (missing API key, bad URL, unreachable server) is visible
+            # to callers rather than hidden in the daemon log.
+            self._unavailable_reason = (
+                f"embedding provider '{self._embedding_provider_name}' "
+                f"failed to initialize: {type(e).__name__}: {e}"
+            )
+            logger.error(
+                "MemoryV2Service initialization failed: %s",
+                self._unavailable_reason,
                 exc_info=True,
             )
             self._initialized = False
