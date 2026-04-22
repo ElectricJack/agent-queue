@@ -59,6 +59,15 @@ def _resolve_api_url() -> str:
     return "http://127.0.0.1:8081"
 
 
+_DEFAULT_TIMEOUT = 30.0
+
+# Per-command read timeouts (seconds) for commands that run an LLM or other
+# long operations server-side. Anything not listed uses _DEFAULT_TIMEOUT.
+_COMMAND_TIMEOUTS: dict[str, float] = {
+    "compile_playbook": 300.0,
+}
+
+
 # ---------------------------------------------------------------------------
 # Typed endpoint dispatch
 # ---------------------------------------------------------------------------
@@ -140,7 +149,7 @@ class CLIClient:
         self._generated_client: Any | None = None
 
     async def connect(self) -> None:
-        self._http = httpx.AsyncClient(base_url=self._base_url, timeout=30.0)
+        self._http = httpx.AsyncClient(base_url=self._base_url, timeout=_DEFAULT_TIMEOUT)
         try:
             resp = await self._http.get("/api/health")
             resp.raise_for_status()
@@ -153,7 +162,7 @@ class CLIClient:
         try:
             from agent_queue_api_client.client import Client
 
-            self._generated_client = Client(base_url=self._base_url, timeout=30.0)
+            self._generated_client = Client(base_url=self._base_url, timeout=_DEFAULT_TIMEOUT)
             self._generated_client.set_async_httpx_client(self._http)
         except ImportError:
             pass
@@ -221,10 +230,12 @@ class CLIClient:
     async def _execute_generic(self, command: str, args: dict[str, Any]) -> dict:
         """Execute via the generic /api/execute endpoint."""
         assert self._http is not None, "CLIClient not connected"
+        timeout = _COMMAND_TIMEOUTS.get(command, _DEFAULT_TIMEOUT)
         try:
             resp = await self._http.post(
                 "/api/execute",
                 json={"command": command, "args": args},
+                timeout=timeout,
             )
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
@@ -312,7 +323,6 @@ class PluginClient:
 
     async def delete_plugin_data_all(self, plugin_id: str) -> None:
         await self.db.delete_plugin_data_all(plugin_id)
-
 
 
 def _resolve_db_config() -> dict | None:
