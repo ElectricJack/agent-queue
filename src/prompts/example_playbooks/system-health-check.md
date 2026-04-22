@@ -72,42 +72,77 @@ Concrete procedure:
 
 ## Agent health
 
-Verify that all agent slots marked as active are actually making
-progress. Check for slots that have been busy for an unusually long
-time or idle despite READY tasks waiting.
+Agents are derived from project workspaces (workspace-as-agent
+model). `list_agents` is project-scoped, so this step must do the
+project fan-out itself in one node — do not split into
+per-project nodes.
 
-Concrete procedure:
-
-1. Call `list_agents()` — each entry reports the workspace-derived
-   slot state (`busy`/`idle`) and `current_task_id`.
-2. Call `list_workspaces(project_id=...)` to see
-   `locked_by_agent_id`, `locked_by_task_id`, and `lock_mode` per
-   workspace.
-3. Call `get_recent_events(event_type="agent.*", since="2h")` to
-   detect recent crashes, errors, pickups, or replies.
-4. For any task reported as failed, call
-   `get_agent_error(task_id=...)` to retrieve the last
-   `error_message` / `error_type`.
-5. Call `get_status()` once for a system-wide overview (project
-   counts, agent counts, task counts by status, `orchestrator_paused`).
-
-Note: since the workspace-as-agent refactor, there is no standalone
+Since the workspace-as-agent refactor, there is no standalone
 "agent" entity — agent slots are derived from project workspaces.
 `create_agent`/`edit_agent`/`delete_agent`/`pause_agent`/`resume_agent`
-are deprecated. Use `list_agents` + `list_workspaces` +
-`get_recent_events` + `get_agent_error` instead.
+are deprecated. Use `list_agents(project_id=...)` + `list_workspaces`
++ `get_recent_events` + `get_agent_error` instead.
+
+In a single LLM turn, call `list_projects` to enumerate active
+projects, then call `list_agents(project_id=...)` once per
+project, then aggregate the results. A project counts as
+unhealthy **only** if it has pending or ready tasks but every
+workspace is busy or locked (stalled throughput); an all-idle
+project with no queued work is healthy. If `list_agents` errors
+for a specific project, record the error and continue with the
+remaining projects — do not abort the step and do not treat the
+error as a health finding.
+
+For any project flagged as unhealthy, enrich the finding with:
+
+- `list_workspaces(project_id=...)` to see `locked_by_agent_id`,
+  `locked_by_task_id`, and `lock_mode` per workspace.
+- `get_recent_events(event_type="agent.*", since="2h")` to detect
+  recent crashes, errors, pickups, or replies.
+- `get_agent_error(task_id=...)` for any failed task to retrieve
+  the last `error_message` / `error_type`.
+- `get_status()` once for a system-wide overview (project counts,
+  agent counts, task counts by status, `orchestrator_paused`).
 
 Do not double-report a slot whose busy state is already explained
 by a stuck task flagged in the first section.
 
-## Summary
+Return an object with two fields: `unhealthy_projects` (array of
+project ids that meet the stalled-throughput criterion) and
+`tool_errors` (array of per-project errors encountered while
+checking).
 
-If any issues are found, post a concise summary to the project
-channel. Group findings by severity: critical (stuck tasks blocking
-the queue), warning (blocked tasks with no path), info (minor
-anomalies). Skip the summary entirely if everything looks healthy
-— do not post "all clear" messages.
+## Decide whether to post
 
-Save findings to system memory with tag `#system-health-check` so
-that other playbooks (like the codebase inspector) can check for
-related issues before creating duplicate tasks.
+Consolidate findings from the prior steps: stuck tasks, blocked
+tasks, and unhealthy projects from the agent-health step.
+
+If `stuck_tasks` is empty AND `blocked_issues` is empty AND
+`unhealthy_projects` is empty, there is nothing to post. Go
+straight to saving findings — do not post, do not draft a
+summary.
+
+Otherwise, draft a concise summary grouped by severity: critical
+(stuck tasks blocking the queue), warning (blocked tasks with no
+path, unhealthy projects), info (minor anomalies). Do **not**
+include tool-integration errors from this playbook's own steps in
+the summary — those are operator diagnostics, not queue findings.
+
+## Post to notifications channel
+
+Post the summary to the system notifications Discord channel.
+
+First, call `get_system_channel(name="notifications")` to resolve
+the channel id from daemon config. Then call `send_message` with
+that `channel_id` and the drafted summary as `content`. Do **not**
+pull a channel id from project memory, facts, or any other
+playbook's output. This playbook runs at system scope; the
+audience is the operator, not any project team.
+
+## Save findings
+
+Save the structured findings (stuck tasks, blocked issues,
+unhealthy projects, and any tool errors recorded above) to system
+memory under `system_health_check_results` (tagged
+`#system-health-check`) so downstream playbooks (like the codebase
+inspector) can consult them before creating duplicate tasks.

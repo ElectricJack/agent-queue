@@ -167,6 +167,7 @@ def _register_all():
         format_entity_detail,
         format_event_list,
         format_key_value,
+        format_playbook_graph,
         format_profile_detail,
         format_profile_list,
         format_prompt_list,
@@ -450,6 +451,11 @@ def _register_all():
     )
     FORMATTERS["list_prompts"] = FormatterSpec(
         render=format_prompt_list,
+        extract=None,
+        many=False,
+    )
+    FORMATTERS["show_playbook_graph"] = FormatterSpec(
+        render=format_playbook_graph,
         extract=None,
         many=False,
     )
