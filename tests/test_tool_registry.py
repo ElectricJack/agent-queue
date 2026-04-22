@@ -1,7 +1,9 @@
 """Tests for ToolRegistry -- tool categorization and on-demand loading."""
 
+import asyncio
+
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from src.tools import ToolRegistry, _TOOL_CATEGORIES
 
@@ -182,10 +184,6 @@ def test_get_category_tool_names(registry):
 # CommandHandler integration tests (browse_tools, load_tools, stubs)
 # -------------------------------------------------------------------
 
-import asyncio
-import sys
-from unittest.mock import AsyncMock, MagicMock
-
 
 def _get_command_handler():
     """Import CommandHandler."""
@@ -235,6 +233,97 @@ def test_cmd_send_message_stub():
     )
     # send_message needs Discord bot reference; without it, error
     assert "error" in result or "success" in result
+
+
+def test_cmd_get_system_channel_requires_name():
+    handler = _make_handler()
+    result = asyncio.run(handler.execute("get_system_channel", {}))
+    assert "error" in result
+    assert "name is required" in result["error"]
+
+
+def test_cmd_get_system_channel_no_bot():
+    handler = _make_handler()
+    handler.orchestrator._discord_bot = None
+    result = asyncio.run(handler.execute("get_system_channel", {"name": "notifications"}))
+    assert "error" in result
+    assert "bot" in result["error"].lower() or "guild" in result["error"].lower()
+
+
+def test_cmd_get_system_channel_unknown_key():
+    handler = _make_handler()
+    bot = MagicMock()
+    bot._guild = MagicMock()
+    bot._guild.text_channels = []
+    bot.config.discord.channels = {"notifications": "notifications", "control": "control"}
+    handler.orchestrator._discord_bot = bot
+    result = asyncio.run(handler.execute("get_system_channel", {"name": "unknown"}))
+    assert "error" in result
+    assert "notifications" in result["error"]
+    assert "control" in result["error"]
+
+
+def test_cmd_get_system_channel_resolves_id():
+    handler = _make_handler()
+    ch = MagicMock()
+    ch.name = "agent-questions"
+    ch.id = 987654321
+    bot = MagicMock()
+    bot._guild = MagicMock()
+    bot._guild.text_channels = [ch]
+    bot.config.discord.channels = {"agent_questions": "agent-questions"}
+    handler.orchestrator._discord_bot = bot
+    result = asyncio.run(handler.execute("get_system_channel", {"name": "agent_questions"}))
+    assert "error" not in result
+    assert result["channel_id"] == "987654321"
+    assert result["channel_name"] == "agent-questions"
+
+
+def test_cmd_get_system_channel_missing_in_guild():
+    handler = _make_handler()
+    bot = MagicMock()
+    bot._guild = MagicMock()
+    bot._guild.text_channels = []  # no matching channel
+    bot.config.discord.channels = {"agent_questions": "agent-questions"}
+    handler.orchestrator._discord_bot = bot
+    result = asyncio.run(handler.execute("get_system_channel", {"name": "agent_questions"}))
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+def test_cmd_get_system_channel_notifications_aliases_to_channel():
+    """After the config merge, 'notifications' is an alias for 'channel'."""
+    handler = _make_handler()
+    ch = MagicMock()
+    ch.name = "control"
+    ch.id = 11111
+    bot = MagicMock()
+    bot._guild = MagicMock()
+    bot._guild.text_channels = [ch]
+    # Post-merge config: only 'channel' and 'agent_questions' exist
+    bot.config.discord.channels = {"channel": "control", "agent_questions": "agent-questions"}
+    handler.orchestrator._discord_bot = bot
+
+    result = asyncio.run(handler.execute("get_system_channel", {"name": "notifications"}))
+    assert "error" not in result
+    assert result["channel_id"] == "11111"
+
+
+def test_cmd_get_system_channel_control_aliases_to_channel():
+    """'control' is also an alias for 'channel'."""
+    handler = _make_handler()
+    ch = MagicMock()
+    ch.name = "control"
+    ch.id = 22222
+    bot = MagicMock()
+    bot._guild = MagicMock()
+    bot._guild.text_channels = [ch]
+    bot.config.discord.channels = {"channel": "control", "agent_questions": "agent-questions"}
+    handler.orchestrator._discord_bot = bot
+
+    result = asyncio.run(handler.execute("get_system_channel", {"name": "control"}))
+    assert "error" not in result
+    assert result["channel_id"] == "22222"
 
 
 # -------------------------------------------------------------------
@@ -664,8 +753,7 @@ class TestPlaybookToolRegistration:
                 props = schema.get("properties", {})
                 for param in required:
                     assert param in props, (
-                        f"{tool['name']}: required param '{param}' "
-                        f"not in properties"
+                        f"{tool['name']}: required param '{param}' not in properties"
                     )
 
     # -- ToolRegistry integration -----------------------------------------
@@ -683,8 +771,7 @@ class TestPlaybookToolRegistration:
         categories = reg.get_categories()
         playbook_cat = next(c for c in categories if c["name"] == "playbook")
         assert playbook_cat["tool_count"] == len(_PLAYBOOK_COMMANDS), (
-            f"Expected {len(_PLAYBOOK_COMMANDS)} playbook tools, "
-            f"got {playbook_cat['tool_count']}"
+            f"Expected {len(_PLAYBOOK_COMMANDS)} playbook tools, got {playbook_cat['tool_count']}"
         )
 
     def test_playbook_category_tools_match_spec(self):
@@ -732,9 +819,7 @@ class TestPlaybookToolRegistration:
         handler = _make_handler()
         for cmd in _PLAYBOOK_COMMANDS:
             method = getattr(handler, f"_cmd_{cmd}", None)
-            assert method is not None, (
-                f"CommandHandler missing _cmd_{cmd} method"
-            )
+            assert method is not None, f"CommandHandler missing _cmd_{cmd} method"
             assert callable(method), f"_cmd_{cmd} is not callable"
 
     def test_execute_routes_unknown_playbook_command(self):
@@ -753,5 +838,3 @@ class TestPlaybookToolRegistration:
         assert loaded_names == set(_PLAYBOOK_COMMANDS), (
             f"Expected {set(_PLAYBOOK_COMMANDS)}, got {loaded_names}"
         )
-
-

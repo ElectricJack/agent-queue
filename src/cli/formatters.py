@@ -447,6 +447,24 @@ def format_entity_detail(data: dict, title_key: str = "name") -> Panel:
     )
 
 
+def format_playbook_graph(data: dict) -> Group:
+    """Render a show_playbook_graph response.
+
+    The ``graph`` field is already self-describing multi-line text (ASCII
+    boxes or a Mermaid diagram). Print it raw so it stays copy-pasteable for
+    humans and legible for LLMs reading CLI output — no borders, no styling
+    that would add ANSI noise when piped.
+    """
+    graph = data.get("graph", "")
+    fmt = data.get("format", "ascii")
+    if fmt == "mermaid":
+        fence = Text("```mermaid", style="dim")
+        body = Text(graph)
+        close = Text("```", style="dim")
+        return Group(fence, body, close)
+    return Group(Text(graph))
+
+
 def format_text_content(data: dict) -> Panel:
     """Format a response that contains a text content field."""
     content = (

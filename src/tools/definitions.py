@@ -1923,6 +1923,29 @@ _ALL_TOOL_DEFINITIONS = [
     # migrated to aq-git internal plugin.
     # --- Communication ---
     {
+        "name": "get_system_channel",
+        "description": (
+            "Resolve a system-level Discord channel by its config key "
+            "(e.g. 'notifications', 'control', 'agent_questions') and return "
+            "its channel_id. Use this when a playbook or system-scope task "
+            "needs to post to a named channel from config without hardcoding "
+            "a channel id. Pass the returned channel_id to send_message."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Config key under discord.channels (e.g. "
+                        "'notifications', 'control', 'agent_questions')"
+                    ),
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
         "name": "send_message",
         "description": (
             "Post a message to a Discord channel. Use this to notify users, "

@@ -342,6 +342,50 @@ class TestFormatterRegistry:
         output = buf.getvalue()
         assert "No tasks" in output
 
+    def test_apply_formatter_playbook_graph_ascii(self):
+        """show_playbook_graph prints the graph field raw — no JSON wrapping."""
+        from rich.console import Console
+        from io import StringIO
+        from src.cli.formatter_registry import apply_formatter
+
+        buf = StringIO()
+        console = Console(file=buf, width=120)
+        result = {
+            "playbook_id": "pb",
+            "version": 1,
+            "format": "ascii",
+            "graph": "Playbook: pb (v1, scope=system)\n┌─ node_a ─┐\n  └──→ node_b",
+            "node_count": 2,
+        }
+        assert apply_formatter("show_playbook_graph", result, console) is True
+        output = buf.getvalue()
+        assert "node_a" in output
+        assert "node_b" in output
+        # Result metadata should NOT leak into the formatted output
+        assert '"playbook_id"' not in output
+        assert '"format"' not in output
+
+    def test_apply_formatter_playbook_graph_mermaid(self):
+        """Mermaid output gets fenced for copy-paste."""
+        from rich.console import Console
+        from io import StringIO
+        from src.cli.formatter_registry import apply_formatter
+
+        buf = StringIO()
+        console = Console(file=buf, width=120)
+        result = {
+            "playbook_id": "pb",
+            "version": 1,
+            "format": "mermaid",
+            "graph": "flowchart TD\n    a --> b",
+            "node_count": 2,
+        }
+        assert apply_formatter("show_playbook_graph", result, console) is True
+        output = buf.getvalue()
+        assert "```mermaid" in output
+        assert "flowchart TD" in output
+        assert output.rstrip().endswith("```")
+
 
 # ---------------------------------------------------------------------------
 # CLIClient tests
