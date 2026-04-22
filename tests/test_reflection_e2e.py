@@ -1136,10 +1136,10 @@ class TestReflectionPlaybookTemplate:
         path = os.path.join(
             os.path.dirname(__file__),
             "..",
-            "vault",
-            "agent-types",
-            "coding",
-            "playbooks",
+            "src",
+            "prompts",
+            "default_agent_type_playbooks",
+            "claude-opus",
             "reflection.md",
         )
         with open(path) as f:

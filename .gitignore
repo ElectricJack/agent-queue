@@ -29,3 +29,4 @@ dashboard/dist/
 dashboard/.vite/
 packages/aq-ts-client/src/
 !packages/aq-ts-client/src/index.ts
+docs/.obsidian

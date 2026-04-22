@@ -340,6 +340,251 @@ def detect_conversations(entries: list[dict]) -> list[list[dict]]:
     return conversations
 
 
+def _project_from_cwd(cwd: str) -> str:
+    """Derive a project folder name from a Claude agent session cwd."""
+    if not cwd:
+        return "_unknown"
+    return os.path.basename(cwd.rstrip("/")) or "_unknown"
+
+
+def format_claude_agent_session(entry: dict) -> str:
+    """Render a single ``claude_agent.jsonl`` entry as markdown.
+
+    Each entry is one full SDK session: initial prompt in, final summary
+    out. Intermediate turns are not captured by the adapter.
+    """
+    inp = entry.get("input", {}) or {}
+    out = entry.get("output", {}) or {}
+
+    task_id = entry.get("task_id", "?")
+    session_id = entry.get("session_id", "?")
+    model = entry.get("model", "?")
+    timestamp = entry.get("timestamp", "?")
+    duration = entry.get("duration_ms", 0)
+
+    prompt = inp.get("prompt", "") or ""
+    allowed = inp.get("allowed_tools", []) or []
+    pmode = inp.get("permission_mode", "")
+    cwd = inp.get("cwd", "")
+
+    result = out.get("result", "")
+    summary = out.get("summary", "")
+    tokens = out.get("tokens_used", 0)
+    files_changed = out.get("files_changed", []) or []
+    error = out.get("error")
+
+    transcript = entry.get("transcript") or []
+
+    lines = [
+        f"# Claude agent session — {task_id}",
+        f"**Time:** {timestamp}  ",
+        f"**Session:** `{session_id}`  ",
+        f"**Model:** `{model}`  ",
+        f"**Duration:** {duration}ms  ",
+        f"**Result:** {result}  ",
+        f"**Tokens:** {tokens}  ",
+        f"**cwd:** `{cwd}`  ",
+        f"**Permission mode:** {pmode}  ",
+        f"**Allowed tools ({len(allowed)}):** "
+        + (", ".join(f"`{t}`" for t in allowed) if allowed else "(none)"),
+        f"**Transcript turns:** {len(transcript)}",
+        "",
+    ]
+
+    if not transcript:
+        lines += [
+            "> ⚠️ No per-turn transcript captured. Sessions logged before the",
+            "> transcript feature shipped only retain prompt + final summary.",
+            "",
+        ]
+
+    lines += ["## Prompt", "", prompt or "*(empty)*", ""]
+
+    if transcript:
+        lines += ["## Transcript", ""]
+        lines.append(_render_transcript(transcript))
+        lines.append("")
+
+    lines += ["## Summary", "", summary or "*(empty)*", ""]
+
+    if files_changed:
+        lines.append(f"## Files changed ({len(files_changed)})\n")
+        for f in files_changed:
+            lines.append(f"- `{f}`")
+        lines.append("")
+
+    if error:
+        lines += ["## Error", "", "```", str(error), "```", ""]
+
+    return "\n".join(lines)
+
+
+def _render_transcript(turns: list[dict]) -> str:
+    """Render a list of structured turn records into readable markdown."""
+    out: list[str] = []
+    for i, turn in enumerate(turns, 1):
+        ttype = turn.get("type", "?")
+        ts = turn.get("ts", "")
+        header = f"### Turn {i} — `{ttype}`" + (f" @ {ts}" if ts else "")
+        out.append(header)
+        out.append("")
+
+        if ttype == "assistant":
+            for block in turn.get("content", []) or []:
+                bt = block.get("type")
+                if bt == "thinking":
+                    text = block.get("text", "")
+                    out.append("**Thinking**")
+                    out.append("")
+                    out.append("> " + text.replace("\n", "\n> "))
+                    out.append("")
+                elif bt == "text":
+                    out.append(block.get("text", ""))
+                    out.append("")
+                elif bt == "tool_use":
+                    name = block.get("name", "?")
+                    tool_id = block.get("id", "")
+                    out.append(f"**Tool call:** `{name}`"
+                               + (f"  *(id: `{tool_id}`)*" if tool_id else ""))
+                    out.append("")
+                    try:
+                        inp_str = json.dumps(block.get("input", {}), indent=2)
+                    except (TypeError, ValueError):
+                        inp_str = str(block.get("input"))
+                    out.append("```json")
+                    out.append(inp_str)
+                    out.append("```")
+                    out.append("")
+                elif bt == "tool_result":
+                    out.append(_render_tool_result(block))
+
+        elif ttype == "user":
+            for block in turn.get("content", []) or []:
+                if block.get("type") == "tool_result":
+                    out.append(_render_tool_result(block))
+                elif block.get("type") == "text":
+                    out.append(block.get("text", ""))
+                    out.append("")
+
+        elif ttype == "result":
+            usage = turn.get("usage") or {}
+            out.append(f"**Subtype:** {turn.get('subtype', '')}  ")
+            out.append(f"**Is error:** {turn.get('is_error', False)}  ")
+            if turn.get("duration_ms") is not None:
+                out.append(f"**Duration:** {turn['duration_ms']}ms  ")
+            if turn.get("num_turns") is not None:
+                out.append(f"**SDK turns:** {turn['num_turns']}  ")
+            if turn.get("total_cost_usd") is not None:
+                out.append(f"**Cost:** ${turn['total_cost_usd']}  ")
+            if usage:
+                out.append(f"**Usage:** `{json.dumps(usage)}`")
+            final = turn.get("result", "")
+            if final:
+                out.append("")
+                out.append("**Result text:**")
+                out.append("")
+                out.append("```")
+                out.append(final)
+                out.append("```")
+            out.append("")
+
+        else:
+            try:
+                out.append("```json")
+                out.append(json.dumps(turn, indent=2))
+                out.append("```")
+            except (TypeError, ValueError):
+                out.append(str(turn))
+            out.append("")
+
+    return "\n".join(out)
+
+
+def _render_tool_result(block: dict) -> str:
+    """Format a tool_result block into markdown."""
+    is_error = block.get("is_error", False)
+    tool_id = block.get("tool_use_id", "")
+    length = block.get("content_length", len(str(block.get("content", ""))))
+    label = "**Tool error**" if is_error else "**Tool result**"
+    header = f"{label} *(id: `{tool_id}`, {length} chars)*"
+    content = str(block.get("content", ""))
+    return "\n".join([
+        header,
+        "",
+        "```",
+        content if content else "(empty)",
+        "```",
+        "",
+    ])
+
+
+def inflate_claude_agents(date_dir: Path, out_dir: Path) -> int:
+    """Inflate ``claude_agent.jsonl`` entries into ``_claude_agents/<project>/``.
+
+    Returns the number of sessions written. Writes an ``_index.md`` summary.
+    """
+    jsonl_path = date_dir / "claude_agent.jsonl"
+    if not jsonl_path.exists():
+        return 0
+
+    entries: list[dict] = []
+    with open(jsonl_path) as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                print(f"  Warning: bad JSON on line {line_num} in claude_agent.jsonl: {e}")
+
+    if not entries:
+        return 0
+
+    base = out_dir / "_claude_agents"
+    base.mkdir(parents=True, exist_ok=True)
+
+    index_rows: list[tuple[str, str, str, str, int, int, str, str]] = []
+    for e in entries:
+        cwd = (e.get("input") or {}).get("cwd", "")
+        project = _project_from_cwd(cwd)
+        task_id = e.get("task_id") or "unknown"
+        ts = e.get("timestamp", "")
+        model = e.get("model", "")
+        dur = e.get("duration_ms", 0)
+        tokens = (e.get("output") or {}).get("tokens_used", 0)
+        result = (e.get("output") or {}).get("result", "")
+
+        proj_dir = base / project
+        proj_dir.mkdir(parents=True, exist_ok=True)
+
+        # Multiple sessions per task_id are possible (resume / retry). Number
+        # them by occurrence within the day.
+        existing = sorted(proj_dir.glob(f"{task_id}*.md"))
+        suffix = f"_{len(existing) + 1:02d}" if existing else ""
+        path = proj_dir / f"{task_id}{suffix}.md"
+        path.write_text(format_claude_agent_session(e), encoding="utf-8")
+        index_rows.append((project, task_id, ts, model, dur, tokens, result, path.name))
+
+    index_lines = [
+        f"# Claude agent sessions — {date_dir.name}",
+        "",
+        f"{len(index_rows)} sessions across "
+        f"{len({r[0] for r in index_rows})} project roots.",
+        "",
+        "| project | task | timestamp | model | dur_ms | tokens | result | file |",
+        "|---|---|---|---|---:|---:|---|---|",
+    ]
+    for r in sorted(index_rows, key=lambda x: x[2]):
+        index_lines.append(
+            f"| {r[0]} | {r[1]} | {r[2]} | `{r[3]}` | {r[4]} | {r[5]} | {r[6]} |"
+            f" [{r[7]}]({r[0]}/{r[7]}) |"
+        )
+    (base / "_index.md").write_text("\n".join(index_lines), encoding="utf-8")
+
+    return len(index_rows)
+
+
 def inflate_date(date_dir: Path) -> None:
     """Inflate a single date's logs."""
     jsonl_path = date_dir / "chat_provider.jsonl"
@@ -410,6 +655,12 @@ def inflate_date(date_dir: Path) -> None:
         f"  -> {out_dir} ({total_convs} conversations across "
         f"{len(project_convs)} projects, {len(entries)} total turns)"
     )
+
+    # Second pass: Claude agent sessions (different schema — one prompt +
+    # one summary per session; no per-turn transcript).
+    claude_count = inflate_claude_agents(date_dir, out_dir)
+    if claude_count:
+        print(f"  -> {out_dir}/_claude_agents ({claude_count} Claude agent sessions)")
 
 
 def main() -> None:

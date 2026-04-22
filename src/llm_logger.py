@@ -221,6 +221,7 @@ class LLMLogger:
         config_summary: dict | None = None,
         output: Any = None,
         duration_ms: int = 0,
+        transcript: list[dict] | None = None,
     ) -> None:
         """Log a Claude Code agent task session.
 
@@ -235,6 +236,10 @@ class LLMLogger:
             config_summary: Optional dict of agent config parameters.
             output: Agent output object (``AgentOutput``).
             duration_ms: Wall-clock duration of the session.
+            transcript: Optional ordered list of structured turn records
+                emitted during the session (assistant messages, tool uses,
+                tool results, result messages). When omitted the entry
+                contains only prompt + final summary.
         """
         if not self._enabled:
             return
@@ -249,7 +254,7 @@ class LLMLogger:
             if error_msg:
                 output_summary["error"] = error_msg[:500]
 
-        entry = {
+        entry: dict[str, Any] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "task_id": task_id,
             "session_id": session_id,
@@ -262,6 +267,8 @@ class LLMLogger:
             },
             "output": output_summary,
         }
+        if transcript:
+            entry["transcript"] = transcript
 
         self._append("claude_agent.jsonl", entry)
         # Also write to per-task log file if task_id is provided

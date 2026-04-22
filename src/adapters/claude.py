@@ -261,6 +261,12 @@ class ClaudeAdapter(AgentAdapter):
         self._inject_event = asyncio.Event()
         self._session_id: str | None = None
         self._llm_logger = llm_logger
+        # Per-turn transcript: accumulated structured records of every
+        # AssistantMessage / UserMessage / ResultMessage seen during the SDK
+        # stream. The adapter otherwise only persists prompt + final summary,
+        # so without this the intermediate turns (tool uses, tool results,
+        # thinking, per-turn text) are lost after the session ends.
+        self._turns: list[dict] = []
         # References to the active SDK transport/query so stop() can force-kill
         # the subprocess instead of just setting a flag.
         self._active_transport = None
@@ -269,6 +275,7 @@ class ClaudeAdapter(AgentAdapter):
     async def start(self, task: TaskContext) -> None:
         self._task = task
         self._cancel_event.clear()
+        self._turns = []
         ctx = get_correlation_context()
         logger.info(
             "Claude adapter starting for task %s",
@@ -505,6 +512,13 @@ class ClaudeAdapter(AgentAdapter):
                             text = self._extract_message_text(message)
                             if text:
                                 await on_message(text)
+
+                        # Record a structured turn for later analysis. Unlike
+                        # the callback (lossy, display-oriented), this keeps
+                        # full tool inputs/results.
+                        turn = self._extract_structured_turn(message)
+                        if turn is not None:
+                            self._turns.append(turn)
 
                         # Capture result and token usage from ResultMessage
                         if isinstance(message, ResultMessage):
@@ -771,7 +785,120 @@ class ClaudeAdapter(AgentAdapter):
             },
             output=output,
             duration_ms=duration_ms,
+            transcript=list(self._turns),
         )
+
+    _TOOL_RESULT_MAX_CHARS = 20_000
+
+    def _extract_structured_turn(self, message) -> dict | None:
+        """Return a structured record for a single SDK message, or ``None``.
+
+        Companion to :meth:`_extract_message_text`: that one produces lossy,
+        Discord-friendly text for live streaming; this one produces a
+        machine-readable record for persistence and later analysis.
+
+        Tool result payloads are truncated to ``_TOOL_RESULT_MAX_CHARS`` to
+        keep per-session log size bounded; the original length is recorded
+        so analysis code can tell when truncation happened.
+        """
+        if not _sdk_types_loaded:
+            return None
+
+        from datetime import datetime, timezone
+
+        ts = datetime.now(timezone.utc).isoformat()
+
+        if isinstance(message, _AssistantMessage):
+            blocks: list[dict] = []
+            for block in getattr(message, "content", None) or []:
+                if isinstance(block, _ThinkingBlock):
+                    blocks.append(
+                        {"type": "thinking", "text": getattr(block, "thinking", "")}
+                    )
+                elif isinstance(block, _TextBlock):
+                    blocks.append({"type": "text", "text": getattr(block, "text", "")})
+                elif isinstance(block, _ToolUseBlock):
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": getattr(block, "id", ""),
+                            "name": getattr(block, "name", ""),
+                            "input": getattr(block, "input", {}),
+                        }
+                    )
+                elif isinstance(block, _ToolResultBlock):
+                    # Rare on assistant messages but handle defensively.
+                    content_val = getattr(block, "content", "")
+                    blocks.append(self._tool_result_block(block, content_val))
+            if not blocks:
+                return None
+            return {"ts": ts, "type": "assistant", "content": blocks}
+
+        if isinstance(message, _UserMessage):
+            blocks = []
+            content = getattr(message, "content", None)
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, _ToolResultBlock):
+                        blocks.append(
+                            self._tool_result_block(block, getattr(block, "content", ""))
+                        )
+                    elif isinstance(block, _TextBlock):
+                        blocks.append({"type": "text", "text": getattr(block, "text", "")})
+            # Some SDK versions surface tool results via tool_use_result dict.
+            tu_result = getattr(message, "tool_use_result", None)
+            if isinstance(tu_result, dict) and tu_result.get("content"):
+                blocks.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tu_result.get("tool_use_id", ""),
+                        "is_error": bool(tu_result.get("is_error")),
+                        "content": self._truncate(tu_result.get("content", "")),
+                        "content_length": len(str(tu_result.get("content", ""))),
+                    }
+                )
+            if not blocks:
+                return None
+            return {"ts": ts, "type": "user", "content": blocks}
+
+        if isinstance(message, _ResultMessage):
+            return {
+                "ts": ts,
+                "type": "result",
+                "subtype": getattr(message, "subtype", ""),
+                "is_error": bool(getattr(message, "is_error", False)),
+                "result": str(getattr(message, "result", "") or ""),
+                "usage": getattr(message, "usage", None) or {},
+                "total_cost_usd": getattr(message, "total_cost_usd", None),
+                "duration_ms": getattr(message, "duration_ms", None),
+                "num_turns": getattr(message, "num_turns", None),
+            }
+
+        return None
+
+    def _tool_result_block(self, block, content_val) -> dict:
+        """Shape a ToolResultBlock for the transcript, truncating if needed."""
+        if isinstance(content_val, list):
+            # SDK sometimes returns a list of content parts (text + image).
+            text_parts = [
+                p.get("text", "") if isinstance(p, dict) else str(p) for p in content_val
+            ]
+            content_str = "\n".join(text_parts)
+        else:
+            content_str = str(content_val or "")
+        return {
+            "type": "tool_result",
+            "tool_use_id": getattr(block, "tool_use_id", ""),
+            "is_error": bool(getattr(block, "is_error", False)),
+            "content": self._truncate(content_str),
+            "content_length": len(content_str),
+        }
+
+    def _truncate(self, s: str) -> str:
+        s = str(s or "")
+        if len(s) <= self._TOOL_RESULT_MAX_CHARS:
+            return s
+        return s[: self._TOOL_RESULT_MAX_CHARS] + f"\n…[truncated {len(s) - self._TOOL_RESULT_MAX_CHARS} chars]"
 
     async def stop(self) -> None:
         self._cancel_event.set()
