@@ -9,6 +9,7 @@ Tests cover:
 - Retry logic on validation failures
 - Error handling (LLM failures, malformed output)
 - Compilation happy-path per roadmap 5.1.8 (a)-(g)
+- aq:// URI rewriting at compile time
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -24,6 +27,16 @@ from src.chat_providers.types import ChatResponse, TextBlock
 from src.playbooks.compiler import CompilationResult, PlaybookCompiler
 from src.playbooks.models import CompiledPlaybook, generate_json_schema
 from src.playbooks.store import CompiledPlaybookStore
+
+
+@dataclass
+class FakeConfig:
+    data_dir: str
+    vault_root: str
+
+
+# Default fake config for tests that don't care about aq:// rewriting.
+_DEFAULT_CONFIG = FakeConfig(data_dir="/tmp", vault_root="/tmp/vault")
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +444,7 @@ class TestMergeFrontmatter:
 class TestPromptConstruction:
     def test_system_prompt_includes_schema(self):
         provider = _make_provider([])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
         prompt = compiler._build_system_prompt()
         assert "JSON Schema" in prompt
         assert '"nodes"' in prompt
@@ -473,7 +486,7 @@ class TestCompileSuccess:
         """Happy path: LLM returns valid JSON on first attempt."""
         response_json = _wrap_json(VALID_COMPILED_NODES)
         provider = _make_provider([response_json])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
 
@@ -493,7 +506,7 @@ class TestCompileSuccess:
         """existing_version is incremented by 1."""
         response_json = _wrap_json(VALID_COMPILED_NODES)
         provider = _make_provider([response_json])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD, existing_version=5)
         assert result.playbook.version == 6
@@ -503,7 +516,7 @@ class TestCompileSuccess:
         """Cooldown from frontmatter is applied to compiled playbook."""
         response_json = _wrap_json(VALID_COMPILED_NODES)
         provider = _make_provider([response_json])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(PLAYBOOK_WITH_COOLDOWN_MD)
         assert result.success is True
@@ -521,7 +534,7 @@ class TestCompileSuccess:
         }
         response_json = _wrap_json(nodes_with_id)
         provider = _make_provider([response_json])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
         assert result.success is True
@@ -534,7 +547,7 @@ class TestCompileSuccess:
         """Result includes the computed source hash."""
         response_json = _wrap_json(VALID_COMPILED_NODES)
         provider = _make_provider([response_json])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
         assert result.source_hash
@@ -545,7 +558,7 @@ class TestCompileSuccess:
         """Result includes the raw JSON dict."""
         response_json = _wrap_json(VALID_COMPILED_NODES)
         provider = _make_provider([response_json])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
         assert result.raw_json is not None
@@ -556,7 +569,7 @@ class TestCompileSuccess:
         """Verify the provider receives system + user messages."""
         response_json = _wrap_json(VALID_COMPILED_NODES)
         provider = _make_provider([response_json])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         await compiler.compile(SIMPLE_PLAYBOOK_MD)
 
@@ -598,7 +611,7 @@ class TestCompileRetry:
             }
         }
         provider = _make_provider([_wrap_json(bad_nodes), _wrap_json(good_nodes)])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
 
@@ -624,7 +637,7 @@ class TestCompileRetry:
         }
         # 3 identical bad responses (1 initial + 2 retries)
         provider = _make_provider([_wrap_json(bad_nodes)] * 3)
-        compiler = PlaybookCompiler(provider, max_retries=2)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG, max_retries=2)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
 
@@ -641,7 +654,7 @@ class TestCompileRetry:
                 _wrap_json(VALID_COMPILED_NODES),
             ]
         )
-        compiler = PlaybookCompiler(provider, max_retries=1)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG, max_retries=1)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
         assert result.success is True
@@ -652,7 +665,7 @@ class TestCompileRetry:
         """With max_retries=0, only one attempt is made."""
         bad_nodes = {"nodes": {"a": {"prompt": "x", "goto": "b"}, "b": {"terminal": True}}}
         provider = _make_provider([_wrap_json(bad_nodes)])
-        compiler = PlaybookCompiler(provider, max_retries=0)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG, max_retries=0)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
         assert result.success is False
@@ -670,7 +683,7 @@ class TestCompileErrors:
         """Markdown without frontmatter fails immediately (no LLM call)."""
         md = "# Just a heading\n\nSome process description."
         provider = _make_provider([])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(md)
 
@@ -683,7 +696,7 @@ class TestCompileErrors:
         """Frontmatter missing required fields fails before LLM call."""
         md = "---\nid: test\n---\nBody"
         provider = _make_provider([])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(md)
 
@@ -698,7 +711,7 @@ class TestCompileErrors:
         provider.model_name = "test-model"
         provider.create_message = AsyncMock(side_effect=RuntimeError("API timeout"))
 
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
 
         assert result.success is False
@@ -713,7 +726,7 @@ class TestCompileErrors:
         # Actually from_dict is quite lenient, so we need something that raises
         bad_json = {"nodes": {"a": {"transitions": "not-a-list"}}}
         provider = _make_provider([_wrap_json(bad_json)] * 3)
-        compiler = PlaybookCompiler(provider, max_retries=2)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG, max_retries=2)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
 
@@ -810,7 +823,7 @@ class TestSpecExampleRoundTrip:
         }
 
         provider = _make_provider([_wrap_json(spec_nodes)])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
 
@@ -851,7 +864,7 @@ class TestSpecExampleRoundTrip:
         }
 
         provider = _make_provider([_wrap_json(nodes)])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
 
         assert result.success is True
@@ -872,7 +885,7 @@ class TestEdgeCases:
         """LLM returns JSON without code fences — still works."""
         raw = json.dumps(VALID_COMPILED_NODES)
         provider = _make_provider([raw])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
         assert result.success is True
@@ -886,7 +899,7 @@ class TestEdgeCases:
             "This covers all the steps described in the markdown."
         )
         provider = _make_provider([response])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
         assert result.success is True
@@ -896,7 +909,7 @@ class TestEdgeCases:
         """Custom max_tokens is passed through to the provider."""
         response_json = _wrap_json(VALID_COMPILED_NODES)
         provider = _make_provider([response_json])
-        compiler = PlaybookCompiler(provider, max_tokens=8192)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG, max_tokens=8192)
 
         await compiler.compile(SIMPLE_PLAYBOOK_MD)
 
@@ -909,7 +922,7 @@ class TestEdgeCases:
         md = "---\nid: test\ntriggers:\n  - e\nscope: system\nenabled: false\n---\nBody"
         response_json = _wrap_json(VALID_COMPILED_NODES)
         provider = _make_provider([response_json])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
 
         result = await compiler.compile(md)
         assert result.success is True
@@ -999,7 +1012,7 @@ class TestCompilationHappyPath:
         import jsonschema
 
         provider = _make_provider([_wrap_json(HAPPY_PATH_LLM_NODES)])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
         result = await compiler.compile(HAPPY_PATH_MD)
 
         assert result.success is True
@@ -1019,7 +1032,7 @@ class TestCompilationHappyPath:
     async def test_b_entry_node_all_nodes_and_transitions(self):
         """(b) Compiled JSON has correct entry_node, all node defs, all transitions."""
         provider = _make_provider([_wrap_json(HAPPY_PATH_LLM_NODES)])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
         result = await compiler.compile(HAPPY_PATH_MD)
 
         pb = result.playbook
@@ -1073,7 +1086,7 @@ class TestCompilationHappyPath:
         currently-defined node fields are tested here.
         """
         provider = _make_provider([_wrap_json(HAPPY_PATH_LLM_NODES)])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
         result = await compiler.compile(HAPPY_PATH_MD)
 
         pb = result.playbook
@@ -1109,7 +1122,7 @@ class TestCompilationHappyPath:
     async def test_d_transition_fields_correctly_extracted(self):
         """(d) Transition fields (condition, target, structured expr) extracted correctly."""
         provider = _make_provider([_wrap_json(HAPPY_PATH_LLM_NODES)])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
         result = await compiler.compile(HAPPY_PATH_MD)
 
         pb = result.playbook
@@ -1151,7 +1164,7 @@ class TestCompilationHappyPath:
     async def test_e_frontmatter_fields_preserved(self):
         """(e) Frontmatter fields (trigger, scope, cooldown) preserved in compiled output."""
         provider = _make_provider([_wrap_json(HAPPY_PATH_LLM_NODES)])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
         result = await compiler.compile(HAPPY_PATH_MD)
 
         pb = result.playbook
@@ -1188,7 +1201,7 @@ class TestCompilationHappyPath:
             **HAPPY_PATH_LLM_NODES,
         }
         provider = _make_provider([_wrap_json(nodes_with_llm_metadata)])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
         result = await compiler.compile(HAPPY_PATH_MD)
 
         pb = result.playbook
@@ -1210,11 +1223,11 @@ class TestCompilationHappyPath:
         response_text = _wrap_json(HAPPY_PATH_LLM_NODES)
 
         provider1 = _make_provider([response_text])
-        compiler1 = PlaybookCompiler(provider1)
+        compiler1 = PlaybookCompiler(provider1, config=_DEFAULT_CONFIG)
         result1 = await compiler1.compile(HAPPY_PATH_MD)
 
         provider2 = _make_provider([response_text])
-        compiler2 = PlaybookCompiler(provider2)
+        compiler2 = PlaybookCompiler(provider2, config=_DEFAULT_CONFIG)
         result2 = await compiler2.compile(HAPPY_PATH_MD)
 
         assert result1.success is True
@@ -1242,11 +1255,11 @@ class TestCompilationHappyPath:
         response_text = _wrap_json(HAPPY_PATH_LLM_NODES)
 
         provider1 = _make_provider([response_text])
-        compiler1 = PlaybookCompiler(provider1)
+        compiler1 = PlaybookCompiler(provider1, config=_DEFAULT_CONFIG)
         result1 = await compiler1.compile(HAPPY_PATH_MD, existing_version=3)
 
         provider2 = _make_provider([response_text])
-        compiler2 = PlaybookCompiler(provider2)
+        compiler2 = PlaybookCompiler(provider2, config=_DEFAULT_CONFIG)
         result2 = await compiler2.compile(HAPPY_PATH_MD, existing_version=3)
 
         assert result1.playbook.version == 4
@@ -1263,7 +1276,7 @@ class TestCompilationHappyPath:
     async def test_g_stored_at_correct_system_scope_path(self, tmp_path):
         """(g) Compiled JSON stored at correct path for system scope."""
         provider = _make_provider([_wrap_json(VALID_COMPILED_NODES)])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
         result = await compiler.compile(SIMPLE_PLAYBOOK_MD)
 
         assert result.success is True
@@ -1290,7 +1303,7 @@ class TestCompilationHappyPath:
     async def test_g_stored_at_correct_project_scope_path(self, tmp_path):
         """(g) Compiled JSON stored at correct path for project scope."""
         provider = _make_provider([_wrap_json(HAPPY_PATH_LLM_NODES)])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
         result = await compiler.compile(HAPPY_PATH_MD)
 
         assert result.success is True
@@ -1335,7 +1348,7 @@ scope: agent-type:coding
 Run lint on all changed files when a coding agent starts a task.
 """
         provider = _make_provider([_wrap_json(VALID_COMPILED_NODES)])
-        compiler = PlaybookCompiler(provider)
+        compiler = PlaybookCompiler(provider, config=_DEFAULT_CONFIG)
         result = await compiler.compile(md)
 
         assert result.success is True
@@ -1355,3 +1368,51 @@ Run lint on all changed files when a coding agent starts a task.
         assert loaded is not None
         assert loaded.scope == "agent-type:coding"
         assert loaded.triggers == ["task.started"]
+
+
+# ---------------------------------------------------------------------------
+# aq:// URI rewriting at compile time
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compiler_rewrites_aq_uris_before_llm_call(tmp_path: Path):
+    """The LLM must see absolute paths, never aq:// URIs.
+
+    We capture the user message passed to the provider and assert that
+    no aq:// tokens remain — and that the expected absolute path is
+    present instead.
+    """
+    config = FakeConfig(data_dir=str(tmp_path), vault_root=str(tmp_path / "vault"))
+
+    captured_messages: list[list[dict]] = []
+
+    class FakeProvider:
+        async def create_message(self, *, messages, system, max_tokens):
+            captured_messages.append(messages)
+            # Return a minimal valid playbook JSON so compile() can proceed.
+            # nodes must be a dict keyed by node_id; one entry node + one terminal.
+            class _Resp:
+                text_parts = [
+                    '{"nodes": {'
+                    '"start": {"entry": true, "prompt": "do it", "goto": "done"},'
+                    '"done": {"terminal": true}'
+                    "}}"
+                ]
+            return _Resp()
+
+    compiler = PlaybookCompiler(FakeProvider(), config=config)
+
+    markdown = (
+        "---\nid: p\ntriggers: [manual]\nscope: system\n---\n"
+        'Call read_file(path="aq://vault/projects/<project_id>/memory/x.md").\n'
+        'Then render_prompt(path="aq://prompts/task.md").'
+    )
+    result = await compiler.compile(markdown)
+    assert result.success, f"compile failed: {result.errors}"
+
+    # The message the LLM saw must have been rewritten.
+    assert captured_messages, "provider was not called"
+    sent_text = captured_messages[0][0]["content"]
+    assert "aq://" not in sent_text, sent_text
+    assert f"{config.vault_root}/projects/<project_id>/memory/x.md" in sent_text

@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from src.aq_uri import AqUriError, rewrite_aq_uris
 from src.playbooks.models import CompiledPlaybook, generate_json_schema
 
 if TYPE_CHECKING:
@@ -116,10 +117,12 @@ class PlaybookCompiler:
         self,
         provider: ChatProvider,
         *,
+        config,  # _ConfigLike from aq_uri — provides data_dir and vault_root
         max_retries: int = MAX_RETRIES,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         self._provider = provider
+        self._config = config
         self._max_retries = max_retries
         self._max_tokens = max_tokens
         self._schema = generate_json_schema()
@@ -155,6 +158,16 @@ class PlaybookCompiler:
         fm_errors = self._validate_frontmatter(frontmatter)
         if fm_errors:
             return CompilationResult(success=False, errors=fm_errors)
+
+        # Rewrite aq:// URIs in the body so the LLM (and every downstream
+        # consumer) sees only absolute filesystem paths.
+        try:
+            body = rewrite_aq_uris(body, config=self._config)
+        except AqUriError as exc:
+            return CompilationResult(
+                success=False,
+                errors=[f"aq:// rewrite failed: {exc}"],
+            )
 
         # 2. Compute source hash
         source_hash = self._compute_source_hash(markdown)

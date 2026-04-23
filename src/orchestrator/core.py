@@ -910,6 +910,7 @@ class Orchestrator(
 
         self.playbook_manager = PlaybookManager(
             chat_provider=playbook_provider,
+            config=self.config,
             event_bus=self.bus,
             data_dir=self.config.data_dir,
             playbook_max_tokens=self.config.chat_provider.playbook_max_tokens,
