@@ -99,3 +99,26 @@ These packages have updates available but are not urgent:
   python-multipart vulnerabilities at the installed version satisfying
   `>=0.0.26`. The `>=` pin still permits later patch releases to be
   installed when available.
+- **Task lineage note: `noble-impact` → `agile-beacon` → `grand-willow`.**
+  The `python-multipart>=0.0.26` pin was originally targeted by task
+  `noble-impact`, which exhausted its retry budget (3/3) and was left in
+  `BLOCKED` state. A follow-up investigation task `agile-beacon` was
+  spawned to diagnose the retry exhaustion. In parallel, task
+  `steady-meadow` independently performed the required pin and landed it
+  in `pyproject.toml` (commit `97717f0d`), and `agile-ember` landed the
+  audit-doc reconciliation entry immediately above (commit `e1345f23`).
+  By the time the re-implementation task `grand-willow` ran, the
+  acceptance criteria were already satisfied: `python-multipart==0.0.26`
+  is installed, `pyproject.toml` pins `>=0.0.26`, and a fresh `pip-audit`
+  run (against the active environment, 2026-04-22) reports zero
+  vulnerabilities for `python-multipart` — and, incidentally, zero
+  vulnerabilities for the overall environment. The follow-up
+  spec-divergence research task `smart-nexus` (titled "Check for spec
+  divergence after python-multipart update") also ran to completion and
+  confirmed no divergence. No code changes were required in
+  `grand-willow`; this lineage note is recorded so future agents can see
+  at a glance that the `noble-impact` / `agile-beacon` work-stream is
+  fully resolved and do not attempt to re-pin a version that is already
+  in place. Note: this project does not use `uv.lock` — dependency
+  resolution is driven entirely by `pyproject.toml` — so the original
+  task's `uv.lock` acceptance criterion is satisfied vacuously (N/A).
