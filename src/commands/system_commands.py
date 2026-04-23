@@ -10,7 +10,6 @@ import signal
 import time
 from pathlib import Path
 
-from src.aq_uri import AqUriError, is_aq_uri, rewrite_aq_uris
 from src.commands.helpers import _run_subprocess, _run_subprocess_shell
 
 logger = logging.getLogger(__name__)
@@ -697,15 +696,37 @@ class SystemCommandsMixin:
             "total": len(templates),
         }
 
+    def _load_prompt_from_path(self, path: str):
+        """Load a prompt template from an absolute filesystem path."""
+        from pathlib import Path
+
+        from src.prompt_manager import load_template
+
+        p = Path(path)
+        if not p.is_absolute():
+            return None, {"error": f"path must be absolute: {path!r}"}
+        if not p.is_file():
+            return None, {"error": f"Prompt not found at {path}"}
+        tmpl = load_template(str(p))
+        if tmpl is None:
+            return None, {"error": f"Could not parse prompt template at {path}"}
+        return tmpl, None
+
     async def _cmd_read_prompt(self, args: dict) -> dict:
         """Read a specific prompt template's content and metadata.
 
         Accepts either ``(project_id, name)`` for project-scoped templates
-        or ``uri="aq://prompts/<path>"`` for bundled templates.
+        or ``path=<absolute-path>`` for bundled templates.
         """
-        uri = args.get("uri")
-        if uri:
-            return await self._read_prompt_by_uri(uri)
+        path = args.get("path")
+        if path:
+            tmpl, err = self._load_prompt_from_path(path)
+            if err is not None:
+                return err
+            result = tmpl.to_dict()
+            result["content"] = tmpl.body
+            result["path"] = path
+            return result
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
@@ -726,11 +747,23 @@ class SystemCommandsMixin:
         """Render a prompt template with variable substitution.
 
         Accepts either ``(project_id, name)`` for project-scoped templates
-        or ``uri="aq://prompts/<path>"`` for bundled templates.
+        or ``path=<absolute-path>`` for bundled templates.
         """
-        uri = args.get("uri")
-        if uri:
-            return await self._render_prompt_by_uri(uri, args.get("variables") or {})
+        from src.prompt_manager import render_template
+
+        path = args.get("path")
+        if path:
+            tmpl, err = self._load_prompt_from_path(path)
+            if err is not None:
+                return err
+            variables = args.get("variables") or {}
+            rendered = render_template(tmpl, variables)
+            return {
+                "path": path,
+                "name": tmpl.name,
+                "rendered": rendered,
+                "variables_used": variables,
+            }
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
@@ -746,48 +779,6 @@ class SystemCommandsMixin:
             return {"error": f"Prompt template '{args['name']}' not found"}
         return {
             "name": args["name"],
-            "rendered": rendered,
-            "variables_used": variables,
-        }
-
-    async def _resolve_aq_prompt(self, uri: str):
-        """Resolve + load a prompt template addressed by an ``aq://`` URI."""
-        from pathlib import Path as PathlibPath
-        from src.prompt_manager import load_template
-
-        if not is_aq_uri(uri):
-            return None, {"error": f"uri must start with aq://: {uri!r}"}
-        try:
-            resolved_uri = rewrite_aq_uris(uri, config=self.config)
-            path = PathlibPath(resolved_uri)
-        except AqUriError as exc:
-            return None, {"error": f"Invalid aq:// URI: {exc}"}
-        if not path.is_file():
-            return None, {"error": f"Prompt not found at {uri}"}
-        tmpl = load_template(str(path))
-        if tmpl is None:
-            return None, {"error": f"Could not parse prompt template at {uri}"}
-        return tmpl, None
-
-    async def _read_prompt_by_uri(self, uri: str) -> dict:
-        tmpl, err = await self._resolve_aq_prompt(uri)
-        if err is not None:
-            return err
-        result = tmpl.to_dict()
-        result["content"] = tmpl.body
-        result["uri"] = uri
-        return result
-
-    async def _render_prompt_by_uri(self, uri: str, variables: dict) -> dict:
-        from src.prompt_manager import render_template
-
-        tmpl, err = await self._resolve_aq_prompt(uri)
-        if err is not None:
-            return err
-        rendered = render_template(tmpl, variables)
-        return {
-            "uri": uri,
-            "name": tmpl.name,
             "rendered": rendered,
             "variables_used": variables,
         }

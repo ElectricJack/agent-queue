@@ -1464,30 +1464,32 @@ _ALL_TOOL_DEFINITIONS = [
             "Read a prompt template's full content and metadata. Returns the "
             "template body, variable definitions, tags, and category. "
             "Pass either (project_id, name) for a project-scoped template, "
-            "or uri='aq://prompts/<path>' for a bundled template that ships "
-            "with the daemon (portable across machines)."
+            "or path=<absolute path> for a bundled template that ships "
+            "with the daemon (in playbooks, use aq://prompts/<path> — compiler rewrites)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Project ID (required unless uri is set)",
+                    "description": "Project ID (required unless path is set)",
                 },
                 "name": {
                     "type": "string",
                     "description": (
                         "Template name from list_prompts (e.g. 'plan-generation'), "
                         "or the filename (e.g. 'plan-generation.md'). Required "
-                        "unless uri is set."
+                        "unless path is set."
                     ),
                 },
-                "uri": {
+                "path": {
                     "type": "string",
                     "description": (
-                        "aq:// URI for a bundled template, e.g. "
-                        "'aq://prompts/consolidation_task.md'. Mutually "
-                        "exclusive with (project_id, name)."
+                        "Absolute filesystem path to a bundled template, e.g. "
+                        "'/opt/agent-queue/src/prompts/consolidation_task.md'. In "
+                        "playbook authoring, use aq://prompts/<name>.md instead — "
+                        "the playbook compiler rewrites it to an absolute path. "
+                        "Mutually exclusive with (project_id, name)."
                     ),
                 },
             },
@@ -1499,26 +1501,28 @@ _ALL_TOOL_DEFINITIONS = [
             "Render a prompt template with variable substitution. Replaces "
             "{{variable}} placeholders with provided values. Returns the "
             "fully rendered prompt text. Pass either (project_id, name) for a "
-            "project-scoped template, or uri='aq://prompts/<path>' for a "
-            "bundled template."
+            "project-scoped template, or path=<absolute path> for a bundled "
+            "template (in playbooks, use aq://prompts/<path> — compiler rewrites)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Project ID (required unless uri is set)",
+                    "description": "Project ID (required unless path is set)",
                 },
                 "name": {
                     "type": "string",
-                    "description": "Template name to render (required unless uri is set)",
+                    "description": "Template name to render (required unless path is set)",
                 },
-                "uri": {
+                "path": {
                     "type": "string",
                     "description": (
-                        "aq:// URI for a bundled template, e.g. "
-                        "'aq://prompts/consolidation_task.md'. Mutually "
-                        "exclusive with (project_id, name)."
+                        "Absolute filesystem path to a bundled template, e.g. "
+                        "'/opt/agent-queue/src/prompts/consolidation_task.md'. In "
+                        "playbook authoring, use aq://prompts/<name>.md instead — "
+                        "the playbook compiler rewrites it to an absolute path. "
+                        "Mutually exclusive with (project_id, name)."
                     ),
                 },
                 "variables": {
