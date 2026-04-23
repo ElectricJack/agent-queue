@@ -1463,21 +1463,34 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Read a prompt template's full content and metadata. Returns the "
             "template body, variable definitions, tags, and category. "
-            "Use the 'name' field from list_prompts as the name parameter."
+            "Pass either (project_id, name) for a project-scoped template, "
+            "or uri='aq://prompts/<path>' for a bundled template that ships "
+            "with the daemon (portable across machines)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (required unless uri is set)",
+                },
                 "name": {
                     "type": "string",
                     "description": (
                         "Template name from list_prompts (e.g. 'plan-generation'), "
-                        "or the filename (e.g. 'plan-generation.md')"
+                        "or the filename (e.g. 'plan-generation.md'). Required "
+                        "unless uri is set."
+                    ),
+                },
+                "uri": {
+                    "type": "string",
+                    "description": (
+                        "aq:// URI for a bundled template, e.g. "
+                        "'aq://prompts/consolidation_task.md'. Mutually "
+                        "exclusive with (project_id, name)."
                     ),
                 },
             },
-            "required": ["project_id", "name"],
         },
     },
     {
@@ -1485,15 +1498,28 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Render a prompt template with variable substitution. Replaces "
             "{{variable}} placeholders with provided values. Returns the "
-            "fully rendered prompt text."
+            "fully rendered prompt text. Pass either (project_id, name) for a "
+            "project-scoped template, or uri='aq://prompts/<path>' for a "
+            "bundled template."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (required unless uri is set)",
+                },
                 "name": {
                     "type": "string",
-                    "description": "Template name to render",
+                    "description": "Template name to render (required unless uri is set)",
+                },
+                "uri": {
+                    "type": "string",
+                    "description": (
+                        "aq:// URI for a bundled template, e.g. "
+                        "'aq://prompts/consolidation_task.md'. Mutually "
+                        "exclusive with (project_id, name)."
+                    ),
                 },
                 "variables": {
                     "type": "object",
@@ -1503,7 +1529,6 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
             },
-            "required": ["project_id", "name"],
         },
     },
     # Git tools (get_git_status, git_commit, git_pull, git_push, git_create_branch,
