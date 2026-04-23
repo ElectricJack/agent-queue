@@ -452,6 +452,59 @@ class TestPluginMemorySave:
         assert "error" in result
         assert "not available" in result["error"]
 
+    def test_coerce_content_accepts_str(self, plugin):
+        assert plugin._coerce_content_to_str("hello") == "hello"
+
+    def test_coerce_content_none_and_empty(self, plugin):
+        assert plugin._coerce_content_to_str(None) is None
+        assert plugin._coerce_content_to_str("") is None
+
+    def test_coerce_content_dict_to_json(self, plugin):
+        """Regression: dict content must be JSON-encoded, not raise.
+
+        Previously, passing a dict into memory_store caused downstream
+        ``content[:1000]`` to raise ``KeyError: slice(None, 1000, None)``.
+        """
+        out = plugin._coerce_content_to_str({"a": 1, "b": [2, 3]})
+        assert isinstance(out, str)
+        assert '"a": 1' in out
+        # Confirm slicing works on the coerced value
+        assert out[:10] == out[:10]
+
+    def test_coerce_content_list_to_json(self, plugin):
+        out = plugin._coerce_content_to_str([{"k": "v"}, 42])
+        assert isinstance(out, str)
+        assert "42" in out
+
+    def test_coerce_content_non_serializable_falls_back_to_str(self, plugin):
+        class NotJSON:
+            def __repr__(self) -> str:
+                return "NotJSON()"
+
+        # default=str on json.dumps handles this; worst case, str() fallback.
+        out = plugin._coerce_content_to_str(NotJSON())
+        assert isinstance(out, str)
+        assert "NotJSON" in out
+
+    @pytest.mark.asyncio
+    async def test_store_with_dict_content_does_not_raise_slice_error(self, plugin):
+        """Regression: memory_store with a dict content must not produce
+        the 'slice(None, 1000, None)' KeyError.
+        """
+        # Make service unavailable so we exit before hitting Milvus — we only
+        # need to verify the coercion guard runs before the dict would hit
+        # ``content[:1000]`` downstream.
+        plugin._service = None
+        plugin._log = MagicMock()
+        result = await plugin.cmd_memory_store(
+            {
+                "project_id": "proj",
+                "content": {"stuck_tasks": [], "blocked_issues": []},
+            }
+        )
+        # We should NOT see the slice-error signature anywhere.
+        assert "slice(None" not in str(result)
+
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
     async def test_save_creates_new_distinct(self, wired_plugin, mock_store):

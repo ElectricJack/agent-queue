@@ -2182,13 +2182,36 @@ class MemoryV2Plugin(InternalPlugin):
             self._log.debug("Content classification failed, defaulting to insight")
             return {"type": "insight", "topic": None}
 
+    @staticmethod
+    def _coerce_content_to_str(content: Any) -> str | None:
+        """Normalize ``content`` to a string.
+
+        Agents sometimes pass structured objects (dicts/lists) as ``content``
+        even though the tool schema declares it as a string.  Downstream code
+        (``content[:1000]``, ``content.split()``, etc.) assumes a string and
+        would raise otherwise — for example, ``dict[:1000]`` raises
+        ``KeyError: slice(None, 1000, None)``.
+
+        Returns the normalized string, or ``None`` if the input is empty /
+        ``None``.  Non-string, non-empty inputs are JSON-encoded (with a
+        ``str`` default fallback for objects that are not JSON-serializable).
+        """
+        if content is None:
+            return None
+        if isinstance(content, str):
+            return content if content else None
+        try:
+            return json.dumps(content, ensure_ascii=False, indent=2, default=str)
+        except (TypeError, ValueError):
+            return str(content)
+
     async def cmd_memory_store(self, args: dict) -> dict:
         """Unified memory storage with LLM-based content classification.
 
         Classifies content as either a key-value fact or a semantic memory
         (insight/knowledge/guidance) and routes to the appropriate backend.
         """
-        content = args.get("content")
+        content = self._coerce_content_to_str(args.get("content"))
         if not content:
             return {"error": "content is required"}
 
@@ -2281,7 +2304,7 @@ class MemoryV2Plugin(InternalPlugin):
         project_id = self._resolve_project_id(args)
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
-        content = args.get("content")
+        content = self._coerce_content_to_str(args.get("content"))
         if not content:
             return {"error": "content is required"}
 
@@ -3678,6 +3701,8 @@ class MemoryV2Plugin(InternalPlugin):
             return self._unavailable("memory_update")
 
         content = args.get("content")
+        if content is not None and not isinstance(content, str):
+            content = self._coerce_content_to_str(content)
         tags = args.get("tags")
         topic = args.get("topic")
         scope = args.get("scope")
@@ -3732,6 +3757,8 @@ class MemoryV2Plugin(InternalPlugin):
 
         scope = args.get("scope")
         override_content = args.get("content")
+        if override_content is not None and not isinstance(override_content, str):
+            override_content = self._coerce_content_to_str(override_content)
         override_topic = args.get("topic")
         override_tags = args.get("tags")
 
