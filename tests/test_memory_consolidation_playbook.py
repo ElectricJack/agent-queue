@@ -100,20 +100,22 @@ def test_references_consolidation_prompt(playbook_text: str) -> None:
 
 
 def test_uses_scoped_vault_memory_tools(playbook_text: str) -> None:
-    """Timer-run vault inspection must go through the dedicated tools.
+    """Timer-run vault inspection must address the vault portably.
 
-    The ordinary ``read_file`` / ``list_directory`` tools are sandboxed to
-    the workspace and cannot see ``~/.agent-queue/vault/``. The playbook
-    must direct the supervisor to use ``read_project_memory_file`` and
-    ``count_project_memory_files`` instead.
+    The supervisor reads ``consolidation.md`` via ``read_file`` using an
+    ``aq://vault/...`` URI, which the daemon resolves to the configured
+    vault root — portable across machines and immune to ``~`` shell-expansion
+    quirks. For the churn count we still use the dedicated
+    ``count_project_memory_files`` tool because it has server-side mtime
+    filtering with no ``aq://`` equivalent.
     """
-    assert "read_project_memory_file" in playbook_text, (
-        "Timer-run step should use read_project_memory_file to read "
-        "consolidation.md, not read_file (which cannot access the vault)."
+    assert "aq://vault/projects/" in playbook_text, (
+        "Timer-run step should read consolidation.md via "
+        'read_file(path="aq://vault/projects/<id>/memory/consolidation.md").'
     )
     assert "count_project_memory_files" in playbook_text, (
         "Timer-run step should use count_project_memory_files to count "
-        "insight churn, not list_directory (which cannot access the vault)."
+        "insight churn (server-side mtime filtering)."
     )
 
 
