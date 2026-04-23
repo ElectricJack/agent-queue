@@ -76,7 +76,7 @@ mcp = [
 cli = [
     "click>=8.1",
     "prompt-toolkit>=3.0",
-    "agent-queue-api-client",
+    "agent-queue-api-client @ file:packages/aq-client",
 ]
 dev = [
     # CVE-2025-71176: pytest <9.0.3 uses predictable /tmp/pytest-of-{user}
