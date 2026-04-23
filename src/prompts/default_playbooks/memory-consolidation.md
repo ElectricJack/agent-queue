@@ -100,7 +100,7 @@ tools it needs via the agent-queue MCP.
 
   ```
   render_prompt(
-    uri="aq://prompts/consolidation_task.md",
+    path="aq://prompts/consolidation_task.md",
     variables={
       "project_id": "<id>",
       "project_name": "<name>",
