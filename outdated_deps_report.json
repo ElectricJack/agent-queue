@@ -1,0 +1,312 @@
+{
+  "outdated": [
+    {
+      "name": "agent-queue",
+      "version": "0.1.0",
+      "latest_version": "1.0.2",
+      "latest_filetype": "wheel",
+      "editable_project_location": "/mnt/d/Dev/agent-queue2"
+    },
+    {
+      "name": "anthropic",
+      "version": "0.89.0",
+      "latest_version": "0.96.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "blinker",
+      "version": "1.4",
+      "latest_version": "1.9.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "cachetools",
+      "version": "7.0.5",
+      "latest_version": "7.0.6",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "certifi",
+      "version": "2026.2.25",
+      "latest_version": "2026.4.22",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "claude-agent-sdk",
+      "version": "0.1.55",
+      "latest_version": "0.1.65",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "click",
+      "version": "8.3.1",
+      "latest_version": "8.3.3",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "dbus-python",
+      "version": "1.2.18",
+      "latest_version": "1.4.0",
+      "latest_filetype": "sdist"
+    },
+    {
+      "name": "discord.py",
+      "version": "2.5.2",
+      "latest_version": "2.7.1",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "distro",
+      "version": "1.7.0",
+      "latest_version": "1.9.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "docstring_parser",
+      "version": "0.17.0",
+      "latest_version": "0.18.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "fastapi",
+      "version": "0.135.3",
+      "latest_version": "0.136.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "filelock",
+      "version": "3.25.2",
+      "latest_version": "3.29.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "google-auth",
+      "version": "2.49.1",
+      "latest_version": "2.49.2",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "google-genai",
+      "version": "1.70.0",
+      "latest_version": "1.73.1",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "greenlet",
+      "version": "3.3.2",
+      "latest_version": "3.4.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "httplib2",
+      "version": "0.20.2",
+      "latest_version": "0.31.2",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "identify",
+      "version": "2.6.18",
+      "latest_version": "2.6.19",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "idna",
+      "version": "3.11",
+      "latest_version": "3.13",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "importlib-metadata",
+      "version": "4.6.4",
+      "latest_version": "9.0.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "jeepney",
+      "version": "0.7.1",
+      "latest_version": "0.9.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "jiter",
+      "version": "0.13.0",
+      "latest_version": "0.14.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "keyring",
+      "version": "23.5.0",
+      "latest_version": "25.7.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "launchpadlib",
+      "version": "1.10.16",
+      "latest_version": "2.1.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "lazr.restfulclient",
+      "version": "0.14.4",
+      "latest_version": "0.14.6",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "lazr.uri",
+      "version": "1.0.6",
+      "latest_version": "1.0.8",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "Mako",
+      "version": "1.3.10",
+      "latest_version": "1.3.11",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "memsearch",
+      "version": "0.2.3",
+      "latest_version": "0.4.0",
+      "latest_filetype": "wheel",
+      "editable_project_location": "/home/jkern/dev/agent-queue2/packages/memsearch"
+    },
+    {
+      "name": "more-itertools",
+      "version": "8.10.0",
+      "latest_version": "11.0.2",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "openai",
+      "version": "2.30.0",
+      "latest_version": "2.32.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "packaging",
+      "version": "26.0",
+      "latest_version": "26.1",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "platformdirs",
+      "version": "4.9.4",
+      "latest_version": "4.9.6",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "pre_commit",
+      "version": "4.5.1",
+      "latest_version": "4.6.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "pydantic",
+      "version": "2.12.5",
+      "latest_version": "2.13.3",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "pydantic_core",
+      "version": "2.41.5",
+      "latest_version": "2.46.3",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "pydantic-settings",
+      "version": "2.13.1",
+      "latest_version": "2.14.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "PyGObject",
+      "version": "3.42.1",
+      "latest_version": "3.56.2",
+      "latest_filetype": "sdist"
+    },
+    {
+      "name": "pymilvus",
+      "version": "2.6.11",
+      "latest_version": "2.6.12",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "pyparsing",
+      "version": "2.4.7",
+      "latest_version": "3.3.2",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "python-discovery",
+      "version": "1.2.1",
+      "latest_version": "1.2.2",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "rich",
+      "version": "14.3.3",
+      "latest_version": "15.0.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "ruff",
+      "version": "0.15.9",
+      "latest_version": "0.15.11",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "SecretStorage",
+      "version": "3.3.1",
+      "latest_version": "3.5.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "setuptools",
+      "version": "81.0.0",
+      "latest_version": "82.0.1",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "six",
+      "version": "1.16.0",
+      "latest_version": "1.17.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "systemd-python",
+      "version": "234",
+      "latest_version": "235",
+      "latest_filetype": "sdist"
+    },
+    {
+      "name": "uvicorn",
+      "version": "0.42.0",
+      "latest_version": "0.45.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "virtualenv",
+      "version": "21.2.0",
+      "latest_version": "21.2.4",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "wadllib",
+      "version": "1.3.6",
+      "latest_version": "2.0.0",
+      "latest_filetype": "wheel"
+    },
+    {
+      "name": "wheel",
+      "version": "0.46.3",
+      "latest_version": "0.47.0",
+      "latest_filetype": "wheel"
+    }
+  ],
+  "skipped_invalid_version": [
+    {
+      "name": "distro-info",
+      "version": "1.1build1"
+    }
+  ]
+}
