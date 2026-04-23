@@ -755,3 +755,52 @@ class TestPlaybookToolRegistration:
         )
 
 
+# ------------------------------------------------------------------
+# get_stuck_tasks — system-scoped helper for the system-health-check
+# playbook.  Promoted from a multi-step supervisor procedure to a
+# first-class tool so the compiler no longer needs to hallucinate the
+# phantom ``system_monitor.get_stuck_tasks``.
+# ------------------------------------------------------------------
+
+
+class TestGetStuckTasksRegistration:
+    """Verify ``get_stuck_tasks`` is a real, system-scoped tool."""
+
+    def test_in_category_map(self):
+        from src.tools import _TOOL_CATEGORIES
+
+        assert _TOOL_CATEGORIES.get("get_stuck_tasks") == "system"
+
+    def test_has_definition(self):
+        from src.tools import _ALL_TOOL_DEFINITIONS
+
+        names = {t["name"] for t in _ALL_TOOL_DEFINITIONS}
+        assert "get_stuck_tasks" in names
+
+    def test_definition_has_expected_parameters(self):
+        """Optional params with defaults documented, no required params."""
+        from src.tools import _ALL_TOOL_DEFINITIONS
+
+        tool = next(t for t in _ALL_TOOL_DEFINITIONS if t["name"] == "get_stuck_tasks")
+        props = tool["input_schema"]["properties"]
+
+        for key in (
+            "assigned_threshold_seconds",
+            "in_progress_threshold_seconds",
+            "now",
+            "project_id",
+        ):
+            assert key in props, f"missing param: {key}"
+
+        # None of the params are required — the defaults handle the common
+        # "just tell me what's stuck" case.
+        assert tool["input_schema"].get("required", []) == []
+
+    def test_system_category_loads_get_stuck_tasks(self):
+        """Loading the 'system' category surfaces the new tool."""
+        reg = _real_registry()
+        names = reg.get_category_tool_names("system")
+        assert names is not None
+        assert "get_stuck_tasks" in names
+
+

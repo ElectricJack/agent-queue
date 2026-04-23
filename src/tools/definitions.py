@@ -124,6 +124,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "restart_daemon": "system",
     "update_and_restart": "system",
     "run_command": "system",
+    "get_stuck_tasks": "system",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
     # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
@@ -1324,6 +1325,59 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["command", "working_dir"],
+        },
+    },
+    {
+        "name": "get_stuck_tasks",
+        "description": (
+            "Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their "
+            "per-status threshold.  Detection and time arithmetic run in "
+            "the database — the caller passes thresholds and a reference "
+            "``now`` timestamp and receives a structured list back.  "
+            "Defaults match the system-health-check playbook's stuck "
+            "definition: ASSIGNED > 30 minutes, IN_PROGRESS > 2 hours.  "
+            "Each entry carries ``id``, ``project_id``, ``status``, "
+            "``assigned_agent``, ``updated_at``, and ``seconds_in_state`` "
+            "so remediation (``restart_task`` vs "
+            "``set_task_status(..., status=\"READY\")``) can branch on "
+            "the agent state."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "assigned_threshold_seconds": {
+                    "type": "integer",
+                    "description": (
+                        "Max seconds a task may stay ASSIGNED before being "
+                        "flagged as stuck.  Default 1800 (30 minutes)."
+                    ),
+                    "default": 1800,
+                },
+                "in_progress_threshold_seconds": {
+                    "type": "integer",
+                    "description": (
+                        "Max seconds a task may stay IN_PROGRESS before "
+                        "being flagged as stuck.  Default 7200 (2 hours)."
+                    ),
+                    "default": 7200,
+                },
+                "now": {
+                    "type": "number",
+                    "description": (
+                        "Reference Unix timestamp (seconds since epoch).  "
+                        "Playbooks should pass the trigger event's "
+                        "``tick_time`` so repeated runs are deterministic.  "
+                        "Defaults to the server's current time."
+                    ),
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional project filter.  When omitted, all "
+                        "projects are scanned."
+                    ),
+                },
+            },
         },
     },
     {

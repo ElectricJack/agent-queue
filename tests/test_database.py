@@ -115,6 +115,187 @@ class TestTaskDependencies:
         assert await db.are_dependencies_met("t-2")
 
 
+class TestGetStuckActiveTasks:
+    """Tests for ``db.get_stuck_active_tasks`` — the backend helper that
+    powers the ``get_stuck_tasks`` command used by the
+    ``system-health-check`` playbook.
+    """
+
+    async def _seed_task(
+        self,
+        db,
+        *,
+        task_id: str,
+        project_id: str = "p-1",
+        status: TaskStatus,
+    ):
+        """Create a task in the given status.  ``db.create_task`` stamps
+        ``updated_at = time.time()`` so we rely on the caller passing a
+        ``now`` far in the future to simulate staleness.
+        """
+        await db.create_task(
+            Task(
+                id=task_id,
+                project_id=project_id,
+                title=task_id,
+                description="d",
+                status=status,
+            )
+        )
+
+    async def test_no_tasks_returns_empty(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        import time
+
+        result = await db.get_stuck_active_tasks(
+            assigned_threshold_seconds=1800,
+            in_progress_threshold_seconds=7200,
+            now=time.time(),
+        )
+        assert result == []
+
+    async def test_fresh_tasks_not_stuck(self, db):
+        """A task freshly-created 5 seconds ago is not stuck."""
+        import time
+
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await self._seed_task(db, task_id="t-1", status=TaskStatus.ASSIGNED)
+        await self._seed_task(db, task_id="t-2", status=TaskStatus.IN_PROGRESS)
+
+        # Now is 5s after the create — below both thresholds.
+        now = time.time() + 5
+        result = await db.get_stuck_active_tasks(
+            assigned_threshold_seconds=1800,
+            in_progress_threshold_seconds=7200,
+            now=now,
+        )
+        assert result == []
+
+    async def test_assigned_over_threshold_returned(self, db):
+        import time
+
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await self._seed_task(db, task_id="t-stuck", status=TaskStatus.ASSIGNED)
+
+        # now is 31 minutes past creation → stuck at default 30m threshold.
+        now = time.time() + 31 * 60
+        result = await db.get_stuck_active_tasks(
+            assigned_threshold_seconds=1800,
+            in_progress_threshold_seconds=7200,
+            now=now,
+        )
+        assert len(result) == 1
+        assert result[0].id == "t-stuck"
+        assert result[0].status == TaskStatus.ASSIGNED
+
+    async def test_in_progress_over_threshold_returned(self, db):
+        import time
+
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await self._seed_task(db, task_id="t-long", status=TaskStatus.IN_PROGRESS)
+
+        # now is 2h 1min past creation → stuck at default 2h threshold.
+        now = time.time() + (2 * 3600 + 60)
+        result = await db.get_stuck_active_tasks(
+            assigned_threshold_seconds=1800,
+            in_progress_threshold_seconds=7200,
+            now=now,
+        )
+        assert len(result) == 1
+        assert result[0].id == "t-long"
+        assert result[0].status == TaskStatus.IN_PROGRESS
+
+    async def test_in_progress_under_threshold_not_returned(self, db):
+        """An IN_PROGRESS task older than the ASSIGNED threshold but under
+        the IN_PROGRESS threshold is not stuck — each status has its own
+        cutoff.
+        """
+        import time
+
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await self._seed_task(db, task_id="t-running", status=TaskStatus.IN_PROGRESS)
+
+        # 40 minutes past create — past ASSIGNED threshold (30m) but under
+        # IN_PROGRESS threshold (2h).
+        now = time.time() + 40 * 60
+        result = await db.get_stuck_active_tasks(
+            assigned_threshold_seconds=1800,
+            in_progress_threshold_seconds=7200,
+            now=now,
+        )
+        assert result == []
+
+    async def test_non_active_statuses_ignored(self, db):
+        """Tasks in DEFINED, READY, COMPLETED, etc. are never stuck via
+        this helper — it targets the active-execution window only.
+        """
+        import time
+
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await self._seed_task(db, task_id="t-def", status=TaskStatus.DEFINED)
+        await self._seed_task(db, task_id="t-ready", status=TaskStatus.READY)
+        await self._seed_task(db, task_id="t-done", status=TaskStatus.COMPLETED)
+        await self._seed_task(db, task_id="t-fail", status=TaskStatus.FAILED)
+        await self._seed_task(db, task_id="t-block", status=TaskStatus.BLOCKED)
+
+        now = time.time() + 10 * 3600  # 10h → way past any threshold
+        result = await db.get_stuck_active_tasks(
+            assigned_threshold_seconds=1800,
+            in_progress_threshold_seconds=7200,
+            now=now,
+        )
+        assert result == []
+
+    async def test_project_id_filter(self, db):
+        """``project_id`` narrows results to a single project."""
+        import time
+
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_project(Project(id="p-2", name="beta"))
+        await self._seed_task(
+            db, task_id="t-alpha", project_id="p-1", status=TaskStatus.ASSIGNED
+        )
+        await self._seed_task(
+            db, task_id="t-beta", project_id="p-2", status=TaskStatus.ASSIGNED
+        )
+
+        now = time.time() + 60 * 60  # 1h → past 30m ASSIGNED threshold
+
+        # Filtered — only the alpha task.
+        only_alpha = await db.get_stuck_active_tasks(
+            assigned_threshold_seconds=1800,
+            in_progress_threshold_seconds=7200,
+            now=now,
+            project_id="p-1",
+        )
+        assert {t.id for t in only_alpha} == {"t-alpha"}
+
+        # Unfiltered — both tasks.
+        both = await db.get_stuck_active_tasks(
+            assigned_threshold_seconds=1800,
+            in_progress_threshold_seconds=7200,
+            now=now,
+        )
+        assert {t.id for t in both} == {"t-alpha", "t-beta"}
+
+    async def test_mixed_statuses_with_different_thresholds(self, db):
+        """Both ASSIGNED and IN_PROGRESS stuck tasks appear in one call."""
+        import time
+
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await self._seed_task(db, task_id="t-a", status=TaskStatus.ASSIGNED)
+        await self._seed_task(db, task_id="t-b", status=TaskStatus.IN_PROGRESS)
+
+        # 3h past creation — past both thresholds.
+        now = time.time() + 3 * 3600
+        result = await db.get_stuck_active_tasks(
+            assigned_threshold_seconds=1800,
+            in_progress_threshold_seconds=7200,
+            now=now,
+        )
+        assert {t.id for t in result} == {"t-a", "t-b"}
+
+
 class TestTaskMetadata:
     async def test_set_and_get(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))

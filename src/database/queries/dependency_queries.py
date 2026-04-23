@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import and_, delete, insert, select
+from sqlalchemy import and_, delete, insert, or_, select
 
 from src.database.tables import task_dependencies, tasks
 from src.models import Task, TaskStatus
@@ -51,6 +51,61 @@ class DependencyQueryMixin:
             )
             rows = result.mappings().fetchall()
             return all(r["status"] == TaskStatus.COMPLETED.value for r in rows)
+
+    async def get_stuck_active_tasks(
+        self,
+        assigned_threshold_seconds: int,
+        in_progress_threshold_seconds: int,
+        now: float,
+        project_id: str | None = None,
+    ) -> list[Task]:
+        """Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their
+        per-status threshold.
+
+        A task is "stuck" when its ``updated_at`` timestamp is older than
+        ``now - threshold`` for its current status. ``updated_at``
+        advances on every state transition, so it is the correct
+        "time-in-current-state" proxy — ``created_at`` is not.
+
+        Parameters
+        ----------
+        assigned_threshold_seconds:
+            Max time (seconds) a task may stay ASSIGNED before being
+            considered stuck.
+        in_progress_threshold_seconds:
+            Max time (seconds) a task may stay IN_PROGRESS before being
+            considered stuck.
+        now:
+            Reference timestamp (seconds since epoch). Callers pass the
+            trigger event's ``tick_time`` so repeated invocations are
+            deterministic.
+        project_id:
+            Optional filter — when provided, only tasks in the given
+            project are considered.
+
+        Returns
+        -------
+        list[Task]
+            Stuck tasks ordered by ``updated_at`` ascending (oldest
+            first), so the most-stuck task surfaces first in the result.
+        """
+        async with self._engine.begin() as conn:
+            condition = or_(
+                and_(
+                    tasks.c.status == TaskStatus.ASSIGNED.value,
+                    tasks.c.updated_at < (now - assigned_threshold_seconds),
+                ),
+                and_(
+                    tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                    tasks.c.updated_at < (now - in_progress_threshold_seconds),
+                ),
+            )
+            stmt = select(tasks).where(condition)
+            if project_id is not None:
+                stmt = stmt.where(tasks.c.project_id == project_id)
+            stmt = stmt.order_by(tasks.c.updated_at.asc())
+            result = await conn.execute(stmt)
+            return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
     async def get_stuck_defined_tasks(self, threshold_seconds: int) -> list[Task]:
         """Return DEFINED tasks blocked by a BLOCKED or FAILED dependency."""

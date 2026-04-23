@@ -31,18 +31,17 @@ without making progress.
 
 Concrete procedure:
 
-1. Call `list_tasks(status="ASSIGNED")` and
-   `list_tasks(status="IN_PROGRESS")` (or
-   `list_active_tasks_all_projects()` for a cross-project dump).
-   Each task dict contains `id`, `project_id`, `status`,
-   `assigned_agent`, `created_at`, `updated_at` (Unix timestamps).
-2. Use the trigger event's `tick_time` as "now". A task is stuck if
-   `now - updated_at > 1800` (ASSIGNED) or `> 7200` (IN_PROGRESS).
-   `updated_at` advances on every state transition, so it is the
-   correct "time in current state" proxy — do not use `created_at`.
-3. For each stuck task, cross-reference `list_agents()` to see
+1. Call `get_stuck_tasks(now=<tick_time>)`. Pass the trigger event's
+   `tick_time` as `now` so repeated runs are deterministic. The tool
+   handles threshold arithmetic internally (ASSIGNED > 30 min,
+   IN_PROGRESS > 2 h by default — override via
+   `assigned_threshold_seconds` / `in_progress_threshold_seconds` if
+   needed). The response is
+   `{stuck: [{id, project_id, status, assigned_agent, updated_at,
+   seconds_in_state}, ...], now_used, thresholds}`.
+2. For each entry in `stuck`, cross-reference `list_agents()` to see
    whether the assigned agent slot is still `idle` or `busy`.
-4. Remediate:
+3. Remediate:
    - Agent alive and idle → `restart_task(task_id=...)`.
    - Agent dead or unreachable →
      `set_task_status(task_id=..., status="READY")` with
