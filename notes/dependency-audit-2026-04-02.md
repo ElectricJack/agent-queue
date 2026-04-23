@@ -122,3 +122,20 @@ These packages have updates available but are not urgent:
   in place. Note: this project does not use `uv.lock` — dependency
   resolution is driven entirely by `pyproject.toml` — so the original
   task's `uv.lock` acceptance criterion is satisfied vacuously (N/A).
+- **`crisp-falcon` retry of `sound-quest` verified oauthlib pin (2026-04-22).**
+  The oauthlib security update was previously targeted by task
+  `sound-quest`, which exhausted its retry budget (3/3) and was left in
+  `BLOCKED` state — most likely due to `pyproject.toml` / lockfile
+  contention with the concurrent cryptography/python-multipart/
+  zipp/wheel/setuptools update tasks. By the time the retry task
+  `crisp-falcon` ran, the acceptance criteria were already satisfied via
+  prior merges: `pyproject.toml` pins `oauthlib>=3.2.1` (commit
+  `608b38f3` from `sound-quest`'s partial work), `oauthlib==3.3.1` is
+  installed in the active environment (satisfies the pin), and a fresh
+  `pip-audit` run (2026-04-22) reports zero known vulnerabilities across
+  the entire environment. No code changes were required in
+  `crisp-falcon`; this note is recorded so future agents can confirm at
+  a glance that the `sound-quest` → `crisp-falcon` work-stream for
+  PYSEC-2022-269 / CVE-2022-36087 is fully resolved. As with
+  `python-multipart`, this project does not use `uv.lock`, so the
+  original task's `uv.lock` acceptance criterion is satisfied vacuously.
