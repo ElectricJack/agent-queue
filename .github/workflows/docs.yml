@@ -52,14 +52,6 @@ jobs:
       - name: Install project (for mkdocstrings introspection)
         run: pip install -e .
 
-      - name: Sync specs into docs directory
-        run: |
-          cp specs/*.md docs/specs/
-          cp specs/adapters/*.md docs/specs/adapters/
-          cp specs/chat-providers/*.md docs/specs/chat-providers/
-          cp specs/discord/*.md docs/specs/discord/
-          cp specs/git/*.md docs/specs/git/
-
       - name: Build documentation
         run: mkdocs build --site-dir docs_out
 
