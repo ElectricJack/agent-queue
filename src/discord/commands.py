@@ -3696,15 +3696,27 @@ def setup_commands(bot: commands.Bot) -> None:
     @bot.tree.command(name="playbook-list", description="List all playbooks across scopes")
     @app_commands.describe(
         scope="Filter by scope type (system, project, agent-type)",
+        all_projects=(
+            "When invoked from a project channel, set true to list playbooks "
+            "across every project (default: only this project's playbooks)."
+        ),
     )
     async def playbook_list_command(
         interaction: discord.Interaction,
         scope: str | None = None,
+        all_projects: bool = False,
     ):
         await interaction.response.defer()
         args: dict = {}
         if scope:
             args["scope"] = scope
+        # In a project channel, restrict project-scoped playbooks to that
+        # project so users don't see playbooks from unrelated projects.
+        # Override with `all_projects=True` to see every project's playbooks.
+        if not all_projects:
+            channel_project_id = bot.get_project_for_channel(interaction.channel_id)
+            if channel_project_id:
+                args["project_id"] = channel_project_id
         result = await handler.execute("list_playbooks", args)
         if "error" in result:
             await _send_error(interaction, result["error"], followup=True)

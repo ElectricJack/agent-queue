@@ -2154,7 +2154,10 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "list_playbooks",
         "description": (
             "List all playbooks across scopes with status, triggers, and last run info. "
-            "Returns every active compiled playbook. Optionally filter by scope."
+            "Returns every active compiled playbook. Optionally filter by scope. "
+            "When project_id is provided, project-scoped playbooks belonging to a "
+            "different project are excluded; system and agent-type scoped playbooks "
+            "are always included because they apply across projects."
         ),
         "input_schema": {
             "type": "object",
@@ -2163,6 +2166,13 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Filter by scope type",
                     "enum": ["system", "project", "agent-type"],
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Restrict project-scoped playbooks to this project. "
+                        "System and agent-type playbooks are still returned."
+                    ),
                 },
             },
         },

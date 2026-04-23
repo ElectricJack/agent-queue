@@ -483,3 +483,127 @@ class TestListPlaybooksToolRegistry:
         scope_prop = tool["input_schema"]["properties"]["scope"]
         assert scope_prop["type"] == "string"
         assert set(scope_prop["enum"]) == {"system", "project", "agent-type"}
+
+    def test_tool_definition_has_project_id(self):
+        """The list_playbooks tool definition includes optional project_id."""
+        from src.tools import _ALL_TOOL_DEFINITIONS
+
+        tool = next(t for t in _ALL_TOOL_DEFINITIONS if t["name"] == "list_playbooks")
+        props = tool["input_schema"]["properties"]
+        assert "project_id" in props
+        assert props["project_id"]["type"] == "string"
+        # project_id should be optional (not in required list)
+        assert "project_id" not in tool["input_schema"].get("required", [])
+
+
+# ---------------------------------------------------------------------------
+# Test: Project filtering (task: filter playbooks by current project channel)
+# ---------------------------------------------------------------------------
+
+
+class TestListPlaybooksProjectFilter:
+    """Tests for project_id-based filtering.
+
+    When called with ``project_id``, the command includes:
+      - All system-scoped playbooks (apply to every project)
+      - All agent-type-scoped playbooks (cross-project)
+      - Project-scoped playbooks whose scope_identifier matches project_id
+
+    And excludes:
+      - Project-scoped playbooks belonging to a different project
+    """
+
+    async def test_excludes_other_project_playbooks(self):
+        """project_id filter excludes project-scoped playbooks for other projects."""
+        pb_mine = _make_playbook(playbook_id="mine-pb", scope="project")
+        pb_other = _make_playbook(playbook_id="other-pb", scope="project")
+
+        handler = _make_handler(
+            playbooks={"mine-pb": pb_mine, "other-pb": pb_other},
+            scope_identifiers={"mine-pb": "my-project", "other-pb": "other-project"},
+        )
+        result = await handler._cmd_list_playbooks({"project_id": "my-project"})
+
+        ids = [p["id"] for p in result["playbooks"]]
+        assert "mine-pb" in ids
+        assert "other-pb" not in ids
+        assert result["count"] == 1
+
+    async def test_includes_system_scoped_playbooks(self):
+        """project_id filter still includes system-scoped playbooks."""
+        pb_sys = _make_playbook(playbook_id="sys-pb", scope="system")
+        pb_other = _make_playbook(playbook_id="other-pb", scope="project")
+
+        handler = _make_handler(
+            playbooks={"sys-pb": pb_sys, "other-pb": pb_other},
+            scope_identifiers={"other-pb": "other-project"},
+        )
+        result = await handler._cmd_list_playbooks({"project_id": "my-project"})
+
+        ids = [p["id"] for p in result["playbooks"]]
+        assert "sys-pb" in ids
+        assert "other-pb" not in ids
+
+    async def test_includes_agent_type_scoped_playbooks(self):
+        """project_id filter still includes agent-type scoped playbooks."""
+        pb_agent = _make_playbook(playbook_id="agent-pb", scope="agent-type:coding")
+        pb_other = _make_playbook(playbook_id="other-pb", scope="project")
+
+        handler = _make_handler(
+            playbooks={"agent-pb": pb_agent, "other-pb": pb_other},
+            scope_identifiers={"other-pb": "other-project"},
+        )
+        result = await handler._cmd_list_playbooks({"project_id": "my-project"})
+
+        ids = [p["id"] for p in result["playbooks"]]
+        assert "agent-pb" in ids
+        assert "other-pb" not in ids
+
+    async def test_no_project_id_returns_all_projects(self):
+        """Without project_id, all project-scoped playbooks are returned."""
+        pb_a = _make_playbook(playbook_id="pb-a", scope="project")
+        pb_b = _make_playbook(playbook_id="pb-b", scope="project")
+
+        handler = _make_handler(
+            playbooks={"pb-a": pb_a, "pb-b": pb_b},
+            scope_identifiers={"pb-a": "project-a", "pb-b": "project-b"},
+        )
+        result = await handler._cmd_list_playbooks({})
+
+        assert result["count"] == 2
+
+    async def test_project_id_combined_with_scope_filter(self):
+        """project_id combines with scope='project' to show only this project's playbooks."""
+        pb_mine = _make_playbook(playbook_id="mine-pb", scope="project")
+        pb_other = _make_playbook(playbook_id="other-pb", scope="project")
+        pb_sys = _make_playbook(playbook_id="sys-pb", scope="system")
+
+        handler = _make_handler(
+            playbooks={
+                "mine-pb": pb_mine,
+                "other-pb": pb_other,
+                "sys-pb": pb_sys,
+            },
+            scope_identifiers={"mine-pb": "my-project", "other-pb": "other-project"},
+        )
+        result = await handler._cmd_list_playbooks(
+            {"project_id": "my-project", "scope": "project"}
+        )
+
+        ids = [p["id"] for p in result["playbooks"]]
+        assert ids == ["mine-pb"]
+        assert result["count"] == 1
+
+    async def test_excludes_project_scoped_missing_identifier(self):
+        """Project-scoped playbooks with no scope_identifier are excluded when filtering."""
+        # A project-scoped playbook without a registered scope_identifier
+        # cannot be matched to any project, so it should be excluded.
+        pb_orphan = _make_playbook(playbook_id="orphan-pb", scope="project")
+
+        handler = _make_handler(
+            playbooks={"orphan-pb": pb_orphan},
+            scope_identifiers={},  # no identifier registered
+        )
+        result = await handler._cmd_list_playbooks({"project_id": "my-project"})
+
+        assert result["count"] == 0
