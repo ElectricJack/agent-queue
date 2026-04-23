@@ -11,19 +11,24 @@ triggered by a specific event, task, or conversation.
 Check every 4 hours.
 
 ## Logic
-1. List files in the project workspace using `git ls-files` (respects .gitignore).
-   Exclude binary files, images, fonts, lockfiles, `__pycache__/`, `node_modules/`,
-   and generated output directories.
-2. Categorize each file and randomly select one using weighted categories:
-   - Source code (40%): `*.py`, `*.ts`, `*.js`, etc.
-   - Specs/docs (20%): `specs/*.md`, `docs/*.md`, `README.md`
-   - Tests (15%): `tests/**`, `test/**`
-   - Configuration (10%): `pyproject.toml`, `Dockerfile`, CI configs
-   - Recently modified within 7 days (15%)
-3. If the file is large (>300 lines), select a random contiguous section of ~150 lines.
-   For smaller files, read the entire file.
-4. Check inspection history in project memory — if this file was inspected in the
-   last 3 cycles, re-roll (up to 3 retries, then accept).
+1. Call the `select_files_for_inspection` tool (files plugin) with the current
+   `project_id` and a modest `count` (1–3 files per cycle). The tool:
+   - Enumerates tracked files via `git ls-files` (respects .gitignore) with a
+     filesystem-walk fallback for non-git workspaces.
+   - Excludes binary files, images, fonts, generic lockfiles, `__pycache__/`,
+     `node_modules/`, and generated output directories.
+   - Categorizes each file (`source`, `specs`, `tests`, `config`, `recent`) and
+     samples using the weighted distribution:
+     source 40%, specs 20%, tests 15%, config 10%, recent-changes 15%.
+   - Reads `inspections` namespace from project memory and de-prioritizes files
+     inspected in the last `history_lookback_days` (default 21).
+2. If the returned `files` list is empty, log completion with no inspection and
+   exit this cycle.
+3. For each selected file, if the file is large (>300 lines), select a random
+   contiguous section of ~150 lines. For smaller files, read the entire file.
+4. The history exclusion is handled by the tool in step 1; no manual re-roll
+   is required. If a second pass is needed (e.g. only recent files in 3 cycles),
+   raise `history_lookback_days` or pass `weights` overrides.
 5. Read the selected content and analyze it for:
    - Code quality issues (complexity, dead code, unclear naming, duplication)
    - Performance concerns (blocking calls in async code, missing caching, N+1 patterns)
@@ -41,5 +46,8 @@ Check every 4 hours.
 7. If a finding is worth suggesting: post a suggestion with the file path,
    specific finding, severity (low/medium/high), and a recommended action.
 8. If nothing notable: log that the inspection completed with no actionable findings.
-9. Record the inspected file path and timestamp in project memory to ensure broad
-   coverage over time and avoid re-inspecting the same files repeatedly.
+9. Record the inspection by calling the `record_file_inspection` tool with the
+   `file_path`, an optional short `summary`, and `findings_count`. This writes
+   the inspection to the `inspections` namespace in project memory so that
+   `select_files_for_inspection` on the next cycle can avoid re-inspecting
+   the same files.

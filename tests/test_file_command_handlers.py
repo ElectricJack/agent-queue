@@ -736,3 +736,416 @@ class TestFilesCategoryRegistry:
         assert expected.issubset(tool_names), (
             f"Missing tools from files category: {expected - tool_names}"
         )
+
+
+# ---------------------------------------------------------------------------
+# categorize_file / _is_excluded_path / _weighted_integer_split (pure logic)
+# ---------------------------------------------------------------------------
+
+
+class TestCategorizeFile:
+    """Pure-logic tests for the file-selection helpers.
+
+    These do not require a handler/database and validate the categorization
+    rules used by ``select_files_for_inspection``.
+    """
+
+    @pytest.mark.parametrize(
+        "path,expected",
+        [
+            # Source
+            ("src/main.py", "source"),
+            ("src/foo.rs", "source"),
+            ("frontend/app.tsx", "source"),
+            ("lib/util.go", "source"),
+            # Tests
+            ("tests/test_foo.py", "tests"),
+            ("test/foo_test.py", "tests"),
+            ("src/foo_test.py", "tests"),
+            ("frontend/__tests__/app.test.ts", "tests"),
+            ("foo.spec.js", "tests"),
+            # Specs / docs
+            ("docs/design.md", "specs"),
+            ("README.md", "specs"),
+            ("specs/plan.md", "specs"),
+            ("notes/audit.md", "specs"),
+            ("CONTRIBUTING.rst", "specs"),
+            # Config
+            ("pyproject.toml", "config"),
+            ("package.json", "config"),
+            ("Dockerfile", "config"),
+            (".github/workflows/ci.yml", "config"),
+            ("config.yaml", "config"),
+            ("setup.cfg", "config"),
+            # Other
+            ("LICENSE", "other"),
+            ("foo.unknown", "other"),
+        ],
+    )
+    def test_categorize(self, path, expected):
+        from src.plugins.internal.files import categorize_file
+
+        assert categorize_file(path) == expected
+
+
+class TestIsExcludedPath:
+    @pytest.mark.parametrize(
+        "path,excluded",
+        [
+            ("src/foo.py", False),
+            ("__pycache__/foo.pyc", True),
+            ("node_modules/lib/x.js", True),
+            ("dist/bundle.js", True),
+            ("build/out.py", True),
+            ("image.png", True),
+            ("icon.svg", True),
+            (".git/HEAD", True),
+            # Known config lockfiles are kept
+            ("package-lock.json", False),
+            ("yarn.lock", False),
+            ("uv.lock", False),
+            # Generic *.lock files are excluded
+            ("foo.lock", True),
+            # Nested node_modules
+            ("packages/foo/node_modules/x.js", True),
+            # Regular source
+            ("src/plugins/files.py", False),
+        ],
+    )
+    def test_exclusion(self, path, excluded):
+        from src.plugins.internal.files import _is_excluded_path
+
+        assert _is_excluded_path(path) is excluded
+
+
+class TestWeightedIntegerSplit:
+    def test_sums_to_total(self):
+        from src.plugins.internal.files import _weighted_integer_split
+
+        weights = {
+            "source": 0.40,
+            "specs": 0.20,
+            "tests": 0.15,
+            "config": 0.10,
+            "recent": 0.15,
+        }
+        for total in (1, 3, 5, 10, 17, 100):
+            split = _weighted_integer_split(weights, total)
+            assert sum(split.values()) == total
+            assert set(split.keys()) == set(weights.keys())
+
+    def test_zero_total(self):
+        from src.plugins.internal.files import _weighted_integer_split
+
+        weights = {"a": 0.5, "b": 0.5}
+        assert _weighted_integer_split(weights, 0) == {"a": 0, "b": 0}
+
+    def test_dominant_weight(self):
+        from src.plugins.internal.files import _weighted_integer_split
+
+        # Single dominant category should receive all remainder
+        split = _weighted_integer_split(
+            {"source": 0.9, "specs": 0.05, "tests": 0.05}, 1
+        )
+        assert split["source"] == 1
+        assert split["specs"] == 0
+        assert split["tests"] == 0
+
+
+# ---------------------------------------------------------------------------
+# select_files_for_inspection / record_file_inspection
+# ---------------------------------------------------------------------------
+
+
+class TestSelectFilesForInspection:
+    async def _seed_workspace(self, workspace_dir):
+        """Create a small representative file tree in the workspace."""
+        # Source
+        (workspace_dir / "src").mkdir()
+        for name in ("main.py", "auth.py", "db.py", "util.py"):
+            (workspace_dir / "src" / name).write_text(f"# {name}\n")
+        # Tests
+        (workspace_dir / "tests").mkdir()
+        for name in ("test_main.py", "test_auth.py"):
+            (workspace_dir / "tests" / name).write_text(f"# {name}\n")
+        # Specs/docs
+        (workspace_dir / "docs").mkdir()
+        (workspace_dir / "docs" / "overview.md").write_text("# overview\n")
+        (workspace_dir / "README.md").write_text("# project\n")
+        # Config
+        (workspace_dir / "pyproject.toml").write_text("[project]\nname='x'\n")
+        (workspace_dir / "Dockerfile").write_text("FROM python:3.12\n")
+        # Excluded
+        (workspace_dir / "__pycache__").mkdir()
+        (workspace_dir / "__pycache__" / "x.pyc").write_bytes(b"\x00\x01")
+        (workspace_dir / "node_modules").mkdir()
+        (workspace_dir / "node_modules" / "lib.js").write_text("// skip\n")
+        (workspace_dir / "logo.png").write_bytes(b"\x89PNG\r\n")
+
+    async def test_basic_selection(
+        self, handler, project_with_workspace, workspace_dir
+    ):
+        """Tool returns a selection respecting count and skipping excluded files."""
+        project_id, _ = project_with_workspace
+        await self._seed_workspace(workspace_dir)
+
+        handler.set_active_project(project_id)
+        result = await handler.execute(
+            "select_files_for_inspection",
+            {
+                "project_id": project_id,
+                "count": 5,
+                "history_lookback_days": 0,  # disable history lookup
+                "seed": 42,
+            },
+        )
+
+        assert "error" not in result, result
+        assert result["project_id"] == project_id
+        assert isinstance(result["files"], list)
+        assert 1 <= len(result["files"]) <= 5
+
+        # Excluded files should never appear
+        for f in result["files"]:
+            assert "__pycache__" not in f
+            assert "node_modules" not in f
+            assert not f.endswith(".png")
+
+        # Every selected file should appear in exactly one category breakdown
+        flat = [p for plist in result["categorized"].values() for p in plist]
+        assert set(flat) == set(result["files"])
+
+        assert result["total_enumerated"] >= len(result["files"])
+
+    async def test_deterministic_with_seed(
+        self, handler, project_with_workspace, workspace_dir
+    ):
+        """Same seed must produce the same selection."""
+        project_id, _ = project_with_workspace
+        await self._seed_workspace(workspace_dir)
+        handler.set_active_project(project_id)
+
+        r1 = await handler.execute(
+            "select_files_for_inspection",
+            {"project_id": project_id, "count": 4, "seed": 7,
+             "history_lookback_days": 0},
+        )
+        r2 = await handler.execute(
+            "select_files_for_inspection",
+            {"project_id": project_id, "count": 4, "seed": 7,
+             "history_lookback_days": 0},
+        )
+        assert r1["files"] == r2["files"]
+
+    async def test_weighted_distribution(
+        self, handler, project_with_workspace, workspace_dir
+    ):
+        """With enough files in each category, targets should be met."""
+        project_id, _ = project_with_workspace
+        # Generate a large tree so each category has enough candidates
+        (workspace_dir / "src").mkdir()
+        (workspace_dir / "tests").mkdir()
+        (workspace_dir / "docs").mkdir()
+        for i in range(20):
+            (workspace_dir / "src" / f"mod{i}.py").write_text(f"# {i}\n")
+            (workspace_dir / "tests" / f"test_mod{i}.py").write_text(f"# {i}\n")
+            (workspace_dir / "docs" / f"doc{i}.md").write_text(f"# {i}\n")
+        # A handful of config files
+        (workspace_dir / "pyproject.toml").write_text("")
+        (workspace_dir / "Dockerfile").write_text("")
+        (workspace_dir / "config.yaml").write_text("")
+
+        handler.set_active_project(project_id)
+        result = await handler.execute(
+            "select_files_for_inspection",
+            {
+                "project_id": project_id,
+                "count": 20,
+                "history_lookback_days": 0,
+                "seed": 1,
+            },
+        )
+
+        assert "error" not in result, result
+        # Total selected should equal requested count
+        assert len(result["files"]) == 20
+        # Weight-derived target counts should sum to count
+        assert sum(result["target_counts"].values()) == 20
+
+    async def test_history_exclusion(
+        self, handler, project_with_workspace, workspace_dir, monkeypatch
+    ):
+        """Files recorded in project memory within lookback window are excluded."""
+        project_id, _ = project_with_workspace
+        await self._seed_workspace(workspace_dir)
+        handler.set_active_project(project_id)
+
+        # Fake memory_kv_list to return one recent inspection of src/main.py
+        import time as _time
+
+        recent_ts = int(_time.time()) - 3600  # 1 hour ago
+        fake_entries = [
+            {
+                "namespace": "inspections",
+                "key": "src:main.py",
+                "value": f'{{"file": "src/main.py", "timestamp": {recent_ts}, "summary": "ok"}}',
+            }
+        ]
+
+        original_execute = handler.execute
+
+        async def fake_execute(name, args=None, **kwargs):
+            if name == "memory_kv_list":
+                return {"entries": fake_entries}
+            return await original_execute(name, args, **kwargs)
+
+        # Patch the FilesPlugin context's command executor to intercept
+        # memory calls. The plugin is registered as "aq-files".
+        registry = handler.orchestrator.plugin_registry
+        loaded = registry._plugins.get("aq-files")
+        assert loaded is not None
+
+        async def fake_kv_list(nm, ag):
+            if nm == "memory_kv_list":
+                return {"entries": fake_entries}
+            return {"error": "not found"}
+
+        loaded.context._execute_command_callback = fake_kv_list
+
+        result = await handler.execute(
+            "select_files_for_inspection",
+            {
+                "project_id": project_id,
+                "count": 20,  # ask for everything
+                "history_lookback_days": 30,
+                "seed": 5,
+            },
+        )
+
+        assert "error" not in result, result
+        assert "src/main.py" not in result["files"]
+        assert result["excluded_history"] >= 1
+        assert "src/main.py" in result["history_files"]
+
+    async def test_recent_category(
+        self, handler, project_with_workspace, workspace_dir
+    ):
+        """Recently modified files are eligible for the 'recent' category."""
+        import os as _os
+        import time as _time
+
+        project_id, _ = project_with_workspace
+        # Build a tree; freshly touched file gets current mtime, others backdated.
+        (workspace_dir / "src").mkdir()
+        old_file = workspace_dir / "src" / "old.py"
+        old_file.write_text("# old\n")
+        far_past = _time.time() - (60 * 86400)
+        _os.utime(old_file, (far_past, far_past))
+
+        fresh = workspace_dir / "src" / "fresh.py"
+        fresh.write_text("# fresh\n")  # defaults to now
+
+        handler.set_active_project(project_id)
+        result = await handler.execute(
+            "select_files_for_inspection",
+            {
+                "project_id": project_id,
+                "count": 2,
+                "recent_days": 7,
+                "history_lookback_days": 0,
+                "weights": {"recent": 1.0},
+                "seed": 0,
+            },
+        )
+
+        assert "error" not in result, result
+        # With weight fully on 'recent', only 'fresh.py' qualifies
+        assert "src/fresh.py" in result["files"]
+
+
+class TestRecordFileInspection:
+    async def test_records_via_memory(
+        self, handler, project_with_workspace, workspace_dir
+    ):
+        """record_file_inspection round-trips through memory_kv_set."""
+        project_id, _ = project_with_workspace
+        handler.set_active_project(project_id)
+
+        # Patch the FilesPlugin context to capture the memory call.
+        # The files plugin is registered under "aq-files".
+        registry = handler.orchestrator.plugin_registry
+        loaded = registry._plugins.get("aq-files")
+        assert loaded is not None
+
+        captured: dict = {}
+
+        async def fake_exec(name, args):
+            captured["name"] = name
+            captured["args"] = args
+            return {"ok": True}
+
+        loaded.context._execute_command_callback = fake_exec
+
+        result = await handler.execute(
+            "record_file_inspection",
+            {
+                "project_id": project_id,
+                "file_path": "src/main.py",
+                "summary": "reviewed",
+                "findings_count": 2,
+                "category": "source",
+            },
+        )
+
+        assert "error" not in result, result
+        assert result["recorded"] is True
+        assert result["project_id"] == project_id
+        assert result["file_path"] == "src/main.py"
+        assert result["record"]["findings_count"] == 2
+        assert result["record"]["summary"] == "reviewed"
+        assert result["record"]["category"] == "source"
+
+        # Memory was invoked with the sanitized key + namespace
+        assert captured["name"] == "memory_kv_set"
+        args = captured["args"]
+        assert args["project_id"] == project_id
+        assert args["namespace"] == "inspections"
+        assert args["key"] == "src:main.py"
+        import json as _json
+
+        stored = _json.loads(args["value"])
+        assert stored["file"] == "src/main.py"
+        assert stored["summary"] == "reviewed"
+        assert stored["findings_count"] == 2
+
+    async def test_missing_file_path(self, handler, project_with_workspace):
+        project_id, _ = project_with_workspace
+        handler.set_active_project(project_id)
+        result = await handler.execute(
+            "record_file_inspection",
+            {"project_id": project_id},
+        )
+        assert "error" in result
+        assert "file_path" in result["error"]
+
+    async def test_memory_error_returns_warning(
+        self, handler, project_with_workspace, workspace_dir
+    ):
+        """If memory_kv_set fails, we surface a warning but don't raise."""
+        project_id, _ = project_with_workspace
+        handler.set_active_project(project_id)
+        registry = handler.orchestrator.plugin_registry
+        loaded = registry._plugins.get("aq-files")
+        assert loaded is not None
+
+        async def fake_exec(name, args):
+            return {"error": "memory unavailable"}
+
+        loaded.context._execute_command_callback = fake_exec
+
+        result = await handler.execute(
+            "record_file_inspection",
+            {"project_id": project_id, "file_path": "src/main.py"},
+        )
+        assert result["recorded"] is False
+        assert "warning" in result
