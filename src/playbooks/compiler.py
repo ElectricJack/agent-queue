@@ -16,7 +16,7 @@ Typical usage::
     from src.chat_providers import create_chat_provider
 
     provider = create_chat_provider(config)
-    compiler = PlaybookCompiler(provider)
+    compiler = PlaybookCompiler(provider, config=config)
 
     result = await compiler.compile(markdown_content)
     if result.success:

@@ -64,7 +64,7 @@ def _manager_with_playbooks(
     max_concurrent_runs: int = 2,
 ) -> PlaybookManager:
     """Create a PlaybookManager with pre-loaded playbooks (no disk/store)."""
-    manager = PlaybookManager(max_concurrent_runs=max_concurrent_runs)
+    manager = PlaybookManager(config=None, max_concurrent_runs=max_concurrent_runs)
     for pb in playbooks:
         manager._active[pb.id] = pb
         manager._index_triggers(pb)
@@ -106,28 +106,28 @@ class TestConcurrencyDefaults:
 
     def test_default_max_concurrent_runs(self) -> None:
         """Default cap is 2 (matches spec's hook engine default)."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         assert manager.max_concurrent_runs == 2
 
     def test_custom_max_concurrent_runs(self) -> None:
         """Cap can be set via constructor."""
-        manager = PlaybookManager(max_concurrent_runs=5)
+        manager = PlaybookManager(config=None, max_concurrent_runs=5)
         assert manager.max_concurrent_runs == 5
 
     def test_unlimited_with_zero(self) -> None:
         """A cap of 0 means unlimited."""
-        manager = PlaybookManager(max_concurrent_runs=0)
+        manager = PlaybookManager(config=None, max_concurrent_runs=0)
         assert manager.max_concurrent_runs == 0
         assert manager.can_start_run() is True
 
     def test_running_count_initially_zero(self) -> None:
         """No runs are in-flight at startup."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         assert manager.running_count == 0
 
     def test_running_runs_initially_empty(self) -> None:
         """Running runs dict is empty at startup."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         assert manager.running_runs == {}
 
 
@@ -141,13 +141,13 @@ class TestCanStartRun:
 
     def test_can_start_when_empty(self) -> None:
         """Can start when no runs are in-flight."""
-        manager = PlaybookManager(max_concurrent_runs=2)
+        manager = PlaybookManager(config=None, max_concurrent_runs=2)
         assert manager.can_start_run() is True
 
     @pytest.mark.asyncio
     async def test_can_start_when_below_cap(self) -> None:
         """Can start when below the concurrency cap."""
-        manager = PlaybookManager(max_concurrent_runs=3)
+        manager = PlaybookManager(config=None, max_concurrent_runs=3)
         task = _make_long_running_task()
         try:
             manager.register_run("run-1", "playbook-a", task)
@@ -162,7 +162,7 @@ class TestCanStartRun:
     @pytest.mark.asyncio
     async def test_cannot_start_at_cap(self) -> None:
         """Cannot start when at the concurrency cap."""
-        manager = PlaybookManager(max_concurrent_runs=2)
+        manager = PlaybookManager(config=None, max_concurrent_runs=2)
         tasks = []
         try:
             for i in range(2):
@@ -178,7 +178,7 @@ class TestCanStartRun:
     @pytest.mark.asyncio
     async def test_unlimited_always_allows(self) -> None:
         """With cap=0 (unlimited), can always start."""
-        manager = PlaybookManager(max_concurrent_runs=0)
+        manager = PlaybookManager(config=None, max_concurrent_runs=0)
         tasks = []
         try:
             for i in range(10):
@@ -203,7 +203,7 @@ class TestRegisterRun:
     @pytest.mark.asyncio
     async def test_register_success(self) -> None:
         """register_run returns True and tracks the run."""
-        manager = PlaybookManager(max_concurrent_runs=2)
+        manager = PlaybookManager(config=None, max_concurrent_runs=2)
         task = _make_long_running_task()
         try:
             result = manager.register_run("run-1", "playbook-a", task)
@@ -221,7 +221,7 @@ class TestRegisterRun:
     @pytest.mark.asyncio
     async def test_register_rejected_at_cap(self) -> None:
         """register_run returns False when at capacity."""
-        manager = PlaybookManager(max_concurrent_runs=1)
+        manager = PlaybookManager(config=None, max_concurrent_runs=1)
         t1 = _make_long_running_task()
         t2 = _make_long_running_task()
         try:
@@ -237,7 +237,7 @@ class TestRegisterRun:
     @pytest.mark.asyncio
     async def test_multiple_instances_same_playbook(self) -> None:
         """Multiple instances of the same playbook can run concurrently."""
-        manager = PlaybookManager(max_concurrent_runs=3)
+        manager = PlaybookManager(config=None, max_concurrent_runs=3)
         tasks = []
         try:
             for i in range(3):
@@ -267,7 +267,7 @@ class TestUnregisterRun:
     @pytest.mark.asyncio
     async def test_unregister_frees_slot(self) -> None:
         """Unregistering a run frees a concurrency slot."""
-        manager = PlaybookManager(max_concurrent_runs=1)
+        manager = PlaybookManager(config=None, max_concurrent_runs=1)
         task = _make_long_running_task()
         try:
             manager.register_run("run-1", "pb-a", task)
@@ -284,7 +284,7 @@ class TestUnregisterRun:
 
     def test_unregister_nonexistent_is_noop(self) -> None:
         """Unregistering a run that doesn't exist is a no-op."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         manager.unregister_run("nonexistent")  # Should not raise
         assert manager.running_count == 0
 
@@ -300,7 +300,7 @@ class TestReapCompletedRuns:
     @pytest.mark.asyncio
     async def test_reap_completed_task(self) -> None:
         """Completed tasks are reaped and their slots freed."""
-        manager = PlaybookManager(max_concurrent_runs=1)
+        manager = PlaybookManager(config=None, max_concurrent_runs=1)
         task = _make_completed_task()
         # Allow the task to complete
         await asyncio.sleep(0)
@@ -315,7 +315,7 @@ class TestReapCompletedRuns:
     @pytest.mark.asyncio
     async def test_reap_failed_task(self) -> None:
         """Failed tasks are reaped and exceptions are logged (not raised)."""
-        manager = PlaybookManager(max_concurrent_runs=1)
+        manager = PlaybookManager(config=None, max_concurrent_runs=1)
         task = _make_failed_task("something broke")
         await asyncio.sleep(0)
         manager._running["run-1"] = task
@@ -329,7 +329,7 @@ class TestReapCompletedRuns:
     @pytest.mark.asyncio
     async def test_reap_does_not_touch_running_tasks(self) -> None:
         """Running (not-done) tasks are not reaped."""
-        manager = PlaybookManager(max_concurrent_runs=3)
+        manager = PlaybookManager(config=None, max_concurrent_runs=3)
         running_task = _make_long_running_task()
         completed_task = _make_completed_task()
         await asyncio.sleep(0)
@@ -353,7 +353,7 @@ class TestReapCompletedRuns:
     @pytest.mark.asyncio
     async def test_reap_returns_empty_when_nothing_done(self) -> None:
         """Reap returns empty list when all tasks are still running."""
-        manager = PlaybookManager(max_concurrent_runs=2)
+        manager = PlaybookManager(config=None, max_concurrent_runs=2)
         task = _make_long_running_task()
         try:
             manager.register_run("run-1", "pb-a", task)
@@ -370,7 +370,7 @@ class TestReapCompletedRuns:
     @pytest.mark.asyncio
     async def test_reap_multiple_completed(self) -> None:
         """Multiple completed tasks are all reaped in one call."""
-        manager = PlaybookManager(max_concurrent_runs=5)
+        manager = PlaybookManager(config=None, max_concurrent_runs=5)
         for i in range(3):
             task = _make_completed_task()
             await asyncio.sleep(0)
@@ -393,7 +393,7 @@ class TestGetRunsForPlaybook:
     @pytest.mark.asyncio
     async def test_returns_runs_for_specific_playbook(self) -> None:
         """Only returns runs belonging to the queried playbook."""
-        manager = PlaybookManager(max_concurrent_runs=5)
+        manager = PlaybookManager(config=None, max_concurrent_runs=5)
         tasks = []
         try:
             for i in range(2):
@@ -423,7 +423,7 @@ class TestMaxConcurrentRunsProperty:
 
     def test_setter_updates_cap(self) -> None:
         """Setting the property updates the internal cap."""
-        manager = PlaybookManager(max_concurrent_runs=2)
+        manager = PlaybookManager(config=None, max_concurrent_runs=2)
         assert manager.max_concurrent_runs == 2
         manager.max_concurrent_runs = 5
         assert manager.max_concurrent_runs == 5
@@ -431,7 +431,7 @@ class TestMaxConcurrentRunsProperty:
     @pytest.mark.asyncio
     async def test_raising_cap_allows_more_runs(self) -> None:
         """Raising the cap while at capacity allows new runs."""
-        manager = PlaybookManager(max_concurrent_runs=1)
+        manager = PlaybookManager(config=None, max_concurrent_runs=1)
         t1 = _make_long_running_task()
         try:
             manager.register_run("run-1", "pb-a", t1)
@@ -449,7 +449,7 @@ class TestMaxConcurrentRunsProperty:
     @pytest.mark.asyncio
     async def test_lowering_cap_does_not_cancel_existing(self) -> None:
         """Lowering the cap does not cancel already-running tasks."""
-        manager = PlaybookManager(max_concurrent_runs=3)
+        manager = PlaybookManager(config=None, max_concurrent_runs=3)
         tasks = []
         try:
             for i in range(3):
@@ -478,7 +478,7 @@ class TestShutdownRuns:
     @pytest.mark.asyncio
     async def test_shutdown_cancels_all_tasks(self) -> None:
         """shutdown_runs cancels all running tasks and clears tracking."""
-        manager = PlaybookManager(max_concurrent_runs=5)
+        manager = PlaybookManager(config=None, max_concurrent_runs=5)
         tasks = []
         for i in range(3):
             t = _make_long_running_task()
@@ -496,7 +496,7 @@ class TestShutdownRuns:
     @pytest.mark.asyncio
     async def test_shutdown_with_no_running_tasks(self) -> None:
         """shutdown_runs is safe to call with no running tasks."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         await manager.shutdown_runs()  # Should not raise
         assert manager.running_count == 0
 
@@ -589,7 +589,7 @@ class TestConcurrencyEdgeCases:
     @pytest.mark.asyncio
     async def test_cap_of_one(self) -> None:
         """With cap=1, only one run at a time."""
-        manager = PlaybookManager(max_concurrent_runs=1)
+        manager = PlaybookManager(config=None, max_concurrent_runs=1)
         t1 = _make_long_running_task()
         t2 = _make_long_running_task()
         try:
@@ -604,7 +604,7 @@ class TestConcurrencyEdgeCases:
     @pytest.mark.asyncio
     async def test_register_after_reap_succeeds(self) -> None:
         """After reaping, new runs can be registered."""
-        manager = PlaybookManager(max_concurrent_runs=1)
+        manager = PlaybookManager(config=None, max_concurrent_runs=1)
 
         # Fill slot with a task that completes immediately
         task = _make_completed_task()
@@ -634,7 +634,7 @@ class TestConcurrencyEdgeCases:
     @pytest.mark.asyncio
     async def test_running_runs_is_snapshot(self) -> None:
         """running_runs property returns a copy, not a live reference."""
-        manager = PlaybookManager(max_concurrent_runs=5)
+        manager = PlaybookManager(config=None, max_concurrent_runs=5)
         task = _make_long_running_task()
         try:
             manager.register_run("run-1", "pb-a", task)
@@ -653,7 +653,7 @@ class TestConcurrencyEdgeCases:
     @pytest.mark.asyncio
     async def test_cancelled_task_reaped(self) -> None:
         """Cancelled tasks are reaped without raising."""
-        manager = PlaybookManager(max_concurrent_runs=2)
+        manager = PlaybookManager(config=None, max_concurrent_runs=2)
         task = _make_long_running_task()
         manager._running["run-1"] = task
         manager._running_playbook_ids["run-1"] = "pb"
@@ -669,5 +669,5 @@ class TestConcurrencyEdgeCases:
 
     def test_negative_cap_treated_as_unlimited(self) -> None:
         """A negative max_concurrent_runs is treated as unlimited (same as 0)."""
-        manager = PlaybookManager(max_concurrent_runs=-1)
+        manager = PlaybookManager(config=None, max_concurrent_runs=-1)
         assert manager.can_start_run() is True

@@ -84,7 +84,7 @@ async def test_orphan_compiled_json_removed(tmp_path: Path) -> None:
     json_path = _drop_compiled_json(tmp_path, "orphan-playbook")
     assert json_path.exists()
 
-    manager = PlaybookManager(chat_provider=None, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=None, data_dir=str(tmp_path))
 
     result = await manager.prune_orphan_compilations(str(vault_root))
 
@@ -100,7 +100,7 @@ async def test_compiled_with_matching_md_kept(tmp_path: Path) -> None:
     _write_md(vault_root, "system/playbooks", "keeper.md", "keeper")
     json_path = _drop_compiled_json(tmp_path, "keeper")
 
-    manager = PlaybookManager(chat_provider=None, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=None, data_dir=str(tmp_path))
 
     result = await manager.prune_orphan_compilations(str(vault_root))
     assert result["pruned"] == []
@@ -119,7 +119,7 @@ async def test_mixed_orphans_and_valid(tmp_path: Path) -> None:
     refl_json = _drop_compiled_json(tmp_path, "reflection")
     orphan_json = _drop_compiled_json(tmp_path, "orphan")
 
-    manager = PlaybookManager(chat_provider=None, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=None, data_dir=str(tmp_path))
     result = await manager.prune_orphan_compilations(str(vault_root))
 
     assert sorted(result["pruned"]) == ["orphan"]
@@ -138,7 +138,7 @@ async def test_frontmatter_id_differs_from_filename(tmp_path: Path) -> None:
     # Compiled JSON uses the frontmatter id, not the filename.
     json_path = _drop_compiled_json(tmp_path, "real-id-in-frontmatter")
 
-    manager = PlaybookManager(chat_provider=None, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=None, data_dir=str(tmp_path))
     result = await manager.prune_orphan_compilations(str(vault_root))
     assert result["pruned"] == []
     assert json_path.exists()
@@ -154,7 +154,7 @@ async def test_orphan_removed_from_active_registry(tmp_path: Path) -> None:
     # file so it becomes an orphan from the registry's perspective.
     md_path = _write_md(vault_root, "system/playbooks", "transient.md", "transient")
     provider = _make_mock_provider(num_compilations=1)
-    manager = PlaybookManager(chat_provider=provider, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=provider, data_dir=str(tmp_path))
     await manager.compile_playbook(md_path.read_text(), source_path=str(md_path))
     assert manager.get_playbook("transient") is not None
 
@@ -172,14 +172,14 @@ async def test_no_compiled_dir_is_noop(tmp_path: Path) -> None:
     vault_root = tmp_path / "vault"
     vault_root.mkdir()
 
-    manager = PlaybookManager(chat_provider=None, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=None, data_dir=str(tmp_path))
     result = await manager.prune_orphan_compilations(str(vault_root))
     assert result == {"pruned": [], "checked": 0}
 
 
 def test_playbook_id_by_source_path_matches(tmp_path: Path) -> None:
     """Source-path lookup returns the correct id for an active playbook."""
-    manager = PlaybookManager(chat_provider=None, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=None, data_dir=str(tmp_path))
     manager._source_paths["alpha"] = "/vault/system/playbooks/alpha.md"
     manager._source_paths["beta"] = "/vault/system/playbooks/beta.md"
 

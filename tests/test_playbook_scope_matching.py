@@ -70,6 +70,7 @@ def _make_manager(
     """Create a PlaybookManager with an EventBus."""
     bus = event_bus or EventBus(validate_events=False)
     return PlaybookManager(
+        config=None,
         event_bus=bus,
         on_trigger=on_trigger,
     )
@@ -259,7 +260,7 @@ class TestScopeIdentifierTracking:
             path = compiled_dir / "coding-pb.json"
             path.write_text(json.dumps(pb.to_dict()))
 
-            mgr = PlaybookManager(data_dir=tmpdir)
+            mgr = PlaybookManager(config=None, data_dir=tmpdir)
             count = await mgr.load_from_disk()
             assert count == 1
             assert mgr.get_scope_identifier("coding-pb") == "coding"
@@ -292,7 +293,7 @@ class TestScopeMatchingEventBusIntegration:
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
         """System-scoped playbook fires when event has project_id."""
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_playbook(scope="system", triggers=["task.completed"])
         mgr._active[pb.id] = pb
         mgr._index_triggers(pb)
@@ -307,7 +308,7 @@ class TestScopeMatchingEventBusIntegration:
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
         """System-scoped playbook fires for events without project_id."""
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_playbook(scope="system", triggers=["config.reloaded"])
         mgr._active[pb.id] = pb
         mgr._index_triggers(pb)
@@ -321,7 +322,7 @@ class TestScopeMatchingEventBusIntegration:
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
         """Project-scoped playbook fires for event with matching project_id."""
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_playbook(
             playbook_id="quality-gate",
             scope="project",
@@ -341,7 +342,7 @@ class TestScopeMatchingEventBusIntegration:
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
         """Project-scoped playbook does NOT fire for a different project."""
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_playbook(
             playbook_id="quality-gate",
             scope="project",
@@ -360,7 +361,7 @@ class TestScopeMatchingEventBusIntegration:
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
         """Project-scoped playbook does NOT fire for non-timer events without project_id."""
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_playbook(
             playbook_id="quality-gate",
             scope="project",
@@ -379,7 +380,7 @@ class TestScopeMatchingEventBusIntegration:
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
         """Agent-type playbook fires for event with matching agent_type."""
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_playbook(
             playbook_id="coding-reflection",
             scope="agent-type:coding",
@@ -401,7 +402,7 @@ class TestScopeMatchingEventBusIntegration:
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
         """Agent-type playbook does NOT fire for events with different type."""
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_playbook(
             playbook_id="coding-reflection",
             scope="agent-type:coding",
@@ -422,7 +423,7 @@ class TestScopeMatchingEventBusIntegration:
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
         """Agent-type playbook does NOT fire for events without project_id."""
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_playbook(
             playbook_id="coding-reflection",
             scope="agent-type:coding",
@@ -445,7 +446,7 @@ class TestScopeMatchingEventBusIntegration:
         Event: task.completed with project_id=myapp, agent_type=coding
         Expected: system + project(myapp) + agent-type:coding fire; project(other) doesn't.
         """
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         system_pb = _make_playbook(
             playbook_id="sys-pb",
@@ -495,7 +496,7 @@ class TestScopeMatchingEventBusIntegration:
 
         All three scope types subscribe to the same event; only system fires.
         """
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         system_pb = _make_playbook(
             playbook_id="sys-pb",
@@ -534,7 +535,7 @@ class TestScopeMatchingEventBusIntegration:
         but project-scoped playbooks still fire as if the tick had been
         scoped to the playbook's own project.
         """
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         system_pb = _make_playbook(
             playbook_id="sys-timer",
@@ -571,7 +572,7 @@ class TestScopeMatchingEventBusIntegration:
         silently dropped because the timer service emits cron events with
         project_id=null.
         """
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         pb = _make_playbook(
             playbook_id="morning-outfit",
@@ -597,7 +598,7 @@ class TestScopeMatchingEventBusIntegration:
         """Project-scoped playbook with no scope_identifier falls back to
         the old behavior: timer events without project_id are skipped.
         """
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         pb = _make_playbook(
             playbook_id="orphan-pb",
@@ -623,7 +624,7 @@ class TestScopeMatchingEventBusIntegration:
         """5.3.8(a): task.completed with project_id triggers BOTH
         project-scoped playbook for that project AND system-scoped playbooks.
         """
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         system_pb = _make_playbook(
             playbook_id="sys-monitor",
@@ -656,7 +657,7 @@ class TestScopeMatchingEventBusIntegration:
         """5.3.8(b): task.completed with project_id="myapp" does NOT trigger
         project-scoped playbook for a different project.
         """
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         other_pb = _make_playbook(
             playbook_id="other-gate",
@@ -676,7 +677,7 @@ class TestScopeMatchingEventBusIntegration:
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
         """5.3.8(c): event without project_id triggers only system-scoped playbooks."""
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         system_pb = _make_playbook(
             playbook_id="sys-pb",
@@ -712,7 +713,7 @@ class TestScopeMatchingEventBusIntegration:
         """5.3.8(d): agent-type-scoped playbook triggers only when event's
         agent_type matches, not for other agent types.
         """
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         coding_pb = _make_playbook(
             playbook_id="coding-reflection",
@@ -746,7 +747,7 @@ class TestScopeMatchingEventBusIntegration:
         """5.3.8(e): multiple playbooks subscribed to same event type all
         trigger (not just the first one).
         """
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         # Three system-scoped playbooks all subscribing to the same event
         pb_a = _make_playbook(
@@ -785,7 +786,7 @@ class TestScopeMatchingEventBusIntegration:
         """5.3.8(f): playbook with trigger event type that never fires does
         not interfere with other playbooks that do fire.
         """
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         # This playbook subscribes to an event that is never emitted
         idle_pb = _make_playbook(
@@ -821,7 +822,7 @@ class TestScopeMatchingEventBusIntegration:
         """5.3.8(g): unrecognized event type does not cause errors in
         PlaybookManager — the manager should handle unknown events gracefully.
         """
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         pb = _make_playbook(
             playbook_id="normal-pb",

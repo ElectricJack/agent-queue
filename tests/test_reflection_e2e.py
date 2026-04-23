@@ -439,7 +439,7 @@ class TestReflectionE2ETriggerToRunner:
             result = await runner.run()
             runner_results.append(result)
 
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_compiled_playbook()
         mgr._active[pb.id] = pb
         mgr._index_triggers(pb)
@@ -465,7 +465,7 @@ class TestReflectionE2ETriggerToRunner:
             await runner.run()
             runner_messages.append(list(runner.messages))
 
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_compiled_playbook()
         mgr._active[pb.id] = pb
         mgr._index_triggers(pb)
@@ -496,7 +496,7 @@ class TestReflectionE2ETriggerToRunner:
                 )
             )
 
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_compiled_playbook()
         mgr._active[pb.id] = pb
         mgr._index_triggers(pb)
@@ -529,7 +529,7 @@ class TestReflectionE2ETriggerToRunner:
             result = await runner.run()
             runner_results.append(result)
 
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_compiled_playbook()
         mgr._active[pb.id] = pb
         mgr._index_triggers(pb)
@@ -994,7 +994,7 @@ class TestReflectionScopeMatching:
         async def on_trigger(playbook, data):
             triggered.append(playbook.id)
 
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_compiled_playbook(scope="agent-type:coding")
         mgr._active[pb.id] = pb
         mgr._index_triggers(pb)
@@ -1012,7 +1012,7 @@ class TestReflectionScopeMatching:
         async def on_trigger(playbook, data):
             triggered.append(playbook.id)
 
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_compiled_playbook(scope="agent-type:coding")
         mgr._active[pb.id] = pb
         mgr._index_triggers(pb)
@@ -1030,7 +1030,7 @@ class TestReflectionScopeMatching:
         async def on_trigger(playbook, data):
             results.append((playbook.id, data.get("agent_type", "")))
 
-        mgr = PlaybookManager(event_bus=event_bus, on_trigger=on_trigger)
+        mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
 
         coding_pb = _make_compiled_playbook(
             playbook_id="coding-reflection",

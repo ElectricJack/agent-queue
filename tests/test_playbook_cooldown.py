@@ -61,7 +61,7 @@ def _make_playbook(
 
 def _manager_with_playbooks(*playbooks: CompiledPlaybook) -> PlaybookManager:
     """Create a PlaybookManager with pre-loaded playbooks (no disk/store)."""
-    manager = PlaybookManager()
+    manager = PlaybookManager(config=None)
     for pb in playbooks:
         manager._active[pb.id] = pb
         manager._index_triggers(pb)
@@ -233,7 +233,7 @@ class TestIsOnCooldown:
 
     def test_unknown_playbook(self) -> None:
         """Querying a non-existent playbook returns not on cooldown."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         assert manager.is_on_cooldown("nonexistent", "system") is False
 
     def test_no_prior_execution(self) -> None:
@@ -282,7 +282,7 @@ class TestGetCooldownRemaining:
 
     def test_returns_zero_for_unknown_playbook(self) -> None:
         """Returns 0.0 for a playbook not in the registry."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         assert manager.get_cooldown_remaining("nonexistent", "system") == 0.0
 
     def test_never_returns_negative(self) -> None:
@@ -403,7 +403,7 @@ class TestClearCooldown:
 
     def test_clear_nonexistent_is_noop(self) -> None:
         """Clearing cooldown for a non-existent playbook doesn't raise."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         # Should not raise
         manager.clear_cooldown("nonexistent")
         manager.clear_cooldown("nonexistent", scope="system")

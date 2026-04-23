@@ -181,7 +181,7 @@ class PlaybookManager:
         self,
         *,
         chat_provider: ChatProvider | None = None,
-        config=None,  # _ConfigLike from aq_uri — provides data_dir and vault_root
+        config,  # required; _ConfigLike from aq_uri — provides data_dir and vault_root
         event_bus: EventBus | None = None,
         data_dir: str | None = None,
         store: CompiledPlaybookStore | None = None,

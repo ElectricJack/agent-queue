@@ -542,6 +542,7 @@ class TestEndToEndCompilation:
 
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
@@ -591,6 +592,7 @@ class TestEndToEndCompilation:
         provider.create_message = AsyncMock(side_effect=[resp, resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
@@ -639,6 +641,7 @@ class TestEndToEndCompilation:
 
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
@@ -683,6 +686,7 @@ class TestEndToEndCompilation:
 
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
@@ -722,6 +726,7 @@ class TestEndToEndCompilation:
 
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(data_dir),
         )
@@ -770,6 +775,7 @@ class TestEndToEndCompilation:
         provider.create_message = AsyncMock(side_effect=[good_resp, bad_resp, bad_resp, bad_resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
@@ -818,6 +824,7 @@ class TestEndToEndCompilation:
         provider.create_message = AsyncMock(side_effect=[resp, resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
@@ -864,6 +871,7 @@ class TestEndToEndCompilation:
         # Phase 1: Initial compile via the full pipeline
         provider1 = _make_mock_provider()
         manager1 = PlaybookManager(
+            config=None,
             chat_provider=provider1,
             data_dir=str(data_dir),
         )
@@ -889,6 +897,7 @@ class TestEndToEndCompilation:
         # Phase 2: Simulate restart — new manager loads from disk
         provider2 = _make_mock_provider()
         manager2 = PlaybookManager(
+            config=None,
             chat_provider=provider2,
             data_dir=str(data_dir),
         )
@@ -927,6 +936,7 @@ class TestEndToEndCompilation:
 
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )

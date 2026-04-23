@@ -309,7 +309,7 @@ class TestSubscribeToEvents:
 
     def test_subscribe_with_no_event_bus(self) -> None:
         """subscribe_to_events with no EventBus returns 0."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         count = manager.subscribe_to_events()
         assert count == 0
         assert manager.subscription_count == 0
@@ -318,7 +318,7 @@ class TestSubscribeToEvents:
     async def test_subscribe_with_no_playbooks(self) -> None:
         """subscribe_to_events with no active playbooks returns 0."""
         bus = EventBus(validate_events=False)
-        manager = PlaybookManager(event_bus=bus)
+        manager = PlaybookManager(config=None, event_bus=bus)
         count = manager.subscribe_to_events()
         assert count == 0
 
@@ -326,7 +326,7 @@ class TestSubscribeToEvents:
     async def test_subscribe_creates_subscriptions(self, tmp_path: Path) -> None:
         """subscribe_to_events creates one subscription per trigger."""
         bus = EventBus(validate_events=False)
-        manager = PlaybookManager(event_bus=bus, data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, event_bus=bus, data_dir=str(tmp_path))
 
         # Pre-load playbooks
         compiled_dir = tmp_path / "playbooks" / "compiled"
@@ -343,7 +343,7 @@ class TestSubscribeToEvents:
     async def test_subscribe_multiple_playbooks(self, tmp_path: Path) -> None:
         """subscribe_to_events handles multiple playbooks correctly."""
         bus = EventBus(validate_events=False)
-        manager = PlaybookManager(event_bus=bus, data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, event_bus=bus, data_dir=str(tmp_path))
 
         compiled_dir = tmp_path / "playbooks" / "compiled"
         compiled_dir.mkdir(parents=True)
@@ -360,7 +360,7 @@ class TestSubscribeToEvents:
     async def test_resubscribe_clears_old(self, tmp_path: Path) -> None:
         """Calling subscribe_to_events again removes old subscriptions first."""
         bus = EventBus(validate_events=False)
-        manager = PlaybookManager(event_bus=bus, data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, event_bus=bus, data_dir=str(tmp_path))
 
         compiled_dir = tmp_path / "playbooks" / "compiled"
         compiled_dir.mkdir(parents=True)
@@ -379,7 +379,7 @@ class TestSubscribeToEvents:
     def test_unsubscribe_clears_all(self) -> None:
         """unsubscribe_from_events removes all subscriptions."""
         bus = EventBus(validate_events=False)
-        manager = PlaybookManager(event_bus=bus)
+        manager = PlaybookManager(config=None, event_bus=bus)
 
         # Manually add a playbook
         pb = _make_playbook(triggers=["git.commit"])
@@ -396,7 +396,7 @@ class TestSubscribeToEvents:
     async def test_shutdown_clears_subscriptions(self, tmp_path: Path) -> None:
         """shutdown_runs also removes EventBus subscriptions."""
         bus = EventBus(validate_events=False)
-        manager = PlaybookManager(event_bus=bus, data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, event_bus=bus, data_dir=str(tmp_path))
 
         compiled_dir = tmp_path / "playbooks" / "compiled"
         compiled_dir.mkdir(parents=True)
@@ -428,7 +428,7 @@ class TestTriggerHandler:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append((playbook.id, data))
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         pb = _make_playbook(triggers=["task.completed"])
         manager._active[pb.id] = pb
         manager._index_triggers(pb)
@@ -449,7 +449,7 @@ class TestTriggerHandler:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append(playbook.id)
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         pb = _make_playbook(
             playbook_id="post-qg",
             triggers=[
@@ -481,7 +481,7 @@ class TestTriggerHandler:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append(playbook.id)
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         pb = _make_playbook(
             playbook_id="specific",
             triggers=[
@@ -512,7 +512,7 @@ class TestTriggerHandler:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append(data)
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         pb = _make_playbook(
             playbook_id="mixed",
             triggers=[
@@ -536,7 +536,7 @@ class TestTriggerHandler:
     async def test_no_callback_no_error(self) -> None:
         """When no on_trigger callback is set, matched events are a no-op."""
         bus = EventBus(validate_events=False)
-        manager = PlaybookManager(event_bus=bus)  # no on_trigger
+        manager = PlaybookManager(config=None, event_bus=bus)  # no on_trigger
         pb = _make_playbook(triggers=["task.completed"])
         manager._active[pb.id] = pb
         manager._index_triggers(pb)
@@ -554,7 +554,7 @@ class TestTriggerHandler:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append(playbook.id)
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         pb = _make_playbook(triggers=["git.commit"])
         manager._active[pb.id] = pb
         manager._index_triggers(pb)
@@ -572,7 +572,7 @@ class TestTriggerHandler:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append(playbook.id)
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         pb = _make_playbook(triggers=["git.commit"])
         manager._active[pb.id] = pb
         manager._index_triggers(pb)
@@ -593,7 +593,7 @@ class TestTriggerHandler:
         def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append(playbook.id)
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         pb = _make_playbook(triggers=["git.commit"])
         manager._active[pb.id] = pb
         manager._index_triggers(pb)
@@ -610,7 +610,7 @@ class TestTriggerHandler:
         async def bad_callback(playbook: CompiledPlaybook, data: dict) -> None:
             raise RuntimeError("Boom!")
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=bad_callback)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=bad_callback)
         pb = _make_playbook(triggers=["git.commit"])
         manager._active[pb.id] = pb
         manager._index_triggers(pb)
@@ -637,7 +637,7 @@ class TestTriggerCooldownIntegration:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append(playbook.id)
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         pb = _make_playbook(triggers=["git.commit"], cooldown_seconds=300)
         manager._active[pb.id] = pb
         manager._index_triggers(pb)
@@ -658,7 +658,7 @@ class TestTriggerCooldownIntegration:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append(playbook.id)
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         pb = _make_playbook(triggers=["git.commit"], cooldown_seconds=300)
         manager._active[pb.id] = pb
         manager._index_triggers(pb)
@@ -677,7 +677,7 @@ class TestTriggerCooldownIntegration:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append(playbook.id)
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         pb = _make_playbook(triggers=["git.commit"], cooldown_seconds=300)
         manager._active[pb.id] = pb
         manager._index_triggers(pb)
@@ -710,6 +710,7 @@ class TestTriggerConcurrencyIntegration:
             triggered.append(playbook.id)
 
         manager = PlaybookManager(
+            config=None,
             event_bus=bus,
             on_trigger=on_trigger,
             max_concurrent_runs=1,
@@ -743,6 +744,7 @@ class TestTriggerConcurrencyIntegration:
             triggered.append(playbook.id)
 
         manager = PlaybookManager(
+            config=None,
             event_bus=bus,
             on_trigger=on_trigger,
             max_concurrent_runs=0,  # unlimited
@@ -774,6 +776,7 @@ class TestSubscriptionLifecycle:
             triggered.append(playbook.id)
 
         manager = PlaybookManager(
+            config=None,
             event_bus=bus,
             on_trigger=on_trigger,
             data_dir=str(tmp_path),
@@ -807,6 +810,7 @@ class TestSubscriptionLifecycle:
 
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             on_trigger=on_trigger,
@@ -834,6 +838,7 @@ class TestSubscriptionLifecycle:
             triggered.append(playbook.id)
 
         manager = PlaybookManager(
+            config=None,
             event_bus=bus,
             on_trigger=on_trigger,
             data_dir=str(tmp_path),
@@ -856,7 +861,7 @@ class TestSubscriptionLifecycle:
     async def test_no_refresh_before_first_subscribe(self) -> None:
         """Mutations don't create subscriptions if subscribe_to_events never called."""
         bus = EventBus(validate_events=False)
-        manager = PlaybookManager(event_bus=bus)
+        manager = PlaybookManager(config=None, event_bus=bus)
 
         # Manually add a playbook (simulates load without subscribe)
         pb = _make_playbook(triggers=["git.commit"])
@@ -873,7 +878,7 @@ class TestSubscriptionLifecycle:
         bus = EventBus(validate_events=False)
         triggered: list[str] = []
 
-        manager = PlaybookManager(event_bus=bus)
+        manager = PlaybookManager(config=None, event_bus=bus)
         pb = _make_playbook(triggers=["git.commit"])
         manager._active[pb.id] = pb
         manager._index_triggers(pb)
@@ -915,7 +920,7 @@ class TestCompositionChain:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append((playbook.id, dict(data)))
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
 
         # Playbook 1: code-quality-gate triggers on git.commit
         qg = _make_playbook(
@@ -977,7 +982,7 @@ class TestCompositionChain:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append(playbook.id)
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
 
         # Upstream playbook
         upstream = _make_playbook(playbook_id="upstream", triggers=["git.commit"])
@@ -1026,7 +1031,7 @@ class TestTriggerMapWithFilters:
 
     def test_trigger_map_uses_event_type(self) -> None:
         """Structured triggers are indexed by event_type in the trigger map."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         pb = _make_playbook(
             playbook_id="filtered",
             triggers=[
@@ -1044,7 +1049,7 @@ class TestTriggerMapWithFilters:
 
     def test_get_all_triggers_includes_filtered(self) -> None:
         """get_all_triggers includes event types from filtered triggers."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         pb = _make_playbook(
             triggers=[
                 "git.commit",
@@ -1060,7 +1065,7 @@ class TestTriggerMapWithFilters:
 
     def test_get_playbooks_by_trigger_with_structured(self) -> None:
         """get_playbooks_by_trigger works for event types from structured triggers."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         pb = _make_playbook(
             playbook_id="filtered",
             triggers=[
@@ -1094,7 +1099,7 @@ class TestTriggerMapWithFilters:
         )
         (compiled_dir / "filtered.json").write_text(json.dumps(pb.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         loaded = await manager.load_from_disk()
         assert loaded == 1
 
