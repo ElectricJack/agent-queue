@@ -2166,8 +2166,8 @@ available or the channel cannot be found.
 
 ### Prompt Template Commands
 - `list_prompts` — list prompt templates
-- `read_prompt` — read a specific template. Accepts either `(project_id, name)` or `uri` (e.g. `aq://prompts/consolidation_task.md` for a bundled template); see the `aq://` scheme in `docs/specs/design/playbooks.md`
-- `render_prompt` — render template with variable substitution. Same `(project_id, name)` vs. `uri` options as `read_prompt`; `{{variable}}` placeholders are substituted from the `variables` dict server-side
+- `read_prompt` — read a specific template. Accepts either `(project_id, name)` or `path` (absolute filesystem path); in playbooks, use `aq://prompts/<name>` which the compiler rewrites to an absolute path
+- `render_prompt` — render template with variable substitution. Same `(project_id, name)` vs. `path` options as `read_prompt`; `{{variable}}` placeholders are substituted from the `variables` dict server-side
 
 ### Note Extensions
 - `promote_note` — incorporate a note into the project profile via LLM

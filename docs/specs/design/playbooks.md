@@ -176,34 +176,33 @@ The only structured portion. Kept minimal:
 ### Referencing Resources
 
 Playbooks often need to reference files that live outside the playbook itself —
-bundled prompt templates, vault entries, logs, per-task artifacts, a project's
-workspace. Absolute filesystem paths are not portable (they break whenever the
-daemon runs on a different machine or with a different `data_dir`), and a
-hardcoded `~/.agent-queue/...` path hides the fact that the vault root is
-configurable.
+bundled prompt templates, vault entries, logs, per-task artifacts. Absolute
+filesystem paths are not portable (they break whenever the daemon runs on a
+different machine or with a different `data_dir`), and hardcoded
+`~/.agent-queue/...` paths hide the fact that the vault root is configurable.
 
-Instead, use the `aq://` URI scheme. The daemon resolves these URIs against
-its own config and database, so the same playbook works unchanged wherever it
-runs. All authorities are **read-only** in v1.
+Use the `aq://` URI scheme for authoring playbooks. **These are compile-time
+macros** — the playbook compiler rewrites each `aq://<authority>/<path>` into
+an absolute filesystem path before the playbook is stored. Runtime tools (at
+execution time) see only absolute paths; they never encounter `aq://`. All
+authorities are **read-only**.
 
-| URI | Resolves to |
+| URI | Rewrites to |
 |---|---|
 | `aq://prompts/<path>` | Bundled `src/prompts/<path>` (ships with the daemon) |
 | `aq://vault/<path>` | `{vault_root}/<path>` |
 | `aq://logs/<path>` | `{data_dir}/logs/<path>` |
 | `aq://tasks/<path>` | `{data_dir}/tasks/<path>` |
 | `aq://attachments/<path>` | `{data_dir}/attachments/<path>` |
-| `aq://workspace/<project_id>/<path>` | Project's primary workspace |
-| `aq://workspace-id/<workspace_id>/<path>` | A specific workspace by DB id |
 
-**Which tools understand the scheme.** `read_file` accepts an `aq://` URI in
-place of `path`. `read_prompt` and `render_prompt` accept a `uri` parameter as
-an alternative to `(project_id, name)`; when `uri` is set, the prompt is
-loaded from the resolved path and (for `render_prompt`) `{{variable}}`
-placeholders are substituted server-side.
+**Runtime placeholders.** Inside a URI, placeholders like `<project_id>` pass
+through the rewrite unchanged. The compiled step's LLM fills them at execution
+time. Example: `aq://vault/project_<project_id>/summary.md` becomes
+`/home/user/.agent-queue/vault/project_<project_id>/summary.md` (literal) at
+compile, then `/home/user/.agent-queue/vault/project_proj-123/summary.md` at
+runtime once the LLM knows `project_id`.
 
-**Example — a playbook step that creates a task whose description is a
-rendered bundled prompt:**
+**Example — a playbook step in the markdown source:**
 
 ```markdown
 For each target project, call `create_task` with:
@@ -211,13 +210,15 @@ For each target project, call `create_task` with:
 - `project_id`: the project's id
 - `title`: "Consolidate memory: <project_name>"
 - `description`: the `rendered` field of
-  `render_prompt(uri="aq://prompts/consolidation_task.md", variables={...})`
+  `render_prompt(path="aq://prompts/consolidation_task.md", variables={...})`
 ```
 
-**Safety rules.** The resolver rejects `..` segments and absolute path
-segments inside the URI, and rejects unknown authorities. The authority
-whitelist is the permission model — `aq://` paths skip the workspace-path
-validation that applies to plain `read_file` calls, so adding a new
+After compilation, `aq://prompts/consolidation_task.md` becomes an absolute
+path like `/app/src/prompts/consolidation_task.md`, which the runtime
+`render_prompt` receives.
+
+**Safety.** The compiler rejects `..` segments and unknown authorities at
+compile time. The authority whitelist is the permission model — adding a new
 authority requires a deliberate code change.
 
 ### LLM Compilation
