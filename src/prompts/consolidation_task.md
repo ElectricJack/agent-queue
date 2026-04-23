@@ -1,17 +1,17 @@
-# Memory Consolidation — Project: {project_name}
+# Memory Consolidation — Project: {{project_name}}
 
 You are performing a nightly consolidation pass over the auto-extracted
-insights for project `{project_id}`. The goal: fewer, better-deduped,
+insights for project `{{project_id}}`. The goal: fewer, better-deduped,
 cross-linked memories, with stable facts promoted from `insights/` into the
 curated `knowledge/` subdirectory.
 
 ## Context
 
-- Project id: `{project_id}`
-- Insights directory: `{insights_dir}`
-- Knowledge directory: `{knowledge_dir}` (create if it does not exist)
-- Last consolidated: `{last_consolidated}`
-- Insights added/updated since then: `{churn_count}`
+- Project id: `{{project_id}}`
+- Insights directory: `{{insights_dir}}`
+- Knowledge directory: `{{knowledge_dir}}` (create if it does not exist)
+- Last consolidated: `{{last_consolidated}}`
+- Insights added/updated since then: `{{churn_count}}`
 
 Budget: prioritize high-churn topics first. Stop cleanly if you run out of
 context; partial progress is fine — the next nightly run continues the work.
@@ -55,7 +55,7 @@ when you edit in place so vault-watcher diffs stay small.
 
 ### 1. Inventory
 
-Glob `{insights_dir}/*.md`. Read each file's frontmatter and body. Group
+Glob `{{insights_dir}}/*.md`. Read each file's frontmatter and body. Group
 by the `topic` field where present. For each topic-cluster, hold the
 list of filenames + body preview + tags + `retrieval_count` +
 `source_task` so you can reason about the cluster as a whole.
@@ -109,8 +109,8 @@ with `[[wiki-link]]` references. Example:
 
 ```markdown
 ## See Also
-- [[projects/{project_id}/memory/knowledge/email-task-creation|Email → Task Creation]]
-- [[projects/{project_id}/memory/insights/<sibling-slug>-<hash>|Sibling insight title]]
+- [[projects/{{project_id}}/memory/knowledge/email-task-creation|Email → Task Creation]]
+- [[projects/{{project_id}}/memory/insights/<sibling-slug>-<hash>|Sibling insight title]]
 ```
 
 Use `Edit` to append — don't rewrite the whole file when a single
@@ -128,8 +128,8 @@ An insight is stable enough to promote when:
 
 To promote:
 
-1. `Bash mv {insights_dir}/<slug>-<hash>.md {knowledge_dir}/<slug>-<hash>.md`
-   (create `{knowledge_dir}` first with `mkdir -p` if needed).
+1. `Bash mv {{insights_dir}}/<slug>-<hash>.md {{knowledge_dir}}/<slug>-<hash>.md`
+   (create `{{knowledge_dir}}` first with `mkdir -p` if needed).
 2. `Edit` the moved file to update its frontmatter:
    - Add `knowledge` and `curated` to the `tags` list.
    - Set `topic` to a canonical cluster slug (e.g.
@@ -143,8 +143,8 @@ To promote:
 ### 6. Update the consolidation marker
 
 Write the marker for **this** project at
-`{insights_dir}/../consolidation.md` (i.e.
-`vault/projects/{project_id}/memory/consolidation.md`). The file is
+`{{insights_dir}}/../consolidation.md` (i.e.
+`vault/projects/{{project_id}}/memory/consolidation.md`). The file is
 project-scoped (one per project — do not touch any other project's
 marker). Use `Write` if it does not exist, `Edit` to append a new log
 line and update the frontmatter timestamp if it does.
@@ -161,7 +161,7 @@ consolidation_stats:
   last_merged: <int>
 ---
 
-# Memory Consolidation Log — {project_name}
+# Memory Consolidation Log — {{project_name}}
 
 - <current-iso-timestamp>: kept=<int> promoted=<int> deleted=<int> merged=<int>
 ```

@@ -96,17 +96,27 @@ hard filter for workspace-bound agent instances (e.g. `"claude"`,
 READY because no workspace agent advertises that type. The project's
 default profile already gives the executing agent the `memory_*`
 tools it needs via the agent-queue MCP.
-- `description`: read
-  `/mnt/d/Dev/agent-queue2/src/prompts/consolidation_task.md` via the
-  `read_file` tool and substitute the placeholders (the full prompt
-  instructs the executing agent to edit the vault markdown files
-  directly with Read/Edit/Write/Bash — no extra tools required beyond
-  the default Claude toolset)
-  `{project_id}`, `{project_name}`,
-  `{insights_dir}` (→ `~/.agent-queue/vault/projects/<project_id>/memory/insights`),
-  `{knowledge_dir}` (→ `~/.agent-queue/vault/projects/<project_id>/memory/knowledge`),
-  `{last_consolidated}` (→ value from Step 1, or `never` if null),
-  `{churn_count}` (→ value from Step 1, or `unknown` if null).
+- `description`: call `render_prompt` with the bundled consolidation
+  prompt URI and the target project's variables:
+
+  ```
+  render_prompt(
+    uri="aq://prompts/consolidation_task.md",
+    variables={
+      "project_id": "<id>",
+      "project_name": "<name>",
+      "insights_dir": "aq://vault/projects/<id>/memory/insights",
+      "knowledge_dir": "aq://vault/projects/<id>/memory/knowledge",
+      "last_consolidated": "<iso-or 'never'>",
+      "churn_count": "<int-or 'unknown'>"
+    }
+  )
+  ```
+
+  Use the `rendered` field of the response as the task description.
+  The full prompt instructs the executing agent to edit the vault
+  markdown files directly with Read/Edit/Write/Bash — no extra tools
+  required beyond the default Claude toolset.
 
 Do **not** pre-delete anything — the consolidation task owns all vault
 writes.

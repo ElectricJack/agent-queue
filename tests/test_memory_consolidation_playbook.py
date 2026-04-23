@@ -157,14 +157,20 @@ def test_consolidation_prompt_uses_direct_filesystem_tools() -> None:
 
 
 def test_consolidation_prompt_has_placeholders() -> None:
-    """Placeholders the playbook fills in at task-creation time."""
+    """Placeholders the playbook fills in at task-creation time.
+
+    Uses ``{{var}}`` format — the canonical placeholder syntax understood
+    by ``src.prompt_manager.render_template`` — so ``render_prompt`` can
+    substitute them server-side when the playbook invokes it via
+    ``aq://prompts/consolidation_task.md``.
+    """
     text = CONSOLIDATION_PROMPT_PATH.read_text(encoding="utf-8")
     for placeholder in (
-        "{project_id}",
-        "{project_name}",
-        "{insights_dir}",
-        "{knowledge_dir}",
-        "{last_consolidated}",
-        "{churn_count}",
+        "{{project_id}}",
+        "{{project_name}}",
+        "{{insights_dir}}",
+        "{{knowledge_dir}}",
+        "{{last_consolidated}}",
+        "{{churn_count}}",
     ):
         assert placeholder in text, f"consolidation prompt missing placeholder: {placeholder}"
