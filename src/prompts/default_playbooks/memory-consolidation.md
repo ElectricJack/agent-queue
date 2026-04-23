@@ -40,13 +40,24 @@ Branch on the incoming event:
 
 3. **Timer run** — `event.type == "timer.24h"` (or any
    non-manual type). Call `list_projects`, filter to `ACTIVE`, then
-   for each one read
-   `~/.agent-queue/vault/projects/<project_id>/memory/consolidation.md`
-   (treat missing file as `last_consolidated: null`) and count the
-   insight files under
-   `~/.agent-queue/vault/projects/<project_id>/memory/insights/`
-   whose mtime is newer than `last_consolidated` (use `null` ⇒ count
-   all files). Keep projects where **either**:
+   for each one:
+   - Call `read_project_memory_file` with `project_id` and
+     `path: "consolidation.md"`. The tool returns the file contents
+     when present, or `{"missing": true, ...}` when it doesn't
+     exist. Treat a missing file as `last_consolidated: null`.
+     Otherwise parse the `last_consolidated` value from the YAML
+     frontmatter at the top of `content`.
+   - Call `count_project_memory_files` with `project_id`, `path:
+     "insights"`, and (if known) `newer_than: <last_consolidated>`
+     to get the churn count. When `last_consolidated` is `null`,
+     omit `newer_than` to count all insights. A missing directory
+     returns `{"count": 0, "missing": true}`.
+   - Use these tools — do **not** attempt to access the vault via
+     `read_file` or `list_directory`. Those are sandboxed to the
+     workspace and cannot see the system vault at
+     `~/.agent-queue/vault/`.
+
+   Keep projects where **either**:
    - `churn_count >= 5` and `last_consolidated` is null or older than
      3 days, or
    - `last_consolidated` is null and the project has at least 3

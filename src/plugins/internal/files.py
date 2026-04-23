@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 
 from src.plugins.base import InternalPlugin, PluginContext
@@ -227,6 +228,83 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["project_id"],
+        },
+    },
+    {
+        "name": "read_project_memory_file",
+        "description": (
+            "Read a markdown file from a project's system memory vault. "
+            "Resolves paths under "
+            "``{data_dir}/vault/projects/<project_id>/memory/<path>``, "
+            "which lives outside the regular workspace sandbox. Use this for "
+            "reading consolidation markers, insight files, or knowledge "
+            "entries from the agent-queue vault. Path traversal outside the "
+            "project's memory directory is rejected. Returns "
+            "``{missing: true, error}`` when the file does not exist so the "
+            "memory-consolidation playbook can treat it as "
+            "``last_consolidated: null``."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project ID. Must contain only alphanumerics, "
+                        "hyphens, and underscores — no path separators or "
+                        "traversal segments."
+                    ),
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Relative path within the project's memory directory "
+                        "(e.g. ``consolidation.md`` or ``insights/foo.md``)."
+                    ),
+                },
+            },
+            "required": ["project_id", "path"],
+        },
+    },
+    {
+        "name": "count_project_memory_files",
+        "description": (
+            "Count files in a subdirectory of a project's system memory "
+            "vault (``{data_dir}/vault/projects/<project_id>/memory/<path>``). "
+            "Optionally filter by modification time via ``newer_than`` (ISO "
+            "8601 timestamp). Returns ``{count, total, missing?}``; a missing "
+            "directory is reported as ``count: 0, missing: true`` rather than "
+            "an error so the memory-consolidation playbook can handle "
+            "first-run projects cleanly."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project ID. Must contain only alphanumerics, "
+                        "hyphens, and underscores — no path separators or "
+                        "traversal segments."
+                    ),
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Relative subdirectory under the project's memory "
+                        "directory (e.g. ``insights`` or ``knowledge``)."
+                    ),
+                },
+                "newer_than": {
+                    "type": "string",
+                    "description": (
+                        "Optional ISO 8601 timestamp. If provided, only files "
+                        "whose mtime is strictly newer than this time are "
+                        "counted. Omit or pass null to count all files."
+                    ),
+                },
+            },
+            "required": ["project_id", "path"],
         },
     },
     {
@@ -488,6 +566,12 @@ class FilesPlugin(InternalPlugin):
         ctx.register_command("grep", self.cmd_grep)
         ctx.register_command("search_files", self.cmd_search_files)
         ctx.register_command("list_directory", self.cmd_list_directory)
+        ctx.register_command(
+            "read_project_memory_file", self.cmd_read_project_memory_file
+        )
+        ctx.register_command(
+            "count_project_memory_files", self.cmd_count_project_memory_files
+        )
         ctx.register_command("select_files_for_inspection", self.cmd_select_files_for_inspection)
         ctx.register_command("record_file_inspection", self.cmd_record_file_inspection)
 
@@ -796,6 +880,198 @@ class FilesPlugin(InternalPlugin):
             "directories": dirs,
             "files": files,
         }
+
+    # ------------------------------------------------------------------
+    # read_project_memory_file / count_project_memory_files
+    #
+    # These commands expose narrow, read-only access to the system memory
+    # vault at ``{data_dir}/vault/projects/<project_id>/memory/``.  The
+    # ordinary ``read_file`` / ``list_directory`` tools sandbox paths to
+    # ``workspace_dir`` and known repo/workspace paths, so the vault — which
+    # lives under ``~/.agent-queue/`` by default — is inaccessible.  The
+    # ``memory-consolidation`` playbook needs to read ``consolidation.md``
+    # and count insight files to decide which projects qualify for a
+    # consolidation pass; these commands are the sanctioned path for that.
+    #
+    # Security:
+    # - ``project_id`` is strictly validated to contain only alphanumerics,
+    #   hyphens, and underscores.  This prevents traversal via crafted
+    #   ids like ``../other``.
+    # - ``path`` is resolved with ``os.path.realpath`` and compared against
+    #   the project's memory directory; any escape via ``..`` is rejected.
+    # - These commands are read-only; no writer exists by design.
+    # ------------------------------------------------------------------
+
+    _PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]*$")
+
+    def _resolve_project_memory_path(
+        self, project_id: str, rel_path: str
+    ) -> tuple[str, str] | dict:
+        """Resolve ``{data_dir}/vault/projects/<id>/memory/<rel_path>``.
+
+        Returns a ``(memory_dir, resolved_abs_path)`` tuple on success, or
+        an error dict compatible with the command contract.  ``rel_path``
+        may be empty (``""``) to refer to the memory directory itself.
+        """
+        if not project_id or not isinstance(project_id, str):
+            return {"error": "project_id is required"}
+        if not self._PROJECT_ID_PATTERN.match(project_id):
+            return {
+                "error": (
+                    "Invalid project_id: must contain only alphanumerics, "
+                    "hyphens, and underscores."
+                )
+            }
+        memory_dir = os.path.realpath(
+            os.path.join(
+                self._cfg.data_dir,
+                "vault",
+                "projects",
+                project_id,
+                "memory",
+            )
+        )
+        if rel_path is None:
+            rel_path = ""
+        # Strip any leading slash so ``os.path.join`` stays relative.
+        rel_clean = rel_path.lstrip("/\\") if isinstance(rel_path, str) else ""
+        candidate = os.path.realpath(os.path.join(memory_dir, rel_clean))
+        if candidate != memory_dir and not candidate.startswith(memory_dir + os.sep):
+            return {
+                "error": (
+                    "Access denied: path is outside the project's memory "
+                    "directory."
+                )
+            }
+        return memory_dir, candidate
+
+    async def cmd_read_project_memory_file(self, args: dict) -> dict:
+        project_id = args.get("project_id", "")
+        rel_path = args.get("path", "")
+        if not rel_path:
+            return {"error": "path is required"}
+
+        resolved = self._resolve_project_memory_path(project_id, rel_path)
+        if isinstance(resolved, dict):
+            return resolved
+        _memory_dir, abs_path = resolved
+
+        if not os.path.exists(abs_path):
+            return {
+                "error": f"File not found: {rel_path}",
+                "missing": True,
+                "project_id": project_id,
+                "path": abs_path,
+            }
+        if not os.path.isfile(abs_path):
+            return {
+                "error": f"Not a file: {rel_path}",
+                "project_id": project_id,
+                "path": abs_path,
+            }
+        try:
+            with open(abs_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            return {
+                "error": "Binary file -- cannot display contents",
+                "project_id": project_id,
+                "path": abs_path,
+            }
+        except OSError as e:
+            return {
+                "error": f"Read failed: {e}",
+                "project_id": project_id,
+                "path": abs_path,
+            }
+        return {
+            "project_id": project_id,
+            "path": abs_path,
+            "content": content,
+        }
+
+    async def cmd_count_project_memory_files(self, args: dict) -> dict:
+        project_id = args.get("project_id", "")
+        rel_path = args.get("path", "")
+        newer_than = args.get("newer_than")
+
+        resolved = self._resolve_project_memory_path(project_id, rel_path or "")
+        if isinstance(resolved, dict):
+            return resolved
+        _memory_dir, abs_dir = resolved
+
+        if not os.path.exists(abs_dir):
+            return {
+                "project_id": project_id,
+                "path": abs_dir,
+                "count": 0,
+                "total": 0,
+                "missing": True,
+                "newer_than": newer_than,
+            }
+        if not os.path.isdir(abs_dir):
+            return {
+                "error": f"Not a directory: {rel_path}",
+                "project_id": project_id,
+                "path": abs_dir,
+            }
+
+        cutoff: float | None = None
+        if newer_than:
+            from datetime import datetime
+
+            raw = str(newer_than).strip()
+            if raw:
+                # Accept trailing ``Z`` (RFC 3339 UTC) which ``fromisoformat``
+                # only understands on 3.11+.  ``replace`` is a safe no-op when
+                # absent.
+                normalized = raw.replace("Z", "+00:00")
+                try:
+                    dt = datetime.fromisoformat(normalized)
+                except ValueError:
+                    return {
+                        "error": (
+                            f"Invalid newer_than timestamp: {newer_than!r}. "
+                            "Use ISO 8601 (e.g. 2026-04-23T00:00:00Z)."
+                        )
+                    }
+                cutoff = dt.timestamp()
+
+        try:
+            entries = os.listdir(abs_dir)
+        except OSError as e:
+            return {
+                "error": f"List failed: {e}",
+                "project_id": project_id,
+                "path": abs_dir,
+            }
+
+        total = 0
+        matched = 0
+        for name in entries:
+            full = os.path.join(abs_dir, name)
+            if not os.path.isfile(full):
+                continue
+            total += 1
+            if cutoff is None:
+                matched += 1
+            else:
+                try:
+                    mtime = os.path.getmtime(full)
+                except OSError:
+                    continue
+                if mtime > cutoff:
+                    matched += 1
+
+        result: dict = {
+            "project_id": project_id,
+            "path": abs_dir,
+            "count": matched,
+            "total": total,
+        }
+        if newer_than:
+            result["newer_than"] = newer_than
+        return result
 
     # ------------------------------------------------------------------
     # select_files_for_inspection / record_file_inspection

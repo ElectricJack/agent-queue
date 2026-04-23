@@ -99,6 +99,34 @@ def test_references_consolidation_prompt(playbook_text: str) -> None:
     assert "consolidation_task.md" in playbook_text
 
 
+def test_uses_scoped_vault_memory_tools(playbook_text: str) -> None:
+    """Timer-run vault inspection must go through the dedicated tools.
+
+    The ordinary ``read_file`` / ``list_directory`` tools are sandboxed to
+    the workspace and cannot see ``~/.agent-queue/vault/``. The playbook
+    must direct the supervisor to use ``read_project_memory_file`` and
+    ``count_project_memory_files`` instead.
+    """
+    assert "read_project_memory_file" in playbook_text, (
+        "Timer-run step should use read_project_memory_file to read "
+        "consolidation.md, not read_file (which cannot access the vault)."
+    )
+    assert "count_project_memory_files" in playbook_text, (
+        "Timer-run step should use count_project_memory_files to count "
+        "insight churn, not list_directory (which cannot access the vault)."
+    )
+
+
+def test_does_not_reference_nonexistent_count_tool(playbook_text: str) -> None:
+    """Guard against regressing to the phantom ``count_files_by_mtime``.
+
+    That tool name appeared in an earlier revision but was never actually
+    registered as a tool — the supervisor would silently fall through to a
+    path-traversal failure. Keep the playbook pointed at real tools.
+    """
+    assert "count_files_by_mtime" not in playbook_text
+
+
 def test_consolidation_prompt_exists() -> None:
     assert CONSOLIDATION_PROMPT_PATH.exists()
 

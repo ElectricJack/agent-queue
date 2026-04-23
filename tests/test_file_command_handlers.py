@@ -1149,3 +1149,217 @@ class TestRecordFileInspection:
         )
         assert result["recorded"] is False
         assert "warning" in result
+
+
+# ---------------------------------------------------------------------------
+# Project memory vault access (read_project_memory_file /
+# count_project_memory_files)
+# ---------------------------------------------------------------------------
+
+
+class TestReadProjectMemoryFile:
+    """Verify the scoped vault-memory reader exposed to the
+    memory-consolidation playbook.
+
+    The ordinary read_file handler sandboxes paths to the workspace; the
+    system vault at ``{data_dir}/vault/projects/<id>/memory/`` lives outside
+    that sandbox.  ``read_project_memory_file`` resolves paths inside the
+    project's memory directory, preventing traversal escape while allowing
+    the playbook to read consolidation markers and insight files.
+    """
+
+    def _memory_dir(self, config, project_id: str):
+        import os as _os
+
+        return _os.path.join(
+            config.data_dir, "vault", "projects", project_id, "memory"
+        )
+
+    async def test_reads_existing_file(self, handler, config):
+        import os as _os
+
+        project_id = "memory-reader-proj"
+        mem_dir = self._memory_dir(config, project_id)
+        _os.makedirs(mem_dir, exist_ok=True)
+        target = _os.path.join(mem_dir, "consolidation.md")
+        with open(target, "w") as f:
+            f.write("---\nlast_consolidated: 2026-04-01T00:00:00Z\n---\nhello\n")
+
+        result = await handler.execute(
+            "read_project_memory_file",
+            {"project_id": project_id, "path": "consolidation.md"},
+        )
+
+        assert "error" not in result, result
+        assert result["project_id"] == project_id
+        assert "last_consolidated" in result["content"]
+        assert result["path"].endswith("consolidation.md")
+        assert result.get("missing") is not True
+
+    async def test_missing_file_returns_flagged_error(self, handler, config):
+        project_id = "memory-reader-proj"
+        # No file created.
+        result = await handler.execute(
+            "read_project_memory_file",
+            {"project_id": project_id, "path": "consolidation.md"},
+        )
+
+        assert result.get("missing") is True
+        assert "error" in result
+
+    async def test_rejects_traversal_in_path(self, handler, config):
+        import os as _os
+
+        project_id = "traversal-proj"
+        mem_dir = self._memory_dir(config, project_id)
+        _os.makedirs(mem_dir, exist_ok=True)
+        # Create something one level outside memory/
+        outside = _os.path.join(_os.path.dirname(mem_dir), "secret.md")
+        with open(outside, "w") as f:
+            f.write("do not read")
+
+        result = await handler.execute(
+            "read_project_memory_file",
+            {"project_id": project_id, "path": "../secret.md"},
+        )
+
+        assert "error" in result
+        assert (
+            "denied" in result["error"].lower()
+            or "invalid" in result["error"].lower()
+            or "outside" in result["error"].lower()
+        )
+
+    async def test_rejects_traversal_in_project_id(self, handler):
+        """project_id must not contain path-traversal characters."""
+        result = await handler.execute(
+            "read_project_memory_file",
+            {"project_id": "../other", "path": "consolidation.md"},
+        )
+        assert "error" in result
+
+    async def test_reads_nested_insight_file(self, handler, config):
+        import os as _os
+
+        project_id = "nested-proj"
+        mem_dir = self._memory_dir(config, project_id)
+        insights = _os.path.join(mem_dir, "insights")
+        _os.makedirs(insights, exist_ok=True)
+        with open(_os.path.join(insights, "insight-a.md"), "w") as f:
+            f.write("# insight A\n")
+
+        result = await handler.execute(
+            "read_project_memory_file",
+            {"project_id": project_id, "path": "insights/insight-a.md"},
+        )
+        assert "error" not in result, result
+        assert "insight A" in result["content"]
+
+
+class TestCountProjectMemoryFiles:
+    def _memory_dir(self, config, project_id: str):
+        import os as _os
+
+        return _os.path.join(
+            config.data_dir, "vault", "projects", project_id, "memory"
+        )
+
+    async def test_counts_all_when_newer_than_omitted(self, handler, config):
+        import os as _os
+
+        project_id = "count-proj"
+        insights = _os.path.join(self._memory_dir(config, project_id), "insights")
+        _os.makedirs(insights, exist_ok=True)
+        for name in ("a.md", "b.md", "c.md"):
+            with open(_os.path.join(insights, name), "w") as f:
+                f.write(f"# {name}\n")
+
+        result = await handler.execute(
+            "count_project_memory_files",
+            {"project_id": project_id, "path": "insights"},
+        )
+        assert "error" not in result, result
+        assert result["count"] == 3
+        assert result["total"] == 3
+
+    async def test_counts_newer_than_iso(self, handler, config):
+        import os as _os
+        import time as _time
+
+        project_id = "count-proj-time"
+        insights = _os.path.join(self._memory_dir(config, project_id), "insights")
+        _os.makedirs(insights, exist_ok=True)
+
+        old = _os.path.join(insights, "old.md")
+        with open(old, "w") as f:
+            f.write("# old\n")
+        far_past = _time.time() - (30 * 86400)
+        _os.utime(old, (far_past, far_past))
+
+        new = _os.path.join(insights, "new.md")
+        with open(new, "w") as f:
+            f.write("# new\n")
+        # `new` keeps its default mtime (now)
+
+        # Cutoff: 7 days ago — `old` should be excluded, `new` included.
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = (datetime.now(tz=timezone.utc) - timedelta(days=7)).isoformat()
+        result = await handler.execute(
+            "count_project_memory_files",
+            {
+                "project_id": project_id,
+                "path": "insights",
+                "newer_than": cutoff,
+            },
+        )
+        assert "error" not in result, result
+        assert result["count"] == 1
+        assert result["total"] == 2
+
+    async def test_missing_directory_returns_zero(self, handler, config):
+        project_id = "count-missing"
+        # Do not create the directory.
+        result = await handler.execute(
+            "count_project_memory_files",
+            {"project_id": project_id, "path": "insights"},
+        )
+        assert "error" not in result, result
+        assert result["count"] == 0
+        assert result.get("missing") is True
+
+    async def test_rejects_traversal(self, handler, config):
+        import os as _os
+
+        project_id = "count-traversal"
+        _os.makedirs(self._memory_dir(config, project_id), exist_ok=True)
+        result = await handler.execute(
+            "count_project_memory_files",
+            {"project_id": project_id, "path": "../"},
+        )
+        assert "error" in result
+
+    async def test_rejects_bad_project_id(self, handler, config):
+        result = await handler.execute(
+            "count_project_memory_files",
+            {"project_id": "../escape", "path": "insights"},
+        )
+        assert "error" in result
+
+    async def test_ignores_subdirectories_in_count(self, handler, config):
+        """Only plain files count — nested dirs don't inflate the total."""
+        import os as _os
+
+        project_id = "count-dir-filter"
+        insights = _os.path.join(self._memory_dir(config, project_id), "insights")
+        _os.makedirs(_os.path.join(insights, "nested"), exist_ok=True)
+        with open(_os.path.join(insights, "a.md"), "w") as f:
+            f.write("# a\n")
+
+        result = await handler.execute(
+            "count_project_memory_files",
+            {"project_id": project_id, "path": "insights"},
+        )
+        assert "error" not in result, result
+        assert result["count"] == 1
+        assert result["total"] == 1
