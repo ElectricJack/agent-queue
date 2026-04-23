@@ -10,7 +10,7 @@ import signal
 import time
 from pathlib import Path
 
-from src.aq_uri import AqUriError, is_aq_uri, resolve as aq_resolve
+from src.aq_uri import AqUriError, is_aq_uri, rewrite_aq_uris
 from src.commands.helpers import _run_subprocess, _run_subprocess_shell
 
 logger = logging.getLogger(__name__)
@@ -752,12 +752,14 @@ class SystemCommandsMixin:
 
     async def _resolve_aq_prompt(self, uri: str):
         """Resolve + load a prompt template addressed by an ``aq://`` URI."""
+        from pathlib import Path as PathlibPath
         from src.prompt_manager import load_template
 
         if not is_aq_uri(uri):
             return None, {"error": f"uri must start with aq://: {uri!r}"}
         try:
-            path = await aq_resolve(uri, config=self.config, db=self.db)
+            resolved_uri = rewrite_aq_uris(uri, config=self.config)
+            path = PathlibPath(resolved_uri)
         except AqUriError as exc:
             return None, {"error": f"Invalid aq:// URI: {exc}"}
         if not path.is_file():
