@@ -116,8 +116,8 @@ They are grouped by category (see `src/tools/registry.py`):
 | `get_task_diff` | Get task diff |
 | `get_token_usage` | Token usage stats |
 | `list_prompts` | List available prompts |
-| `read_prompt` | Read a prompt |
-| `render_prompt` | Render a prompt |
+| `read_prompt` | Read a prompt (by `(project_id, name)` or `aq://` URI) |
+| `render_prompt` | Render a prompt (by `(project_id, name)` or `aq://` URI) |
 | `orchestrator_control` | Orchestrator control operations |
 
 ### Agent & Profile Management

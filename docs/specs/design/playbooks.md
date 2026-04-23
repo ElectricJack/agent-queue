@@ -173,6 +173,53 @@ The only structured portion. Kept minimal:
 | `cooldown` | no | Minimum seconds between executions. Default varies by trigger |
 | `version` | no | Auto-incremented on each compilation |
 
+### Referencing Resources
+
+Playbooks often need to reference files that live outside the playbook itself —
+bundled prompt templates, vault entries, logs, per-task artifacts, a project's
+workspace. Absolute filesystem paths are not portable (they break whenever the
+daemon runs on a different machine or with a different `data_dir`), and a
+hardcoded `~/.agent-queue/...` path hides the fact that the vault root is
+configurable.
+
+Instead, use the `aq://` URI scheme. The daemon resolves these URIs against
+its own config and database, so the same playbook works unchanged wherever it
+runs. All authorities are **read-only** in v1.
+
+| URI | Resolves to |
+|---|---|
+| `aq://prompts/<path>` | Bundled `src/prompts/<path>` (ships with the daemon) |
+| `aq://vault/<path>` | `{vault_root}/<path>` |
+| `aq://logs/<path>` | `{data_dir}/logs/<path>` |
+| `aq://tasks/<path>` | `{data_dir}/tasks/<path>` |
+| `aq://attachments/<path>` | `{data_dir}/attachments/<path>` |
+| `aq://workspace/<project_id>/<path>` | Project's primary workspace |
+| `aq://workspace-id/<workspace_id>/<path>` | A specific workspace by DB id |
+
+**Which tools understand the scheme.** `read_file` accepts an `aq://` URI in
+place of `path`. `read_prompt` and `render_prompt` accept a `uri` parameter as
+an alternative to `(project_id, name)`; when `uri` is set, the prompt is
+loaded from the resolved path and (for `render_prompt`) `{{variable}}`
+placeholders are substituted server-side.
+
+**Example — a playbook step that creates a task whose description is a
+rendered bundled prompt:**
+
+```markdown
+For each target project, call `create_task` with:
+
+- `project_id`: the project's id
+- `title`: "Consolidate memory: <project_name>"
+- `description`: the `rendered` field of
+  `render_prompt(uri="aq://prompts/consolidation_task.md", variables={...})`
+```
+
+**Safety rules.** The resolver rejects `..` segments and absolute path
+segments inside the URI, and rejects unknown authorities. The authority
+whitelist is the permission model — `aq://` paths skip the workspace-path
+validation that applies to plain `read_file` calls, so adding a new
+authority requires a deliberate code change.
+
 ### LLM Compilation
 
 When a playbook markdown is saved or modified, an LLM reads the natural language

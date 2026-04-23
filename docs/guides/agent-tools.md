@@ -241,13 +241,33 @@ Filesystem operations within project workspaces.
 
 | Tool | What It Does | Parameters |
 |------|-------------|------------|
-| `read_file` | Read file contents (supports pagination) | `path` (required: absolute or relative to workspaces root), `max_lines` (default 2000), `offset` (1-based, default 1), `limit` (overrides max_lines) |
+| `read_file` | Read file contents (supports pagination) | `path` (required: absolute, relative to workspaces root, or `aq://` URI — see "Resource URIs" below), `max_lines` (default 2000), `offset` (1-based, default 1), `limit` (overrides max_lines) |
 | `write_file` | Write/create file (creates parent dirs) | `path` (required), `content` (required) |
 | `edit_file` | Targeted string replacement | `path` (required), `old_string` (required, must be unique unless replace_all), `new_string` (required), `replace_all` (bool, default false) |
 | `glob_files` | Find files matching glob pattern | `pattern` (required, e.g. `**/*.py`), `path` (required: directory) |
 | `grep` | Regex content search (ripgrep-style) | `pattern` (required), `path` (required), `context` (int: lines around match), `case_insensitive` (bool), `glob` (file filter), `output_mode` (content/files_with_matches/count), `max_results` (default 100) |
 | `search_files` | Search content (grep) or filenames (find) | `pattern` (required), `path` (required), `mode` ("grep" default or "find") |
 | `list_directory` | List files/dirs at workspace path | `project_id` (required), `path` (relative, default root), `workspace` (name or ID) |
+
+### Resource URIs (`aq://`)
+
+Playbooks and tool calls can reference portable resources with an `aq://` URI
+instead of a machine-specific filesystem path. The daemon resolves these against
+its own config and database, so the same call works on any host. Read-only.
+
+| URI | Resolves to |
+|---|---|
+| `aq://prompts/<path>` | Bundled `src/prompts/<path>` (ships with the daemon) |
+| `aq://vault/<path>` | `{vault_root}/<path>` |
+| `aq://logs/<path>` | `{data_dir}/logs/<path>` |
+| `aq://tasks/<path>` | `{data_dir}/tasks/<path>` |
+| `aq://attachments/<path>` | `{data_dir}/attachments/<path>` |
+| `aq://workspace/<project_id>/<path>` | Project's primary workspace |
+| `aq://workspace-id/<workspace_id>/<path>` | Specific workspace by DB id |
+
+`read_file` accepts an `aq://` URI in place of `path`. `read_prompt` and
+`render_prompt` accept `uri` as an alternative to `(project_id, name)`.
+`..` path segments and unknown authorities are rejected.
 
 ---
 
@@ -312,8 +332,8 @@ Filesystem operations within project workspaces.
 | Tool | What It Does | Parameters |
 |------|-------------|------------|
 | `list_prompts` | List prompt templates | `project_id` (required), `category` (system/task/hooks/custom), `tag` |
-| `read_prompt` | Read prompt template content | `project_id` (required), `name` (required) |
-| `render_prompt` | Render template with variable substitution | `project_id` (required), `name` (required), `variables` (object: key → value) |
+| `read_prompt` | Read prompt template content | `project_id` + `name`, **or** `uri` (e.g. `aq://prompts/consolidation_task.md` for a bundled template) |
+| `render_prompt` | Render template with variable substitution | `project_id` + `name`, **or** `uri`; plus `variables` (object: key → value). `{{placeholders}}` are substituted server-side. |
 
 ---
 
