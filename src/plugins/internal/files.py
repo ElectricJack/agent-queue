@@ -14,7 +14,6 @@ import random
 import re
 import time
 
-from src.aq_uri import AqUriError, is_aq_uri, resolve as aq_resolve
 from src.plugins.base import InternalPlugin, PluginContext
 
 logger = logging.getLogger(__name__)
@@ -58,13 +57,13 @@ TOOL_CATEGORY = "files"
 TOOL_DEFINITIONS = [
     {
         "name": "read_file",
-        "description": "Read a file's contents. Path can be absolute, relative to the workspaces root, or an aq:// URI (e.g. 'aq://prompts/consolidation_task.md', 'aq://vault/projects/<id>/memory.md', 'aq://logs/daemon/today.log'). Supports offset/limit for reading specific portions of large files.",
+        "description": "Read a file's contents. Path can be absolute or relative to the workspaces root. Supports offset/limit for reading specific portions of large files.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path (absolute, relative to workspaces root, or aq:// URI)",
+                    "description": "File path (absolute or relative to workspaces root)",
                 },
                 "max_lines": {
                     "type": "integer",
@@ -590,22 +589,11 @@ class FilesPlugin(InternalPlugin):
         offset = max(args.get("offset", 1), 1)
         limit = args.get("limit")
         max_lines = limit if limit is not None else args.get("max_lines", 2000)
-        if is_aq_uri(path):
-            # aq:// resources are resolved against daemon config (+ db for
-            # workspace authorities). The resolver itself enforces the
-            # allowed-roots whitelist, so we skip workspace-path validation —
-            # the scheme itself is the permission model.
-            try:
-                resolved = await aq_resolve(path, config=self._cfg, db=self._db)
-            except AqUriError as exc:
-                return {"error": f"Invalid aq:// URI: {exc}"}
-            validated = str(resolved)
-        else:
-            if not os.path.isabs(path):
-                path = os.path.join(self._cfg.workspace_dir, path)
-            validated = await self._ws.validate_path(path)
-            if not validated:
-                return {"error": "Access denied: path is outside allowed directories"}
+        if not os.path.isabs(path):
+            path = os.path.join(self._cfg.workspace_dir, path)
+        validated = await self._ws.validate_path(path)
+        if not validated:
+            return {"error": "Access denied: path is outside allowed directories"}
         if not os.path.isfile(validated):
             return {"error": f"File not found: {path}"}
         try:
