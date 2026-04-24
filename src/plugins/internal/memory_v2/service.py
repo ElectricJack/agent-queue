@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -170,8 +171,7 @@ class MemoryV2Service:
 
         if not MEMSEARCH_AVAILABLE:
             self._unavailable_reason = (
-                "memsearch package is not installed "
-                "(pip install -e packages/memsearch)"
+                "memsearch package is not installed (pip install -e packages/memsearch)"
             )
             logger.warning("memsearch package not available — MemoryV2Service disabled")
             return
@@ -383,14 +383,28 @@ class MemoryV2Service:
                 escaped = _escape_filter_value(topic)
                 filter_expr = f'(topic == "{escaped}" or topic == "")'
 
-            results = await asyncio.to_thread(
-                store.search,
-                query_embedding,
-                query_text=query,
-                top_k=top_k,
-                filter_expr=filter_expr,
-                full=full,
-            )
+            try:
+                results = await asyncio.to_thread(
+                    store.search,
+                    query_embedding,
+                    query_text=query,
+                    top_k=top_k,
+                    filter_expr=filter_expr,
+                    full=full,
+                )
+            except Exception as exc:
+                # Defensive: rather than propagate a Milvus error to the
+                # MCP caller (which would abort the whole tool call),
+                # log and return an empty result list.  Hybrid search has
+                # its own dense-only fallback inside store.search; this
+                # catches anything that fallback couldn't recover from.
+                logger.warning(
+                    "scoped search failed for project=%s scope=%s: %s",
+                    project_id,
+                    scope,
+                    exc,
+                )
+                results = []
             # Annotate with scope info
             mem_scope, scope_id = self._resolve_scope(project_id, scope)
             coll_name = collection_name(mem_scope, scope_id)
@@ -913,7 +927,7 @@ class MemoryV2Service:
                     if text.startswith("---"):
                         end = text.find("---", 3)
                         if end != -1:
-                            text = text[end + 3:].strip()
+                            text = text[end + 3 :].strip()
                     text = text.strip()
                     if text:
                         parts.append(text)
@@ -924,7 +938,11 @@ class MemoryV2Service:
         # Agent-type scope
         if agent_type and MEMSEARCH_AVAILABLE:
             at_paths = vault_paths(MemoryScope.AGENT_TYPE, agent_type)
-            base = Path(self._data_dir).expanduser() if self._data_dir else Path.home() / ".agent-queue"
+            base = (
+                Path(self._data_dir).expanduser()
+                if self._data_dir
+                else Path.home() / ".agent-queue"
+            )
             for p in at_paths:
                 if p.endswith("/memory/") or p.endswith("/memory"):
                     mem_dir = base / p
@@ -934,7 +952,11 @@ class MemoryV2Service:
         # Project scope
         if project_id and MEMSEARCH_AVAILABLE:
             proj_paths = vault_paths(MemoryScope.PROJECT, project_id)
-            base = Path(self._data_dir).expanduser() if self._data_dir else Path.home() / ".agent-queue"
+            base = (
+                Path(self._data_dir).expanduser()
+                if self._data_dir
+                else Path.home() / ".agent-queue"
+            )
             for p in proj_paths:
                 if p.endswith("/memory/") or p.endswith("/memory"):
                     mem_dir = base / p
@@ -1334,7 +1356,11 @@ class MemoryV2Service:
         try:
             from src.vault_glossary import VaultGlossary
 
-            base = Path(self._data_dir).expanduser() if self._data_dir else Path.home() / ".agent-queue"
+            base = (
+                Path(self._data_dir).expanduser()
+                if self._data_dir
+                else Path.home() / ".agent-queue"
+            )
             glossary = VaultGlossary(base / "vault")
             glossary.load()
             if glossary._concepts:
@@ -1348,7 +1374,11 @@ class MemoryV2Service:
         try:
             from src.wiki_links import add_see_also
 
-            base_dir = Path(self._data_dir).expanduser() if self._data_dir else Path.home() / ".agent-queue"
+            base_dir = (
+                Path(self._data_dir).expanduser()
+                if self._data_dir
+                else Path.home() / ".agent-queue"
+            )
             vault_root = base_dir / "vault"
             vault_rel = str(vault_dir.relative_to(vault_root))
             parts = vault_rel.split(os.sep)
@@ -2065,9 +2095,7 @@ class MemoryV2Service:
         doc_task = asyncio.to_thread(
             store.query, filter_expr='entry_type == "document"', track=False
         )
-        kv_task = asyncio.to_thread(
-            store.query, filter_expr='entry_type == "kv"', track=False
-        )
+        kv_task = asyncio.to_thread(store.query, filter_expr='entry_type == "kv"', track=False)
         temporal_task = asyncio.to_thread(
             store.query, filter_expr='entry_type == "temporal"', track=False
         )
@@ -2131,9 +2159,7 @@ class MemoryV2Service:
         try:
             # track=False: this is a diagnostic count, not a retrieval —
             # shouldn't inflate per-entry last_retrieved timestamps.
-            results = await asyncio.to_thread(
-                store.query, filter_expr=filter_expr, track=False
-            )
+            results = await asyncio.to_thread(store.query, filter_expr=filter_expr, track=False)
             return len(results)
         except Exception:
             logger.debug("count_by_tag query failed for tag=%s", tag, exc_info=True)
@@ -2206,9 +2232,7 @@ class MemoryV2Service:
         }
 
         # --- 2. Growth rate (documents created in the last 7 days) ---
-        recent_docs = [
-            d for d in documents if d.get("updated_at", 0) >= seven_days_ago
-        ]
+        recent_docs = [d for d in documents if d.get("updated_at", 0) >= seven_days_ago]
         growth_rate = {
             "new_documents_7d": len(recent_docs),
             "period_days": 7,
@@ -2218,18 +2242,13 @@ class MemoryV2Service:
         stale = [
             d
             for d in documents
-            if d.get("last_retrieved", 0) == 0
-            or d.get("last_retrieved", 0) < stale_threshold
+            if d.get("last_retrieved", 0) == 0 or d.get("last_retrieved", 0) < stale_threshold
         ]
         stale_count = len(stale)
 
         # --- 4. Most-retrieved (top N by retrieval_count) ---
-        docs_with_retrievals = [
-            d for d in documents if d.get("retrieval_count", 0) > 0
-        ]
-        docs_with_retrievals.sort(
-            key=lambda d: d.get("retrieval_count", 0), reverse=True
-        )
+        docs_with_retrievals = [d for d in documents if d.get("retrieval_count", 0) > 0]
+        docs_with_retrievals.sort(key=lambda d: d.get("retrieval_count", 0), reverse=True)
         most_retrieved = [
             {
                 "chunk_hash": d.get("chunk_hash", ""),
@@ -2253,9 +2272,7 @@ class MemoryV2Service:
         for d in documents:
             tags_raw = d.get("tags", "[]")
             try:
-                tags = (
-                    _json.loads(tags_raw) if isinstance(tags_raw, str) else tags_raw
-                )
+                tags = _json.loads(tags_raw) if isinstance(tags_raw, str) else tags_raw
             except (_json.JSONDecodeError, TypeError):
                 tags = []
             if isinstance(tags, list) and "contested" in tags:
@@ -2348,9 +2365,9 @@ class MemoryV2Service:
 
         now = time.time()
         stale_threshold = now - (stale_days * 86400)
-        threshold_date = datetime.fromtimestamp(
-            stale_threshold, tz=timezone.utc
-        ).strftime("%Y-%m-%d")
+        threshold_date = datetime.fromtimestamp(stale_threshold, tz=timezone.utc).strftime(
+            "%Y-%m-%d"
+        )
 
         # Partition into never-retrieved vs. stale-retrieved
         never_retrieved: list[dict[str, Any]] = []
@@ -2394,9 +2411,9 @@ class MemoryV2Service:
             last_ret = doc.get("last_retrieved", 0)
             if last_ret and last_ret > 0:
                 days_since = int((now - last_ret) / 86400)
-                last_retrieved_date = datetime.fromtimestamp(
-                    last_ret, tz=timezone.utc
-                ).strftime("%Y-%m-%d")
+                last_retrieved_date = datetime.fromtimestamp(last_ret, tz=timezone.utc).strftime(
+                    "%Y-%m-%d"
+                )
             else:
                 days_since = None  # never retrieved
                 last_retrieved_date = None
@@ -2431,9 +2448,7 @@ class MemoryV2Service:
                     "days_since_retrieval": days_since,
                     "created_date": created_date,
                     "content_preview": preview,
-                    "reason": (
-                        "never_retrieved" if last_retrieved_date is None else "stale"
-                    ),
+                    "reason": ("never_retrieved" if last_retrieved_date is None else "stale"),
                 }
             )
 

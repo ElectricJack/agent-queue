@@ -2168,8 +2168,7 @@ def test_roadmap_2_1_16g_concurrent_different_timestamps(store: MilvusStore):
     # Verify contiguous chain: each entry's valid_to == next entry's valid_from
     for i in range(len(history) - 1):
         assert history[i]["valid_to"] == history[i + 1]["valid_from"], (
-            f"Chain broken at index {i}: valid_to={history[i]['valid_to']} "
-            f"!= valid_from={history[i + 1]['valid_from']}"
+            f"Chain broken at index {i}: valid_to={history[i]['valid_to']} != valid_from={history[i + 1]['valid_from']}"
         )
 
     # Final entry is open
@@ -2198,7 +2197,7 @@ def test_temporal_checkpoint_5_updates_as_of_each(store: MilvusStore):
     versions = ["v0", "v1", "v2", "v3", "v4", "v5"]
     timestamps = [1000, 2000, 3000, 4000, 5000, 6000]
 
-    for val, ts in zip(versions, timestamps):
+    for val, ts in zip(versions, timestamps, strict=False):
         store.set_temporal("deploy_env", val, timestamp=ts)
 
     # Full history chain has 6 entries
@@ -2206,7 +2205,7 @@ def test_temporal_checkpoint_5_updates_as_of_each(store: MilvusStore):
     assert len(history) == 6
 
     # Verify history values in order
-    for i, (expected_val, expected_ts) in enumerate(zip(versions, timestamps)):
+    for i, (expected_val, expected_ts) in enumerate(zip(versions, timestamps, strict=False)):
         assert history[i]["kv_value"] == json.dumps(expected_val)
         assert history[i]["valid_from"] == expected_ts
 
@@ -2221,27 +2220,24 @@ def test_temporal_checkpoint_5_updates_as_of_each(store: MilvusStore):
     # that was current at that time
     as_of_cases = [
         # (query_time, expected_value)
-        (1000, "v0"),   # exact start of v0 window
-        (1500, "v0"),   # midpoint of v0 window
-        (2000, "v1"),   # boundary: v0 closed, v1 opens
-        (2500, "v1"),   # midpoint of v1 window
+        (1000, "v0"),  # exact start of v0 window
+        (1500, "v0"),  # midpoint of v0 window
+        (2000, "v1"),  # boundary: v0 closed, v1 opens
+        (2500, "v1"),  # midpoint of v1 window
         (3000, "v2"),
         (3500, "v2"),
         (4000, "v3"),
         (4500, "v3"),
         (5000, "v4"),
         (5500, "v4"),
-        (6000, "v5"),   # current value
-        (9999, "v5"),   # far future — still v5
+        (6000, "v5"),  # current value
+        (9999, "v5"),  # far future — still v5
     ]
     for query_time, expected in as_of_cases:
         result = store.get_temporal("deploy_env", at=query_time)
-        assert len(result) == 1, (
-            f"At t={query_time}: expected 1 result, got {len(result)}"
-        )
+        assert len(result) == 1, f"At t={query_time}: expected 1 result, got {len(result)}"
         assert result[0]["kv_value"] == json.dumps(expected), (
-            f"At t={query_time}: expected {expected!r}, "
-            f"got {json.loads(result[0]['kv_value'])!r}"
+            f"At t={query_time}: expected {expected!r}, got {json.loads(result[0]['kv_value'])!r}"
         )
 
     # Before first entry: empty
@@ -3105,10 +3101,7 @@ def test_kv_set_then_query_tracks_retrieval(store: MilvusStore):
     store.set_kv("test_command", "pytest tests/ -v", namespace="project")
 
     # Query using KV filter — this is how KV entries are typically retrieved
-    results = store.query(
-        filter_expr='entry_type == "kv" AND kv_namespace == "project" '
-        'AND kv_key == "test_command"'
-    )
+    results = store.query(filter_expr='entry_type == "kv" AND kv_namespace == "project" AND kv_key == "test_command"')
     assert len(results) >= 1
 
     # Retrieve via get to check stats (get itself is a direct PK lookup,
@@ -3120,10 +3113,7 @@ def test_kv_set_then_query_tracks_retrieval(store: MilvusStore):
     assert entry["last_retrieved"] > 0
 
     # Second query — cumulative
-    store.query(
-        filter_expr='entry_type == "kv" AND kv_namespace == "project" '
-        'AND kv_key == "test_command"'
-    )
+    store.query(filter_expr='entry_type == "kv" AND kv_namespace == "project" AND kv_key == "test_command"')
     entry = store.get(chunk_hash)
     assert entry is not None
     assert entry["retrieval_count"] == 2
@@ -3233,6 +3223,138 @@ def test_search_retrieval_tracking_overhead(store: MilvusStore):
     # Tracking should complete in under 50ms per call — a generous limit
     # that accommodates Milvus Lite variability while catching regressions.
     # Production Milvus servers are faster.
-    assert avg_tracking_ms < 50, (
-        f"Average tracking overhead {avg_tracking_ms:.1f}ms exceeds 50ms threshold"
-    )
+    assert avg_tracking_ms < 50, f"Average tracking overhead {avg_tracking_ms:.1f}ms exceeds 50ms threshold"
+
+
+# ---------------------------------------------------------------------------
+# BM25 NaN/Inf MilvusException defensive handling
+# ---------------------------------------------------------------------------
+
+
+class TestBM25NaNDefensiveHandling:
+    """Regression tests for the MilvusException
+
+        Search failed: <MilvusException: (code=2000,
+        message=Assert "std::isfinite(element.val)"
+        => Invalid sparse row: NaN or Inf value ...
+
+    that intermittently surfaced from milvus-lite's BM25 path and caused
+    the codebase-inspector playbook to abort.  The store's hybrid search
+    now falls back to dense-only ANN, and document upserts with empty
+    content are skipped to keep BM25 corpus statistics healthy.
+    """
+
+    def test_empty_content_document_is_skipped(self, store: MilvusStore):
+        """Documents with empty `content` would poison BM25 stats."""
+        n = store.upsert(
+            [
+                {
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "",
+                    "source": "empty.md",
+                    "chunk_hash": "empty_doc",
+                    "heading": "x",
+                    "heading_level": 1,
+                    "start_line": 0,
+                    "end_line": 0,
+                }
+            ]
+        )
+        assert n == 0
+
+    def test_whitespace_content_document_is_skipped(self, store: MilvusStore):
+        n = store.upsert(
+            [
+                {
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "   \n\t ",
+                    "source": "ws.md",
+                    "chunk_hash": "ws_doc",
+                    "heading": "x",
+                    "heading_level": 1,
+                    "start_line": 0,
+                    "end_line": 0,
+                }
+            ]
+        )
+        assert n == 0
+
+    def test_kv_entry_with_empty_content_is_allowed(self, store: MilvusStore):
+        """KV entries legitimately have empty `content` — search uses
+        scalar fields (kv_key/kv_value).  They must not be filtered out."""
+        n = store.upsert(
+            [
+                {
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "",
+                    "entry_type": "kv",
+                    "source": "kv.md",
+                    "chunk_hash": "kv_entry_1",
+                    "heading": "",
+                    "heading_level": 0,
+                    "start_line": 0,
+                    "end_line": 0,
+                    "kv_namespace": "project",
+                    "kv_key": "k",
+                    "kv_value": '"v"',
+                    "updated_at": 1700000000,
+                }
+            ]
+        )
+        assert n == 1
+
+    def test_hybrid_search_falls_back_on_bm25_nan(self, store: MilvusStore):
+        """When hybrid_search raises a NaN/Inf MilvusException, the store
+        retries with a dense-only ANN search instead of propagating the
+        error to callers."""
+        store.upsert(
+            [
+                {
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Findable via dense fallback",
+                    "source": "doc.md",
+                    "chunk_hash": "fallback_doc",
+                    "heading": "h",
+                    "heading_level": 1,
+                    "start_line": 0,
+                    "end_line": 0,
+                }
+            ]
+        )
+
+        from pymilvus.exceptions import MilvusException
+
+        original = store._client.hybrid_search
+
+        def boom(*args, **kwargs):
+            raise MilvusException(
+                code=2000,
+                message='Assert "std::isfinite(element.val)" => Invalid sparse row: NaN or Inf value',
+            )
+
+        store._client.hybrid_search = boom
+        try:
+            results = store.search([1.0, 0.0, 0.0, 0.0], query_text="anything", top_k=3)
+        finally:
+            store._client.hybrid_search = original
+
+        assert len(results) >= 1
+        assert any(r["content"] == "Findable via dense fallback" for r in results)
+
+    def test_hybrid_search_unrelated_milvus_error_propagates(self, store: MilvusStore):
+        """Errors that aren't the BM25 NaN/Inf signature must not be
+        silently swallowed — the dense-only fallback is intentionally
+        narrow to that one failure mode."""
+        from pymilvus.exceptions import MilvusException
+
+        original = store._client.hybrid_search
+
+        def boom(*args, **kwargs):
+            raise MilvusException(code=999, message="schema mismatch")
+
+        store._client.hybrid_search = boom
+        try:
+            with pytest.raises(MilvusException):
+                store.search([1.0, 0.0, 0.0, 0.0], query_text="x", top_k=1)
+        finally:
+            store._client.hybrid_search = original

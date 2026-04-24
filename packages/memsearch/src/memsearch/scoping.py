@@ -49,7 +49,7 @@ class MemoryScope(Enum):
     PROJECT = "project"
 
     # Backward-compat alias — code may still reference ORCHESTRATOR.
-    ORCHESTRATOR = "supervisor"
+    ORCHESTRATOR = "supervisor"  # noqa: PIE796 — intentional alias for SUPERVISOR
 
 
 # Default specificity weights for multi-scope search.
@@ -1206,15 +1206,31 @@ class CollectionRouter:
             # worst case, we get the same error we would have gotten.
             pass
 
-        # Run sync Milvus call in a thread for true parallelism
-        results = await asyncio.to_thread(
-            store.search,
-            query_embedding,
-            query_text=query_text,
-            top_k=top_k,
-            filter_expr=filter_expr,
-            full=full,
-        )
+        # Run sync Milvus call in a thread for true parallelism.  Catch
+        # MilvusException-style failures here too: store.search has its
+        # own dense-only fallback for the BM25 NaN/Inf path, but if any
+        # Milvus error escapes that fallback we degrade to "no results
+        # from this scope" rather than poisoning the whole multi-scope
+        # search (the gather() above sets return_exceptions=True, but
+        # logging here gives clearer per-scope diagnostics).
+        try:
+            results = await asyncio.to_thread(
+                store.search,
+                query_embedding,
+                query_text=query_text,
+                top_k=top_k,
+                filter_expr=filter_expr,
+                full=full,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Search failed for scope %s/%s on collection '%s': %s",
+                scope.value,
+                scope_id,
+                collection_name(scope, scope_id),
+                exc,
+            )
+            return []
 
         # Annotate results with scope metadata and apply weight
         coll_name = collection_name(scope, scope_id)

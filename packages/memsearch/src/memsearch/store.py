@@ -392,12 +392,39 @@ class MilvusStore:
         """
         if not chunks:
             return 0
-        data = [{**self._FIELD_DEFAULTS, **chunk} for chunk in chunks]
+        data: list[dict[str, Any]] = []
+        skipped = 0
+        for chunk in chunks:
+            merged = {**self._FIELD_DEFAULTS, **chunk}
+            # The BM25 Function generates `sparse_vector` from `content`.
+            # For *document* entries, empty / whitespace-only content can
+            # poison the BM25 corpus statistics and make subsequent
+            # searches throw "Invalid sparse row: NaN or Inf value".
+            # Skip those entries — they would not be searchable anyway.
+            # KV / temporal entries are exempt: their searchable data
+            # lives in scalar fields (kv_key, kv_value) and they are
+            # never expected to surface via vector / BM25 search.
+            entry_type = merged.get("entry_type", "document")
+            if entry_type == "document":
+                content = merged.get("content")
+                if not isinstance(content, str) or not content.strip():
+                    skipped += 1
+                    continue
+            data.append(merged)
+        if skipped:
+            logger.warning(
+                "upsert: skipping %d chunk(s) with empty 'content' "
+                "in collection '%s' (would corrupt BM25 sparse vector).",
+                skipped,
+                self._collection,
+            )
+        if not data:
+            return 0
         result = self._client.upsert(
             collection_name=self._collection,
             data=data,
         )
-        return result.get("upsert_count", len(chunks)) if isinstance(result, dict) else len(chunks)
+        return result.get("upsert_count", len(data)) if isinstance(result, dict) else len(data)
 
     def _update_retrieval_stats(self, chunk_hashes: list[str]) -> None:
         """Increment ``retrieval_count`` and set ``last_retrieved`` for the given entries.
@@ -503,13 +530,40 @@ class MilvusStore:
             **req_kwargs,
         )
 
-        results = self._client.hybrid_search(
-            collection_name=self._collection,
-            reqs=[dense_req, bm25_req],
-            ranker=RRFRanker(k=60),
-            limit=top_k,
-            output_fields=output_fields,
-        )
+        try:
+            results = self._client.hybrid_search(
+                collection_name=self._collection,
+                reqs=[dense_req, bm25_req],
+                ranker=RRFRanker(k=60),
+                limit=top_k,
+                output_fields=output_fields,
+            )
+        except Exception as exc:
+            # Milvus's BM25 sparse-vector path can throw "Invalid sparse row:
+            # NaN or Inf value" when the corpus statistics get into a bad
+            # state (e.g. transient issue inside milvus-lite's BM25 IDF
+            # computation).  Rather than failing the whole search, fall
+            # back to a dense-only ANN search so callers still get
+            # semantically relevant results.
+            msg = str(exc)
+            if "NaN or Inf" in msg or "sparse row" in msg or "BM25" in msg:
+                logger.warning(
+                    "Hybrid search failed for collection '%s' (%s); falling back to dense-only ANN search.",
+                    self._collection,
+                    msg.split("\n", 1)[0],
+                )
+                dense_results = self._client.search(
+                    collection_name=self._collection,
+                    data=[query_embedding],
+                    anns_field="embedding",
+                    search_params={"metric_type": "COSINE", "params": {}},
+                    limit=top_k,
+                    output_fields=output_fields,
+                    filter=filter_expr or "",
+                )
+                results = dense_results
+            else:
+                raise
 
         if not results or not results[0]:
             return []
