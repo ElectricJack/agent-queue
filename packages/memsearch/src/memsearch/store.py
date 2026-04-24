@@ -4,11 +4,35 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sys
 from pathlib import Path
 from typing import Any, ClassVar
 
 logger = logging.getLogger(__name__)
+
+
+def _embedding_is_finite(embedding: Any) -> bool:
+    """Return ``True`` when *embedding* contains only finite floats.
+
+    NaN / Inf values in the dense vector corrupt Milvus's on-disk index
+    and can poison BM25 sparse-vector statistics, causing subsequent
+    hybrid searches to crash with::
+
+        Assert "std::isfinite(element.val)" => Invalid sparse row:
+        NaN or Inf value ...
+
+    Any non-list, non-finite, or otherwise malformed vector returns
+    ``False`` so the caller can skip the row rather than risk data
+    corruption.
+    """
+    if not isinstance(embedding, list | tuple):
+        return False
+    try:
+        return all(isinstance(v, int | float) and math.isfinite(float(v)) for v in embedding)
+    except (TypeError, ValueError):
+        return False
+
 
 # ---- Embedding model version metadata helpers --------------------------------
 
@@ -394,6 +418,7 @@ class MilvusStore:
             return 0
         data: list[dict[str, Any]] = []
         skipped = 0
+        skipped_bad_embedding = 0
         for chunk in chunks:
             merged = {**self._FIELD_DEFAULTS, **chunk}
             # The BM25 Function generates `sparse_vector` from `content`.
@@ -410,12 +435,31 @@ class MilvusStore:
                 if not isinstance(content, str) or not content.strip():
                     skipped += 1
                     continue
+            # Reject any embedding vector containing NaN / Inf values.
+            # Milvus's segcore validates std::isfinite(element.val) during
+            # index build & BM25 scoring; a single malformed vector
+            # poisons the entire collection and produces the opaque
+            # "Invalid sparse row: NaN or Inf value" error on the next
+            # search.  It is strictly safer to drop the row than to
+            # persist it.  Embedding-provider flakes (rate-limit partial
+            # responses, truncated API payloads) are the main source.
+            if "embedding" in merged and not _embedding_is_finite(merged["embedding"]):
+                skipped_bad_embedding += 1
+                continue
             data.append(merged)
         if skipped:
             logger.warning(
                 "upsert: skipping %d chunk(s) with empty 'content' "
                 "in collection '%s' (would corrupt BM25 sparse vector).",
                 skipped,
+                self._collection,
+            )
+        if skipped_bad_embedding:
+            logger.warning(
+                "upsert: skipping %d chunk(s) with NaN/Inf values in "
+                "'embedding' in collection '%s' (would poison Milvus "
+                "segcore and break future hybrid search).",
+                skipped_bad_embedding,
                 self._collection,
             )
         if not data:
@@ -530,6 +574,18 @@ class MilvusStore:
             **req_kwargs,
         )
 
+        # Validate the query embedding.  A vector containing NaN / Inf
+        # values will crash Milvus's segcore assertions with the same
+        # "Invalid sparse row: NaN or Inf value" signature even though
+        # the failure is on the dense side — return [] immediately
+        # rather than let an invalid request propagate.
+        if not _embedding_is_finite(query_embedding):
+            logger.warning(
+                "search: query embedding contains NaN/Inf values; returning empty results for collection '%s'.",
+                self._collection,
+            )
+            return []
+
         try:
             results = self._client.hybrid_search(
                 collection_name=self._collection,
@@ -542,16 +598,21 @@ class MilvusStore:
             # Milvus's BM25 sparse-vector path can throw "Invalid sparse row:
             # NaN or Inf value" when the corpus statistics get into a bad
             # state (e.g. transient issue inside milvus-lite's BM25 IDF
-            # computation).  Rather than failing the whole search, fall
-            # back to a dense-only ANN search so callers still get
-            # semantically relevant results.
+            # computation, or when hybrid_search is invoked against an
+            # empty corpus where IDF is undefined).  Rather than failing
+            # the whole search, fall back to a dense-only ANN search so
+            # callers still get semantically relevant results.
             msg = str(exc)
-            if "NaN or Inf" in msg or "sparse row" in msg or "BM25" in msg:
-                logger.warning(
-                    "Hybrid search failed for collection '%s' (%s); falling back to dense-only ANN search.",
-                    self._collection,
-                    msg.split("\n", 1)[0],
-                )
+            bm25_signature = "NaN or Inf" in msg or "sparse row" in msg or "BM25" in msg or "std::isfinite" in msg
+            if not bm25_signature:
+                raise
+
+            logger.warning(
+                "Hybrid search failed for collection '%s' (%s); falling back to dense-only ANN search.",
+                self._collection,
+                msg.split("\n", 1)[0],
+            )
+            try:
                 dense_results = self._client.search(
                     collection_name=self._collection,
                     data=[query_embedding],
@@ -561,9 +622,19 @@ class MilvusStore:
                     output_fields=output_fields,
                     filter=filter_expr or "",
                 )
-                results = dense_results
-            else:
-                raise
+            except Exception as dense_exc:
+                # Dense-only should succeed when hybrid fails because of
+                # BM25 corpus issues, but belt-and-braces: if it too
+                # blows up (e.g. collection mid-compaction) the caller
+                # should not see a Milvus traceback.  Degrade to no
+                # results and let higher layers keep running.
+                logger.warning(
+                    "Dense-only fallback also failed for collection '%s' (%s); returning empty results.",
+                    self._collection,
+                    str(dense_exc).split("\n", 1)[0],
+                )
+                return []
+            results = dense_results
 
         if not results or not results[0]:
             return []

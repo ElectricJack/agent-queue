@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import os
 import re
 import time
@@ -43,6 +44,27 @@ from typing import Any
 from src.facts_parser import extract_preamble, parse_facts_file, render_facts_file
 
 logger = logging.getLogger(__name__)
+
+
+def _query_embedding_is_finite(embedding: Any) -> bool:
+    """Return ``True`` when the query embedding is usable by Milvus.
+
+    Embedding providers occasionally return partial or malformed
+    vectors (Inf/NaN values on API rate-limit edges, truncated
+    responses, etc.).  Feeding such a vector into Milvus causes a
+    segcore assertion failure rather than a graceful empty result —
+    ``Invalid sparse row: NaN or Inf value``.  We validate defensively
+    at the service boundary.
+    """
+    if not isinstance(embedding, list | tuple):
+        return False
+    try:
+        return bool(embedding) and all(
+            isinstance(v, int | float) and math.isfinite(float(v)) for v in embedding
+        )
+    except (TypeError, ValueError):
+        return False
+
 
 try:
     from memsearch import (
@@ -369,8 +391,28 @@ class MemoryV2Service:
         if not self.available:
             return []
 
-        # Embed the query
-        embeddings = await self._embedder.embed([query])
+        # Embed the query.  If the provider fails or returns a
+        # non-finite vector (NaN / Inf), skip the search rather than
+        # propagate a Milvus segcore crash to the MCP caller.
+        try:
+            embeddings = await self._embedder.embed([query])
+        except Exception as exc:
+            logger.warning(
+                "memory_search: query embedding failed for project=%s "
+                "query=%r (%s); returning empty results.",
+                project_id,
+                query[:80],
+                exc,
+            )
+            return []
+        if not embeddings or not _query_embedding_is_finite(embeddings[0]):
+            logger.warning(
+                "memory_search: embedder returned an invalid vector "
+                "for project=%s query=%r; returning empty results.",
+                project_id,
+                query[:80],
+            )
+            return []
         query_embedding = embeddings[0]
 
         if scope is not None:
@@ -413,15 +455,29 @@ class MemoryV2Service:
                 r["_scope"] = mem_scope.value
                 r["_scope_id"] = scope_id
         else:
-            # Multi-scope search via router (project + system)
-            results = await self._router.search(
-                query_embedding,
-                query_text=query,
-                project_id=project_id,
-                topic=topic,
-                top_k=top_k,
-                full=full,
-            )
+            # Multi-scope search via router (project + system).
+            # Defensive: the router already catches per-scope errors via
+            # ``asyncio.gather(return_exceptions=True)`` and short-circuits
+            # empty collections, but any unhandled error from the router
+            # itself (e.g. a Milvus segcore assert on the return path)
+            # should not poison the whole MCP tool call.
+            try:
+                results = await self._router.search(
+                    query_embedding,
+                    query_text=query,
+                    project_id=project_id,
+                    topic=topic,
+                    top_k=top_k,
+                    full=full,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "multi-scope search failed for project=%s query=%r: %s",
+                    project_id,
+                    query[:80],
+                    exc,
+                )
+                results = []
 
         # Update vault file retrieval stats (spec §6: Memory Audit Trail)
         if track_retrieval and results:
