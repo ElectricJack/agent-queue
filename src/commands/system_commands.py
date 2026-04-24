@@ -697,17 +697,28 @@ class SystemCommandsMixin:
         }
 
     def _load_prompt_from_path(self, path: str):
-        """Load a prompt template from an absolute filesystem path."""
+        """Load a prompt template from an absolute filesystem path.
+
+        The path must lie under one of the ``aq://`` authority roots
+        (bundled prompts, vault, logs, tasks, or attachments). Paths outside
+        those roots are rejected so MCP-exposed callers cannot load arbitrary
+        files as prompt templates.
+        """
         from pathlib import Path
 
+        from src.aq_uri import allowed_roots
         from src.prompt_manager import load_template
 
         p = Path(path)
         if not p.is_absolute():
             return None, {"error": f"path must be absolute: {path!r}"}
-        if not p.is_file():
+        resolved = p.resolve()
+        roots = allowed_roots(self.config)
+        if not any(resolved == r or r in resolved.parents for r in roots):
+            return None, {"error": f"path is outside allowed roots: {path!r}"}
+        if not resolved.is_file():
             return None, {"error": f"Prompt not found at {path}"}
-        tmpl = load_template(str(p))
+        tmpl = load_template(str(resolved))
         if tmpl is None:
             return None, {"error": f"Could not parse prompt template at {path}"}
         return tmpl, None

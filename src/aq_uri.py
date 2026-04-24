@@ -57,6 +57,22 @@ def _prompts_root() -> Path:
     return Path(__file__).parent / "prompts"
 
 
+def allowed_roots(config: _ConfigLike) -> list[Path]:
+    """Return the absolute directory roots under which ``aq://`` paths resolve.
+
+    Callers that accept a resolved ``aq://`` path at runtime (e.g. MCP-exposed
+    prompt commands) can use this to validate the path was produced by the
+    compile-time rewrite, not supplied directly by an untrusted client.
+    """
+    return [
+        _prompts_root().resolve(),
+        Path(config.vault_root).resolve(),
+        (Path(config.data_dir) / "logs").resolve(),
+        (Path(config.data_dir) / "tasks").resolve(),
+        (Path(config.data_dir) / "attachments").resolve(),
+    ]
+
+
 def _resolve_authority(authority: str, subpath: str, *, config: _ConfigLike, full_uri: str) -> str:
     """Return absolute path for ``aq://<authority>/<subpath>``."""
     if ".." in subpath.replace("\\", "/").split("/"):

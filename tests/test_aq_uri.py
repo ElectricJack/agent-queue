@@ -119,3 +119,29 @@ def test_rewrite_rejects_workspace_authority(config: FakeConfig):
 def test_rewrite_rejects_traversal(config: FakeConfig):
     with pytest.raises(AqUriError, match="rejects '..'"):
         rewrite_aq_uris("aq://vault/../etc/passwd", config=config)
+
+
+# ---------------------------------------------------------------------------
+# allowed_roots
+# ---------------------------------------------------------------------------
+
+
+def test_allowed_roots_returns_five_roots(config: FakeConfig):
+    from src.aq_uri import allowed_roots
+
+    roots = allowed_roots(config=config)
+    assert len(roots) == 5
+    # All returned values are absolute, resolved paths.
+    for r in roots:
+        assert r.is_absolute()
+
+
+def test_allowed_roots_covers_each_authority(config: FakeConfig, tmp_path: Path):
+    from src.aq_uri import _prompts_root, allowed_roots
+
+    roots = {str(r) for r in allowed_roots(config=config)}
+    assert str(_prompts_root().resolve()) in roots
+    assert str(Path(config.vault_root).resolve()) in roots
+    assert str((Path(config.data_dir) / "logs").resolve()) in roots
+    assert str((Path(config.data_dir) / "tasks").resolve()) in roots
+    assert str((Path(config.data_dir) / "attachments").resolve()) in roots
