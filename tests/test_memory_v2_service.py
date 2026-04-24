@@ -1956,6 +1956,42 @@ class TestSearch:
         results = await svc.search_by_tag("tag")
         assert results == []
 
+    @pytest.mark.asyncio
+    async def test_search_returns_empty_when_embedder_raises(self, service, mock_embedder):
+        """A flaky embedding provider must not crash memory_search."""
+        mock_embedder.embed = AsyncMock(side_effect=RuntimeError("API down"))
+        results = await service.search("test-project", "query")
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_search_returns_empty_when_embedder_returns_nan(self, service, mock_embedder):
+        """NaN / Inf values in the query vector would trigger a Milvus
+        segcore assertion; service-layer must short-circuit."""
+        mock_embedder.embed = AsyncMock(return_value=[[float("nan")] * 384])
+        results = await service.search("test-project", "query")
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_search_returns_empty_when_embedder_returns_inf(self, service, mock_embedder):
+        mock_embedder.embed = AsyncMock(return_value=[[float("inf"), 0.0] + [0.0] * 382])
+        results = await service.search("test-project", "query")
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_search_returns_empty_when_router_raises(self, service, mock_router):
+        """Any unhandled error from the multi-scope router must degrade
+        to empty results rather than surface as an MCP error."""
+        from pymilvus.exceptions import MilvusException
+
+        mock_router.search = AsyncMock(
+            side_effect=MilvusException(
+                code=2000,
+                message='Assert "std::isfinite(element.val)" => Invalid sparse row: NaN or Inf value',
+            )
+        )
+        results = await service.search("test-project", "query")
+        assert results == []
+
 
 # ---------------------------------------------------------------------------
 # Browse / List Memories
@@ -2233,6 +2269,45 @@ class TestPluginHandlers:
         result = await wired_plugin.cmd_memory_search_by_tag({"tag": "sqlite"})
         assert result["success"] is True
         assert result["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_memory_search_degrades_gracefully_on_backend_error(self, wired_plugin, service):
+        """When the memory service crashes (e.g. Milvus BM25 segcore
+        assertion), ``cmd_memory_search`` must return a ``success: True``
+        response with an empty ``results`` list and a ``warning`` field.
+
+        Returning ``{"error": ...}`` would cause playbook-runner to treat
+        memory search as a fatal step failure and abort the whole
+        playbook — the regression that originally prompted this fix.
+        """
+        service.search = AsyncMock(
+            side_effect=RuntimeError(
+                '<MilvusException: (code=2000, message=Assert "std::isfinite(element.val)" '
+                "=> Invalid sparse row: NaN or Inf value)>"
+            )
+        )
+        result = await wired_plugin.cmd_memory_search({"project_id": "proj", "query": "anything"})
+        assert result["success"] is True
+        assert result["results"] == []
+        assert result["count"] == 0
+        assert "warning" in result
+        assert "NaN or Inf" in result["warning"] or "unavailable" in result["warning"]
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_memory_search_batch_degrades_gracefully(self, wired_plugin, service):
+        """Batch memory_search must also degrade gracefully — returning
+        a per-query empty dict rather than a top-level error so callers
+        continue to function."""
+        service.batch_search = AsyncMock(side_effect=RuntimeError("memory backend exploded"))
+        result = await wired_plugin.cmd_memory_search(
+            {"project_id": "proj", "queries": ["q1", "q2"]}
+        )
+        assert result["success"] is True
+        assert result["batch"] is True
+        assert result["results"] == {"q1": [], "q2": []}
+        assert "warning" in result
+        assert "error" not in result
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")

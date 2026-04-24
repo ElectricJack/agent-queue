@@ -1009,9 +1009,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
                 "top_n": {
                     "type": "integer",
-                    "description": (
-                        "Number of most-retrieved documents to include.  Default 10."
-                    ),
+                    "description": ("Number of most-retrieved documents to include.  Default 10."),
                     "default": 10,
                 },
             },
@@ -1066,9 +1064,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
                 "limit": {
                     "type": "integer",
-                    "description": (
-                        "Maximum entries to return.  Default 50, max 200."
-                    ),
+                    "description": ("Maximum entries to return.  Default 50, max 200."),
                     "default": 50,
                 },
             },
@@ -1469,14 +1465,10 @@ class MemoryV2Plugin(InternalPlugin):
         try:
             profiles = await db_svc.list_profiles()
         except Exception:
-            self._log.debug(
-                "Failed to load profiles for scope alias map", exc_info=True
-            )
+            self._log.debug("Failed to load profiles for scope alias map", exc_info=True)
             return
         aliases: dict[str, str] = {
-            p.id: p.memory_scope_id
-            for p in profiles
-            if getattr(p, "memory_scope_id", None)
+            p.id: p.memory_scope_id for p in profiles if getattr(p, "memory_scope_id", None)
         }
         self._service.set_scope_alias_map(aliases)
         if aliases:
@@ -1554,7 +1546,6 @@ class MemoryV2Plugin(InternalPlugin):
             self._log.debug("memsearch not available, skipping vault watchers")
             return
 
-        app_config = getattr(config_svc, "_config", None) if config_svc else None
         data_dir = config_svc.data_dir if config_svc else ""
         if not data_dir:
             return
@@ -1572,15 +1563,18 @@ class MemoryV2Plugin(InternalPlugin):
         # System scope
         sys_paths = vault_paths(MemoryScope.SYSTEM)
         sys_dirs = [
-            os.path.join(data_dir, p) for p in sys_paths
+            os.path.join(data_dir, p)
+            for p in sys_paths
             if not p.endswith(".md")  # only directories, not individual files
         ]
         sys_dirs = [d for d in sys_dirs if os.path.isdir(d)]
         if sys_dirs:
-            scopes.append((
-                collection_name(MemoryScope.SYSTEM),
-                sys_dirs,
-            ))
+            scopes.append(
+                (
+                    collection_name(MemoryScope.SYSTEM),
+                    sys_dirs,
+                )
+            )
 
         # Project scopes — scan vault/projects/ directory for project folders
         projects_dir = os.path.join(data_dir, "vault", "projects")
@@ -1590,16 +1584,15 @@ class MemoryV2Plugin(InternalPlugin):
                 if not os.path.isdir(pid_path):
                     continue
                 proj_paths = vault_paths(MemoryScope.PROJECT, pid)
-                proj_dirs = [
-                    os.path.join(data_dir, p) for p in proj_paths
-                    if not p.endswith(".md")
-                ]
+                proj_dirs = [os.path.join(data_dir, p) for p in proj_paths if not p.endswith(".md")]
                 proj_dirs = [d for d in proj_dirs if os.path.isdir(d)]
                 if proj_dirs:
-                    scopes.append((
-                        collection_name(MemoryScope.PROJECT, pid),
-                        proj_dirs,
-                    ))
+                    scopes.append(
+                        (
+                            collection_name(MemoryScope.PROJECT, pid),
+                            proj_dirs,
+                        )
+                    )
 
         # Create a MemSearch instance per scope and start watching
         for coll_name, paths in scopes:
@@ -1618,11 +1611,13 @@ class MemoryV2Plugin(InternalPlugin):
                 self._vault_watchers.append(watcher)
                 self._log.info(
                     "Vault watcher started for collection %s (%d paths)",
-                    coll_name, len(paths),
+                    coll_name,
+                    len(paths),
                 )
             except Exception:
                 self._log.warning(
-                    "Failed to start vault watcher for %s", coll_name,
+                    "Failed to start vault watcher for %s",
+                    coll_name,
                     exc_info=True,
                 )
 
@@ -2033,10 +2028,10 @@ class MemoryV2Plugin(InternalPlugin):
     # Regex for obvious key: value or key = value lines.
     _KV_LINE_RE = re.compile(
         r"^\s*"
-        r"[-•*]?\s*"                       # optional bullet
+        r"[-•*]?\s*"  # optional bullet
         r"(?P<key>[A-Za-z][A-Za-z0-9_ .-]*?)"  # key (starts with letter)
-        r"\s*[:=]\s*"                       # separator
-        r"(?P<value>.+?)\s*$",             # value
+        r"\s*[:=]\s*"  # separator
+        r"(?P<value>.+?)\s*$",  # value
     )
 
     # Regex for headings that act as category/namespace markers.
@@ -2103,17 +2098,17 @@ class MemoryV2Plugin(InternalPlugin):
         "insight, prefer fact.\n\n"
         "CONTROLLED TOPICS: {topics}\n\n"
         "OUTPUT: A single JSON object.\n"
-        "For single fact: {{\"type\": \"facts\", \"items\": "
-        "[{{\"key\": \"snake_case\", \"value\": \"the value\", "
-        "\"namespace\": \"category\"}}]}}\n"
-        "For multiple facts: {{\"type\": \"facts\", \"items\": "
-        "[{{\"key\": \"k1\", \"value\": \"v1\", \"namespace\": \"display\"}}, "
-        "{{\"key\": \"k2\", \"value\": \"v2\", \"namespace\": \"display\"}}]}}\n"
+        'For single fact: {{"type": "facts", "items": '
+        '[{{"key": "snake_case", "value": "the value", '
+        '"namespace": "category"}}]}}\n'
+        'For multiple facts: {{"type": "facts", "items": '
+        '[{{"key": "k1", "value": "v1", "namespace": "display"}}, '
+        '{{"key": "k2", "value": "v2", "namespace": "display"}}]}}\n'
         "(namespace defaults to 'project' — use a descriptive category "
         "when the content implies one, e.g. 'display', 'database', "
         "'deployment', 'conventions')\n"
-        "For non-facts: {{\"type\": \"insight\", "
-        "\"topic\": \"topic-from-list\"}}\n"
+        'For non-facts: {{"type": "insight", '
+        '"topic": "topic-from-list"}}\n'
         "(Use the best topic from CONTROLLED TOPICS, or a new lowercase "
         "hyphenated topic if none fit.)\n"
         "Output ONLY the JSON object, nothing else."
@@ -2176,8 +2171,10 @@ class MemoryV2Plugin(InternalPlugin):
                 topic = re.sub(r"-{2,}", "-", topic).strip("-")
                 if not topic:
                     topic = None
-            return {"type": item_type if item_type in ("knowledge", "guidance") else "insight",
-                    "topic": topic}
+            return {
+                "type": item_type if item_type in ("knowledge", "guidance") else "insight",
+                "topic": topic,
+            }
         except Exception:
             self._log.debug("Content classification failed, defaulting to insight")
             return {"type": "insight", "topic": None}
@@ -2218,11 +2215,13 @@ class MemoryV2Plugin(InternalPlugin):
                         value=item["value"],
                         scope=scope,
                     )
-                    stored.append({
-                        "key": item["key"],
-                        "value": item["value"],
-                        "namespace": item.get("namespace", "project"),
-                    })
+                    stored.append(
+                        {
+                            "key": item["key"],
+                            "value": item["value"],
+                            "namespace": item.get("namespace", "project"),
+                        }
+                    )
                 return {
                     "success": True,
                     "stored_as": "fact",
@@ -2915,12 +2914,34 @@ class MemoryV2Plugin(InternalPlugin):
                     **({"kv_matches": kv_matches} if kv_matches else {}),
                 }
         except Exception as e:
+            # Memory search is best-effort context gathering.  A Milvus
+            # segcore crash (e.g. BM25 NaN/Inf assertion) or any other
+            # backend failure should not abort the caller's workflow —
+            # playbook-runner in particular treats an {"error": ...}
+            # response as a fatal step failure.  Degrade gracefully:
+            # return an empty result set with a ``warning`` field so
+            # callers can still see the underlying issue in logs /
+            # reflections, and the playbook continues.
             self._log.error("memory_search failed: %s", e, exc_info=True)
-            return {"error": f"Search failed: {e}"}
+            warning = f"Memory search unavailable: {e}"
+            if queries:
+                return {
+                    "success": True,
+                    "project_id": project_id,
+                    "batch": True,
+                    "results": {q: [] for q in queries},
+                    "warning": warning,
+                }
+            return {
+                "success": True,
+                "project_id": project_id,
+                "query": query,
+                "count": 0,
+                "results": [],
+                "warning": warning,
+            }
 
-    async def _search_kv_keyword(
-        self, project_id: str, query: str
-    ) -> list[dict[str, str]]:
+    async def _search_kv_keyword(self, project_id: str, query: str) -> list[dict[str, str]]:
         """Search KV entries (facts) for keyword matches against a query.
 
         Tokenises the query into lowercase words and matches against both
@@ -2944,11 +2965,13 @@ class MemoryV2Plugin(InternalPlugin):
                 value = str(entry.get("value", "")).lower()
                 combined = f"{key} {value}"
                 if any(w in combined for w in words):
-                    matches.append({
-                        "namespace": ns or "(default)",
-                        "key": entry.get("key", ""),
-                        "value": str(entry.get("value", ""))[:500],
-                    })
+                    matches.append(
+                        {
+                            "namespace": ns or "(default)",
+                            "key": entry.get("key", ""),
+                            "value": str(entry.get("value", ""))[:500],
+                        }
+                    )
         return matches
 
     def _format_search_result(self, result: dict[str, Any]) -> dict[str, Any]:
@@ -3652,11 +3675,7 @@ class MemoryV2Plugin(InternalPlugin):
             from pathlib import Path
 
             data_dir = self._service._data_dir
-            base = (
-                Path(data_dir).expanduser()
-                if data_dir
-                else Path.home() / ".agent-queue"
-            )
+            base = Path(data_dir).expanduser() if data_dir else Path.home() / ".agent-queue"
             return str(base / "vault")
         return None
 
@@ -3778,9 +3797,7 @@ class MemoryV2Plugin(InternalPlugin):
                 await self._service.delete_document(project_id, chunk_hash, scope=scope)
                 deleted_source = True
             except Exception as e:
-                self._log.warning(
-                    "Failed to delete source after knowledge promote: %s", e
-                )
+                self._log.warning("Failed to delete source after knowledge promote: %s", e)
 
             return {
                 "success": True,
@@ -4027,9 +4044,7 @@ class MemoryV2Plugin(InternalPlugin):
             return {"error": "data_dir not available"}
 
         # Scan vault insights directory for this project
-        insights_dir = os.path.join(
-            data_dir, "vault", "projects", project_id, "memory", "insights"
-        )
+        insights_dir = os.path.join(data_dir, "vault", "projects", project_id, "memory", "insights")
         knowledge_dir = os.path.join(
             data_dir, "vault", "projects", project_id, "memory", "knowledge"
         )
@@ -4055,6 +4070,7 @@ class MemoryV2Plugin(InternalPlugin):
                     parts = raw.split("---", 2)
                     if len(parts) >= 3:
                         import yaml
+
                         try:
                             fm = yaml.safe_load(parts[1])
                             topic = fm.get("topic", "general") if fm else "general"
@@ -4062,22 +4078,35 @@ class MemoryV2Plugin(InternalPlugin):
                         except Exception:
                             pass
                         content = parts[2].strip()
-                insights.append({
-                    "file": fname,
-                    "path": fpath,
-                    "topic": topic,
-                    "tags": tags,
-                    "content": content,
-                })
+                insights.append(
+                    {
+                        "file": fname,
+                        "path": fpath,
+                        "topic": topic,
+                        "tags": tags,
+                        "content": content,
+                    }
+                )
             except Exception:
                 continue
 
         if not insights:
-            return {"project_id": project_id, "status": "no insights to consolidate", "consolidated": 0}
+            return {
+                "project_id": project_id,
+                "status": "no insights to consolidate",
+                "consolidated": 0,
+            }
 
         # Get knowledge topics from config
-        topics = ("architecture", "api-and-endpoints", "deployment", "dependencies",
-                  "gotchas", "conventions", "decisions")
+        topics = (
+            "architecture",
+            "api-and-endpoints",
+            "deployment",
+            "dependencies",
+            "gotchas",
+            "conventions",
+            "decisions",
+        )
         if app_config and hasattr(app_config, "memory"):
             topics = getattr(app_config.memory, "knowledge_topics", topics)
 
@@ -4096,8 +4125,7 @@ class MemoryV2Plugin(InternalPlugin):
         # Get LLM provider for consolidation
         try:
             from src.chat_providers import create_chat_provider
-            memory_cfg = self._get_memory_config(config_svc)
-            provider_name = memory_cfg.get("embedding_provider", "gemini")
+
             # Use the main chat provider, not the embedding provider
             provider = create_chat_provider(app_config.chat_provider)
         except Exception as e:
@@ -4172,11 +4200,13 @@ class MemoryV2Plugin(InternalPlugin):
                     except Exception:
                         pass
 
-            topic_results.append({
-                "topic": topic_name,
-                "insights_merged": len(topic_insights),
-                "knowledge_file": f"knowledge/{topic_name}.md",
-            })
+            topic_results.append(
+                {
+                    "topic": topic_name,
+                    "insights_merged": len(topic_insights),
+                    "knowledge_file": f"knowledge/{topic_name}.md",
+                }
+            )
 
         return {
             "project_id": project_id,
@@ -4223,7 +4253,10 @@ class MemoryV2Plugin(InternalPlugin):
                     stale_result = {
                         "stale_entries": len(stale) if stale else 0,
                         "stale_candidates": [
-                            {"content": s.get("content", "")[:100], "days_stale": s.get("days_since_retrieval", 0)}
+                            {
+                                "content": s.get("content", "")[:100],
+                                "days_stale": s.get("days_since_retrieval", 0),
+                            }
                             for s in (stale or [])[:5]
                         ],
                     }

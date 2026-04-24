@@ -3358,3 +3358,172 @@ class TestBM25NaNDefensiveHandling:
                 store.search([1.0, 0.0, 0.0, 0.0], query_text="x", top_k=1)
         finally:
             store._client.hybrid_search = original
+
+    def test_upsert_rejects_document_with_nan_embedding(self, store: MilvusStore):
+        """Document embeddings with NaN values must not be persisted —
+        a single poisoned vector breaks future hybrid search across the
+        whole collection."""
+        n = store.upsert(
+            [
+                {
+                    "embedding": [float("nan"), 0.0, 0.0, 0.0],
+                    "content": "Would poison BM25 index",
+                    "source": "nan.md",
+                    "chunk_hash": "nan_doc",
+                    "heading": "x",
+                    "heading_level": 1,
+                    "start_line": 0,
+                    "end_line": 0,
+                }
+            ]
+        )
+        assert n == 0
+
+    def test_upsert_rejects_document_with_inf_embedding(self, store: MilvusStore):
+        n = store.upsert(
+            [
+                {
+                    "embedding": [float("inf"), 0.0, 0.0, 0.0],
+                    "content": "Would poison segcore index",
+                    "source": "inf.md",
+                    "chunk_hash": "inf_doc",
+                    "heading": "x",
+                    "heading_level": 1,
+                    "start_line": 0,
+                    "end_line": 0,
+                }
+            ]
+        )
+        assert n == 0
+
+    def test_upsert_keeps_good_rows_when_mixed_with_bad(self, store: MilvusStore):
+        """A bad embedding in a batch must not take down its siblings."""
+        n = store.upsert(
+            [
+                {
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Good row",
+                    "source": "good.md",
+                    "chunk_hash": "good_doc",
+                    "heading": "x",
+                    "heading_level": 1,
+                    "start_line": 0,
+                    "end_line": 0,
+                },
+                {
+                    "embedding": [float("nan"), 0.0, 0.0, 0.0],
+                    "content": "Bad row",
+                    "source": "bad.md",
+                    "chunk_hash": "bad_doc",
+                    "heading": "x",
+                    "heading_level": 1,
+                    "start_line": 0,
+                    "end_line": 0,
+                },
+            ]
+        )
+        assert n == 1
+
+    def test_search_returns_empty_when_query_embedding_has_nan(self, store: MilvusStore):
+        """A NaN query vector must short-circuit to [] rather than
+        round-trip through Milvus and trigger a segcore assertion."""
+        store.upsert(
+            [
+                {
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "Some content",
+                    "source": "a.md",
+                    "chunk_hash": "a_doc",
+                    "heading": "x",
+                    "heading_level": 1,
+                    "start_line": 0,
+                    "end_line": 0,
+                }
+            ]
+        )
+        results = store.search(
+            [float("nan"), 0.0, 0.0, 0.0],
+            query_text="content",
+            top_k=3,
+        )
+        assert results == []
+
+    def test_search_returns_empty_when_dense_fallback_also_fails(self, store: MilvusStore):
+        """If both hybrid and the dense-only fallback raise, the store
+        must return [] rather than propagate — memory search is
+        best-effort and must never abort a playbook."""
+        store.upsert(
+            [
+                {
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "some content",
+                    "source": "x.md",
+                    "chunk_hash": "x_doc",
+                    "heading": "x",
+                    "heading_level": 1,
+                    "start_line": 0,
+                    "end_line": 0,
+                }
+            ]
+        )
+
+        from pymilvus.exceptions import MilvusException
+
+        orig_hybrid = store._client.hybrid_search
+        orig_search = store._client.search
+
+        def hybrid_boom(*args, **kwargs):
+            raise MilvusException(
+                code=2000,
+                message='Assert "std::isfinite(element.val)" => Invalid sparse row: NaN or Inf value',
+            )
+
+        def dense_boom(*args, **kwargs):
+            raise MilvusException(code=2001, message="collection compacting")
+
+        store._client.hybrid_search = hybrid_boom
+        store._client.search = dense_boom
+        try:
+            results = store.search([1.0, 0.0, 0.0, 0.0], query_text="x", top_k=1)
+        finally:
+            store._client.hybrid_search = orig_hybrid
+            store._client.search = orig_search
+
+        assert results == []
+
+    def test_search_recognises_std_isfinite_signature(self, store: MilvusStore):
+        """The dense-only fallback must trigger on the raw assertion
+        text (``std::isfinite``) that appears in some milvus-lite
+        builds, not only on humanised ``NaN or Inf`` message strings."""
+        store.upsert(
+            [
+                {
+                    "embedding": [1.0, 0.0, 0.0, 0.0],
+                    "content": "dense-fallback content",
+                    "source": "y.md",
+                    "chunk_hash": "y_doc",
+                    "heading": "y",
+                    "heading_level": 1,
+                    "start_line": 0,
+                    "end_line": 0,
+                }
+            ]
+        )
+
+        from pymilvus.exceptions import MilvusException
+
+        original = store._client.hybrid_search
+
+        def boom(*args, **kwargs):
+            raise MilvusException(
+                code=2000,
+                message='Assert "std::isfinite(element.val)" => segcore error',
+            )
+
+        store._client.hybrid_search = boom
+        try:
+            results = store.search([1.0, 0.0, 0.0, 0.0], query_text="x", top_k=1)
+        finally:
+            store._client.hybrid_search = original
+
+        assert any(r["content"] == "dense-fallback content" for r in results)

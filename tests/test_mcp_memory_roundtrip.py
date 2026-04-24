@@ -1224,9 +1224,17 @@ class TestErrorHandling:
         assert "not available" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_service_exception_returns_error_dict(self, wired_plugin, mock_router):
-        """When the service raises an exception, the handler catches it
-        and returns an error dict instead of propagating."""
+    async def test_service_exception_degrades_gracefully(self, wired_plugin, mock_router):
+        """When the memory backend blows up (e.g. Milvus connection lost
+        or a BM25 ``NaN or Inf`` segcore assertion), ``cmd_memory_search``
+        must NOT return an ``{"error": ...}`` dict.
+
+        Playbook-runner treats an error dict from any step as a fatal
+        failure, which meant a transient Milvus hiccup aborted the whole
+        playbook (the regression this fix targets).  The handler now
+        returns ``success=True`` with an empty result list so playbooks
+        keep running even when memory is temporarily unavailable.
+        """
         mock_router.search = AsyncMock(side_effect=RuntimeError("Milvus connection lost"))
         result = await wired_plugin.cmd_memory_search(
             {
@@ -1235,8 +1243,10 @@ class TestErrorHandling:
             }
         )
         assert isinstance(result, dict)
-        assert "error" in result
-        assert "success" not in result or result.get("success") is not True
+        assert "error" not in result
+        assert result.get("success") is True
+        assert result.get("results") == []
+        assert result.get("count") == 0
 
 
 # ---------------------------------------------------------------------------
