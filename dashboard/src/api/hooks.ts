@@ -19,6 +19,32 @@ export function useSystemStatus() {
   });
 }
 
+export interface OrchestratorStatus {
+  status: "paused" | "running";
+  running_tasks?: number;
+  message?: string;
+}
+
+export function useOrchestratorStatus() {
+  return useQuery({
+    queryKey: ["orchestrator", "status"],
+    queryFn: () =>
+      apiPost<OrchestratorStatus>("/system/orchestrator-control", { action: "status" }),
+    refetchInterval: 15_000,
+  });
+}
+
+export function useOrchestratorControl() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (action: "pause" | "resume") =>
+      apiPost<OrchestratorStatus>("/system/orchestrator-control", { action }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["orchestrator", "status"] });
+    },
+  });
+}
+
 // --- Agents ---
 
 export interface Agent {
@@ -132,6 +158,7 @@ export function useActiveTasksAllProjects() {
 export interface Project {
   id: string;
   name: string;
+  status?: string;
   repo_path?: string;
   default_branch?: string;
   is_active?: boolean;
@@ -141,12 +168,16 @@ export interface Project {
   budget_limit?: number | null;
 }
 
+function withPaused<T extends { status?: string; paused?: boolean }>(p: T): T {
+  return { ...p, paused: p.paused ?? p.status === "PAUSED" };
+}
+
 export function useProjects() {
   return useQuery({
     queryKey: ["projects"],
     queryFn: async () => {
       const data = await apiPost<{ success: boolean; projects: Project[] }>("/project/list");
-      return data.projects ?? [];
+      return (data.projects ?? []).map(withPaused);
     },
     refetchInterval: 30_000,
   });
@@ -155,9 +186,38 @@ export function useProjects() {
 export function useProject(projectId: string) {
   return useQuery({
     queryKey: ["project", projectId],
-    queryFn: () => apiPost<Project>("/project/get", { project_id: projectId }),
+    queryFn: async () =>
+      withPaused(await apiPost<Project>("/project/get", { project_id: projectId })),
     enabled: !!projectId,
   });
+}
+
+function useProjectMutation<TInput extends Record<string, unknown>, TOutput = unknown>(
+  endpoint: string,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: TInput) => apiPost<TOutput>(endpoint, input),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      const pid = (variables as { project_id?: string }).project_id;
+      if (pid) {
+        queryClient.invalidateQueries({ queryKey: ["project", pid] });
+      }
+    },
+  });
+}
+
+export function usePauseProject() {
+  return useProjectMutation<{ project_id: string }, { paused: string; name: string }>(
+    "/project/pause",
+  );
+}
+
+export function useResumeProject() {
+  return useProjectMutation<{ project_id: string }, { resumed: string; name: string }>(
+    "/project/resume",
+  );
 }
 
 // --- Workspaces ---

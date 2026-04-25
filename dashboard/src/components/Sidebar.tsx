@@ -7,7 +7,7 @@ import {
   CpuChipIcon,
   FolderIcon,
 } from "@heroicons/react/24/outline";
-import { useProjects } from "../api/hooks";
+import { useOrchestratorStatus, useProjects } from "../api/hooks";
 
 type SystemLink = {
   to: string;
@@ -25,7 +25,9 @@ const systemLinks: SystemLink[] = [
 
 export default function Sidebar() {
   const { data: projects } = useProjects();
+  const { data: orch } = useOrchestratorStatus();
   const projectList = projects ?? [];
+  const orchPaused = orch?.status === "paused";
 
   return (
     <aside className="flex w-60 flex-col border-r border-gray-800 bg-gray-900">
@@ -37,7 +39,14 @@ export default function Sidebar() {
       <nav className="flex-1 space-y-6 overflow-y-auto p-3">
         <SidebarSection title="System">
           {systemLinks.map(({ to, label, icon: Icon, end }) => (
-            <SidebarLink key={to} to={to} icon={Icon} label={label} end={end} />
+            <SidebarLink
+              key={to}
+              to={to}
+              icon={Icon}
+              label={label}
+              end={end}
+              trailing={to === "/system" && orchPaused ? <PausedDot /> : null}
+            />
           ))}
         </SidebarSection>
 

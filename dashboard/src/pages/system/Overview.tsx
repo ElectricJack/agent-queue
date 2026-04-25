@@ -3,9 +3,18 @@ import {
   CpuChipIcon,
   ClipboardDocumentListIcon,
   ExclamationTriangleIcon,
+  PauseIcon,
+  PlayIcon,
 } from "@heroicons/react/24/outline";
 import { Link } from "react-router-dom";
-import { useAllAgents, useActiveTasksAllProjects, useHealth, useProjects } from "../../api/hooks";
+import {
+  useAllAgents,
+  useActiveTasksAllProjects,
+  useHealth,
+  useOrchestratorControl,
+  useOrchestratorStatus,
+  useProjects,
+} from "../../api/hooks";
 import StatusBadge from "../../components/StatusBadge";
 
 export default function SystemOverview() {
@@ -14,15 +23,26 @@ export default function SystemOverview() {
   const projectIds = (projects.data ?? []).map((p) => p.id);
   const agents = useAllAgents(projectIds);
   const activeTasks = useActiveTasksAllProjects();
+  const orchStatus = useOrchestratorStatus();
+  const orchControl = useOrchestratorControl();
 
   const agentList = agents.data ?? [];
   const taskList = activeTasks.data ?? [];
   const busyAgents = agentList.filter((a) => a.state === "busy").length;
   const failedTasks = taskList.filter((t) => t.status === "failed").length;
+  const isPaused = orchStatus.data?.status === "paused";
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">System</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">System</h1>
+        <OrchestratorControl
+          status={orchStatus.data?.status}
+          isLoading={orchStatus.isLoading}
+          isPending={orchControl.isPending}
+          onToggle={() => orchControl.mutate(isPaused ? "resume" : "pause")}
+        />
+      </div>
 
       {/* Stats row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -108,6 +128,39 @@ export default function SystemOverview() {
         )}
       </section>
     </div>
+  );
+}
+
+function OrchestratorControl({
+  status,
+  isLoading,
+  isPending,
+  onToggle,
+}: {
+  status?: "paused" | "running";
+  isLoading: boolean;
+  isPending: boolean;
+  onToggle: () => void;
+}) {
+  if (isLoading || !status) {
+    return <div className="h-8 w-8 animate-pulse rounded-md bg-gray-800" />;
+  }
+  const paused = status === "paused";
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={isPending}
+      className={`inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+        paused
+          ? "bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
+          : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+      }`}
+      title={paused ? "Resume orchestrator" : "Pause orchestrator"}
+      aria-label={paused ? "Resume orchestrator" : "Pause orchestrator"}
+    >
+      {paused ? <PlayIcon className="h-4 w-4" /> : <PauseIcon className="h-4 w-4" />}
+    </button>
   );
 }
 
