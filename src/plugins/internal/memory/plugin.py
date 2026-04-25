@@ -1278,6 +1278,13 @@ class MemoryPlugin(InternalPlugin):
         self._extractor: Any = None  # MemoryExtractor, created below
         await self._init_service(ctx)
 
+        # Expose the service via the plugin-services registry so core
+        # consumers (prompt_builder, supervisor, facts watcher) can reach
+        # it without direct orchestrator attribute access.  This is the
+        # contract that lets the plugin become external in later tasks.
+        if self._service is not None:
+            ctx.register_service("memory", self._service)
+
         # -- Map command names to handlers --
         # Full command table — all handlers.  Only AGENT_TOOLS are
         # registered for LLM tool use; the rest remain available for

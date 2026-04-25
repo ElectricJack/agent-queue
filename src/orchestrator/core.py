@@ -1133,20 +1133,16 @@ class Orchestrator(
         #
         # The facts handlers were registered earlier (before plugins loaded)
         # with service=None — the handler falls back to logging only.  Now
-        # that the MemoryPlugin has been loaded and owns a live service,
-        # re-register the handlers with the actual service so KV sync works.
-        # register_facts_handlers() is idempotent (same handler IDs are
-        # reused), so this is safe.
-        self._memory_service = None
-        mem_plugin = self.plugin_registry.get_plugin_instance("aq-memory")
-        if mem_plugin:
-            svc = getattr(mem_plugin, "service", None)
-            if svc and getattr(svc, "available", False):
-                from src.facts_handler import register_facts_handlers
+        # that a memory plugin has been loaded and registered itself via
+        # ``ctx.register_service("memory", ...)``, re-register the handlers
+        # with the actual service so KV sync works.  register_facts_handlers()
+        # is idempotent (same handler IDs are reused), so this is safe.
+        mem_svc = self.plugin_registry.get_service("memory")
+        if mem_svc and getattr(mem_svc, "available", False):
+            from src.facts_handler import register_facts_handlers
 
-                register_facts_handlers(self.vault_watcher, service=svc)
-                self._memory_service = svc
-                logger.info("Wired MemoryService to facts.md watcher handlers")
+            register_facts_handlers(self.vault_watcher, service=mem_svc)
+            logger.info("Wired memory service to facts.md watcher handlers")
 
 
         # HookEngine + RuleManager removed (playbooks spec §13 Phase 3).
