@@ -1535,9 +1535,16 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     if "memory" in raw:
         mem = raw["memory"]
+        # Defaults must match MemoryConfig dataclass defaults
+        # (enabled=True, embedding_provider="ollama") so a partial memory:
+        # section (e.g. just an api_key override) does not silently flip
+        # callers onto a different provider.  The pyproject.toml `memory`
+        # extra installs `memsearch[ollama]` to support the "ollama"
+        # default; deploying with `embedding_provider: openai` is opt-in
+        # and requires an api key.
         config.memory = MemoryConfig(
-            enabled=mem.get("enabled", False),
-            embedding_provider=mem.get("embedding_provider", "openai"),
+            enabled=mem.get("enabled", True),
+            embedding_provider=mem.get("embedding_provider", "ollama"),
             embedding_model=mem.get("embedding_model", ""),
             embedding_base_url=mem.get("embedding_base_url", ""),
             embedding_api_key=mem.get("embedding_api_key", ""),

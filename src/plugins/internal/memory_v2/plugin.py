@@ -1418,7 +1418,7 @@ class MemoryV2Plugin(InternalPlugin):
             self._service = MemoryV2Service(
                 milvus_uri=memory_cfg.get("milvus_uri", "~/.agent-queue/memsearch/milvus.db"),
                 milvus_token=memory_cfg.get("milvus_token", ""),
-                embedding_provider=memory_cfg.get("embedding_provider", "openai"),
+                embedding_provider=memory_cfg.get("embedding_provider", "ollama"),
                 embedding_model=memory_cfg.get("embedding_model", ""),
                 embedding_base_url=memory_cfg.get("embedding_base_url", ""),
                 embedding_api_key=memory_cfg.get("embedding_api_key", ""),
@@ -1499,7 +1499,7 @@ class MemoryV2Plugin(InternalPlugin):
                 return {
                     "milvus_uri": getattr(mem, "milvus_uri", ""),
                     "milvus_token": getattr(mem, "milvus_token", ""),
-                    "embedding_provider": getattr(mem, "embedding_provider", "openai"),
+                    "embedding_provider": getattr(mem, "embedding_provider", "ollama"),
                     "embedding_model": getattr(mem, "embedding_model", ""),
                     "embedding_base_url": getattr(mem, "embedding_base_url", ""),
                     "embedding_api_key": getattr(mem, "embedding_api_key", ""),
@@ -1561,7 +1561,7 @@ class MemoryV2Plugin(InternalPlugin):
 
         milvus_uri = memory_cfg.get("milvus_uri", "~/.agent-queue/memsearch/milvus.db")
         milvus_token = memory_cfg.get("milvus_token", "")
-        embedding_provider = memory_cfg.get("embedding_provider", "openai")
+        embedding_provider = memory_cfg.get("embedding_provider", "ollama")
         embedding_model = memory_cfg.get("embedding_model", "")
         embedding_base_url = memory_cfg.get("embedding_base_url", "")
         embedding_api_key = memory_cfg.get("embedding_api_key", "")

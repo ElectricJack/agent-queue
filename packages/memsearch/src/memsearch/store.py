@@ -483,6 +483,21 @@ class MilvusStore:
 
         output_fields = self._FULL_FIELDS if full else self._SUMMARY_FIELDS
 
+        # Empty collections crash hybrid_search with "MilvusException:
+        # Invalid sparse row: NaN or Inf value" because Milvus's BM25 IDF
+        # is undefined when N=0 (log of zero).  Short-circuit rather than
+        # let the RPC raise — every caller would otherwise need its own
+        # guard (the higher-level scoping.py guard only covers multi-scope
+        # search; direct callers like MemSearch.search() in core.py are
+        # unprotected).  count() failures fall through to the normal
+        # search path so we surface the original error instead of masking
+        # it.
+        try:
+            if self.count() == 0:
+                return []
+        except Exception:
+            logger.debug("count() failed during search guard", exc_info=True)
+
         req_kwargs: dict[str, Any] = {}
         if filter_expr:
             req_kwargs["expr"] = filter_expr
