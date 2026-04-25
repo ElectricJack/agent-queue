@@ -9,12 +9,19 @@ import {
 } from "@heroicons/react/24/outline";
 import { useProjects } from "../api/hooks";
 
-const systemLinks = [
+type SystemLink = {
+  to: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  end?: boolean;
+};
+
+const systemLinks: SystemLink[] = [
   { to: "/system", label: "Overview", icon: Squares2X2Icon, end: true },
   { to: "/system/events", label: "Events", icon: SignalIcon },
   { to: "/system/playbooks", label: "Playbooks", icon: BookOpenIcon },
   { to: "/system/config", label: "Config", icon: Cog6ToothIcon },
-] as const;
+];
 
 export default function Sidebar() {
   const { data: projects } = useProjects();

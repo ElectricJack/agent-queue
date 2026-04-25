@@ -1,14 +1,14 @@
 import { NavLink, Outlet, useParams } from "react-router-dom";
 import { useProject } from "../../api/hooks";
 
-const tabs = [
+const tabs: Array<{ to: string; label: string; end?: boolean }> = [
   { to: ".", label: "Overview", end: true },
   { to: "tasks", label: "Tasks" },
   { to: "workspaces", label: "Workspaces" },
   { to: "profiles", label: "Profiles" },
   { to: "playbooks", label: "Playbooks" },
   { to: "config", label: "Config" },
-] as const;
+];
 
 export default function ProjectLayout() {
   const { projectId = "" } = useParams();
