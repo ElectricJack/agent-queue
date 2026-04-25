@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -70,3 +73,57 @@ def npm_available() -> str:
     if path is None:
         pytest.skip("npx not found on PATH — skipping MCP functional tests")
     return path
+
+
+# ---------------------------------------------------------------------------
+# Plugin system fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def plugin_registry(tmp_path: Path):
+    """Bare PluginRegistry with no plugins loaded.
+
+    Backed by AsyncMock db / MagicMock bus / MagicMock config so tests can
+    exercise registry behavior without spinning up real subsystems.
+    """
+    from src.plugins.registry import PluginRegistry
+
+    db = AsyncMock()
+    db.get_plugin = AsyncMock(return_value=None)
+    db.create_plugin = AsyncMock()
+    db.update_plugin = AsyncMock()
+    db.delete_plugin = AsyncMock()
+    db.list_plugins = AsyncMock(return_value=[])
+    db.get_plugin_data = AsyncMock(return_value=None)
+    db.set_plugin_data = AsyncMock()
+    db.delete_plugin_data = AsyncMock()
+    db.delete_plugin_data_all = AsyncMock()
+
+    bus = MagicMock()
+    bus.emit = AsyncMock()
+    bus.subscribe = MagicMock()
+
+    config = MagicMock()
+    config.data_dir = str(tmp_path / "data")
+    os.makedirs(config.data_dir, exist_ok=True)
+
+    return PluginRegistry(db=db, bus=bus, config=config)
+
+
+@pytest.fixture
+def plugin_registry_with_plugin(plugin_registry):
+    """Helper that loads an in-memory plugin class into the registry.
+
+    Usage::
+
+        async def test_x(plugin_registry_with_plugin):
+            registry = await plugin_registry_with_plugin(MyPluginCls)
+            ...
+    """
+
+    async def _load(plugin_cls):
+        await plugin_registry.register_in_memory_plugin(plugin_cls)
+        return plugin_registry
+
+    return _load

@@ -30,9 +30,11 @@ from src.plugins.base import (
     cron,
 )
 from src.plugins.registry import PluginRegistry
+from src.plugins.services import MemoryServiceProtocol
 
 __all__ = [
     "InternalPlugin",
+    "MemoryServiceProtocol",
     "Plugin",
     "PluginContext",
     "PluginInfo",

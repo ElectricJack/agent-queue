@@ -189,6 +189,7 @@ class PluginContext:
         invoke_llm_callback: Callable | None = None,
         trust_level: TrustLevel = TrustLevel.EXTERNAL,
         services: dict[str, Any] | None = None,
+        plugin_services_callback: Callable[[str, str, object], None] | None = None,
         active_project_id_getter: Callable | None = None,
     ):
         self._plugin_name = plugin_name
@@ -205,6 +206,9 @@ class PluginContext:
         self._invoke_llm_callback = invoke_llm_callback
         self._trust_level = trust_level
         self._services: dict[str, Any] = services or {}
+        self._plugin_services_callback: Callable[[str, str, object], None] = (
+            plugin_services_callback or (lambda *_args, **_kw: None)
+        )
         self._active_project_id_getter = active_project_id_getter
 
         self._logger = logging.getLogger(f"plugin.{plugin_name}")
@@ -347,6 +351,34 @@ class PluginContext:
         """
         self._event_type_registry.add(event_type)
         self._logger.debug("Registered event type: %s", event_type)
+
+    # --- Service Registration (plugin → core) ---
+
+    def register_service(self, name: str, instance: object) -> None:
+        """Expose a service the plugin provides for core / other plugins to use.
+
+        The instance should implement the corresponding Protocol declared in
+        ``src/plugins/services.py`` (e.g. :class:`MemoryServiceProtocol` for
+        ``name="memory"``).  Core consumers fetch it via
+        ``plugin_registry.get_service(name)`` and it returns ``None`` when no
+        plugin has registered the service.
+
+        Distinct from :meth:`get_service`, which fetches services that
+        *core* exposes to *plugins* (db, git, config, etc.).
+
+        Args:
+            name: Service name (e.g. ``"memory"``).  Conventionally matches
+                  the Protocol it implements.
+            instance: The service object.  Stored as-is; lifecycle is the
+                      plugin's responsibility.
+
+        Raises:
+            ValueError: If ``name`` is empty.
+        """
+        if not name:
+            raise ValueError("Service name must be non-empty")
+        self._plugin_services_callback(self._plugin_name, name, instance)
+        self._logger.debug("Registered service: %s", name)
 
     async def emit_event(self, event_type: str, data: dict | None = None) -> None:
         """Emit an event on the system EventBus.
