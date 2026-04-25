@@ -46,7 +46,7 @@ dependencies = [
     # sanitized URL-derived filenames — os.path.join discards tmpdir when
     # the second arg begins with a slash or drive letter, allowing writes
     # to arbitrary filesystem locations and potential RCE). Comes in as a
-    # transitive dep (notably via memsearch for the memory extras).
+    # transitive dep through several optional extras.
     "setuptools>=78.1.1",
 ]
 
@@ -89,16 +89,6 @@ dev = [
     # CVE-2022-40898: wheel <0.38.1 has a ReDoS in the wheel CLI
     "wheel>=0.38.1",
 ]
-memory = [
-    # Default embedding provider in MemoryConfig is "ollama", which
-    # requires the `ollama` Python package. Pull it in alongside memsearch
-    # so a default install doesn't leave MemoryService in degraded mode
-    # with a ModuleNotFoundError. Operators using a different embedding
-    # provider (openai/google/voyage/local/onnx) can override
-    # `memory.embedding_provider` in config.yaml; the corresponding extra
-    # is still the user's responsibility.
-    "memsearch[ollama] @ file:packages/memsearch",
-]
 docs = [
     "mkdocs>=1.6",
     "mkdocs-material>=9.5",
@@ -119,7 +109,7 @@ testpaths = ["tests", "packages"]
 markers = [
     "functional: tests that launch real Claude CLI (require auth + API key)",
     "functional_mcp: functional tests requiring npm/npx for MCP servers",
-    "integration: tests requiring external dependencies (memsearch, Milvus Lite, etc.)",
+    "integration: tests requiring external dependencies (Milvus Lite, etc.)",
 ]
 
 [tool.ruff]

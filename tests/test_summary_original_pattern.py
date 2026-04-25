@@ -25,7 +25,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory.service import MemoryService, MEMSEARCH_AVAILABLE
+from aq_memory.service import MemoryService, MEMSEARCH_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ def service(mock_embedder, mock_router, tmp_data_dir):
 
 @pytest.fixture
 def plugin():
-    from src.plugins.internal.memory import MemoryPlugin
+    from aq_memory import MemoryPlugin
 
     return MemoryPlugin()
 

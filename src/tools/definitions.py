@@ -51,7 +51,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "resume_agent": "agent",
     # vault — reference stub management
     "scan_stub_staleness": "system",
-    # memory — migrated to aq-memory internal plugin (src/plugins/internal/memory/)
+    # memory — provided by the external aq-memory plugin (install via `aq plugin install`)
     # notes — migrated to aq-notes internal plugin (src/plugins/internal/notes.py)
     # files — migrated to aq-files internal plugin (src/plugins/internal/files.py)
     # task — lifecycle, approval, dependencies, archives, results

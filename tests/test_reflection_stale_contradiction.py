@@ -898,7 +898,7 @@ class TestMemoryHealthResponseCompatibility:
         mock_store = MagicMock()
         mock_store.query.return_value = entries
 
-        from src.plugins.internal.memory.service import MemoryService
+        from aq_memory.service import MemoryService
 
         service = MemoryService.__new__(MemoryService)
 
@@ -1058,7 +1058,7 @@ class TestMemoryStaleResponseCompatibility:
         mock_store = MagicMock()
         mock_store.query.return_value = entries
 
-        from src.plugins.internal.memory.service import MemoryService
+        from aq_memory.service import MemoryService
 
         service = MemoryService.__new__(MemoryService)
 

@@ -4,7 +4,7 @@ Registers glob patterns with the :class:`~src.vault_watcher.VaultWatcher` to
 detect changes to ``facts.md`` files across all vault scopes (system,
 supervisor, agent-type, project).  When a facts file is created, modified, or
 deleted, the handler parses the file and syncs the key-value entries to the
-Milvus KV backend via :class:`~src.plugins.internal.memory.service.MemoryService`.
+Milvus KV backend via :class:`~aq_memory.service.MemoryService`.
 
 Patterns registered (relative to vault root)::
 
@@ -177,7 +177,7 @@ async def _sync_facts_to_kv(
     identifier:
         Scope-specific identifier.
     service:
-        A :class:`~src.plugins.internal.memory.service.MemoryService` instance (or
+        A :class:`~aq_memory.service.MemoryService` instance (or
         any object implementing the ``kv_set`` protocol).
 
     Returns
@@ -247,7 +247,7 @@ async def on_facts_changed(
         List of :class:`~src.vault_watcher.VaultChange` objects for files
         matching one of the registered facts patterns.
     service:
-        Optional :class:`~src.plugins.internal.memory.service.MemoryService` instance.
+        Optional :class:`~aq_memory.service.MemoryService` instance.
         When provided, KV entries are synced to the backend.
     """
     for change in changes:
@@ -317,7 +317,7 @@ def register_facts_handlers(
         The :class:`~src.vault_watcher.VaultWatcher` instance to register
         handlers on (typically ``orchestrator.vault_watcher``).
     service:
-        Optional :class:`~src.plugins.internal.memory.service.MemoryService` instance.
+        Optional :class:`~aq_memory.service.MemoryService` instance.
         When provided, the handler will parse facts files and sync KV
         entries to the backend.  When ``None``, the handler falls back to
         logging only.

@@ -33,7 +33,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory.service import MemoryService, MEMSEARCH_AVAILABLE
+from aq_memory.service import MemoryService, MEMSEARCH_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ def service(mock_embedder, mock_router):
 @pytest.fixture
 def plugin():
     """Create a MemoryPlugin for handler testing."""
-    from src.plugins.internal.memory import MemoryPlugin
+    from aq_memory import MemoryPlugin
 
     return MemoryPlugin()
 
@@ -576,7 +576,7 @@ class TestNoDuplicationWithL1L2:
                 return_value=(MemoryScope.SYSTEM, None),
             ):
                 with patch(
-                    "src.plugins.internal.memory.service.collection_name",
+                    "aq_memory.service.collection_name",
                     return_value="aq_system",
                 ):
                     results = await service.search("myapp", "query", scope="system")
@@ -931,7 +931,7 @@ class TestRetrievalTracking:
                 return_value=(MemoryScope.PROJECT, "myapp"),
             ):
                 with patch(
-                    "src.plugins.internal.memory.service.collection_name",
+                    "aq_memory.service.collection_name",
                     return_value="aq_project_myapp",
                 ):
                     results = await service.search("myapp", "query", scope="project_myapp")

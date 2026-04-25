@@ -31,8 +31,8 @@ from unittest.mock import AsyncMock, MagicMock  # noqa: E402
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory.service import MEMSEARCH_AVAILABLE, MemoryService
-from src.plugins.internal.memory import MemoryPlugin
+from aq_memory.service import MEMSEARCH_AVAILABLE, MemoryService
+from aq_memory import MemoryPlugin
 
 # All tests require memsearch
 pytestmark = pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
