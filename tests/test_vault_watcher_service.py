@@ -16,8 +16,9 @@ class _StubVaultWatcher:
         self.registered.append((pattern, handler, handler_id))
         return handler_id or f"auto:{pattern}"
 
-    def unregister_handler(self, handler_id):
+    def unregister_handler(self, handler_id) -> bool:
         self.unregistered.append(handler_id)
+        return True
 
 
 def test_vault_watcher_service_protocol_satisfied_by_stub():
