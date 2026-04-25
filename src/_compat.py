@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import pkgutil
 import sys
+import warnings
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +102,13 @@ def _ensure_pkg_resources() -> None:
     """
     # If a real pkg_resources is importable, leave it alone so installed
     # packages that genuinely need the full API continue to work.
+    # The probe import is wrapped in catch_warnings because setuptools >=81
+    # emits a UserWarning at pkg_resources import time; we don't need to
+    # surface that to operators every time we run our compat probe.
     try:
-        import pkg_resources  # noqa: F401
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            import pkg_resources  # noqa: F401
         return
     except ImportError:
         pass

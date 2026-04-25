@@ -266,14 +266,19 @@ class ContextMixin:
         if isinstance(parsed_text, dict):
             val = _dot_extract(parsed_text, extract_path)
             if val is not None:
-                logger.info(
-                    "_extract_output: extracted '%s' from text response → %s (%d items)"
-                    if isinstance(val, list)
-                    else "_extract_output: extracted '%s' from text response → %s",
-                    extract_path,
-                    type(val).__name__,
-                    len(val) if isinstance(val, list) else 0,
-                )
+                if isinstance(val, list):
+                    logger.info(
+                        "_extract_output: extracted '%s' from text response → %s (%d items)",
+                        extract_path,
+                        type(val).__name__,
+                        len(val),
+                    )
+                else:
+                    logger.info(
+                        "_extract_output: extracted '%s' from text response → %s",
+                        extract_path,
+                        type(val).__name__,
+                    )
                 return val
 
         # 2. Fall back to the last matching tool_result.

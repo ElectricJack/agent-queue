@@ -4,9 +4,9 @@ tags: [spec, reflection, self-improvement]
 
 # Reflection Engine Specification
 
-The ReflectionEngine manages the [[specs/supervisor|Supervisor]]'s action-reflect cycle.
+The ReflectionEngine manages the [[specs/supervisor|Supervisor]]'s action-reflect cycle — a per-interaction self-verification pass that checks whether the Supervisor actually accomplished what it intended.
 
-Reflection is a [[design/playbooks|playbook]]-driven process. See [[design/self-improvement]] for the self-improvement loop.
+Not to be confused with the periodic *reflection playbook* that distills task records into scoped memory; that is a separate subsystem described in [[design/self-improvement]].
 
 ## Class: ReflectionEngine (src/reflection.py)
 
