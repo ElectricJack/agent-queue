@@ -73,7 +73,7 @@ export default function SystemOverview() {
                     )}
                   </div>
                   <p className="text-xs text-gray-500">
-                    {projectAgents.length} workspaces \u00b7 {projectTasks.length} active tasks
+                    {projectAgents.length} workspaces · {projectTasks.length} active tasks
                   </p>
                 </Link>
               );
