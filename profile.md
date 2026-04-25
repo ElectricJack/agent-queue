@@ -39,11 +39,11 @@ asyncio event loop
 │   ├── Orphan Recovery          — detect & recover stale/crashed workflows
 │   └── Pipeline View            — dashboard-ready visualization
 ├── Plugin Registry              — modular extensibility (tools, events, cron)
-│   ├── aq-files                 — file read/write/glob/grep
-│   ├── aq-git                   — branch, commit, push, PR, merge
-│   ├── aq-memory             — semantic search, KV, temporal facts
-│   ├── aq-notes                 — project notes management
-│   └── aq-vibecop               — static analysis for code quality
+│   ├── aq-files                 — file read/write/glob/grep (internal)
+│   ├── aq-git                   — branch, commit, push, PR, merge (internal)
+│   ├── aq-notes                 — project notes management (internal)
+│   ├── aq-vibecop               — static analysis for code quality (internal)
+│   └── aq-memory                — semantic search, KV, temporal facts (external; install via `aq plugin install`)
 ├── Memory V2 Service            — Milvus-backed 4-tier knowledge
 │   ├── Semantic search          — multi-scope weighted vector search
 │   ├── KV store                 — fast scalar lookups per scope
@@ -147,11 +147,10 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 
 ### Memory & Knowledge
 
+Memory is provided by the **external `aq-memory` plugin** (install via `aq plugin install`). The plugin owns its memsearch/Milvus backend, the auto-extractor, and all `memory_*` tool/command handlers. Only the in-tree parsers below remain in core.
+
 | File | Purpose |
 |------|---------|
-| `src/plugins/internal/memory/service.py` | Memory backend — Milvus via memsearch fork, multi-scope search/KV/temporal |
-| `src/plugins/internal/memory/extractor.py` | Auto-extracts knowledge from system events (task completion, failures, etc.) |
-| `src/plugins/internal/memory/plugin.py` | MemoryPlugin — command handlers and tool definitions |
 | `src/facts_parser.py` | Deterministic `facts.md` parser — KV pairs with namespace support |
 | `src/profile_parser.py` | Parses hybrid markdown profiles (English + JSON blocks) |
 
@@ -162,7 +161,7 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 | `src/plugins/base.py` | Plugin base class, PluginContext API, TrustLevel, @cron decorator |
 | `src/plugins/registry.py` | Central coordinator — discovery, loading, lifecycle, circuit breaker |
 | `src/plugins/loader.py` | Plugin install/update/load mechanics |
-| `src/plugins/internal/` | Shipped plugins: aq-files, aq-git, aq-memory, aq-notes, aq-vibecop |
+| `src/plugins/internal/` | Shipped internal plugins: aq-files, aq-git, aq-notes, aq-vibecop (aq-memory is external) |
 
 ### Subsystems
 
@@ -178,7 +177,6 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 | `src/telegram/` | Telegram bot integration |
 | `src/plugins/` | Plugin system for extensibility |
 | `packages/mcp_server/` | MCP server — auto-exposes all CommandHandler commands as MCP tools |
-| `packages/memsearch/` | Milvus-backed semantic memory engine (fork of zilliztech/memsearch) |
 | `packages/aq-client/` | Typed API client (generated) for CLI and external tools |
 | `docs/specs/` | Behavioral specifications (source of truth) |
 | `docs/specs/design/` | Design specs (playbooks, memory, self-improvement, coordination, vault, profiles, roadmap) |
@@ -277,7 +275,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - Git operations wrapped in `GitManager` with `GitError` exceptions
 - **Linter:** ruff (line-length 100, target py312)
 - **Tests:** pytest with pytest-asyncio (`asyncio_mode = "auto"`)
-- **Dependencies:** sqlalchemy[asyncio], aiosqlite, alembic, discord.py, claude-agent-sdk, pyyaml, memsearch
+- **Dependencies:** sqlalchemy[asyncio], aiosqlite, alembic, discord.py, claude-agent-sdk, pyyaml (memsearch ships with the external `aq-memory` plugin)
 
 ## Infrastructure
 
@@ -295,4 +293,4 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - Plan-generated tasks can get stuck in DEFINED due to inherited approval settings blocking dependency chains
 - The system uses workspace isolation per task (git worktrees or separate clones)
 - Rules/hooks are deprecated; playbooks are the replacement (migration in progress)
-- Memory is provided by the `aq-memory` internal plugin (`src/plugins/internal/memory/`)
+- Memory is provided by the external `aq-memory` plugin (separate repo; install via `aq plugin install`)

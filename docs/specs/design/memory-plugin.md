@@ -12,9 +12,10 @@ tags: [design, memory, plugin, milvus, memsearch]
 
 ## 1. Overview
 
-The memory system is implemented as a **self-contained internal plugin** that replaces
-the current `memory.py` MemoryManager (2958 lines) and memory plugin facade (1046
-lines) with a unified v2 plugin.
+The memory system is implemented as a **self-contained external plugin** shipped as a
+separate repo at `/mnt/d/Dev/aq/aq-memory` (or installed via `aq plugin install`). It
+replaces the original `memory.py` MemoryManager (2958 lines) and memory plugin facade
+(1046 lines) with a unified plugin owned outside the core tree.
 
 ---
 
