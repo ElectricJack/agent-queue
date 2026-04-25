@@ -254,7 +254,7 @@ class TestOnFactsChangedNoService:
 
 
 class TestOnFactsChangedWithService:
-    """Tests for on_facts_changed with a MemoryV2Service (KV sync)."""
+    """Tests for on_facts_changed with a MemoryService (KV sync)."""
 
     @pytest.fixture
     def mock_service(self):

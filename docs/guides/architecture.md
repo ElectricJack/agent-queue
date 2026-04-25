@@ -187,8 +187,8 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 
 | Module | Purpose |
 |--------|---------|
-| `src/memory_v2_service.py` | Milvus-backed 4-tier memory |
-| `src/memory_extractor.py` | Auto-extracts knowledge from events |
+| `src/plugins/internal/memory/service.py` | Milvus-backed 4-tier memory |
+| `src/plugins/internal/memory/extractor.py` | Auto-extracts knowledge from events |
 | `src/facts_parser.py` | Deterministic `facts.md` parser |
 | `src/profile_parser.py` | Hybrid markdown profile parser |
 | `src/plan_parser.py` | Plan file parsing (regex + LLM) |

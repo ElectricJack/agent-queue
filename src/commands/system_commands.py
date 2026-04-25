@@ -549,12 +549,6 @@ class SystemCommandsMixin:
             return {"error": f"Command timed out after {timeout}s"}
 
     # -----------------------------------------------------------------------
-    # Memory commands — V1 MemoryManager commands removed (roadmap 8.6).
-    # All memory operations are now handled by MemoryV2Plugin
-    # (src/plugins/internal/memory_v2.py).
-    # -----------------------------------------------------------------------
-
-    # -----------------------------------------------------------------------
     # Reference stub staleness scanning (Roadmap 6.3.4)
     # -----------------------------------------------------------------------
 

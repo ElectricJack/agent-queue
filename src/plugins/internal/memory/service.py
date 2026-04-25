@@ -1,9 +1,9 @@
-"""MemoryV2Service — async service layer wrapping the memsearch fork.
+"""MemoryService — async service layer wrapping the memsearch fork.
 
-Provides the backend for :class:`MemoryV2Plugin` and the ``memory_v2``
-service protocol accessible via ``ctx.get_service("memory_v2")``.
+Provides the backend for :class:`MemoryPlugin` and the ``memory``
+service protocol accessible via ``ctx.get_service("memory")``.
 
-All v2 memory operations flow through this service:
+All memory operations flow through this service:
 
 - **Semantic search** — multi-scope weighted search via
   :class:`CollectionRouter` with automatic embedding.
@@ -67,12 +67,12 @@ except ImportError:
     MilvusStore = None  # type: ignore[assignment,misc]
 
 
-class MemoryV2Service:
-    """Async service layer for v2 memory operations via memsearch/Milvus.
+class MemoryService:
+    """Async service layer for memory operations via memsearch/Milvus.
 
-    Initialized by :class:`MemoryV2Plugin` during plugin startup.  Other
+    Initialized by :class:`MemoryPlugin` during plugin startup.  Other
     subsystems access these operations through the plugin's tool interface
-    or via ``ctx.get_service("memory_v2")``.
+    or via ``ctx.get_service("memory")``.
 
     Parameters
     ----------
@@ -173,7 +173,7 @@ class MemoryV2Service:
                 "memsearch package is not installed "
                 "(pip install -e packages/memsearch)"
             )
-            logger.warning("memsearch package not available — MemoryV2Service disabled")
+            logger.warning("memsearch package not available — MemoryService disabled")
             return
 
         try:
@@ -193,7 +193,7 @@ class MemoryV2Service:
             self._initialized = True
             self._unavailable_reason = None
             logger.info(
-                "MemoryV2Service initialized (embedding=%s/%s, dim=%d, milvus=%s)",
+                "MemoryService initialized (embedding=%s/%s, dim=%d, milvus=%s)",
                 self._embedding_provider_name,
                 self._embedder.model_name,
                 self._embedder.dimension,
@@ -209,7 +209,7 @@ class MemoryV2Service:
                 f"or switch `memory.embedding_provider` in config.yaml."
             )
             logger.error(
-                "MemoryV2Service initialization failed: %s",
+                "MemoryService initialization failed: %s",
                 self._unavailable_reason,
                 exc_info=True,
             )
@@ -223,7 +223,7 @@ class MemoryV2Service:
                 f"failed to initialize: {type(e).__name__}: {e}"
             )
             logger.error(
-                "MemoryV2Service initialization failed: %s",
+                "MemoryService initialization failed: %s",
                 self._unavailable_reason,
                 exc_info=True,
             )
@@ -236,7 +236,7 @@ class MemoryV2Service:
             self._router = None
         self._embedder = None
         self._initialized = False
-        logger.info("MemoryV2Service shut down")
+        logger.info("MemoryService shut down")
 
     # ------------------------------------------------------------------
     # Scope resolution
@@ -532,7 +532,7 @@ class MemoryV2Service:
             facts file.
         """
         if not self.available:
-            raise RuntimeError("MemoryV2Service not available")
+            raise RuntimeError("MemoryService not available")
 
         store = self._get_store(project_id, scope)
         entry = await asyncio.to_thread(
@@ -1138,7 +1138,7 @@ class MemoryV2Service:
             The newly created entry.
         """
         if not self.available:
-            raise RuntimeError("MemoryV2Service not available")
+            raise RuntimeError("MemoryService not available")
 
         store = self._get_store(project_id)
         return await asyncio.to_thread(
@@ -1599,7 +1599,7 @@ class MemoryV2Service:
             Result with ``chunk_hash``, ``vault_path``, ``collection``, etc.
         """
         if not self.available:
-            raise RuntimeError("MemoryV2Service not available")
+            raise RuntimeError("MemoryService not available")
 
         tags = tags or ["insight", "auto-extracted"]
         indexed_content = summary or content
@@ -1696,7 +1696,7 @@ class MemoryV2Service:
             Updated entry info.
         """
         if not self.available:
-            raise RuntimeError("MemoryV2Service not available")
+            raise RuntimeError("MemoryService not available")
 
         store = self._get_store(project_id, scope)
         entry = await asyncio.to_thread(store.get, chunk_hash)
@@ -1768,7 +1768,7 @@ class MemoryV2Service:
             Updated entry info.
         """
         if not self.available:
-            raise RuntimeError("MemoryV2Service not available")
+            raise RuntimeError("MemoryService not available")
 
         store = self._get_store(project_id, scope)
         entry = await asyncio.to_thread(store.get, chunk_hash)
@@ -1861,7 +1861,7 @@ class MemoryV2Service:
             Updated entry info.
         """
         if not self.available:
-            raise RuntimeError("MemoryV2Service not available")
+            raise RuntimeError("MemoryService not available")
 
         store = self._get_store(project_id, scope)
         entry = await asyncio.to_thread(store.get, chunk_hash)
@@ -1980,7 +1980,7 @@ class MemoryV2Service:
             Confirmation with deleted entry info.
         """
         if not self.available:
-            raise RuntimeError("MemoryV2Service not available")
+            raise RuntimeError("MemoryService not available")
 
         store = self._get_store(project_id, scope)
 
@@ -2051,7 +2051,7 @@ class MemoryV2Service:
         info, and reindex status.
         """
         if not self.available:
-            return {"error": "MemoryV2Service not available"}
+            return {"error": "MemoryService not available"}
 
         store = self._get_store(project_id, scope)
         mem_scope, scope_id = self._resolve_scope(project_id, scope)
@@ -2177,7 +2177,7 @@ class MemoryV2Service:
             Number of most-retrieved documents to return.  Default 10.
         """
         if not self.available:
-            return {"error": "MemoryV2Service not available"}
+            return {"error": "MemoryService not available"}
 
         store = self._get_store(project_id, scope)
         mem_scope, scope_id = self._resolve_scope(project_id, scope)
@@ -2334,7 +2334,7 @@ class MemoryV2Service:
             ``threshold_date``.
         """
         if not self.available:
-            return {"error": "MemoryV2Service not available"}
+            return {"error": "MemoryService not available"}
 
         store = self._get_store(project_id, scope)
         mem_scope, scope_id = self._resolve_scope(project_id, scope)

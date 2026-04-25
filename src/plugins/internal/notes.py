@@ -269,11 +269,10 @@ class NotesPlugin(InternalPlugin):
         self._ctx = ctx
         self._ws = ctx.get_service("workspace")
         self._db = ctx.get_service("db")
-        # Use memory_v2 — v1 was removed in roadmap 8.6 and the 'memory'
-        # service no longer exists.  When v2 is unavailable (degraded mode,
-        # missing milvus), note-promotion features no-op instead of erroring.
+        # When the memory service is unavailable (degraded mode, missing
+        # milvus), note-promotion features no-op instead of erroring.
         try:
-            self._memv2 = ctx.get_service("memory_v2")
+            self._memv2 = ctx.get_service("memory")
         except ValueError:
             self._memv2 = None
         self._git = ctx.get_service("git")
@@ -307,10 +306,9 @@ class NotesPlugin(InternalPlugin):
         note_filename: str,
         note_content: str,
     ) -> None:
-        """Store the note content into memory_v2 so it becomes searchable.
+        """Store the note content into memory so it becomes searchable.
 
-        Memory V1 used to LLM-rewrite the project profile from the note;
-        V2's semantic store is a better fit for free-form note content —
+        The semantic store is a good fit for free-form note content —
         the extractor will classify it as an insight/fact and index it.
         """
         if not self._memv2 or not getattr(self._memv2, "available", False):
@@ -522,7 +520,7 @@ class NotesPlugin(InternalPlugin):
 
         if not self._memv2 or not getattr(self._memv2, "available", False):
             return {
-                "error": "memory_v2 service is not available; cannot promote note."
+                "error": "memory service is not available; cannot promote note."
             }
         try:
             result = await self._ctx.execute_command(
@@ -545,8 +543,8 @@ class NotesPlugin(InternalPlugin):
             "note": note_filename,
             "status": "promoted",
             "message": (
-                f"Note '{note_filename}' indexed into project memory "
-                f"(memory_v2). It will surface in future semantic searches."
+                f"Note '{note_filename}' indexed into project memory. "
+                f"It will surface in future semantic searches."
             ),
             "memory_result": result,
         }

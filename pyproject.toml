@@ -92,7 +92,7 @@ dev = [
 memory = [
     # Default embedding provider in MemoryConfig is "ollama", which
     # requires the `ollama` Python package. Pull it in alongside memsearch
-    # so a default install doesn't leave MemoryV2Service in degraded mode
+    # so a default install doesn't leave MemoryService in degraded mode
     # with a ModuleNotFoundError. Operators using a different embedding
     # provider (openai/google/voyage/local/onnx) can override
     # `memory.embedding_provider` in config.yaml; the corresponding extra

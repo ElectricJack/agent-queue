@@ -28,7 +28,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory_v2.service import MemoryV2Service, MEMSEARCH_AVAILABLE
+from src.plugins.internal.memory.service import MemoryService, MEMSEARCH_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -91,8 +91,8 @@ def tmp_data_dir():
 
 @pytest.fixture
 def service(mock_embedder, mock_router, tmp_data_dir):
-    """Create a MemoryV2Service with mocked dependencies and temp vault."""
-    svc = MemoryV2Service(
+    """Create a MemoryService with mocked dependencies and temp vault."""
+    svc = MemoryService(
         milvus_uri="/tmp/test.db",
         embedding_provider="openai",
         data_dir=tmp_data_dir,
@@ -105,10 +105,10 @@ def service(mock_embedder, mock_router, tmp_data_dir):
 
 @pytest.fixture
 def plugin():
-    """Create a bare MemoryV2Plugin instance."""
-    from src.plugins.internal.memory_v2 import MemoryV2Plugin
+    """Create a bare MemoryPlugin instance."""
+    from src.plugins.internal.memory import MemoryPlugin
 
-    return MemoryV2Plugin()
+    return MemoryPlugin()
 
 
 @pytest.fixture
@@ -130,46 +130,46 @@ class TestConsolidationToolDefinitions:
     """Verify the consolidation tool definitions exist in TOOL_DEFINITIONS."""
 
     def test_memory_delete_defined(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         names = [t["name"] for t in TOOL_DEFINITIONS]
         assert "memory_delete" in names
 
     def test_memory_update_defined(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         names = [t["name"] for t in TOOL_DEFINITIONS]
         assert "memory_update" in names
 
     def test_memory_promote_defined(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         names = [t["name"] for t in TOOL_DEFINITIONS]
         assert "memory_promote" in names
 
     def test_tools_in_v2_only_set(self):
-        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS, TOOL_DEFINITIONS
+        from src.plugins.internal.memory import AGENT_TOOLS, TOOL_DEFINITIONS
 
         tool_names = {t["name"] for t in TOOL_DEFINITIONS}
-        assert "memory_delete" in V2_ONLY_TOOLS
+        assert "memory_delete" in AGENT_TOOLS
         assert "memory_update" in tool_names
         assert "memory_promote" in tool_names
 
     def test_memory_delete_requires_chunk_hash(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         defn = next(t for t in TOOL_DEFINITIONS if t["name"] == "memory_delete")
         assert "chunk_hash" in defn["input_schema"]["required"]
         # project_id is auto-resolved, not required in schema
 
     def test_memory_update_requires_chunk_hash(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         defn = next(t for t in TOOL_DEFINITIONS if t["name"] == "memory_update")
         assert "chunk_hash" in defn["input_schema"]["required"]
 
     def test_memory_promote_requires_target_scope(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         defn = next(t for t in TOOL_DEFINITIONS if t["name"] == "memory_promote")
         assert "target_scope" in defn["input_schema"]["required"]
@@ -182,7 +182,7 @@ class TestConsolidationToolDefinitions:
 
 
 class TestDeleteDocument:
-    """Test MemoryV2Service.delete_document()."""
+    """Test MemoryService.delete_document()."""
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
@@ -258,7 +258,7 @@ class TestDeleteDocument:
 
 
 class TestUpdateDocument:
-    """Test MemoryV2Service.update_document()."""
+    """Test MemoryService.update_document()."""
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
@@ -348,14 +348,14 @@ class TestUpdateDocument:
 
 
 class TestUpdateVaultTopic:
-    """Test MemoryV2Service._update_vault_topic helper."""
+    """Test MemoryService._update_vault_topic helper."""
 
     def test_update_existing_topic(self, tmp_data_dir):
         filepath = Path(tmp_data_dir) / "test.md"
         filepath.write_text(
             "---\ntags: [\"insight\"]\ntopic: old-topic\ncreated: 2026-01-01\n---\n\nContent\n"
         )
-        MemoryV2Service._update_vault_topic(filepath, "new-topic")
+        MemoryService._update_vault_topic(filepath, "new-topic")
         text = filepath.read_text()
         assert "topic: new-topic" in text
         assert "old-topic" not in text
@@ -365,14 +365,14 @@ class TestUpdateVaultTopic:
         filepath.write_text(
             "---\ntags: [\"insight\"]\ncreated: 2026-01-01\n---\n\nContent\n"
         )
-        MemoryV2Service._update_vault_topic(filepath, "new-topic")
+        MemoryService._update_vault_topic(filepath, "new-topic")
         text = filepath.read_text()
         assert "topic: new-topic" in text
 
     def test_nonexistent_file_is_noop(self, tmp_data_dir):
         filepath = Path(tmp_data_dir) / "nonexistent.md"
         # Should not raise
-        MemoryV2Service._update_vault_topic(filepath, "topic")
+        MemoryService._update_vault_topic(filepath, "topic")
         assert not filepath.exists()
 
 
@@ -798,7 +798,7 @@ class TestMemoryMutationsUpdateVaultFiles:
             "source": str(orphan),
         }
 
-        with caplog.at_level(logging.WARNING, logger="src.plugins.internal.memory_v2.service"):
+        with caplog.at_level(logging.WARNING, logger="src.plugins.internal.memory.service"):
             result = await service.delete_document("p", "existing_hash")
 
         assert result["vault_deleted"] is False
@@ -821,7 +821,7 @@ class TestMemoryMutationsUpdateVaultFiles:
             "source": "/nonexistent/path/insights/gone.md",
         }
 
-        with caplog.at_level(logging.WARNING, logger="src.plugins.internal.memory_v2.service"):
+        with caplog.at_level(logging.WARNING, logger="src.plugins.internal.memory.service"):
             result = await service.delete_document("p", "existing_hash")
 
         assert result["vault_deleted"] is False

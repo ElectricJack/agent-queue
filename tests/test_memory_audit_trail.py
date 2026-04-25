@@ -22,7 +22,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory_v2.service import MemoryV2Service
+from src.plugins.internal.memory.service import MemoryService
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ def mock_router(mock_store):
 
 @pytest.fixture
 def service(mock_embedder, mock_router, tmp_path):
-    svc = MemoryV2Service(
+    svc = MemoryService(
         milvus_uri="/tmp/test.db",
         embedding_provider="openai",
         data_dir=str(tmp_path),
@@ -468,10 +468,10 @@ class TestPluginMemorySaveSourcePlaybook:
 
     @pytest.fixture
     def plugin(self, service):
-        """Create a minimal MemoryV2Plugin for testing."""
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        """Create a minimal MemoryPlugin for testing."""
+        from src.plugins.internal.memory import MemoryPlugin
 
-        p = MemoryV2Plugin.__new__(MemoryV2Plugin)
+        p = MemoryPlugin.__new__(MemoryPlugin)
         p._service = service
         p._log = MagicMock()
         p._ctx = MagicMock()
@@ -520,9 +520,9 @@ class TestPluginSearchResultFields:
 
     @pytest.fixture
     def plugin(self, service):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        p = MemoryV2Plugin.__new__(MemoryV2Plugin)
+        p = MemoryPlugin.__new__(MemoryPlugin)
         p._service = service
         p._log = MagicMock()
         return p

@@ -21,7 +21,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory_v2.service import MemoryV2Service
+from src.plugins.internal.memory.service import MemoryService
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ def mock_router(mock_store):
 
 @pytest.fixture
 def service(mock_embedder, mock_router, tmp_path):
-    svc = MemoryV2Service(
+    svc = MemoryService(
         milvus_uri="/tmp/test.db",
         embedding_provider="openai",
         data_dir=str(tmp_path),
@@ -79,7 +79,7 @@ def service(mock_embedder, mock_router, tmp_path):
 
 
 class TestCountByTag:
-    """Tests for MemoryV2Service.count_by_tag."""
+    """Tests for MemoryService.count_by_tag."""
 
     async def test_count_by_tag_returns_count(self, service, mock_store):
         """count_by_tag returns the number of entries matching a tag."""
@@ -162,14 +162,14 @@ class TestStatsContestedCount:
 
 
 class TestDetectContradiction:
-    """Tests for MemoryV2Plugin._detect_contradiction."""
+    """Tests for MemoryPlugin._detect_contradiction."""
 
     @pytest.fixture
     def plugin(self):
-        """Create a MemoryV2Plugin instance with mocked context."""
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        """Create a MemoryPlugin instance with mocked context."""
+        from src.plugins.internal.memory import MemoryPlugin
 
-        plugin = MemoryV2Plugin.__new__(MemoryV2Plugin)
+        plugin = MemoryPlugin.__new__(MemoryPlugin)
         plugin._ctx = MagicMock()
         plugin._ctx.invoke_llm = AsyncMock()
         plugin._log = MagicMock()
@@ -251,14 +251,14 @@ class TestDetectContradiction:
 
 
 class TestHandleContradiction:
-    """Tests for MemoryV2Plugin._handle_contradiction."""
+    """Tests for MemoryPlugin._handle_contradiction."""
 
     @pytest.fixture
     def plugin(self):
-        """Create a MemoryV2Plugin instance with mocked service."""
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        """Create a MemoryPlugin instance with mocked service."""
+        from src.plugins.internal.memory import MemoryPlugin
 
-        plugin = MemoryV2Plugin.__new__(MemoryV2Plugin)
+        plugin = MemoryPlugin.__new__(MemoryPlugin)
         plugin._ctx = MagicMock()
         plugin._ctx.invoke_llm = AsyncMock(return_value="short summary")
         plugin._log = MagicMock()
@@ -479,10 +479,10 @@ class TestDedupMergeContradictionRouting:
 
     @pytest.fixture
     def plugin(self):
-        """Create a MemoryV2Plugin instance with mocked deps."""
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        """Create a MemoryPlugin instance with mocked deps."""
+        from src.plugins.internal.memory import MemoryPlugin
 
-        plugin = MemoryV2Plugin.__new__(MemoryV2Plugin)
+        plugin = MemoryPlugin.__new__(MemoryPlugin)
         plugin._ctx = MagicMock()
         plugin._log = MagicMock()
 
@@ -580,10 +580,10 @@ class TestMemorySaveContradictionFlow:
 
     @pytest.fixture
     def plugin(self):
-        """Create a fully-wired MemoryV2Plugin with mocked service."""
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        """Create a fully-wired MemoryPlugin with mocked service."""
+        from src.plugins.internal.memory import MemoryPlugin
 
-        plugin = MemoryV2Plugin.__new__(MemoryV2Plugin)
+        plugin = MemoryPlugin.__new__(MemoryPlugin)
         plugin._ctx = MagicMock()
         plugin._log = MagicMock()
 

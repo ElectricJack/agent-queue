@@ -21,7 +21,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory_v2.service import MemoryV2Service, MEMSEARCH_AVAILABLE
+from src.plugins.internal.memory.service import MemoryService, MEMSEARCH_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +83,8 @@ def tmp_data_dir():
 
 @pytest.fixture
 def service(mock_embedder, mock_router, tmp_data_dir):
-    """Create a MemoryV2Service with mocked dependencies and temp vault."""
-    svc = MemoryV2Service(
+    """Create a MemoryService with mocked dependencies and temp vault."""
+    svc = MemoryService(
         milvus_uri="/tmp/test.db",
         embedding_provider="openai",
         data_dir=tmp_data_dir,
@@ -104,45 +104,45 @@ class TestSlugify:
     """Test the _slugify static method."""
 
     def test_simple_text(self):
-        assert MemoryV2Service._slugify("Hello World") == "hello-world"
+        assert MemoryService._slugify("Hello World") == "hello-world"
 
     def test_special_characters(self):
-        assert MemoryV2Service._slugify("OAuth 2.0 Token Refresh!") == "oauth-2-0-token-refresh"
+        assert MemoryService._slugify("OAuth 2.0 Token Refresh!") == "oauth-2-0-token-refresh"
 
     def test_truncation_at_word_boundary(self):
         long_text = "this is a very long title that should be truncated at a word boundary"
-        slug = MemoryV2Service._slugify(long_text, max_len=30)
+        slug = MemoryService._slugify(long_text, max_len=30)
         assert len(slug) <= 30
         assert not slug.endswith("-")
 
     def test_empty_text(self):
-        assert MemoryV2Service._slugify("") == "insight"
-        assert MemoryV2Service._slugify("!!!") == "insight"
+        assert MemoryService._slugify("") == "insight"
+        assert MemoryService._slugify("!!!") == "insight"
 
     def test_consecutive_special_chars(self):
-        assert MemoryV2Service._slugify("hello---world___foo") == "hello-world-foo"
+        assert MemoryService._slugify("hello---world___foo") == "hello-world-foo"
 
 
 class TestGenerateChunkHash:
     """Test chunk hash generation."""
 
     def test_deterministic(self):
-        h1 = MemoryV2Service._generate_chunk_hash("project:test", "content", "auth")
-        h2 = MemoryV2Service._generate_chunk_hash("project:test", "content", "auth")
+        h1 = MemoryService._generate_chunk_hash("project:test", "content", "auth")
+        h2 = MemoryService._generate_chunk_hash("project:test", "content", "auth")
         assert h1 == h2
 
     def test_different_content(self):
-        h1 = MemoryV2Service._generate_chunk_hash("project:test", "content1")
-        h2 = MemoryV2Service._generate_chunk_hash("project:test", "content2")
+        h1 = MemoryService._generate_chunk_hash("project:test", "content1")
+        h2 = MemoryService._generate_chunk_hash("project:test", "content2")
         assert h1 != h2
 
     def test_different_scope(self):
-        h1 = MemoryV2Service._generate_chunk_hash("project:a", "content")
-        h2 = MemoryV2Service._generate_chunk_hash("project:b", "content")
+        h1 = MemoryService._generate_chunk_hash("project:a", "content")
+        h2 = MemoryService._generate_chunk_hash("project:b", "content")
         assert h1 != h2
 
     def test_hash_length(self):
-        h = MemoryV2Service._generate_chunk_hash("scope", "content")
+        h = MemoryService._generate_chunk_hash("scope", "content")
         assert len(h) == 32
 
 
@@ -317,7 +317,7 @@ class TestSaveDocument:
 
     @pytest.mark.asyncio
     async def test_save_document_unavailable(self):
-        svc = MemoryV2Service()
+        svc = MemoryService()
         with pytest.raises(RuntimeError, match="not available"):
             await svc.save_document("proj", "content")
 
@@ -358,7 +358,7 @@ class TestUpdateDocumentTimestamp:
 
     @pytest.mark.asyncio
     async def test_update_timestamp_unavailable(self):
-        svc = MemoryV2Service()
+        svc = MemoryService()
         with pytest.raises(RuntimeError, match="not available"):
             await svc.update_document_timestamp("proj", "hash")
 
@@ -399,7 +399,7 @@ class TestUpdateDocumentContent:
 
     @pytest.mark.asyncio
     async def test_update_content_unavailable(self):
-        svc = MemoryV2Service()
+        svc = MemoryService()
         with pytest.raises(RuntimeError, match="not available"):
             await svc.update_document_content("proj", "hash", "content")
 
@@ -414,9 +414,9 @@ class TestPluginMemorySave:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -836,7 +836,7 @@ class TestVaultFileOriginal:
 
     @pytest.fixture
     def service_with_tmpdir(self, mock_embedder, mock_router, tmp_data_dir):
-        svc = MemoryV2Service(
+        svc = MemoryService(
             milvus_uri="/tmp/test.db",
             embedding_provider="openai",
             data_dir=tmp_data_dir,
@@ -944,9 +944,9 @@ class TestDedupScopedSearch:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -1007,9 +1007,9 @@ class TestDedupBoundaryConditions:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -1125,7 +1125,7 @@ class TestSourceTasksAccumulation:
 
     @pytest.fixture
     def service_with_tmpdir(self, mock_embedder, mock_router, tmp_data_dir):
-        svc = MemoryV2Service(
+        svc = MemoryService(
             milvus_uri="/tmp/test.db",
             embedding_provider="openai",
             data_dir=tmp_data_dir,
@@ -1214,9 +1214,9 @@ class TestDistinctContentSave:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -1476,9 +1476,9 @@ class TestLLMMerge:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -1772,9 +1772,9 @@ class TestLLMMergeSimilarContent:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -2189,9 +2189,9 @@ class TestDuplicateDetection:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -2631,13 +2631,13 @@ class TestToolDefinition:
     """Verify memory_save tool is properly registered."""
 
     def test_memory_save_tool_definition_exists(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool_names = {t["name"] for t in TOOL_DEFINITIONS}
         assert "memory_save" in tool_names
 
     def test_memory_save_tool_definition_exists(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         save_def = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_save"), None)
         assert save_def is not None

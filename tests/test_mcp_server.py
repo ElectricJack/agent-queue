@@ -753,27 +753,27 @@ class TestMemoryRecallMCPTool:
 
     async def test_memory_recall_tool_definition_exists(self):
         """memory_recall has a tool definition registered."""
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool_names = {t["name"] for t in TOOL_DEFINITIONS}
         assert "memory_recall" in tool_names
 
     async def test_memory_recall_in_v2_only_tools(self):
-        """memory_recall is listed in V2_ONLY_TOOLS (agent-facing)."""
-        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+        """memory_recall is listed in AGENT_TOOLS (agent-facing)."""
+        from src.plugins.internal.memory import AGENT_TOOLS
 
-        assert "memory_recall" in V2_ONLY_TOOLS
+        assert "memory_recall" in AGENT_TOOLS
 
     async def test_memory_recall_registered_as_mcp_tool(self, populated_db):
         """memory_recall appears as an MCP tool when v2 plugin tools are passed."""
         from src.event_bus import EventBus
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS, AGENT_TOOLS
 
         test_bus = EventBus()
         ctx = _make_mock_context(populated_db, test_bus)
 
         # Simulate what embedded_mcp.py does: pass plugin tool definitions
-        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in AGENT_TOOLS]
         server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
 
         tools = await server.list_tools()
@@ -783,11 +783,11 @@ class TestMemoryRecallMCPTool:
     async def test_memory_recall_schema_has_query_required(self, populated_db):
         """memory_recall MCP tool schema requires 'query' parameter."""
         from src.event_bus import EventBus
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS, AGENT_TOOLS
 
         test_bus = EventBus()
         ctx = _make_mock_context(populated_db, test_bus)
-        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in AGENT_TOOLS]
         server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
 
         tools = await server.list_tools()
@@ -798,11 +798,11 @@ class TestMemoryRecallMCPTool:
     async def test_memory_recall_schema_has_expected_params(self, populated_db):
         """memory_recall MCP tool schema exposes project_id, agent_type, namespace, topic, top_k."""
         from src.event_bus import EventBus
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS, AGENT_TOOLS
 
         test_bus = EventBus()
         ctx = _make_mock_context(populated_db, test_bus)
-        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in AGENT_TOOLS]
         server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
 
         tools = await server.list_tools()
@@ -817,7 +817,7 @@ class TestMemoryRecallMCPTool:
     async def test_memory_recall_delegates_to_command_handler(self, populated_db):
         """memory_recall MCP tool delegates to CommandHandler.execute()."""
         from src.event_bus import EventBus
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS, AGENT_TOOLS
 
         test_bus = EventBus()
         mock_handler = AsyncMock()
@@ -836,7 +836,7 @@ class TestMemoryRecallMCPTool:
             ],
         }
         ctx = _make_mock_context(populated_db, test_bus, mock_handler)
-        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in AGENT_TOOLS]
         server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
 
         result = await server.call_tool(
@@ -869,26 +869,26 @@ class TestMemoryStoreMCPTool:
 
     async def test_memory_store_tool_definition_exists(self):
         """memory_store has a tool definition registered."""
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool_names = {t["name"] for t in TOOL_DEFINITIONS}
         assert "memory_store" in tool_names
 
     async def test_memory_store_in_v2_only_tools(self):
-        """memory_store is listed in V2_ONLY_TOOLS (agent-facing)."""
-        from src.plugins.internal.memory_v2 import V2_ONLY_TOOLS
+        """memory_store is listed in AGENT_TOOLS (agent-facing)."""
+        from src.plugins.internal.memory import AGENT_TOOLS
 
-        assert "memory_store" in V2_ONLY_TOOLS
+        assert "memory_store" in AGENT_TOOLS
 
     async def test_memory_store_registered_as_mcp_tool(self, populated_db):
         """memory_store appears as an MCP tool when v2 plugin tools are passed."""
         from src.event_bus import EventBus
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS, AGENT_TOOLS
 
         test_bus = EventBus()
         ctx = _make_mock_context(populated_db, test_bus)
 
-        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in AGENT_TOOLS]
         server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
 
         tools = await server.list_tools()
@@ -898,11 +898,11 @@ class TestMemoryStoreMCPTool:
     async def test_memory_store_schema_has_content_required(self, populated_db):
         """memory_store MCP tool schema requires 'content' parameter."""
         from src.event_bus import EventBus
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS, AGENT_TOOLS
 
         test_bus = EventBus()
         ctx = _make_mock_context(populated_db, test_bus)
-        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in AGENT_TOOLS]
         server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
 
         tools = await server.list_tools()
@@ -913,11 +913,11 @@ class TestMemoryStoreMCPTool:
     async def test_memory_store_schema_has_expected_params(self, populated_db):
         """memory_store MCP tool schema exposes tags, topic, scope, source_task, source_playbook."""
         from src.event_bus import EventBus
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS, AGENT_TOOLS
 
         test_bus = EventBus()
         ctx = _make_mock_context(populated_db, test_bus)
-        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in AGENT_TOOLS]
         server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
 
         tools = await server.list_tools()
@@ -932,7 +932,7 @@ class TestMemoryStoreMCPTool:
     async def test_memory_store_delegates_to_command_handler(self, populated_db):
         """memory_store MCP tool delegates to CommandHandler.execute()."""
         from src.event_bus import EventBus
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS, V2_ONLY_TOOLS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS, AGENT_TOOLS
 
         test_bus = EventBus()
         mock_handler = AsyncMock()
@@ -944,7 +944,7 @@ class TestMemoryStoreMCPTool:
             "chunk_hash": "abc123",
         }
         ctx = _make_mock_context(populated_db, test_bus, mock_handler)
-        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in V2_ONLY_TOOLS]
+        v2_tools = [d for d in TOOL_DEFINITIONS if d["name"] in AGENT_TOOLS]
         server = _build_test_mcp_with_plugin_tools(populated_db, ctx, v2_tools)
 
         result = await server.call_tool(

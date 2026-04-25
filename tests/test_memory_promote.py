@@ -25,7 +25,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory_v2.service import MemoryV2Service, MEMSEARCH_AVAILABLE
+from src.plugins.internal.memory.service import MemoryService, MEMSEARCH_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ def tmp_data_dir():
 
 @pytest.fixture
 def service(mock_embedder, mock_router, tmp_data_dir):
-    svc = MemoryV2Service(
+    svc = MemoryService(
         milvus_uri="/tmp/test-promote.db",
         embedding_provider="openai",
         data_dir=tmp_data_dir,
@@ -105,9 +105,9 @@ def service(mock_embedder, mock_router, tmp_data_dir):
 
 @pytest.fixture
 def wired_plugin(service):
-    from src.plugins.internal.memory_v2 import MemoryV2Plugin
+    from src.plugins.internal.memory import MemoryPlugin
 
-    plugin = MemoryV2Plugin()
+    plugin = MemoryPlugin()
     plugin._service = service
     plugin._log = MagicMock()
     plugin._ctx = MagicMock()
@@ -123,13 +123,13 @@ def wired_plugin(service):
 
 class TestRegistration:
     def test_tool_defined(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         names = [t["name"] for t in TOOL_DEFINITIONS]
         assert "memory_promote_to_knowledge" in names
 
     def test_tool_requires_chunk_hash(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         defn = next(
             t for t in TOOL_DEFINITIONS if t["name"] == "memory_promote_to_knowledge"
@@ -137,7 +137,7 @@ class TestRegistration:
         assert "chunk_hash" in defn["input_schema"]["required"]
 
     def test_exposed_as_agent_tool(self):
-        from src.plugins.internal.memory_v2 import AGENT_TOOLS
+        from src.plugins.internal.memory import AGENT_TOOLS
 
         assert "memory_promote_to_knowledge" in AGENT_TOOLS
 

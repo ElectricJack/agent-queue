@@ -808,7 +808,7 @@ class TestExtendedReflectionDryRun:
 class TestMemoryHealthResponseCompatibility:
     """Verify memory_health returns the fields the playbook expects.
 
-    These tests use the real MemoryV2Service.health() method (with a mock
+    These tests use the real MemoryService.health() method (with a mock
     store) to confirm the response structure matches playbook expectations.
     """
 
@@ -898,9 +898,9 @@ class TestMemoryHealthResponseCompatibility:
         mock_store = MagicMock()
         mock_store.query.return_value = entries
 
-        from src.plugins.internal.memory_v2.service import MemoryV2Service
+        from src.plugins.internal.memory.service import MemoryService
 
-        service = MemoryV2Service.__new__(MemoryV2Service)
+        service = MemoryService.__new__(MemoryService)
 
         with (
             patch.object(
@@ -919,7 +919,7 @@ class TestMemoryHealthResponseCompatibility:
 class TestMemoryStaleResponseCompatibility:
     """Verify memory_stale returns the fields the playbook expects.
 
-    These tests use the real MemoryV2Service.find_stale() method (with a
+    These tests use the real MemoryService.find_stale() method (with a
     mock store) to confirm the response structure matches playbook expectations.
     """
 
@@ -1058,9 +1058,9 @@ class TestMemoryStaleResponseCompatibility:
         mock_store = MagicMock()
         mock_store.query.return_value = entries
 
-        from src.plugins.internal.memory_v2.service import MemoryV2Service
+        from src.plugins.internal.memory.service import MemoryService
 
-        service = MemoryV2Service.__new__(MemoryV2Service)
+        service = MemoryService.__new__(MemoryService)
 
         with (
             patch.object(

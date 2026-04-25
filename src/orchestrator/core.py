@@ -293,8 +293,6 @@ class Orchestrator(
         self.vault_watcher = None
         self.workspace_spec_watcher = None  # WorkspaceSpecWatcher | None (vault.md §4)
         self.timer_service = None  # TimerService | None — initialized in initialize()
-        # V1 MemoryManager removed (roadmap 8.6 — memory-plugin.md §2).
-        # Memory is now handled entirely by MemoryV2Plugin (src/plugins/internal/memory_v2.py).
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
@@ -855,7 +853,7 @@ class Orchestrator(
         # Detects changes to facts files across all vault scopes so they
         # can be synced to the KV backend.  Initially registered with no
         # service (log-only fallback); re-registered with the live
-        # MemoryV2Service after plugins load — see post-plugin wiring below.
+        # MemoryService after plugins load — see post-plugin wiring below.
         from src.facts_handler import register_facts_handlers
 
         register_facts_handlers(self.vault_watcher)
@@ -886,7 +884,7 @@ class Orchestrator(
         )
 
         # V1 memory/*.md watcher handlers removed (roadmap 8.6).
-        # Memory file watching is now handled by MemoryV2Plugin.
+        # Memory file watching is now handled by MemoryPlugin.
 
         # Register playbook .md watcher handlers (playbooks spec §17).
         # Detects changes to playbook files across all vault scopes so they
@@ -1089,7 +1087,7 @@ class Orchestrator(
             self.reference_stub_enricher.subscribe()
             logger.info("ReferenceStubEnricher initialized and subscribed")
 
-        # MemoryExtractor is now managed by the MemoryV2Plugin internally.
+        # MemoryExtractor is now managed by the MemoryPlugin internally.
 
         # Initialize plugin registry (after DB)
         from src.plugins import PluginRegistry
@@ -1127,29 +1125,25 @@ class Orchestrator(
             except Exception as e:
                 logger.warning("Tool index build failed (semantic search disabled): %s", e)
 
-        # Wire MemoryV2Service to facts.md watcher handlers (spec §7).
+        # Wire MemoryService to facts.md watcher handlers (spec §7).
         #
         # The facts handlers were registered earlier (before plugins loaded)
         # with service=None — the handler falls back to logging only.  Now
-        # that the MemoryV2Plugin has been loaded and owns a live service,
+        # that the MemoryPlugin has been loaded and owns a live service,
         # re-register the handlers with the actual service so KV sync works.
         # register_facts_handlers() is idempotent (same handler IDs are
         # reused), so this is safe.
-        self._memory_v2_service = None
-        mem_v2_plugin = self.plugin_registry.get_plugin_instance(
-            "aq-memory_v2"
-        ) or self.plugin_registry.get_plugin_instance("memory_v2")
-        if mem_v2_plugin:
-            svc = getattr(mem_v2_plugin, "service", None)
+        self._memory_service = None
+        mem_plugin = self.plugin_registry.get_plugin_instance("aq-memory")
+        if mem_plugin:
+            svc = getattr(mem_plugin, "service", None)
             if svc and getattr(svc, "available", False):
                 from src.facts_handler import register_facts_handlers
 
                 register_facts_handlers(self.vault_watcher, service=svc)
-                self._memory_v2_service = svc
-                logger.info("Wired MemoryV2Service to facts.md watcher handlers")
+                self._memory_service = svc
+                logger.info("Wired MemoryService to facts.md watcher handlers")
 
-        # V1 MemoryManager collection initialization removed (roadmap 8.6).
-        # Collection management is now handled by MemoryV2Plugin.
 
         # HookEngine + RuleManager removed (playbooks spec §13 Phase 3).
         # All automation is now handled by playbooks — see PlaybookExecutor
@@ -1165,7 +1159,7 @@ class Orchestrator(
             self.bus.subscribe("config.reloaded", self._on_config_reloaded)
             self._config_watcher.start()
 
-        # MemoryExtractor is now managed by the MemoryV2Plugin.
+        # MemoryExtractor is now managed by the MemoryPlugin.
 
         # Take the vault watcher's initial snapshot now that all subsystems
         # have had a chance to register their path handlers.  The first
@@ -1473,7 +1467,7 @@ class Orchestrator(
             self.playbook_resume_handler.shutdown()
         if hasattr(self, "workflow_stage_resume_handler") and self.workflow_stage_resume_handler:
             self.workflow_stage_resume_handler.shutdown()
-        # MemoryExtractor shutdown is handled by the MemoryV2Plugin.
+        # MemoryExtractor shutdown is handled by the MemoryPlugin.
         await self.db.close()
 
     async def run_one_cycle(self) -> None:
@@ -1650,7 +1644,7 @@ class Orchestrator(
             await self._auto_archive_tasks()
 
             # 11. V1 memory compaction removed (roadmap 8.6).
-            # Memory lifecycle is now managed by MemoryV2Plugin.
+            # Memory lifecycle is now managed by MemoryPlugin.
 
             # 12. Check paused playbook runs for timeout (roadmap 5.4.4).
             #     Sweeps paused runs and handles expired timeouts — either

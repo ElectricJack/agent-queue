@@ -1,4 +1,4 @@
-"""Internal plugin: Memory v2 — unified memory operations via memsearch/Milvus.
+"""Internal plugin: Memory — unified memory operations via memsearch/Milvus.
 
 Backed by a memsearch fork and Milvus.  See the design spec at
 ``docs/specs/design/memory-plugin.md`` (especially Sections 3–4) for the full
@@ -29,13 +29,13 @@ from typing import TYPE_CHECKING, Any
 from src.plugins.base import InternalPlugin, PluginContext
 
 if TYPE_CHECKING:
-    from src.plugins.internal.memory_v2.service import MemoryV2Service
+    from src.plugins.internal.memory.service import MemoryService
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Tool definitions — new v2 architecture
+# Tool definitions
 # ---------------------------------------------------------------------------
 
 TOOL_CATEGORY = "memory"
@@ -56,9 +56,6 @@ AGENT_TOOLS: frozenset[str] = frozenset(
         "memory_search",
     }
 )
-
-# Backward-compat alias used by tests and other modules.
-V2_ONLY_TOOLS = AGENT_TOOLS
 
 TOOL_DEFINITIONS: list[dict] = [
     # ---- Unified store (agent-facing) ----
@@ -1237,25 +1234,21 @@ TOOL_DEFINITIONS: list[dict] = [
 # ---------------------------------------------------------------------------
 
 
-class MemoryV2Plugin(InternalPlugin):
-    """Memory v2: unified memory via memsearch/Milvus with scoped collections.
+class MemoryPlugin(InternalPlugin):
+    """Memory: unified memory via memsearch/Milvus with scoped collections.
 
-    Registered alongside v1 MemoryPlugin during transition (§4 of the spec).
-    Only the new v2-specific tool names are registered here; overlapping
-    tool names remain owned by v1.  See ``docs/specs/design/memory-plugin.md``.
+    See ``docs/specs/design/memory-plugin.md``.
 
-    The plugin delegates all operations to :class:`MemoryV2Service` which
+    The plugin delegates all operations to :class:`MemoryService` which
     wraps the memsearch fork's :class:`CollectionRouter` and
     :class:`MilvusStore`.
     """
 
-    # Auto-discovered and loaded alongside v1 MemoryPlugin.  Both plugins
-    # are active: v1 owns existing tool names, v2 owns new ones.
     _internal: bool = True
 
     @property
-    def service(self) -> MemoryV2Service | None:
-        """The :class:`MemoryV2Service` backend, or ``None`` if unavailable.
+    def service(self) -> MemoryService | None:
+        """The :class:`MemoryService` backend, or ``None`` if unavailable.
 
         Exposed so the orchestrator can wire the service to subsystems
         that need it after plugin initialization (e.g. facts.md KV sync).
@@ -1280,8 +1273,8 @@ class MemoryV2Plugin(InternalPlugin):
         self._ctx = ctx
         self._log = ctx.logger
 
-        # Initialize the MemoryV2Service backend.
-        self._service: MemoryV2Service | None = None
+        # Initialize the MemoryService backend.
+        self._service: MemoryService | None = None
         self._extractor: Any = None  # MemoryExtractor, created below
         await self._init_service(ctx)
 
@@ -1350,7 +1343,7 @@ class MemoryV2Plugin(InternalPlugin):
         status = "connected" if self._service and self._service.available else "degraded"
         extractor_status = "active" if self._extractor else "disabled"
         self._log.info(
-            "MemoryV2Plugin initialized (%s, extractor=%s, %d agent-facing tools / %d total commands)",
+            "MemoryPlugin initialized (%s, extractor=%s, %d agent-facing tools / %d total commands)",
             status,
             extractor_status,
             agent_tools_registered,
@@ -1376,7 +1369,7 @@ class MemoryV2Plugin(InternalPlugin):
             if not extractor_cfg or not extractor_cfg.get("enabled"):
                 return
 
-            from src.plugins.internal.memory_v2.extractor import MemoryExtractor
+            from src.plugins.internal.memory.extractor import MemoryExtractor
 
             db_svc = ctx.get_service("db")
             chat_provider_cfg = getattr(config_svc, "chat_provider", {})
@@ -1397,7 +1390,7 @@ class MemoryV2Plugin(InternalPlugin):
             self._extractor = None
 
     async def _init_service(self, ctx: PluginContext) -> None:
-        """Initialize the MemoryV2Service backend from config.
+        """Initialize the MemoryService backend from config.
 
         Reads Milvus/embedding settings from the ``config`` service and
         creates the service.  If memsearch is not installed or config is
@@ -1405,7 +1398,7 @@ class MemoryV2Plugin(InternalPlugin):
         return graceful error responses).
         """
         try:
-            from src.plugins.internal.memory_v2.service import MemoryV2Service
+            from src.plugins.internal.memory.service import MemoryService
 
             # Get config values from the config service
             config_svc = ctx.get_service("config")
@@ -1415,7 +1408,7 @@ class MemoryV2Plugin(InternalPlugin):
             # config service's internal reference.
             memory_cfg = self._get_memory_config(config_svc)
 
-            self._service = MemoryV2Service(
+            self._service = MemoryService(
                 milvus_uri=memory_cfg.get("milvus_uri", "~/.agent-queue/memsearch/milvus.db"),
                 milvus_token=memory_cfg.get("milvus_token", ""),
                 embedding_provider=memory_cfg.get("embedding_provider", "openai"),
@@ -1427,7 +1420,7 @@ class MemoryV2Plugin(InternalPlugin):
             await self._service.initialize()
 
             if self._service.available:
-                self._log.info("MemoryV2Service backend connected")
+                self._log.info("MemoryService backend connected")
                 # Populate the profile-to-shared-scope alias map so
                 # ``agenttype_{id}`` lookups redirect when a profile
                 # declares ``memory_scope_id``.  Done once at startup;
@@ -1442,12 +1435,12 @@ class MemoryV2Plugin(InternalPlugin):
                     or "unknown (check earlier log entries)"
                 )
                 self._log.warning(
-                    "MemoryV2Service initialized but not available: %s",
+                    "MemoryService initialized but not available: %s",
                     reason,
                 )
         except Exception:
             self._log.warning(
-                "Failed to initialize MemoryV2Service — operating in degraded mode",
+                "Failed to initialize MemoryService — operating in degraded mode",
                 exc_info=True,
             )
             self._service = None
@@ -1456,7 +1449,7 @@ class MemoryV2Plugin(InternalPlugin):
         """Rebuild the service's profile-to-shared-scope alias map.
 
         Reads all ``agent_profiles`` rows and forwards the subset that
-        declare ``memory_scope_id`` to ``MemoryV2Service.set_scope_alias_map``.
+        declare ``memory_scope_id`` to ``MemoryService.set_scope_alias_map``.
         Silently no-ops when the DB is not reachable or the service is
         unavailable.
         """
@@ -1633,15 +1626,10 @@ class MemoryV2Plugin(InternalPlugin):
             )
 
     def _not_implemented(self, command: str) -> dict:
-        """Return a standard 'not yet implemented' response.
-
-        Used for overlapping commands that are still owned by v1.
-        """
+        """Return a standard 'not yet implemented' response."""
         return {
-            "error": (
-                f"{command} is not yet implemented in memory v2 (owned by v1 during transition)"
-            ),
-            "plugin": "memory_v2",
+            "error": f"{command} is not yet implemented",
+            "plugin": "memory",
         }
 
     def _unavailable(self, command: str) -> dict:
@@ -1649,19 +1637,19 @@ class MemoryV2Plugin(InternalPlugin):
 
         Surfaces the concrete reason (missing ollama package, bad API
         key, unreachable Milvus, etc.) captured during
-        :meth:`MemoryV2Service.initialize` so agents can report the
+        :meth:`MemoryService.initialize` so agents can report the
         actual cause instead of spawning follow-up tasks that re-diagnose
         the generic "not available" message.
         """
         reason = getattr(self._service, "unavailable_reason", None) if self._service else None
         if not reason:
             reason = (
-                "MemoryV2Service is not available. Ensure memsearch is "
+                "MemoryService is not available. Ensure memsearch is "
                 "installed and `memory.enabled: true` in config.yaml."
             )
         return {
             "error": f"{command}: {reason}",
-            "plugin": "memory_v2",
+            "plugin": "memory",
         }
 
     def _format_kv_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
@@ -3351,7 +3339,7 @@ class MemoryV2Plugin(InternalPlugin):
         default retrieval tool for agents — pass a query and let the system
         decide the best retrieval strategy.
 
-        Delegates to :meth:`MemoryV2Service.recall` which tries KV exact
+        Delegates to :meth:`MemoryService.recall` which tries KV exact
         match (scope-resolved) first and falls back to multi-scope semantic
         search.
         """

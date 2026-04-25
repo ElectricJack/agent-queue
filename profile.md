@@ -41,7 +41,7 @@ asyncio event loop
 ├── Plugin Registry              — modular extensibility (tools, events, cron)
 │   ├── aq-files                 — file read/write/glob/grep
 │   ├── aq-git                   — branch, commit, push, PR, merge
-│   ├── aq-memory-v2             — semantic search, KV, temporal facts
+│   ├── aq-memory             — semantic search, KV, temporal facts
 │   ├── aq-notes                 — project notes management
 │   └── aq-vibecop               — static analysis for code quality
 ├── Memory V2 Service            — Milvus-backed 4-tier knowledge
@@ -149,11 +149,11 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 
 | File | Purpose |
 |------|---------|
-| `src/memory_v2_service.py` | Memory backend — Milvus via memsearch fork, multi-scope search/KV/temporal |
-| `src/memory_extractor.py` | Auto-extracts knowledge from system events (task completion, failures, etc.) |
+| `src/plugins/internal/memory/service.py` | Memory backend — Milvus via memsearch fork, multi-scope search/KV/temporal |
+| `src/plugins/internal/memory/extractor.py` | Auto-extracts knowledge from system events (task completion, failures, etc.) |
+| `src/plugins/internal/memory/plugin.py` | MemoryPlugin — command handlers and tool definitions |
 | `src/facts_parser.py` | Deterministic `facts.md` parser — KV pairs with namespace support |
 | `src/profile_parser.py` | Parses hybrid markdown profiles (English + JSON blocks) |
-| `src/memory.py` | Legacy memory system (deprecated, replaced by memory_v2_service) |
 
 ### Plugin System
 
@@ -162,7 +162,7 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 | `src/plugins/base.py` | Plugin base class, PluginContext API, TrustLevel, @cron decorator |
 | `src/plugins/registry.py` | Central coordinator — discovery, loading, lifecycle, circuit breaker |
 | `src/plugins/loader.py` | Plugin install/update/load mechanics |
-| `src/plugins/internal/` | Shipped plugins: aq-files, aq-git, aq-memory-v2, aq-notes, aq-vibecop |
+| `src/plugins/internal/` | Shipped plugins: aq-files, aq-git, aq-memory, aq-notes, aq-vibecop |
 
 ### Subsystems
 
@@ -295,4 +295,4 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - Plan-generated tasks can get stuck in DEFINED due to inherited approval settings blocking dependency chains
 - The system uses workspace isolation per task (git worktrees or separate clones)
 - Rules/hooks are deprecated; playbooks are the replacement (migration in progress)
-- Memory v1 (`src/memory.py`) is deprecated; Memory v2 (`src/memory_v2_service.py` + `aq-memory-v2` plugin) is the active system
+- Memory is provided by the `aq-memory` internal plugin (`src/plugins/internal/memory/`)

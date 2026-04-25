@@ -3660,7 +3660,7 @@ def setup_commands(bot: commands.Bot) -> None:
                 await _send_error(interaction, msg)
             return
 
-        # Memory V2 response shape (see MemoryV2Service.stats):
+        # MemoryService.stats response shape:
         # collection, scope, total_entries, documents, kv_entries,
         # temporal_entries, contested_memories, embedding_model, needs_reindex.
         fields = [

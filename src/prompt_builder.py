@@ -378,8 +378,7 @@ class PromptBuilder:
     async def load_project_context(self) -> None:
         """Layer 2: Load project context from memory system.
 
-        V1 MemoryManager integration removed (roadmap 8.6).
-        Project context is now injected by MemoryV2Plugin via L1 facts.
+        Project context is now injected by MemoryPlugin via L1 facts.
         This method is retained as a no-op for API compatibility.
         """
         pass

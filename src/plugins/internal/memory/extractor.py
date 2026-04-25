@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from src.chat_providers.base import ChatProvider
     from src.database.base import DatabaseBackend
     from src.event_bus import EventBus
-    from src.plugins.internal.memory_v2.service import MemoryV2Service
+    from src.plugins.internal.memory.service import MemoryService
 
 SaveCallback = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -171,7 +171,7 @@ class MemoryExtractor:
         *,
         bus: EventBus,
         db: DatabaseBackend,
-        memory_service: MemoryV2Service,
+        memory_service: MemoryService,
         config: dict[str, Any],
         chat_provider_config: Any,
         save_callback: SaveCallback | None = None,

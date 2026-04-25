@@ -51,7 +51,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "resume_agent": "agent",
     # vault — reference stub management
     "scan_stub_staleness": "system",
-    # memory — migrated to aq-memory-v2 internal plugin (src/plugins/internal/memory_v2.py)
+    # memory — migrated to aq-memory internal plugin (src/plugins/internal/memory/)
     # notes — migrated to aq-notes internal plugin (src/plugins/internal/notes.py)
     # files — migrated to aq-files internal plugin (src/plugins/internal/files.py)
     # task — lifecycle, approval, dependencies, archives, results
@@ -1769,9 +1769,6 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["source"],
         },
     },
-    # Memory tools migrated to aq-memory-v2 internal plugin (roadmap 8.6).
-    # recall_topic_context removed (roadmap 8.6 — v1 MemoryManager deleted).
-    # On-demand topic context is now handled by MemoryV2Plugin's memory_recall tool.
     # ------------------------------------------------------------------
     # Vault / reference stub management (Roadmap 6.3.4)
     # ------------------------------------------------------------------

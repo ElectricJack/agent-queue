@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.plugins.internal.memory_v2.extractor import (
+from src.plugins.internal.memory.extractor import (
     MemoryExtractor,
     _looks_like_garbage,
 )

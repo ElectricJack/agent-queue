@@ -1,9 +1,9 @@
 """Tests for memory health command (spec §6 — Memory Health View, Roadmap 6.5.2).
 
 Covers:
-- ``MemoryV2Service.health()`` computing all six metrics:
+- ``MemoryService.health()`` computing all six metrics:
   collection sizes, growth rate, stale count, most-retrieved, hit rate, contradictions.
-- ``MemoryV2Plugin.cmd_memory_health()`` command handler.
+- ``MemoryPlugin.cmd_memory_health()`` command handler.
 - ``store.query(track=False)`` does not inflate retrieval stats.
 - Edge cases: empty collections, all-stale, all-retrieved, no documents.
 """
@@ -20,7 +20,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory_v2.service import MemoryV2Service
+from src.plugins.internal.memory.service import MemoryService
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ def mock_router(mock_store):
 
 @pytest.fixture
 def service(mock_embedder, mock_router, tmp_path):
-    svc = MemoryV2Service(
+    svc = MemoryService(
         milvus_uri="/tmp/test.db",
         embedding_provider="openai",
         data_dir=str(tmp_path),
@@ -99,7 +99,7 @@ def _make_doc(
 
 
 # ---------------------------------------------------------------------------
-# MemoryV2Service.health() — collection sizes
+# MemoryService.health() — collection sizes
 # ---------------------------------------------------------------------------
 
 
@@ -138,7 +138,7 @@ class TestHealthCollectionSizes:
 
 
 # ---------------------------------------------------------------------------
-# MemoryV2Service.health() — growth rate
+# MemoryService.health() — growth rate
 # ---------------------------------------------------------------------------
 
 
@@ -189,7 +189,7 @@ class TestHealthGrowthRate:
 
 
 # ---------------------------------------------------------------------------
-# MemoryV2Service.health() — stale count
+# MemoryService.health() — stale count
 # ---------------------------------------------------------------------------
 
 
@@ -252,7 +252,7 @@ class TestHealthStaleCount:
 
 
 # ---------------------------------------------------------------------------
-# MemoryV2Service.health() — most-retrieved
+# MemoryService.health() — most-retrieved
 # ---------------------------------------------------------------------------
 
 
@@ -333,7 +333,7 @@ class TestHealthMostRetrieved:
 
 
 # ---------------------------------------------------------------------------
-# MemoryV2Service.health() — hit rate
+# MemoryService.health() — hit rate
 # ---------------------------------------------------------------------------
 
 
@@ -396,7 +396,7 @@ class TestHealthHitRate:
 
 
 # ---------------------------------------------------------------------------
-# MemoryV2Service.health() — contradictions
+# MemoryService.health() — contradictions
 # ---------------------------------------------------------------------------
 
 
@@ -475,7 +475,7 @@ class TestHealthContradictions:
 
 
 # ---------------------------------------------------------------------------
-# MemoryV2Service.health() — scope & metadata
+# MemoryService.health() — scope & metadata
 # ---------------------------------------------------------------------------
 
 
@@ -502,7 +502,7 @@ class TestHealthMetadata:
 
 
 # ---------------------------------------------------------------------------
-# MemoryV2Service.health() — query uses track=False
+# MemoryService.health() — query uses track=False
 # ---------------------------------------------------------------------------
 
 
@@ -521,7 +521,7 @@ class TestHealthNoTracking:
 
 
 # ---------------------------------------------------------------------------
-# MemoryV2Service.stats() — now uses track=False
+# MemoryService.stats() — now uses track=False
 # ---------------------------------------------------------------------------
 
 
@@ -551,9 +551,9 @@ class TestPluginCmdMemoryHealth:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        p = MemoryV2Plugin()
+        p = MemoryPlugin()
         p._log = MagicMock()
         p._service = MagicMock()
         p._service.available = True
@@ -641,7 +641,7 @@ class TestPluginCmdMemoryHealth:
     async def test_service_returns_error(self, plugin):
         """Service returning error dict passes through without success."""
         plugin._service.health = AsyncMock(
-            return_value={"error": "MemoryV2Service not available"}
+            return_value={"error": "MemoryService not available"}
         )
 
         result = await plugin.cmd_memory_health({"project_id": "test"})
@@ -656,22 +656,22 @@ class TestPluginCmdMemoryHealth:
 
 
 class TestHealthToolRegistration:
-    """memory_health should be in V2_ONLY_TOOLS and TOOL_DEFINITIONS."""
+    """memory_health should be in AGENT_TOOLS and TOOL_DEFINITIONS."""
 
     def test_tool_definition_exists(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool_names = {t["name"] for t in TOOL_DEFINITIONS}
         assert "memory_health" in tool_names
 
     def test_in_tool_definitions(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         names = [t["name"] for t in TOOL_DEFINITIONS]
         assert "memory_health" in names
 
     def test_tool_schema_has_required_fields(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "memory_health")
         schema = tool["input_schema"]

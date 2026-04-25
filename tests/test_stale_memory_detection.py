@@ -21,7 +21,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory_v2.service import MemoryV2Service
+from src.plugins.internal.memory.service import MemoryService
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ def mock_router(mock_store):
 
 @pytest.fixture
 def service(mock_embedder, mock_router, tmp_path):
-    svc = MemoryV2Service(
+    svc = MemoryService(
         milvus_uri="/tmp/test.db",
         embedding_provider="openai",
         data_dir=str(tmp_path),
@@ -523,12 +523,12 @@ class TestCmdMemoryStale:
 
     @pytest.fixture
     def plugin(self, service):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
         ctx = MagicMock()
         ctx.get_service = MagicMock(return_value=service)
         ctx.active_project_id = None
-        plugin = MemoryV2Plugin.__new__(MemoryV2Plugin)
+        plugin = MemoryPlugin.__new__(MemoryPlugin)
         plugin._service = service
         plugin._log = MagicMock()
         # cmd_memory_stale → _resolve_project_id reads self._ctx.active_project_id.
@@ -592,14 +592,14 @@ class TestMemoryStaleToolRegistration:
 
     def test_tool_definition_exists(self):
         """memory_stale has a tool definition registered."""
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool_names = {t["name"] for t in TOOL_DEFINITIONS}
         assert "memory_stale" in tool_names
 
     def test_tool_definition_exists(self):
         """memory_stale has a tool definition in TOOL_DEFINITIONS."""
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         stale_tools = [t for t in TOOL_DEFINITIONS if t["name"] == "memory_stale"]
         assert len(stale_tools) == 1

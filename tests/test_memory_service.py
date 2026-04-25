@@ -1,4 +1,4 @@
-"""Tests for MemoryV2Service — the service layer wrapping memsearch fork.
+"""Tests for MemoryService — the service layer wrapping memsearch fork.
 
 Tests cover:
 - Service initialization and lifecycle
@@ -23,7 +23,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory_v2.service import MemoryV2Service, MEMSEARCH_AVAILABLE
+from src.plugins.internal.memory.service import MemoryService, MEMSEARCH_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -225,8 +225,8 @@ def mock_router(mock_store):
 
 @pytest.fixture
 def service(mock_embedder, mock_router):
-    """Create a MemoryV2Service with mocked dependencies."""
-    svc = MemoryV2Service(
+    """Create a MemoryService with mocked dependencies."""
+    svc = MemoryService(
         milvus_uri="/tmp/test.db",
         embedding_provider="openai",
     )
@@ -245,7 +245,7 @@ class TestServiceLifecycle:
     """Test service initialization and shutdown."""
 
     def test_not_available_before_init(self):
-        svc = MemoryV2Service()
+        svc = MemoryService()
         assert svc.available is False
         assert svc.router is None
         assert svc.embedder is None
@@ -380,21 +380,21 @@ class TestKVOperations:
     @pytest.mark.asyncio
     async def test_kv_get_unavailable(self):
         """KV get returns None when service is unavailable."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         result = await svc.kv_get("proj", "ns", "key")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_kv_set_unavailable(self):
         """KV set raises when service is unavailable."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         with pytest.raises(RuntimeError, match="not available"):
             await svc.kv_set("proj", "ns", "key", "val")
 
     @pytest.mark.asyncio
     async def test_kv_list_unavailable(self):
         """KV list returns empty list when unavailable."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         result = await svc.kv_list("proj", "ns")
         assert result == []
 
@@ -408,11 +408,11 @@ class TestFactsFileParsing:
     """Test facts.md file parsing and rendering."""
 
     def test_parse_empty(self):
-        assert MemoryV2Service._parse_facts_file("") == {}
+        assert MemoryService._parse_facts_file("") == {}
 
     def test_parse_single_namespace(self):
         text = "## project\ntech_stack: [Python, SQLAlchemy]\ntest_command: pytest tests/ -v\n"
-        result = MemoryV2Service._parse_facts_file(text)
+        result = MemoryService._parse_facts_file(text)
         assert result == {
             "project": {
                 "tech_stack": "[Python, SQLAlchemy]",
@@ -429,7 +429,7 @@ class TestFactsFileParsing:
             "commit_style: conventional\n"
             "line_length: 100\n"
         )
-        result = MemoryV2Service._parse_facts_file(text)
+        result = MemoryService._parse_facts_file(text)
         assert "project" in result
         assert "conventions" in result
         assert result["project"]["tech_stack"] == "Python"
@@ -438,26 +438,26 @@ class TestFactsFileParsing:
 
     def test_parse_ignores_non_kv_lines(self):
         text = "## project\ntech_stack: Python\nThis is a comment without colon\n"
-        result = MemoryV2Service._parse_facts_file(text)
+        result = MemoryService._parse_facts_file(text)
         assert result == {"project": {"tech_stack": "Python"}}
 
     def test_parse_ignores_lines_before_heading(self):
         text = "orphan_key: orphan_value\n## project\nkey: val\n"
-        result = MemoryV2Service._parse_facts_file(text)
+        result = MemoryService._parse_facts_file(text)
         assert result == {"project": {"key": "val"}}
 
     def test_parse_value_with_colons(self):
         """Values containing colons should be preserved after the first colon."""
         text = "## urls\napi: http://localhost:8080/api\n"
-        result = MemoryV2Service._parse_facts_file(text)
+        result = MemoryService._parse_facts_file(text)
         assert result["urls"]["api"] == "http://localhost:8080/api"
 
     def test_render_empty(self):
-        assert MemoryV2Service._render_facts_file({}) == ""
+        assert MemoryService._render_facts_file({}) == ""
 
     def test_render_single_namespace(self):
         data = {"project": {"tech_stack": "Python", "test_cmd": "pytest"}}
-        rendered = MemoryV2Service._render_facts_file(data)
+        rendered = MemoryService._render_facts_file(data)
         assert "## project" in rendered
         assert "tech_stack: Python" in rendered
         assert "test_cmd: pytest" in rendered
@@ -467,7 +467,7 @@ class TestFactsFileParsing:
             "project": {"a": "1"},
             "conventions": {"b": "2"},
         }
-        rendered = MemoryV2Service._render_facts_file(data)
+        rendered = MemoryService._render_facts_file(data)
         assert "## conventions" in rendered
         assert "## project" in rendered
         # Namespaces should be sorted
@@ -485,9 +485,9 @@ class TestFactsFileParsing:
             "## project\n"
             "tech_stack: Python\n"
         )
-        data = MemoryV2Service._parse_facts_file(original)
-        rendered = MemoryV2Service._render_facts_file(data)
-        data2 = MemoryV2Service._parse_facts_file(rendered)
+        data = MemoryService._parse_facts_file(original)
+        rendered = MemoryService._render_facts_file(data)
+        data2 = MemoryService._parse_facts_file(rendered)
         assert data == data2
 
 
@@ -603,7 +603,7 @@ class TestFactsFileSync:
 
     def test_sync_facts_file_creates_directories(self, tmp_path):
         """_sync_facts_file creates parent dirs if they don't exist."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "vault" / "projects" / "new_proj" / "facts.md"
         svc._sync_facts_file(facts_path, "project", "key", "value")
         assert facts_path.exists()
@@ -621,7 +621,7 @@ class TestFactsWriterPreamble:
 
     def test_preserves_frontmatter_on_write(self, tmp_path):
         """Frontmatter should be preserved when updating KV entries."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
         facts_path.write_text(
             "---\ntags: [facts, auto-updated]\n---\n\n## project\ntech_stack: Python\n",
@@ -637,7 +637,7 @@ class TestFactsWriterPreamble:
 
     def test_preserves_title_on_write(self, tmp_path):
         """A ``# Title`` line before headings should be preserved."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
         facts_path.write_text(
             "# Project Facts -- Mech Fighters\n\n## project\ntech_stack: Python\n",
@@ -653,7 +653,7 @@ class TestFactsWriterPreamble:
 
     def test_preserves_full_preamble_with_frontmatter_and_title(self, tmp_path):
         """Full preamble (frontmatter + title) should be preserved."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
         original = (
             "---\n"
@@ -678,7 +678,7 @@ class TestFactsWriterPreamble:
 
     def test_no_preamble_new_file(self, tmp_path):
         """A new file (no existing content) should get default frontmatter."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
 
         svc._sync_facts_file(facts_path, "project", "key", "value")
@@ -691,7 +691,7 @@ class TestFactsWriterPreamble:
 
     def test_no_preamble_existing_file_without_preamble(self, tmp_path):
         """Existing file without preamble should get default frontmatter on write."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
         facts_path.write_text("## project\nold_key: old_val\n", encoding="utf-8")
 
@@ -705,7 +705,7 @@ class TestFactsWriterPreamble:
 
     def test_preamble_separator_normalised(self, tmp_path):
         """Preamble ending without a blank line should get a separator."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
         # No blank line between title and ## heading
         facts_path.write_text(
@@ -722,7 +722,7 @@ class TestFactsWriterPreamble:
 
     def test_repeated_writes_preserve_preamble(self, tmp_path):
         """Multiple writes should preserve the preamble each time."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
         facts_path.write_text(
             "---\ntags: [facts]\n---\n\n## project\ntech_stack: Python\n",
@@ -1012,7 +1012,7 @@ class TestKVRecall:
     @pytest.mark.asyncio
     async def test_kv_recall_unavailable(self):
         """Returns None when service is unavailable."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         result = await svc.kv_recall("key", project_id="proj")
         assert result is None
 
@@ -1056,7 +1056,7 @@ class TestRecall:
     @pytest.mark.asyncio
     async def test_recall_unavailable(self):
         """Returns unavailable source when service is not initialized."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         result = await svc.recall("query")
         assert result["source"] == "unavailable"
         assert result["results"] == []
@@ -1173,7 +1173,7 @@ class TestLoadL1Facts:
     @pytest.mark.asyncio
     async def test_l1_unavailable_returns_empty(self, tmp_path):
         """Returns empty string when service is not initialized and no files exist."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         svc._data_dir = str(tmp_path)  # clean dir with no facts files
         result = await svc.load_l1_facts(project_id="proj", agent_type="coding")
         assert result == ""
@@ -1215,9 +1215,9 @@ class TestPluginRecallHandlers:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -1304,7 +1304,7 @@ class TestToolSchemas:
     """Test tool definitions for new recall tools."""
 
     def test_memory_fact_recall_tool_exists(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_fact_recall"), None)
         assert tool is not None
@@ -1315,7 +1315,7 @@ class TestToolSchemas:
         assert "namespace" in props
 
     def test_memory_recall_tool_exists(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_recall"), None)
         assert tool is not None
@@ -1328,29 +1328,29 @@ class TestToolSchemas:
         assert "top_k" in props
 
     def test_new_tools_in_tool_definitions(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool_names = {t["name"] for t in TOOL_DEFINITIONS}
         assert "memory_fact_recall" in tool_names
         assert "memory_recall" in tool_names
 
     def test_build_scope_list(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
         # Both project and agent-type
-        scopes = MemoryV2Plugin._build_scope_list("my-proj", "coding")
+        scopes = MemoryPlugin._build_scope_list("my-proj", "coding")
         assert scopes == ["project_my-proj", "agenttype_coding", "system"]
 
         # Only project
-        scopes = MemoryV2Plugin._build_scope_list("my-proj", None)
+        scopes = MemoryPlugin._build_scope_list("my-proj", None)
         assert scopes == ["project_my-proj", "system"]
 
         # Only agent-type
-        scopes = MemoryV2Plugin._build_scope_list(None, "coding")
+        scopes = MemoryPlugin._build_scope_list(None, "coding")
         assert scopes == ["agenttype_coding", "system"]
 
         # Neither
-        scopes = MemoryV2Plugin._build_scope_list(None, None)
+        scopes = MemoryPlugin._build_scope_list(None, None)
         assert scopes == ["system"]
 
 
@@ -1363,9 +1363,9 @@ class TestMemoryGet:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -1466,7 +1466,7 @@ class TestMemoryGetToolSchema:
     """Test memory_get tool definition and registration."""
 
     def test_memory_get_tool_exists(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
         assert tool is not None
@@ -1478,13 +1478,13 @@ class TestMemoryGetToolSchema:
         assert "top_k" in props
 
     def test_memory_get_tool_definition_exists(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool_names = {t["name"] for t in TOOL_DEFINITIONS}
         assert "memory_get" in tool_names
 
     def test_memory_get_description_mentions_auto_routing(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
         assert tool is not None
@@ -1494,7 +1494,7 @@ class TestMemoryGetToolSchema:
 
     def test_memory_get_does_not_require_project_id(self):
         """memory_get should work without project_id (system-scope only)."""
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
         assert tool is not None
@@ -1503,7 +1503,7 @@ class TestMemoryGetToolSchema:
 
     def test_memory_get_no_namespace_param(self):
         """memory_get omits namespace — simpler interface than memory_recall."""
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
         assert tool is not None
@@ -1520,9 +1520,9 @@ class TestMemoryGetAutoRouting:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -1767,9 +1767,9 @@ class TestPluginKVSetWithScope:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -1811,7 +1811,7 @@ class TestPluginKVSetWithScope:
     @pytest.mark.asyncio
     async def test_kv_set_tool_schema_has_scope(self):
         """The tool schema for memory_kv_set includes the scope property."""
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         kv_set_tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "memory_kv_set")
         props = kv_set_tool["input_schema"]["properties"]
@@ -1865,13 +1865,13 @@ class TestTemporalFacts:
 
     @pytest.mark.asyncio
     async def test_fact_get_unavailable(self):
-        svc = MemoryV2Service()
+        svc = MemoryService()
         result = await svc.fact_get("proj", "key")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_fact_set_unavailable(self):
-        svc = MemoryV2Service()
+        svc = MemoryService()
         with pytest.raises(RuntimeError, match="not available"):
             await svc.fact_set("proj", "key", "val")
 
@@ -1895,13 +1895,13 @@ class TestTemporalFacts:
 
     @pytest.mark.asyncio
     async def test_fact_list_unavailable(self):
-        svc = MemoryV2Service()
+        svc = MemoryService()
         result = await svc.fact_list("proj")
         assert result == []
 
     @pytest.mark.asyncio
     async def test_fact_history_unavailable(self):
-        svc = MemoryV2Service()
+        svc = MemoryService()
         result = await svc.fact_history("proj", "key")
         assert result == []
 
@@ -1946,13 +1946,13 @@ class TestSearch:
 
     @pytest.mark.asyncio
     async def test_search_unavailable(self):
-        svc = MemoryV2Service()
+        svc = MemoryService()
         results = await svc.search("proj", "query")
         assert results == []
 
     @pytest.mark.asyncio
     async def test_search_by_tag_unavailable(self):
-        svc = MemoryV2Service()
+        svc = MemoryService()
         results = await svc.search_by_tag("tag")
         assert results == []
 
@@ -2081,7 +2081,7 @@ class TestListMemories:
     @pytest.mark.asyncio
     async def test_list_memories_unavailable(self):
         """Returns empty list when service is unavailable."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         result = await svc.list_memories("proj")
         assert result == []
 
@@ -2106,7 +2106,7 @@ class TestStats:
 
     @pytest.mark.asyncio
     async def test_stats_unavailable(self):
-        svc = MemoryV2Service()
+        svc = MemoryService()
         result = await svc.stats("proj")
         assert "error" in result
 
@@ -2117,13 +2117,13 @@ class TestStats:
 
 
 class TestPluginHandlers:
-    """Test the plugin command handlers via MemoryV2Plugin."""
+    """Test the plugin command handlers via MemoryPlugin."""
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -2327,9 +2327,9 @@ class TestFormatHelpers:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        p = MemoryV2Plugin()
+        p = MemoryPlugin()
         p._log = MagicMock()
         return p
 
@@ -2464,9 +2464,9 @@ class TestMemoryGetFull:
 
     @pytest.fixture
     def plugin(self):
-        from src.plugins.internal.memory_v2 import MemoryV2Plugin
+        from src.plugins.internal.memory import MemoryPlugin
 
-        return MemoryV2Plugin()
+        return MemoryPlugin()
 
     @pytest.fixture
     def wired_plugin(self, plugin, service):
@@ -2629,7 +2629,7 @@ class TestMemoryGetFullToolSchema:
     """Test that memory_get tool schema includes the full parameter."""
 
     def test_full_parameter_exists(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
         assert tool is not None
@@ -2637,27 +2637,27 @@ class TestMemoryGetFullToolSchema:
         assert "full" in props
 
     def test_full_parameter_is_boolean(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
         props = tool["input_schema"]["properties"]
         assert props["full"]["type"] == "boolean"
 
     def test_full_parameter_defaults_false(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
         props = tool["input_schema"]["properties"]
         assert props["full"]["default"] is False
 
     def test_full_parameter_not_required(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
         assert "full" not in tool["input_schema"]["required"]
 
     def test_full_description_mentions_original(self):
-        from src.plugins.internal.memory_v2 import TOOL_DEFINITIONS
+        from src.plugins.internal.memory import TOOL_DEFINITIONS
 
         tool = next((t for t in TOOL_DEFINITIONS if t["name"] == "memory_get"), None)
         props = tool["input_schema"]["properties"]
@@ -2666,7 +2666,7 @@ class TestMemoryGetFullToolSchema:
 
 
 class TestMemoryGetFullServiceLayer:
-    """Test full parameter threading through MemoryV2Service.recall() and search()."""
+    """Test full parameter threading through MemoryService.recall() and search()."""
 
     @pytest.mark.asyncio
     async def test_recall_passes_full_to_search(self, service, mock_router):

@@ -33,7 +33,7 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory_v2.service import MemoryV2Service, MEMSEARCH_AVAILABLE
+from src.plugins.internal.memory.service import MemoryService, MEMSEARCH_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -114,8 +114,8 @@ def mock_store():
 
 @pytest.fixture
 def service(mock_embedder, mock_router):
-    """Create a MemoryV2Service with mocked deps."""
-    svc = MemoryV2Service(
+    """Create a MemoryService with mocked deps."""
+    svc = MemoryService(
         milvus_uri="/tmp/test_l3.db",
         embedding_provider="openai",
     )
@@ -127,10 +127,10 @@ def service(mock_embedder, mock_router):
 
 @pytest.fixture
 def plugin():
-    """Create a MemoryV2Plugin for handler testing."""
-    from src.plugins.internal.memory_v2 import MemoryV2Plugin
+    """Create a MemoryPlugin for handler testing."""
+    from src.plugins.internal.memory import MemoryPlugin
 
-    return MemoryV2Plugin()
+    return MemoryPlugin()
 
 
 @pytest.fixture
@@ -576,7 +576,7 @@ class TestNoDuplicationWithL1L2:
                 return_value=(MemoryScope.SYSTEM, None),
             ):
                 with patch(
-                    "src.plugins.internal.memory_v2.service.collection_name",
+                    "src.plugins.internal.memory.service.collection_name",
                     return_value="aq_system",
                 ):
                     results = await service.search("myapp", "query", scope="system")
@@ -931,7 +931,7 @@ class TestRetrievalTracking:
                 return_value=(MemoryScope.PROJECT, "myapp"),
             ):
                 with patch(
-                    "src.plugins.internal.memory_v2.service.collection_name",
+                    "src.plugins.internal.memory.service.collection_name",
                     return_value="aq_project_myapp",
                 ):
                     results = await service.search("myapp", "query", scope="project_myapp")
@@ -1034,7 +1034,7 @@ class TestL3EdgeCases:
     @pytest.mark.asyncio
     async def test_search_unavailable_returns_empty(self):
         """When memsearch is not initialized, search returns empty."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         results = await svc.search("myapp", "query")
         assert results == []
 

@@ -1030,7 +1030,7 @@ class PluginRegistry:
         Parameters
         ----------
         name:
-            Plugin name (e.g. ``"memory_v2"``).
+            Plugin name (e.g. ``"memory"``).
         """
         loaded = self._plugins.get(name)
         return loaded.instance if loaded else None

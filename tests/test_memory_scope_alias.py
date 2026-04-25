@@ -19,7 +19,7 @@ if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
 from src.models import AgentProfile
-from src.plugins.internal.memory_v2.service import MemoryV2Service
+from src.plugins.internal.memory.service import MemoryService
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ def tmp_data_dir():
 
 @pytest.fixture
 def service(mock_embedder, mock_router, tmp_data_dir):
-    svc = MemoryV2Service(
+    svc = MemoryService(
         milvus_uri="/tmp/test.db",
         embedding_provider="openai",
         data_dir=tmp_data_dir,

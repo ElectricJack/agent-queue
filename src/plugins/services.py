@@ -8,7 +8,7 @@ Services available to internal plugins via ``ctx.get_service(name)``:
 
 - ``"git"``        — :class:`GitService`
 - ``"db"``         — :class:`DatabaseService`
-- ``"memory_v2"``  — :class:`MemoryV2ServiceProtocol`
+- ``"memory"``     — :class:`MemoryServiceProtocol`
 - ``"workspace"``  — :class:`WorkspaceService`
 - ``"config"``     — :class:`ConfigService`
 """
@@ -88,8 +88,8 @@ class DatabaseService(Protocol):
 
 
 @runtime_checkable
-class MemoryV2ServiceProtocol(Protocol):
-    """V2 memory operations via memsearch/Milvus with scoped collections.
+class MemoryServiceProtocol(Protocol):
+    """Memory operations via memsearch/Milvus with scoped collections.
 
     Provides semantic search, KV storage, temporal facts, and cross-scope
     tag search.  Wraps the memsearch fork's ``CollectionRouter`` and
@@ -572,7 +572,7 @@ def build_internal_services(
     db: Database,
     git: GitManager,
     config: AppConfig,
-    memory_v2_service: Any = None,
+    memory_service: Any = None,
 ) -> dict[str, Any]:
     """Build the services dict for internal plugin contexts.
 
@@ -586,9 +586,9 @@ def build_internal_services(
         Git manager instance.
     config:
         Application configuration.
-    memory_v2_service:
-        Optional v2 MemoryV2Service instance.  When provided, exposed
-        as ``"memory_v2"`` for plugins that need v2-specific operations
+    memory_service:
+        Optional MemoryService instance.  When provided, exposed
+        as ``"memory"`` for plugins that need memory operations
         (KV, temporal facts, scoped search).
     """
     services: dict[str, Any] = {
@@ -597,6 +597,6 @@ def build_internal_services(
         "workspace": WorkspaceServiceImpl(db, git, config),
         "config": ConfigServiceImpl(config),
     }
-    if memory_v2_service is not None:
-        services["memory_v2"] = memory_v2_service
+    if memory_service is not None:
+        services["memory"] = memory_service
     return services

@@ -451,9 +451,9 @@ class ExecutionMixin:
         l1_facts = ""
         l1_guidance = ""
         l2_context = ""
-        if self._memory_v2_service:
+        if self._memory_service:
             try:
-                l1_text = await self._memory_v2_service.load_l1_facts(
+                l1_text = await self._memory_service.load_l1_facts(
                     project_id=task.project_id,
                     agent_type=underlying_agent_type(profile.id) if profile else None,
                 )
@@ -463,7 +463,7 @@ class ExecutionMixin:
                 logger.warning("L1 facts injection failed for task %s: %s", task.id, e)
 
             try:
-                l1_guid = await self._memory_v2_service.load_l1_guidance(
+                l1_guid = await self._memory_service.load_l1_guidance(
                     project_id=task.project_id,
                     agent_type=underlying_agent_type(profile.id) if profile else None,
                 )
@@ -475,7 +475,7 @@ class ExecutionMixin:
             # L2 Topic Context — semantic search using task description.
             if task.project_id and task.description:
                 try:
-                    l2_text = await self._memory_v2_service.load_l2_context(
+                    l2_text = await self._memory_service.load_l2_context(
                         task.description,
                         project_id=task.project_id,
                     )

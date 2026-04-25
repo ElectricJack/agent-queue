@@ -29,8 +29,8 @@ import pytest
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory_v2.service import MEMSEARCH_AVAILABLE, MemoryV2Service
-from src.plugins.internal.memory_v2 import MemoryV2Plugin
+from src.plugins.internal.memory.service import MEMSEARCH_AVAILABLE, MemoryService
+from src.plugins.internal.memory import MemoryPlugin
 
 # All tests require memsearch
 pytestmark = pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
@@ -144,8 +144,8 @@ def tmp_data_dir():
 
 @pytest.fixture
 def service(mock_embedder, mock_router, tmp_data_dir):
-    """Create a MemoryV2Service with mocked dependencies and temp vault."""
-    svc = MemoryV2Service(
+    """Create a MemoryService with mocked dependencies and temp vault."""
+    svc = MemoryService(
         milvus_uri="/tmp/test.db",
         embedding_provider="openai",
         data_dir=tmp_data_dir,
@@ -158,8 +158,8 @@ def service(mock_embedder, mock_router, tmp_data_dir):
 
 @pytest.fixture
 def plugin():
-    """Create a fresh MemoryV2Plugin instance."""
-    return MemoryV2Plugin()
+    """Create a fresh MemoryPlugin instance."""
+    return MemoryPlugin()
 
 
 @pytest.fixture

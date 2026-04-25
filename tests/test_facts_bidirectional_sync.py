@@ -17,7 +17,7 @@ Test cases from the roadmap spec (docs/specs/design/roadmap.md):
     formatting in stored value.
 
 These are integration-level tests that exercise the full bidirectional
-sync pipeline: facts.md ↔ KV backend via MemoryV2Service and the
+sync pipeline: facts.md ↔ KV backend via MemoryService and the
 facts_handler watcher.
 """
 
@@ -42,7 +42,7 @@ from src.vault_watcher import VaultChange, VaultWatcher
 _SKIP_WINDOWS = sys.platform == "win32"
 
 try:
-    from src.plugins.internal.memory_v2.service import MEMSEARCH_AVAILABLE, MemoryV2Service
+    from src.plugins.internal.memory.service import MEMSEARCH_AVAILABLE, MemoryService
 except Exception:
     MEMSEARCH_AVAILABLE = False
 
@@ -54,7 +54,7 @@ except Exception:
 def _make_mock_service(kv_store: dict[str, dict[str, str]] | None = None):
     """Create a mock service that tracks KV state in a plain dict.
 
-    The returned service behaves like MemoryV2Service for the subset of
+    The returned service behaves like MemoryService for the subset of
     the API used by the facts handler (kv_set, kv_recall-compatible
     get_kv).
 
@@ -344,7 +344,7 @@ class TestRecallFromParsedFacts:
     async def test_kv_recall_scope_resolution(self):
         """kv_recall searches scopes in order: project → agent-type → system."""
         # Use a real mock_store that returns different values per scope
-        service = MemoryV2Service(milvus_uri="/tmp/test.db")
+        service = MemoryService(milvus_uri="/tmp/test.db")
 
         mock_router = MagicMock()
 
@@ -514,7 +514,7 @@ class TestStoreTriggersWrite:
     @pytest.mark.asyncio
     async def test_kv_set_creates_facts_file(self, tmp_path):
         """kv_set without _from_vault creates/updates the vault facts.md."""
-        service = MemoryV2Service(
+        service = MemoryService(
             milvus_uri="/tmp/test.db",
             data_dir=str(tmp_path),
         )
@@ -551,7 +551,7 @@ class TestStoreTriggersWrite:
     @pytest.mark.asyncio
     async def test_kv_set_appends_to_existing_facts(self, tmp_path):
         """kv_set merges new entry into an existing facts.md without clobbering."""
-        service = MemoryV2Service(
+        service = MemoryService(
             milvus_uri="/tmp/test.db",
             data_dir=str(tmp_path),
         )
@@ -591,7 +591,7 @@ class TestStoreTriggersWrite:
     @pytest.mark.asyncio
     async def test_kv_set_from_vault_skips_file_write(self, tmp_path):
         """kv_set with _from_vault=True does NOT write to facts.md (prevents loops)."""
-        service = MemoryV2Service(
+        service = MemoryService(
             milvus_uri="/tmp/test.db",
             data_dir=str(tmp_path),
         )
@@ -619,7 +619,7 @@ class TestStoreTriggersWrite:
 
     def test_sync_facts_file_creates_new_file(self, tmp_path):
         """_sync_facts_file creates facts.md from scratch."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "vault" / "projects" / "app" / "facts.md"
 
         svc._sync_facts_file(facts_path, "project", "api_url", "https://api.example.com")
@@ -631,7 +631,7 @@ class TestStoreTriggersWrite:
 
     def test_sync_facts_file_preserves_existing_entries(self, tmp_path):
         """_sync_facts_file preserves other keys when adding a new one."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
         facts_path.write_text(
             "## project\nexisting: value\n",
@@ -646,7 +646,7 @@ class TestStoreTriggersWrite:
 
     def test_sync_facts_file_updates_existing_key(self, tmp_path):
         """_sync_facts_file overwrites the value of an existing key."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
         facts_path.write_text(
             "## project\nmy_key: old_value\n",
@@ -661,7 +661,7 @@ class TestStoreTriggersWrite:
 
     def test_sync_facts_file_adds_new_namespace(self, tmp_path):
         """_sync_facts_file adds a new namespace heading when needed."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
         facts_path.write_text(
             "## project\ntech: Python\n",
@@ -1004,7 +1004,7 @@ class TestMarkdownFormattingPreserved:
 
     def test_sync_facts_file_preserves_markdown_in_values(self, tmp_path):
         """_sync_facts_file writes markdown-formatted values correctly."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
 
         svc._sync_facts_file(
@@ -1067,7 +1067,7 @@ class TestBidirectionalRoundtrip:
 
     def test_kv_to_file_direction(self, tmp_path):
         """kv_set → _sync_facts_file → parse roundtrip is lossless."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
 
         # Write several entries
@@ -1085,7 +1085,7 @@ class TestBidirectionalRoundtrip:
 
     def test_update_existing_via_sync(self, tmp_path):
         """Updating a value via _sync_facts_file preserves other entries."""
-        svc = MemoryV2Service()
+        svc = MemoryService()
         facts_path = tmp_path / "facts.md"
 
         # Initial state
