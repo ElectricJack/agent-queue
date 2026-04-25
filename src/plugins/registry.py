@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from src.plugins.base import (
+    EXTERNAL_ALLOWED_SERVICES,
     Plugin,
     PluginContext,
     PluginInfo,
@@ -467,8 +468,17 @@ class PluginRegistry:
 
         instance = plugin_class()
 
-        # Create context
+        # Create context — external plugins get the allowlisted subset of services.
         data_path = str(self._plugin_data_dir / name)
+        external_services = (
+            {
+                k: v
+                for k, v in self._internal_services.items()
+                if k in EXTERNAL_ALLOWED_SERVICES
+            }
+            if self._internal_services
+            else {}
+        )
         ctx = PluginContext(
             plugin_name=name,
             install_path=install_path,
@@ -481,7 +491,9 @@ class PluginRegistry:
             notify_callback=self._notify_callback,
             execute_command_callback=self._execute_command_callback,
             invoke_llm_callback=self._invoke_llm_callback,
+            services=external_services,
             plugin_services_callback=self.register_plugin_service,
+            active_project_id_getter=self._active_project_id_getter,
         )
 
         # Load config from DB before plugin init so get_config() works
@@ -1115,6 +1127,15 @@ class PluginRegistry:
         instance = plugin_cls()
         name = getattr(plugin_cls, "plugin_name", plugin_cls.__name__)
 
+        external_services = (
+            {
+                k: v
+                for k, v in self._internal_services.items()
+                if k in EXTERNAL_ALLOWED_SERVICES
+            }
+            if self._internal_services
+            else {}
+        )
         ctx = PluginContext(
             plugin_name=name,
             install_path=str(self._plugins_dir),
@@ -1127,6 +1148,7 @@ class PluginRegistry:
             notify_callback=self._notify_callback,
             execute_command_callback=self._execute_command_callback,
             invoke_llm_callback=self._invoke_llm_callback,
+            services=external_services,
             plugin_services_callback=self.register_plugin_service,
         )
 
@@ -1248,16 +1270,25 @@ class PluginRegistry:
             loaded.context._invoke_llm_callback = callback
 
     def set_internal_services(self, services: dict) -> None:
-        """Set the services dict for internal plugin contexts.
+        """Set the services dict for plugin contexts.
 
         Must be called before ``load_all()`` so that internal plugins
         receive their service providers during initialization.
+
+        Internal plugins receive the full ``services`` map.  External
+        plugins receive only the subset in
+        :data:`src.plugins.base.EXTERNAL_ALLOWED_SERVICES` (currently
+        ``config`` and ``vault_watcher``).
         """
         self._internal_services = services
-        # Update already-loaded internal plugins
+        # Update already-loaded plugins, filtering by trust level.
         for loaded in self._plugins.values():
             if loaded.context._trust_level == TrustLevel.INTERNAL:
                 loaded.context._services = services
+            else:
+                loaded.context._services = {
+                    k: v for k, v in services.items() if k in EXTERNAL_ALLOWED_SERVICES
+                }
 
     def set_active_project_id_getter(self, getter: Callable) -> None:
         """Set the active project ID getter for all plugin contexts."""

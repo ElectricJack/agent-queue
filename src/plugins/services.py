@@ -6,17 +6,19 @@ contract; implementation wrappers delegate to the real managers.
 
 Services available to internal plugins via ``ctx.get_service(name)``:
 
-- ``"git"``        — :class:`GitService`
-- ``"db"``         — :class:`DatabaseService`
-- ``"memory"``     — :class:`MemoryServiceProtocol`
-- ``"workspace"``  — :class:`WorkspaceService`
-- ``"config"``     — :class:`ConfigService`
+- ``"git"``           — :class:`GitService`
+- ``"db"``            — :class:`DatabaseService`
+- ``"memory"``        — :class:`MemoryServiceProtocol`
+- ``"workspace"``     — :class:`WorkspaceService`
+- ``"config"``        — :class:`ConfigService` (external-allowed)
+- ``"vault_watcher"`` — :class:`VaultWatcherService` (external-allowed)
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
 
 if TYPE_CHECKING:
@@ -241,6 +243,25 @@ class ConfigService(Protocol):
     def chat_provider(self) -> Any: ...
     @property
     def inbox(self) -> dict: ...
+
+
+@runtime_checkable
+class VaultWatcherService(Protocol):
+    """Register / unregister handlers for vault file changes.
+
+    Exposed to external plugins so they can react to vault edits
+    (e.g., the memory plugin syncs facts.md changes to its KV store).
+    """
+
+    def register_handler(
+        self,
+        pattern: str,
+        handler: Callable[[list[Any]], Any],
+        *,
+        handler_id: str | None = None,
+    ) -> str: ...
+
+    def unregister_handler(self, handler_id: str) -> None: ...
 
 
 # ---------------------------------------------------------------------------

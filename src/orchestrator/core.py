@@ -1105,6 +1105,10 @@ class Orchestrator(
             git=self.git,
             config=self.config,
         )
+        # Expose the vault_watcher so external plugins (e.g. memory) can
+        # register their own facts.md / vault-path handlers.  Spec §6.3.
+        if self.vault_watcher is not None:
+            internal_services["vault_watcher"] = self.vault_watcher
         self.plugin_registry.set_internal_services(internal_services)
 
         try:

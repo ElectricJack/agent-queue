@@ -112,6 +112,37 @@ def plugin_registry(tmp_path: Path):
 
 
 @pytest.fixture
+def plugin_context_factory(tmp_path: Path):
+    """Build a PluginContext with the given trust_level / services for unit tests."""
+    from src.plugins.base import PluginContext, TrustLevel
+
+    def _make(
+        *,
+        trust_level: TrustLevel = TrustLevel.EXTERNAL,
+        services: dict | None = None,
+        plugin_name: str = "testplugin",
+    ):
+        db = AsyncMock()
+        bus = MagicMock()
+        bus.emit = AsyncMock()
+        bus.subscribe = MagicMock()
+        return PluginContext(
+            plugin_name=plugin_name,
+            install_path=str(tmp_path / "install"),
+            data_path=str(tmp_path / "data"),
+            db=db,
+            bus=bus,
+            command_registry={},
+            tool_registry={},
+            event_type_registry=set(),
+            trust_level=trust_level,
+            services=services or {},
+        )
+
+    return _make
+
+
+@pytest.fixture
 def plugin_registry_with_plugin(plugin_registry):
     """Helper that loads an in-memory plugin class into the registry.
 

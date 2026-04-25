@@ -104,6 +104,15 @@ class TrustLevel(Enum):
     INTERNAL = "internal"  # Ships with the repo, full service access
 
 
+# Services in this allowlist may be fetched by EXTERNAL-trust plugins via
+# :meth:`PluginContext.get_service`.  All other services remain
+# INTERNAL-only.  Spec §6.3.
+EXTERNAL_ALLOWED_SERVICES: frozenset[str] = frozenset({
+    "config",
+    "vault_watcher",
+})
+
+
 # ---------------------------------------------------------------------------
 # PluginInfo — metadata from plugin.yaml
 # ---------------------------------------------------------------------------
@@ -269,10 +278,13 @@ class PluginContext:
         """Get a service by name.
 
         Internal plugins (``TrustLevel.INTERNAL``) can access all services.
-        External plugins can only access services allowed by their permissions.
+        External plugins can only access services in
+        :data:`EXTERNAL_ALLOWED_SERVICES` (currently ``"config"`` and
+        ``"vault_watcher"``).
 
         Available services for internal plugins:
-        ``"git"``, ``"db"``, ``"memory"``, ``"workspace"``, ``"config"``.
+        ``"git"``, ``"db"``, ``"memory"``, ``"workspace"``, ``"config"``,
+        ``"vault_watcher"``.
 
         Args:
             name: Service name.
@@ -282,14 +294,21 @@ class PluginContext:
 
         Raises:
             ValueError: If the service is unknown.
-            PermissionError: If the plugin lacks access.
+            PermissionError: If the plugin lacks access (external plugin
+                requesting a non-allowlisted service).
         """
         service = self._services.get(name)
         if service is None:
             available = list(self._services.keys())
             raise ValueError(f"Unknown service: {name!r}. Available: {available}")
-        if self._trust_level == TrustLevel.EXTERNAL:
-            raise PermissionError(f"Service {name!r} requires TrustLevel.INTERNAL")
+        if (
+            self._trust_level == TrustLevel.EXTERNAL
+            and name not in EXTERNAL_ALLOWED_SERVICES
+        ):
+            raise PermissionError(
+                f"Service {name!r} is not in the external allowlist "
+                f"{sorted(EXTERNAL_ALLOWED_SERVICES)}; requires TrustLevel.INTERNAL"
+            )
         return service
 
     # --- Command Registration ---
