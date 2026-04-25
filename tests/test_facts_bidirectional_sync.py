@@ -30,6 +30,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+pytest.importorskip("aq_memory")
+pytest.importorskip("memsearch")
+
 from src.facts_handler import (
     _sync_facts_to_kv,
     on_facts_changed,
@@ -41,10 +44,7 @@ from src.vault_watcher import VaultChange, VaultWatcher
 # Skip on Windows — Milvus Lite unavailable, and some tests need memsearch
 _SKIP_WINDOWS = sys.platform == "win32"
 
-try:
-    from aq_memory.service import MEMSEARCH_AVAILABLE, MemoryService
-except Exception:
-    MEMSEARCH_AVAILABLE = False
+from aq_memory.service import MEMSEARCH_AVAILABLE, MemoryService
 
 # ---------------------------------------------------------------------------
 # Helpers

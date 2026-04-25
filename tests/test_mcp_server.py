@@ -42,6 +42,13 @@ from src.mcp_interfaces import (
     workspace_to_dict,
 )
 
+try:
+    import aq_memory  # noqa: F401
+
+    AQ_MEMORY_AVAILABLE = True
+except ImportError:
+    AQ_MEMORY_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -744,6 +751,7 @@ class TestPluginToolRegistration:
         assert len(tools_none) == len(tools_empty)
 
 
+@pytest.mark.skipif(not AQ_MEMORY_AVAILABLE, reason="aq-memory plugin not installed")
 class TestMemoryRecallMCPTool:
     """Tests for memory_recall exposure as an MCP tool.
 
@@ -860,6 +868,7 @@ class TestMemoryRecallMCPTool:
         assert data["count"] == 2
 
 
+@pytest.mark.skipif(not AQ_MEMORY_AVAILABLE, reason="aq-memory plugin not installed")
 class TestMemoryStoreMCPTool:
     """Tests for memory_store exposure as an MCP tool.
 

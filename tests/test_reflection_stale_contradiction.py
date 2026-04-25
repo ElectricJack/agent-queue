@@ -32,6 +32,13 @@ import pytest
 
 from src.playbooks.runner import PlaybookRunner
 
+try:
+    import aq_memory  # noqa: F401
+
+    AQ_MEMORY_AVAILABLE = True
+except ImportError:
+    AQ_MEMORY_AVAILABLE = False
+
 # The graph-walking tests below need the 6-node extended reflection playbook.
 # The playbook file at vault/agent-types/coding/playbooks/reflection.md is
 # only 4 nodes, so classes that exercise the extended graph end up failing
@@ -805,6 +812,7 @@ class TestExtendedReflectionDryRun:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not AQ_MEMORY_AVAILABLE, reason="aq-memory plugin not installed")
 class TestMemoryHealthResponseCompatibility:
     """Verify memory_health returns the fields the playbook expects.
 
@@ -916,6 +924,7 @@ class TestMemoryHealthResponseCompatibility:
             return await service.health("test-project")
 
 
+@pytest.mark.skipif(not AQ_MEMORY_AVAILABLE, reason="aq-memory plugin not installed")
 class TestMemoryStaleResponseCompatibility:
     """Verify memory_stale returns the fields the playbook expects.
 
