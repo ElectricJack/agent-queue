@@ -259,7 +259,7 @@ class TestL1FactsFromMemory:
 
         mock_mem = AsyncMock()
         mock_mem.load_l1_facts = AsyncMock(return_value=L1_FACTS_REALISTIC)
-        orch._memory_v2_service = mock_mem
+        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
 
         profile = AgentProfile(
             id="coding",
@@ -292,7 +292,7 @@ class TestL1FactsFromMemory:
 
         mock_mem = AsyncMock()
         mock_mem.load_l1_facts = AsyncMock(return_value="## Critical Facts\n- key: value")
-        orch._memory_v2_service = mock_mem
+        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
 
         profile = AgentProfile(
             id="web-developer",
@@ -473,7 +473,7 @@ class TestL1GracefulDegradation:
 
         mock_mem = AsyncMock()
         mock_mem.load_l1_facts = AsyncMock(return_value="")
-        orch._memory_v2_service = mock_mem
+        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
 
         await _setup_project_and_agent(orch.db)
 
@@ -501,8 +501,8 @@ class TestL1GracefulDegradation:
         """No memory service configured → l1_facts is empty, no error."""
         orch, factory = orch_env
 
-        # Ensure no memory service is set (default state)
-        orch._memory_v2_service = None
+        # Ensure no memory service is registered
+        orch.plugin_registry._clear_plugin_services("aq-memory")
 
         await _setup_project_and_agent(orch.db)
 
@@ -529,7 +529,7 @@ class TestL1GracefulDegradation:
 
         mock_mem = AsyncMock()
         mock_mem.load_l1_facts = AsyncMock(side_effect=RuntimeError("memsearch unavailable"))
-        orch._memory_v2_service = mock_mem
+        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
 
         await _setup_project_and_agent(orch.db)
 
@@ -657,7 +657,7 @@ class TestL0L1ProfileWithoutProjectFacts:
         agent_type_facts = "## Critical Facts\n- default_model: claude-sonnet\n- code_style: PEP 8"
         mock_mem = AsyncMock()
         mock_mem.load_l1_facts = AsyncMock(return_value=agent_type_facts)
-        orch._memory_v2_service = mock_mem
+        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
 
         profile = AgentProfile(
             id="coding",
@@ -695,7 +695,7 @@ class TestL0L1ProfileWithoutProjectFacts:
 
         mock_mem = AsyncMock()
         mock_mem.load_l1_facts = AsyncMock(return_value="")
-        orch._memory_v2_service = mock_mem
+        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
 
         profile = AgentProfile(
             id="reviewer",
@@ -729,7 +729,7 @@ class TestL0L1ProfileWithoutProjectFacts:
 
         mock_mem = AsyncMock()
         mock_mem.load_l1_facts = AsyncMock(return_value="")
-        orch._memory_v2_service = mock_mem
+        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
 
         # No profile
         await _setup_project_and_agent(orch.db)
@@ -764,7 +764,7 @@ class TestL0L1ProfileWithoutProjectFacts:
         # or MagicMocks into the assembled prompt.
         mock_mem.load_l1_guidance = AsyncMock(return_value="")
         mock_mem.load_l2_context = AsyncMock(return_value="")
-        orch._memory_v2_service = mock_mem
+        orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
 
         profile = AgentProfile(
             id="coding",

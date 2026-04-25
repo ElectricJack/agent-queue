@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 import os
 import signal
+import time
 from pathlib import Path
-
-import logging
 
 from src.commands.helpers import _run_subprocess, _run_subprocess_shell
 
@@ -21,6 +21,72 @@ class SystemCommandsMixin:
     # -----------------------------------------------------------------------
     # System commands — config reload, status, diagnostics
     # -----------------------------------------------------------------------
+
+    async def _cmd_get_stuck_tasks(self, args: dict) -> dict:
+        """Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their
+        per-status threshold.
+
+        This replaces the previous multi-step "list_tasks + time arithmetic"
+        procedure in the ``system-health-check`` playbook with a single,
+        deterministic lookup.  Detection runs entirely in the database —
+        the caller does no time math.
+
+        Args
+        ----
+        assigned_threshold_seconds: int
+            Max seconds a task may stay ASSIGNED before being flagged
+            stuck.  Default 1800 (30 minutes).
+        in_progress_threshold_seconds: int
+            Max seconds a task may stay IN_PROGRESS before being flagged
+            stuck.  Default 7200 (2 hours).
+        now: float
+            Reference timestamp (seconds since epoch).  Defaults to
+            ``time.time()``; playbooks typically pass the trigger event's
+            ``tick_time`` so repeated invocations are deterministic.
+        project_id: str, optional
+            Filter — when provided, only stuck tasks in the given project
+            are returned.  When omitted, all projects are scanned.
+
+        Returns
+        -------
+        dict with keys:
+            ``stuck``: list of ``{id, project_id, status, assigned_agent,
+            updated_at, seconds_in_state}`` dicts, ordered by
+            ``updated_at`` ascending (oldest first).
+            ``now_used``: the reference timestamp actually applied.
+            ``thresholds``: ``{assigned, in_progress}`` showing which
+            thresholds were applied.
+        """
+        assigned_threshold = int(args.get("assigned_threshold_seconds", 1800))
+        in_progress_threshold = int(args.get("in_progress_threshold_seconds", 7200))
+        now = float(args.get("now", time.time()))
+        project_id = args.get("project_id") or None
+
+        stuck = await self.db.get_stuck_active_tasks(
+            assigned_threshold_seconds=assigned_threshold,
+            in_progress_threshold_seconds=in_progress_threshold,
+            now=now,
+            project_id=project_id,
+        )
+
+        return {
+            "stuck": [
+                {
+                    "id": task.id,
+                    "project_id": task.project_id,
+                    "status": task.status.value,
+                    "assigned_agent": task.assigned_agent_id,
+                    "updated_at": task.updated_at,
+                    "seconds_in_state": now - task.updated_at,
+                }
+                for task in stuck
+            ],
+            "now_used": now,
+            "thresholds": {
+                "assigned": assigned_threshold,
+                "in_progress": in_progress_threshold,
+            },
+        }
 
     async def _cmd_reload_config(self, args: dict) -> dict:
         """Manually trigger a config hot-reload from disk.
@@ -483,12 +549,6 @@ class SystemCommandsMixin:
             return {"error": f"Command timed out after {timeout}s"}
 
     # -----------------------------------------------------------------------
-    # Memory commands — V1 MemoryManager commands removed (roadmap 8.6).
-    # All memory operations are now handled by MemoryV2Plugin
-    # (src/plugins/internal/memory_v2.py).
-    # -----------------------------------------------------------------------
-
-    # -----------------------------------------------------------------------
     # Reference stub staleness scanning (Roadmap 6.3.4)
     # -----------------------------------------------------------------------
 
@@ -630,8 +690,48 @@ class SystemCommandsMixin:
             "total": len(templates),
         }
 
+    def _load_prompt_from_path(self, path: str):
+        """Load a prompt template from an absolute filesystem path.
+
+        The path must lie under one of the ``aq://`` authority roots
+        (bundled prompts, vault, logs, tasks, or attachments). Paths outside
+        those roots are rejected so MCP-exposed callers cannot load arbitrary
+        files as prompt templates.
+        """
+        from pathlib import Path
+
+        from src.aq_uri import allowed_roots
+        from src.prompt_manager import load_template
+
+        p = Path(path)
+        if not p.is_absolute():
+            return None, {"error": f"path must be absolute: {path!r}"}
+        resolved = p.resolve()
+        roots = allowed_roots(self.config)
+        if not any(resolved == r or r in resolved.parents for r in roots):
+            return None, {"error": f"path is outside allowed roots: {path!r}"}
+        if not resolved.is_file():
+            return None, {"error": f"Prompt not found at {path}"}
+        tmpl = load_template(str(resolved))
+        if tmpl is None:
+            return None, {"error": f"Could not parse prompt template at {path}"}
+        return tmpl, None
+
     async def _cmd_read_prompt(self, args: dict) -> dict:
-        """Read a specific prompt template's content and metadata."""
+        """Read a specific prompt template's content and metadata.
+
+        Accepts either ``(project_id, name)`` for project-scoped templates
+        or ``path=<absolute-path>`` for bundled templates.
+        """
+        path = args.get("path")
+        if path:
+            tmpl, err = self._load_prompt_from_path(path)
+            if err is not None:
+                return err
+            result = tmpl.to_dict()
+            result["content"] = tmpl.body
+            result["path"] = path
+            return result
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}
@@ -649,7 +749,26 @@ class SystemCommandsMixin:
         return result
 
     async def _cmd_render_prompt(self, args: dict) -> dict:
-        """Render a prompt template with variable substitution."""
+        """Render a prompt template with variable substitution.
+
+        Accepts either ``(project_id, name)`` for project-scoped templates
+        or ``path=<absolute-path>`` for bundled templates.
+        """
+        from src.prompt_manager import render_template
+
+        path = args.get("path")
+        if path:
+            tmpl, err = self._load_prompt_from_path(path)
+            if err is not None:
+                return err
+            variables = args.get("variables") or {}
+            rendered = render_template(tmpl, variables)
+            return {
+                "path": path,
+                "name": tmpl.name,
+                "rendered": rendered,
+                "variables_used": variables,
+            }
         project = await self.db.get_project(args["project_id"])
         if not project:
             return {"error": f"Project '{args['project_id']}' not found"}

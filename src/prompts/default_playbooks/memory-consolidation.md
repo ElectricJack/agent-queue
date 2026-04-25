@@ -40,13 +40,23 @@ Branch on the incoming event:
 
 3. **Timer run** — `event.type == "timer.24h"` (or any
    non-manual type). Call `list_projects`, filter to `ACTIVE`, then
-   for each one read
-   `~/.agent-queue/vault/projects/<project_id>/memory/consolidation.md`
-   (treat missing file as `last_consolidated: null`) and count the
-   insight files under
-   `~/.agent-queue/vault/projects/<project_id>/memory/insights/`
-   whose mtime is newer than `last_consolidated` (use `null` ⇒ count
-   all files). Keep projects where **either**:
+   for each one:
+   - Call `read_file` with
+     `path: "aq://vault/projects/<project_id>/memory/consolidation.md"`.
+     If the response has `error` containing "File not found", treat
+     as `last_consolidated: null`. Otherwise parse the
+     `last_consolidated` value from the YAML frontmatter at the top
+     of `content`.
+   - Call `count_project_memory_files` with `project_id`,
+     `path: "insights"`, and (if known)
+     `newer_than: <last_consolidated>` to get the churn count. When
+     `last_consolidated` is `null`, omit `newer_than` to count all
+     insights. A missing directory returns
+     `{"count": 0, "missing": true}`. (This tool stays
+     project-scoped — it has server-side mtime filtering with no
+     `aq://` equivalent.)
+
+   Keep projects where **either**:
    - `churn_count >= 5` and `last_consolidated` is null or older than
      3 days, or
    - `last_consolidated` is null and the project has at least 3
@@ -85,17 +95,30 @@ hard filter for workspace-bound agent instances (e.g. `"claude"`,
 READY because no workspace agent advertises that type. The project's
 default profile already gives the executing agent the `memory_*`
 tools it needs via the agent-queue MCP.
-- `description`: read
-  `/mnt/d/Dev/agent-queue2/src/prompts/consolidation_task.md` via the
-  `read_file` tool and substitute the placeholders (the full prompt
-  instructs the executing agent to edit the vault markdown files
-  directly with Read/Edit/Write/Bash — no extra tools required beyond
-  the default Claude toolset)
-  `{project_id}`, `{project_name}`,
-  `{insights_dir}` (→ `~/.agent-queue/vault/projects/<project_id>/memory/insights`),
-  `{knowledge_dir}` (→ `~/.agent-queue/vault/projects/<project_id>/memory/knowledge`),
-  `{last_consolidated}` (→ value from Step 1, or `never` if null),
-  `{churn_count}` (→ value from Step 1, or `unknown` if null).
+- `description`: call `render_prompt` with the bundled consolidation
+  prompt URI and the target project's variables:
+
+  ```
+  render_prompt(
+    path="aq://prompts/consolidation_task.md",
+    variables={
+      "project_id": "<id>",
+      "project_name": "<name>",
+      "insights_dir": "~/.agent-queue/vault/projects/<id>/memory/insights",
+      "knowledge_dir": "~/.agent-queue/vault/projects/<id>/memory/knowledge",
+      "last_consolidated": "<iso-or 'never'>",
+      "churn_count": "<int-or 'unknown'>"
+    }
+  )
+  ```
+
+  Use the `rendered` field of the response as the task description.
+  **`insights_dir` and `knowledge_dir` must be real filesystem paths,
+  not `aq://` URIs** — the executing agent uses native Claude tools
+  (Glob, Read, Edit, Bash mv/rm) against them, which don't understand
+  the `aq://` scheme. The full prompt instructs that agent to edit
+  the vault markdown files directly with Read/Edit/Write/Bash — no
+  extra tools required beyond the default Claude toolset.
 
 Do **not** pre-delete anything — the consolidation task owns all vault
 writes.

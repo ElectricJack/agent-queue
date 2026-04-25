@@ -535,7 +535,6 @@ Several existing AgentQueue subsystems are good candidates for extraction into p
 
 | Component | Current Location | Notes |
 |---|---|---|
-| **Memory / Semantic Search** | `src/memory.py` (400+ LOC) | Good isolation, lazy loading. Needs dependency injection for task context assembly. |
 | **Telegram Adapter** | `src/telegram/` (1,379 LOC) | Self-contained platform adapter. Needs formalized callback API. |
 
 ### Hard Extractions (Long-term)
@@ -547,10 +546,10 @@ Several existing AgentQueue subsystems are good candidates for extraction into p
 
 ### Recommended Extraction Order
 
-1. Start with **File Watcher** — simplest, validates the plugin loading pipeline end-to-end
-2. Then **Ollama Chat Provider** — validates plugin tool/command registration
-3. Then **Telegram Adapter** — validates messaging plugin pattern for future platforms (Slack, Teams)
-4. Then **Memory Manager** — validates complex plugin with external dependencies
+1. ✅ **Memory Manager** — extracted as `aq-memory`; validated complex plugin with external dependencies
+2. Next, **File Watcher** — validates the plugin loading pipeline end-to-end for a simpler subsystem
+3. Then **Ollama Chat Provider** — validates plugin tool/command registration
+4. Then **Telegram Adapter** — validates messaging plugin pattern for future platforms (Slack, Teams)
 
 Each extraction serves as a proving ground for the plugin API surface. If the API can't cleanly support the extraction, the API needs to change before publishing it for external plugin authors.
 
@@ -650,6 +649,7 @@ Without a CLAUDE.md, the agent has to reverse-engineer all of this from code, wh
 - Legacy `plugin.yaml` still supported with deprecation warning
 
 ### Phase 5: First Plugin Extraction
-- Extract File Watcher as a plugin (proves the architecture)
-- Document plugin authoring guide
-- Publish plugin template repository
+- ✅ Memory plugin extracted to external repo (aq-memory)
+- (File Watcher extraction: still planned)
+- ✅ Plugin authoring guide via aq-memory's CLAUDE.md
+- (Plugin template repository: still planned)

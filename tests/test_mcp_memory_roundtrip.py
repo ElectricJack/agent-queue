@@ -18,19 +18,21 @@ the exact code paths invoked by MCP tool calls via CommandHandler.execute().
 
 from __future__ import annotations
 
-import json
-import sys
-import tempfile
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
+
+pytest.importorskip("aq_memory")
+
+import json  # noqa: E402
+import sys  # noqa: E402
+import tempfile  # noqa: E402
+from unittest.mock import AsyncMock, MagicMock  # noqa: E402
 
 # Skip entire module on Windows (Milvus Lite not supported)
 if sys.platform == "win32":
     pytest.skip("Milvus Lite not supported on Windows", allow_module_level=True)
 
-from src.plugins.internal.memory_v2.service import MEMSEARCH_AVAILABLE, MemoryV2Service
-from src.plugins.internal.memory_v2 import MemoryV2Plugin
+from aq_memory.service import MEMSEARCH_AVAILABLE, MemoryService
+from aq_memory import MemoryPlugin
 
 # All tests require memsearch
 pytestmark = pytest.mark.skipif(not MEMSEARCH_AVAILABLE, reason="memsearch not installed")
@@ -144,8 +146,8 @@ def tmp_data_dir():
 
 @pytest.fixture
 def service(mock_embedder, mock_router, tmp_data_dir):
-    """Create a MemoryV2Service with mocked dependencies and temp vault."""
-    svc = MemoryV2Service(
+    """Create a MemoryService with mocked dependencies and temp vault."""
+    svc = MemoryService(
         milvus_uri="/tmp/test.db",
         embedding_provider="openai",
         data_dir=tmp_data_dir,
@@ -158,8 +160,8 @@ def service(mock_embedder, mock_router, tmp_data_dir):
 
 @pytest.fixture
 def plugin():
-    """Create a fresh MemoryV2Plugin instance."""
-    return MemoryV2Plugin()
+    """Create a fresh MemoryPlugin instance."""
+    return MemoryPlugin()
 
 
 @pytest.fixture

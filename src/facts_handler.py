@@ -4,7 +4,7 @@ Registers glob patterns with the :class:`~src.vault_watcher.VaultWatcher` to
 detect changes to ``facts.md`` files across all vault scopes (system,
 supervisor, agent-type, project).  When a facts file is created, modified, or
 deleted, the handler parses the file and syncs the key-value entries to the
-Milvus KV backend via :class:`~src.memory_v2_service.MemoryV2Service`.
+Milvus KV backend via :class:`~aq_memory.service.MemoryService`.
 
 Patterns registered (relative to vault root)::
 
@@ -45,7 +45,7 @@ FACTS_PATTERNS: list[str] = [
 ]
 
 # Maps derive_scope() scope names to the scope strings expected by
-# MemoryV2Service.kv_set().
+# MemoryService.kv_set().
 _SCOPE_TO_KV_SCOPE: dict[str, str] = {
     "system": "system",
     "supervisor": "supervisor",
@@ -133,7 +133,7 @@ def _scope_to_kv_scope(scope: str, identifier: str | None) -> str:
     Returns
     -------
     str
-        Scope string for ``MemoryV2Service.kv_set(scope=...)``.
+        Scope string for ``MemoryService.kv_set(scope=...)``.
     """
     if scope == "system":
         return "system"
@@ -177,7 +177,7 @@ async def _sync_facts_to_kv(
     identifier:
         Scope-specific identifier.
     service:
-        A :class:`~src.memory_v2_service.MemoryV2Service` instance (or
+        A :class:`~aq_memory.service.MemoryService` instance (or
         any object implementing the ``kv_set`` protocol).
 
     Returns
@@ -236,7 +236,7 @@ async def on_facts_changed(
 ) -> None:
     """Handle changes to ``facts.md`` files in the vault.
 
-    When a ``MemoryV2Service`` is available (passed via *service*), this
+    When a ``MemoryService`` is available (passed via *service*), this
     handler parses the changed facts files and syncs their KV entries to
     the Milvus backend.  When no service is available, falls back to
     logging (Phase 1 stub behaviour).
@@ -247,7 +247,7 @@ async def on_facts_changed(
         List of :class:`~src.vault_watcher.VaultChange` objects for files
         matching one of the registered facts patterns.
     service:
-        Optional :class:`~src.memory_v2_service.MemoryV2Service` instance.
+        Optional :class:`~aq_memory.service.MemoryService` instance.
         When provided, KV entries are synced to the backend.
     """
     for change in changes:
@@ -317,7 +317,7 @@ def register_facts_handlers(
         The :class:`~src.vault_watcher.VaultWatcher` instance to register
         handlers on (typically ``orchestrator.vault_watcher``).
     service:
-        Optional :class:`~src.memory_v2_service.MemoryV2Service` instance.
+        Optional :class:`~aq_memory.service.MemoryService` instance.
         When provided, the handler will parse facts files and sync KV
         entries to the backend.  When ``None``, the handler falls back to
         logging only.

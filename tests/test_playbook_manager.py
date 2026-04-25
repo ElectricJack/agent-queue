@@ -147,6 +147,7 @@ class TestCompilationSuccess:
         provider = _make_mock_provider()
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -169,6 +170,7 @@ class TestCompilationSuccess:
         """Compiled playbook JSON is written to the data directory."""
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -187,6 +189,7 @@ class TestCompilationSuccess:
         provider = _make_mock_provider()
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -216,6 +219,7 @@ class TestCompilationSuccess:
         provider.create_message = AsyncMock(side_effect=[resp, resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -255,6 +259,7 @@ class TestCompilationFailureRetainsPrevious:
 
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -293,6 +298,7 @@ class TestCompilationFailureRetainsPrevious:
         provider.create_message = AsyncMock(side_effect=[good_resp, bad_resp, bad_resp, bad_resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -334,6 +340,7 @@ class TestCompilationFailureRetainsPrevious:
         provider.create_message = AsyncMock(side_effect=[good_resp, bad_resp, bad_resp, bad_resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -370,6 +377,7 @@ class TestCompilationFailureRetainsPrevious:
 
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -416,6 +424,7 @@ class TestCompilationFailureRetainsPrevious:
 
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -447,6 +456,7 @@ class TestCompilationFailureRetainsPrevious:
         good_provider = _make_mock_provider()
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=good_provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -503,6 +513,7 @@ class TestCompilationFailureRetainsPrevious:
 
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -542,6 +553,7 @@ class TestCompilationFailureRetainsPrevious:
 
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -581,6 +593,7 @@ class TestCompilationFailureRetainsPrevious:
 
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -623,6 +636,7 @@ class TestCompilationFailureRetainsPrevious:
 
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -679,6 +693,7 @@ class TestFixAndRecompile:
 
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -721,6 +736,7 @@ class TestFixAndRecompile:
 
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -778,6 +794,7 @@ class TestFailureIsolation:
         provider.create_message = AsyncMock(side_effect=[good_resp, bad_resp, bad_resp, bad_resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -813,6 +830,7 @@ class TestFailureIsolation:
 
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -844,7 +862,7 @@ class TestDiskLoading:
         playbook = _make_playbook()
         (compiled_dir / "test-playbook.json").write_text(json.dumps(playbook.to_dict(), indent=2))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         loaded = await manager.load_from_disk()
 
         assert loaded == 1
@@ -865,7 +883,7 @@ class TestDiskLoading:
         # Write an invalid one
         (compiled_dir / "bad.json").write_text("not json {{{")
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         loaded = await manager.load_from_disk()
 
         assert loaded == 1
@@ -890,7 +908,7 @@ class TestDiskLoading:
         }
         (compiled_dir / "bad.json").write_text(json.dumps(bad_data))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         loaded = await manager.load_from_disk()
 
         assert loaded == 0
@@ -911,7 +929,7 @@ class TestDiskLoading:
         payload["scope_identifier"] = "my-playbooks"
         (compiled_dir / "test-playbook.json").write_text(json.dumps(payload))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         loaded = await manager.load_from_disk()
 
         assert loaded == 1
@@ -920,7 +938,7 @@ class TestDiskLoading:
     @pytest.mark.asyncio
     async def test_persist_writes_scope_identifier(self, tmp_path: Path) -> None:
         """Compiled JSONs include scope_identifier when known."""
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         playbook = _make_playbook(scope="project", triggers=["cron.08:00"])
         manager._active[playbook.id] = playbook
         manager._scope_identifiers[playbook.id] = "my-playbooks"
@@ -934,7 +952,7 @@ class TestDiskLoading:
     @pytest.mark.asyncio
     async def test_load_no_data_dir(self) -> None:
         """Loading without a data_dir returns 0."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         loaded = await manager.load_from_disk()
         assert loaded == 0
 
@@ -944,7 +962,7 @@ class TestDiskLoading:
         compiled_dir = tmp_path / "playbooks" / "compiled"
         compiled_dir.mkdir(parents=True)
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         loaded = await manager.load_from_disk()
         assert loaded == 0
 
@@ -967,7 +985,7 @@ class TestPlaybookDeletion:
         json_path = compiled_dir / "test-playbook.json"
         json_path.write_text(json.dumps(playbook.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         await manager.load_from_disk()
         assert manager.get_playbook("test-playbook") is not None
 
@@ -979,7 +997,7 @@ class TestPlaybookDeletion:
     @pytest.mark.asyncio
     async def test_remove_nonexistent_playbook(self) -> None:
         """Removing a nonexistent playbook returns False."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         removed = await manager.remove_playbook("nonexistent")
         assert not removed
 
@@ -1006,7 +1024,7 @@ class TestTriggerLookup:
         (compiled_dir / "pb-2.json").write_text(json.dumps(pb2.to_dict()))
         (compiled_dir / "pb-3.json").write_text(json.dumps(pb3.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         await manager.load_from_disk()
 
         git_commit_playbooks = manager.get_playbooks_by_trigger("git.commit")
@@ -1032,7 +1050,7 @@ class TestNoProviderMode:
     @pytest.mark.asyncio
     async def test_compile_without_provider_fails_gracefully(self) -> None:
         """Compilation without a chat provider returns a clear error."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         result = await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
         assert not result.success
         assert any("No chat provider" in e for e in result.errors)
@@ -1041,7 +1059,7 @@ class TestNoProviderMode:
     async def test_compile_without_provider_no_event(self) -> None:
         """No event is emitted when no provider is configured."""
         bus = _make_event_bus()
-        manager = PlaybookManager(event_bus=bus)
+        manager = PlaybookManager(config=None, event_bus=bus)
         await manager.compile_playbook(SIMPLE_PLAYBOOK_MD)
         # No failure event emitted — the no-provider case is an
         # operational configuration issue, not a compilation error
@@ -1062,6 +1080,7 @@ class TestFrontmatterErrors:
         provider = _make_mock_provider()
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -1085,6 +1104,7 @@ class TestFrontmatterErrors:
         provider = _make_mock_provider()
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -1123,6 +1143,7 @@ class TestPlaybookHandler:
 
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1152,6 +1173,7 @@ class TestPlaybookHandler:
         provider.create_message = AsyncMock(side_effect=[resp, resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1183,7 +1205,7 @@ class TestPlaybookHandler:
         playbook = _make_playbook(playbook_id="test")
         (compiled_dir / "test.json").write_text(json.dumps(playbook.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         await manager.load_from_disk()
         assert manager.get_playbook("test") is not None
 
@@ -1214,6 +1236,7 @@ class TestPlaybookHandler:
         from src.playbooks.handler import on_playbook_changed
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=_make_mock_provider(),
             data_dir=str(tmp_path),
         )
@@ -1351,6 +1374,7 @@ class TestSourceHashChangeDetection:
         """Compiling with identical markdown skips the LLM call."""
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1382,6 +1406,7 @@ class TestSourceHashChangeDetection:
         provider.create_message = AsyncMock(side_effect=[resp, resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1410,6 +1435,7 @@ class TestSourceHashChangeDetection:
         provider.create_message = AsyncMock(side_effect=[resp, resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1430,6 +1456,7 @@ class TestSourceHashChangeDetection:
         """First compilation always proceeds (no hash to compare against)."""
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1446,6 +1473,7 @@ class TestSourceHashChangeDetection:
 
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1461,6 +1489,7 @@ class TestSourceHashChangeDetection:
         """Skipped result returns the active compiled playbook instance."""
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1477,6 +1506,7 @@ class TestSourceHashChangeDetection:
         provider = _make_mock_provider()
         bus = _make_event_bus()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             event_bus=bus,
             data_dir=str(tmp_path),
@@ -1505,6 +1535,7 @@ class TestSourceHashChangeDetection:
         # Create manager, load from disk
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1529,6 +1560,7 @@ class TestSourceHashChangeDetection:
 
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1579,6 +1611,7 @@ class TestSourceHashChangeDetection5110:
 
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1614,6 +1647,7 @@ class TestSourceHashChangeDetection5110:
         """
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1640,6 +1674,7 @@ class TestSourceHashChangeDetection5110:
         """
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1663,6 +1698,7 @@ class TestSourceHashChangeDetection5110:
         """(b) Adding a YAML comment in frontmatter does NOT trigger recompilation."""
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1702,6 +1738,7 @@ Do something then finish.
         provider.create_message = AsyncMock(side_effect=[resp, resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1732,6 +1769,7 @@ Do something then finish.
         provider.create_message = AsyncMock(side_effect=[resp, resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1771,6 +1809,7 @@ Do something then finish.
         provider.create_message = AsyncMock(side_effect=[resp, resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -1807,6 +1846,7 @@ Do something then finish.
         provider.create_message = AsyncMock(side_effect=[resp, resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )

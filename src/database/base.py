@@ -133,6 +133,13 @@ class DatabaseBackend(Protocol):
     async def get_all_dependencies(self) -> dict[str, set[str]]: ...
     async def are_dependencies_met(self, task_id: str) -> bool: ...
     async def get_stuck_defined_tasks(self, threshold_seconds: int) -> list[Task]: ...
+    async def get_stuck_active_tasks(
+        self,
+        assigned_threshold_seconds: int,
+        in_progress_threshold_seconds: int,
+        now: float,
+        project_id: str | None = None,
+    ) -> list[Task]: ...
     async def get_blocking_dependencies(
         self,
         task_id: str,

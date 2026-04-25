@@ -78,7 +78,7 @@ async def test_compiles_uncompiled_playbook(tmp_path: Path) -> None:
     )
 
     provider = _make_mock_provider(num_compilations=1)
-    manager = PlaybookManager(chat_provider=provider, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=provider, data_dir=str(tmp_path))
 
     result = await manager.reconcile_compilations(str(vault_root))
     assert result["compiled"] == ["new-playbook"]
@@ -100,7 +100,7 @@ async def test_skips_already_active_playbook(tmp_path: Path) -> None:
 
     # Pre-compile so the playbook is already in _active.
     provider = _make_mock_provider(num_compilations=1)
-    manager = PlaybookManager(chat_provider=provider, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=provider, data_dir=str(tmp_path))
     md = (vault_root / "system" / "playbooks" / "existing.md").read_text()
     await manager.compile_playbook(md)
     assert manager.get_playbook("existing") is not None
@@ -137,7 +137,7 @@ async def test_multiple_scopes(tmp_path: Path) -> None:
     )
 
     provider = _make_mock_provider(num_compilations=3)
-    manager = PlaybookManager(chat_provider=provider, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=provider, data_dir=str(tmp_path))
 
     result = await manager.reconcile_compilations(str(vault_root))
     assert set(result["compiled"]) == {"sys-play", "sup-play", "proj-play"}
@@ -156,7 +156,7 @@ async def test_missing_id_recorded_as_error(tmp_path: Path) -> None:
     )
 
     provider = _make_mock_provider(num_compilations=0)
-    manager = PlaybookManager(chat_provider=provider, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=provider, data_dir=str(tmp_path))
 
     result = await manager.reconcile_compilations(str(vault_root))
     assert result["compiled"] == []
@@ -169,7 +169,7 @@ async def test_missing_id_recorded_as_error(tmp_path: Path) -> None:
 async def test_nonexistent_vault_root_is_noop(tmp_path: Path) -> None:
     """An invalid vault path returns an empty result, not an exception."""
     provider = _make_mock_provider(num_compilations=0)
-    manager = PlaybookManager(chat_provider=provider, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=provider, data_dir=str(tmp_path))
 
     result = await manager.reconcile_compilations(str(tmp_path / "does-not-exist"))
     assert result == {"compiled": [], "skipped": [], "errors": []}
@@ -187,7 +187,7 @@ async def test_ignores_non_playbook_md(tmp_path: Path) -> None:
     )
 
     provider = _make_mock_provider(num_compilations=0)
-    manager = PlaybookManager(chat_provider=provider, data_dir=str(tmp_path))
+    manager = PlaybookManager(config=None, chat_provider=provider, data_dir=str(tmp_path))
 
     result = await manager.reconcile_compilations(str(vault_root))
     assert result == {"compiled": [], "skipped": [], "errors": []}

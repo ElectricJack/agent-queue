@@ -249,6 +249,25 @@ Filesystem operations within project workspaces.
 | `search_files` | Search content (grep) or filenames (find) | `pattern` (required), `path` (required), `mode` ("grep" default or "find") |
 | `list_directory` | List files/dirs at workspace path | `project_id` (required), `path` (relative, default root), `workspace` (name or ID) |
 
+### Resource URIs (`aq://`) — Compile-Time Macros
+
+`aq://` URIs are **compile-time macros for playbook authoring**. The playbook
+compiler rewrites each `aq://<authority>/<path>` into an absolute filesystem
+path before the playbook is stored or executed — runtime tools never see
+`aq://`. Authorities:
+
+| URI | Rewrites to |
+|---|---|
+| `aq://prompts/<path>` | Bundled `src/prompts/<path>` (ships with the daemon) |
+| `aq://vault/<path>` | `{vault_root}/<path>` |
+| `aq://logs/<path>` | `{data_dir}/logs/<path>` |
+| `aq://tasks/<path>` | `{data_dir}/tasks/<path>` |
+| `aq://attachments/<path>` | `{data_dir}/attachments/<path>` |
+
+Runtime placeholders inside a URI (e.g. `<project_id>`) pass through the
+rewrite unchanged and are filled by the step's LLM at execution time.
+`..` path segments and unknown authorities are rejected at compile time.
+
 ---
 
 ## System Category (28+ tools)
@@ -312,8 +331,8 @@ Filesystem operations within project workspaces.
 | Tool | What It Does | Parameters |
 |------|-------------|------------|
 | `list_prompts` | List prompt templates | `project_id` (required), `category` (system/task/hooks/custom), `tag` |
-| `read_prompt` | Read prompt template content | `project_id` (required), `name` (required) |
-| `render_prompt` | Render template with variable substitution | `project_id` (required), `name` (required), `variables` (object: key → value) |
+| `read_prompt` | Read prompt template content | `project_id` + `name`, **or** `path` (absolute path to template; in playbooks, use `aq://prompts/<name>` which the compiler rewrites) |
+| `render_prompt` | Render template with variable substitution | `project_id` + `name`, **or** `path` (absolute path); plus `variables` (object: key → value). `{{placeholders}}` are substituted server-side. |
 
 ---
 

@@ -51,7 +51,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "resume_agent": "agent",
     # vault — reference stub management
     "scan_stub_staleness": "system",
-    # memory — migrated to aq-memory-v2 internal plugin (src/plugins/internal/memory_v2.py)
+    # memory — provided by the external aq-memory plugin (install via `aq plugin install`)
     # notes — migrated to aq-notes internal plugin (src/plugins/internal/notes.py)
     # files — migrated to aq-files internal plugin (src/plugins/internal/files.py)
     # task — lifecycle, approval, dependencies, archives, results
@@ -124,6 +124,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "restart_daemon": "system",
     "update_and_restart": "system",
     "run_command": "system",
+    "get_stuck_tasks": "system",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
     # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
@@ -1327,6 +1328,59 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_stuck_tasks",
+        "description": (
+            "Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their "
+            "per-status threshold.  Detection and time arithmetic run in "
+            "the database — the caller passes thresholds and a reference "
+            "``now`` timestamp and receives a structured list back.  "
+            "Defaults match the system-health-check playbook's stuck "
+            "definition: ASSIGNED > 30 minutes, IN_PROGRESS > 2 hours.  "
+            "Each entry carries ``id``, ``project_id``, ``status``, "
+            "``assigned_agent``, ``updated_at``, and ``seconds_in_state`` "
+            "so remediation (``restart_task`` vs "
+            "``set_task_status(..., status=\"READY\")``) can branch on "
+            "the agent state."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "assigned_threshold_seconds": {
+                    "type": "integer",
+                    "description": (
+                        "Max seconds a task may stay ASSIGNED before being "
+                        "flagged as stuck.  Default 1800 (30 minutes)."
+                    ),
+                    "default": 1800,
+                },
+                "in_progress_threshold_seconds": {
+                    "type": "integer",
+                    "description": (
+                        "Max seconds a task may stay IN_PROGRESS before "
+                        "being flagged as stuck.  Default 7200 (2 hours)."
+                    ),
+                    "default": 7200,
+                },
+                "now": {
+                    "type": "number",
+                    "description": (
+                        "Reference Unix timestamp (seconds since epoch).  "
+                        "Playbooks should pass the trigger event's "
+                        "``tick_time`` so repeated runs are deterministic.  "
+                        "Defaults to the server's current time."
+                    ),
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional project filter.  When omitted, all "
+                        "projects are scanned."
+                    ),
+                },
+            },
+        },
+    },
+    {
         "name": "delete_project",
         "description": "Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any task is IN_PROGRESS. In-memory channel caches are automatically purged. Optionally archive the project's Discord channels.",
         "input_schema": {
@@ -1409,21 +1463,36 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Read a prompt template's full content and metadata. Returns the "
             "template body, variable definitions, tags, and category. "
-            "Use the 'name' field from list_prompts as the name parameter."
+            "Pass either (project_id, name) for a project-scoped template, "
+            "or path=<absolute path> for a bundled template that ships "
+            "with the daemon (in playbooks, use aq://prompts/<path> — compiler rewrites)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (required unless path is set)",
+                },
                 "name": {
                     "type": "string",
                     "description": (
                         "Template name from list_prompts (e.g. 'plan-generation'), "
-                        "or the filename (e.g. 'plan-generation.md')"
+                        "or the filename (e.g. 'plan-generation.md'). Required "
+                        "unless path is set."
+                    ),
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute filesystem path to a bundled template, e.g. "
+                        "'/opt/agent-queue/src/prompts/consolidation_task.md'. In "
+                        "playbook authoring, use aq://prompts/<name>.md instead — "
+                        "the playbook compiler rewrites it to an absolute path. "
+                        "Mutually exclusive with (project_id, name)."
                     ),
                 },
             },
-            "required": ["project_id", "name"],
         },
     },
     {
@@ -1431,15 +1500,30 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Render a prompt template with variable substitution. Replaces "
             "{{variable}} placeholders with provided values. Returns the "
-            "fully rendered prompt text."
+            "fully rendered prompt text. Pass either (project_id, name) for a "
+            "project-scoped template, or path=<absolute path> for a bundled "
+            "template (in playbooks, use aq://prompts/<path> — compiler rewrites)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project ID"},
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (required unless path is set)",
+                },
                 "name": {
                     "type": "string",
-                    "description": "Template name to render",
+                    "description": "Template name to render (required unless path is set)",
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute filesystem path to a bundled template, e.g. "
+                        "'/opt/agent-queue/src/prompts/consolidation_task.md'. In "
+                        "playbook authoring, use aq://prompts/<name>.md instead — "
+                        "the playbook compiler rewrites it to an absolute path. "
+                        "Mutually exclusive with (project_id, name)."
+                    ),
                 },
                 "variables": {
                     "type": "object",
@@ -1449,7 +1533,6 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
             },
-            "required": ["project_id", "name"],
         },
     },
     # Git tools (get_git_status, git_commit, git_pull, git_push, git_create_branch,
@@ -1686,9 +1769,6 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["source"],
         },
     },
-    # Memory tools migrated to aq-memory-v2 internal plugin (roadmap 8.6).
-    # recall_topic_context removed (roadmap 8.6 — v1 MemoryManager deleted).
-    # On-demand topic context is now handled by MemoryV2Plugin's memory_recall tool.
     # ------------------------------------------------------------------
     # Vault / reference stub management (Roadmap 6.3.4)
     # ------------------------------------------------------------------
@@ -2177,7 +2257,10 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "list_playbooks",
         "description": (
             "List all playbooks across scopes with status, triggers, and last run info. "
-            "Returns every active compiled playbook. Optionally filter by scope."
+            "Returns every active compiled playbook. Optionally filter by scope. "
+            "When project_id is provided, project-scoped playbooks belonging to a "
+            "different project are excluded; system and agent-type scoped playbooks "
+            "are always included because they apply across projects."
         ),
         "input_schema": {
             "type": "object",
@@ -2186,6 +2269,13 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Filter by scope type",
                     "enum": ["system", "project", "agent-type"],
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Restrict project-scoped playbooks to this project. "
+                        "System and agent-type playbooks are still returned."
+                    ),
                 },
             },
         },

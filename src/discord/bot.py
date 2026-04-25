@@ -988,10 +988,9 @@ class AgentQueueBot(commands.Bot):
     async def _store_observation_memory(self, project_id: str, content: str) -> None:
         """Store observation content in project memory.
 
-        V1 MemoryManager integration removed (roadmap 8.6).
-        Observation storage should be wired to MemoryV2Plugin's save_document.
+        Observation storage should be wired to MemoryPlugin's save_document.
         """
-        # TODO: wire to MemoryV2Plugin save_document via event bus
+        # TODO: wire to MemoryPlugin save_document via event bus
         pass
 
     def _build_project_profiles(self) -> dict[str, set[str]]:

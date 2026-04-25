@@ -34,6 +34,7 @@ from src.discord.embeds import (
     LIMIT_FIELD_VALUE,
 )
 from src.discord.project_wizard import ProjectInfoModal
+from src.discord.views import ExpiredInteractionTolerantView
 
 logger = logging.getLogger(__name__)
 
@@ -1843,7 +1844,7 @@ def setup_commands(bot: commands.Bot) -> None:
     # StatusReportView removed — /status now uses TaskReportView with
     # orchestrator state in header_lines for a consolidated view.
 
-    class TaskReportView(discord.ui.View):
+    class TaskReportView(ExpiredInteractionTolerantView):
         """Grouped task report with collapsible status sections and detail select.
 
         Displays tasks grouped by status with tree-view for parent/subtask
@@ -3624,70 +3625,10 @@ def setup_commands(bot: commands.Bot) -> None:
             description=f"Note **{title}** deleted from `{project_id}`",
         )
 
-    # ===================================================================
-    # MEMORY COMMANDS
-    # ===================================================================
-
-    @bot.tree.command(name="memory-stats", description="Show memory index statistics for a project")
-    @app_commands.describe(
-        project="Project ID (defaults to the project linked to this channel)",
-    )
-    async def memory_stats_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        result = await handler.execute("memory_stats", {"project_id": project_id})
-        if "error" in result:
-            # Plugin returns an error dict when the service isn't available
-            # (memsearch not installed, Milvus unreachable, etc.).
-            msg = result.get("error", "")
-            if "not available" in msg.lower():
-                await _send_info(
-                    interaction,
-                    "Memory Unavailable",
-                    description=(
-                        f"Memory service is not available for `{project_id}`.\n\n"
-                        f"{msg}"
-                    ),
-                )
-            else:
-                await _send_error(interaction, msg)
-            return
-
-        # Memory V2 response shape (see MemoryV2Service.stats):
-        # collection, scope, total_entries, documents, kv_entries,
-        # temporal_entries, contested_memories, embedding_model, needs_reindex.
-        fields = [
-            ("Collection", f"`{result.get('collection', 'N/A')}`", False),
-            ("Scope", f"`{result.get('scope', 'N/A')}`", True),
-            ("Total Entries", str(result.get("total_entries", 0)), True),
-            ("Documents", str(result.get("documents", 0)), True),
-            ("KV Entries", str(result.get("kv_entries", 0)), True),
-            ("Temporal", str(result.get("temporal_entries", 0)), True),
-            ("Contested", str(result.get("contested_memories", 0)), True),
-            (
-                "Embedding Model",
-                f"`{result.get('embedding_model', 'N/A')}`",
-                False,
-            ),
-            (
-                "Needs Reindex",
-                "Yes" if result.get("needs_reindex") else "No",
-                True,
-            ),
-        ]
-
-        await _send_success(
-            interaction,
-            f"Memory Stats — {project_id}",
-            description="Memory subsystem is **active** and operational.",
-            fields=fields,
-        )
+    # Memory slash commands (memory-stats, memory-store, memory-recall,
+    # memory-health, memory-reindex, project-profile) live in the external
+    # aq-memory plugin and register themselves via Plugin.discord_commands()
+    # when installed.
 
     # ===================================================================
     # PLAYBOOK COMMANDS
@@ -3696,15 +3637,27 @@ def setup_commands(bot: commands.Bot) -> None:
     @bot.tree.command(name="playbook-list", description="List all playbooks across scopes")
     @app_commands.describe(
         scope="Filter by scope type (system, project, agent-type)",
+        all_projects=(
+            "When invoked from a project channel, set true to list playbooks "
+            "across every project (default: only this project's playbooks)."
+        ),
     )
     async def playbook_list_command(
         interaction: discord.Interaction,
         scope: str | None = None,
+        all_projects: bool = False,
     ):
         await interaction.response.defer()
         args: dict = {}
         if scope:
             args["scope"] = scope
+        # In a project channel, restrict project-scoped playbooks to that
+        # project so users don't see playbooks from unrelated projects.
+        # Override with `all_projects=True` to see every project's playbooks.
+        if not all_projects:
+            channel_project_id = bot.get_project_for_channel(interaction.channel_id)
+            if channel_project_id:
+                args["project_id"] = channel_project_id
         result = await handler.execute("list_playbooks", args)
         if "error" in result:
             await _send_error(interaction, result["error"], followup=True)
@@ -4078,188 +4031,10 @@ def setup_commands(bot: commands.Bot) -> None:
         embed = info_embed("Playbook Health", description=description)
         await interaction.followup.send(embed=embed)
 
-    # ===================================================================
-    # MEMORY COMMANDS
-    # ===================================================================
-
-    @bot.tree.command(name="memory-store", description="Store information in project memory")
-    @app_commands.describe(
-        content="The information to store (fact, insight, or knowledge)",
-        project="Project ID (defaults to channel's project)",
-        topic="Optional topic override",
-        tags="Comma-separated tags",
-    )
-    async def memory_store_command(
-        interaction: discord.Interaction,
-        content: str,
-        project: str | None = None,
-        topic: str | None = None,
-        tags: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        await interaction.response.defer()
-        args: dict = {"project_id": project_id, "content": content}
-        if topic:
-            args["topic"] = topic
-        if tags:
-            args["tags"] = [t.strip() for t in tags.split(",")]
-        result = await handler.execute("memory_store", args)
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-
-        stored_as = result.get("stored_as", "memory")
-        preview = content[:100] + "..." if len(content) > 100 else content
-        await _send_success(
-            interaction,
-            f"Stored as {stored_as}",
-            description=f"Saved to `{project_id}` memory:\n> {preview}",
-            followup=True,
-            result=result,
-        )
-
-    @bot.tree.command(name="memory-recall", description="Smart retrieval — KV exact match then semantic")
-    @app_commands.describe(
-        query="Search query (used as KV key and semantic query)",
-        project="Project ID (defaults to channel's project)",
-        topic="Topic filter for semantic fallback",
-    )
-    async def memory_recall_command(
-        interaction: discord.Interaction,
-        query: str,
-        project: str | None = None,
-        topic: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        await interaction.response.defer()
-        args: dict = {"query": query, "project_id": project_id}
-        if topic:
-            args["topic"] = topic
-        result = await handler.execute("memory_recall", args)
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        # Format similarly to memory-get
-        kv_value = result.get("value")
-        if kv_value is not None:
-            await _send_success(
-                interaction, f"Recall: {query}",
-                description=f"**KV match:**\n```\n{kv_value}\n```",
-                followup=True,
-            )
-            return
-        results = result.get("results", [])
-        if not results:
-            await _send_info(interaction, "Not Found",
-                             description=f"No results for `{query}`.", followup=True)
-            return
-        desc_parts = []
-        for r in results:
-            content = r.get("content", "").replace("\n", " ")[:150]
-            score = r.get("score", 0)
-            desc_parts.append(f"• ({score * 100:.0f}%) {content}")
-        description = "\n".join(desc_parts)
-        if len(description) > 4000:
-            description = description[:3997] + "..."
-        embed = info_embed(f"Recall — {len(results)} results", description=description)
-        await interaction.followup.send(embed=embed)
-
-    # ===================================================================
-    # MEMORY ADMIN COMMANDS (human-only, not agent-facing)
-    # ===================================================================
-
-    @bot.tree.command(name="memory-health", description="Memory health metrics for a project")
-    @app_commands.describe(
-        project="Project ID (defaults to channel's project)",
-    )
-    async def memory_health_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-
-        await interaction.response.defer()
-        result = await handler.execute("memory_health", {"project_id": project_id})
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-
-        fields = []
-        for key in ("total_entries", "collection_size", "stale_count",
-                     "growth_rate", "retrieval_hit_rate", "contradictions"):
-            val = result.get(key)
-            if val is not None:
-                label = key.replace("_", " ").title()
-                fields.append((label, str(val), True))
-
-        await _send_info(
-            interaction,
-            f"Memory Health — {project_id}",
-            fields=fields if fields else [("Status", "No data available", False)],
-            followup=True,
-        )
-
-    @bot.tree.command(name="memory-reindex", description="Reindex vault files into memory")
-    @app_commands.describe(
-        project="Project ID (defaults to channel's project)",
-        full="Drop and rebuild from scratch (default: incremental)",
-    )
-    async def memory_reindex_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-        full: bool = False,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        await interaction.response.defer()
-        args: dict = {"project_id": project_id}
-        if full:
-            args["full"] = True
-        result = await handler.execute("memory_reindex", args)
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        indexed = result.get("indexed", 0)
-        await _send_success(
-            interaction, "Reindex Complete",
-            description=f"Indexed **{indexed}** entries for `{project_id}`.",
-            followup=True, result=result,
-        )
-
-    @bot.tree.command(name="project-profile", description="View project memory profile")
-    @app_commands.describe(
-        project="Project ID (defaults to channel's project)",
-    )
-    async def view_profile_command(
-        interaction: discord.Interaction,
-        project: str | None = None,
-    ):
-        project_id = await _resolve_project_from_context(interaction, project)
-        if not project_id:
-            await _send_error(interaction, _NO_PROJECT_MSG)
-            return
-        await interaction.response.defer()
-        result = await handler.execute("view_profile", {"project_id": project_id})
-        if "error" in result:
-            await _send_error(interaction, result["error"], followup=True)
-            return
-        content = result.get("content", result.get("profile", str(result)))
-        await _send_long_interaction(
-            content, interaction.followup.send,
-            filename=f"{project_id}-profile.md",
-        )
+    # Memory write/read/admin slash commands (memory-store, memory-recall,
+    # memory-health, memory-reindex, project-profile) live in the external
+    # aq-memory plugin and register themselves via Plugin.discord_commands()
+    # when installed.
 
     # ===================================================================
     # ADDITIONAL TASK COMMANDS

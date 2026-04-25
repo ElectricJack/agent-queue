@@ -104,6 +104,15 @@ class TrustLevel(Enum):
     INTERNAL = "internal"  # Ships with the repo, full service access
 
 
+# Services in this allowlist may be fetched by EXTERNAL-trust plugins via
+# :meth:`PluginContext.get_service`.  All other services remain
+# INTERNAL-only.  Spec §6.3.
+EXTERNAL_ALLOWED_SERVICES: frozenset[str] = frozenset({
+    "config",
+    "vault_watcher",
+})
+
+
 # ---------------------------------------------------------------------------
 # PluginInfo — metadata from plugin.yaml
 # ---------------------------------------------------------------------------
@@ -189,6 +198,7 @@ class PluginContext:
         invoke_llm_callback: Callable | None = None,
         trust_level: TrustLevel = TrustLevel.EXTERNAL,
         services: dict[str, Any] | None = None,
+        plugin_services_callback: Callable[[str, str, object], None] | None = None,
         active_project_id_getter: Callable | None = None,
     ):
         self._plugin_name = plugin_name
@@ -205,6 +215,9 @@ class PluginContext:
         self._invoke_llm_callback = invoke_llm_callback
         self._trust_level = trust_level
         self._services: dict[str, Any] = services or {}
+        self._plugin_services_callback: Callable[[str, str, object], None] = (
+            plugin_services_callback or (lambda *_args, **_kw: None)
+        )
         self._active_project_id_getter = active_project_id_getter
 
         self._logger = logging.getLogger(f"plugin.{plugin_name}")
@@ -265,10 +278,13 @@ class PluginContext:
         """Get a service by name.
 
         Internal plugins (``TrustLevel.INTERNAL``) can access all services.
-        External plugins can only access services allowed by their permissions.
+        External plugins can only access services in
+        :data:`EXTERNAL_ALLOWED_SERVICES` (currently ``"config"`` and
+        ``"vault_watcher"``).
 
         Available services for internal plugins:
-        ``"git"``, ``"db"``, ``"memory"``, ``"workspace"``, ``"config"``.
+        ``"git"``, ``"db"``, ``"memory"``, ``"workspace"``, ``"config"``,
+        ``"vault_watcher"``.
 
         Args:
             name: Service name.
@@ -278,14 +294,21 @@ class PluginContext:
 
         Raises:
             ValueError: If the service is unknown.
-            PermissionError: If the plugin lacks access.
+            PermissionError: If the plugin lacks access (external plugin
+                requesting a non-allowlisted service).
         """
         service = self._services.get(name)
         if service is None:
             available = list(self._services.keys())
             raise ValueError(f"Unknown service: {name!r}. Available: {available}")
-        if self._trust_level == TrustLevel.EXTERNAL:
-            raise PermissionError(f"Service {name!r} requires TrustLevel.INTERNAL")
+        if (
+            self._trust_level == TrustLevel.EXTERNAL
+            and name not in EXTERNAL_ALLOWED_SERVICES
+        ):
+            raise PermissionError(
+                f"Service {name!r} is not in the external allowlist "
+                f"{sorted(EXTERNAL_ALLOWED_SERVICES)}; requires TrustLevel.INTERNAL"
+            )
         return service
 
     # --- Command Registration ---
@@ -347,6 +370,34 @@ class PluginContext:
         """
         self._event_type_registry.add(event_type)
         self._logger.debug("Registered event type: %s", event_type)
+
+    # --- Service Registration (plugin → core) ---
+
+    def register_service(self, name: str, instance: object) -> None:
+        """Expose a service the plugin provides for core / other plugins to use.
+
+        The instance should implement the corresponding Protocol declared in
+        ``src/plugins/services.py`` (e.g. :class:`MemoryServiceProtocol` for
+        ``name="memory"``).  Core consumers fetch it via
+        ``plugin_registry.get_service(name)`` and it returns ``None`` when no
+        plugin has registered the service.
+
+        Distinct from :meth:`get_service`, which fetches services that
+        *core* exposes to *plugins* (db, git, config, etc.).
+
+        Args:
+            name: Service name (e.g. ``"memory"``).  Conventionally matches
+                  the Protocol it implements.
+            instance: The service object.  Stored as-is; lifecycle is the
+                      plugin's responsibility.
+
+        Raises:
+            ValueError: If ``name`` is empty.
+        """
+        if not name:
+            raise ValueError("Service name must be non-empty")
+        self._plugin_services_callback(self._plugin_name, name, instance)
+        self._logger.debug("Registered service: %s", name)
 
     async def emit_event(self, event_type: str, data: dict | None = None) -> None:
         """Emit an event on the system EventBus.

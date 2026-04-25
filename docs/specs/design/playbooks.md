@@ -173,6 +173,54 @@ The only structured portion. Kept minimal:
 | `cooldown` | no | Minimum seconds between executions. Default varies by trigger |
 | `version` | no | Auto-incremented on each compilation |
 
+### Referencing Resources
+
+Playbooks often need to reference files that live outside the playbook itself —
+bundled prompt templates, vault entries, logs, per-task artifacts. Absolute
+filesystem paths are not portable (they break whenever the daemon runs on a
+different machine or with a different `data_dir`), and hardcoded
+`~/.agent-queue/...` paths hide the fact that the vault root is configurable.
+
+Use the `aq://` URI scheme for authoring playbooks. **These are compile-time
+macros** — the playbook compiler rewrites each `aq://<authority>/<path>` into
+an absolute filesystem path before the playbook is stored. Runtime tools (at
+execution time) see only absolute paths; they never encounter `aq://`. All
+authorities are **read-only**.
+
+| URI | Rewrites to |
+|---|---|
+| `aq://prompts/<path>` | Bundled `src/prompts/<path>` (ships with the daemon) |
+| `aq://vault/<path>` | `{vault_root}/<path>` |
+| `aq://logs/<path>` | `{data_dir}/logs/<path>` |
+| `aq://tasks/<path>` | `{data_dir}/tasks/<path>` |
+| `aq://attachments/<path>` | `{data_dir}/attachments/<path>` |
+
+**Runtime placeholders.** Inside a URI, placeholders like `<project_id>` pass
+through the rewrite unchanged. The compiled step's LLM fills them at execution
+time. Example: `aq://vault/project_<project_id>/summary.md` becomes
+`/home/user/.agent-queue/vault/project_<project_id>/summary.md` (literal) at
+compile, then `/home/user/.agent-queue/vault/project_proj-123/summary.md` at
+runtime once the LLM knows `project_id`.
+
+**Example — a playbook step in the markdown source:**
+
+```markdown
+For each target project, call `create_task` with:
+
+- `project_id`: the project's id
+- `title`: "Consolidate memory: <project_name>"
+- `description`: the `rendered` field of
+  `render_prompt(path="aq://prompts/consolidation_task.md", variables={...})`
+```
+
+After compilation, `aq://prompts/consolidation_task.md` becomes an absolute
+path like `/app/src/prompts/consolidation_task.md`, which the runtime
+`render_prompt` receives.
+
+**Safety.** The compiler rejects `..` segments and unknown authorities at
+compile time. The authority whitelist is the permission model — adding a new
+authority requires a deliberate code change.
+
 ### LLM Compilation
 
 When a playbook markdown is saved or modified, an LLM reads the natural language

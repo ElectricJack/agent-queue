@@ -52,7 +52,7 @@ def _make_manager(
 ) -> PlaybookManager:
     """Create a PlaybookManager with an EventBus."""
     bus = event_bus or EventBus(validate_events=False)
-    return PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+    return PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
 
 
 # ---------------------------------------------------------------------------

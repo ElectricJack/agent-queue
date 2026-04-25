@@ -1233,7 +1233,7 @@ class TestTriggerEventFiring:
 
     def test_playbook_manager_registers_trigger(self):
         """PlaybookManager maps the trigger event type to the playbook."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         playbook = CompiledPlaybook(
             id="feature-pipeline",
             version=1,
@@ -1260,7 +1260,7 @@ class TestTriggerEventFiring:
 
     def test_trigger_map_includes_feature_pipeline_for_task_created(self):
         """get_playbooks_by_trigger('task.created') includes feature-pipeline."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         playbook = CompiledPlaybook(
             id="feature-pipeline",
             version=1,
@@ -1294,7 +1294,7 @@ class TestTriggerEventFiring:
         async def on_trigger(playbook, event_data):
             triggered.append((playbook.id, event_data))
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         playbook = CompiledPlaybook(
             id="feature-pipeline",
             version=1,
@@ -1327,7 +1327,7 @@ class TestTriggerEventFiring:
         async def on_trigger(playbook, event_data):
             triggered.append((playbook.id, event_data))
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         playbook = CompiledPlaybook(
             id="feature-pipeline",
             version=1,
@@ -1363,7 +1363,7 @@ class TestTriggerEventFiring:
         async def on_trigger(playbook, event_data):
             triggered.append((playbook.id, event_data))
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         playbook = CompiledPlaybook(
             id="feature-pipeline",
             version=1,
@@ -1421,7 +1421,7 @@ class TestTriggerEventFiring:
         async def on_trigger(playbook, event_data):
             triggered.append(playbook.id)
 
-        manager = PlaybookManager(event_bus=bus, on_trigger=on_trigger)
+        manager = PlaybookManager(config=None, event_bus=bus, on_trigger=on_trigger)
         playbook = CompiledPlaybook(
             id="feature-pipeline",
             version=1,

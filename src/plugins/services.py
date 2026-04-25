@@ -6,17 +6,19 @@ contract; implementation wrappers delegate to the real managers.
 
 Services available to internal plugins via ``ctx.get_service(name)``:
 
-- ``"git"``        — :class:`GitService`
-- ``"db"``         — :class:`DatabaseService`
-- ``"memory_v2"``  — :class:`MemoryV2ServiceProtocol`
-- ``"workspace"``  — :class:`WorkspaceService`
-- ``"config"``     — :class:`ConfigService`
+- ``"git"``           — :class:`GitService`
+- ``"db"``            — :class:`DatabaseService`
+- ``"memory"``        — :class:`MemoryServiceProtocol`
+- ``"workspace"``     — :class:`WorkspaceService`
+- ``"config"``        — :class:`ConfigService` (external-allowed)
+- ``"vault_watcher"`` — :class:`VaultWatcherService` (external-allowed)
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
 
 if TYPE_CHECKING:
@@ -88,8 +90,8 @@ class DatabaseService(Protocol):
 
 
 @runtime_checkable
-class MemoryV2ServiceProtocol(Protocol):
-    """V2 memory operations via memsearch/Milvus with scoped collections.
+class MemoryServiceProtocol(Protocol):
+    """Memory operations via memsearch/Milvus with scoped collections.
 
     Provides semantic search, KV storage, temporal facts, and cross-scope
     tag search.  Wraps the memsearch fork's ``CollectionRouter`` and
@@ -241,6 +243,25 @@ class ConfigService(Protocol):
     def chat_provider(self) -> Any: ...
     @property
     def inbox(self) -> dict: ...
+
+
+@runtime_checkable
+class VaultWatcherService(Protocol):
+    """Register / unregister handlers for vault file changes.
+
+    Exposed to external plugins so they can react to vault edits
+    (e.g., the memory plugin syncs facts.md changes to its KV store).
+    """
+
+    def register_handler(
+        self,
+        pattern: str,
+        handler: Callable[[list[Any]], Any],
+        *,
+        handler_id: str | None = None,
+    ) -> str: ...
+
+    def unregister_handler(self, handler_id: str) -> bool: ...
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +593,7 @@ def build_internal_services(
     db: Database,
     git: GitManager,
     config: AppConfig,
-    memory_v2_service: Any = None,
+    memory_service: Any = None,
 ) -> dict[str, Any]:
     """Build the services dict for internal plugin contexts.
 
@@ -586,9 +607,9 @@ def build_internal_services(
         Git manager instance.
     config:
         Application configuration.
-    memory_v2_service:
-        Optional v2 MemoryV2Service instance.  When provided, exposed
-        as ``"memory_v2"`` for plugins that need v2-specific operations
+    memory_service:
+        Optional MemoryService instance.  When provided, exposed
+        as ``"memory"`` for plugins that need memory operations
         (KV, temporal facts, scoped search).
     """
     services: dict[str, Any] = {
@@ -597,6 +618,6 @@ def build_internal_services(
         "workspace": WorkspaceServiceImpl(db, git, config),
         "config": ConfigServiceImpl(config),
     }
-    if memory_v2_service is not None:
-        services["memory_v2"] = memory_v2_service
+    if memory_service is not None:
+        services["memory"] = memory_service
     return services

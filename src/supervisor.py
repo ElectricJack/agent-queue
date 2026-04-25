@@ -437,7 +437,11 @@ class Supervisor:
 
             # L1 Critical Facts — inject project facts so the supervisor has
             # key context without needing explicit memory_search calls.
-            mem_svc = getattr(self.orchestrator, "_memory_v2_service", None)
+            mem_svc = (
+                self.orchestrator.plugin_registry.get_service("memory")
+                if getattr(self.orchestrator, "plugin_registry", None) is not None
+                else None
+            )
             if mem_svc:
                 try:
                     l1_text = await mem_svc.load_l1_facts(

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from src.plugins.base import (
+    EXTERNAL_ALLOWED_SERVICES,
     Plugin,
     PluginContext,
     PluginInfo,
@@ -172,6 +173,11 @@ class PluginRegistry:
         self._internal_services: dict | None = None
         self._active_project_id_getter: Callable | None = None
 
+        # Plugin-provided services (plugin → core direction).  Populated
+        # by PluginContext.register_service via the bound callback.
+        self._plugin_services: dict[str, object] = {}
+        self._plugin_services_by_owner: dict[str, set[str]] = {}
+
         # Plugins base directory (git clones)
         self._plugins_dir = Path(config.data_dir) / "plugins"
         self._plugins_dir.mkdir(parents=True, exist_ok=True)
@@ -297,6 +303,7 @@ class PluginRegistry:
                     invoke_llm_callback=self._invoke_llm_callback,
                     trust_level=TrustLevel.INTERNAL,
                     services=services,
+                    plugin_services_callback=self.register_plugin_service,
                     active_project_id_getter=self._active_project_id_getter,
                 )
 
@@ -461,8 +468,17 @@ class PluginRegistry:
 
         instance = plugin_class()
 
-        # Create context
+        # Create context — external plugins get the allowlisted subset of services.
         data_path = str(self._plugin_data_dir / name)
+        external_services = (
+            {
+                k: v
+                for k, v in self._internal_services.items()
+                if k in EXTERNAL_ALLOWED_SERVICES
+            }
+            if self._internal_services
+            else {}
+        )
         ctx = PluginContext(
             plugin_name=name,
             install_path=install_path,
@@ -475,6 +491,9 @@ class PluginRegistry:
             notify_callback=self._notify_callback,
             execute_command_callback=self._execute_command_callback,
             invoke_llm_callback=self._invoke_llm_callback,
+            services=external_services,
+            plugin_services_callback=self.register_plugin_service,
+            active_project_id_getter=self._active_project_id_getter,
         )
 
         # Load config from DB before plugin init so get_config() works
@@ -585,6 +604,9 @@ class PluginRegistry:
             if key.startswith(f"{name}."):
                 task.cancel()
                 self._cron_tasks.pop(key, None)
+
+        # Clear any plugin-provided services owned by this plugin
+        self._clear_plugin_services(name)
 
         del self._plugins[name]
         logger.info("Unloaded plugin: %s", name)
@@ -1030,10 +1052,120 @@ class PluginRegistry:
         Parameters
         ----------
         name:
-            Plugin name (e.g. ``"memory_v2"``).
+            Plugin name (e.g. ``"memory"``).
         """
         loaded = self._plugins.get(name)
         return loaded.instance if loaded else None
+
+    # ------------------------------------------------------------------
+    # Plugin-provided services (plugin → core direction)
+    # ------------------------------------------------------------------
+
+    def register_plugin_service(
+        self, plugin_name: str, service_name: str, instance: object
+    ) -> None:
+        """Internal: called by :meth:`PluginContext.register_service`.
+
+        Stores ``instance`` under ``service_name`` in the plugin-services
+        dict and tracks ownership so it can be cleared on unload.  Logs
+        a warning if a different plugin previously registered the name.
+        """
+        if service_name in self._plugin_services:
+            existing_owner = next(
+                (
+                    o
+                    for o, names in self._plugin_services_by_owner.items()
+                    if service_name in names
+                ),
+                None,
+            )
+            if existing_owner and existing_owner != plugin_name:
+                logger.warning(
+                    "Plugin %r overrides service %r previously registered by %r",
+                    plugin_name,
+                    service_name,
+                    existing_owner,
+                )
+        self._plugin_services[service_name] = instance
+        self._plugin_services_by_owner.setdefault(plugin_name, set()).add(service_name)
+
+    def get_service(self, name: str) -> object | None:
+        """Return a service instance registered by a loaded plugin, or ``None``.
+
+        The service object should implement the corresponding Protocol in
+        ``src/plugins/services.py`` (e.g. :class:`MemoryServiceProtocol` for
+        ``name="memory"``).
+
+        This is the *plugin → core* direction.  For the inverse (services
+        core exposes to plugins) see :meth:`PluginContext.get_service`.
+        """
+        return self._plugin_services.get(name)
+
+    def _clear_plugin_services(self, plugin_name: str) -> None:
+        """Internal: drop all services owned by ``plugin_name``."""
+        owned = self._plugin_services_by_owner.pop(plugin_name, set())
+        for name in owned:
+            self._plugin_services.pop(name, None)
+
+    async def register_in_memory_plugin(self, plugin_cls: type[Plugin]) -> None:
+        """Register an in-memory Plugin subclass for testing.
+
+        Bypasses the on-disk install / git / pyproject machinery.  The
+        plugin is instantiated, given an EXTERNAL-trust ``PluginContext``
+        wired into the registry's command/tool/service registries, and
+        ``initialize()`` is awaited.  Suitable for unit tests; not used
+        by production loading.
+
+        The plugin name is taken from a ``plugin_name`` class attribute
+        if present, otherwise from the class ``__name__``.
+
+        Parameters
+        ----------
+        plugin_cls:
+            A :class:`Plugin` subclass.
+        """
+        instance = plugin_cls()
+        name = getattr(plugin_cls, "plugin_name", plugin_cls.__name__)
+
+        external_services = (
+            {
+                k: v
+                for k, v in self._internal_services.items()
+                if k in EXTERNAL_ALLOWED_SERVICES
+            }
+            if self._internal_services
+            else {}
+        )
+        ctx = PluginContext(
+            plugin_name=name,
+            install_path=str(self._plugins_dir),
+            data_path=str(self._plugin_data_dir / name),
+            db=self._db,
+            bus=self._bus,
+            command_registry=self._commands,
+            tool_registry=self._tools,
+            event_type_registry=self._event_types,
+            notify_callback=self._notify_callback,
+            execute_command_callback=self._execute_command_callback,
+            invoke_llm_callback=self._invoke_llm_callback,
+            services=external_services,
+            plugin_services_callback=self.register_plugin_service,
+        )
+
+        await instance.initialize(ctx)
+
+        info = PluginInfo(
+            name=name,
+            version="0.0.0",
+            description=f"In-memory test plugin: {name}",
+        )
+        self._plugins[name] = _LoadedPlugin(
+            info=info,
+            instance=instance,
+            context=ctx,
+            install_path="<in-memory>",
+            status=PluginStatus.ACTIVE,
+        )
 
     # ------------------------------------------------------------------
     # Circuit Breaker
@@ -1138,16 +1270,25 @@ class PluginRegistry:
             loaded.context._invoke_llm_callback = callback
 
     def set_internal_services(self, services: dict) -> None:
-        """Set the services dict for internal plugin contexts.
+        """Set the services dict for plugin contexts.
 
         Must be called before ``load_all()`` so that internal plugins
         receive their service providers during initialization.
+
+        Internal plugins receive the full ``services`` map.  External
+        plugins receive only the subset in
+        :data:`src.plugins.base.EXTERNAL_ALLOWED_SERVICES` (currently
+        ``config`` and ``vault_watcher``).
         """
         self._internal_services = services
-        # Update already-loaded internal plugins
+        # Update already-loaded plugins, filtering by trust level.
         for loaded in self._plugins.values():
             if loaded.context._trust_level == TrustLevel.INTERNAL:
                 loaded.context._services = services
+            else:
+                loaded.context._services = {
+                    k: v for k, v in services.items() if k in EXTERNAL_ALLOWED_SERVICES
+                }
 
     def set_active_project_id_getter(self, getter: Callable) -> None:
         """Set the active project ID getter for all plugin contexts."""

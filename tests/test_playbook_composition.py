@@ -116,7 +116,7 @@ def _failing_graph(playbook_id: str) -> dict:
 
 def _manager_with_playbooks(*playbooks: CompiledPlaybook) -> PlaybookManager:
     """Create a PlaybookManager with pre-loaded playbooks (no disk/store)."""
-    manager = PlaybookManager()
+    manager = PlaybookManager(config=None)
     for pb in playbooks:
         manager._active[pb.id] = pb
         manager._index_triggers(pb)

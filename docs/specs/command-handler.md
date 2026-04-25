@@ -2166,8 +2166,8 @@ available or the channel cannot be found.
 
 ### Prompt Template Commands
 - `list_prompts` — list prompt templates
-- `read_prompt` — read a specific template
-- `render_prompt` — render template with variable substitution
+- `read_prompt` — read a specific template. Accepts either `(project_id, name)` or `path` (absolute filesystem path); in playbooks, use `aq://prompts/<name>` which the compiler rewrites to an absolute path
+- `render_prompt` — render template with variable substitution. Same `(project_id, name)` vs. `path` options as `read_prompt`; `{{variable}}` placeholders are substituted from the `variables` dict server-side
 
 ### Note Extensions
 - `promote_note` — incorporate a note into the project profile via LLM

@@ -24,11 +24,20 @@ class PlaybookCommandsMixin:
 
         Returns every active compiled playbook with its scope, triggers,
         compilation metadata, cooldown state, and most recent run info
-        from the database.  Supports optional filtering by scope.
+        from the database.  Supports optional filtering by scope and by
+        project.
+
+        When ``project_id`` is provided (e.g. when the command is invoked
+        from a project-specific Discord channel), project-scoped playbooks
+        belonging to a *different* project are excluded.  System-scoped
+        and agent-type-scoped playbooks are always included because they
+        apply across projects.
 
         Args:
             scope: Optional — filter by scope type
                 (``system``, ``project``, ``agent-type``).
+            project_id: Optional — when set, restrict project-scoped
+                playbooks to those belonging to this project.
         """
         pm = getattr(self.orchestrator, "playbook_manager", None)
         if pm is None:
@@ -43,6 +52,10 @@ class PlaybookCommandsMixin:
                 )
             }
 
+        project_filter = args.get("project_id")
+        if project_filter is not None:
+            project_filter = str(project_filter).strip() or None
+
         playbooks_data = []
         for pb_id, pb in sorted(pm.active_playbooks.items()):
             # Parse scope for filtering
@@ -55,6 +68,13 @@ class PlaybookCommandsMixin:
 
             # Scope identifier (project_id for project-scoped playbooks)
             scope_id = pm.get_scope_identifier(pb_id)
+
+            # Project filter: exclude project-scoped playbooks that do not
+            # belong to the requested project.  Non-project scopes pass
+            # through untouched (they apply across all projects).
+            if project_filter and scope_enum.value == "project":
+                if scope_id != project_filter:
+                    continue
 
             # In-flight runs
             running_runs = pm.get_runs_for_playbook(pb_id)

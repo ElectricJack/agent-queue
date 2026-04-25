@@ -149,7 +149,7 @@ class TestTriggerMapBasic:
         (compiled_dir / "pb-2.json").write_text(json.dumps(pb2.to_dict()))
         (compiled_dir / "pb-3.json").write_text(json.dumps(pb3.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         loaded = await manager.load_from_disk()
         assert loaded == 3
 
@@ -162,7 +162,7 @@ class TestTriggerMapBasic:
     @pytest.mark.asyncio
     async def test_trigger_map_empty_initially(self) -> None:
         """A fresh manager has an empty trigger map."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         assert manager.trigger_map == {}
         assert manager.get_all_triggers() == []
         assert manager.playbook_count == 0
@@ -181,7 +181,7 @@ class TestTriggerMapBasic:
         (compiled_dir / "pb-2.json").write_text(json.dumps(pb2.to_dict()))
         (compiled_dir / "pb-3.json").write_text(json.dumps(pb3.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         await manager.load_from_disk()
 
         # Verify lookup
@@ -213,7 +213,7 @@ class TestTriggerMapBasic:
         (compiled_dir / "pb-1.json").write_text(json.dumps(pb1.to_dict()))
         (compiled_dir / "pb-2.json").write_text(json.dumps(pb2.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         await manager.load_from_disk()
 
         triggers = manager.get_all_triggers()
@@ -231,7 +231,7 @@ class TestTriggerMapBasic:
         (compiled_dir / "pb-1.json").write_text(json.dumps(pb1.to_dict()))
         (compiled_dir / "pb-2.json").write_text(json.dumps(pb2.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         assert manager.playbook_count == 0
 
         await manager.load_from_disk()
@@ -251,6 +251,7 @@ class TestTriggerMapOnCompile:
         """Successful compilation adds triggers to the mapping."""
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -275,6 +276,7 @@ class TestTriggerMapOnCompile:
         provider.create_message = AsyncMock(side_effect=[good_resp, bad_resp, bad_resp, bad_resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -321,6 +323,7 @@ class TestTriggerMapOnCompile:
         provider.create_message = AsyncMock(side_effect=[v1_resp, v2_resp])
 
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -366,7 +369,7 @@ class TestTriggerMapOnRemove:
         )
         (compiled_dir / "removable.json").write_text(json.dumps(pb.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         await manager.load_from_disk()
 
         assert "git.commit" in manager.trigger_map
@@ -395,7 +398,7 @@ class TestTriggerMapOnRemove:
         (compiled_dir / "pb-1.json").write_text(json.dumps(pb1.to_dict()))
         (compiled_dir / "pb-2.json").write_text(json.dumps(pb2.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         await manager.load_from_disk()
 
         assert set(manager.trigger_map["git.commit"]) == {"pb-1", "pb-2"}
@@ -410,7 +413,7 @@ class TestTriggerMapOnRemove:
     @pytest.mark.asyncio
     async def test_remove_nonexistent_does_not_affect_trigger_map(self) -> None:
         """Removing a nonexistent playbook leaves the trigger map unchanged."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
         # Manually inject a playbook
         pb = _make_playbook(playbook_id="existing", triggers=["git.commit"])
         manager._active["existing"] = pb
@@ -431,7 +434,7 @@ class TestRebuildTriggerMap:
 
     def test_rebuild_from_scratch(self) -> None:
         """_rebuild_trigger_map clears and rebuilds the entire mapping."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
 
         pb1 = _make_playbook(playbook_id="pb-1", triggers=["git.commit", "git.push"])
         pb2 = _make_playbook(playbook_id="pb-2", triggers=["task.completed"])
@@ -451,7 +454,7 @@ class TestRebuildTriggerMap:
 
     def test_rebuild_clears_stale_entries(self) -> None:
         """_rebuild_trigger_map removes stale entries from a previous state."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
 
         # Simulate a stale trigger map
         manager._trigger_map["stale.event"] = {"old-playbook"}
@@ -482,7 +485,7 @@ class TestLoadFromStore:
         pb = _make_playbook(playbook_id="sys-pb", triggers=["task.completed"], scope="system")
         store.save(pb, "system")
 
-        manager = PlaybookManager(store=store)
+        manager = PlaybookManager(config=None, store=store)
         loaded = await manager.load_from_store()
 
         assert loaded == 1
@@ -502,7 +505,7 @@ class TestLoadFromStore:
         )
         store.save(pb, "project", "my-app")
 
-        manager = PlaybookManager(store=store)
+        manager = PlaybookManager(config=None, store=store)
         loaded = await manager.load_from_store()
 
         assert loaded == 1
@@ -522,7 +525,7 @@ class TestLoadFromStore:
         )
         store.save(pb, "agent_type", "coding")
 
-        manager = PlaybookManager(store=store)
+        manager = PlaybookManager(config=None, store=store)
         loaded = await manager.load_from_store()
 
         assert loaded == 1
@@ -557,7 +560,7 @@ class TestLoadFromStore:
         store.save(pb_agent, "agent_type", "coding")
         store.save(pb_proj, "project", "my-app")
 
-        manager = PlaybookManager(store=store)
+        manager = PlaybookManager(config=None, store=store)
         loaded = await manager.load_from_store()
 
         assert loaded == 3
@@ -593,7 +596,7 @@ class TestLoadFromStore:
         )
         store.save(bad_pb, "system")
 
-        manager = PlaybookManager(store=store)
+        manager = PlaybookManager(config=None, store=store)
         loaded = await manager.load_from_store()
 
         assert loaded == 1
@@ -609,7 +612,7 @@ class TestLoadFromStore:
         vm = FakeVaultManager(str(tmp_path / "compiled"))
         store = CompiledPlaybookStore(vm)
 
-        manager = PlaybookManager(store=store)
+        manager = PlaybookManager(config=None, store=store)
         loaded = await manager.load_from_store()
 
         assert loaded == 0
@@ -624,7 +627,7 @@ class TestLoadFromStore:
         pb = _make_playbook(playbook_id="disk-pb", triggers=["git.commit"])
         (compiled_dir / "disk-pb.json").write_text(json.dumps(pb.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))  # no store
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))  # no store
         loaded = await manager.load_from_store()
 
         assert loaded == 1
@@ -658,7 +661,7 @@ class TestLoadFromStore:
         store.save(pb_b, "project", "my-app")
         store.save(pb_c, "system")
 
-        manager = PlaybookManager(store=store)
+        manager = PlaybookManager(config=None, store=store)
         await manager.load_from_store()
 
         # git.pr.created → both deploy-gate and code-review
@@ -700,6 +703,7 @@ class TestTriggerMapConsistency:
         """Compiling then removing a playbook leaves no stale triggers."""
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -725,6 +729,7 @@ class TestTriggerMapConsistency:
 
         provider = _make_mock_provider()
         manager = PlaybookManager(
+            config=None,
             chat_provider=provider,
             data_dir=str(tmp_path),
         )
@@ -759,7 +764,7 @@ class TestTriggerMapConsistency:
             pb = _make_playbook(playbook_id=name, triggers=["shared.trigger"])
             (compiled_dir / f"{name}.json").write_text(json.dumps(pb.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         await manager.load_from_disk()
 
         results = manager.get_playbooks_by_trigger("shared.trigger")
@@ -777,7 +782,7 @@ class TestTriggerMapConsistency:
             pb = _make_playbook(playbook_id=name, triggers=["shared.trigger"])
             (compiled_dir / f"{name}.json").write_text(json.dumps(pb.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         await manager.load_from_disk()
 
         tmap = manager.trigger_map
@@ -804,7 +809,7 @@ class TestMultipleTriggersSamePlaybook:
         )
         (compiled_dir / "multi-trigger.json").write_text(json.dumps(pb.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         await manager.load_from_disk()
 
         for trigger in ["git.commit", "git.push", "task.completed", "timer.30m"]:
@@ -826,7 +831,7 @@ class TestMultipleTriggersSamePlaybook:
         )
         (compiled_dir / "multi.json").write_text(json.dumps(pb.to_dict()))
 
-        manager = PlaybookManager(data_dir=str(tmp_path))
+        manager = PlaybookManager(config=None, data_dir=str(tmp_path))
         await manager.load_from_disk()
         assert len(manager.get_all_triggers()) == 3
 
@@ -869,7 +874,7 @@ class TestStoreIntegrationScopeMetadata:
         store.save(pb_proj, "project", "my-app")
         store.save(pb_at, "agent_type", "coding")
 
-        manager = PlaybookManager(store=store)
+        manager = PlaybookManager(config=None, store=store)
         await manager.load_from_store()
 
         assert manager.get_playbook("sys-pb").scope == "system"
@@ -885,7 +890,7 @@ class TestStoreIntegrationScopeMetadata:
         pb = _make_playbook(playbook_id="versioned", version=5, triggers=["git.commit"])
         store.save(pb, "system")
 
-        manager = PlaybookManager(store=store)
+        manager = PlaybookManager(config=None, store=store)
         await manager.load_from_store()
 
         loaded = manager.get_playbook("versioned")
@@ -904,7 +909,7 @@ class TestTriggerMapEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_triggers_list_does_not_crash(self) -> None:
         """A playbook with no triggers (theoretically invalid) doesn't crash the mapping."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
 
         # Manually create a playbook with empty triggers (bypasses validation)
         pb = CompiledPlaybook(
@@ -929,7 +934,7 @@ class TestTriggerMapEdgeCases:
     @pytest.mark.asyncio
     async def test_duplicate_trigger_in_playbook(self) -> None:
         """A playbook with duplicate trigger entries handles gracefully."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
 
         pb = _make_playbook(
             playbook_id="dupe",
@@ -946,7 +951,7 @@ class TestTriggerMapEdgeCases:
     @pytest.mark.asyncio
     async def test_unindex_unknown_playbook_is_safe(self) -> None:
         """Unindexing triggers for a playbook not in the map is a no-op."""
-        manager = PlaybookManager()
+        manager = PlaybookManager(config=None)
 
         pb = _make_playbook(playbook_id="ghost", triggers=["unknown.event"])
 
@@ -976,7 +981,7 @@ class TestTriggerMapEdgeCases:
         store.save(pb_v1, "system")
         store.save(pb_v2, "project", "my-app")
 
-        manager = PlaybookManager(store=store)
+        manager = PlaybookManager(config=None, store=store)
         await manager.load_from_store()
 
         # Only one should be active (the last one loaded wins)
@@ -990,7 +995,7 @@ class TestTriggerMapEdgeCases:
         vm = FakeVaultManager(str(tmp_path / "compiled"))
         store = CompiledPlaybookStore(vm)
 
-        manager = PlaybookManager(store=store)
+        manager = PlaybookManager(config=None, store=store)
         loaded = await manager.load_from_store()
         assert loaded == 0
         assert manager.playbook_count == 0

@@ -181,6 +181,7 @@ class PlaybookManager:
         self,
         *,
         chat_provider: ChatProvider | None = None,
+        config,  # required; _ConfigLike from aq_uri — provides data_dir and vault_root
         event_bus: EventBus | None = None,
         data_dir: str | None = None,
         store: CompiledPlaybookStore | None = None,
@@ -189,6 +190,7 @@ class PlaybookManager:
         playbook_max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         self._chat_provider = chat_provider
+        self._config = config
         self._event_bus = event_bus
         self._data_dir = data_dir
         self._store = store
@@ -251,7 +253,9 @@ class PlaybookManager:
         self._playbook_max_tokens = playbook_max_tokens
         self._compiler: PlaybookCompiler | None = None
         if chat_provider is not None:
-            self._compiler = PlaybookCompiler(chat_provider, max_tokens=playbook_max_tokens)
+            self._compiler = PlaybookCompiler(
+                chat_provider, config=config, max_tokens=playbook_max_tokens
+            )
 
     # -- public API ----------------------------------------------------------
 

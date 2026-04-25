@@ -7,9 +7,16 @@ operate on workspace files with path-validation security.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
+import random
+import re
+import time
 
 from src.plugins.base import InternalPlugin, PluginContext
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +57,7 @@ TOOL_CATEGORY = "files"
 TOOL_DEFINITIONS = [
     {
         "name": "read_file",
-        "description": "Read a file's contents from a workspace. Path can be absolute or relative to the workspaces root. Supports offset/limit for reading specific portions of large files.",
+        "description": "Read a file's contents. Path can be absolute or relative to the workspaces root. Supports offset/limit for reading specific portions of large files.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -223,6 +230,192 @@ TOOL_DEFINITIONS = [
             "required": ["project_id"],
         },
     },
+    {
+        "name": "read_project_memory_file",
+        "description": (
+            "Read a markdown file from a project's system memory vault. "
+            "Resolves paths under "
+            "``{data_dir}/vault/projects/<project_id>/memory/<path>``, "
+            "which lives outside the regular workspace sandbox. Use this for "
+            "reading consolidation markers, insight files, or knowledge "
+            "entries from the agent-queue vault. Path traversal outside the "
+            "project's memory directory is rejected. Returns "
+            "``{missing: true, error}`` when the file does not exist so the "
+            "memory-consolidation playbook can treat it as "
+            "``last_consolidated: null``."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project ID. Must contain only alphanumerics, "
+                        "hyphens, and underscores — no path separators or "
+                        "traversal segments."
+                    ),
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Relative path within the project's memory directory "
+                        "(e.g. ``consolidation.md`` or ``insights/foo.md``)."
+                    ),
+                },
+            },
+            "required": ["project_id", "path"],
+        },
+    },
+    {
+        "name": "count_project_memory_files",
+        "description": (
+            "Count files in a subdirectory of a project's system memory "
+            "vault (``{data_dir}/vault/projects/<project_id>/memory/<path>``). "
+            "Optionally filter by modification time via ``newer_than`` (ISO "
+            "8601 timestamp). Returns ``{count, total, missing?}``; a missing "
+            "directory is reported as ``count: 0, missing: true`` rather than "
+            "an error so the memory-consolidation playbook can handle "
+            "first-run projects cleanly."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project ID. Must contain only alphanumerics, "
+                        "hyphens, and underscores — no path separators or "
+                        "traversal segments."
+                    ),
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Relative subdirectory under the project's memory "
+                        "directory (e.g. ``insights`` or ``knowledge``)."
+                    ),
+                },
+                "newer_than": {
+                    "type": "string",
+                    "description": (
+                        "Optional ISO 8601 timestamp. If provided, only files "
+                        "whose mtime is strictly newer than this time are "
+                        "counted. Omit or pass null to count all files."
+                    ),
+                },
+            },
+            "required": ["project_id", "path"],
+        },
+    },
+    {
+        "name": "select_files_for_inspection",
+        "description": (
+            "Select a random sample of files from a project workspace for "
+            "codebase inspection, using a weighted distribution across "
+            "categories (source, specs, tests, config, recent). Automatically "
+            "categorizes each tracked file by path/extension, excludes binary "
+            "and generated files, and de-prioritizes files that have been "
+            "inspected recently (by consulting project memory history). "
+            "Returns the selected file paths plus per-category breakdown and "
+            "enumeration statistics. Use this tool to implement the "
+            "'codebase-inspector' playbook's file-selection step."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project ID whose workspace to enumerate. Falls back "
+                        "to the active project if omitted."
+                    ),
+                },
+                "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (default: first workspace)",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Total number of files to select (default 5).",
+                    "default": 5,
+                },
+                "weights": {
+                    "type": "object",
+                    "description": (
+                        "Optional weighted distribution across categories. "
+                        "Defaults to the codebase-inspector spec: "
+                        "{source: 0.40, specs: 0.20, tests: 0.15, "
+                        "config: 0.10, recent: 0.15}. Values are normalized."
+                    ),
+                },
+                "recent_days": {
+                    "type": "integer",
+                    "description": (
+                        "Files modified within this many days are eligible "
+                        "for the 'recent' category (default 7)."
+                    ),
+                    "default": 7,
+                },
+                "history_lookback_days": {
+                    "type": "integer",
+                    "description": (
+                        "Exclude files that were inspected within this "
+                        "window, based on project-memory inspection records "
+                        "(default 21). Set to 0 to disable."
+                    ),
+                    "default": 21,
+                },
+                "seed": {
+                    "type": "integer",
+                    "description": (
+                        "Optional RNG seed for deterministic selection "
+                        "(useful for tests and reproducible runs)."
+                    ),
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "record_file_inspection",
+        "description": (
+            "Record that a file has been inspected by the codebase-inspector "
+            "(or similar) workflow. Stores an entry in project memory keyed "
+            "by the file path under the 'inspections' namespace, with a "
+            "timestamp and optional summary. Used so future "
+            "select_files_for_inspection calls can de-prioritize files that "
+            "were recently inspected."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID under which to record the inspection.",
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "Relative or absolute path of the inspected file.",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Optional short summary of the inspection outcome.",
+                },
+                "findings_count": {
+                    "type": "integer",
+                    "description": "Optional number of findings produced by the inspection.",
+                },
+                "category": {
+                    "type": "string",
+                    "description": (
+                        "Optional category label (e.g. 'source', 'specs', "
+                        "'tests', 'config', 'recent') for reporting."
+                    ),
+                },
+            },
+            "required": ["project_id", "file_path"],
+        },
+    },
 ]
 
 
@@ -373,6 +566,14 @@ class FilesPlugin(InternalPlugin):
         ctx.register_command("grep", self.cmd_grep)
         ctx.register_command("search_files", self.cmd_search_files)
         ctx.register_command("list_directory", self.cmd_list_directory)
+        ctx.register_command(
+            "read_project_memory_file", self.cmd_read_project_memory_file
+        )
+        ctx.register_command(
+            "count_project_memory_files", self.cmd_count_project_memory_files
+        )
+        ctx.register_command("select_files_for_inspection", self.cmd_select_files_for_inspection)
+        ctx.register_command("record_file_inspection", self.cmd_record_file_inspection)
 
         # Register tool definitions with category
         for tool_def in TOOL_DEFINITIONS:
@@ -679,3 +880,741 @@ class FilesPlugin(InternalPlugin):
             "directories": dirs,
             "files": files,
         }
+
+    # ------------------------------------------------------------------
+    # read_project_memory_file / count_project_memory_files
+    #
+    # These commands expose narrow, read-only access to the system memory
+    # vault at ``{data_dir}/vault/projects/<project_id>/memory/``.  The
+    # ordinary ``read_file`` / ``list_directory`` tools sandbox paths to
+    # ``workspace_dir`` and known repo/workspace paths, so the vault — which
+    # lives under ``~/.agent-queue/`` by default — is inaccessible.  The
+    # ``memory-consolidation`` playbook needs to read ``consolidation.md``
+    # and count insight files to decide which projects qualify for a
+    # consolidation pass; these commands are the sanctioned path for that.
+    #
+    # Security:
+    # - ``project_id`` is strictly validated to contain only alphanumerics,
+    #   hyphens, and underscores.  This prevents traversal via crafted
+    #   ids like ``../other``.
+    # - ``path`` is resolved with ``os.path.realpath`` and compared against
+    #   the project's memory directory; any escape via ``..`` is rejected.
+    # - These commands are read-only; no writer exists by design.
+    # ------------------------------------------------------------------
+
+    _PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]*$")
+
+    def _resolve_project_memory_path(
+        self, project_id: str, rel_path: str
+    ) -> tuple[str, str] | dict:
+        """Resolve ``{data_dir}/vault/projects/<id>/memory/<rel_path>``.
+
+        Returns a ``(memory_dir, resolved_abs_path)`` tuple on success, or
+        an error dict compatible with the command contract.  ``rel_path``
+        may be empty (``""``) to refer to the memory directory itself.
+        """
+        if not project_id or not isinstance(project_id, str):
+            return {"error": "project_id is required"}
+        if not self._PROJECT_ID_PATTERN.match(project_id):
+            return {
+                "error": (
+                    "Invalid project_id: must contain only alphanumerics, "
+                    "hyphens, and underscores."
+                )
+            }
+        memory_dir = os.path.realpath(
+            os.path.join(
+                self._cfg.data_dir,
+                "vault",
+                "projects",
+                project_id,
+                "memory",
+            )
+        )
+        if rel_path is None:
+            rel_path = ""
+        # Strip any leading slash so ``os.path.join`` stays relative.
+        rel_clean = rel_path.lstrip("/\\") if isinstance(rel_path, str) else ""
+        candidate = os.path.realpath(os.path.join(memory_dir, rel_clean))
+        if candidate != memory_dir and not candidate.startswith(memory_dir + os.sep):
+            return {
+                "error": (
+                    "Access denied: path is outside the project's memory "
+                    "directory."
+                )
+            }
+        return memory_dir, candidate
+
+    async def cmd_read_project_memory_file(self, args: dict) -> dict:
+        project_id = args.get("project_id", "")
+        rel_path = args.get("path", "")
+        if not rel_path:
+            return {"error": "path is required"}
+
+        resolved = self._resolve_project_memory_path(project_id, rel_path)
+        if isinstance(resolved, dict):
+            return resolved
+        _memory_dir, abs_path = resolved
+
+        if not os.path.exists(abs_path):
+            return {
+                "error": f"File not found: {rel_path}",
+                "missing": True,
+                "project_id": project_id,
+                "path": abs_path,
+            }
+        if not os.path.isfile(abs_path):
+            return {
+                "error": f"Not a file: {rel_path}",
+                "project_id": project_id,
+                "path": abs_path,
+            }
+        try:
+            with open(abs_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            return {
+                "error": "Binary file -- cannot display contents",
+                "project_id": project_id,
+                "path": abs_path,
+            }
+        except OSError as e:
+            return {
+                "error": f"Read failed: {e}",
+                "project_id": project_id,
+                "path": abs_path,
+            }
+        return {
+            "project_id": project_id,
+            "path": abs_path,
+            "content": content,
+        }
+
+    async def cmd_count_project_memory_files(self, args: dict) -> dict:
+        project_id = args.get("project_id", "")
+        rel_path = args.get("path", "")
+        newer_than = args.get("newer_than")
+
+        resolved = self._resolve_project_memory_path(project_id, rel_path or "")
+        if isinstance(resolved, dict):
+            return resolved
+        _memory_dir, abs_dir = resolved
+
+        if not os.path.exists(abs_dir):
+            return {
+                "project_id": project_id,
+                "path": abs_dir,
+                "count": 0,
+                "total": 0,
+                "missing": True,
+                "newer_than": newer_than,
+            }
+        if not os.path.isdir(abs_dir):
+            return {
+                "error": f"Not a directory: {rel_path}",
+                "project_id": project_id,
+                "path": abs_dir,
+            }
+
+        cutoff: float | None = None
+        if newer_than:
+            from datetime import datetime
+
+            raw = str(newer_than).strip()
+            if raw:
+                # Accept trailing ``Z`` (RFC 3339 UTC) which ``fromisoformat``
+                # only understands on 3.11+.  ``replace`` is a safe no-op when
+                # absent.
+                normalized = raw.replace("Z", "+00:00")
+                try:
+                    dt = datetime.fromisoformat(normalized)
+                except ValueError:
+                    return {
+                        "error": (
+                            f"Invalid newer_than timestamp: {newer_than!r}. "
+                            "Use ISO 8601 (e.g. 2026-04-23T00:00:00Z)."
+                        )
+                    }
+                cutoff = dt.timestamp()
+
+        try:
+            entries = os.listdir(abs_dir)
+        except OSError as e:
+            return {
+                "error": f"List failed: {e}",
+                "project_id": project_id,
+                "path": abs_dir,
+            }
+
+        total = 0
+        matched = 0
+        for name in entries:
+            full = os.path.join(abs_dir, name)
+            if not os.path.isfile(full):
+                continue
+            total += 1
+            if cutoff is None:
+                matched += 1
+            else:
+                try:
+                    mtime = os.path.getmtime(full)
+                except OSError:
+                    continue
+                if mtime > cutoff:
+                    matched += 1
+
+        result: dict = {
+            "project_id": project_id,
+            "path": abs_dir,
+            "count": matched,
+            "total": total,
+        }
+        if newer_than:
+            result["newer_than"] = newer_than
+        return result
+
+    # ------------------------------------------------------------------
+    # select_files_for_inspection / record_file_inspection
+    # ------------------------------------------------------------------
+
+    async def _resolve_workspace_path(
+        self, project_id: str, workspace_name: str | None
+    ) -> tuple[str, str] | dict:
+        """Resolve (ws_path, ws_name) for a project, or return an error dict."""
+        if workspace_name:
+            ws = await self._db.get_workspace_by_name(project_id, workspace_name)
+            if not ws:
+                workspaces = await self._db.list_workspaces(project_id)
+                ws = next((w for w in workspaces if w.id == workspace_name), None)
+            if not ws:
+                return {
+                    "error": (
+                        f"Workspace '{workspace_name}' not found for project '{project_id}'."
+                    )
+                }
+        else:
+            workspaces = await self._db.list_workspaces(project_id)
+            if not workspaces:
+                return {"error": f"Project '{project_id}' has no workspaces."}
+            ws = workspaces[0]
+        if not ws.workspace_path:
+            return {"error": f"Project '{project_id}' has no workspaces."}
+        return (os.path.realpath(ws.workspace_path), ws.name or ws.id)
+
+    async def cmd_select_files_for_inspection(self, args: dict) -> dict:
+        project_id = args.get("project_id") or self._ctx.active_project_id
+        if not project_id:
+            return {"error": "project_id is required (no active project set)"}
+
+        count = max(1, int(args.get("count", 5)))
+        recent_days = max(0, int(args.get("recent_days", 7)))
+        history_lookback_days = max(0, int(args.get("history_lookback_days", 21)))
+        seed = args.get("seed")
+        workspace_name = args.get("workspace")
+
+        default_weights = {
+            "source": 0.40,
+            "specs": 0.20,
+            "tests": 0.15,
+            "config": 0.10,
+            "recent": 0.15,
+        }
+        raw_weights = args.get("weights")
+        if isinstance(raw_weights, dict) and raw_weights:
+            weights = {k: float(v) for k, v in raw_weights.items() if k in default_weights}
+            if not weights:
+                weights = dict(default_weights)
+        else:
+            weights = dict(default_weights)
+        total_w = sum(weights.values()) or 1.0
+        weights = {k: v / total_w for k, v in weights.items()}
+
+        # Resolve workspace
+        ws_info = await self._resolve_workspace_path(project_id, workspace_name)
+        if isinstance(ws_info, dict):  # error dict
+            return ws_info
+        ws_path, ws_name = ws_info
+        validated_ws = await self._ws.validate_path(ws_path)
+        if not validated_ws:
+            return {"error": "Access denied: workspace path is outside allowed directories"}
+        if not os.path.isdir(validated_ws):
+            return {"error": f"Workspace path not found: {ws_path}"}
+
+        # Enumerate tracked files (respect .gitignore)
+        try:
+            all_files = await _list_tracked_files(validated_ws)
+        except RuntimeError as e:
+            return {"error": f"File enumeration failed: {e}"}
+
+        # Filter out binary / generated / lockfile entries
+        candidates: list[dict] = []
+        now = time.time()
+        recent_cutoff = now - (recent_days * 86400) if recent_days > 0 else 0
+        for rel in all_files:
+            if _is_excluded_path(rel):
+                continue
+            abs_path = os.path.join(validated_ws, rel)
+            try:
+                mtime = os.path.getmtime(abs_path)
+            except OSError:
+                continue
+            if not os.path.isfile(abs_path):
+                continue
+            category = categorize_file(rel)
+            candidates.append(
+                {
+                    "path": rel,
+                    "category": category,
+                    "mtime": mtime,
+                    "recent": recent_cutoff > 0 and mtime >= recent_cutoff,
+                }
+            )
+
+        total_enumerated = len(candidates)
+
+        # Load inspection history from project memory
+        recent_history = await self._load_recent_inspections(
+            project_id, history_lookback_days
+        )
+        excluded_count = 0
+        if recent_history:
+            before = len(candidates)
+            candidates = [c for c in candidates if c["path"] not in recent_history]
+            excluded_count = before - len(candidates)
+
+        # Group by category
+        pools: dict[str, list[dict]] = {k: [] for k in default_weights}
+        for c in candidates:
+            cat = c["category"]
+            if cat in pools:
+                pools[cat].append(c)
+            if c["recent"]:
+                pools["recent"].append(c)
+
+        # Weighted selection
+        rng = random.Random(seed) if seed is not None else random.Random()
+        target_counts = _weighted_integer_split(weights, count)
+        selected_rel: list[str] = []
+        selected_breakdown: dict[str, list[str]] = {k: [] for k in default_weights}
+        seen: set[str] = set()
+
+        # First pass: draw each category up to its target count from its pool
+        for cat, want in target_counts.items():
+            if want <= 0:
+                continue
+            pool = [p for p in pools.get(cat, []) if p["path"] not in seen]
+            rng.shuffle(pool)
+            drawn = pool[:want]
+            for entry in drawn:
+                selected_rel.append(entry["path"])
+                selected_breakdown[cat].append(entry["path"])
+                seen.add(entry["path"])
+
+        # Second pass: fill any shortfall from remaining candidates
+        remaining_slots = count - len(selected_rel)
+        if remaining_slots > 0:
+            leftovers = [c for c in candidates if c["path"] not in seen]
+            rng.shuffle(leftovers)
+            for entry in leftovers[:remaining_slots]:
+                selected_rel.append(entry["path"])
+                selected_breakdown.setdefault(entry["category"], []).append(entry["path"])
+                seen.add(entry["path"])
+
+        return {
+            "project_id": project_id,
+            "workspace_name": ws_name,
+            "workspace_path": validated_ws,
+            "files": selected_rel,
+            "categorized": selected_breakdown,
+            "weights": weights,
+            "target_counts": target_counts,
+            "total_enumerated": total_enumerated,
+            "excluded_history": excluded_count,
+            "history_files": sorted(recent_history),
+            "history_lookback_days": history_lookback_days,
+        }
+
+    async def cmd_record_file_inspection(self, args: dict) -> dict:
+        project_id = args.get("project_id") or self._ctx.active_project_id
+        if not project_id:
+            return {"error": "project_id is required (no active project set)"}
+        file_path = args.get("file_path", "")
+        if not file_path:
+            return {"error": "file_path is required"}
+
+        summary = args.get("summary", "") or ""
+        findings_count = args.get("findings_count")
+        category = args.get("category", "") or ""
+        timestamp = int(time.time())
+
+        record = {
+            "file": file_path,
+            "timestamp": timestamp,
+            "summary": summary,
+            "category": category,
+        }
+        if findings_count is not None:
+            try:
+                record["findings_count"] = int(findings_count)
+            except (TypeError, ValueError):
+                pass
+
+        key = _sanitize_kv_key(file_path)
+        try:
+            memory_result = await self._ctx.execute_command(
+                "memory_kv_set",
+                {
+                    "project_id": project_id,
+                    "namespace": "inspections",
+                    "key": key,
+                    "value": json.dumps(record),
+                },
+            )
+        except Exception as e:
+            logger.warning("record_file_inspection: memory_kv_set raised %s", e)
+            memory_result = {"error": str(e)}
+
+        if isinstance(memory_result, dict) and memory_result.get("error"):
+            return {
+                "recorded": False,
+                "project_id": project_id,
+                "file_path": file_path,
+                "key": key,
+                "record": record,
+                "warning": memory_result.get("error"),
+            }
+
+        return {
+            "recorded": True,
+            "project_id": project_id,
+            "file_path": file_path,
+            "key": key,
+            "record": record,
+        }
+
+    async def _load_recent_inspections(
+        self, project_id: str, lookback_days: int
+    ) -> set[str]:
+        """Query project memory for files inspected within ``lookback_days``."""
+        if lookback_days <= 0:
+            return set()
+        try:
+            result = await self._ctx.execute_command(
+                "memory_kv_list",
+                {"project_id": project_id, "namespace": "inspections"},
+            )
+        except Exception as e:
+            logger.debug("select_files_for_inspection: history lookup failed: %s", e)
+            return set()
+        if not isinstance(result, dict) or result.get("error"):
+            return set()
+
+        entries = result.get("entries") or result.get("items") or result.get("results") or []
+        if isinstance(entries, dict):
+            entries = list(entries.values())
+        cutoff = time.time() - (lookback_days * 86400)
+        recent: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            raw_value = entry.get("value")
+            if raw_value is None:
+                raw_value = entry.get("kv_value")
+            if not raw_value:
+                continue
+            try:
+                parsed = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            ts = parsed.get("timestamp")
+            try:
+                ts_f = float(ts) if ts is not None else 0.0
+            except (TypeError, ValueError):
+                ts_f = 0.0
+            if ts_f < cutoff:
+                continue
+            file_path = parsed.get("file")
+            if isinstance(file_path, str) and file_path:
+                recent.add(file_path)
+        return recent
+
+
+# ---------------------------------------------------------------------------
+# File-selection helpers
+# ---------------------------------------------------------------------------
+
+# File categories and their associated path/extension rules. Order matters:
+# the first matching rule determines the category for a given file path.
+
+_SOURCE_EXTS: frozenset[str] = frozenset(
+    {
+        "py", "ts", "tsx", "js", "jsx", "mjs", "cjs",
+        "rs", "go", "java", "kt", "kts", "scala",
+        "rb", "c", "h", "cc", "cpp", "hpp", "hh", "cs",
+        "swift", "php", "lua", "ex", "exs", "erl",
+        "hs", "sh", "bash", "zsh", "fish", "pl", "pm",
+        "dart", "m", "mm", "clj", "cljs", "cljc", "edn",
+    }
+)
+
+_SPEC_EXTS: frozenset[str] = frozenset({"md", "rst", "txt", "adoc"})
+
+_CONFIG_NAMES: frozenset[str] = frozenset(
+    {
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "requirements.txt",
+        "uv.lock",
+        "poetry.lock",
+        "pipfile",
+        "pipfile.lock",
+        "package.json",
+        "package-lock.json",
+        "yarn.lock",
+        "tsconfig.json",
+        "tsconfig.base.json",
+        "jsconfig.json",
+        "dockerfile",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "makefile",
+        "justfile",
+        "cargo.toml",
+        "cargo.lock",
+        "gemfile",
+        "gemfile.lock",
+        ".pre-commit-config.yaml",
+        ".editorconfig",
+        ".gitignore",
+        ".dockerignore",
+        ".env.example",
+    }
+)
+
+_CONFIG_EXTS: frozenset[str] = frozenset(
+    {"toml", "ini", "cfg", "yaml", "yml", "conf"}
+)
+
+_CONFIG_DIR_PREFIXES: tuple[str, ...] = (
+    ".github/",
+    ".gitlab/",
+    ".circleci/",
+    "ci/",
+)
+
+_SPEC_DIR_PREFIXES: tuple[str, ...] = (
+    "docs/",
+    "doc/",
+    "specs/",
+    "spec/",
+    "notes/",
+)
+
+_TEST_DIR_PREFIXES: tuple[str, ...] = (
+    "tests/",
+    "test/",
+    "__tests__/",
+)
+
+_TEST_FILENAME_MARKERS: tuple[str, ...] = (
+    "test_",
+    "_test.",
+    ".test.",
+    ".spec.",
+    "_spec.",
+)
+
+_EXCLUDED_DIR_PREFIXES: tuple[str, ...] = (
+    "__pycache__/",
+    "node_modules/",
+    ".venv/",
+    "venv/",
+    ".env/",
+    "dist/",
+    "build/",
+    "target/",
+    ".tox/",
+    ".mypy_cache/",
+    ".pytest_cache/",
+    ".ruff_cache/",
+    ".git/",
+    ".idea/",
+    ".vscode/",
+    "coverage/",
+    "htmlcov/",
+    "site-packages/",
+)
+
+_BINARY_EXTS: frozenset[str] = frozenset(
+    {
+        "png", "jpg", "jpeg", "gif", "bmp", "svg", "ico",
+        "webp", "tiff", "tif", "pdf", "zip", "tar", "gz",
+        "bz2", "xz", "7z", "rar", "jar", "war", "class",
+        "pyc", "pyo", "so", "dylib", "dll", "exe", "o",
+        "a", "wasm", "woff", "woff2", "ttf", "otf", "eot",
+        "mp3", "mp4", "wav", "avi", "mov", "webm", "mkv",
+        "ogg", "flac", "heic",
+    }
+)
+
+_LOCKFILE_SUFFIXES: tuple[str, ...] = (
+    ".lock",
+)
+
+
+def _is_excluded_path(rel_path: str) -> bool:
+    """Return True if the path should not be considered for inspection."""
+    norm = rel_path.replace(os.sep, "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    lower = norm.lower()
+    for prefix in _EXCLUDED_DIR_PREFIXES:
+        if lower.startswith(prefix) or f"/{prefix}" in f"/{lower}":
+            return True
+    base = os.path.basename(lower)
+    ext = base.rsplit(".", 1)[-1] if "." in base else ""
+    if ext in _BINARY_EXTS:
+        return True
+    # Treat *.lock files as generated (but allow known config lockfiles via names)
+    if base in _CONFIG_NAMES:
+        return False
+    for suffix in _LOCKFILE_SUFFIXES:
+        if base.endswith(suffix):
+            return True
+    return False
+
+
+def categorize_file(rel_path: str) -> str:
+    """Assign a category to a file path. Returns one of:
+    'source', 'specs', 'tests', 'config', or 'other'.
+
+    The 'recent' category is applied separately by mtime and is not returned
+    from this function (a file can belong to both its structural category and
+    the recent pool).
+    """
+    norm = rel_path.replace(os.sep, "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    lower = norm.lower()
+    base = os.path.basename(lower)
+    ext = base.rsplit(".", 1)[-1] if "." in base else ""
+
+    # Tests take precedence over source when under a tests/ dir or marked by name
+    for prefix in _TEST_DIR_PREFIXES:
+        if lower.startswith(prefix) or f"/{prefix}" in f"/{lower}":
+            return "tests"
+    if any(marker in base for marker in _TEST_FILENAME_MARKERS):
+        # But only if it "looks like" a test file and has a source-ish extension.
+        if ext in _SOURCE_EXTS:
+            return "tests"
+
+    # Config: known filenames / extensions / well-known dirs
+    if base in _CONFIG_NAMES:
+        return "config"
+    for prefix in _CONFIG_DIR_PREFIXES:
+        if lower.startswith(prefix):
+            return "config"
+    if ext in _CONFIG_EXTS:
+        return "config"
+
+    # Specs / docs
+    for prefix in _SPEC_DIR_PREFIXES:
+        if lower.startswith(prefix) or f"/{prefix}" in f"/{lower}":
+            return "specs"
+    if ext in _SPEC_EXTS:
+        return "specs"
+
+    # Source code
+    if ext in _SOURCE_EXTS:
+        return "source"
+
+    return "other"
+
+
+def _weighted_integer_split(weights: dict[str, float], total: int) -> dict[str, int]:
+    """Split ``total`` across keys according to weights using largest-remainder."""
+    if total <= 0 or not weights:
+        return {k: 0 for k in weights}
+    raw = {k: w * total for k, w in weights.items()}
+    base = {k: int(v) for k, v in raw.items()}
+    assigned = sum(base.values())
+    remainder = total - assigned
+    if remainder > 0:
+        # Largest remainders first
+        order = sorted(
+            weights.keys(), key=lambda k: raw[k] - base[k], reverse=True
+        )
+        for k in order:
+            if remainder <= 0:
+                break
+            base[k] += 1
+            remainder -= 1
+    return base
+
+
+def _sanitize_kv_key(file_path: str) -> str:
+    """Turn a file path into a KV-safe key by replacing separators."""
+    # Milvus/vault keys should be short and filesystem-safe.
+    safe = file_path.replace(os.sep, "/").strip("/")
+    safe = safe.replace("/", ":")
+    # Guard against pathological lengths
+    if len(safe) > 240:
+        safe = safe[:120] + "..." + safe[-117:]
+    return safe
+
+
+async def _list_tracked_files(workspace_path: str) -> list[str]:
+    """Return repository-tracked files, respecting .gitignore.
+
+    Falls back to a recursive filesystem walk if the workspace is not a git
+    repository or ``git ls-files`` is unavailable.
+    """
+    try:
+        rc, stdout, _ = await _run_subprocess(
+            "git",
+            "-C",
+            workspace_path,
+            "ls-files",
+            timeout=30,
+        )
+        if rc == 0:
+            files = [
+                line.strip()
+                for line in stdout.splitlines()
+                if line.strip()
+            ]
+            if files:
+                return files
+    except (FileNotFoundError, asyncio.TimeoutError) as e:
+        logger.debug("_list_tracked_files: git ls-files unavailable: %s", e)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("_list_tracked_files: git ls-files failed: %s", e)
+
+    # Fallback: walk filesystem, skipping excluded directories
+    results: list[str] = []
+    exclude_dirs = {
+        "__pycache__",
+        "node_modules",
+        ".git",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        "target",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".idea",
+        ".vscode",
+    }
+    for root, dirs, files in os.walk(workspace_path):
+        dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
+        for fname in files:
+            full = os.path.join(root, fname)
+            rel = os.path.relpath(full, workspace_path)
+            results.append(rel.replace(os.sep, "/"))
+    return results
