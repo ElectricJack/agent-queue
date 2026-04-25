@@ -123,6 +123,34 @@ if [[ -n "$COMP_FILE" && -s "$COMP_FILE" ]]; then
     fi
 fi
 
+# --- Optional memory plugin ---
+INSTALL_MEMORY=0
+NO_PROMPT=0
+for arg in "$@"; do
+    case "$arg" in
+        --with-memory) INSTALL_MEMORY=1; NO_PROMPT=1 ;;
+        --no-memory)   INSTALL_MEMORY=0; NO_PROMPT=1 ;;
+    esac
+done
+
+if [[ "$NO_PROMPT" -eq 0 && -t 0 ]]; then
+    read -rp "Install aq-memory plugin (Milvus-backed memory)? (y/N) " yn
+    case "$yn" in
+        [Yy]*) INSTALL_MEMORY=1 ;;
+    esac
+fi
+
+if [[ "$INSTALL_MEMORY" -eq 1 ]]; then
+    AQ_MEMORY_PATH="${AQ_MEMORY_PATH:-/mnt/d/Dev/aq/aq-memory}"
+    if [[ -d "$AQ_MEMORY_PATH" ]]; then
+        echo "Installing aq-memory from $AQ_MEMORY_PATH..."
+        aq plugin install "$AQ_MEMORY_PATH"
+    else
+        echo "aq-memory not found at $AQ_MEMORY_PATH — skipping."
+        echo "  Set AQ_MEMORY_PATH=<dir> or run: aq plugin install <git-or-path>"
+    fi
+fi
+
 # --- Run setup wizard ---
 echo ""
 .venv/bin/python src/setup_wizard.py
