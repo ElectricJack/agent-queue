@@ -272,9 +272,9 @@ class NotesPlugin(InternalPlugin):
         # When the memory service is unavailable (degraded mode, missing
         # milvus), note-promotion features no-op instead of erroring.
         try:
-            self._memv2 = ctx.get_service("memory")
+            self._mem = ctx.get_service("memory")
         except ValueError:
-            self._memv2 = None
+            self._mem = None
         self._git = ctx.get_service("git")
         self._cfg = ctx.get_service("config")
 
@@ -311,7 +311,7 @@ class NotesPlugin(InternalPlugin):
         The semantic store is a good fit for free-form note content —
         the extractor will classify it as an insight/fact and index it.
         """
-        if not self._memv2 or not getattr(self._memv2, "available", False):
+        if not self._mem or not getattr(self._mem, "available", False):
             return
         try:
             await self._ctx.execute_command(
@@ -518,7 +518,7 @@ class NotesPlugin(InternalPlugin):
 
         note_filename = os.path.basename(fpath)
 
-        if not self._memv2 or not getattr(self._memv2, "available", False):
+        if not self._mem or not getattr(self._mem, "available", False):
             return {
                 "error": "memory service is not available; cannot promote note."
             }
