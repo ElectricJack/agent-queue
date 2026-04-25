@@ -136,6 +136,9 @@ export interface Project {
   default_branch?: string;
   is_active?: boolean;
   paused?: boolean;
+  default_profile_id?: string | null;
+  discord_channel_id?: string | null;
+  budget_limit?: number | null;
 }
 
 export function useProjects() {
@@ -146,6 +149,63 @@ export function useProjects() {
       return data.projects ?? [];
     },
     refetchInterval: 30_000,
+  });
+}
+
+export function useProject(projectId: string) {
+  return useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => apiPost<Project>("/project/get", { project_id: projectId }),
+    enabled: !!projectId,
+  });
+}
+
+// --- Workspaces ---
+
+export interface Workspace {
+  id: string;
+  project_id: string;
+  workspace_path: string;
+  source_type: string;
+  name?: string | null;
+  locked_by_agent_id?: string | null;
+  locked_by_task_id?: string | null;
+}
+
+export function useWorkspaces(projectId: string) {
+  return useQuery({
+    queryKey: ["workspaces", projectId],
+    queryFn: async () => {
+      const data = await apiPost<{ workspaces: Workspace[] }>("/project/list-workspaces", {
+        project_id: projectId,
+      });
+      return data.workspaces ?? [];
+    },
+    refetchInterval: 30_000,
+    enabled: !!projectId,
+  });
+}
+
+// --- Profiles ---
+
+export interface Profile {
+  id: string;
+  name: string;
+  description: string;
+  model: string;
+  allowed_tools: string[];
+  mcp_servers: string[];
+  has_system_prompt: boolean;
+}
+
+export function useProfiles() {
+  return useQuery({
+    queryKey: ["profiles"],
+    queryFn: async () => {
+      const data = await apiPost<{ profiles: Profile[]; count: number }>("/agent/list-profiles");
+      return data.profiles ?? [];
+    },
+    refetchInterval: 60_000,
   });
 }
 

@@ -4,10 +4,11 @@ import {
   ClipboardDocumentListIcon,
   ExclamationTriangleIcon,
 } from "@heroicons/react/24/outline";
-import { useAllAgents, useActiveTasksAllProjects, useHealth, useProjects } from "../api/hooks";
-import StatusBadge from "../components/StatusBadge";
+import { Link } from "react-router-dom";
+import { useAllAgents, useActiveTasksAllProjects, useHealth, useProjects } from "../../api/hooks";
+import StatusBadge from "../../components/StatusBadge";
 
-export default function Dashboard() {
+export default function SystemOverview() {
   const health = useHealth();
   const projects = useProjects();
   const projectIds = (projects.data ?? []).map((p) => p.id);
@@ -21,19 +22,19 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Dashboard</h1>
+      <h1 className="text-2xl font-bold">System</h1>
 
       {/* Stats row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           icon={<BoltIcon className="h-5 w-5 text-green-400" />}
-          label="System"
+          label="Health"
           value={health.data?.status ?? "..."}
         />
         <StatCard
           icon={<CpuChipIcon className="h-5 w-5 text-indigo-400" />}
-          label="Agents"
-          value={`${busyAgents} / ${agentList.length} busy`}
+          label="Active Workspaces"
+          value={`${busyAgents} / ${agentList.length}`}
         />
         <StatCard
           icon={<ClipboardDocumentListIcon className="h-5 w-5 text-blue-400" />}
@@ -47,34 +48,41 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Active agents */}
+      {/* Projects */}
       <section>
-        <h2 className="mb-3 text-lg font-semibold">Agents</h2>
-        {agentList.length === 0 ? (
-          <p className="text-sm text-gray-500">No agents registered.</p>
+        <h2 className="mb-3 text-lg font-semibold">Projects</h2>
+        {(projects.data ?? []).length === 0 ? (
+          <p className="text-sm text-gray-500">No projects.</p>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {agentList.map((agent) => (
-              <div
-                key={agent.workspace_id}
-                className="rounded-lg border border-gray-800 bg-gray-900 p-4"
-              >
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="font-medium">{agent.name || agent.workspace_id}</span>
-                  <StatusBadge status={agent.state} />
-                </div>
-                {agent.current_task_title && (
-                  <p className="truncate text-sm text-gray-400">
-                    {agent.current_task_title}
+            {(projects.data ?? []).map((p) => {
+              const projectAgents = agentList.filter((a) => a.project_id === p.id);
+              const projectTasks = taskList.filter((t) => t.project_id === p.id);
+              return (
+                <Link
+                  key={p.id}
+                  to={`/projects/${p.id}`}
+                  className="rounded-lg border border-gray-800 bg-gray-900 p-4 transition-colors hover:border-indigo-500/50"
+                >
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="font-medium">{p.name || p.id}</span>
+                    {p.paused && (
+                      <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-400">
+                        paused
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    {projectAgents.length} workspaces \u00b7 {projectTasks.length} active tasks
                   </p>
-                )}
-              </div>
-            ))}
+                </Link>
+              );
+            })}
           </div>
         )}
       </section>
 
-      {/* Active tasks */}
+      {/* Active tasks across projects */}
       <section>
         <h2 className="mb-3 text-lg font-semibold">Active Tasks</h2>
         {taskList.length === 0 ? (
@@ -82,9 +90,10 @@ export default function Dashboard() {
         ) : (
           <div className="space-y-2">
             {taskList.slice(0, 20).map((task) => (
-              <div
+              <Link
                 key={task.id}
-                className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-4 py-3"
+                to={`/tasks/${task.id}`}
+                className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 transition-colors hover:border-indigo-500/50"
               >
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{task.title}</p>
@@ -93,7 +102,7 @@ export default function Dashboard() {
                   </p>
                 </div>
                 <StatusBadge status={task.status} />
-              </div>
+              </Link>
             ))}
           </div>
         )}
