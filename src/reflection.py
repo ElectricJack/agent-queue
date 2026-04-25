@@ -86,7 +86,6 @@ class ReflectionEngine:
         "get_project", "list_projects", "get_project_channels",
         "get_project_for_channel", "list_workspaces",
         "browse_tools", "load_tools",
-        "memory_recall",
         "list_agents", "list_profiles", "get_profile", "check_profile",
         "get_status", "get_token_usage", "get_recent_events",
         "list_prompts", "read_prompt", "read_logs", "token_audit",

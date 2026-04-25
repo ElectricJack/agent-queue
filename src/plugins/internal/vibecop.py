@@ -939,11 +939,18 @@ class VibeCopPlugin(InternalPlugin):
                     "Injected vibecop pre-complete rule: %s",
                     result.get("id", _VIBECOP_RULE_ID),
                 )
-            else:
-                logger.warning(
-                    "Failed to inject vibecop rule: %s",
-                    result.get("error", "unknown"),
+                return
+            err = str(result.get("error", "unknown"))
+            # `save_rule` is provided by an optional rules/memory plugin.
+            # Treat its absence as a soft skip rather than a noisy warning
+            # — the agents will still get the rule via direct tool prompts.
+            if "Unknown command" in err and "save_rule" in err:
+                logger.debug(
+                    "Skipping vibecop rule injection: save_rule command not available "
+                    "(install a rules/memory plugin to enable persistent rule injection)"
                 )
+                return
+            logger.warning("Failed to inject vibecop rule: %s", err)
         except Exception:
             logger.warning("Could not inject vibecop pre-complete rule", exc_info=True)
 
