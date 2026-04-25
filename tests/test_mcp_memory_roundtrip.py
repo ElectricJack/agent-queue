@@ -18,12 +18,14 @@ the exact code paths invoked by MCP tool calls via CommandHandler.execute().
 
 from __future__ import annotations
 
-import json
-import sys
-import tempfile
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
+
+pytest.importorskip("aq_memory")
+
+import json  # noqa: E402
+import sys  # noqa: E402
+import tempfile  # noqa: E402
+from unittest.mock import AsyncMock, MagicMock  # noqa: E402
 
 # Skip entire module on Windows (Milvus Lite not supported)
 if sys.platform == "win32":
