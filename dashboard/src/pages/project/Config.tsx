@@ -1,9 +1,13 @@
+import { useState } from "react";
 import { useParams } from "react-router-dom";
+import { TrashIcon } from "@heroicons/react/24/outline";
 import { useProject } from "../../api/hooks";
+import DeleteProjectModal from "../../components/DeleteProjectModal";
 
 export default function ProjectConfig() {
   const { projectId = "" } = useParams();
   const { data: project, isLoading } = useProject(projectId);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (isLoading) return <p className="text-sm text-gray-500">Loading...</p>;
   if (!project) return <p className="text-sm text-gray-500">Project not found.</p>;
@@ -20,7 +24,7 @@ export default function ProjectConfig() {
   ];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <p className="text-xs text-gray-500">Editing project config from the dashboard isn't wired yet.</p>
       <dl className="overflow-hidden rounded-lg border border-gray-800">
         {rows.map(([label, value], i) => (
@@ -35,6 +39,33 @@ export default function ProjectConfig() {
           </div>
         ))}
       </dl>
+
+      <section className="rounded-lg border border-red-500/30 bg-red-500/5 p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold text-red-300">Danger zone</h3>
+            <p className="text-xs text-red-300/70">
+              Deleting a project removes its tasks, workspaces, and constraints. This cannot be
+              undone.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDeleteOpen(true)}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/20 hover:text-red-200"
+          >
+            <TrashIcon className="h-4 w-4" />
+            Delete project
+          </button>
+        </div>
+      </section>
+
+      <DeleteProjectModal
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        projectId={project.id}
+        projectName={project.name}
+      />
     </div>
   );
 }

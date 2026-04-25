@@ -220,6 +220,17 @@ export function useResumeProject() {
   );
 }
 
+export function useDeleteProject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { project_id: string }) =>
+      apiPost<{ deleted?: string; name?: string; error?: string }>("/project/delete", input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
 // --- Workspaces ---
 
 export interface Workspace {
