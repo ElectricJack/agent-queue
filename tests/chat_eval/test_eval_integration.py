@@ -87,7 +87,7 @@ async def eval_setup(tmp_path, eval_provider_config):
         chat_provider=eval_provider_config,
     )
 
-    orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
+    orch = Orchestrator(config, platforms=MockAdapterFactory())
     await orch.initialize()
 
     inner_provider = create_chat_provider(config.chat_provider)

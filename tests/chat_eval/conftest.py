@@ -55,7 +55,7 @@ async def eval_config(tmp_path):
 @pytest.fixture
 async def eval_orchestrator(eval_config):
     """Initialized Orchestrator with mock adapter factory."""
-    orch = Orchestrator(eval_config, adapter_factory=MockAdapterFactory())
+    orch = Orchestrator(eval_config, platforms=MockAdapterFactory())
     await orch.initialize()
     yield orch
     await orch.shutdown()

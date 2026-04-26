@@ -75,9 +75,9 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         db_path = config.database.url or config.database_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-    orch = Orchestrator(config, adapter_factory=None)
+    orch = Orchestrator(config, platforms=None)
     adapter_factory = AdapterFactory(llm_logger=orch.llm_logger)
-    orch._adapter_factory = adapter_factory
+    orch._platforms = adapter_factory
     await orch.initialize()
 
     # Start health check server (if enabled)

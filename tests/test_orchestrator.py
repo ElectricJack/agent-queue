@@ -77,7 +77,7 @@ async def orch(tmp_path):
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
-    o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+    o = Orchestrator(config, platforms=MockAdapterFactory())
     await o.initialize()
     yield o
     # Drain any remaining background tasks before closing DB
@@ -165,7 +165,7 @@ class TestOrchestratorLifecycle:
         assert task.status == TaskStatus.COMPLETED
 
     async def test_failed_task_retries(self, orch):
-        orch._adapter_factory = MockAdapterFactory(result=AgentResult.FAILED)
+        orch._platforms = MockAdapterFactory(result=AgentResult.FAILED)
         await _create_project_with_workspace(orch.db)
         await orch.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
         await orch.db.create_task(
@@ -187,7 +187,7 @@ class TestOrchestratorLifecycle:
         assert task.retry_count == 1
 
     async def test_paused_on_token_exhaustion(self, orch):
-        orch._adapter_factory = MockAdapterFactory(result=AgentResult.PAUSED_TOKENS)
+        orch._platforms = MockAdapterFactory(result=AgentResult.PAUSED_TOKENS)
         await _create_project_with_workspace(orch.db)
         await orch.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
         await orch.db.create_task(
@@ -501,7 +501,7 @@ class TestPlanApprovalBlocking:
             data_dir=str(tmp_path / "data"),
         )
         config.auto_task = AutoTaskConfig(enabled=True, chain_dependencies=True)
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, platforms=MockAdapterFactory())
         await o.initialize()
         yield o, workspace
         await _drain_running_tasks(o)
@@ -678,7 +678,7 @@ class TestIsLastSubtask:
             workspace_dir=str(workspace),
             data_dir=str(tmp_path / "data"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, platforms=MockAdapterFactory())
         await o.initialize()
         yield o
         await _drain_running_tasks(o)
@@ -794,7 +794,7 @@ class TestPrepareWorkspaceCleanDefault:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        orch = Orchestrator(config, platforms=MockAdapterFactory())
         await orch.initialize()
 
         await orch.db.create_project(
@@ -926,7 +926,7 @@ class TestPhaseVerifyNormalTask:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, platforms=MockAdapterFactory())
         await o.initialize()
 
         await o.db.create_project(Project(id="p-1", name="alpha"))
@@ -1292,7 +1292,7 @@ class TestPhaseVerifyApprovalTask:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, platforms=MockAdapterFactory())
         await o.initialize()
 
         await o.db.create_project(Project(id="p-1", name="alpha"))
@@ -1401,7 +1401,7 @@ class TestPhaseVerifyIntermediateSubtask:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, platforms=MockAdapterFactory())
         await o.initialize()
 
         await o.db.create_project(Project(id="p-1", name="alpha"))
@@ -1538,7 +1538,7 @@ class TestCleanupWorkspaceForNextTask:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, platforms=MockAdapterFactory())
         await o.initialize()
 
         mock_git = MagicMock()
@@ -1610,7 +1610,7 @@ class TestVerificationReopen:
             data_dir=str(tmp_path / "data"),
             auto_task=AutoTaskConfig(max_verification_retries=2),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, platforms=MockAdapterFactory())
         await o.initialize()
 
         await o.db.create_project(Project(id="p-1", name="alpha"))
@@ -1713,7 +1713,7 @@ class TestCompletionPipelineVerify:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, platforms=MockAdapterFactory())
         await o.initialize()
 
         # Set up project, workspace, agent

@@ -192,7 +192,7 @@ async def orch(tmp_path):
         database_path=str(tmp_path / "test.db"),
         workspace_dir=str(tmp_path / "workspaces"),
     )
-    o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+    o = Orchestrator(config, platforms=MockAdapterFactory())
     await o.initialize()
     yield o
     await _drain_running_tasks(o)
@@ -429,7 +429,7 @@ class TestGitMutexSerialization:
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, platforms=MockAdapterFactory())
         await o.initialize()
 
         # Register a mutex for the base workspace

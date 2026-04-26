@@ -141,7 +141,7 @@ async def orch_env(tmp_path):
         workspace_dir=str(tmp_path / "workspaces"),
     )
     factory = CapturingMockAdapterFactory()
-    o = Orchestrator(config, adapter_factory=factory)
+    o = Orchestrator(config, platforms=factory)
     await o.initialize()
     yield o, factory
     await o.wait_for_running_tasks(timeout=10)

@@ -246,8 +246,8 @@ class ExecutionMixin:
         """
         from src.orchestrator.core import _parse_reset_time
 
-        if not self._adapter_factory:
-            logger.error("Cannot execute task %s: no adapter factory configured", action.task_id)
+        if not self._platforms:
+            logger.error("Cannot execute task %s: no platforms registry configured", action.task_id)
             await self._emit_text_notify(
                 f"**Error:** Cannot execute task `{action.task_id}` — no agent adapter configured.",
                 project_id=action.project_id,
@@ -408,7 +408,8 @@ class ExecutionMixin:
             )
         else:
             logger.info("Task %s: no profile (using system defaults)", task.id)
-        adapter = self._adapter_factory.create("claude", profile=profile)
+        platform_name = self.config.default_platform
+        adapter = self._platforms.create(platform_name, profile=profile)
         # Store adapter reference so admin commands (stop_task, timeout handler)
         # can call adapter.stop() to terminate the agent process.
         self._adapters[action.agent_id] = adapter

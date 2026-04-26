@@ -193,13 +193,13 @@ class Orchestrator(
       work is assigned) but monitoring, approvals, and promotions continue.
     """
 
-    def __init__(self, config: AppConfig, adapter_factory=None):
+    def __init__(self, config: AppConfig, platforms=None):
         """Initialize the orchestrator with its configuration and subsystems.
 
         Args:
             config: The application configuration (loaded from YAML).
-            adapter_factory: Factory for creating agent adapters (e.g.
-                ClaudeAdapterFactory).  When None, the orchestrator can
+            platforms: :class:`~src.platforms.PlatformRegistry` used to
+                instantiate agent adapters.  When None, the orchestrator can
                 manage state and scheduling but cannot execute tasks.
 
         The constructor wires up all subsystems but does NOT perform any
@@ -216,7 +216,7 @@ class Orchestrator(
         self.budget = BudgetManager(global_budget=config.global_token_budget_daily)
         self.git = GitManager()
         self.git.set_lock_provider(self._resolve_git_lock)
-        self._adapter_factory = adapter_factory
+        self._platforms = platforms
         # Live adapter instances keyed by agent_id.  Stored so we can call
         # adapter.stop() from admin commands (stop_task, timeout recovery).
         self._adapters: dict[str, object] = {}

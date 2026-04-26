@@ -151,7 +151,7 @@ class TestToolEnforcement:
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, platforms=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -245,7 +245,7 @@ class TestMCPEnforcement:
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, platforms=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -353,7 +353,7 @@ class TestProfileIsolation:
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, platforms=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -430,7 +430,7 @@ class TestMultiProfileIsolation:
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, platforms=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -518,7 +518,7 @@ class TestInstallCheckIntegration:
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, platforms=factory)
         await orch.initialize()
         handler = CommandHandler(orch, config)
         yield handler, factory
@@ -595,7 +595,7 @@ class TestProjectDefaultProfileEnforcement:
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, platforms=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -722,7 +722,7 @@ class TestMCPAutoInjection:
             data_dir=str(tmp_path / "data"),
             mcp_server=McpServerConfig(enabled=True, host="127.0.0.1", port=8082),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, platforms=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -739,7 +739,7 @@ class TestMCPAutoInjection:
             data_dir=str(tmp_path / "data"),
             mcp_server=McpServerConfig(enabled=False),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, platforms=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -761,7 +761,7 @@ class TestMCPAutoInjection:
                 inject_into_tasks=False,
             ),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, platforms=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -903,7 +903,7 @@ class TestModelOverrideEnforcement:
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, platforms=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)

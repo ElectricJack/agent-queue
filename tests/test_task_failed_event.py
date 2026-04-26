@@ -55,7 +55,7 @@ async def orch(tmp_path):
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
-    o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+    o = Orchestrator(config, platforms=MockAdapterFactory())
     await o.initialize()
     yield o
     if o._running_tasks:

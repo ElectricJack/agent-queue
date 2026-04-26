@@ -285,7 +285,7 @@ async def _main(args: argparse.Namespace) -> None:
         # Import MockAdapterFactory locally to avoid circular deps at top level
         from tests.chat_eval.conftest import MockAdapterFactory
 
-        orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        orch = Orchestrator(config, platforms=MockAdapterFactory())
         await orch.initialize()
 
         try:

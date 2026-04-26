@@ -863,7 +863,7 @@ class TestProfileEnforcement:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, platforms=factory)
         await orch.initialize()
         yield orch, factory
         if orch._running_tasks:

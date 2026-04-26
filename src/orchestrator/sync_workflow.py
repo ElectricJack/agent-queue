@@ -259,18 +259,19 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     return
 
             # Launch the Claude Code agent for the merge work.
-            if not self._adapter_factory:
-                await _notify(f"❌ **Sync `{task.id}`** — No adapter factory configured.")
+            if not self._platforms:
+                await _notify(f"❌ **Sync `{task.id}`** — No platforms registry configured.")
                 await self.db.transition_task(
-                    action.task_id, TaskStatus.FAILED, context="no_adapter_factory"
+                    action.task_id, TaskStatus.FAILED, context="no_platforms_registry"
                 )
                 await self._emit_task_failure(
-                    task, "no_adapter_factory", error="No agent adapter factory configured"
+                    task, "no_platforms_registry", error="No platforms registry configured"
                 )
                 return
 
             profile = await self._resolve_profile(task)
-            adapter = self._adapter_factory.create("claude", profile=profile)
+            platform_name = self.config.default_platform
+            adapter = self._platforms.create(platform_name, profile=profile)
             self._adapters[action.agent_id] = adapter
 
             ctx = TaskContext(
