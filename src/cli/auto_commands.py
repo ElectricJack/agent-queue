@@ -80,6 +80,7 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "notes": "note",
     "files": "file",
     "system": "system",
+    "mcp": "mcp",
 }
 
 # Human-readable group descriptions for newly created groups.
@@ -89,6 +90,7 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "note": "Project notes — list, read, write, append, delete.",
     "file": "File operations — read, write, edit, glob, grep.",
     "system": "System diagnostics, config, and prompt management.",
+    "mcp": "MCP server registry and tool catalog.",
 }
 
 
