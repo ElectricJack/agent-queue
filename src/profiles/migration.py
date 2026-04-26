@@ -177,13 +177,11 @@ def verify_round_trip(profile: AgentProfile, markdown: str) -> tuple[bool, list[
     if rebuilt_tools != profile.allowed_tools:
         diffs.append(f"allowed_tools: DB={profile.allowed_tools!r}, markdown={rebuilt_tools!r}")
 
-    # Check MCP servers
-    rebuilt_mcp = rebuilt.get("mcp_servers", {})
-    if rebuilt_mcp != profile.mcp_servers:
-        diffs.append(
-            f"mcp_servers: DB keys={sorted(profile.mcp_servers.keys())}, "
-            f"markdown keys={sorted(rebuilt_mcp.keys())}"
-        )
+    # Check MCP servers — both sides are list[str] of registry names.
+    rebuilt_mcp = list(rebuilt.get("mcp_servers", []) or [])
+    db_mcp = list(profile.mcp_servers or [])
+    if sorted(rebuilt_mcp) != sorted(db_mcp):
+        diffs.append(f"mcp_servers: DB={sorted(db_mcp)}, markdown={sorted(rebuilt_mcp)}")
 
     # Check install
     rebuilt_install = rebuilt.get("install", {})

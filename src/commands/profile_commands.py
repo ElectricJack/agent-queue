@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class ProfileCommandsMixin:
                     "description": p.description,
                     "model": p.model or "(default)",
                     "allowed_tools": p.allowed_tools,
-                    "mcp_servers": list(p.mcp_servers.keys()) if p.mcp_servers else [],
+                    "mcp_servers": list(p.mcp_servers) if p.mcp_servers else [],
                     "has_system_prompt": bool(p.system_prompt_suffix),
                 }
                 for p in profiles
@@ -273,6 +273,277 @@ class ProfileCommandsMixin:
             await self.db.delete_profile(profile_id)
 
         return {"deleted": profile_id, "name": name}
+
+    # --- Project-scoped profile CRUD ----------------------------------------
+    #
+    # Profile IDs of the form ``project:<project_id>:<agent_type>`` are
+    # synced from ``vault/projects/<project>/agent-types/<type>/profile.md``.
+    # The dedicated commands below let the dashboard / aq CLI manage these
+    # without callers having to construct the scoped id by hand.
+
+    def _vault_project_profile_path(self, project_id: str, agent_type: str) -> str:
+        """Return the vault path for a project-scoped profile markdown."""
+        return os.path.join(
+            self.config.data_dir,
+            "vault",
+            "projects",
+            project_id,
+            "agent-types",
+            agent_type,
+            "profile.md",
+        )
+
+    async def _cmd_create_project_profile(self, args: dict) -> dict:
+        """Create a project-scoped profile, optionally seeded from a global one.
+
+        Args:
+            project_id: Required.
+            agent_type: Required.  The underlying type (``"coding"``, etc.) —
+                gets composed into ``project:{project_id}:{agent_type}``.
+            seed_from_global: Optional.  When True (default), seeds the new
+                profile from the matching global ``{agent_type}`` profile so
+                the override starts as a delta, not a blank slate.
+            Plus any of: name, description, model, permission_mode,
+            allowed_tools, mcp_servers, system_prompt_suffix, install.
+        """
+        from pathlib import Path
+
+        from src.profiles.parser import agent_profile_to_markdown
+        from src.profiles.sync import (
+            project_scoped_profile_id,
+            sync_profile_text_to_db,
+        )
+
+        project_id = (args.get("project_id") or "").strip()
+        agent_type = (args.get("agent_type") or "").strip()
+        if not project_id:
+            return {"error": "project_id is required"}
+        if not agent_type:
+            return {"error": "agent_type is required"}
+        if ":" in project_id or ":" in agent_type:
+            return {"error": "project_id and agent_type cannot contain ':'"}
+
+        scoped_id = project_scoped_profile_id(project_id, agent_type)
+        target = self._vault_project_profile_path(project_id, agent_type)
+        if os.path.isfile(target):
+            return {"error": f"Project profile '{scoped_id}' already exists"}
+        existing = await self.db.get_profile(scoped_id)
+        if existing:
+            return {"error": f"Project profile '{scoped_id}' already exists"}
+
+        # Optionally seed from the matching global profile so the override
+        # starts as a delta the user can tweak.
+        seed_from_global = args.get("seed_from_global", True)
+        seed: dict = {}
+        if seed_from_global:
+            global_profile = await self.db.get_profile(agent_type)
+            if global_profile:
+                seed = {
+                    "model": global_profile.model,
+                    "permission_mode": global_profile.permission_mode,
+                    "allowed_tools": list(global_profile.allowed_tools or []),
+                    "mcp_servers": list(global_profile.mcp_servers or []),
+                    "system_prompt_suffix": global_profile.system_prompt_suffix or "",
+                    "install": dict(global_profile.install or {}),
+                }
+
+        # Apply explicit overrides on top of the seed.
+        merged = {
+            "name": args.get("name") or f"{agent_type} (project: {project_id})",
+            "description": args.get("description", ""),
+            "model": args.get("model", seed.get("model", "")),
+            "permission_mode": args.get("permission_mode", seed.get("permission_mode", "")),
+            "allowed_tools": list(args.get("allowed_tools", seed.get("allowed_tools", []))),
+            "mcp_servers": list(args.get("mcp_servers", seed.get("mcp_servers", []))),
+            "system_prompt_suffix": args.get(
+                "system_prompt_suffix", seed.get("system_prompt_suffix", "")
+            ),
+            "install": dict(args.get("install", seed.get("install", {}))),
+        }
+
+        markdown = agent_profile_to_markdown(
+            id=scoped_id,
+            name=merged["name"],
+            description=merged["description"],
+            model=merged["model"],
+            permission_mode=merged["permission_mode"],
+            allowed_tools=merged["allowed_tools"],
+            mcp_servers=merged["mcp_servers"],
+            system_prompt_suffix=merged["system_prompt_suffix"],
+            install=merged["install"],
+        )
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        Path(target).write_text(markdown, encoding="utf-8")
+
+        sync_result = await sync_profile_text_to_db(
+            markdown, self.db, source_path=target, fallback_id=scoped_id
+        )
+        if not sync_result.success:
+            return {"error": (f"Profile file written but DB sync failed: {sync_result.errors}")}
+        out: dict = {
+            "created": scoped_id,
+            "project_id": project_id,
+            "agent_type": agent_type,
+            "path": target,
+        }
+        if sync_result.warnings:
+            out["warnings"] = sync_result.warnings
+        return out
+
+    async def _cmd_edit_project_profile(self, args: dict) -> dict:
+        """Edit a project-scoped profile.  Delegates to :meth:`_cmd_edit_profile`.
+
+        Convenience wrapper that lets callers pass ``project_id`` +
+        ``agent_type`` instead of constructing the scoped id by hand.
+        """
+        from src.profiles.sync import project_scoped_profile_id
+
+        project_id = (args.get("project_id") or "").strip()
+        agent_type = (args.get("agent_type") or "").strip()
+        if not project_id or not agent_type:
+            return {"error": "project_id and agent_type are required"}
+
+        forwarded = dict(args)
+        forwarded.pop("project_id", None)
+        forwarded.pop("agent_type", None)
+        forwarded["profile_id"] = project_scoped_profile_id(project_id, agent_type)
+        return await self._cmd_edit_profile(forwarded)
+
+    async def _cmd_delete_project_profile(self, args: dict) -> dict:
+        """Delete a project-scoped profile (vault file + DB row)."""
+        from src.profiles.sync import project_scoped_profile_id
+
+        project_id = (args.get("project_id") or "").strip()
+        agent_type = (args.get("agent_type") or "").strip()
+        if not project_id or not agent_type:
+            return {"error": "project_id and agent_type are required"}
+
+        scoped_id = project_scoped_profile_id(project_id, agent_type)
+        target = self._vault_project_profile_path(project_id, agent_type)
+
+        profile = await self.db.get_profile(scoped_id)
+        vault_exists = os.path.isfile(target)
+        if not profile and not vault_exists:
+            return {"error": f"Project profile '{scoped_id}' not found"}
+
+        if vault_exists:
+            os.remove(target)
+        if profile:
+            await self.db.delete_profile(scoped_id)
+
+        return {
+            "deleted": scoped_id,
+            "project_id": project_id,
+            "agent_type": agent_type,
+        }
+
+    async def _cmd_list_project_profiles(self, args: dict) -> dict:
+        """Return per-agent-type profile rows for a project.
+
+        For each known agent_type we surface:
+          * ``global`` — the system-wide profile (if any)
+          * ``scoped`` — the project override (if any)
+          * ``effective`` — the row the orchestrator would resolve at
+            task launch (project override wins, then global)
+
+        Plus the catalog snapshot for the project's MCP servers so the
+        frontend has everything it needs in one round-trip.
+        """
+        from src.mcp_interfaces import profile_to_dict
+
+        project_id = (args.get("project_id") or "").strip()
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        all_profiles = await self.db.list_profiles()
+        scoped_prefix = f"project:{project_id}:"
+
+        # Build maps
+        global_by_type: dict[str, Any] = {}
+        scoped_by_type: dict[str, Any] = {}
+        for p in all_profiles:
+            if p.id.startswith(scoped_prefix):
+                agent_type = p.id[len(scoped_prefix) :]
+                scoped_by_type[agent_type] = p
+            elif ":" not in p.id:
+                global_by_type[p.id] = p
+
+        agent_types = sorted(set(global_by_type) | set(scoped_by_type))
+
+        rows: list[dict] = []
+        for agent_type in agent_types:
+            global_p = global_by_type.get(agent_type)
+            scoped_p = scoped_by_type.get(agent_type)
+            effective = scoped_p or global_p
+            rows.append(
+                {
+                    "agent_type": agent_type,
+                    "global": profile_to_dict(global_p) if global_p else None,
+                    "scoped": profile_to_dict(scoped_p) if scoped_p else None,
+                    "effective": profile_to_dict(effective) if effective else None,
+                    "has_override": scoped_p is not None,
+                }
+            )
+
+        # Tool catalog scoped to this project
+        catalog_view: dict = {}
+        catalog = getattr(self.orchestrator, "mcp_tool_catalog", None)
+        if catalog is not None:
+            for entry in catalog.list_for_scope(project_id):
+                catalog_view[entry.server_name] = entry.to_dict()
+
+        return {
+            "project_id": project_id,
+            "agent_types": rows,
+            "tool_catalog": catalog_view,
+        }
+
+    async def _cmd_show_effective_profile(self, args: dict) -> dict:
+        """Run the orchestrator's resolution cascade and return the result.
+
+        Useful for debugging "why is this agent getting these tools?"
+        without scheduling a real task.
+        """
+        from src.mcp_interfaces import profile_to_dict
+        from src.models import Task
+
+        project_id = (args.get("project_id") or "").strip()
+        agent_type = (args.get("agent_type") or "").strip()
+        if not project_id or not agent_type:
+            return {"error": "project_id and agent_type are required"}
+
+        # Synthesize a task object that the resolver expects.  We don't
+        # touch the DB or schedule anything.
+        task = Task(
+            id="__effective_profile_lookup__",
+            project_id=project_id,
+            title="",
+            description="",
+            agent_type=agent_type,
+        )
+        profile = await self.orchestrator._resolve_profile(task)
+        if profile is None:
+            return {
+                "project_id": project_id,
+                "agent_type": agent_type,
+                "profile": None,
+                "source": None,
+            }
+
+        # Tag the resolution path so callers can see where the row came from.
+        if profile.id == f"project:{project_id}:{agent_type}":
+            source = "project"
+        elif profile.id == agent_type:
+            source = "global-agent-type"
+        else:
+            source = "fallback"
+
+        return {
+            "project_id": project_id,
+            "agent_type": agent_type,
+            "profile": profile_to_dict(profile),
+            "source": source,
+        }
 
     # --- Discovery commands ------------------------------------------------
 

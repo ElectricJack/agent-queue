@@ -20,13 +20,11 @@ from src.adapters.base import AgentAdapter
 from src.adapters.claude import ClaudeAdapterConfig
 from src.config import AppConfig, AgentProfileConfig, load_config
 from src.database import Database
-from src.known_tools import validate_tool_names
 from src.models import (
     Agent,
     AgentOutput,
     AgentProfile,
     AgentResult,
-    AgentState,
     Project,
     RepoSourceType,
     Task,
@@ -53,7 +51,7 @@ def sample_profile():
         model="claude-sonnet-4-5-20250514",
         permission_mode="plan",
         allowed_tools=["Read", "Glob", "Grep", "Bash"],
-        mcp_servers={"linter": {"command": "npx", "args": ["eslint-mcp"]}},
+        mcp_servers=["linter"],
         system_prompt_suffix="You are a code reviewer. Report findings — do not modify code.",
     )
 
@@ -74,7 +72,7 @@ class TestProfileDatabaseCRUD:
         assert result.model == "claude-sonnet-4-5-20250514"
         assert result.permission_mode == "plan"
         assert result.allowed_tools == ["Read", "Glob", "Grep", "Bash"]
-        assert result.mcp_servers == {"linter": {"command": "npx", "args": ["eslint-mcp"]}}
+        assert result.mcp_servers == ["linter"]
         assert "do not modify code" in result.system_prompt_suffix
 
     async def test_get_nonexistent_profile(self, db):
@@ -108,11 +106,11 @@ class TestProfileDatabaseCRUD:
         await db.update_profile(
             "reviewer",
             allowed_tools=["Read", "Glob"],
-            mcp_servers={"new": {"command": "test"}},
+            mcp_servers=["new"],
         )
         result = await db.get_profile("reviewer")
         assert result.allowed_tools == ["Read", "Glob"]
-        assert result.mcp_servers == {"new": {"command": "test"}}
+        assert result.mcp_servers == ["new"]
 
     async def test_delete_profile(self, db, sample_profile):
         await db.create_profile(sample_profile)

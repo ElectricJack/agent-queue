@@ -635,7 +635,11 @@ class AgentProfileConfig:
     model: str = ""
     permission_mode: str = ""
     allowed_tools: list[str] = field(default_factory=list)
-    mcp_servers: dict[str, dict] = field(default_factory=dict)
+    # New shape: ``list[str]`` of MCP registry names.  Legacy YAML profiles
+    # may still carry a ``dict[str, dict]`` of inline configs; the
+    # inline-mcp-servers migration extracts these to the vault registry
+    # at startup.  Both shapes are accepted at load time.
+    mcp_servers: list[str] | dict[str, dict] = field(default_factory=list)
     system_prompt_suffix: str = ""
     install: dict = field(default_factory=dict)
 

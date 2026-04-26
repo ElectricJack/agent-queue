@@ -404,7 +404,7 @@ class ExecutionMixin:
                 task.id,
                 profile.id,
                 profile.allowed_tools or "(default)",
-                list(profile.mcp_servers.keys()) if profile.mcp_servers else "(none)",
+                list(profile.mcp_servers) if profile.mcp_servers else "(none)",
             )
         else:
             logger.info("Task %s: no profile (using system defaults)", task.id)
@@ -489,9 +489,13 @@ class ExecutionMixin:
                 except Exception as e:
                     logger.warning("L2 context injection failed for task %s: %s", task.id, e)
 
-        # Merge MCP servers: start with the daemon's own MCP server (if
-        # inject_into_tasks is enabled), then layer profile-specific servers
-        # on top.  Profile servers win on name collisions.
+        # Resolve MCP servers from the in-memory registry.  Each profile
+        # entry is a *name*; we look it up against the project-scoped or
+        # system-scoped registry to recover the dict the agent adapter
+        # expects.  The daemon's own embedded MCP server is auto-injected
+        # if ``inject_into_tasks`` is enabled, separately from profile
+        # entries (so a profile that doesn't list ``agent-queue`` still
+        # gets it).
         injected_mcp: dict[str, dict] = dict(self.config.mcp_server.task_mcp_entry())
         if not injected_mcp:
             ms = self.config.mcp_server
@@ -501,9 +505,30 @@ class ExecutionMixin:
                 ms.enabled,
                 ms.inject_into_tasks,
             )
-        profile_mcp: dict[str, dict] = (
-            dict(profile.mcp_servers) if profile and profile.mcp_servers else {}
-        )
+
+        profile_mcp: dict[str, dict] = {}
+        registry = getattr(self, "mcp_registry", None)
+        missing_servers: list[str] = []
+        if profile and profile.mcp_servers and registry is not None:
+            for name in profile.mcp_servers:
+                # Auto-injected agent-queue takes precedence over any
+                # registry entry of the same name.
+                if name in injected_mcp:
+                    continue
+                resolved = registry.get(name, project_id=task.project_id)
+                if resolved is None:
+                    missing_servers.append(name)
+                    continue
+                profile_mcp[name] = resolved.to_adapter_dict()
+
+        if missing_servers:
+            logger.error(
+                "Task %s: profile='%s' references unknown MCP server(s): %s",
+                task.id,
+                profile.id if profile else "(none)",
+                missing_servers,
+            )
+
         task_mcp: dict[str, dict] = dict(injected_mcp)
         task_mcp.update(profile_mcp)
 

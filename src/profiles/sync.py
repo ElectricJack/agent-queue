@@ -231,7 +231,7 @@ async def sync_profile_to_db(
         model=profile_dict.get("model", ""),
         permission_mode=profile_dict.get("permission_mode", ""),
         allowed_tools=profile_dict.get("allowed_tools", []),
-        mcp_servers=profile_dict.get("mcp_servers", {}),
+        mcp_servers=profile_dict.get("mcp_servers", []),
         system_prompt_suffix=profile_dict.get("system_prompt_suffix", ""),
         install=profile_dict.get("install", {}),
         memory_scope_id=profile_dict.get("memory_scope_id"),

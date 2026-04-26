@@ -49,6 +49,20 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_agent": "agent",
     "pause_agent": "agent",
     "resume_agent": "agent",
+    # agent profiles (project-scoped CRUD wrappers)
+    "create_project_profile": "agent",
+    "edit_project_profile": "agent",
+    "delete_project_profile": "agent",
+    "list_project_profiles": "agent",
+    "show_effective_profile": "agent",
+    # mcp — registry + tool catalog (vault-sourced)
+    "list_mcp_servers": "mcp",
+    "get_mcp_server": "mcp",
+    "list_mcp_tool_catalog": "mcp",
+    "probe_mcp_server": "mcp",
+    "create_mcp_server": "mcp",
+    "edit_mcp_server": "mcp",
+    "delete_mcp_server": "mcp",
     # vault — reference stub management
     "scan_stub_staleness": "system",
     # memory — provided by the external aq-memory plugin (install via `aq plugin install`)
@@ -1339,7 +1353,7 @@ _ALL_TOOL_DEFINITIONS = [
             "Each entry carries ``id``, ``project_id``, ``status``, "
             "``assigned_agent``, ``updated_at``, and ``seconds_in_state`` "
             "so remediation (``restart_task`` vs "
-            "``set_task_status(..., status=\"READY\")``) can branch on "
+            '``set_task_status(..., status="READY")``) can branch on '
             "the agent state."
         ),
         "input_schema": {
@@ -1373,8 +1387,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": (
-                        "Optional project filter.  When omitted, all "
-                        "projects are scanned."
+                        "Optional project filter.  When omitted, all projects are scanned."
                     ),
                 },
             },
@@ -2576,6 +2589,224 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["playbook_id"],
+        },
+    },
+    # -----------------------------------------------------------------------
+    # Project-scoped agent profile CRUD wrappers
+    # -----------------------------------------------------------------------
+    {
+        "name": "create_project_profile",
+        "description": (
+            "Create a project-scoped agent profile.  Composes "
+            "``project:<project_id>:<agent_type>`` as the profile id and "
+            "writes the vault markdown.  When ``seed_from_global`` is true "
+            "(default), starts from the matching global ``<agent_type>`` "
+            "profile so the override is a delta."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "agent_type": {"type": "string"},
+                "seed_from_global": {"type": "boolean", "default": True},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "model": {"type": "string"},
+                "permission_mode": {"type": "string"},
+                "allowed_tools": {"type": "array", "items": {"type": "string"}},
+                "mcp_servers": {"type": "array", "items": {"type": "string"}},
+                "system_prompt_suffix": {"type": "string"},
+                "install": {"type": "object"},
+            },
+            "required": ["project_id", "agent_type"],
+        },
+    },
+    {
+        "name": "edit_project_profile",
+        "description": "Edit fields on a project-scoped agent profile.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "agent_type": {"type": "string"},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "model": {"type": "string"},
+                "permission_mode": {"type": "string"},
+                "allowed_tools": {"type": "array", "items": {"type": "string"}},
+                "mcp_servers": {"type": "array", "items": {"type": "string"}},
+                "system_prompt_suffix": {"type": "string"},
+                "install": {"type": "object"},
+            },
+            "required": ["project_id", "agent_type"],
+        },
+    },
+    {
+        "name": "delete_project_profile",
+        "description": ("Remove a project-scoped agent profile (vault file + DB row)."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "agent_type": {"type": "string"},
+            },
+            "required": ["project_id", "agent_type"],
+        },
+    },
+    {
+        "name": "list_project_profiles",
+        "description": (
+            "List per-agent-type profile rows for a project, including the "
+            "global, scoped, and effective views — plus the project-scoped "
+            "MCP tool catalog snapshot in the same response."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "show_effective_profile",
+        "description": (
+            "Run the orchestrator's profile resolution cascade for a "
+            "(project_id, agent_type) pair and return the merged profile "
+            "the next task launch would use.  Debug helper."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "agent_type": {"type": "string"},
+            },
+            "required": ["project_id", "agent_type"],
+        },
+    },
+    # -----------------------------------------------------------------------
+    # MCP server registry + tool catalog
+    # -----------------------------------------------------------------------
+    {
+        "name": "list_mcp_servers",
+        "description": (
+            "List MCP servers visible to a scope.  Omit project_id for "
+            "system scope; supply it to include project-scoped servers "
+            "and inherited system entries."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "get_mcp_server",
+        "description": "Return one MCP server's full config (for editing).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "project_id": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "list_mcp_tool_catalog",
+        "description": (
+            "Return the cached tool list for one or more servers.  Probed "
+            "once at daemon startup; refreshed manually via probe_mcp_server."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "server_names": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    },
+    {
+        "name": "probe_mcp_server",
+        "description": (
+            "Re-probe a single MCP server and overwrite its tool catalog "
+            "entry.  Use after editing a server config or when the server's "
+            "tool list has changed externally."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "project_id": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "create_mcp_server",
+        "description": (
+            "Add an MCP server registry entry by writing its vault markdown.  "
+            "Watcher updates the in-memory registry and probes the new entry."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "transport": {"type": "string", "enum": ["stdio", "http"]},
+                "project_id": {
+                    "type": "string",
+                    "description": "Omit for system scope.",
+                },
+                "description": {"type": "string"},
+                "notes": {"type": "string"},
+                "command": {"type": "string"},
+                "args": {"type": "array", "items": {"type": "string"}},
+                "env": {"type": "object"},
+                "url": {"type": "string"},
+                "headers": {"type": "object"},
+            },
+            "required": ["name", "transport"],
+        },
+    },
+    {
+        "name": "edit_mcp_server",
+        "description": (
+            "Update fields on an existing MCP server registry entry.  "
+            "Loads the current markdown, merges the patch, writes back, "
+            "and re-probes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "project_id": {"type": "string"},
+                "transport": {"type": "string", "enum": ["stdio", "http"]},
+                "description": {"type": "string"},
+                "notes": {"type": "string"},
+                "command": {"type": "string"},
+                "args": {"type": "array", "items": {"type": "string"}},
+                "env": {"type": "object"},
+                "url": {"type": "string"},
+                "headers": {"type": "object"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "delete_mcp_server",
+        "description": (
+            "Remove an MCP server's vault file and registry/catalog entry.  "
+            "Refuses if any profile still references the name; the response "
+            "lists the offending profiles."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "project_id": {"type": "string"},
+            },
+            "required": ["name"],
         },
     },
 ]

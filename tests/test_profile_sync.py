@@ -28,7 +28,6 @@ import pytest
 
 from src.database import Database
 from src.models import AgentProfile
-from src.known_tools import KNOWN_TOOL_NAMES
 from src.profiles.parser import ParsedProfile, parse_profile, parsed_profile_to_agent_profile
 from src.profiles.sync import (
     PROFILE_PATTERNS,
@@ -346,8 +345,10 @@ class TestSyncProfileToDb:
         assert profile.model == "claude-sonnet-4-6"
         assert profile.permission_mode == "auto"
         assert profile.allowed_tools == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+        # Profile.mcp_servers is now a list of registry names; the inline
+        # configs from legacy markdown are extracted to the vault registry
+        # by the inline-config migration on startup, not preserved here.
         assert "github" in profile.mcp_servers
-        assert profile.mcp_servers["github"]["command"] == "npx"
         assert "## Role" in profile.system_prompt_suffix
         assert "## Rules" in profile.system_prompt_suffix
         assert "## Reflection" in profile.system_prompt_suffix
@@ -537,15 +538,25 @@ You do things.
 
     @pytest.mark.asyncio
     async def test_mcp_servers_preserved(self, db):
-        """MCP server configuration is preserved through sync."""
+        """MCP server *names* survive sync.
+
+        Inline configs in legacy markdown are no longer kept on the profile
+        — they are extracted to the vault MCP registry by the startup
+        migration.  We assert here only that the name reference makes it
+        through.
+        """
         parsed = parse_profile(FULL_PROFILE)
         await sync_profile_to_db(parsed, db)
 
         profile = await db.get_profile("coding")
-        github = profile.mcp_servers["github"]
-        assert github["command"] == "npx"
-        assert github["args"] == ["-y", "@modelcontextprotocol/server-github"]
-        assert github["env"]["GITHUB_TOKEN"] == "${GITHUB_TOKEN}"
+        assert "github" in profile.mcp_servers
+        # Legacy inline data is preserved on the parsed result (for the
+        # migration to consume), not on the synced profile.
+        assert parsed.mcp_servers_legacy["github"]["command"] == "npx"
+        assert parsed.mcp_servers_legacy["github"]["args"] == [
+            "-y",
+            "@modelcontextprotocol/server-github",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -1074,7 +1085,7 @@ class TestUpsertProfile:
                 model="old-model",
                 permission_mode="plan",
                 allowed_tools=["Read"],
-                mcp_servers={"old": {"command": "old"}},
+                mcp_servers=["old"],
                 system_prompt_suffix="old prompt",
             )
         )
@@ -1086,7 +1097,7 @@ class TestUpsertProfile:
             model="new-model",
             permission_mode="auto",
             allowed_tools=["Read", "Write", "Edit"],
-            mcp_servers={"new": {"command": "new"}},
+            mcp_servers=["new"],
             system_prompt_suffix="new prompt",
         )
         action = await db.upsert_profile(updated)
@@ -1098,7 +1109,7 @@ class TestUpsertProfile:
         assert fetched.model == "new-model"
         assert fetched.permission_mode == "auto"
         assert fetched.allowed_tools == ["Read", "Write", "Edit"]
-        assert fetched.mcp_servers == {"new": {"command": "new"}}
+        assert fetched.mcp_servers == ["new"]
         assert fetched.system_prompt_suffix == "new prompt"
 
 
@@ -1416,12 +1427,13 @@ class TestRoadmap4110:
         assert "github" in result.mcp_servers
         assert "playwright" in result.mcp_servers
 
-        github = result.mcp_servers["github"]
+        # Inline configs preserved on the legacy field for the migration.
+        github = result.mcp_servers_legacy["github"]
         assert github["command"] == "npx"
         assert github["args"] == ["-y", "@modelcontextprotocol/server-github"]
         assert github["env"]["GITHUB_TOKEN"] == "${GITHUB_TOKEN}"
 
-        playwright = result.mcp_servers["playwright"]
+        playwright = result.mcp_servers_legacy["playwright"]
         assert playwright["command"] == "npx"
         assert playwright["args"] == ["@anthropic/mcp-playwright"]
 
@@ -1761,7 +1773,7 @@ You are a focused agent.
         assert parsed.config["permission_mode"] == "plan"
         # Missing sections use defaults
         assert parsed.tools == {}
-        assert parsed.mcp_servers == {}
+        assert parsed.mcp_servers == []
         assert parsed.rules == ""
         assert parsed.reflection == ""
 
@@ -1773,7 +1785,7 @@ You are a focused agent.
         assert profile.model == "claude-sonnet-4-6"
         assert profile.permission_mode == "plan"
         assert profile.allowed_tools == []
-        assert profile.mcp_servers == {}
+        assert profile.mcp_servers == []
         # system_prompt_suffix should contain only Role (no Rules/Reflection)
         assert "## Role" in profile.system_prompt_suffix
         assert "## Rules" not in profile.system_prompt_suffix
@@ -1815,7 +1827,9 @@ name: Tools MCP Only
         assert profile.model == ""
         assert profile.permission_mode == ""
         assert profile.allowed_tools == ["Read", "Bash"]
-        assert profile.mcp_servers["linter"]["command"] == "eslint-server"
+        # Inline configs are migrated out to the registry; only the name
+        # is left on the profile.
+        assert "linter" in profile.mcp_servers
         assert profile.system_prompt_suffix == ""
 
     @pytest.mark.asyncio
@@ -1836,7 +1850,7 @@ name: Rules Only
         assert "- Follow PEP 8" in parsed.rules
         assert parsed.config == {}
         assert parsed.tools == {}
-        assert parsed.mcp_servers == {}
+        assert parsed.mcp_servers == []
         assert parsed.role == ""
         assert parsed.reflection == ""
 
@@ -1846,7 +1860,7 @@ name: Rules Only
         profile = await db.get_profile("rules-only")
         assert profile.model == ""
         assert profile.allowed_tools == []
-        assert profile.mcp_servers == {}
+        assert profile.mcp_servers == []
         assert "## Rules" in profile.system_prompt_suffix
         assert "- Follow PEP 8" in profile.system_prompt_suffix
         # Only Rules in suffix — no Role or Reflection labels
@@ -1866,7 +1880,7 @@ name: Bare Profile
         assert parsed.is_valid
         assert parsed.config == {}
         assert parsed.tools == {}
-        assert parsed.mcp_servers == {}
+        assert parsed.mcp_servers == []
         assert parsed.role == ""
         assert parsed.rules == ""
         assert parsed.reflection == ""
@@ -1879,7 +1893,7 @@ name: Bare Profile
         assert profile.model == ""
         assert profile.permission_mode == ""
         assert profile.allowed_tools == []
-        assert profile.mcp_servers == {}
+        assert profile.mcp_servers == []
         assert profile.system_prompt_suffix == ""
 
     # -------------------------------------------------------------------
@@ -1923,15 +1937,8 @@ name: Bare Profile
         assert profile.permission_mode == "auto"
         assert profile.allowed_tools == ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
 
-        # MCP servers round-trip
-        assert len(profile.mcp_servers) == 2
-        github = profile.mcp_servers["github"]
-        assert github["command"] == "npx"
-        assert github["args"] == ["-y", "@modelcontextprotocol/server-github"]
-        assert github["env"]["GITHUB_TOKEN"] == "${GITHUB_TOKEN}"
-        playwright = profile.mcp_servers["playwright"]
-        assert playwright["command"] == "npx"
-        assert playwright["args"] == ["@anthropic/mcp-playwright"]
+        # MCP server names round-trip; inline configs migrated to registry.
+        assert sorted(profile.mcp_servers) == ["github", "playwright"]
 
         # Prompt sections round-trip (in system_prompt_suffix)
         assert "senior software engineer" in profile.system_prompt_suffix
@@ -1982,7 +1989,7 @@ You handle code reviews.
         assert profile.model == "claude-sonnet-4-6"
         assert profile.permission_mode == ""  # Not specified → default
         assert profile.allowed_tools == []  # No Tools section → empty
-        assert profile.mcp_servers == {}  # No MCP Servers → empty
+        assert profile.mcp_servers == []  # No MCP Servers → empty
         assert "code reviews" in profile.system_prompt_suffix
         # Only Role in suffix
         assert "## Role" in profile.system_prompt_suffix
@@ -2111,7 +2118,7 @@ Updated role.
         assert p2.model == "new-model"
         assert p2.permission_mode == "auto"
         assert p2.allowed_tools == ["Read", "Write", "Bash"]
-        assert p2.mcp_servers == {"linter": {"command": "eslint"}}
+        assert p2.mcp_servers == ["linter"]
         assert "Updated role" in p2.system_prompt_suffix
         assert "- New rule" in p2.system_prompt_suffix
 
@@ -2373,7 +2380,7 @@ class TestRoadmap4111:
                 model="original-model",
                 permission_mode="plan",
                 allowed_tools=["Read", "Write"],
-                mcp_servers={"github": {"command": "npx"}},
+                mcp_servers=["github"],
                 system_prompt_suffix="Original prompt",
             )
         )
@@ -2389,7 +2396,7 @@ class TestRoadmap4111:
         assert profile.model == "original-model"
         assert profile.permission_mode == "plan"
         assert profile.allowed_tools == ["Read", "Write"]
-        assert profile.mcp_servers == {"github": {"command": "npx"}}
+        assert profile.mcp_servers == ["github"]
         assert profile.system_prompt_suffix == "Original prompt"
 
     @pytest.mark.asyncio
@@ -2511,7 +2518,7 @@ You are a helpful agent.
         profile = await db.get_profile("warn-tools")
         assert profile is not None
         assert profile.model == "claude-sonnet-4-6"
-        assert profile.mcp_servers["myserver"]["command"] == "my-server-cmd"
+        assert "myserver" in profile.mcp_servers
         assert "helpful agent" in profile.system_prompt_suffix
         assert "- Follow best practices" in profile.system_prompt_suffix
         # Tools still stored (unknown names are allowed, just warned)
@@ -2662,7 +2669,7 @@ name: All Unknown
         assert result.frontmatter.name == ""
         assert result.config == {}
         assert result.tools == {}
-        assert result.mcp_servers == {}
+        assert result.mcp_servers == []
         assert result.role == ""
         assert result.rules == ""
         assert result.reflection == ""
@@ -2705,7 +2712,7 @@ name: All Unknown
         assert profile is not None
         assert profile.model == ""
         assert profile.allowed_tools == []
-        assert profile.mcp_servers == {}
+        assert profile.mcp_servers == []
 
     def test_e_frontmatter_delimiters_only(self):
         """(e) Just frontmatter delimiters with nothing inside doesn't crash."""
@@ -4539,9 +4546,7 @@ name: {agent_type.title()} Agent
 {{"model": "claude-sonnet-4-6"}}
 ```
 """
-            profile_path = (
-                tmp_path / "vault" / "agent-types" / agent_type / "profile.md"
-            )
+            profile_path = tmp_path / "vault" / "agent-types" / agent_type / "profile.md"
             _create_file(str(profile_path), profile_md)
 
             change = VaultChange(
@@ -4818,13 +4823,8 @@ class TestUnderlyingAgentType:
         assert underlying_agent_type("claude-opus") == "claude-opus"
 
     def test_project_scoped_id_strips_prefix(self):
-        assert (
-            underlying_agent_type("project:moss-and-spade:claude-code")
-            == "claude-code"
-        )
-        assert (
-            underlying_agent_type("project:agent-queue:coding") == "coding"
-        )
+        assert underlying_agent_type("project:moss-and-spade:claude-code") == "claude-code"
+        assert underlying_agent_type("project:agent-queue:coding") == "coding"
 
     def test_none_returns_none(self):
         assert underlying_agent_type(None) is None
@@ -4836,7 +4836,4 @@ class TestUnderlyingAgentType:
         # Missing the type segment — don't silently mangle, just pass through.
         assert underlying_agent_type("project:only-two-parts") == "project:only-two-parts"
         # Empty type segment.
-        assert (
-            underlying_agent_type("project:proj:")
-            == "project:proj:"
-        )
+        assert underlying_agent_type("project:proj:") == "project:proj:"

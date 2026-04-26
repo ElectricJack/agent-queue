@@ -41,6 +41,7 @@ from src.commands.project_commands import ProjectCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
 from src.commands.agent_commands import AgentCommandsMixin
 from src.commands.profile_commands import ProfileCommandsMixin
+from src.commands.mcp_commands import McpCommandsMixin
 from src.commands.notes_commands import NotesCommandsMixin
 from src.commands.playbook_commands import PlaybookCommandsMixin
 from src.commands.workflow_commands import WorkflowCommandsMixin
@@ -92,6 +93,7 @@ class CommandHandler(
     TaskCommandsMixin,
     AgentCommandsMixin,
     ProfileCommandsMixin,
+    McpCommandsMixin,
     NotesCommandsMixin,
     PlaybookCommandsMixin,
     WorkflowCommandsMixin,

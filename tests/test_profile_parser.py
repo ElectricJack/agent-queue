@@ -391,9 +391,9 @@ class TestParseProfile:
 
         # MCP Servers
         assert "github" in result.mcp_servers
-        assert result.mcp_servers["github"]["command"] == "npx"
-        assert "-y" in result.mcp_servers["github"]["args"]
-        assert result.mcp_servers["github"]["env"]["GITHUB_TOKEN"] == "${GITHUB_TOKEN}"
+        assert result.mcp_servers_legacy["github"]["command"] == "npx"
+        assert "-y" in result.mcp_servers_legacy["github"]["args"]
+        assert result.mcp_servers_legacy["github"]["env"]["GITHUB_TOKEN"] == "${GITHUB_TOKEN}"
 
         # Role
         assert "software engineering agent" in result.role
@@ -410,7 +410,7 @@ class TestParseProfile:
         assert result.is_valid
         assert result.config == {}
         assert result.tools == {}
-        assert result.mcp_servers == {}
+        assert result.mcp_servers == []
         assert result.role == ""
 
     def test_whitespace_only(self):
@@ -434,7 +434,7 @@ class TestParseProfile:
         text = '## MCP Servers\n```json\n{"linter": {"command": "eslint"}}\n```\n'
         result = parse_profile(text)
         assert result.is_valid
-        assert result.mcp_servers["linter"]["command"] == "eslint"
+        assert result.mcp_servers_legacy["linter"]["command"] == "eslint"
 
     def test_role_only(self):
         text = "## Role\nYou are a reviewer.\n"
@@ -475,11 +475,25 @@ class TestParseProfile:
         assert not result.is_valid
         assert any("must be an object" in e for e in result.errors)
 
-    def test_mcp_servers_json_not_object(self):
-        text = '## MCP Servers\n```json\n["not", "an", "object"]\n```\n'
+    def test_mcp_servers_list_of_strings_is_new_format(self):
+        # Lists of strings are now the canonical shape (registry names).
+        text = '## MCP Servers\n```json\n["alpha", "beta"]\n```\n'
+        result = parse_profile(text)
+        assert result.is_valid
+        assert result.mcp_servers == ["alpha", "beta"]
+        assert result.mcp_servers_legacy is None
+
+    def test_mcp_servers_json_neither_list_nor_object(self):
+        text = "## MCP Servers\n```json\n42\n```\n"
         result = parse_profile(text)
         assert not result.is_valid
-        assert any("must be an object" in e for e in result.errors)
+        assert any("must be a list" in e for e in result.errors)
+
+    def test_mcp_servers_list_with_non_string_entry(self):
+        text = '## MCP Servers\n```json\n["good", 123]\n```\n'
+        result = parse_profile(text)
+        assert not result.is_valid
+        assert any("must be a non-empty string" in e for e in result.errors)
 
     def test_unrecognized_sections_preserved(self):
         text = "## Custom Section\nCustom content.\n\n## Config\n```json\n{}\n```\n"
@@ -923,7 +937,7 @@ class TestEnglishSectionExtraction:
         # Structured sections should be defaults
         assert result.config == {}
         assert result.tools == {}
-        assert result.mcp_servers == {}
+        assert result.mcp_servers == []
 
     def test_unicode_in_prompt_sections(self):
         """Unicode content in prompt sections is preserved."""
@@ -988,7 +1002,7 @@ class TestEdgeCases:
         )
         result = parse_profile(text)
         # JSON parses fine and is accessible
-        assert result.mcp_servers["server"]["env"]["NESTED"]["a"] == 1
+        assert result.mcp_servers_legacy["server"]["env"]["NESTED"]["a"] == 1
         # But non-string env values are now flagged as errors
         assert not result.is_valid
         assert any("env['NESTED']" in e and "string" in e for e in result.errors)
@@ -1013,7 +1027,7 @@ class TestEdgeCases:
             '{"gh": {"command": "npx", "env": {"TOKEN": "${GITHUB_TOKEN}"}}}\n```\n'
         )
         result = parse_profile(text)
-        assert result.mcp_servers["gh"]["env"]["TOKEN"] == "${GITHUB_TOKEN}"
+        assert result.mcp_servers_legacy["gh"]["env"]["TOKEN"] == "${GITHUB_TOKEN}"
 
     def test_unicode_content(self):
         text = "---\nid: intl\nname: 国際化エージェント\n---\n\n## Role\nYou speak 日本語.\n"
@@ -1368,7 +1382,7 @@ class TestValidateMcpServers:
         )
         result = parse_profile(text)
         assert result.is_valid, f"Unexpected errors: {result.errors}"
-        assert result.mcp_servers["gh"]["command"] == "npx"
+        assert result.mcp_servers_legacy["gh"]["command"] == "npx"
 
     def test_integration_missing_command(self):
         """parse_profile reports missing command in MCP server."""
@@ -1377,7 +1391,10 @@ class TestValidateMcpServers:
         assert not result.is_valid
         assert any("missing required field 'command'" in e for e in result.errors)
         # Data is still stored (parse, then validate)
-        assert result.mcp_servers == {"gh": {"args": ["-y"]}}
+        # Old shape preserved in mcp_servers_legacy
+        assert result.mcp_servers_legacy == {"gh": {"args": ["-y"]}}
+        # New flat shape: just the names
+        assert result.mcp_servers == ["gh"]
 
     def test_integration_bad_args_type(self):
         """parse_profile reports non-array args in MCP server."""
@@ -1405,13 +1422,13 @@ class TestValidateMcpServers:
         text = '## MCP Servers\n```json\n{"linter": {"command": "eslint"}}\n```\n'
         result = parse_profile(text)
         assert result.is_valid
-        assert result.mcp_servers["linter"]["command"] == "eslint"
+        assert result.mcp_servers_legacy["linter"]["command"] == "eslint"
 
     def test_integration_spec_example_valid(self):
         """The spec example MCP servers block passes validation."""
         result = parse_profile(SPEC_EXAMPLE)
         assert result.is_valid, f"Unexpected errors: {result.errors}"
-        assert result.mcp_servers["github"]["command"] == "npx"
+        assert result.mcp_servers_legacy["github"]["command"] == "npx"
 
 
 # ---------------------------------------------------------------------------

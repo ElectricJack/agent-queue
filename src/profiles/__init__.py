@@ -1,14 +1,14 @@
-"""Agent profile management — parsing, syncing, and migration."""
+"""Agent profile management — parsing, syncing, registry, and migration.
 
-from src.profiles.parser import (
-    parse_profile,
-    ParsedProfile,
-    parsed_profile_to_agent_profile,
-    agent_profile_to_markdown,
-)
-from src.profiles.sync import (
-    scan_and_sync_existing_profiles,
-    sync_profile_text_to_db,
-    register_profile_handlers,
-)
-from src.profiles.migration import migrate_db_profiles_to_vault
+Submodules:
+    parser           — markdown ↔ AgentProfile conversion
+    sync             — vault → DB profile sync, vault watcher integration
+    migration        — DB → vault markdown generation
+    mcp_registry     — MCP server registry (vault-sourced, in-memory)
+    mcp_probe        — MCP server tool-list probe (stdio/http)
+    mcp_catalog      — in-memory tool catalog populated by probes
+    mcp_inline_migration — one-shot extractor for legacy inline mcp_servers
+
+All public symbols live on the submodules — import from there directly
+rather than from the package.
+"""

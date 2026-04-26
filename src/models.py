@@ -239,7 +239,9 @@ class Project:
     repo_url: str = ""
     repo_default_branch: str = "main"
     default_profile_id: str | None = None  # fallback profile for tasks in this project
-    default_agent_type: str | None = None  # default agent_type for new tasks (selects project-scoped profile)
+    default_agent_type: str | None = (
+        None  # default agent_type for new tasks (selects project-scoped profile)
+    )
 
 
 @dataclass
@@ -398,7 +400,13 @@ class AgentProfile:
     model: str = ""  # override model (empty = use default)
     permission_mode: str = ""  # override (empty = use default)
     allowed_tools: list[str] = field(default_factory=list)  # tool whitelist
-    mcp_servers: dict[str, dict] = field(default_factory=dict)  # name -> server config
+    # Names of MCP servers this profile uses.  The names are resolved at
+    # task launch against the in-memory MCP registry (system + project
+    # scope) which is sourced from ``vault/[projects/<pid>/]mcp-servers/*.md``.
+    # Profiles do not store inline server configs anymore — see
+    # ``src/profiles/mcp_registry.py`` and the inline-config migration in
+    # ``src/profiles/mcp_inline_migration.py``.
+    mcp_servers: list[str] = field(default_factory=list)
     system_prompt_suffix: str = ""  # appended to agent instructions
     install: dict = field(default_factory=dict)  # auto-install manifest (future)
     # Optional override: when set, agent-type memory for this profile lives at

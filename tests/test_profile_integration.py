@@ -18,6 +18,43 @@ from src.adapters import AdapterFactory
 from src.adapters.base import AgentAdapter
 from src.adapters.claude import ClaudeAdapterConfig
 from src.config import AppConfig, McpServerConfig
+from src.database import Database
+from src.models import (
+    Agent,
+    AgentOutput,
+    AgentProfile,
+    AgentResult,
+    Project,
+    RepoSourceType,
+    Task,
+    TaskContext,
+    TaskStatus,
+    Workspace,
+)
+from src.orchestrator import Orchestrator
+from src.profiles.mcp_registry import McpServerConfig as McpRegistryConfig
+
+
+def _register_mcp(orch, name: str, *, project_id: str | None = None, **inline) -> None:
+    """Test helper: add an MCP server entry to the in-memory registry.
+
+    Mirrors the ``vault/mcp-servers/<name>.md`` flow without touching disk.
+    Pass legacy-style inline kwargs (``command``/``args``/``env`` for stdio,
+    ``url``/``headers`` for http) and the helper builds the config.
+    """
+    transport = "http" if "url" in inline else "stdio"
+    orch.mcp_registry.upsert(
+        McpRegistryConfig(
+            name=name,
+            transport=transport,
+            project_id=project_id,
+            command=inline.get("command", ""),
+            args=list(inline.get("args", [])),
+            env=dict(inline.get("env", {})),
+            url=inline.get("url", ""),
+            headers=dict(inline.get("headers", {})),
+        )
+    )
 
 
 def _no_inject_mcp() -> McpServerConfig:
@@ -28,21 +65,6 @@ def _no_inject_mcp() -> McpServerConfig:
     would muddy those assertions.
     """
     return McpServerConfig(enabled=True, inject_into_tasks=False)
-from src.database import Database
-from src.models import (
-    Agent,
-    AgentOutput,
-    AgentProfile,
-    AgentResult,
-    AgentState,
-    Project,
-    RepoSourceType,
-    Task,
-    TaskContext,
-    TaskStatus,
-    Workspace,
-)
-from src.orchestrator import Orchestrator
 
 
 # ---------------------------------------------------------------------------
@@ -252,14 +274,12 @@ class TestMCPEnforcement:
 
     async def test_profile_mcp_servers_in_task_context(self, env):
         orch, factory = env
-        mcp_config = {
-            "playwright": {"command": "npx", "args": ["@anthropic/mcp-playwright"]},
-        }
+        _register_mcp(orch, "playwright", command="npx", args=["@anthropic/mcp-playwright"])
         await orch.db.create_profile(
             AgentProfile(
                 id="web-dev",
                 name="Web Dev",
-                mcp_servers=mcp_config,
+                mcp_servers=["playwright"],
             )
         )
         await _setup_project_and_agent(orch.db)
@@ -305,14 +325,12 @@ class TestMCPEnforcement:
 
     async def test_mcp_server_values_are_preserved(self, env):
         orch, factory = env
-        mcp_config = {
-            "linter": {"command": "node", "args": ["./server.js", "--port", "3000"]},
-        }
+        _register_mcp(orch, "linter", command="node", args=["./server.js", "--port", "3000"])
         await orch.db.create_profile(
             AgentProfile(
                 id="lint-prof",
                 name="Linter",
-                mcp_servers=mcp_config,
+                mcp_servers=["linter"],
             )
         )
         await _setup_project_and_agent(orch.db)
@@ -360,12 +378,13 @@ class TestProfileIsolation:
 
     async def test_profiled_then_unprofiled_isolation(self, env):
         orch, factory = env
+        _register_mcp(orch, "linter", command="npx", args=["eslint-mcp"])
         await orch.db.create_profile(
             AgentProfile(
                 id="reviewer",
                 name="Reviewer",
                 allowed_tools=["Read", "Glob", "Grep"],
-                mcp_servers={"linter": {"command": "npx", "args": ["eslint-mcp"]}},
+                mcp_servers=["linter"],
             )
         )
         await _setup_project_and_agent(orch.db)
@@ -444,12 +463,13 @@ class TestMultiProfileIsolation:
                 allowed_tools=["Read", "Glob", "Grep"],
             )
         )
+        _register_mcp(orch, "playwright", command="npx", args=["mcp-playwright"])
         await orch.db.create_profile(
             AgentProfile(
                 id="web-dev",
                 name="Web Dev",
                 allowed_tools=["Read", "Write", "Edit", "Bash"],
-                mcp_servers={"playwright": {"command": "npx", "args": ["mcp-playwright"]}},
+                mcp_servers=["playwright"],
             )
         )
         await _setup_project_and_agent(orch.db)
@@ -673,11 +693,12 @@ class TestProjectDefaultProfileEnforcement:
 
     async def test_project_default_with_mcp_reaches_task_context(self, env):
         orch, factory = env
+        _register_mcp(orch, "sentry", command="npx", args=["sentry-mcp"])
         await orch.db.create_profile(
             AgentProfile(
                 id="mcp-profile",
                 name="MCP Profile",
-                mcp_servers={"sentry": {"command": "npx", "args": ["sentry-mcp"]}},
+                mcp_servers=["sentry"],
             )
         )
         await _setup_project_and_agent(
@@ -829,11 +850,12 @@ class TestMCPAutoInjection:
     async def test_profile_mcp_merged_with_daemon_mcp(self, env_with_mcp):
         """Profile MCP servers are layered on top of the daemon's MCP server."""
         orch, factory = env_with_mcp
+        _register_mcp(orch, "playwright", command="npx", args=["mcp-playwright"])
         await orch.db.create_profile(
             AgentProfile(
                 id="web-dev",
                 name="Web Dev",
-                mcp_servers={"playwright": {"command": "npx", "args": ["mcp-playwright"]}},
+                mcp_servers=["playwright"],
             )
         )
         await _setup_project_and_agent(orch.db)
@@ -857,14 +879,25 @@ class TestMCPAutoInjection:
         assert "playwright" in mcp
         assert mcp["playwright"]["command"] == "npx"
 
-    async def test_profile_can_override_daemon_mcp_name(self, env_with_mcp):
-        """A profile that defines an 'agent-queue' MCP server overrides the daemon's."""
+    async def test_agent_queue_is_builtin_and_unclobberable(self, env_with_mcp):
+        """The embedded agent-queue MCP entry is built-in and cannot be replaced.
+
+        Users may try to register a system-scope ``agent-queue`` entry via
+        vault markdown, but the registry refuses to clobber a builtin.  The
+        daemon's own URL is what every task receives.
+        """
         orch, factory = env_with_mcp
+
+        # Attempted override is rejected by the registry.
+        with pytest.raises(ValueError):
+            _register_mcp(orch, "agent-queue", url="http://other:9999/mcp")
+
+        # Profile listing agent-queue still gets the daemon's URL via auto-inject.
         await orch.db.create_profile(
             AgentProfile(
                 id="custom",
                 name="Custom",
-                mcp_servers={"agent-queue": {"type": "http", "url": "http://other:9999/mcp"}},
+                mcp_servers=["agent-queue"],
             )
         )
         await _setup_project_and_agent(orch.db)
@@ -882,7 +915,7 @@ class TestMCPAutoInjection:
         await orch.wait_for_running_tasks()
 
         mcp = factory.adapters_created[0].task_context.mcp_servers
-        assert mcp["agent-queue"]["url"] == "http://other:9999/mcp"
+        assert mcp["agent-queue"]["url"] == "http://127.0.0.1:8082/mcp"
 
 
 # ---------------------------------------------------------------------------

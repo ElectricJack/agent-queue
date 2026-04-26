@@ -60,7 +60,12 @@ def data_dir(tmp_path):
 
 @pytest.fixture
 def sample_profile():
-    """A fully-populated AgentProfile for testing."""
+    """A fully-populated AgentProfile for testing.
+
+    ``mcp_servers`` is a list of registry names — inline configs no longer
+    live on profiles.  See ``src/profiles/mcp_registry.py`` and the
+    inline-config migration for how the dict-form gets extracted.
+    """
     return AgentProfile(
         id="coding",
         name="Coding Agent",
@@ -68,13 +73,7 @@ def sample_profile():
         model="claude-sonnet-4-6",
         permission_mode="auto",
         allowed_tools=["Read", "Write", "Edit", "Bash"],
-        mcp_servers={
-            "github": {
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-github"],
-                "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"},
-            }
-        },
+        mcp_servers=["github"],
         system_prompt_suffix=(
             "## Role\nYou are a software engineering agent.\n\n"
             "## Rules\n- Always run tests\n- Never commit secrets\n\n"
@@ -172,21 +171,11 @@ class TestVerifyRoundTrip:
         assert ok, f"Round-trip failed: {diffs}"
 
     def test_profile_with_mcp_servers(self):
-        """MCP servers should round-trip."""
+        """MCP server *names* should round-trip."""
         profile = AgentProfile(
             id="mcp-test",
             name="MCP Test",
-            mcp_servers={
-                "github": {
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-github"],
-                },
-                "slack": {
-                    "command": "node",
-                    "args": ["slack-mcp-server"],
-                    "env": {"SLACK_TOKEN": "xxx"},
-                },
-            },
+            mcp_servers=["github", "slack"],
         )
         markdown = _render_profile_markdown(profile)
         ok, diffs = verify_round_trip(profile, markdown)
@@ -502,8 +491,9 @@ class TestMigrateDbProfilesToVault:
         assert parsed.config["model"] == "claude-sonnet-4-6"
         assert parsed.config["permission_mode"] == "auto"
         assert parsed.tools["allowed"] == ["Read", "Write", "Edit", "Bash"]
+        # Profile mcp_servers is now a list of registry names; inline
+        # configs no longer round-trip through the DB→vault migration.
         assert "github" in parsed.mcp_servers
-        assert parsed.mcp_servers["github"]["command"] == "npx"
         assert "software engineering agent" in parsed.role
         assert "Always run tests" in parsed.rules
         assert "consider what you learned" in parsed.reflection
