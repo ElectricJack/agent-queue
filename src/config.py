@@ -795,6 +795,9 @@ class AppConfig:
             "mark_read_on_emit": True,
         }
     )
+    # Phase-1 stub: which platform to spawn for tasks. Replaced by
+    # profile.platform in phase 2 of the platforms refactor.
+    default_platform: str = "claude_sdk"
     _config_path: str = field(default="", repr=False)
 
     # -- Vault path properties (derived from data_dir) -----------------------
@@ -943,6 +946,22 @@ class AppConfig:
                         "rate_limits", scope, f"expected a dict, got {type(limits).__name__}"
                     )
                 )
+
+        # default_platform must be a known platform name.
+        from src.platforms import default_registry
+
+        try:
+            available = default_registry().names()
+        except Exception:  # pragma: no cover - registry import fail = bigger problem
+            available = ["claude_sdk", "claude_cli", "codex_cli"]
+        if self.default_platform not in available:
+            errors.append(
+                ConfigError(
+                    section="app",
+                    field="default_platform",
+                    message=f"unknown platform {self.default_platform!r}; available: {available}",
+                )
+            )
 
         return errors
 

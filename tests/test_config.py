@@ -72,3 +72,24 @@ class TestConfigLoading:
     def test_missing_config_file_raises(self):
         with pytest.raises(FileNotFoundError):
             load_config("/nonexistent/config.yaml")
+
+
+def test_default_platform_default_value():
+    cfg = AppConfig()
+    assert cfg.default_platform == "claude_sdk"
+
+
+def test_default_platform_validation_accepts_known():
+    for name in ("claude_sdk", "claude_cli", "codex_cli"):
+        cfg = AppConfig()
+        cfg.default_platform = name
+        errors = [e for e in cfg.validate() if e.field == "default_platform"]
+        assert errors == [], f"{name} flagged as invalid"
+
+
+def test_default_platform_validation_rejects_unknown():
+    cfg = AppConfig()
+    cfg.default_platform = "made-up"
+    errors = [e for e in cfg.validate() if e.field == "default_platform"]
+    assert len(errors) == 1
+    assert "unknown platform" in errors[0].message.lower()
