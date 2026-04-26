@@ -123,26 +123,28 @@ class CodexCLIPlatform(Platform):
             dispatch_tasks.append(asyncio.create_task(self._dispatch(event)))
 
         start_time = time.monotonic()
+        exit_code: int | None = None
         try:
-            exit_code = await run_streaming_subprocess(
-                cmd=cmd,
-                env=env,
-                cwd=cwd,
-                on_line=_on_line,
-                cancel_event=self._cancel_event,
-            )
-        except Exception as e:
-            logger.exception("CodexCLI subprocess failed")
-            return AgentOutput(
-                result=_classify_error_result(str(e)),
-                summary=str(e),
-                error_message=str(e),
-            )
-
-        # Drain in-flight dispatch coroutines so any pending on_message
-        # callbacks land before we return.
-        if dispatch_tasks:
-            await asyncio.gather(*dispatch_tasks, return_exceptions=True)
+            try:
+                exit_code = await run_streaming_subprocess(
+                    cmd=cmd,
+                    env=env,
+                    cwd=cwd,
+                    on_line=_on_line,
+                    cancel_event=self._cancel_event,
+                )
+            except Exception as e:
+                logger.exception("CodexCLI subprocess failed")
+                return AgentOutput(
+                    result=_classify_error_result(str(e)),
+                    summary=str(e),
+                    error_message=str(e),
+                )
+        finally:
+            # Drain in-flight dispatch coroutines so any pending on_message
+            # callbacks land before we return, even when run_streaming_subprocess raised.
+            if dispatch_tasks:
+                await asyncio.gather(*dispatch_tasks, return_exceptions=True)
 
         if self._cancel_event.is_set():
             return AgentOutput(

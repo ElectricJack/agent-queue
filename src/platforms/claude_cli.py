@@ -102,21 +102,24 @@ class ClaudeCLIPlatform(Platform):
         cmd_with_prompt = [*cmd, prompt]
 
         start_time = time.monotonic()
+        exit_code: int | None = None
         try:
-            exit_code = await run_streaming_subprocess(
-                cmd=cmd_with_prompt,
-                env=env,
-                cwd=cwd,
-                on_line=_on_line,
-                cancel_event=self._cancel_event,
-            )
-        except Exception as e:
-            logger.exception("ClaudeCLI subprocess failed")
-            return self._build_failure_output(str(e))
-
-        # Drain any pending dispatch tasks so callbacks finish before we return.
-        if _dispatch_tasks:
-            await asyncio.gather(*_dispatch_tasks, return_exceptions=True)
+            try:
+                exit_code = await run_streaming_subprocess(
+                    cmd=cmd_with_prompt,
+                    env=env,
+                    cwd=cwd,
+                    on_line=_on_line,
+                    cancel_event=self._cancel_event,
+                )
+            except Exception as e:
+                logger.exception("ClaudeCLI subprocess failed")
+                return self._build_failure_output(str(e))
+        finally:
+            # Drain any pending dispatch tasks so callbacks finish before we return,
+            # even when run_streaming_subprocess raised.
+            if _dispatch_tasks:
+                await asyncio.gather(*_dispatch_tasks, return_exceptions=True)
 
         if self._cancel_event.is_set():
             return AgentOutput(
