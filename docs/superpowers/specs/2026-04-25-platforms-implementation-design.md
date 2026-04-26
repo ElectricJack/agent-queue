@@ -77,7 +77,7 @@ class Platform(ABC):
     capabilities: ClassVar[frozenset[Capability]]
 
     @abstractmethod
-    async def start(self, task: TaskContext, profile: AgentProfile) -> None: ...
+    async def start(self, task: TaskContext) -> None: ...
 
     @abstractmethod
     async def wait(self, on_message: MessageCallback | None = None) -> AgentOutput: ...
@@ -89,7 +89,7 @@ class Platform(ABC):
     async def is_alive(self) -> bool: ...
 ```
 
-Contract from `src/adapters/base.py` is preserved. `start()` now takes the profile alongside the task so capability-aware behavior is local to the platform impl (today the profile is bound at construction; surfacing it at `start()` is a small win for clarity and doesn't break anything).
+Contract from `src/adapters/base.py` is preserved verbatim — `start(task)` is unchanged. The only structural additions are the two `ClassVar`s (`name`, `capabilities`). Profile binding stays at construction (each platform's `__init__` takes `profile: AgentProfile`), exactly like today's `ClaudeAdapter`.
 
 ## §2 — Three implementations
 
