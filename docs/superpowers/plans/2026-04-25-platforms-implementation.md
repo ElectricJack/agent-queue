@@ -88,22 +88,35 @@ Plan dispatcher rules:
 
 ### Codex CLI (`codex exec --json --skip-git-repo-check --sandbox <mode> <prompt>`)
 
+Verified live with `codex exec` v0.125.0 against ChatGPT auth, both for plain message responses and tool-using runs.
+
 ```jsonl
-{"type":"thread.started","thread_id":"019dc84d-..."}
+{"type":"thread.started","thread_id":"019dc856-0873-7a82-9ea1-c8456914f8d1"}
 {"type":"turn.started"}
-{"type":"error","message":"..."}                         # non-fatal — streams inline on transient errors
-{"type":"turn.failed","error":{"message":"..."}}         # terminal failure
-{"type":"turn.completed", ...}                           # terminal success — exact field set unverified live (auth required)
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I'll create the file..."}}
+{"type":"item.started","item":{"id":"item_1","type":"file_change","changes":[{"path":"/tmp/x/hello.txt","kind":"add"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"/tmp/x/hello.txt","kind":"add"}],"status":"completed"}}
+{"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"/bin/bash -lc 'cat hello.txt'","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"/bin/bash -lc 'cat hello.txt'","aggregated_output":"hi\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Created [hello.txt](...) with hi.\n\nVerified."}}
+{"type":"turn.completed","usage":{"input_tokens":90884,"cached_input_tokens":88192,"output_tokens":138,"reasoning_output_tokens":0}}
 ```
+
+Item types observed (more may exist, dispatcher adds branches as encountered):
+- `agent_message` — `{id, type, text}` — assistant's human-readable response. The summary is built from these.
+- `file_change` — `{id, type, changes: [{path, kind}], status}` — agent-driven file edits.
+- `command_execution` — `{id, type, command, aggregated_output, exit_code, status}` — shell commands the agent ran.
 
 Plan dispatcher rules:
 - `thread.started` → capture `thread_id` as session id, no callback.
-- `turn.started` → ignore (or emit a "starting…" hint).
-- `error` (non-terminal) → log at warning level, no callback (or emit short summary). Don't classify as failure unless terminal event is reached.
-- `turn.failed` → terminal. Extract `error.message`, classify via `_classify_error_result`.
-- `turn.completed` → terminal success. Field set is observed at first live integration test; placeholder assumes `summary` + `usage.{input,output}` keys until verified, with a TODO log line on first encounter.
-- Always pass `--skip-git-repo-check` so Codex doesn't refuse to run when the task workspace isn't in a git repo (agent-queue worktrees may not be).
-- Always pass `--sandbox workspace-write` (default sane behavior for autonomous agents on a checked-out workspace) — operators can override via profile config in phase 2.
+- `turn.started` → ignore.
+- `item.started` → for tool-like items (`file_change`, `command_execution`) emit a one-line preview (`-# file_change /tmp/x/hello.txt` etc). For `agent_message` ignore (the text is on the matching `item.completed`).
+- `item.completed` → for `agent_message` emit `item.text` to the callback AND append to the summary buffer; for tool items emit a completion preview.
+- `error` (non-terminal) → log at warning level. Don't classify as failure unless terminal event is reached.
+- `turn.failed` → terminal failure. Extract `error.message`, classify via `_classify_error_result`.
+- `turn.completed` → terminal success. Summary built from accumulated `agent_message` items. Token accounting: `usage.input_tokens + usage.output_tokens + usage.reasoning_output_tokens` — `cached_input_tokens` is an informational subset of `input_tokens`, NOT additive.
+- Always pass `--skip-git-repo-check` so Codex doesn't refuse to run when the task workspace isn't in a git repo.
+- Always pass `--sandbox workspace-write` (sane default for autonomous agents).
 
 ---
 
@@ -1630,14 +1643,24 @@ class TestCodexCLIPlatformContract:
 
 class TestCodexCLIPlatformWait:
     @pytest.mark.asyncio
-    async def test_happy_path(self):
-        # turn.completed schema is provisional (live auth needed to verify exact
-        # field names). Implementation logs a TODO when this branch fires so the
-        # first live run reveals the real shape.
+    async def test_happy_path_simple_message(self):
+        """Verified shape from `codex exec --json` v0.125.0 — single agent_message turn."""
         emitted = _ndjson_lines(
-            {"type": "thread.started", "thread_id": "thr-1"},
+            {"type": "thread.started", "thread_id": "019dc856-0873-7a82-9ea1-c8456914f8d1"},
             {"type": "turn.started"},
-            {"type": "turn.completed", "summary": "Done", "usage": {"input_tokens": 100, "output_tokens": 50}},
+            {
+                "type": "item.completed",
+                "item": {"id": "item_0", "type": "agent_message", "text": "2 + 2 equals 4."},
+            },
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 29325,
+                    "cached_input_tokens": 7552,
+                    "output_tokens": 12,
+                    "reasoning_output_tokens": 0,
+                },
+            },
         )
 
         async def fake_run(cmd, env, cwd, on_line, cancel_event, **kwargs):  # noqa: ARG001
@@ -1651,12 +1674,104 @@ class TestCodexCLIPlatformWait:
             output = await platform.wait()
 
         assert output.result == AgentResult.COMPLETED
-        assert "Done" in output.summary
+        assert "2 + 2 equals 4." in output.summary
+        # input + output + reasoning_output (cached_input is a subset of input, not additive)
+        assert output.tokens_used == 29325 + 12 + 0
+
+    @pytest.mark.asyncio
+    async def test_happy_path_with_tool_items(self):
+        """Tool-using turn: agent_message + file_change + command_execution items."""
+        emitted = _ndjson_lines(
+            {"type": "thread.started", "thread_id": "thr-2"},
+            {"type": "turn.started"},
+            {
+                "type": "item.completed",
+                "item": {"id": "item_0", "type": "agent_message", "text": "I'll create the file."},
+            },
+            {
+                "type": "item.started",
+                "item": {
+                    "id": "item_1",
+                    "type": "file_change",
+                    "changes": [{"path": "/tmp/x/hello.txt", "kind": "add"}],
+                    "status": "in_progress",
+                },
+            },
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item_1",
+                    "type": "file_change",
+                    "changes": [{"path": "/tmp/x/hello.txt", "kind": "add"}],
+                    "status": "completed",
+                },
+            },
+            {
+                "type": "item.started",
+                "item": {
+                    "id": "item_2",
+                    "type": "command_execution",
+                    "command": "/bin/bash -lc 'cat hello.txt'",
+                    "status": "in_progress",
+                },
+            },
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item_2",
+                    "type": "command_execution",
+                    "command": "/bin/bash -lc 'cat hello.txt'",
+                    "aggregated_output": "hi\n",
+                    "exit_code": 0,
+                    "status": "completed",
+                },
+            },
+            {
+                "type": "item.completed",
+                "item": {"id": "item_3", "type": "agent_message", "text": "Created hello.txt with hi."},
+            },
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 90884,
+                    "cached_input_tokens": 88192,
+                    "output_tokens": 138,
+                    "reasoning_output_tokens": 0,
+                },
+            },
+        )
+
+        received: list[str] = []
+
+        async def on_message(text: str) -> None:
+            received.append(text)
+
+        async def fake_run(cmd, env, cwd, on_line, cancel_event, **kwargs):  # noqa: ARG001
+            for line in emitted:
+                on_line(line)
+            return 0
+
+        platform = CodexCLIPlatform(profile=None)
+        await platform.start(_make_task())
+        with patch("src.platforms.codex_cli.run_streaming_subprocess", side_effect=fake_run):
+            output = await platform.wait(on_message=on_message)
+
+        assert output.result == AgentResult.COMPLETED
+        # Summary contains both agent_message texts.
+        assert "I'll create the file." in output.summary
+        assert "Created hello.txt with hi." in output.summary
+        assert output.tokens_used == 90884 + 138 + 0
+        # Callback received the agent_message text and tool-item summaries.
+        joined = "\n".join(received)
+        assert "I'll create the file." in joined
+        assert "Created hello.txt" in joined
+        assert "file_change" in joined or "/tmp/x/hello.txt" in joined
+        assert "command_execution" in joined or "cat hello.txt" in joined
 
     @pytest.mark.asyncio
     async def test_turn_failed_event(self):
         emitted = _ndjson_lines(
-            {"type": "thread.started", "thread_id": "thr-2"},
+            {"type": "thread.started", "thread_id": "thr-3"},
             {"type": "turn.started"},
             {"type": "turn.failed", "error": {"message": "Unauthorized"}},
         )
@@ -1678,10 +1793,17 @@ class TestCodexCLIPlatformWait:
         # "error" events stream inline on transient issues (websocket reconnects).
         # They must not classify the run as failed unless followed by turn.failed.
         emitted = _ndjson_lines(
-            {"type": "thread.started", "thread_id": "thr-3"},
+            {"type": "thread.started", "thread_id": "thr-4"},
             {"type": "error", "message": "Reconnecting... 1/5"},
             {"type": "error", "message": "Reconnecting... 2/5"},
-            {"type": "turn.completed", "summary": "OK", "usage": {"input_tokens": 1, "output_tokens": 1}},
+            {
+                "type": "item.completed",
+                "item": {"id": "item_0", "type": "agent_message", "text": "OK"},
+            },
+            {
+                "type": "turn.completed",
+                "usage": {"input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1, "reasoning_output_tokens": 0},
+            },
         )
 
         async def fake_run(cmd, env, cwd, on_line, cancel_event, **kwargs):  # noqa: ARG001
@@ -1742,15 +1864,33 @@ Create `src/platforms/codex_cli.py`:
 
 Capability set: STREAMING_JSON, RESUME, THINKING, MCP, PLAN_MODE.
 
-Verified event schema (codex v0.125.0):
+Verified event schema (codex v0.125.0, ChatGPT auth, both message-only and
+tool-using runs):
+
 - ``thread.started``  — once at start, has ``thread_id``.
 - ``turn.started``    — turn boundary, no payload of interest.
-- ``error``           — non-fatal, streams inline (transient connectivity etc.).
+- ``item.started``    — tool-like items (file_change, command_execution)
+                         emit a started event before completion. Pure
+                         agent_message items skip this and only emit
+                         item.completed.
+- ``item.completed``  — wraps an ``item`` with ``type`` switching the shape:
+                         * ``agent_message`` — ``{id, type, text}``
+                           assistant's user-facing text.
+                         * ``file_change`` — ``{id, type, changes, status}``
+                           (changes = list of ``{path, kind}``).
+                         * ``command_execution`` — ``{id, type, command,
+                           aggregated_output, exit_code, status}``.
+                         Other item types may exist; dispatcher adds
+                         branches as encountered.
+- ``error``           — non-fatal, streams inline (transient connectivity).
                          Don't classify as failure on its own.
 - ``turn.failed``     — terminal failure with ``error.message``.
-- ``turn.completed``  — terminal success. Field set is provisional —
-                         the dispatcher logs a TODO on first encounter so
-                         the live shape is captured for follow-up.
+- ``turn.completed``  — terminal success. ``usage`` has ``input_tokens``,
+                         ``cached_input_tokens`` (informational subset of
+                         input_tokens, NOT additive), ``output_tokens``,
+                         ``reasoning_output_tokens``.  Token accounting:
+                         ``input_tokens + output_tokens +
+                         reasoning_output_tokens``.
 
 Codex requires being inside a trusted directory or ``--skip-git-repo-check``;
 agent-queue task workspaces aren't always git repos, so we always pass the flag.
@@ -1874,13 +2014,14 @@ class CodexCLIPlatform(Platform):
             )
 
         if terminal.get("type") == "turn.completed":
-            # turn.completed field set is provisional — log on first encounter
-            # so the real shape gets captured.  Look for either a ``summary``
-            # field or fall back to the last assistant-style content.
-            logger.info("CodexCLI turn.completed payload (capture for schema): %s", terminal)
-            summary = terminal.get("summary", "") or self._compose_summary_from_events()
+            summary = self._compose_summary_from_events()
             usage = terminal.get("usage") or {}
-            tokens = int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
+            # cached_input_tokens is a subset of input_tokens (informational), NOT additive.
+            tokens = (
+                int(usage.get("input_tokens", 0))
+                + int(usage.get("output_tokens", 0))
+                + int(usage.get("reasoning_output_tokens", 0))
+            )
             output = AgentOutput(
                 result=AgentResult.COMPLETED,
                 summary=summary,
@@ -1962,15 +2103,43 @@ class CodexCLIPlatform(Platform):
             return
         if self._on_message is None:
             return
-        # Surface any text-bearing event types we recognize.  The full set is
-        # not stable across codex versions; add new branches as observed.
-        if etype in ("message", "assistant.message"):
-            text = event.get("content") or event.get("text") or ""
-            if text:
-                await self._on_message(text)
-        elif etype in ("tool_call", "tool.call"):
-            name = event.get("name", "?")
-            await self._on_message(f"-# {name}")
+        if etype in ("item.started", "item.completed"):
+            await self._dispatch_item(event)
+
+    async def _dispatch_item(self, event: dict) -> None:
+        """Dispatch an item.started / item.completed event to the callback.
+
+        Item types:
+            agent_message       — text response (only on item.completed)
+            file_change         — file edits (started + completed both relevant)
+            command_execution   — shell commands (started + completed both relevant)
+
+        Add branches as new item types are observed in the wild.
+        """
+        assert self._on_message is not None
+        item = event.get("item") or {}
+        item_type = item.get("type")
+        is_started = event.get("type") == "item.started"
+
+        if item_type == "agent_message":
+            # agent_message only emits on item.completed; ignore item.started.
+            if not is_started:
+                text = item.get("text", "")
+                if text:
+                    await self._on_message(text)
+        elif item_type == "file_change":
+            verb = "starting" if is_started else "completed"
+            paths = ", ".join(c.get("path", "?") for c in item.get("changes", []))
+            await self._on_message(f"-# file_change {verb}: {paths}")
+        elif item_type == "command_execution":
+            cmd = item.get("command", "?")
+            verb = "starting" if is_started else "completed"
+            await self._on_message(f"-# command_execution {verb}: {cmd}")
+        else:
+            # Unknown item type — log a TODO so future schema additions are visible.
+            logger.info(
+                "CodexCLI unknown item type=%s (capture for schema): %s", item_type, item
+            )
 
     def _final_terminal_event(self) -> dict | None:
         for event in reversed(self._events):
@@ -1979,20 +2148,22 @@ class CodexCLIPlatform(Platform):
         return None
 
     def _compose_summary_from_events(self) -> str:
-        """Fallback summary when turn.completed has no summary field.
+        """Build the AgentOutput summary by concatenating agent_message item texts.
 
-        Concatenates assistant-style message text from the event stream.
-        Used only on first live runs until the real turn.completed shape
-        is captured.
+        Codex's turn.completed event carries no summary field — the assistant's
+        user-facing response lives in item.completed events with item.type=
+        "agent_message". This helper joins them in arrival order.
         """
         parts: list[str] = []
         for event in self._events:
-            etype = event.get("type")
-            if etype in ("message", "assistant.message"):
-                text = event.get("content") or event.get("text") or ""
+            if event.get("type") != "item.completed":
+                continue
+            item = event.get("item") or {}
+            if item.get("type") == "agent_message":
+                text = item.get("text", "")
                 if text:
                     parts.append(text)
-        return "\n".join(parts) or "Completed"
+        return "\n\n".join(parts) or "Completed"
 ```
 
 - [ ] **Step 5: Run tests to verify they pass**
@@ -2467,17 +2638,16 @@ After Task 11, before declaring phase 1 done:
     - NDJSON events are parsed (look for `event_type=assistant`, `event_type=result`)
     - The task transitions to COMPLETED with non-zero `tokens_used`
   - Restore `default_platform: claude_sdk` after testing
-- [ ] **Live CodexCLI integration** (requires `codex login`):
-  - Verify auth: `codex login status` reports logged in
+- [ ] **Live CodexCLI integration** (`codex login status` should report logged in via ChatGPT or API key):
   - Edit `~/.agent-queue/config.yaml` → `default_platform: codex_cli`
-  - Restart daemon, create a trivial task
+  - Restart daemon, create a trivial task ("Print hello world to a file then read it back")
   - Confirm in `~/.agent-queue/daemon.log`:
     - The subprocess command line includes `codex exec --json --skip-git-repo-check --sandbox workspace-write`
-    - `thread.started` and `turn.completed` events are observed
-    - Logs show "CodexCLI turn.completed payload (capture for schema): {...}" — copy that payload into a follow-up note so the field set can be locked in to the dispatcher (currently provisional)
-    - The task transitions to COMPLETED
+    - `thread.started`, `turn.started`, multiple `item.started`/`item.completed`, and `turn.completed` events are observed
+    - The task transitions to COMPLETED with non-zero `tokens_used`
+    - The summary contains the agent's `agent_message` item text(s)
+  - If you see "CodexCLI unknown item type=..." log lines, capture the payload — that's a new item type not yet handled by the dispatcher; file a follow-up to add a branch.
   - Restore `default_platform: claude_sdk` after testing
-  - **If the live `turn.completed` payload doesn't include `summary` / `usage`**, file a follow-up to update `_dispatch` and `_compose_summary_from_events` to use the real field names; tests in Task 6 stay valid (they mock the schema) but the implementation comment marking the shape as provisional can be removed.
 - [ ] Commit history shows ~11 focused commits, one per task
 
 ## Out of scope (handed to phase 2)
