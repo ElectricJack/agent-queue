@@ -70,6 +70,9 @@ async def run_streaming_subprocess(
     SIGKILL.  *on_line* is called synchronously for each raw line
     (including trailing newline) as it arrives.
 
+    Exceptions raised by *on_line* are logged and the stream continues; do
+    not rely on *on_line* aborting the subprocess.
+
     Stderr is captured and logged; not surfaced to *on_line*.
     """
     proc = await asyncio.create_subprocess_exec(
@@ -87,7 +90,10 @@ async def run_streaming_subprocess(
             line = await proc.stdout.readline()
             if not line:
                 return
-            on_line(line)
+            try:
+                on_line(line)
+            except Exception:
+                logger.exception("on_line callback raised; continuing stream")
 
     async def _read_stderr() -> None:
         assert proc.stderr is not None
@@ -124,7 +130,9 @@ async def run_streaming_subprocess(
         await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
         try:
             await cancel_task
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.exception("cancel watcher raised unexpectedly")
 
     return proc.returncode if proc.returncode is not None else -1

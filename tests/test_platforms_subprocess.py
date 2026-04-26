@@ -120,3 +120,35 @@ class TestRunStreamingSubprocess:
             cancel_event=cancel,
         )
         assert exit_code == 7
+
+    @pytest.mark.asyncio
+    async def test_on_line_exception_does_not_abort_stream(self, tmp_path, caplog):
+        """If on_line raises, the stream must continue and the error must be logged."""
+        import logging
+
+        script = tmp_path / "emit3.py"
+        script.write_text(
+            'import sys; sys.stdout.write(\'{"a":1}\\n{"b":2}\\n{"c":3}\\n\'); sys.stdout.flush()\n'
+        )
+        delivered: list[bytes] = []
+        cancel = asyncio.Event()
+
+        def callback(line: bytes) -> None:
+            delivered.append(line)
+            if line == b'{"b":2}\n':
+                raise RuntimeError("boom")
+
+        with caplog.at_level(logging.ERROR, logger="src.platforms._subprocess"):
+            exit_code = await run_streaming_subprocess(
+                cmd=["python3", str(script)],
+                env=isolated_env(),
+                cwd=str(tmp_path),
+                on_line=callback,
+                cancel_event=cancel,
+            )
+
+        assert exit_code == 0
+        # All three lines were delivered despite the middle one's callback raising.
+        assert delivered == [b'{"a":1}\n', b'{"b":2}\n', b'{"c":3}\n']
+        # The exception was logged.
+        assert any("boom" in r.message or "boom" in (r.exc_text or "") for r in caplog.records)
