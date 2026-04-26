@@ -5,6 +5,8 @@ import {
   useProjectProfiles,
   type ProfileDetail,
 } from "../../api/hooks";
+import McpServerSelector from "./McpServerSelector";
+import ToolPicker from "./ToolPicker";
 
 interface Props {
   open: boolean;
@@ -19,8 +21,8 @@ interface FormState {
   model: string;
   permission_mode: string;
   system_prompt_suffix: string;
-  allowed_tools_text: string;
-  mcp_servers_text: string;
+  allowed_tools: string[];
+  mcp_servers: string[];
 }
 
 function profileToForm(p: ProfileDetail | null | undefined): FormState {
@@ -30,24 +32,9 @@ function profileToForm(p: ProfileDetail | null | undefined): FormState {
     model: p?.model ?? "",
     permission_mode: p?.permission_mode ?? "",
     system_prompt_suffix: p?.system_prompt_suffix ?? "",
-    allowed_tools_text: JSON.stringify(p?.allowed_tools ?? [], null, 2),
-    mcp_servers_text: JSON.stringify(p?.mcp_servers ?? [], null, 2),
+    allowed_tools: [...(p?.allowed_tools ?? [])],
+    mcp_servers: [...(p?.mcp_servers ?? [])],
   };
-}
-
-function parseJsonStringArray(text: string, label: string): string[] {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch (e) {
-    throw new Error(`${label}: invalid JSON (${e instanceof Error ? e.message : String(e)})`);
-  }
-  if (!Array.isArray(parsed) || !parsed.every((v) => typeof v === "string")) {
-    throw new Error(`${label}: must be a JSON array of strings`);
-  }
-  return parsed as string[];
 }
 
 export default function ProfileEditDrawer({ open, onClose, projectId, agentType }: Props) {
@@ -75,18 +62,23 @@ export default function ProfileEditDrawer({ open, onClose, projectId, agentType 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
+  const onMcpChange = (next: string[]) => {
+    setForm((prev) => {
+      const removed = prev.mcp_servers.filter((n) => !next.includes(n));
+      if (removed.length === 0) {
+        return { ...prev, mcp_servers: next };
+      }
+      // Prune allowed_tools entries that reference servers we just unchecked.
+      const dropPrefixes = removed.map((n) => `mcp__${n}__`);
+      const allowed = prev.allowed_tools.filter(
+        (t) => !dropPrefixes.some((p) => t.startsWith(p)),
+      );
+      return { ...prev, mcp_servers: next, allowed_tools: allowed };
+    });
+  };
+
   const onSave = async () => {
     setFatal(null);
-    let allowedTools: string[];
-    let mcpServers: string[];
-    try {
-      allowedTools = parseJsonStringArray(form.allowed_tools_text, "Allowed tools");
-      mcpServers = parseJsonStringArray(form.mcp_servers_text, "MCP servers");
-    } catch (err) {
-      setFatal(err instanceof Error ? err.message : String(err));
-      return;
-    }
-
     try {
       await edit.mutateAsync({
         project_id: projectId,
@@ -96,8 +88,8 @@ export default function ProfileEditDrawer({ open, onClose, projectId, agentType 
         model: form.model || null,
         permission_mode: form.permission_mode || null,
         system_prompt_suffix: form.system_prompt_suffix || null,
-        allowed_tools: allowedTools,
-        mcp_servers: mcpServers,
+        allowed_tools: form.allowed_tools,
+        mcp_servers: form.mcp_servers,
       });
       onClose();
     } catch (err) {
@@ -179,23 +171,27 @@ export default function ProfileEditDrawer({ open, onClose, projectId, agentType 
             />
           </Section>
 
-          <Section title="MCP servers" hint="JSON array of registered server names. Picker arrives in F3.">
-            <textarea
-              value={form.mcp_servers_text}
-              onChange={(e) => set("mcp_servers_text", e.target.value)}
-              rows={4}
-              spellCheck={false}
-              className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-xs text-gray-200 focus:border-indigo-500 focus:outline-none"
+          <Section
+            title="MCP servers"
+            hint="Servers this profile may connect to. The embedded agent-queue server is always included."
+          >
+            <McpServerSelector
+              projectId={projectId}
+              value={form.mcp_servers}
+              onChange={onMcpChange}
             />
           </Section>
 
-          <Section title="Allowed tools" hint="JSON array of tool names. Picker arrives in F3.">
-            <textarea
-              value={form.allowed_tools_text}
-              onChange={(e) => set("allowed_tools_text", e.target.value)}
-              rows={6}
-              spellCheck={false}
-              className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-xs text-gray-200 focus:border-indigo-500 focus:outline-none"
+          <Section
+            title="Allowed tools"
+            hint="Tools the agent may invoke. Groups appear for the servers selected above."
+          >
+            <ToolPicker
+              projectId={projectId}
+              value={form.allowed_tools}
+              onChange={(t) => set("allowed_tools", t)}
+              enabledServers={form.mcp_servers}
+              model={form.model}
             />
           </Section>
         </div>
