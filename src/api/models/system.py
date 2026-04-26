@@ -124,6 +124,88 @@ class RunCommandResponse(BaseModel):
     stderr: str = ""
 
 
+class EventTrigger(BaseModel):
+    name: str
+    category: str
+
+
+class ListEventTriggersResponse(BaseModel):
+    events: list[EventTrigger] = []
+    count: int = 0
+
+
+class LogEntry(BaseModel):
+    model_config = {"extra": "allow"}
+    timestamp: str | None = None
+    level: str | None = None
+    event: str | None = None
+    message: str | None = None
+    component: str | None = None
+
+
+class ReadLogsResponse(BaseModel):
+    log_file: str
+    level_filter: str
+    count: int = 0
+    entries: list[LogEntry] = []
+
+
+class StuckTask(BaseModel):
+    id: str
+    project_id: str
+    status: str
+    assigned_agent: str | None = None
+    updated_at: float
+    seconds_in_state: float
+
+
+class StuckTasksThresholds(BaseModel):
+    assigned: int
+    in_progress: int
+
+
+class GetStuckTasksResponse(BaseModel):
+    stuck: list[StuckTask] = []
+    now_used: float
+    thresholds: StuckTasksThresholds
+
+
+class StubScanEntry(BaseModel):
+    stub_name: str
+    status: str
+    source_path: str | None = None
+    recorded_hash: str | None = None
+    current_hash: str | None = None
+    last_synced: str | None = None
+    is_enriched: bool = False
+
+
+class StubScanProject(BaseModel):
+    project_id: str
+    total: int = 0
+    stale: int = 0
+    missing_source: int = 0
+    unenriched: int = 0
+    orphaned: int = 0
+    current: int = 0
+    stubs: list[StubScanEntry] = []
+
+
+class StubScanTotals(BaseModel):
+    total: int = 0
+    stale: int = 0
+    missing_source: int = 0
+    unenriched: int = 0
+    orphaned: int = 0
+    current: int = 0
+
+
+class ScanStubStalenessResponse(BaseModel):
+    projects: list[StubScanProject] = []
+    totals: StubScanTotals | None = None
+    summary: str = ""
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_status": GetStatusResponse,
     "get_token_usage": GetTokenUsageResponse,
@@ -140,4 +222,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "shutdown": ShutdownResponse,
     "update_and_restart": UpdateAndRestartResponse,
     "run_command": RunCommandResponse,
+    "list_event_triggers": ListEventTriggersResponse,
+    "read_logs": ReadLogsResponse,
+    "get_stuck_tasks": GetStuckTasksResponse,
+    "scan_stub_staleness": ScanStubStalenessResponse,
 }

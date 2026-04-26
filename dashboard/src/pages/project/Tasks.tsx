@@ -183,7 +183,7 @@ function TaskTable({ projectId, showCompleted }: { projectId: string; showComple
               <td className="px-4 py-3 text-gray-400">
                 {task.priority != null ? `P${task.priority}` : "-"}
               </td>
-              <td className="px-4 py-3 text-gray-400">{task.agent_name ?? "-"}</td>
+              <td className="px-4 py-3 text-gray-400">{task.assigned_agent ?? "-"}</td>
               <td className="px-4 py-3">
                 <RowActions task={task} />
               </td>

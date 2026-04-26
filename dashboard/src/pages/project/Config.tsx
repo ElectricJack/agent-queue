@@ -15,12 +15,12 @@ export default function ProjectConfig() {
   const rows: Array<[string, React.ReactNode]> = [
     ["ID", <span className="font-mono">{project.id}</span>],
     ["Name", project.name],
-    ["Repo path", project.repo_path ? <span className="font-mono text-xs">{project.repo_path}</span> : "—"],
-    ["Default branch", project.default_branch ?? "—"],
+    ["Repo URL", project.repo_url ? <span className="font-mono text-xs">{project.repo_url}</span> : "—"],
+    ["Default branch", project.repo_default_branch ?? "—"],
     ["Default profile", project.default_profile_id ?? "—"],
     ["Discord channel", project.discord_channel_id ?? "—"],
     ["Budget limit", project.budget_limit != null ? String(project.budget_limit) : "—"],
-    ["Status", project.paused ? "Paused" : project.is_active === false ? "Inactive" : "Active"],
+    ["Status", project.paused ? "Paused" : project.status || "Active"],
   ];
 
   return (

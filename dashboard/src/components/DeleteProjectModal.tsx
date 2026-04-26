@@ -31,11 +31,7 @@ export default function DeleteProjectModal({ open, onClose, projectId, projectNa
   const onConfirm = async () => {
     setFatal(null);
     try {
-      const result = await del.mutateAsync({ project_id: projectId });
-      if (result.error) {
-        setFatal(result.error);
-        return;
-      }
+      await del.mutateAsync({ project_id: projectId });
       onClose();
       navigate("/system");
     } catch (err) {

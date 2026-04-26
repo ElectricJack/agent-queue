@@ -51,12 +51,12 @@ export default function PlaybookDetail() {
                 <span>{meta.scope}{meta.scope_identifier ? `:${meta.scope_identifier}` : ""}</span>
                 <span>v{meta.version}</span>
                 <span>{meta.node_count} nodes</span>
-                {meta.triggers.map((t) => (
+                {(meta.triggers ?? []).map((t) => (
                   <span key={t} className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-300">
                     {t}
                   </span>
                 ))}
-                {meta.running_count > 0 && (
+                {(meta.running_count ?? 0) > 0 && (
                   <span className="text-green-400">{meta.running_count} running</span>
                 )}
               </>

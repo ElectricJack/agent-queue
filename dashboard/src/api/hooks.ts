@@ -1,7 +1,135 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiPost, apiGet } from "./client";
+import { apiGet } from "./legacy-fetch";
+import {
+  approvePlan,
+  approveTask,
+  createMcpServer,
+  createPlaybook,
+  createProjectProfile,
+  createTask,
+  deleteMcpServer,
+  deletePlan,
+  deletePlaybook,
+  deleteProject,
+  deleteProjectProfile,
+  deleteTask,
+  editMcpServer,
+  editProjectProfile,
+  editTask,
+  getMcpServer,
+  getProject,
+  getStatus,
+  getTask,
+  listActiveTasksAllProjects,
+  listAgents,
+  listEventTriggers,
+  listMcpServers,
+  listMcpToolCatalog,
+  listPlaybookRuns,
+  listPlaybooks,
+  listProfiles,
+  listProjectProfiles,
+  listProjects,
+  listTasks,
+  listWorkspaces,
+  orchestratorControl,
+  pauseProject,
+  probeMcpServer,
+  provideInput,
+  rejectPlan,
+  reopenWithFeedback,
+  restartTask,
+  resumeProject,
+  showEffectiveProfile,
+  skipTask,
+  stopTask,
+  updatePlaybookSource,
+  getPlaybookSource,
+} from "./client";
+import type {
+  AgentSummary,
+  CatalogEntryModel,
+  TaskRef,
+  CreateMcpServerRequest,
+  CreateProjectProfileRequest,
+  CreateTaskRequest,
+  CreateProjectProfileResponse2 as CreateProjectProfileResponse,
+  EditProjectProfileRequest,
+  EditTaskRequest,
+  EventTrigger,
+  GetMcpServerResponse,
+  GetProjectResponse2 as ProjectResponse,
+  GetStatusResponse2 as SystemStatusResponse,
+  GetTaskResponse2 as TaskResponse,
+  ListEventTriggersResponse,
+  ListMcpServersResponse,
+  ListMcpToolCatalogResponse,
+  ListPlaybookRunsResponse,
+  ListPlaybooksResponse,
+  ListProfilesResponse2 as ListProfilesResponse,
+  ListProjectProfilesResponse,
+  ListProjectsResponse2 as ListProjectsResponse,
+  ListTasksResponse2 as ListTasksResponse,
+  ListWorkspacesResponse2 as ListWorkspacesResponse,
+  McpServerSummary,
+  OrchestratorControlResponse2 as OrchestratorControlResponse,
+  PlaybookRunSummary,
+  PlaybookSummary,
+  ProbedToolModel,
+  ProbeMcpServerResponse,
+  ProfileDetail,
+  ProfileSummary,
+  ProjectProfileRow,
+  ProjectSummary,
+  ShowEffectiveProfileResponse,
+  TaskDetail,
+  WorkspaceSummary,
+  GetPlaybookSourceResponse,
+  UpdatePlaybookSourceResponse,
+} from "./client";
 
-// --- System ---
+// --- Re-exports — call sites should import shared types from here ---
+export type {
+  AgentSummary,
+  AgentSummary as Agent,
+  CatalogEntryModel as CatalogEntry,
+  TaskRef,
+  CreateMcpServerRequest,
+  CreateProjectProfileRequest,
+  CreateProjectProfileResponse,
+  CreateTaskRequest,
+  EditProjectProfileRequest,
+  EditTaskRequest,
+  EventTrigger,
+  GetMcpServerResponse as McpServerDetail,
+  ListPlaybookRunsResponse,
+  ListPlaybooksResponse,
+  McpServerSummary,
+  PlaybookRunSummary,
+  PlaybookSummary,
+  ProbedToolModel as ProbedTool,
+  ProfileDetail,
+  ProfileSummary as Profile,
+  ProjectProfileRow,
+  ProjectResponse as Project,
+  ProjectSummary,
+  ShowEffectiveProfileResponse,
+  TaskResponse as Task,
+  TaskDetail,
+  WorkspaceSummary as Workspace,
+  GetPlaybookSourceResponse as PlaybookSource,
+  UpdatePlaybookSourceResponse as PlaybookUpdateResult,
+};
+
+// Convenience: every project response gets a derived `paused` boolean so
+// existing UI code can keep doing `project.paused` regardless of whether the
+// daemon returned status="PAUSED" or paused=true.
+type Pausable = { status?: string | null; paused?: boolean | null };
+function withPaused<T extends Pausable>(p: T): T & { paused: boolean } {
+  return { ...p, paused: Boolean(p.paused ?? p.status === "PAUSED") };
+}
+
+// --- Health (non-codegen routes — these stay on the legacy fetch) ---
 
 export function useHealth() {
   return useQuery({
@@ -11,25 +139,23 @@ export function useHealth() {
   });
 }
 
+// --- System ---
+
 export function useSystemStatus() {
   return useQuery({
     queryKey: ["system", "status"],
-    queryFn: () => apiPost<Record<string, unknown>>("/system/get-status"),
+    queryFn: async () => (await getStatus({ body: {}, throwOnError: true })).data as SystemStatusResponse,
     refetchInterval: 60_000,
   });
 }
 
-export interface OrchestratorStatus {
-  status: "paused" | "running";
-  running_tasks?: number;
-  message?: string;
-}
+export type { SystemStatusResponse, OrchestratorControlResponse };
 
 export function useOrchestratorStatus() {
   return useQuery({
     queryKey: ["orchestrator", "status"],
-    queryFn: () =>
-      apiPost<OrchestratorStatus>("/system/orchestrator-control", { action: "status" }),
+    queryFn: async () =>
+      (await orchestratorControl({ body: { action: "status" }, throwOnError: true })).data as OrchestratorControlResponse,
     refetchInterval: 15_000,
   });
 }
@@ -37,8 +163,8 @@ export function useOrchestratorStatus() {
 export function useOrchestratorControl() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (action: "pause" | "resume") =>
-      apiPost<OrchestratorStatus>("/system/orchestrator-control", { action }),
+    mutationFn: async (action: "pause" | "resume") =>
+      (await orchestratorControl({ body: { action }, throwOnError: true })).data as OrchestratorControlResponse,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["orchestrator", "status"] });
     },
@@ -47,22 +173,14 @@ export function useOrchestratorControl() {
 
 // --- Agents ---
 
-export interface Agent {
-  workspace_id: string;
-  project_id: string;
-  name: string;
-  state: string;
-  current_task_id?: string | null;
-  current_task_title?: string | null;
-}
-
 export function useAgents(projectId?: string) {
   return useQuery({
     queryKey: ["agents", projectId],
     queryFn: async () => {
-      const body: Record<string, unknown> = {};
-      if (projectId) body.project_id = projectId;
-      const data = await apiPost<{ success: boolean; agents: Agent[] }>("/agent/list", body);
+      const { data } = await listAgents({
+        body: projectId ? { project_id: projectId } : {},
+        throwOnError: true,
+      });
       return data.agents ?? [];
     },
     refetchInterval: 60_000,
@@ -75,11 +193,9 @@ export function useAllAgents(projectIds: string[]) {
     queryKey: ["agents", "all", projectIds],
     queryFn: async () => {
       const results = await Promise.all(
-        projectIds.map((pid) =>
-          apiPost<{ success: boolean; agents: Agent[] }>("/agent/list", { project_id: pid })
-        ),
+        projectIds.map((pid) => listAgents({ body: { project_id: pid }, throwOnError: true })),
       );
-      return results.flatMap((r) => r.agents ?? []);
+      return results.flatMap((r) => r.data.agents ?? []);
     },
     refetchInterval: 60_000,
     enabled: projectIds.length > 0,
@@ -88,37 +204,6 @@ export function useAllAgents(projectIds: string[]) {
 
 // --- Tasks ---
 
-export interface TaskRef {
-  id: string;
-  title: string;
-  status?: string;
-}
-
-export interface Task {
-  id: string;
-  title: string;
-  status: string;
-  description?: string;
-  priority?: number;
-  project_id?: string;
-  assigned_agent?: string | null;
-  agent_name?: string | null;
-  task_type?: string | null;
-  profile_id?: string | null;
-  pr_url?: string | null;
-  retry_count?: number;
-  max_retries?: number;
-  requires_approval?: boolean;
-  is_plan_subtask?: boolean;
-  auto_approve_plan?: boolean;
-  parent_task_id?: string | null;
-  depends_on?: TaskRef[];
-  blocks?: TaskRef[];
-  subtasks?: TaskRef[];
-  created_at?: string;
-  updated_at?: string;
-}
-
 export function useTasks(projectId?: string, opts?: { showAll?: boolean }) {
   return useQuery({
     queryKey: ["tasks", projectId, opts?.showAll],
@@ -126,8 +211,8 @@ export function useTasks(projectId?: string, opts?: { showAll?: boolean }) {
       const body: Record<string, unknown> = {};
       if (projectId) body.project_id = projectId;
       if (opts?.showAll) body.show_all = true;
-      const data = await apiPost<{ success: boolean; tasks: Task[] }>("/task/list", body);
-      return data.tasks ?? [];
+      const { data } = await listTasks({ body, throwOnError: true });
+      return (data as ListTasksResponse).tasks ?? [];
     },
     refetchInterval: 60_000,
   });
@@ -136,7 +221,7 @@ export function useTasks(projectId?: string, opts?: { showAll?: boolean }) {
 export function useTask(taskId: string) {
   return useQuery({
     queryKey: ["task", taskId],
-    queryFn: () => apiPost<Task>("/task/get", { task_id: taskId }),
+    queryFn: async () => (await getTask({ body: { task_id: taskId }, throwOnError: true })).data as TaskResponse,
     refetchInterval: 60_000,
     enabled: !!taskId,
   });
@@ -146,8 +231,8 @@ export function useActiveTasksAllProjects() {
   return useQuery({
     queryKey: ["tasks", "active", "all"],
     queryFn: async () => {
-      const data = await apiPost<{ success: boolean; tasks: Task[] }>("/task/list-active-all-projects");
-      return data.tasks ?? [];
+      const { data } = await listActiveTasksAllProjects({ body: {}, throwOnError: true });
+      return (data as ListTasksResponse).tasks ?? [];
     },
     refetchInterval: 60_000,
   });
@@ -155,29 +240,12 @@ export function useActiveTasksAllProjects() {
 
 // --- Projects ---
 
-export interface Project {
-  id: string;
-  name: string;
-  status?: string;
-  repo_path?: string;
-  default_branch?: string;
-  is_active?: boolean;
-  paused?: boolean;
-  default_profile_id?: string | null;
-  discord_channel_id?: string | null;
-  budget_limit?: number | null;
-}
-
-function withPaused<T extends { status?: string; paused?: boolean }>(p: T): T {
-  return { ...p, paused: p.paused ?? p.status === "PAUSED" };
-}
-
 export function useProjects() {
   return useQuery({
     queryKey: ["projects"],
     queryFn: async () => {
-      const data = await apiPost<{ success: boolean; projects: Project[] }>("/project/list");
-      return (data.projects ?? []).map(withPaused);
+      const { data } = await listProjects({ body: {}, throwOnError: true });
+      return ((data as ListProjectsResponse).projects ?? []).map(withPaused);
     },
     refetchInterval: 30_000,
   });
@@ -186,45 +254,42 @@ export function useProjects() {
 export function useProject(projectId: string) {
   return useQuery({
     queryKey: ["project", projectId],
-    queryFn: async () =>
-      withPaused(await apiPost<Project>("/project/get", { project_id: projectId })),
+    queryFn: async () => {
+      const { data } = await getProject({ body: { project_id: projectId }, throwOnError: true });
+      return withPaused(data as ProjectResponse);
+    },
     enabled: !!projectId,
   });
 }
 
-function useProjectMutation<TInput extends Record<string, unknown>, TOutput = unknown>(
-  endpoint: string,
-) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (input: TInput) => apiPost<TOutput>(endpoint, input),
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
-      const pid = (variables as { project_id?: string }).project_id;
-      if (pid) {
-        queryClient.invalidateQueries({ queryKey: ["project", pid] });
-      }
-    },
-  });
+function invalidateProjectQueries(queryClient: ReturnType<typeof useQueryClient>, projectId?: string) {
+  queryClient.invalidateQueries({ queryKey: ["projects"] });
+  if (projectId) queryClient.invalidateQueries({ queryKey: ["project", projectId] });
 }
 
 export function usePauseProject() {
-  return useProjectMutation<{ project_id: string }, { paused: string; name: string }>(
-    "/project/pause",
-  );
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { project_id: string }) =>
+      (await pauseProject({ body: input, throwOnError: true })).data,
+    onSuccess: (_d, variables) => invalidateProjectQueries(queryClient, variables.project_id),
+  });
 }
 
 export function useResumeProject() {
-  return useProjectMutation<{ project_id: string }, { resumed: string; name: string }>(
-    "/project/resume",
-  );
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { project_id: string }) =>
+      (await resumeProject({ body: input, throwOnError: true })).data,
+    onSuccess: (_d, variables) => invalidateProjectQueries(queryClient, variables.project_id),
+  });
 }
 
 export function useDeleteProject() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { project_id: string }) =>
-      apiPost<{ deleted?: string; name?: string; error?: string }>("/project/delete", input),
+    mutationFn: async (input: { project_id: string }) =>
+      (await deleteProject({ body: input, throwOnError: true })).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
@@ -233,48 +298,26 @@ export function useDeleteProject() {
 
 // --- Workspaces ---
 
-export interface Workspace {
-  id: string;
-  project_id: string;
-  workspace_path: string;
-  source_type: string;
-  name?: string | null;
-  locked_by_agent_id?: string | null;
-  locked_by_task_id?: string | null;
-}
-
 export function useWorkspaces(projectId: string) {
   return useQuery({
     queryKey: ["workspaces", projectId],
     queryFn: async () => {
-      const data = await apiPost<{ workspaces: Workspace[] }>("/project/list-workspaces", {
-        project_id: projectId,
-      });
-      return data.workspaces ?? [];
+      const { data } = await listWorkspaces({ body: { project_id: projectId }, throwOnError: true });
+      return (data as ListWorkspacesResponse).workspaces ?? [];
     },
     refetchInterval: 30_000,
     enabled: !!projectId,
   });
 }
 
-// --- Profiles ---
-
-export interface Profile {
-  id: string;
-  name: string;
-  description: string;
-  model: string;
-  allowed_tools: string[];
-  mcp_servers: string[];
-  has_system_prompt: boolean;
-}
+// --- Profiles (system-wide) ---
 
 export function useProfiles() {
   return useQuery({
     queryKey: ["profiles"],
     queryFn: async () => {
-      const data = await apiPost<{ profiles: Profile[]; count: number }>("/agent/list-profiles");
-      return data.profiles ?? [];
+      const { data } = await listProfiles({ body: {}, throwOnError: true });
+      return (data as ListProfilesResponse).profiles ?? [];
     },
     refetchInterval: 60_000,
   });
@@ -282,143 +325,135 @@ export function useProfiles() {
 
 // --- Task Mutations ---
 
-function useTaskMutation<TInput extends Record<string, unknown>, TOutput = unknown>(
-  endpoint: string,
-) {
+function useTaskMutationCallbacks() {
   const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (input: TInput) => apiPost<TOutput>(endpoint, input),
+  return {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       queryClient.invalidateQueries({ queryKey: ["task"] });
     },
-  });
+  };
 }
 
 export function useStopTask() {
-  return useTaskMutation<{ task_id: string }, { stopped: string }>("/task/stop");
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string }) =>
+      (await stopTask({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
 }
 
 export function useRestartTask() {
-  return useTaskMutation<{ task_id: string }, { restarted: string; title: string; previous_status: string }>("/task/restart");
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string }) =>
+      (await restartTask({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
 }
 
 export function useSkipTask() {
-  return useTaskMutation<{ task_id: string }, { skipped: string; unblocked_count: number }>("/task/skip");
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string }) =>
+      (await skipTask({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
 }
 
 export function useApproveTask() {
-  return useTaskMutation<{ task_id: string }, { approved: string; title: string }>("/task/approve");
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string }) =>
+      (await approveTask({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
 }
 
 export function useApprovePlan() {
-  return useTaskMutation<{ task_id: string }, { approved: string; subtask_count: number }>("/task/approve-plan");
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string }) =>
+      (await approvePlan({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
 }
 
 export function useRejectPlan() {
-  return useTaskMutation<{ task_id: string; feedback: string }, { rejected: string }>("/task/reject-plan");
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string; feedback: string }) =>
+      (await rejectPlan({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
 }
 
 export function useDeletePlan() {
-  return useTaskMutation<{ task_id: string }, { deleted: string; draft_subtasks_deleted: number }>("/task/delete-plan");
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string }) =>
+      (await deletePlan({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
 }
 
 export function useReopenWithFeedback() {
-  return useTaskMutation<{ task_id: string; feedback: string }, { reopened: string }>("/task/reopen-with-feedback");
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string; feedback: string }) =>
+      (await reopenWithFeedback({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
 }
 
 export function useEditTask() {
-  return useTaskMutation<Record<string, unknown>, { updated: string; fields: string[] }>("/task/edit");
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: EditTaskRequest) =>
+      (await editTask({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
 }
 
 export function useDeleteTask() {
-  return useTaskMutation<{ task_id: string }, { deleted: string; title: string }>("/task/delete");
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string }) =>
+      (await deleteTask({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
 }
 
 export function useCreateTask() {
-  return useTaskMutation<Record<string, unknown>, { created: string; title: string }>("/task/create");
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: CreateTaskRequest) =>
+      (await createTask({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
 }
 
 export function useProvideInput() {
-  return useTaskMutation<{ task_id: string; input: string }>("/system/provide-input");
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string; input: string }) =>
+      (await provideInput({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
 }
 
 // --- Playbooks ---
-
-export interface PlaybookLastRun {
-  run_id: string;
-  status: string;
-  started_at?: number;
-  completed_at?: number | null;
-  tokens_used?: number;
-}
-
-export interface PlaybookSummary {
-  id: string;
-  scope: string;
-  triggers: string[];
-  version: number;
-  compiled_at?: number;
-  node_count: number;
-  status: string;
-  running_count: number;
-  scope_identifier?: string;
-  agent_type?: string;
-  cooldown_seconds?: number;
-  cooldown_remaining?: number;
-  max_tokens?: number;
-  last_run?: PlaybookLastRun;
-}
-
-export interface PlaybookRunSummary {
-  run_id: string;
-  playbook_id: string;
-  playbook_version: number;
-  status: string;
-  current_node?: string | null;
-  tokens_used?: number;
-  started_at?: number;
-  completed_at?: number | null;
-  path?: Array<{ node_id: string; status: string }>;
-  duration_seconds?: number;
-  error?: string;
-}
-
-export interface PlaybookSource {
-  playbook_id: string;
-  path: string;
-  markdown: string;
-  source_hash: string;
-}
-
-export interface PlaybookUpdateResult {
-  playbook_id: string;
-  source_hash: string;
-  compiled: boolean;
-  version?: number;
-  node_count?: number;
-  scope?: string;
-  triggers?: string[];
-  errors?: string[];
-  retries_used?: number;
-  // Conflict response
-  error?: string;
-  reason?: string;
-  current_source_hash?: string;
-  expected_source_hash?: string;
-}
 
 export function usePlaybooks(scope?: string) {
   return useQuery({
     queryKey: ["playbooks", scope ?? "all"],
     queryFn: async () => {
-      const body: Record<string, unknown> = {};
-      if (scope) body.scope = scope;
-      const data = await apiPost<{ playbooks: PlaybookSummary[]; count: number }>(
-        "/playbook/list",
-        body,
-      );
-      return data.playbooks ?? [];
+      const { data } = await listPlaybooks({
+        body: scope ? { scope } : {},
+        throwOnError: true,
+      });
+      return (data as ListPlaybooksResponse).playbooks ?? [];
     },
     refetchInterval: 30_000,
   });
@@ -427,7 +462,9 @@ export function usePlaybooks(scope?: string) {
 export function usePlaybookSource(playbookId: string) {
   return useQuery({
     queryKey: ["playbook-source", playbookId],
-    queryFn: () => apiPost<PlaybookSource>("/playbook/get-source", { playbook_id: playbookId }),
+    queryFn: async () =>
+      (await getPlaybookSource({ body: { playbook_id: playbookId }, throwOnError: true }))
+        .data as GetPlaybookSourceResponse,
     enabled: !!playbookId,
   });
 }
@@ -439,11 +476,8 @@ export function usePlaybookRuns(playbookId?: string, status?: string, limit = 20
       const body: Record<string, unknown> = { limit };
       if (playbookId) body.playbook_id = playbookId;
       if (status) body.status = status;
-      const data = await apiPost<{ runs: PlaybookRunSummary[]; count: number }>(
-        "/playbook/list-runs",
-        body,
-      );
-      return data.runs ?? [];
+      const { data } = await listPlaybookRuns({ body, throwOnError: true });
+      return (data as ListPlaybookRunsResponse).runs ?? [];
     },
     refetchInterval: 30_000,
     enabled: !!playbookId || playbookId === undefined,
@@ -453,39 +487,21 @@ export function usePlaybookRuns(playbookId?: string, status?: string, limit = 20
 export function useUpdatePlaybookSource() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: {
-      playbook_id: string;
-      markdown: string;
-      expected_source_hash?: string;
-    }) => apiPost<PlaybookUpdateResult>("/playbook/update-source", input),
-    onSuccess: (_data, variables) => {
+    mutationFn: async (input: { playbook_id: string; markdown: string; expected_source_hash?: string }) =>
+      (await updatePlaybookSource({ body: input, throwOnError: true })).data as UpdatePlaybookSourceResponse,
+    onSuccess: (_d, variables) => {
       queryClient.invalidateQueries({ queryKey: ["playbook-source", variables.playbook_id] });
       queryClient.invalidateQueries({ queryKey: ["playbooks"] });
     },
   });
 }
 
-export interface PlaybookCreateResult {
-  created?: boolean;
-  playbook_id?: string;
-  path?: string;
-  source_hash?: string;
-  error?: string;
-}
-
-export interface EventTrigger {
-  name: string;
-  category: string;
-}
-
 export function useEventTriggers() {
   return useQuery({
     queryKey: ["event-triggers"],
     queryFn: async () => {
-      const data = await apiPost<{ events: EventTrigger[]; count: number }>(
-        "/system/list-event-triggers",
-      );
-      return data.events ?? [];
+      const { data } = await listEventTriggers({ body: {}, throwOnError: true });
+      return (data as ListEventTriggersResponse).events ?? [];
     },
     staleTime: 10 * 60_000,
   });
@@ -494,29 +510,179 @@ export function useEventTriggers() {
 export function useCreatePlaybook() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { playbook_id: string; scope: string; markdown: string }) =>
-      apiPost<PlaybookCreateResult>("/playbook/create", input),
+    mutationFn: async (input: { playbook_id: string; scope: string; markdown: string }) =>
+      (await createPlaybook({ body: input, throwOnError: true })).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["playbooks"] });
     },
   });
 }
 
-export interface PlaybookDeleteResult {
-  deleted?: boolean;
-  playbook_id?: string;
-  archived_path?: string;
-  removed_from_registry?: boolean;
-  error?: string;
-}
-
 export function useDeletePlaybook() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { playbook_id: string }) =>
-      apiPost<PlaybookDeleteResult>("/playbook/delete", input),
+    mutationFn: async (input: { playbook_id: string }) =>
+      (await deletePlaybook({ body: input, throwOnError: true })).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["playbooks"] });
     },
+  });
+}
+
+// --- Project profiles (per-agent-type override view) ---
+
+export function useProjectProfiles(projectId: string) {
+  return useQuery({
+    queryKey: ["project-profiles", projectId],
+    queryFn: async () => {
+      const { data } = await listProjectProfiles({
+        body: { project_id: projectId },
+        throwOnError: true,
+      });
+      return data as ListProjectProfilesResponse;
+    },
+    enabled: !!projectId,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useEffectiveProfile(projectId: string, agentType: string) {
+  return useQuery({
+    queryKey: ["effective-profile", projectId, agentType],
+    queryFn: async () => {
+      const { data } = await showEffectiveProfile({
+        body: { project_id: projectId, agent_type: agentType },
+        throwOnError: true,
+      });
+      return data as ShowEffectiveProfileResponse;
+    },
+    enabled: !!projectId && !!agentType,
+  });
+}
+
+function invalidateProfileViews(queryClient: ReturnType<typeof useQueryClient>, projectId: string) {
+  queryClient.invalidateQueries({ queryKey: ["project-profiles", projectId] });
+  queryClient.invalidateQueries({ queryKey: ["effective-profile", projectId] });
+  queryClient.invalidateQueries({ queryKey: ["profiles"] });
+}
+
+export function useCreateProjectProfile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateProjectProfileRequest) =>
+      (await createProjectProfile({ body: input, throwOnError: true })).data as CreateProjectProfileResponse,
+    onSuccess: (_d, variables) => invalidateProfileViews(queryClient, variables.project_id),
+  });
+}
+
+export function useEditProjectProfile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: EditProjectProfileRequest) =>
+      (await editProjectProfile({ body: input, throwOnError: true })).data,
+    onSuccess: (_d, variables) => invalidateProfileViews(queryClient, variables.project_id),
+  });
+}
+
+export function useDeleteProjectProfile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { project_id: string; agent_type: string }) =>
+      (await deleteProjectProfile({ body: input, throwOnError: true })).data,
+    onSuccess: (_d, variables) => invalidateProfileViews(queryClient, variables.project_id),
+  });
+}
+
+// --- MCP servers (registry) + tool catalog ---
+
+export function useMcpServers(projectId?: string) {
+  return useQuery({
+    queryKey: ["mcp-servers", projectId ?? "system"],
+    queryFn: async () => {
+      const { data } = await listMcpServers({
+        body: projectId ? { project_id: projectId } : {},
+        throwOnError: true,
+      });
+      return (data as ListMcpServersResponse).servers ?? [];
+    },
+    refetchInterval: 60_000,
+  });
+}
+
+export function useMcpServer(name: string, projectId?: string) {
+  return useQuery({
+    queryKey: ["mcp-server", projectId ?? "system", name],
+    queryFn: async () => {
+      const { data } = await getMcpServer({
+        body: projectId ? { name, project_id: projectId } : { name },
+        throwOnError: true,
+      });
+      return data as GetMcpServerResponse;
+    },
+    enabled: !!name,
+  });
+}
+
+export function useToolCatalog(projectId?: string, serverNames?: string[]) {
+  return useQuery({
+    queryKey: ["tool-catalog", projectId ?? "system", serverNames ?? "all"],
+    queryFn: async () => {
+      const body: Record<string, unknown> = {};
+      if (projectId) body.project_id = projectId;
+      if (serverNames && serverNames.length > 0) body.server_names = serverNames;
+      const { data } = await listMcpToolCatalog({ body, throwOnError: true });
+      return (data as ListMcpToolCatalogResponse).servers ?? {};
+    },
+    refetchInterval: 60_000,
+  });
+}
+
+function invalidateMcpViews(queryClient: ReturnType<typeof useQueryClient>, projectId?: string | null) {
+  queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });
+  queryClient.invalidateQueries({ queryKey: ["tool-catalog"] });
+  queryClient.invalidateQueries({ queryKey: ["mcp-server"] });
+  if (projectId) {
+    queryClient.invalidateQueries({ queryKey: ["project-profiles", projectId] });
+  }
+}
+
+export function useProbeMcpServer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { name: string; project_id?: string }) =>
+      (await probeMcpServer({ body: input, throwOnError: true })).data as ProbeMcpServerResponse,
+    onSuccess: (_d, variables) => invalidateMcpViews(queryClient, variables.project_id),
+  });
+}
+
+export function useCreateMcpServer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateMcpServerRequest) =>
+      (await createMcpServer({ body: input, throwOnError: true })).data,
+    onSuccess: (_d, variables) => invalidateMcpViews(queryClient, variables.project_id),
+  });
+}
+
+export type EditMcpServerInput = Partial<CreateMcpServerRequest> & {
+  name: string;
+  project_id?: string;
+};
+
+export function useEditMcpServer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: EditMcpServerInput) =>
+      (await editMcpServer({ body: input, throwOnError: true })).data,
+    onSuccess: (_d, variables) => invalidateMcpViews(queryClient, variables.project_id),
+  });
+}
+
+export function useDeleteMcpServer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { name: string; project_id?: string }) =>
+      (await deleteMcpServer({ body: input, throwOnError: true })).data,
+    onSuccess: (_d, variables) => invalidateMcpViews(queryClient, variables.project_id),
   });
 }

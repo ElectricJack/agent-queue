@@ -11,7 +11,7 @@ export default function TaskDetail() {
   if (isLoading) return <p className="p-6 text-sm text-gray-500">Loading...</p>;
   if (!task) return <p className="p-6 text-sm text-gray-500">Task not found.</p>;
 
-  const agent = task.assigned_agent ?? task.agent_name;
+  const agent = task.assigned_agent;
 
   return (
     <div className="space-y-6">
@@ -154,11 +154,13 @@ function TaskRefList({ title, items }: { title: string; items: TaskRef[] }) {
   );
 }
 
-function formatDate(iso?: string): string {
-  if (!iso) return "-";
+function formatDate(value?: string | number | null): string {
+  if (value == null) return "-";
   try {
-    return new Date(iso).toLocaleString();
+    // Daemon returns unix-epoch floats; ISO strings are also accepted.
+    const date = typeof value === "number" ? new Date(value * 1000) : new Date(value);
+    return date.toLocaleString();
   } catch {
-    return iso;
+    return String(value);
   }
 }

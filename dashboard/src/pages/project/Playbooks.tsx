@@ -50,10 +50,10 @@ function PlaybookTable({ rows }: { rows: PlaybookSummary[] }) {
               </td>
               <td className="px-4 py-3">
                 <div className="flex flex-wrap gap-1">
-                  {p.triggers.length === 0 ? (
+                  {(p.triggers ?? []).length === 0 ? (
                     <span className="text-gray-500">—</span>
                   ) : (
-                    p.triggers.map((t) => (
+                    (p.triggers ?? []).map((t) => (
                       <span
                         key={t}
                         className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-300"
@@ -74,7 +74,7 @@ function PlaybookTable({ rows }: { rows: PlaybookSummary[] }) {
                 )}
               </td>
               <td className="px-4 py-3 text-gray-400">
-                {p.running_count > 0 ? (
+                {(p.running_count ?? 0) > 0 ? (
                   <span className="text-green-400">{p.running_count}</span>
                 ) : (
                   <span className="text-gray-500">0</span>

@@ -43,13 +43,13 @@ export default function ProjectProfiles() {
                     custom prompt
                   </span>
                 )}
-                {p.mcp_servers.length > 0 && (
+                {(p.mcp_servers ?? []).length > 0 && (
                   <span className="rounded bg-gray-800 px-2 py-0.5 text-gray-400">
-                    {p.mcp_servers.length} MCP
+                    {(p.mcp_servers ?? []).length} MCP
                   </span>
                 )}
                 <span className="rounded bg-gray-800 px-2 py-0.5 text-gray-500">
-                  {p.allowed_tools.length} tools
+                  {(p.allowed_tools ?? []).length} tools
                 </span>
               </div>
             </div>

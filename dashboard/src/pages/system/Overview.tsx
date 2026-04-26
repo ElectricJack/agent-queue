@@ -118,7 +118,7 @@ export default function SystemOverview() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{task.title}</p>
                   <p className="text-xs text-gray-500">
-                    {task.project_id} {task.agent_name ? `\u00b7 ${task.agent_name}` : ""}
+                    {task.project_id} {task.assigned_agent ? `\u00b7 ${task.assigned_agent}` : ""}
                   </p>
                 </div>
                 <StatusBadge status={task.status} />
@@ -137,7 +137,7 @@ function OrchestratorControl({
   isPending,
   onToggle,
 }: {
-  status?: "paused" | "running";
+  status?: string;
   isLoading: boolean;
   isPending: boolean;
   onToggle: () => void;

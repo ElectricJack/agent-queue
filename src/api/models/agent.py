@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AgentSummary(BaseModel):
@@ -55,16 +55,20 @@ class CreateProfileResponse(BaseModel):
     warnings: list[str] | None = None
 
 
-class GetProfileResponse(BaseModel):
+class ProfileDetail(BaseModel):
     id: str
     name: str
     description: str = ""
     model: str = ""
     permission_mode: str = ""
     allowed_tools: list[str] = []
-    mcp_servers: dict[str, Any] = {}
+    mcp_servers: list[str] = []
     system_prompt_suffix: str = ""
     install: dict[str, Any] = {}
+
+
+class GetProfileResponse(ProfileDetail):
+    pass
 
 
 class EditProfileResponse(BaseModel):
@@ -114,6 +118,71 @@ class ImportProfileResponse(BaseModel):
     ready: bool = False
 
 
+# --- Project-scoped profile responses --------------------------------------
+
+
+class CreateProjectProfileResponse(BaseModel):
+    created: str
+    project_id: str
+    agent_type: str
+    path: str
+    warnings: list[str] | None = None
+
+
+class EditProjectProfileResponse(BaseModel):
+    updated: str
+    fields: list[str] = []
+    warnings: list[str] | None = None
+
+
+class DeleteProjectProfileResponse(BaseModel):
+    deleted: str
+    project_id: str
+    agent_type: str
+
+
+class ProbedToolModel(BaseModel):
+    name: str
+    description: str = ""
+    input_schema: dict[str, Any] = {}
+
+
+class CatalogEntryModel(BaseModel):
+    server_name: str
+    project_id: str | None = None
+    scope: str
+    transport: str
+    tools: list[ProbedToolModel] = []
+    tool_count: int = 0
+    last_probed_at: float = 0.0
+    last_error: str | None = None
+    ok: bool = True
+    is_builtin: bool = False
+
+
+class ProjectProfileRow(BaseModel):
+    agent_type: str
+    global_profile: ProfileDetail | None = Field(default=None, alias="global")
+    scoped: ProfileDetail | None = None
+    effective: ProfileDetail | None = None
+    has_override: bool = False
+
+    model_config = {"populate_by_name": True}
+
+
+class ListProjectProfilesResponse(BaseModel):
+    project_id: str
+    agent_types: list[ProjectProfileRow] = []
+    tool_catalog: dict[str, CatalogEntryModel] = {}
+
+
+class ShowEffectiveProfileResponse(BaseModel):
+    project_id: str
+    agent_type: str
+    profile: ProfileDetail | None = None
+    source: str | None = None  # "project" | "global" | None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_agents": ListAgentsResponse,
     "create_agent": ListAgentsResponse,  # deprecated, returns error
@@ -132,4 +201,9 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "install_profile": InstallProfileResponse,
     "export_profile": ExportProfileResponse,
     "import_profile": ImportProfileResponse,
+    "create_project_profile": CreateProjectProfileResponse,
+    "edit_project_profile": EditProjectProfileResponse,
+    "delete_project_profile": DeleteProjectProfileResponse,
+    "list_project_profiles": ListProjectProfilesResponse,
+    "show_effective_profile": ShowEffectiveProfileResponse,
 }

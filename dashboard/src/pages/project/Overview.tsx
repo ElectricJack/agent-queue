@@ -56,8 +56,8 @@ export default function ProjectOverview() {
               >
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{task.title}</p>
-                  {task.agent_name && (
-                    <p className="text-xs text-gray-500">{task.agent_name}</p>
+                  {task.assigned_agent && (
+                    <p className="text-xs text-gray-500">{task.assigned_agent}</p>
                   )}
                 </div>
                 <StatusBadge status={task.status} />

@@ -28,11 +28,7 @@ export default function DeletePlaybookModal({ open, onClose, playbookId }: Props
   const onConfirm = async () => {
     setFatal(null);
     try {
-      const result = await del.mutateAsync({ playbook_id: playbookId });
-      if (result.error) {
-        setFatal(result.error);
-        return;
-      }
+      await del.mutateAsync({ playbook_id: playbookId });
       onClose();
       navigate("/playbooks");
     } catch (err) {
