@@ -1556,14 +1556,7 @@ class TaskCommandsMixin:
         if cfg.enabled and cfg.statuses:
             for status in cfg.statuses:
                 tasks = await self.db.list_tasks(status=TaskStatus(status))
-                for t in tasks:
-                    # Check updated_at from DB row
-                    cursor = await self.db._db.execute(
-                        "SELECT updated_at FROM tasks WHERE id = ?", (t.id,)
-                    )
-                    row = await cursor.fetchone()
-                    if row and row["updated_at"] <= cutoff:
-                        eligible += 1
+                eligible += sum(1 for t in tasks if t.updated_at and t.updated_at <= cutoff)
 
         return {
             "enabled": cfg.enabled,

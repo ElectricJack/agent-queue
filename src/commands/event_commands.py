@@ -69,47 +69,12 @@ class EventCommandsMixin:
         project_id = args.get("project_id")
         task_id = args.get("task_id")
 
+        result = await self.db.get_token_breakdown(task_id=task_id, project_id=project_id)
         if task_id:
-            cursor = await self.db._db.execute(
-                "SELECT agent_id, SUM(tokens_used) as total, COUNT(*) as entries "
-                "FROM token_ledger WHERE task_id = ? GROUP BY agent_id",
-                (task_id,),
-            )
-            rows = await cursor.fetchall()
-            return {
-                "task_id": task_id,
-                "breakdown": [
-                    {"agent_id": r["agent_id"], "tokens": r["total"], "entries": r["entries"]}
-                    for r in rows
-                ],
-                "total": sum(r["total"] for r in rows),
-            }
-        elif project_id:
-            cursor = await self.db._db.execute(
-                "SELECT task_id, agent_id, SUM(tokens_used) as total "
-                "FROM token_ledger WHERE project_id = ? "
-                "GROUP BY task_id, agent_id ORDER BY total DESC",
-                (project_id,),
-            )
-            rows = await cursor.fetchall()
-            return {
-                "project_id": project_id,
-                "breakdown": [
-                    {"task_id": r["task_id"], "agent_id": r["agent_id"], "tokens": r["total"]}
-                    for r in rows
-                ],
-                "total": sum(r["total"] for r in rows),
-            }
-        else:
-            cursor = await self.db._db.execute(
-                "SELECT project_id, SUM(tokens_used) as total "
-                "FROM token_ledger GROUP BY project_id ORDER BY total DESC",
-            )
-            rows = await cursor.fetchall()
-            return {
-                "breakdown": [{"project_id": r["project_id"], "tokens": r["total"]} for r in rows],
-                "total": sum(r["total"] for r in rows),
-            }
+            return {"task_id": task_id, **result}
+        if project_id:
+            return {"project_id": project_id, **result}
+        return result
 
     async def _cmd_token_audit(self, args: dict) -> dict:
         days = args.get("days", 7)

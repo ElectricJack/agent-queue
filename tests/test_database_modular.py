@@ -537,6 +537,39 @@ class TestTokenQueries:
         total = await db.get_project_token_usage("p-1")
         assert total == 800
 
+    async def test_get_token_breakdown_by_task(self, db):
+        await _make_project(db)
+        await _make_agent(db)
+        await _make_task(db)
+        await db.record_token_usage("p-1", "a-1", "t-1", 500)
+        await db.record_token_usage("p-1", "a-1", "t-1", 300)
+        result = await db.get_token_breakdown(task_id="t-1")
+        assert result["total"] == 800
+        assert result["breakdown"] == [{"agent_id": "a-1", "tokens": 800, "entries": 2}]
+
+    async def test_get_token_breakdown_by_project(self, db):
+        await _make_project(db)
+        await _make_agent(db)
+        await _make_task(db)
+        await db.record_token_usage("p-1", "a-1", "t-1", 600)
+        await db.record_token_usage("p-1", "a-1", "t-1", 400)
+        result = await db.get_token_breakdown(project_id="p-1")
+        assert result["total"] == 1000
+        assert result["breakdown"] == [{"task_id": "t-1", "agent_id": "a-1", "tokens": 1000}]
+
+    async def test_get_token_breakdown_all_projects(self, db):
+        await _make_project(db)
+        await _make_agent(db)
+        await _make_task(db)
+        await db.record_token_usage("p-1", "a-1", "t-1", 1234)
+        result = await db.get_token_breakdown()
+        assert result["total"] == 1234
+        assert result["breakdown"] == [{"project_id": "p-1", "tokens": 1234}]
+
+    async def test_get_token_breakdown_empty(self, db):
+        result = await db.get_token_breakdown()
+        assert result == {"breakdown": [], "total": 0}
+
 
 # ── Event Queries ────────────────────────────────────────────────────────
 
@@ -574,7 +607,6 @@ class TestArchiveQueries:
         archived = await db.list_archived_tasks()
         assert len(archived) == 1
         assert archived[0]["id"] == "t-1"
-
 
     async def test_count_archived(self, db):
         await _make_project(db)
