@@ -30,10 +30,10 @@ import signal
 import sys
 import time
 
-from src.adapters import AdapterFactory
 from src.config import ConfigValidationError, load_config
 from src.logging_config import setup_logging
 from src.messaging import create_messaging_adapter
+from src.platforms import default_registry
 from src.messaging.base import MessagingAdapter
 from src.models import AgentState, TaskStatus
 from src.orchestrator import Orchestrator
@@ -76,8 +76,8 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
     orch = Orchestrator(config, platforms=None)
-    adapter_factory = AdapterFactory(llm_logger=orch.llm_logger)
-    orch._platforms = adapter_factory
+    registry = default_registry()
+    orch._platforms = registry
     await orch.initialize()
 
     # Start health check server (if enabled)

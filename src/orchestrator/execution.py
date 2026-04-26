@@ -409,7 +409,7 @@ class ExecutionMixin:
         else:
             logger.info("Task %s: no profile (using system defaults)", task.id)
         platform_name = self.config.default_platform
-        adapter = self._platforms.create(platform_name, profile=profile)
+        adapter = self._platforms.create(platform_name, profile=profile, llm_logger=self.llm_logger)
         # Store adapter reference so admin commands (stop_task, timeout handler)
         # can call adapter.stop() to terminate the agent process.
         self._adapters[action.agent_id] = adapter

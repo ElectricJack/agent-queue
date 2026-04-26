@@ -51,7 +51,7 @@ class MockAdapterFactory:
         self.last_profile = None
         self.create_calls = []
 
-    def create(self, agent_type: str, profile=None) -> AgentAdapter:
+    def create(self, agent_type: str, profile=None, llm_logger=None) -> AgentAdapter:
         self.last_profile = profile
         self.create_calls.append({"agent_type": agent_type, "profile": profile})
         return MockAdapter(result=self.result, tokens=self.tokens, on_wait=self.on_wait)

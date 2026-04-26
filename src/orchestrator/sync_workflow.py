@@ -271,7 +271,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
 
             profile = await self._resolve_profile(task)
             platform_name = self.config.default_platform
-            adapter = self._platforms.create(platform_name, profile=profile)
+            adapter = self._platforms.create(platform_name, profile=profile, llm_logger=self.llm_logger)
             self._adapters[action.agent_id] = adapter
 
             ctx = TaskContext(
