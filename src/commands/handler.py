@@ -173,6 +173,16 @@ class CommandHandler(
         # are born DEFINED, eliminating the race condition that required
         # project-wide plan processing locks.
         self._plan_subtask_creation_mode: bool = False
+        # The profile id of the caller currently invoking commands.  Set by
+        # the playbook runner (and, eventually, the task adapter) so that
+        # ``_cmd_create_task`` can:
+        #   1. default-inherit the caller's profile when the LLM omits
+        #      ``profile_id`` — preserves the capability sandbox by default;
+        #   2. reject upward escalation when the LLM explicitly passes a
+        #      ``profile_id`` whose allowed_tools / mcp_servers exceed the
+        #      caller's.
+        # See ``docs/specs/design/sandboxed-playbooks.md``.
+        self._caller_profile_id: str | None = None
 
     @property
     def db(self):
@@ -180,6 +190,17 @@ class CommandHandler(
 
     def set_active_project(self, project_id: str | None) -> None:
         self._active_project_id = project_id
+
+    def set_caller_profile(self, profile_id: str | None) -> None:
+        """Bind the capability profile of the caller invoking commands.
+
+        Called by the playbook runner (and task adapters) around their
+        ``supervisor.chat()`` invocations so that ``_cmd_create_task`` can
+        enforce profile inheritance and prevent capability escalation.
+
+        Pass ``None`` to clear the binding when the call completes.
+        """
+        self._caller_profile_id = profile_id
 
     async def resolve_project_id(self, raw: str) -> str:
         """Resolve a potentially malformed project ID to the correct one.

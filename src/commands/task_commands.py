@@ -33,6 +33,41 @@ from src.task_summary import write_task_summary
 logger = logging.getLogger(__name__)
 
 
+def _check_capability_escalation(parent, child) -> str:
+    """Return an explanation if ``child`` exceeds ``parent``'s capabilities.
+
+    Returns the empty string when the child profile is a strict subset
+    (i.e. acceptable).  Used by ``_cmd_create_task`` to reject upward
+    escalation when a sandboxed caller delegates work to another profile.
+
+    Subset semantics:
+
+    * ``child.allowed_tools ⊆ parent.allowed_tools``.  An empty parent
+      list means the parent has no tools at all, so the child cannot
+      have any either.  An empty child list is always OK (strictest).
+    * ``child.mcp_servers ⊆ parent.mcp_servers``.
+
+    System-prompt subsetting is intentionally not enforced — there is no
+    mechanical notion of "subset of prose".  The parent profile's author
+    is responsible for what they delegate; the runtime ensures the
+    delegate cannot reach beyond the parent's tool/server bounds.
+    """
+    parent_tools = set(parent.allowed_tools or [])
+    child_tools = set(child.allowed_tools or [])
+    extra_tools = sorted(child_tools - parent_tools)
+    if extra_tools:
+        return f"child has {len(extra_tools)} tool(s) not in parent's allowlist: {extra_tools[:5]}"
+    parent_servers = set(parent.mcp_servers or [])
+    child_servers = set(child.mcp_servers or [])
+    extra_servers = sorted(child_servers - parent_servers)
+    if extra_servers:
+        return (
+            f"child references {len(extra_servers)} MCP server(s) not in "
+            f"parent's list: {extra_servers}"
+        )
+    return ""
+
+
 class TaskCommandsMixin:
     """Task command methods mixed into CommandHandler."""
 
@@ -733,12 +768,66 @@ class TaskCommandsMixin:
                     "error": f"Invalid task_type '{raw_task_type}'. "
                     f"Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}"
                 }
-        # Validate optional profile_id
+        # ----- Profile resolution + capability inheritance ----------------
+        # When the calling context is sandboxed (the playbook runner / a
+        # task adapter set ``self._caller_profile_id``), tasks created
+        # without an explicit ``profile_id`` inherit the caller's profile.
+        # This preserves the capability sandbox by default — a sandboxed
+        # playbook delegating work doesn't accidentally hand the child
+        # task broader permissions than itself.
+        #
+        # When ``profile_id`` IS set explicitly, we require it to be a
+        # subset of the caller's capabilities (no upward escalation):
+        # ``child.allowed_tools ⊆ parent.allowed_tools`` AND
+        # ``child.mcp_servers ⊆ parent.mcp_servers``.  This blocks the
+        # confused-deputy attack where prompt-injected text in a
+        # sandboxed playbook says "create a task with profile=admin and
+        # description=`rm -rf`".
+        #
+        # **v1 gap — recursive task→child-task escalation:** when
+        # ``create_task`` is invoked by a task agent via the embedded
+        # ``agent-queue`` MCP server (HTTP), there's no per-task identity
+        # on the request, so ``self._caller_profile_id`` will be unset
+        # and the escalation check won't fire.  The line of defense for
+        # untrusted-input *tasks* is therefore the Claude CLI's
+        # ``--allowed-tools`` flag — a profile that omits
+        # ``mcp__agent-queue__create_task`` from its allowlist literally
+        # cannot reach this code path from inside the agent.  Profiles
+        # that DO whitelist ``create_task`` are trusted to delegate.
+        # See ``docs/specs/design/sandboxed-playbooks.md`` for the plan
+        # to plumb task identity through the MCP server.
         profile_id = args.get("profile_id")
+        caller_profile_id = getattr(self, "_caller_profile_id", None)
+        caller_profile = None
+        if caller_profile_id:
+            caller_profile = await self.db.get_profile(caller_profile_id)
+            if caller_profile is None:
+                # Caller profile is gone — fail closed.  Leaks of stale
+                # caller_profile_id mid-run shouldn't widen the child's
+                # scope; refuse the create until the situation is sane.
+                return {
+                    "error": f"Caller profile '{caller_profile_id}' not "
+                    "found — refusing to create task without a resolved "
+                    "capability bound."
+                }
+
         if profile_id:
             profile = await self.db.get_profile(profile_id)
             if not profile:
                 return {"error": f"Profile '{profile_id}' not found"}
+            if caller_profile is not None and profile.id != caller_profile.id:
+                escalation = _check_capability_escalation(caller_profile, profile)
+                if escalation:
+                    return {
+                        "error": (
+                            f"Capability escalation rejected: child profile "
+                            f"'{profile.id}' is not a subset of caller profile "
+                            f"'{caller_profile.id}'. {escalation}"
+                        )
+                    }
+        elif caller_profile is not None:
+            # Default-inherit so the child cannot exceed the caller.
+            profile_id = caller_profile.id
         # Validate optional preferred_workspace_id
         preferred_workspace_id = args.get("preferred_workspace_id")
         if preferred_workspace_id:

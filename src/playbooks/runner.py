@@ -35,7 +35,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from src.models import PlaybookRun, PlaybookRunEvent, PlaybookRunStatus
+from src.models import AgentProfile, PlaybookRun, PlaybookRunEvent, PlaybookRunStatus
 from src.playbooks.runner_context import ContextMixin, _parse_json_from_text
 from src.playbooks.runner_events import EventsMixin
 from src.playbooks.runner_transitions import TransitionMixin, _event_to_fallback_status
@@ -185,10 +185,91 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         self._llm_config: dict | None = graph.get("llm_config")
         self._transition_llm_config: dict | None = graph.get("transition_llm_config")
 
+        # Capability-scoped profile (sandboxed playbooks).  When set, every
+        # supervisor.chat() call for this run is restricted to
+        # ``profile.allowed_tools`` — the LLM literally cannot call anything
+        # else, even if prompt-injected.  Loaded lazily on first ``run()``
+        # call (db lookup is async).  ``None`` means full supervisor scope.
+        self._profile_id_raw: str | None = graph.get("profile_id")
+        self._profile: AgentProfile | None = None
+        self._tool_overrides: list[str] | None = None
+        self._profile_loaded: bool = False
+
         # Global daily playbook token cap (roadmap 5.2.8).
         # When set, ``run()`` checks today's cumulative playbook token usage
         # before starting and refuses to execute if the cap is already reached.
         self._max_daily_playbook_tokens: int | None = max_daily_playbook_tokens
+
+    # ------------------------------------------------------------------
+    # Capability-scoped profile (sandboxed playbooks)
+    # ------------------------------------------------------------------
+
+    async def _load_profile_or_error(self) -> str | None:
+        """Resolve the playbook's declared ``profile_id`` to an
+        :class:`AgentProfile` and cache the tool-allowlist for runtime use.
+
+        Sandboxed playbooks declare ``profile_id:`` in frontmatter to bound
+        what tools their LLM nodes can invoke.  This method:
+
+        * Resolves a relative slug (``email-triager``) against the
+          playbook's project (``project:<pid>:email-triager``) when an
+          event-supplied ``project_id`` is available.
+        * Accepts an absolute id (``project:<pid>:<slug>`` or a system
+          slug) verbatim.
+        * **Fails closed** — if a profile_id is declared but cannot be
+          loaded, returns an error string instead of letting the
+          playbook run with the full unsandboxed supervisor scope.
+
+        Returns ``None`` on success (profile loaded, or no profile_id
+        declared); a human-readable error string on failure.
+        """
+        if self._profile_loaded:
+            return None
+        self._profile_loaded = True
+        if not self._profile_id_raw:
+            return None
+        if self.db is None:
+            return (
+                f"profile '{self._profile_id_raw}' declared but no database is "
+                "available to resolve it"
+            )
+
+        raw = self._profile_id_raw.strip()
+        project_id = self.event.get("project_id") if isinstance(self.event, dict) else None
+        candidates: list[str] = []
+        if raw.startswith("project:") or ":" in raw:
+            candidates.append(raw)
+        else:
+            if project_id:
+                candidates.append(f"project:{project_id}:{raw}")
+            candidates.append(raw)
+
+        for candidate in candidates:
+            try:
+                prof = await self.db.get_profile(candidate)
+            except Exception:
+                logger.exception("Profile lookup raised for '%s'", candidate)
+                prof = None
+            if prof is not None:
+                self._profile = prof
+                # An empty allowed_tools list means "no tools at all".  We
+                # represent that as ``[]`` (not ``None``) so supervisor.chat
+                # honours the empty whitelist instead of falling back to
+                # default tool set.
+                self._tool_overrides = list(prof.allowed_tools)
+                logger.info(
+                    "Playbook '%s' run %s scoped to profile '%s' — %d allowed tool(s)",
+                    self._playbook_id,
+                    self.run_id,
+                    candidate,
+                    len(self._tool_overrides),
+                )
+                return None
+
+        return (
+            f"profile '{raw}' not found "
+            f"(tried {candidates}) — sandboxed playbook cannot run unscoped"
+        )
 
     # ------------------------------------------------------------------
     # Daily playbook token cap (roadmap 5.2.8)
@@ -279,6 +360,29 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         at startup and after each node.
         """
         started_at = time.time()
+
+        # ---- Capability profile pre-flight ----
+        # Sandboxed playbooks (frontmatter ``profile_id:``) must resolve
+        # their profile before any LLM call.  Fail closed: if the profile
+        # is declared but can't be loaded, refuse to execute the playbook
+        # rather than silently running with full supervisor scope.
+        profile_load_error = await self._load_profile_or_error()
+        if profile_load_error is not None:
+            logger.warning(
+                "Playbook '%s' refused to start: %s",
+                self._playbook_id,
+                profile_load_error,
+            )
+            if self.on_progress:
+                await self.on_progress("playbook_failed", profile_load_error)
+            await self._emit_failed_event(error=profile_load_error, started_at=started_at)
+            return RunResult(
+                run_id=self.run_id,
+                status="failed",
+                node_trace=[],
+                tokens_used=0,
+                error=profile_load_error,
+            )
 
         # ---- Daily token cap pre-flight check ----
         # If a global daily cap is configured and usage already exceeds it,
@@ -1568,6 +1672,13 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         context = self._build_node_context()
 
         timeout = node.get("timeout_seconds")
+        # Bind caller profile so any create_task tool call from inside this
+        # supervisor turn inherits / is bounded by the playbook's profile.
+        # Cleared in finally so an exception can't leak it across runs.
+        handler = getattr(self.supervisor, "handler", None)
+        caller_pid = self._profile.id if self._profile is not None else None
+        if handler is not None:
+            handler.set_caller_profile(caller_pid)
         try:
             coro = self.supervisor.chat(
                 text=prompt,
@@ -1575,6 +1686,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 history=context,
                 on_progress=supervisor_progress,
                 llm_config=node_llm_config,
+                tool_overrides=self._tool_overrides,
             )
             if timeout:
                 response = await asyncio.wait_for(coro, timeout=timeout)
@@ -1583,6 +1695,9 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         except asyncio.TimeoutError:
             trace_entry.status = "failed"
             raise TimeoutError(f"Node '{node_id}' timed out after {timeout}s") from None
+        finally:
+            if handler is not None:
+                handler.set_caller_profile(None)
 
         # Extract structured output from tool results
         output = self._extract_output(node, response)

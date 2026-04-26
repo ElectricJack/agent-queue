@@ -55,9 +55,7 @@ def mock_supervisor():
     supervisor.summarize = AsyncMock(return_value="Summary of prior steps.")
     # PlaybookRunner reads supervisor.config.chat_provider.playbook_max_tokens
     # at runner.py:1537 to default each node's max_tokens.
-    supervisor.config = SimpleNamespace(
-        chat_provider=SimpleNamespace(playbook_max_tokens=2048)
-    )
+    supervisor.config = SimpleNamespace(chat_provider=SimpleNamespace(playbook_max_tokens=2048))
     return supervisor
 
 
@@ -363,6 +361,146 @@ class TestConditionalTransitions:
         assert len(calls) >= 2
         transition_call = calls[1]
         assert transition_call.kwargs.get("tool_overrides") == []
+
+
+# ---------------------------------------------------------------------------
+# Sandboxed playbooks — capability-scoped profile (frontmatter ``profile_id:``)
+# ---------------------------------------------------------------------------
+
+
+class TestSandboxedPlaybook:
+    """A playbook that declares ``profile_id:`` in frontmatter must run with
+    its supervisor.chat() calls bounded by ``profile.allowed_tools``.
+
+    Defense against prompt injection: the LLM's tool schema only contains
+    the whitelisted tools, so even attacker-influenced input can't escape
+    the capability bundle.  See docs/specs/design/sandboxed-playbooks.md.
+    """
+
+    @staticmethod
+    def _make_profile(profile_id: str, allowed_tools: list[str]):
+        from src.models import AgentProfile
+
+        return AgentProfile(
+            id=profile_id,
+            name=profile_id,
+            allowed_tools=list(allowed_tools),
+        )
+
+    async def test_no_profile_id_means_unscoped(
+        self, mock_supervisor, mock_db, simple_graph, event_data
+    ):
+        """A playbook without ``profile_id`` passes ``tool_overrides=None``
+        (default supervisor scope) to every chat() call."""
+        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+        mock_db.get_profile.assert_not_called()
+        assert mock_supervisor.chat.call_args.kwargs.get("tool_overrides") is None
+
+    async def test_profile_allowed_tools_become_tool_overrides(
+        self, mock_supervisor, mock_db, simple_graph, event_data
+    ):
+        """``profile.allowed_tools`` is passed as ``tool_overrides`` to
+        every supervisor.chat() call — the runtime constrains the model."""
+        graph = {
+            **simple_graph,
+            "profile_id": "project:test-proj:email-triager",
+        }
+        mock_db.get_profile = AsyncMock(
+            return_value=self._make_profile(
+                "project:test-proj:email-triager",
+                ["mcp__email__read", "mcp__agent-queue__write_note"],
+            )
+        )
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+        assert result.status == "completed"
+        assert mock_supervisor.chat.call_args.kwargs["tool_overrides"] == [
+            "mcp__email__read",
+            "mcp__agent-queue__write_note",
+        ]
+
+    async def test_relative_slug_resolved_against_project(
+        self, mock_supervisor, mock_db, simple_graph, event_data
+    ):
+        """A bare slug (``email-triager``) is resolved against the event's
+        ``project_id`` — ``project:<pid>:email-triager`` is tried first."""
+        graph = {**simple_graph, "profile_id": "email-triager"}
+        mock_db.get_profile = AsyncMock(
+            return_value=self._make_profile("project:test-proj:email-triager", ["mcp__email__read"])
+        )
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+        # Project-scoped id should have been tried first.
+        assert mock_db.get_profile.call_args_list[0].args[0] == "project:test-proj:email-triager"
+
+    async def test_missing_profile_fails_closed(
+        self, mock_supervisor, mock_db, simple_graph, event_data
+    ):
+        """A declared ``profile_id`` that can't be loaded fails the run —
+        we never silently fall back to an unsandboxed scope."""
+        graph = {**simple_graph, "profile_id": "nonexistent-profile"}
+        mock_db.get_profile = AsyncMock(return_value=None)
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+        assert result.status == "failed"
+        assert "nonexistent-profile" in (result.error or "")
+        # No LLM calls were made — we refused to start.
+        mock_supervisor.chat.assert_not_called()
+
+    async def test_empty_allowed_tools_is_total_lockdown(
+        self, mock_supervisor, mock_db, simple_graph, event_data
+    ):
+        """An ``allowed_tools=[]`` profile means no tools at all (text-only
+        responses).  Distinct from ``None`` which would default-load tools."""
+        graph = {**simple_graph, "profile_id": "project:test-proj:no-tools"}
+        mock_db.get_profile = AsyncMock(
+            return_value=self._make_profile("project:test-proj:no-tools", [])
+        )
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+        assert mock_supervisor.chat.call_args.kwargs["tool_overrides"] == []
+
+    async def test_caller_profile_bound_around_chat(
+        self, mock_supervisor, mock_db, simple_graph, event_data
+    ):
+        """The runner binds ``handler._caller_profile_id`` before each
+        ``supervisor.chat()`` call and clears it after.  This is what lets
+        ``_cmd_create_task`` inherit / enforce capability scope when the
+        LLM invokes it from inside the chat turn.
+        """
+        from types import SimpleNamespace
+
+        captured = {}
+
+        # Real (sync) handler stub with set_caller_profile so the AsyncMock
+        # default-async behaviour doesn't apply.
+        handler = SimpleNamespace(_caller_profile_id=None)
+
+        def _set_caller_profile(pid):
+            handler._caller_profile_id = pid
+
+        handler.set_caller_profile = _set_caller_profile
+
+        async def chat(**_kw):
+            # Record the binding visible during the chat turn — i.e. what
+            # _cmd_create_task would see if invoked here.
+            captured["during_chat"] = handler._caller_profile_id
+            return "ok"
+
+        mock_supervisor.chat = chat
+        mock_supervisor.handler = handler
+
+        graph = {**simple_graph, "profile_id": "project:test-proj:email-triager"}
+        mock_db.get_profile = AsyncMock(
+            return_value=self._make_profile("project:test-proj:email-triager", ["mcp__email__read"])
+        )
+        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        await runner.run()
+
+        assert captured["during_chat"] == "project:test-proj:email-triager"
+        # Cleared in the finally block — must not leak across runs.
+        assert handler._caller_profile_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -6650,8 +6788,18 @@ class TestListPlaybookRunsCommand:
 
         trace = [
             {"node_id": "start", "started_at": 100.0, "completed_at": 110.0, "status": "completed"},
-            {"node_id": "validate", "started_at": 110.0, "completed_at": 120.0, "status": "completed"},
-            {"node_id": "deploy", "started_at": 120.0, "completed_at": 130.0, "status": "completed"},
+            {
+                "node_id": "validate",
+                "started_at": 110.0,
+                "completed_at": 120.0,
+                "status": "completed",
+            },
+            {
+                "node_id": "deploy",
+                "started_at": 120.0,
+                "completed_at": 130.0,
+                "status": "completed",
+            },
         ]
         run = PlaybookRun(
             run_id="r1",
@@ -8454,22 +8602,28 @@ class TestExtractOutputTextFallback:
         (all projects, including PAUSED ones). Text is the LLM's
         *conclusion* — it should win over raw tool inputs.
         """
-        ctx = _TestContext([
-            {"role": "user", "content": [
-                {"type": "tool_result", "content": '{"projects": [1, 2, 3]}'}
-            ]}
-        ])
+        ctx = _TestContext(
+            [
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "content": '{"projects": [1, 2, 3]}'}],
+                }
+            ]
+        )
         node = {"output": {"extract": "projects"}}
         result = ctx._extract_output(node, '{"projects": [99]}')
         assert result == [99]
 
     def test_tool_result_fallback_when_text_has_no_key(self):
         """Tool result is still used when the text doesn't contain the key."""
-        ctx = _TestContext([
-            {"role": "user", "content": [
-                {"type": "tool_result", "content": '{"projects": [1, 2, 3]}'}
-            ]}
-        ])
+        ctx = _TestContext(
+            [
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "content": '{"projects": [1, 2, 3]}'}],
+                }
+            ]
+        )
         node = {"output": {"extract": "projects"}}
         # Text is pure prose — no JSON object in it
         result = ctx._extract_output(node, "I found three projects.")
@@ -8519,11 +8673,14 @@ class TestExtractOutputTextFallback:
 
     def test_tool_result_lacking_key_falls_back_to_text(self):
         """Unrelated tool_result doesn't block text-response parsing."""
-        ctx = _TestContext([
-            {"role": "user", "content": [
-                {"type": "tool_result", "content": '{"unrelated": "x"}'}
-            ]}
-        ])
+        ctx = _TestContext(
+            [
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "content": '{"unrelated": "x"}'}],
+                }
+            ]
+        )
         node = {"output": {"extract": "projects"}}
         text = '{"projects": [7]}'
         assert ctx._extract_output(node, text) == [7]
@@ -8536,10 +8693,7 @@ class TestExtractOutputTextFallback:
         """
         ctx = _TestContext()
         node = {"output": {"extract": "projects"}}
-        text = (
-            "The schema is {\"projects\": []}.\n\n"
-            "Final result: {\"projects\": [\"real\"]}"
-        )
+        text = 'The schema is {"projects": []}.\n\nFinal result: {"projects": ["real"]}'
         assert ctx._extract_output(node, text) == ["real"]
 
     def test_memory_consolidation_regression_cascading(self):
@@ -8555,14 +8709,22 @@ class TestExtractOutputTextFallback:
         The iteration-collection auto-parse for (b) is covered separately
         by TestForEachCollectsParsedJson.
         """
-        ctx = _TestContext([
-            {"role": "user", "content": [
-                {"type": "tool_result", "content": (
-                    '{"projects": [{"id": "p1", "status": "ACTIVE"}, '
-                    '{"id": "p2", "status": "PAUSED"}]}'
-                )}
-            ]}
-        ])
+        ctx = _TestContext(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "content": (
+                                '{"projects": [{"id": "p1", "status": "ACTIVE"}, '
+                                '{"id": "p2", "status": "PAUSED"}]}'
+                            ),
+                        }
+                    ],
+                }
+            ]
+        )
         node = {"output": {"extract": "projects", "as": "active_projects"}}
         text = '{"projects": [{"id": "p1", "status": "ACTIVE"}]}'  # filtered
         result = ctx._extract_output(node, text)
@@ -8577,11 +8739,9 @@ class TestExtractOutputTextFallback:
         schema spec in the playbook; fallback should extract the projects
         list even though `_last_messages` has no matching tool_result.
         """
-        ctx = _TestContext([
-            {"role": "user", "content": [
-                {"type": "tool_result", "content": '{"top_k": 1}'}
-            ]}
-        ])
+        ctx = _TestContext(
+            [{"role": "user", "content": [{"type": "tool_result", "content": '{"top_k": 1}'}]}]
+        )
         node = {"output": {"extract": "projects", "as": "projects"}}
         text = (
             '{"projects": [{"id": "skinnable-imgui", "name": "skinnable-imgui"}, '
@@ -8614,9 +8774,7 @@ class TestForEachCollectsParsedJson:
     the parsed value is stored instead of the raw text.
     """
 
-    async def test_string_iteration_results_upgrade_to_dicts(
-        self, mock_supervisor, event_data
-    ):
+    async def test_string_iteration_results_upgrade_to_dicts(self, mock_supervisor, event_data):
         """Iteration returning bare JSON text is stored as a dict."""
         iter_responses = [
             '{"id": "a", "name": "Alpha"}',
@@ -8666,9 +8824,7 @@ class TestForEachCollectsParsedJson:
         assert processed[0] == {"id": "a", "name": "Alpha"}
         assert processed[1] == {"id": "b", "name": "Beta"}
 
-    async def test_non_json_iteration_results_stay_as_strings(
-        self, mock_supervisor, event_data
-    ):
+    async def test_non_json_iteration_results_stay_as_strings(self, mock_supervisor, event_data):
         """Iteration returning pure prose stays as text (no false upgrade)."""
 
         call_count = {"n": 0}
@@ -8687,14 +8843,18 @@ class TestForEachCollectsParsedJson:
             "version": 1,
             "nodes": {
                 "enumerate": {
-                    "entry": True, "prompt": "list", "goto": "iter",
+                    "entry": True,
+                    "prompt": "list",
+                    "goto": "iter",
                     "output": {"extract": "items", "as": "items"},
                 },
                 "iter": {
                     "prompt": "Describe",
                     "goto": "done",
                     "for_each": {
-                        "source": "items", "as": "item", "collect": "results",
+                        "source": "items",
+                        "as": "item",
+                        "collect": "results",
                     },
                 },
                 "done": {"terminal": True},
@@ -8707,9 +8867,7 @@ class TestForEachCollectsParsedJson:
         assert isinstance(results, list) and len(results) == 2
         assert all(isinstance(r, str) for r in results)
 
-    async def test_run_lifecycle_notifications_system_scope(
-        self, mock_supervisor, event_data
-    ):
+    async def test_run_lifecycle_notifications_system_scope(self, mock_supervisor, event_data):
         """System-scope runs emit notify.playbook_run_started/completed with project_id=None.
 
         The trigger event has no `project_id` for system playbooks, so the
@@ -8745,9 +8903,7 @@ class TestForEachCollectsParsedJson:
         assert completed["playbook_id"] == "sys-pb"
         assert completed["run_id"] == started["run_id"]
 
-    async def test_run_lifecycle_notifications_project_scope(
-        self, mock_supervisor, event_data
-    ):
+    async def test_run_lifecycle_notifications_project_scope(self, mock_supervisor, event_data):
         """Project-scope runs propagate project_id to Discord routing."""
         from unittest.mock import AsyncMock
 
@@ -8770,9 +8926,7 @@ class TestForEachCollectsParsedJson:
         assert emitted["notify.playbook_run_started"]["project_id"] == "my-proj"
         assert emitted["notify.playbook_run_completed"]["project_id"] == "my-proj"
 
-    async def test_run_failure_emits_notify_failed(
-        self, mock_supervisor, event_data
-    ):
+    async def test_run_failure_emits_notify_failed(self, mock_supervisor, event_data):
         """A run that fails emits notify.playbook_run_failed, not completed."""
         from unittest.mock import AsyncMock
 
@@ -8797,9 +8951,7 @@ class TestForEachCollectsParsedJson:
         assert "notify.playbook_run_failed" in emitted
         assert "notify.playbook_run_completed" not in emitted
 
-    async def test_event_accessible_via_template(
-        self, mock_supervisor, event_data
-    ):
+    async def test_event_accessible_via_template(self, mock_supervisor, event_data):
         """The trigger event is accessible in node prompts as `{{event.*}}`.
 
         Regression for the email-allowlisted playbook run (3f1d7750-7d0):
@@ -8842,9 +8994,7 @@ class TestForEachCollectsParsedJson:
         assert "abc123" in rendered
         assert "git.commit" in rendered
 
-    async def test_json_with_trailing_prose_parsed(
-        self, mock_supervisor, event_data
-    ):
+    async def test_json_with_trailing_prose_parsed(self, mock_supervisor, event_data):
         """JSON object with leading/trailing prose is recovered."""
 
         call_count = {"n": 0}
@@ -8855,8 +9005,7 @@ class TestForEachCollectsParsedJson:
             if idx == 0:
                 return '{"items": [{"id": "a"}]}'
             return (
-                "I analyzed the project and here is the result:\n\n"
-                '{"id": "a", "churn_count": 42}\n'
+                'I analyzed the project and here is the result:\n\n{"id": "a", "churn_count": 42}\n'
             )
 
         mock_supervisor.chat.side_effect = chat_side_effect
@@ -8866,14 +9015,18 @@ class TestForEachCollectsParsedJson:
             "version": 1,
             "nodes": {
                 "enumerate": {
-                    "entry": True, "prompt": "list", "goto": "iter",
+                    "entry": True,
+                    "prompt": "list",
+                    "goto": "iter",
                     "output": {"extract": "items", "as": "items"},
                 },
                 "iter": {
                     "prompt": "Analyze",
                     "goto": "done",
                     "for_each": {
-                        "source": "items", "as": "item", "collect": "analyzed",
+                        "source": "items",
+                        "as": "item",
+                        "collect": "analyzed",
                     },
                 },
                 "done": {"terminal": True},

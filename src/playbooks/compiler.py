@@ -364,6 +364,16 @@ class PlaybookCompiler:
             if not isinstance(enabled, bool):
                 errors.append("Frontmatter 'enabled' must be a boolean")
 
+        # 'profile_id' is optional — when set, the playbook runs sandboxed
+        # under the named capability profile.  See
+        # docs/specs/design/sandboxed-playbooks.md.
+        if "profile_id" in frontmatter:
+            pid = frontmatter["profile_id"]
+            if pid is not None and not isinstance(pid, str):
+                errors.append(
+                    f"Frontmatter 'profile_id' must be a string, got {type(pid).__name__}"
+                )
+
         return errors
 
     # -- hashing -------------------------------------------------------------
@@ -645,5 +655,16 @@ class PlaybookCompiler:
             result["transition_llm_config"] = frontmatter["transition_llm_config"]
         if "max_tokens" in frontmatter:
             result["max_tokens"] = int(frontmatter["max_tokens"])
+
+        # Capability-scoped profile: locks the playbook's LLM nodes to
+        # ``profile.allowed_tools`` so prompt injection in untrusted input
+        # cannot escape the tool whitelist.  See
+        # ``docs/specs/design/sandboxed-playbooks.md``.  Strict: only the
+        # frontmatter author can declare this — drop any LLM-supplied
+        # value so attacker-influenced markdown body cannot inject a
+        # broader capability scope into the compiled JSON.
+        result.pop("profile_id", None)
+        if "profile_id" in frontmatter and frontmatter["profile_id"]:
+            result["profile_id"] = str(frontmatter["profile_id"]).strip()
 
         return result

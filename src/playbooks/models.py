@@ -392,6 +392,15 @@ class CompiledPlaybook:
     llm_config: LlmConfig | None = None
     transition_llm_config: LlmConfig | None = None
     compiled_at: str | None = None
+    # Optional capability-scoped profile for the playbook's LLM nodes.  When
+    # set, every supervisor.chat() call for this playbook receives
+    # tool_overrides=profile.allowed_tools and llm_config synthesised from the
+    # profile, so the runtime — not the model — bounds what tools are
+    # callable.  Untrusted-input playbooks (email triage, web scraping, etc.)
+    # rely on this to make prompt injection un-exploitable.  Slug only:
+    # relative names resolve against the playbook's project at runtime;
+    # absolute ids (``project:<pid>:<slug>``) pass through.
+    profile_id: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize trigger entries to :class:`PlaybookTrigger` objects.
@@ -710,6 +719,8 @@ class CompiledPlaybook:
             d["transition_llm_config"] = self.transition_llm_config.to_dict()
         if self.compiled_at is not None:
             d["compiled_at"] = self.compiled_at
+        if self.profile_id is not None:
+            d["profile_id"] = self.profile_id
         return d
 
     @classmethod
@@ -735,6 +746,7 @@ class CompiledPlaybook:
             llm_config=llm_cfg,
             transition_llm_config=trans_cfg,
             compiled_at=data.get("compiled_at"),
+            profile_id=data.get("profile_id"),
         )
 
     @classmethod
