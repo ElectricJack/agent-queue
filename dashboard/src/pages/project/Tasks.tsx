@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import {
   PlusIcon,
   StopIcon,
@@ -10,19 +10,17 @@ import {
 } from "@heroicons/react/24/outline";
 import {
   useTasks,
-  useProjects,
   useStopTask,
   useRestartTask,
   useApproveTask,
   useApprovePlan,
   type Task,
-} from "../api/hooks";
-import StatusBadge from "../components/StatusBadge";
-import CreateTaskModal from "../components/CreateTaskModal";
+} from "../../api/hooks";
+import StatusBadge from "../../components/StatusBadge";
+import CreateTaskModal from "../../components/CreateTaskModal";
 
-export default function Tasks() {
-  const { data: projects } = useProjects();
-  const [activeTab, setActiveTab] = useState<string>("");
+export default function ProjectTasks() {
+  const { projectId = "" } = useParams();
   const [showCompleted, setShowCompleted] = useState(
     () => localStorage.getItem("tasks:showCompleted") === "true",
   );
@@ -33,13 +31,28 @@ export default function Tasks() {
     localStorage.setItem("tasks:showCompleted", String(v));
   };
 
-  const projectList = projects ?? [];
-  const selectedProjectId = activeTab || projectList[0]?.id || "";
-
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Tasks</h1>
+        <button
+          role="switch"
+          aria-checked={showCompleted}
+          onClick={() => toggleShowCompleted(!showCompleted)}
+          className="flex items-center gap-2 text-sm text-gray-400"
+        >
+          <span>Show completed</span>
+          <span
+            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors duration-200 ${
+              showCompleted ? "bg-indigo-500" : "bg-gray-700"
+            }`}
+          >
+            <span
+              className={`pointer-events-none inline-block h-4 w-4 translate-y-0.5 rounded-full bg-white shadow ring-0 transition-transform duration-200 ${
+                showCompleted ? "translate-x-4.5" : "translate-x-0.5"
+              }`}
+            />
+          </span>
+        </button>
         <button
           onClick={() => setCreateOpen(true)}
           className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
@@ -49,58 +62,12 @@ export default function Tasks() {
         </button>
       </div>
 
-      {/* Tab bar with toggle on the right */}
-      {projectList.length > 0 && (
-        <div className="flex items-center justify-between border-b border-gray-800">
-          <div className="flex gap-1">
-            {projectList.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => setActiveTab(p.id)}
-                className={`px-4 py-2 text-sm font-medium transition-colors ${
-                  selectedProjectId === p.id
-                    ? "border-b-2 border-indigo-400 text-indigo-400"
-                    : "text-gray-400 hover:text-gray-200"
-                }`}
-              >
-                {p.name || p.id}
-              </button>
-            ))}
-          </div>
-
-          {/* Toggle switch */}
-          <button
-            role="switch"
-            aria-checked={showCompleted}
-            onClick={() => toggleShowCompleted(!showCompleted)}
-            className="flex items-center gap-2 pb-1 text-sm text-gray-400"
-          >
-            <span>Show completed</span>
-            <span
-              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors duration-200 ${
-                showCompleted ? "bg-indigo-500" : "bg-gray-700"
-              }`}
-            >
-              <span
-                className={`pointer-events-none inline-block h-4 w-4 translate-y-0.5 rounded-full bg-white shadow ring-0 transition-transform duration-200 ${
-                  showCompleted ? "translate-x-4.5" : "translate-x-0.5"
-                }`}
-              />
-            </span>
-          </button>
-        </div>
-      )}
-
-      {selectedProjectId ? (
-        <TaskTable projectId={selectedProjectId} showCompleted={showCompleted} />
-      ) : (
-        <p className="text-sm text-gray-500">No projects found.</p>
-      )}
+      <TaskTable projectId={projectId} showCompleted={showCompleted} />
 
       <CreateTaskModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        defaultProjectId={selectedProjectId}
+        defaultProjectId={projectId}
       />
     </div>
   );
@@ -196,7 +163,7 @@ function TaskTable({ projectId, showCompleted }: { projectId: string; showComple
             <th className="px-4 py-3">Status</th>
             <th className="px-4 py-3">Priority</th>
             <th className="px-4 py-3">Agent</th>
-            <th className="px-4 py-3 w-24"></th>
+            <th className="w-24 px-4 py-3"></th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-800">

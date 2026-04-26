@@ -4,8 +4,8 @@ import { SignalIcon, TrashIcon, ArrowDownIcon } from "@heroicons/react/24/outlin
 import {
   useEventStreamStatus,
   useEventBuffer,
-} from "../ws/EventStreamProvider";
-import type { NotifyEvent } from "../ws/types";
+} from "../../ws/EventStreamProvider";
+import type { NotifyEvent } from "../../ws/types";
 
 const severityColors: Record<string, string> = {
   info: "text-blue-400",

@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PlusIcon } from "@heroicons/react/24/outline";
-import { usePlaybooks, type PlaybookSummary } from "../api/hooks";
-import StatusBadge from "../components/StatusBadge";
-import CreatePlaybookModal from "../components/CreatePlaybookModal";
+import { usePlaybooks, type PlaybookSummary } from "../../api/hooks";
+import StatusBadge from "../../components/StatusBadge";
+import CreatePlaybookModal from "../../components/CreatePlaybookModal";
 
 const SCOPE_FILTERS = ["all", "system", "project", "agent-type"] as const;
 type ScopeFilter = (typeof SCOPE_FILTERS)[number];

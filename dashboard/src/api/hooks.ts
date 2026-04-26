@@ -19,6 +19,32 @@ export function useSystemStatus() {
   });
 }
 
+export interface OrchestratorStatus {
+  status: "paused" | "running";
+  running_tasks?: number;
+  message?: string;
+}
+
+export function useOrchestratorStatus() {
+  return useQuery({
+    queryKey: ["orchestrator", "status"],
+    queryFn: () =>
+      apiPost<OrchestratorStatus>("/system/orchestrator-control", { action: "status" }),
+    refetchInterval: 15_000,
+  });
+}
+
+export function useOrchestratorControl() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (action: "pause" | "resume") =>
+      apiPost<OrchestratorStatus>("/system/orchestrator-control", { action }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["orchestrator", "status"] });
+    },
+  });
+}
+
 // --- Agents ---
 
 export interface Agent {
@@ -132,10 +158,18 @@ export function useActiveTasksAllProjects() {
 export interface Project {
   id: string;
   name: string;
+  status?: string;
   repo_path?: string;
   default_branch?: string;
   is_active?: boolean;
   paused?: boolean;
+  default_profile_id?: string | null;
+  discord_channel_id?: string | null;
+  budget_limit?: number | null;
+}
+
+function withPaused<T extends { status?: string; paused?: boolean }>(p: T): T {
+  return { ...p, paused: p.paused ?? p.status === "PAUSED" };
 }
 
 export function useProjects() {
@@ -143,9 +177,106 @@ export function useProjects() {
     queryKey: ["projects"],
     queryFn: async () => {
       const data = await apiPost<{ success: boolean; projects: Project[] }>("/project/list");
-      return data.projects ?? [];
+      return (data.projects ?? []).map(withPaused);
     },
     refetchInterval: 30_000,
+  });
+}
+
+export function useProject(projectId: string) {
+  return useQuery({
+    queryKey: ["project", projectId],
+    queryFn: async () =>
+      withPaused(await apiPost<Project>("/project/get", { project_id: projectId })),
+    enabled: !!projectId,
+  });
+}
+
+function useProjectMutation<TInput extends Record<string, unknown>, TOutput = unknown>(
+  endpoint: string,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: TInput) => apiPost<TOutput>(endpoint, input),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      const pid = (variables as { project_id?: string }).project_id;
+      if (pid) {
+        queryClient.invalidateQueries({ queryKey: ["project", pid] });
+      }
+    },
+  });
+}
+
+export function usePauseProject() {
+  return useProjectMutation<{ project_id: string }, { paused: string; name: string }>(
+    "/project/pause",
+  );
+}
+
+export function useResumeProject() {
+  return useProjectMutation<{ project_id: string }, { resumed: string; name: string }>(
+    "/project/resume",
+  );
+}
+
+export function useDeleteProject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { project_id: string }) =>
+      apiPost<{ deleted?: string; name?: string; error?: string }>("/project/delete", input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
+// --- Workspaces ---
+
+export interface Workspace {
+  id: string;
+  project_id: string;
+  workspace_path: string;
+  source_type: string;
+  name?: string | null;
+  locked_by_agent_id?: string | null;
+  locked_by_task_id?: string | null;
+}
+
+export function useWorkspaces(projectId: string) {
+  return useQuery({
+    queryKey: ["workspaces", projectId],
+    queryFn: async () => {
+      const data = await apiPost<{ workspaces: Workspace[] }>("/project/list-workspaces", {
+        project_id: projectId,
+      });
+      return data.workspaces ?? [];
+    },
+    refetchInterval: 30_000,
+    enabled: !!projectId,
+  });
+}
+
+// --- Profiles ---
+
+export interface Profile {
+  id: string;
+  name: string;
+  description: string;
+  model: string;
+  allowed_tools: string[];
+  mcp_servers: string[];
+  has_system_prompt: boolean;
+}
+
+export function useProfiles() {
+  return useQuery({
+    queryKey: ["profiles"],
+    queryFn: async () => {
+      const data = await apiPost<{ profiles: Profile[]; count: number }>("/agent/list-profiles");
+      return data.profiles ?? [];
+    },
+    refetchInterval: 60_000,
   });
 }
 
