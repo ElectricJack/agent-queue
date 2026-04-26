@@ -238,7 +238,7 @@ agent_profiles = Table(
     "agent_profiles",
     metadata,
     Column("id", Text, primary_key=True),
-    Column("name", Text, nullable=False, unique=True),
+    Column("name", Text, nullable=False),
     Column("description", Text, nullable=False, server_default="''"),
     Column("model", Text, nullable=False, server_default="''"),
     Column("permission_mode", Text, nullable=False, server_default="''"),
