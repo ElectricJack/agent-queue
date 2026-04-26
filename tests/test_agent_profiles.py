@@ -3,7 +3,7 @@
 Covers:
 - Database CRUD for agent_profiles table
 - Profile resolution cascade (task → project → None)
-- AdapterFactory._config_for_profile() merging
+- ClaudeSDKPlatform._config_from_profile() merging
 - CommandHandler profile commands
 - Task/project profile_id and default_profile_id
 - Config loading from YAML
@@ -15,9 +15,8 @@ Covers:
 
 import pytest
 
-from src.adapters import AdapterFactory
 from src.adapters.base import AgentAdapter
-from src.adapters.claude import ClaudeAdapterConfig
+from src.platforms.claude_sdk import ClaudeAdapterConfig, ClaudeSDKPlatform
 from src.config import AppConfig, AgentProfileConfig, load_config
 from src.database import Database
 from src.known_tools import validate_tool_names
@@ -341,71 +340,49 @@ class TestProfileResolution:
 
 
 # ---------------------------------------------------------------------------
-# AdapterFactory._config_for_profile() merging
+# ClaudeSDKPlatform._config_from_profile() merging
 # ---------------------------------------------------------------------------
 
+_DEFAULTS = ClaudeAdapterConfig()
 
-class TestConfigForProfile:
-    def test_no_profile_returns_base_config(self):
-        base = ClaudeAdapterConfig(
-            model="claude-sonnet-4-5-20250514",
-            permission_mode="acceptEdits",
-            allowed_tools=["Read", "Write", "Edit", "Bash"],
-        )
-        factory = AdapterFactory(claude_config=base)
-        result = factory._config_for_profile(None)
-        assert result is base
+
+class TestConfigFromProfile:
+    def test_no_profile_returns_defaults(self):
+        result = ClaudeSDKPlatform._config_from_profile(None)
+        assert result.model == _DEFAULTS.model
+        assert result.permission_mode == _DEFAULTS.permission_mode
+        assert result.allowed_tools == _DEFAULTS.allowed_tools
 
     def test_profile_overrides_model(self):
-        base = ClaudeAdapterConfig(model="claude-sonnet-4-5-20250514")
-        factory = AdapterFactory(claude_config=base)
         profile = AgentProfile(id="test", name="Test", model="claude-opus-4-20250514")
-        result = factory._config_for_profile(profile)
+        result = ClaudeSDKPlatform._config_from_profile(profile)
         assert result.model == "claude-opus-4-20250514"
 
-    def test_profile_empty_model_falls_through(self):
-        base = ClaudeAdapterConfig(model="claude-sonnet-4-5-20250514")
-        factory = AdapterFactory(claude_config=base)
+    def test_profile_empty_model_falls_through_to_default(self):
         profile = AgentProfile(id="test", name="Test", model="")
-        result = factory._config_for_profile(profile)
-        assert result.model == "claude-sonnet-4-5-20250514"
+        result = ClaudeSDKPlatform._config_from_profile(profile)
+        assert result.model == _DEFAULTS.model
 
     def test_profile_overrides_allowed_tools(self):
-        base = ClaudeAdapterConfig(
-            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-        )
-        factory = AdapterFactory(claude_config=base)
         profile = AgentProfile(
             id="reviewer",
             name="Reviewer",
             allowed_tools=["Read", "Glob", "Grep"],
         )
-        result = factory._config_for_profile(profile)
+        result = ClaudeSDKPlatform._config_from_profile(profile)
         assert result.allowed_tools == ["Read", "Glob", "Grep"]
 
-    def test_profile_empty_tools_falls_through(self):
-        base = ClaudeAdapterConfig(
-            allowed_tools=["Read", "Write", "Edit"],
-        )
-        factory = AdapterFactory(claude_config=base)
+    def test_profile_empty_tools_falls_through_to_default(self):
         profile = AgentProfile(id="test", name="Test", allowed_tools=[])
-        result = factory._config_for_profile(profile)
-        assert result.allowed_tools == ["Read", "Write", "Edit"]
+        result = ClaudeSDKPlatform._config_from_profile(profile)
+        assert result.allowed_tools == _DEFAULTS.allowed_tools
 
     def test_profile_overrides_permission_mode(self):
-        base = ClaudeAdapterConfig(permission_mode="acceptEdits")
-        factory = AdapterFactory(claude_config=base)
         profile = AgentProfile(id="test", name="Test", permission_mode="plan")
-        result = factory._config_for_profile(profile)
+        result = ClaudeSDKPlatform._config_from_profile(profile)
         assert result.permission_mode == "plan"
 
     def test_full_override(self):
-        base = ClaudeAdapterConfig(
-            model="claude-sonnet-4-5-20250514",
-            permission_mode="acceptEdits",
-            allowed_tools=["Read", "Write", "Edit", "Bash"],
-        )
-        factory = AdapterFactory(claude_config=base)
         profile = AgentProfile(
             id="reviewer",
             name="Reviewer",
@@ -413,7 +390,7 @@ class TestConfigForProfile:
             permission_mode="plan",
             allowed_tools=["Read", "Glob"],
         )
-        result = factory._config_for_profile(profile)
+        result = ClaudeSDKPlatform._config_from_profile(profile)
         assert result.model == "claude-opus-4-20250514"
         assert result.permission_mode == "plan"
         assert result.allowed_tools == ["Read", "Glob"]

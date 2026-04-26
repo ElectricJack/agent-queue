@@ -14,9 +14,8 @@ ClaudeAdapterConfig and the TaskContext at each stage of execution.
 
 import pytest
 
-from src.adapters import AdapterFactory
 from src.adapters.base import AgentAdapter
-from src.adapters.claude import ClaudeAdapterConfig
+from src.platforms.claude_sdk import ClaudeAdapterConfig, ClaudeSDKPlatform
 from src.config import AppConfig, McpServerConfig
 
 
@@ -71,20 +70,22 @@ class CapturingMockAdapter(AgentAdapter):
 
 
 class CapturingAdapterFactory:
-    """Wraps the real AdapterFactory._config_for_profile() merging logic.
+    """Captures the merged ClaudeAdapterConfig produced by ClaudeSDKPlatform.
 
     After each create() call, the merged config, profile, and adapter are
     available for inspection.
     """
 
     def __init__(self, base_config: ClaudeAdapterConfig | None = None):
-        self._real_factory = AdapterFactory(claude_config=base_config)
+        # base_config is no longer injected — the platform always uses its own
+        # defaults.  The parameter is retained so existing call-sites compile,
+        # but its value is ignored (mirroring the production path).
         self.adapters_created: list[CapturingMockAdapter] = []
         self.configs_created: list[ClaudeAdapterConfig] = []
         self.profiles_received: list[AgentProfile | None] = []
 
     def create(self, agent_type: str, profile: AgentProfile | None = None) -> AgentAdapter:
-        merged = self._real_factory._config_for_profile(profile)
+        merged = ClaudeSDKPlatform._config_from_profile(profile)
         self.profiles_received.append(profile)
         self.configs_created.append(merged)
         adapter = CapturingMockAdapter(merged)
@@ -895,8 +896,7 @@ class TestModelOverrideEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        base = ClaudeAdapterConfig(model="claude-sonnet-4-5-20250514")
-        factory = CapturingAdapterFactory(base_config=base)
+        factory = CapturingAdapterFactory()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -934,7 +934,7 @@ class TestModelOverrideEnforcement:
 
         assert factory.configs_created[0].model == "claude-opus-4-20250514"
 
-    async def test_no_profile_keeps_base_model(self, env):
+    async def test_no_profile_keeps_default_model(self, env):
         orch, factory = env
         await _setup_project_and_agent(orch.db)
         await orch.db.create_task(
@@ -949,7 +949,8 @@ class TestModelOverrideEnforcement:
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
-        assert factory.configs_created[0].model == "claude-sonnet-4-5-20250514"
+        # No profile → platform defaults apply; model is "" (let Claude pick)
+        assert factory.configs_created[0].model == ClaudeAdapterConfig().model
 
 
 # ---------------------------------------------------------------------------

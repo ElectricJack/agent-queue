@@ -18,7 +18,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from src.adapters.base import AgentAdapter
-from src.adapters.claude import ClaudeAdapter
+from src.platforms.claude_sdk import ClaudeSDKPlatform
 from src.config import AppConfig
 from src.models import (
     Agent,
@@ -563,8 +563,8 @@ class TestL0L1InSystemPrompt:
     """(f) L0+L1 content appears in the system prompt section (not user message)."""
 
     def test_l0_l1_present_in_adapter_system_prompt(self):
-        """L0 and L1 appear in ClaudeAdapter._build_prompt() output."""
-        adapter = ClaudeAdapter()
+        """L0 and L1 appear in ClaudeSDKPlatform._build_prompt() output."""
+        adapter = ClaudeSDKPlatform()
         adapter._task = TaskContext(
             description="## Task\nImplement the feature.",
             l0_role=L0_ROLE_REALISTIC,
@@ -578,7 +578,7 @@ class TestL0L1InSystemPrompt:
 
     def test_l0_before_l1_before_description_in_prompt(self):
         """System prompt ordering: L0 → L1 → description."""
-        adapter = ClaudeAdapter()
+        adapter = ClaudeSDKPlatform()
         adapter._task = TaskContext(
             description="## Task\nImplement the feature.",
             l0_role="You are a QA agent.",
@@ -615,7 +615,7 @@ class TestL0L1InSystemPrompt:
 
     def test_l0_l1_with_all_task_context_extras(self):
         """L0+L1 coexist with acceptance criteria and test commands in prompt."""
-        adapter = ClaudeAdapter()
+        adapter = ClaudeSDKPlatform()
         adapter._task = TaskContext(
             description="## Task\nBuild the API.",
             l0_role="You are an API developer.",
@@ -792,7 +792,7 @@ class TestL0L1ProfileWithoutProjectFacts:
         assert ctx.l1_facts == facts
 
         # Verify both would appear in the adapter's built prompt
-        adapter = ClaudeAdapter()
+        adapter = ClaudeSDKPlatform()
         adapter._task = ctx
         prompt = adapter._build_prompt()
 

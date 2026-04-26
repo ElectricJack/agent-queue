@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.adapters.claude import ClaudeAdapter, ClaudeAdapterConfig
+from src.platforms.claude_sdk import ClaudeSDKPlatform, ClaudeAdapterConfig
 from src.models import TaskContext
 
 
@@ -27,18 +27,21 @@ def claude_cli_path() -> str:
 def claude_cli_authenticated(claude_cli_path: str, tmp_path_factory) -> str:
     """Verify the Claude Agent SDK can authenticate and complete a trivial prompt.
 
-    Uses the same code path as the real application (ClaudeAdapter + SDK),
+    Uses the same code path as the real application (ClaudeSDKPlatform + SDK),
     not subprocess. Runs once per session; skips all functional tests if
     authentication fails.
     """
     workspace = str(tmp_path_factory.mktemp("auth_check"))
-    adapter = ClaudeAdapter(
-        ClaudeAdapterConfig(
-            model="claude-haiku-4-5-20251001",
-            permission_mode="bypassPermissions",
-            allowed_tools=[],
-        )
+    from src.models import AgentProfile
+
+    _profile = AgentProfile(
+        id="auth-check",
+        name="auth-check",
+        model="claude-haiku-4-5-20251001",
+        permission_mode="bypassPermissions",
+        allowed_tools=[],
     )
+    adapter = ClaudeSDKPlatform(profile=_profile)
     ctx = TaskContext(
         description="respond with only: ok",
         task_id="auth-check",

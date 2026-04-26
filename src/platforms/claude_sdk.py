@@ -1,8 +1,8 @@
 """Claude Code adapter -- runs AI agent tasks via the Claude Agent SDK.
 
-This implements AgentAdapter by wrapping the Claude Code CLI as a subprocess,
+This implements Platform by wrapping the Claude Code CLI as a subprocess,
 communicating through the SDK's streaming protocol.  The orchestrator sees
-only the AgentAdapter interface; all Claude-specific concerns live here.
+only the Platform interface; all Claude-specific concerns live here.
 
 Key design decisions:
 
@@ -33,8 +33,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from typing import ClassVar
 
-from src.adapters.base import AgentAdapter, MessageCallback
+from src.platforms.base import Capability, MessageCallback, Platform
 from src.logging_config import get_correlation_context
 from src.models import AgentOutput, AgentResult, TaskContext
 
@@ -245,16 +246,19 @@ class ClaudeAdapterConfig:
     max_turns: int = 20000  # Allow long-running multi-step tasks (100x default)
 
 
-class ClaudeAdapter(AgentAdapter):
-    """AgentAdapter implementation that runs tasks via the Claude Code CLI.
+class ClaudeSDKPlatform(Platform):
+    """Platform implementation that runs tasks via the Claude Code CLI.
 
-    Each task gets a fresh SDK query (subprocess).  The adapter streams
+    Each task gets a fresh SDK query (subprocess).  The platform streams
     messages back through the on_message callback and collects the final
     result/token counts from the ResultMessage.
     """
 
-    def __init__(self, config: ClaudeAdapterConfig | None = None, llm_logger=None):
-        self._config = config or ClaudeAdapterConfig()
+    name: ClassVar[str] = "claude_sdk"
+    capabilities: ClassVar[frozenset[Capability]] = frozenset(Capability)
+
+    def __init__(self, profile=None, llm_logger=None):
+        self._config = self._config_from_profile(profile)
         self._task: TaskContext | None = None
         self._cancel_event = asyncio.Event()
         self._inject_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -271,6 +275,23 @@ class ClaudeAdapter(AgentAdapter):
         # the subprocess instead of just setting a flag.
         self._active_transport = None
         self._active_query = None
+
+    @staticmethod
+    def _config_from_profile(profile) -> "ClaudeAdapterConfig":
+        """Translate an AgentProfile into a ClaudeAdapterConfig.
+
+        Mirrors the logic previously in AdapterFactory._config_for_profile().
+        Fields left empty in the profile fall through to the base config defaults.
+        """
+        base = ClaudeAdapterConfig()
+        if profile is None:
+            return base
+        return ClaudeAdapterConfig(
+            model=profile.model or base.model,
+            permission_mode=profile.permission_mode or base.permission_mode,
+            allowed_tools=profile.allowed_tools or base.allowed_tools,
+            max_turns=base.max_turns,
+        )
 
     async def start(self, task: TaskContext) -> None:
         self._task = task
