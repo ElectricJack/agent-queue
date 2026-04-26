@@ -55,6 +55,56 @@ pytest tests/test_adapters.py -v 2>&1 | tail -20
 ```
 Expected: all pass. Establishes the rename baseline.
 
+- [ ] **(Optional) Authenticate Codex for live integration testing**
+
+`codex login` (browser-based OAuth) or `printenv OPENAI_API_KEY | codex login --with-api-key`. The plan's unit tests don't depend on Codex auth — they mock the subprocess. Live integration testing of `CodexCLIPlatform` will fail without auth.
+
+`codex login status` should report something other than "Not logged in".
+
+---
+
+## Verified CLI event schemas
+
+These are the actual NDJSON shapes emitted by the live CLIs (Claude v2.1.116, Codex v0.125.0). Used by Tasks 5 and 6.
+
+### Claude CLI (`claude -p --output-format stream-json --verbose <prompt>`)
+
+```jsonl
+{"type":"system","subtype":"hook_started","hook_id":"...","session_id":"..."}
+{"type":"system","subtype":"hook_response","hook_id":"...","output":"..."}
+{"type":"system","subtype":"init","session_id":"...","tools":[...],"mcp_servers":[...],"model":"claude-opus-4-7[1m]","permissionMode":"auto",...}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"..."}],"usage":{"input_tokens":6,"output_tokens":1,"cache_creation_input_tokens":12126,"cache_read_input_tokens":16567,...}},"session_id":"..."}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":...,"rateLimitType":"five_hour"},"session_id":"..."}
+{"type":"result","subtype":"success","is_error":false,"result":"2 + 2 equals 4.","duration_ms":2954,"usage":{"input_tokens":6,"output_tokens":16,"cache_creation_input_tokens":12126,"cache_read_input_tokens":16567},"total_cost_usd":0.085,"terminal_reason":"completed",...}
+```
+
+Plan dispatcher rules:
+- `system/hook_started` and `system/hook_response` → ignore.
+- `system/init` → capture `session_id`, no callback.
+- `assistant` → for each block in `message.content`: `text` → emit text; `tool_use` → emit `-# {name}` summary.
+- `rate_limit_event` → ignore (non-fatal, streams inline). When `rate_limit_info.status != "allowed"`, optionally surface to logs.
+- `result` → terminal. `subtype="success"` + `is_error=false` → COMPLETED. Otherwise classify via `_classify_error_result(result_text)`.
+- Token accounting: `usage.input_tokens + usage.output_tokens` (matches the existing `ClaudeAdapter` behavior — cache token fields are not summed, preserving parity through the rename).
+
+### Codex CLI (`codex exec --json --skip-git-repo-check --sandbox <mode> <prompt>`)
+
+```jsonl
+{"type":"thread.started","thread_id":"019dc84d-..."}
+{"type":"turn.started"}
+{"type":"error","message":"..."}                         # non-fatal — streams inline on transient errors
+{"type":"turn.failed","error":{"message":"..."}}         # terminal failure
+{"type":"turn.completed", ...}                           # terminal success — exact field set unverified live (auth required)
+```
+
+Plan dispatcher rules:
+- `thread.started` → capture `thread_id` as session id, no callback.
+- `turn.started` → ignore (or emit a "starting…" hint).
+- `error` (non-terminal) → log at warning level, no callback (or emit short summary). Don't classify as failure unless terminal event is reached.
+- `turn.failed` → terminal. Extract `error.message`, classify via `_classify_error_result`.
+- `turn.completed` → terminal success. Field set is observed at first live integration test; placeholder assumes `summary` + `usage.{input,output}` keys until verified, with a TODO log line on first encounter.
+- Always pass `--skip-git-repo-check` so Codex doesn't refuse to run when the task workspace isn't in a git repo (agent-queue worktrees may not be).
+- Always pass `--sandbox workspace-write` (default sane behavior for autonomous agents on a checked-out workspace) — operators can override via profile config in phase 2.
+
 ---
 
 ## File Structure Overview
@@ -1142,6 +1192,35 @@ class TestClaudeCLIPlatformWait:
         assert output.result == AgentResult.FAILED
 
     @pytest.mark.asyncio
+    async def test_rate_limit_event_streamed_inline_is_ignored(self):
+        """rate_limit_event types stream as informational signals, not errors."""
+        emitted_lines = _ndjson_lines(
+            {"type": "system", "subtype": "init", "session_id": "s-1"},
+            {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Hi"}]}},
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": "Hi",
+                "usage": {"input_tokens": 5, "output_tokens": 5},
+            },
+        )
+
+        async def fake_run(cmd, env, cwd, on_line, cancel_event, **kwargs):  # noqa: ARG001
+            for line in emitted_lines:
+                on_line(line)
+            return 0
+
+        platform = ClaudeCLIPlatform(profile=None)
+        await platform.start(_make_task())
+        with patch("src.platforms.claude_cli.run_streaming_subprocess", side_effect=fake_run):
+            output = await platform.wait()
+
+        # Rate-limit event did not classify the run as failed.
+        assert output.result == AgentResult.COMPLETED
+        assert output.tokens_used == 10
+
+    @pytest.mark.asyncio
     async def test_streams_messages_via_callback(self):
         emitted_lines = _ndjson_lines(
             {"type": "assistant", "message": {"content": [{"type": "text", "text": "Step 1"}]}},
@@ -1392,12 +1471,28 @@ class ClaudeCLIPlatform(Platform):
         return "\n\n".join(p for p in parts if p)
 
     async def _dispatch(self, event: dict) -> None:
-        """Dispatch an NDJSON event to the on_message callback as readable text."""
-        if self._on_message is None:
-            return
+        """Dispatch an NDJSON event to the on_message callback as readable text.
+
+        Verified against claude v2.1.116 live output:
+        - system/hook_started, system/hook_response → ignored.
+        - system/init → captures session_id, no callback.
+        - rate_limit_event → ignored (streams inline as a non-error signal).
+        - assistant.message.content blocks: text → emit; tool_use → emit name.
+        - result.subtype=success → emit final result text.
+        """
         etype = event.get("type")
+        # Capture session_id from init regardless of callback presence.
         if etype == "system" and event.get("subtype") == "init":
             self._session_id = event.get("session_id")
+            return
+        if etype == "rate_limit_event":
+            # Streamed inline; not a failure on its own.  Log if the rate-limit
+            # status is anything other than "allowed" so ops have visibility.
+            status = (event.get("rate_limit_info") or {}).get("status")
+            if status and status != "allowed":
+                logger.warning("ClaudeCLI rate-limit signal: %s", event.get("rate_limit_info"))
+            return
+        if self._on_message is None:
             return
         if etype == "assistant":
             for block in event.get("message", {}).get("content", []) or []:
@@ -1470,17 +1565,14 @@ Wraps `codex exec --json` for non-interactive runs. The streaming format and exa
 - Create: `src/platforms/codex_cli.py`
 - Create: `tests/test_platforms_codex_cli.py`
 
-- [ ] **Step 1: Verify codex CLI flags and JSON shape**
+- [ ] **Step 1: Re-verify codex JSON event schema (sanity check)**
 
-Run:
+The "Verified CLI event schemas" section at the top of this plan was captured against codex v0.125.0. If the installed version differs, re-run:
 ```bash
-codex exec --help 2>&1 | grep -E "json|output|stream|format" | head -10
-codex exec --json "Say hello" 2>&1 | head -30 || true
+codex --version
+codex exec --json --skip-git-repo-check --sandbox read-only "Say hello." 2>&1 < /dev/null | head -20 || true
 ```
-
-Note the exact JSON shape emitted (event field names like `type`, `delta`, `message`, etc.). The implementation below assumes `{"type": "...", ...}`-shaped events; if Codex uses a different schema, adapt the dispatcher accordingly. **Don't skip this step** — Codex's output schema isn't stable across versions.
-
-If `codex exec --json` requires authentication that isn't set up, capture the help output and proceed with the schema described below as an assumption. The unit tests use mocked NDJSON, so the implementation can be developed without a working Codex auth.
+If codex isn't authenticated you'll see `turn.failed` after the auth error, but the event types (`thread.started`, `turn.started`, `error`, `turn.failed`) confirm the schema. Update the dispatcher in Step 4 if a newer codex version emits different event types.
 
 - [ ] **Step 2: Write failing tests**
 
@@ -1539,9 +1631,13 @@ class TestCodexCLIPlatformContract:
 class TestCodexCLIPlatformWait:
     @pytest.mark.asyncio
     async def test_happy_path(self):
+        # turn.completed schema is provisional (live auth needed to verify exact
+        # field names). Implementation logs a TODO when this branch fires so the
+        # first live run reveals the real shape.
         emitted = _ndjson_lines(
-            {"type": "message", "role": "assistant", "content": "Working on it"},
-            {"type": "result", "status": "success", "summary": "Done", "tokens": {"input": 100, "output": 50}},
+            {"type": "thread.started", "thread_id": "thr-1"},
+            {"type": "turn.started"},
+            {"type": "turn.completed", "summary": "Done", "usage": {"input_tokens": 100, "output_tokens": 50}},
         )
 
         async def fake_run(cmd, env, cwd, on_line, cancel_event, **kwargs):  # noqa: ARG001
@@ -1556,10 +1652,51 @@ class TestCodexCLIPlatformWait:
 
         assert output.result == AgentResult.COMPLETED
         assert "Done" in output.summary
-        assert output.tokens_used == 150
 
     @pytest.mark.asyncio
-    async def test_failed_exit_no_result(self):
+    async def test_turn_failed_event(self):
+        emitted = _ndjson_lines(
+            {"type": "thread.started", "thread_id": "thr-2"},
+            {"type": "turn.started"},
+            {"type": "turn.failed", "error": {"message": "Unauthorized"}},
+        )
+
+        async def fake_run(cmd, env, cwd, on_line, cancel_event, **kwargs):  # noqa: ARG001
+            for line in emitted:
+                on_line(line)
+            return 1
+
+        platform = CodexCLIPlatform(profile=None)
+        await platform.start(_make_task())
+        with patch("src.platforms.codex_cli.run_streaming_subprocess", side_effect=fake_run):
+            output = await platform.wait()
+        assert output.result == AgentResult.FAILED
+        assert "Unauthorized" in (output.error_message or "")
+
+    @pytest.mark.asyncio
+    async def test_inline_error_events_are_ignored(self):
+        # "error" events stream inline on transient issues (websocket reconnects).
+        # They must not classify the run as failed unless followed by turn.failed.
+        emitted = _ndjson_lines(
+            {"type": "thread.started", "thread_id": "thr-3"},
+            {"type": "error", "message": "Reconnecting... 1/5"},
+            {"type": "error", "message": "Reconnecting... 2/5"},
+            {"type": "turn.completed", "summary": "OK", "usage": {"input_tokens": 1, "output_tokens": 1}},
+        )
+
+        async def fake_run(cmd, env, cwd, on_line, cancel_event, **kwargs):  # noqa: ARG001
+            for line in emitted:
+                on_line(line)
+            return 0
+
+        platform = CodexCLIPlatform(profile=None)
+        await platform.start(_make_task())
+        with patch("src.platforms.codex_cli.run_streaming_subprocess", side_effect=fake_run):
+            output = await platform.wait()
+        assert output.result == AgentResult.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_no_terminal_event_is_failed(self):
         async def fake_run(cmd, env, cwd, on_line, cancel_event, **kwargs):  # noqa: ARG001
             return 1
 
@@ -1603,12 +1740,20 @@ Create `src/platforms/codex_cli.py`:
 ```python
 """Codex CLI platform — runs tasks via the `codex exec --json` CLI.
 
-Provisional capability set: STREAMING_JSON, RESUME, THINKING, MCP, PLAN_MODE.
-The Codex CLI exposes `codex mcp` (so MCP belongs in the set) and a non-
-interactive exec mode with JSON output.  The exact event shape emitted by
-`codex exec --json` is observed during implementation (Step 1 of this
-task) and the dispatcher adapted accordingly — assume `{"type": ..., ...}`
-events here as the v1 baseline.
+Capability set: STREAMING_JSON, RESUME, THINKING, MCP, PLAN_MODE.
+
+Verified event schema (codex v0.125.0):
+- ``thread.started``  — once at start, has ``thread_id``.
+- ``turn.started``    — turn boundary, no payload of interest.
+- ``error``           — non-fatal, streams inline (transient connectivity etc.).
+                         Don't classify as failure on its own.
+- ``turn.failed``     — terminal failure with ``error.message``.
+- ``turn.completed``  — terminal success. Field set is provisional —
+                         the dispatcher logs a TODO on first encounter so
+                         the live shape is captured for follow-up.
+
+Codex requires being inside a trusted directory or ``--skip-git-repo-check``;
+agent-queue task workspaces aren't always git repos, so we always pass the flag.
 """
 
 from __future__ import annotations
@@ -1630,6 +1775,9 @@ from src.platforms.base import Capability, MessageCallback, Platform
 
 logger = logging.getLogger(__name__)
 
+# Terminal events that end the run.
+_TERMINAL_EVENT_TYPES = frozenset({"turn.completed", "turn.failed"})
+
 
 def _classify_error_result(error_msg: str) -> AgentResult:
     lower = error_msg.lower()
@@ -1637,6 +1785,9 @@ def _classify_error_result(error_msg: str) -> AgentResult:
         return AgentResult.PAUSED_RATE_LIMIT
     if "quota" in lower or "token limit" in lower:
         return AgentResult.PAUSED_TOKENS
+    if "401" in lower or "unauthorized" in lower or "missing bearer" in lower:
+        # Auth misconfiguration — surface clearly but don't pause; ops fix needed.
+        return AgentResult.FAILED
     return AgentResult.FAILED
 
 
@@ -1659,11 +1810,13 @@ class CodexCLIPlatform(Platform):
         self._cancel_event = asyncio.Event()
         self._events: list[dict] = []
         self._on_message: MessageCallback | None = None
+        self._thread_id: str | None = None
 
     async def start(self, task: TaskContext) -> None:
         self._task = task
         self._cancel_event.clear()
         self._events = []
+        self._thread_id = None
         ctx = get_correlation_context()
         logger.info(
             "CodexCLI platform starting for task %s",
@@ -1713,21 +1866,34 @@ class CodexCLIPlatform(Platform):
                 error_message="Agent was stopped",
             )
 
-        result_event = self._final_result_event()
-        if result_event is None:
+        terminal = self._final_terminal_event()
+        if terminal is None:
             return AgentOutput(
                 result=AgentResult.FAILED,
-                error_message=f"CodexCLI exited with code {exit_code} before emitting a result event",
+                error_message=f"CodexCLI exited with code {exit_code} before emitting a terminal event",
             )
 
-        if result_event.get("status") == "success":
-            summary = result_event.get("summary", "")
-            tokens = result_event.get("tokens") or {}
-            tokens_used = int(tokens.get("input", 0)) + int(tokens.get("output", 0))
-            output = AgentOutput(result=AgentResult.COMPLETED, summary=summary, tokens_used=tokens_used)
-        else:
-            text = result_event.get("error") or result_event.get("summary", "")
-            output = AgentOutput(result=_classify_error_result(text), summary=text, error_message=text)
+        if terminal.get("type") == "turn.completed":
+            # turn.completed field set is provisional — log on first encounter
+            # so the real shape gets captured.  Look for either a ``summary``
+            # field or fall back to the last assistant-style content.
+            logger.info("CodexCLI turn.completed payload (capture for schema): %s", terminal)
+            summary = terminal.get("summary", "") or self._compose_summary_from_events()
+            usage = terminal.get("usage") or {}
+            tokens = int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
+            output = AgentOutput(
+                result=AgentResult.COMPLETED,
+                summary=summary,
+                tokens_used=tokens,
+            )
+        else:  # turn.failed
+            err = terminal.get("error") or {}
+            text = err.get("message") or terminal.get("message") or ""
+            output = AgentOutput(
+                result=_classify_error_result(text),
+                summary=text,
+                error_message=text,
+            )
 
         logger.info(
             "CodexCLI finished task %s in %.1fs (exit=%s, result=%s)",
@@ -1750,7 +1916,18 @@ class CodexCLIPlatform(Platform):
         cli = shutil.which("codex")
         if cli is None:
             raise RuntimeError("`codex` CLI not found in PATH")
-        cmd = [cli, "exec", "--json"]
+        # --skip-git-repo-check: codex refuses to run outside a trusted git repo
+        # by default; agent-queue worktrees aren't always one.
+        # --sandbox workspace-write: sane default for autonomous agents on a
+        # checked-out workspace (operators override via profile in phase 2).
+        cmd = [
+            cli,
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "workspace-write",
+        ]
         if self._profile is not None:
             model = getattr(self._profile, "model", "") or ""
             if model:
@@ -1774,22 +1951,48 @@ class CodexCLIPlatform(Platform):
         return "\n\n".join(p for p in parts if p)
 
     async def _dispatch(self, event: dict) -> None:
+        etype = event.get("type")
+        if etype == "thread.started":
+            self._thread_id = event.get("thread_id")
+            return
+        if etype == "error":
+            # Non-fatal inline error (typically transient connectivity).
+            # Logged for visibility; not surfaced to the user-facing callback.
+            logger.warning("CodexCLI inline error: %s", event.get("message", ""))
+            return
         if self._on_message is None:
             return
-        etype = event.get("type")
-        if etype == "message":
-            text = event.get("content", "") or ""
+        # Surface any text-bearing event types we recognize.  The full set is
+        # not stable across codex versions; add new branches as observed.
+        if etype in ("message", "assistant.message"):
+            text = event.get("content") or event.get("text") or ""
             if text:
                 await self._on_message(text)
-        elif etype == "tool_call":
+        elif etype in ("tool_call", "tool.call"):
             name = event.get("name", "?")
             await self._on_message(f"-# {name}")
 
-    def _final_result_event(self) -> dict | None:
+    def _final_terminal_event(self) -> dict | None:
         for event in reversed(self._events):
-            if event.get("type") == "result":
+            if event.get("type") in _TERMINAL_EVENT_TYPES:
                 return event
         return None
+
+    def _compose_summary_from_events(self) -> str:
+        """Fallback summary when turn.completed has no summary field.
+
+        Concatenates assistant-style message text from the event stream.
+        Used only on first live runs until the real turn.completed shape
+        is captured.
+        """
+        parts: list[str] = []
+        for event in self._events:
+            etype = event.get("type")
+            if etype in ("message", "assistant.message"):
+                text = event.get("content") or event.get("text") or ""
+                if text:
+                    parts.append(text)
+        return "\n".join(parts) or "Completed"
 ```
 
 - [ ] **Step 5: Run tests to verify they pass**
@@ -2255,12 +2458,26 @@ After Task 11, before declaring phase 1 done:
 - [ ] `ruff check src/ tests/` is clean
 - [ ] `grep -r "AgentAdapter\|AdapterFactory\|src\.adapters\." src/ tests/` returns zero results
 - [ ] `./run.sh start && sleep 3 && ./run.sh stop` completes without errors
-- [ ] Manual test (optional, requires `~/.agent-queue/config.yaml` edit):
-  - Set `default_platform: claude_cli` in config
+- [ ] **Live ClaudeCLI integration** (requires authenticated `claude` CLI):
+  - Edit `~/.agent-queue/config.yaml` → `default_platform: claude_cli`
   - Restart daemon
-  - Create a trivial task
-  - Confirm `claude -p` is invoked and the task completes
-  - Repeat for `default_platform: codex_cli` (skip if Codex auth not configured locally)
+  - Create a trivial task ("Print hello world to a file")
+  - Confirm in `~/.agent-queue/daemon.log`:
+    - The subprocess command line includes `claude -p --output-format stream-json --verbose`
+    - NDJSON events are parsed (look for `event_type=assistant`, `event_type=result`)
+    - The task transitions to COMPLETED with non-zero `tokens_used`
+  - Restore `default_platform: claude_sdk` after testing
+- [ ] **Live CodexCLI integration** (requires `codex login`):
+  - Verify auth: `codex login status` reports logged in
+  - Edit `~/.agent-queue/config.yaml` → `default_platform: codex_cli`
+  - Restart daemon, create a trivial task
+  - Confirm in `~/.agent-queue/daemon.log`:
+    - The subprocess command line includes `codex exec --json --skip-git-repo-check --sandbox workspace-write`
+    - `thread.started` and `turn.completed` events are observed
+    - Logs show "CodexCLI turn.completed payload (capture for schema): {...}" — copy that payload into a follow-up note so the field set can be locked in to the dispatcher (currently provisional)
+    - The task transitions to COMPLETED
+  - Restore `default_platform: claude_sdk` after testing
+  - **If the live `turn.completed` payload doesn't include `summary` / `usage`**, file a follow-up to update `_dispatch` and `_compose_summary_from_events` to use the real field names; tests in Task 6 stay valid (they mock the schema) but the implementation comment marking the shape as provisional can be removed.
 - [ ] Commit history shows ~11 focused commits, one per task
 
 ## Out of scope (handed to phase 2)
