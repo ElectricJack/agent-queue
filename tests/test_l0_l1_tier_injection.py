@@ -17,7 +17,7 @@ Test cases from docs/specs/design/roadmap.md §3.3.7:
 import pytest
 from unittest.mock import AsyncMock
 
-from src.adapters.base import AgentAdapter
+from src.platforms.base import Platform
 from src.platforms.claude_sdk import ClaudeSDKPlatform
 from src.config import AppConfig
 from src.models import (
@@ -61,7 +61,7 @@ L1_FACTS_REALISTIC = (
 # -- Test helpers --------------------------------------------------------
 
 
-class CapturingMockAdapter(AgentAdapter):
+class CapturingMockAdapter(Platform):
     """MockAdapter that captures the TaskContext passed to start()."""
 
     def __init__(self):
@@ -86,7 +86,7 @@ class CapturingMockAdapterFactory:
     def __init__(self):
         self.adapters: list[CapturingMockAdapter] = []
 
-    def create(self, agent_type: str, profile=None) -> AgentAdapter:
+    def create(self, agent_type: str, profile=None, llm_logger=None) -> Platform:
         adapter = CapturingMockAdapter()
         self.adapters.append(adapter)
         return adapter

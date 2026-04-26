@@ -10,14 +10,14 @@ import pytest
 from src.supervisor import Supervisor
 from src.config import AppConfig
 from src.models import AgentResult, AgentOutput
-from src.adapters.base import AgentAdapter
+from src.platforms.base import Platform
 from src.orchestrator import Orchestrator
 
 from tests.chat_eval.providers import ScriptedProvider
 from tests.chat_eval.recording_handler import RecordingCommandHandler
 
 
-class MockAdapter(AgentAdapter):
+class MockAdapter(Platform):
     async def start(self, task):
         pass
 
@@ -36,7 +36,7 @@ class MockAdapterFactory:
         self.last_profile = None
         self.create_calls = []
 
-    def create(self, agent_type: str, profile=None) -> AgentAdapter:
+    def create(self, agent_type: str, profile=None, llm_logger=None) -> Platform:
         self.last_profile = profile
         self.create_calls.append({"agent_type": agent_type, "profile": profile})
         return MockAdapter()

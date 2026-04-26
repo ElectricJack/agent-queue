@@ -25,7 +25,7 @@ import subprocess
 
 import pytest
 
-from src.adapters.base import AgentAdapter
+from src.platforms.base import Platform
 from src.config import AppConfig
 from src.git.manager import GitManager
 from src.models import (
@@ -114,7 +114,7 @@ def _commit_file(repo: str, filename: str, content: str, message: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class MockAdapter(AgentAdapter):
+class MockAdapter(Platform):
     """Controllable adapter for testing."""
 
     def __init__(self, result=AgentResult.COMPLETED, tokens=1000, on_wait=None):
@@ -145,7 +145,7 @@ class MockAdapterFactory:
         self.on_wait = on_wait
         self.create_calls = []
 
-    def create(self, agent_type: str, profile=None) -> AgentAdapter:
+    def create(self, agent_type: str, profile=None, llm_logger=None) -> Platform:
         self.create_calls.append({"agent_type": agent_type, "profile": profile})
         return MockAdapter(result=self.result, tokens=self.tokens, on_wait=self.on_wait)
 

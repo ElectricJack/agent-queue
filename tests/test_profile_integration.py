@@ -8,13 +8,13 @@ Two gaps the unit tests don't cover:
 2. Negative isolation: a non-profiled task does NOT inherit tools/MCP from
    another profile, and profile A tasks don't get profile B's config.
 
-Uses CapturingMockAdapter + CapturingAdapterFactory to capture the merged
+Uses CapturingMockAdapter + CapturingPlatformRegistry to capture the merged
 ClaudeAdapterConfig and the TaskContext at each stage of execution.
 """
 
 import pytest
 
-from src.adapters.base import AgentAdapter
+from src.platforms.base import Platform
 from src.platforms.claude_sdk import ClaudeAdapterConfig, ClaudeSDKPlatform
 from src.config import AppConfig, McpServerConfig
 
@@ -49,7 +49,7 @@ from src.orchestrator import Orchestrator
 # ---------------------------------------------------------------------------
 
 
-class CapturingMockAdapter(AgentAdapter):
+class CapturingMockAdapter(Platform):
     """Records the TaskContext passed to start() for later assertions."""
 
     def __init__(self, config: ClaudeAdapterConfig):
@@ -69,7 +69,7 @@ class CapturingMockAdapter(AgentAdapter):
         return True
 
 
-class CapturingAdapterFactory:
+class CapturingPlatformRegistry:
     """Captures the merged ClaudeAdapterConfig produced by ClaudeSDKPlatform.
 
     After each create() call, the merged config, profile, and adapter are
@@ -84,7 +84,7 @@ class CapturingAdapterFactory:
         self.configs_created: list[ClaudeAdapterConfig] = []
         self.profiles_received: list[AgentProfile | None] = []
 
-    def create(self, agent_type: str, profile: AgentProfile | None = None) -> AgentAdapter:
+    def create(self, agent_type: str, profile: AgentProfile | None = None, llm_logger=None) -> Platform:
         merged = ClaudeSDKPlatform._config_from_profile(profile)
         self.profiles_received.append(profile)
         self.configs_created.append(merged)
@@ -144,7 +144,7 @@ class TestToolEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingAdapterFactory()
+        factory = CapturingPlatformRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -238,7 +238,7 @@ class TestMCPEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingAdapterFactory()
+        factory = CapturingPlatformRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -346,7 +346,7 @@ class TestProfileIsolation:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingAdapterFactory()
+        factory = CapturingPlatformRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -423,7 +423,7 @@ class TestMultiProfileIsolation:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingAdapterFactory()
+        factory = CapturingPlatformRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -511,7 +511,7 @@ class TestInstallCheckIntegration:
     async def handler(self, tmp_path):
         from src.commands.handler import CommandHandler
 
-        factory = CapturingAdapterFactory()
+        factory = CapturingPlatformRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -588,7 +588,7 @@ class TestProjectDefaultProfileEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingAdapterFactory()
+        factory = CapturingPlatformRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -715,7 +715,7 @@ class TestMCPAutoInjection:
     async def env_with_mcp(self, tmp_path):
         from src.config import McpServerConfig
 
-        factory = CapturingAdapterFactory()
+        factory = CapturingPlatformRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -732,7 +732,7 @@ class TestMCPAutoInjection:
     async def env_mcp_disabled(self, tmp_path):
         from src.config import McpServerConfig
 
-        factory = CapturingAdapterFactory()
+        factory = CapturingPlatformRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -749,7 +749,7 @@ class TestMCPAutoInjection:
     async def env_inject_disabled(self, tmp_path):
         from src.config import McpServerConfig
 
-        factory = CapturingAdapterFactory()
+        factory = CapturingPlatformRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -896,7 +896,7 @@ class TestModelOverrideEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingAdapterFactory()
+        factory = CapturingPlatformRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),

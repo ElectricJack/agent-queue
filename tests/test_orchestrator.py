@@ -17,11 +17,11 @@ from src.models import (
     RepoSourceType,
     Workspace,
 )
-from src.adapters.base import AgentAdapter
+from src.platforms.base import Platform
 from src.config import AppConfig, AutoTaskConfig
 
 
-class MockAdapter(AgentAdapter):
+class MockAdapter(Platform):
     def __init__(self, result=AgentResult.COMPLETED, tokens=1000, on_wait=None):
         self._result = result
         self._tokens = tokens
@@ -51,7 +51,7 @@ class MockAdapterFactory:
         self.last_profile = None
         self.create_calls = []
 
-    def create(self, agent_type: str, profile=None, llm_logger=None) -> AgentAdapter:
+    def create(self, agent_type: str, profile=None, llm_logger=None) -> Platform:
         self.last_profile = profile
         self.create_calls.append({"agent_type": agent_type, "profile": profile})
         return MockAdapter(result=self.result, tokens=self.tokens, on_wait=self.on_wait)

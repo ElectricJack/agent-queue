@@ -44,7 +44,7 @@ class MockAdapterFactory:
         self.result = result
         self.tokens = tokens
 
-    def create(self, agent_type: str, profile=None):
+    def create(self, agent_type: str, profile=None, llm_logger=None):
         return MockAdapter(result=self.result, tokens=self.tokens)
 
 
