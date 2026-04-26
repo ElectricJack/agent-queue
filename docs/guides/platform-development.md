@@ -1,25 +1,25 @@
 ---
-tags: [adapters, development-guide]
+tags: [platforms, development-guide]
 ---
 
-# Adapter Development Guide
+# Platform Development Guide
 
 How to add a new AI agent backend to Agent Queue.
 
-> See also: [[specs/adapters/claude|Claude adapter spec]] and [[specs/adapters/development-guide|Adapter Development Guide spec]] for detailed reference.
+> See also: [[specs/platforms/claude_sdk|Claude SDK platform spec]] and [[specs/platforms/development-guide|Platform Development Guide spec]] for detailed reference.
 >
-> See also: [[specs/design/agent-coordination]] for how adapters interact with coordination playbooks.
+> See also: [[specs/design/agent-coordination]] for how platforms interact with coordination playbooks.
 
 ## Architecture Overview
 
-Agent adapters are the bridge between the [[specs/orchestrator|orchestrator]] and external AI coding
-agents. Each adapter implements a minimal 4-method interface that the
-orchestrator calls during the task execution pipeline. The adapter is
+Agent platforms are the bridge between the [[specs/orchestrator|orchestrator]] and external AI coding
+agents. Each platform implements a minimal 4-method interface that the
+orchestrator calls during the task execution pipeline. The platform is
 responsible for launching the agent process, streaming its output, and
 returning structured results.
 
 ```
-Orchestrator                    Adapter                     Agent Process
+Orchestrator                    Platform                    Agent Process
     │                             │                              │
     ├── start(TaskContext) ──────►│                              │
     │                             ├── (prepare config) ─────────►│
@@ -38,20 +38,21 @@ Orchestrator                    Adapter                     Agent Process
 
 ## Step-by-Step Guide
 
-### 1. Create the Adapter File
+### 1. Create the Platform File
 
-Create `src/adapters/your_agent.py`:
+Create `src/platforms/your_agent.py`:
 
 ```python
-"""YourAgent adapter — wraps the YourAgent CLI/SDK for agent-queue orchestration."""
+"""YourAgent platform — wraps the YourAgent CLI/SDK for agent-queue orchestration."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from typing import ClassVar
 
-from src.adapters.base import AgentAdapter, MessageCallback
+from src.platforms.base import Platform, Capability, MessageCallback
 from src.models import AgentOutput, AgentResult, TaskContext
 
 logger = logging.getLogger(__name__)
@@ -59,35 +60,54 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class YourAgentConfig:
-    """Configuration for the YourAgent adapter.
+    """Configuration for the YourAgent platform.
 
-    These values come from the AdapterFactory's base config, which can
-    be overridden per-task via AgentProfiles.
+    Profile-bound construction happens in _config_from_profile(); see
+    ClaudeSDKPlatform for the canonical pattern.
     """
     model: str = "default-model"
     max_tokens: int = 200000
     # Add any agent-specific settings here
 
 
-class YourAgentAdapter(AgentAdapter):
-    """Adapter for YourAgent coding assistant.
+class YourAgentPlatform(Platform):
+    """Platform for YourAgent coding assistant.
 
     Lifecycle:
       1. ``start()`` stores the task context and prepares the agent config.
       2. ``wait()`` launches the agent process, streams output via on_message,
          and blocks until the agent finishes.
-      3. ``stop()`` forcefully kills the agent process (e.g., on admin cancel).
-      4. ``is_alive()`` checks if the agent subprocess is still running.
+      3. ``stop()`` signals cancellation via an asyncio.Event (cooperative).
+      4. ``is_alive()`` checks whether the agent is still running.
     """
 
-    def __init__(self, config: YourAgentConfig | None = None):
-        self._config = config or YourAgentConfig()
+    name: ClassVar[str] = "your_agent"
+    capabilities: ClassVar[frozenset[Capability]] = frozenset()
+
+    def __init__(self, profile=None, llm_logger=None):
+        self._config = self._config_from_profile(profile)
         self._task: TaskContext | None = None
+        self._cancel_event = asyncio.Event()
         self._process = None  # subprocess handle
-        self._cancelled = False
+        self._llm_logger = llm_logger
+
+    @staticmethod
+    def _config_from_profile(profile) -> YourAgentConfig:
+        """Translate an AgentProfile into a YourAgentConfig.
+
+        Fields left empty in the profile fall through to base config defaults.
+        See ClaudeSDKPlatform._config_from_profile() for the canonical pattern.
+        """
+        base = YourAgentConfig()
+        if profile is None:
+            return base
+        return YourAgentConfig(
+            model=profile.model or base.model,
+            # Map other profile fields as appropriate
+        )
 
     async def start(self, task: TaskContext) -> None:
-        """Prepare the adapter for task execution.
+        """Prepare the platform for task execution.
 
         Store the task context and reset cancellation state. The actual
         agent process is NOT launched here — that happens in wait().
@@ -95,7 +115,7 @@ class YourAgentAdapter(AgentAdapter):
         between start() and wait().
         """
         self._task = task
-        self._cancelled = False
+        self._cancel_event.clear()
 
     async def wait(self, on_message: MessageCallback | None = None) -> AgentOutput:
         """Launch the agent, stream output, and return results.
@@ -131,9 +151,11 @@ class YourAgentAdapter(AgentAdapter):
             # )
 
             # --- Stream output ---
-            # While the agent runs, forward messages to Discord:
+            # While the agent runs, check cancellation and forward messages:
             #
             # async for line in self._process.stdout:
+            #     if self._cancel_event.is_set():
+            #         break
             #     text = line.decode().strip()
             #     if on_message and text:
             #         await on_message(text)
@@ -164,13 +186,13 @@ class YourAgentAdapter(AgentAdapter):
             )
 
     async def stop(self) -> None:
-        """Forcefully terminate the agent process.
+        """Signal the agent to stop.
 
-        Called by the orchestrator when an admin stops a task or when
-        the daemon is shutting down. Must be safe to call multiple times
-        and when no process is running.
+        Sets the cancel event (cooperative cancellation). If you hold a
+        subprocess reference, also terminate it. Must be safe to call
+        multiple times and when no process is running.
         """
-        self._cancelled = True
+        self._cancel_event.set()
         if self._process is not None:
             try:
                 self._process.kill()
@@ -181,20 +203,18 @@ class YourAgentAdapter(AgentAdapter):
                 self._process = None
 
     async def is_alive(self) -> bool:
-        """Check if the agent process is still running.
+        """Check if the agent is still running.
 
-        Used by the heartbeat monitor to detect dead agents. Return True
-        if the agent subprocess is active, False otherwise.
+        Used by the heartbeat monitor to detect dead agents. Must return
+        True for the entire duration between start() and wait() finishing.
         """
-        if self._process is None:
-            return False
-        return self._process.returncode is None
+        return self._task is not None and not self._cancel_event.is_set()
 
     def _build_prompt(self, task: TaskContext) -> str:
         """Construct the full prompt from TaskContext fields.
 
         The orchestrator populates TaskContext with everything the agent
-        needs. Your adapter should map these fields to whatever format
+        needs. Your platform should map these fields to whatever format
         your agent expects.
         """
         parts = [task.description]
@@ -217,47 +237,42 @@ class YourAgentAdapter(AgentAdapter):
         return "\n".join(parts)
 ```
 
-### 2. Register in the AdapterFactory
+### 2. Register in PlatformRegistry
 
-Edit `src/adapters/__init__.py` to register your new adapter type:
+Edit `src/platforms/__init__.py` to add your platform to `default_registry()`:
 
 ```python
-from src.adapters.your_agent import YourAgentAdapter, YourAgentConfig
-
-class AdapterFactory:
-    def __init__(self, ...):
-        # Add your agent's base config
-        self._configs = {
-            "claude": ClaudeAdapterConfig(),
-            "your_agent": YourAgentConfig(),
-        }
-
-    def create(self, agent_type: str, profile=None) -> AgentAdapter:
-        if agent_type == "claude":
-            return ClaudeAdapter(config=self._configs["claude"])
-        elif agent_type == "your_agent":
-            return YourAgentAdapter(config=self._configs["your_agent"])
-        else:
-            raise ValueError(f"Unknown agent type: {agent_type}")
+# src/platforms/__init__.py
+def default_registry() -> PlatformRegistry:
+    from src.platforms.claude_sdk import ClaudeSDKPlatform
+    from src.platforms.your_agent import YourAgentPlatform  # add this
+    return PlatformRegistry(platforms={
+        ClaudeSDKPlatform.name: ClaudeSDKPlatform,
+        YourAgentPlatform.name: YourAgentPlatform,
+    })
 ```
+
+`PlatformRegistry` is a simple dict-based lookup — no factory class needed.
+Instantiation happens via `PlatformRegistry.create(name, profile, llm_logger)`,
+which calls `cls(profile=profile, llm_logger=llm_logger)` on the registered class.
 
 ### 3. Register Agents with the New Type
 
 Agents are stored in the database with an `agent_type` field. To use your
-new adapter, register agents with your type string:
+new platform, register agents with your type string:
 
 ```
 /add-agent name="my-agent" type="your_agent"
 ```
 
-The orchestrator will automatically use your adapter when scheduling tasks
+The orchestrator will automatically use your platform when scheduling tasks
 to agents of this type.
 
 ## Key Interfaces
 
 ### TaskContext (Input)
 
-The `TaskContext` dataclass is everything the adapter receives about the task:
+The `TaskContext` dataclass is everything the platform receives about the task:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -272,7 +287,7 @@ The `TaskContext` dataclass is everything the adapter receives about the task:
 
 ### AgentOutput (Output)
 
-The `AgentOutput` dataclass is what the adapter returns:
+The `AgentOutput` dataclass is what the platform returns:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -305,20 +320,36 @@ meaningful — they appear directly in the Discord thread.
 
 ## Agent Profiles
 
-Adapters can receive per-task configuration overrides via `AgentProfile`:
+Platforms receive per-task configuration overrides via `AgentProfile`. The
+profile is passed at construction time; profile→config translation belongs in
+a `_config_from_profile` static method on your platform class (see
+`ClaudeSDKPlatform._config_from_profile()` for the canonical example):
 
+```python
+@staticmethod
+def _config_from_profile(profile) -> YourAgentConfig:
+    base = YourAgentConfig()
+    if profile is None:
+        return base
+    return YourAgentConfig(
+        model=profile.model or base.model,
+        # Map other profile fields here
+    )
+```
+
+Profile fields available for override include:
 - **model** — override the default model
 - **allowed_tools** — restrict available tools
 - **mcp_servers** — additional MCP server configs
 - **system_prompt_suffix** — extra instructions
+- **permission_mode** — tool permission mode
 
-The `AdapterFactory.create()` receives the resolved profile and should
-merge it with the base config. See `ClaudeAdapter` for an example of
-how profile fields override defaults.
+When a profile field is empty, fall through to the platform's base config
+defaults.
 
-## Testing Your Adapter
+## Testing Your Platform
 
-1. **Unit test** the adapter in isolation with mock subprocesses
+1. **Unit test** the platform in isolation with mock subprocesses
 2. **Integration test** with a real agent binary and a test workspace
 3. **End-to-end test** by registering an agent and creating a test task
 
@@ -326,35 +357,41 @@ Example test structure:
 
 ```python
 import pytest
-from src.adapters.your_agent import YourAgentAdapter
+from src.platforms.your_agent import YourAgentPlatform
 from src.models import TaskContext, AgentResult
 
 @pytest.mark.asyncio
 async def test_basic_execution():
-    adapter = YourAgentAdapter()
+    platform = YourAgentPlatform()
     task = TaskContext(
         description="Create a hello.py file",
         checkout_path="/tmp/test-workspace",
         branch_name="test-branch",
     )
-    await adapter.start(task)
-    output = await adapter.wait()
+    await platform.start(task)
+    output = await platform.wait()
     assert output.result == AgentResult.COMPLETED
 
 @pytest.mark.asyncio
 async def test_stop():
-    adapter = YourAgentAdapter()
+    platform = YourAgentPlatform()
     task = TaskContext(description="Long running task")
-    await adapter.start(task)
-    await adapter.stop()
-    assert not await adapter.is_alive()
+    await platform.start(task)
+    await platform.stop()
+    assert not await platform.is_alive()
 ```
 
-## Reference: ClaudeAdapter
+## Reference: ClaudeSDKPlatform
 
-The existing [[specs/adapters/claude|ClaudeAdapter]] (`src/adapters/claude.py`) is the reference
+The existing [[specs/platforms/claude_sdk|ClaudeSDKPlatform]] (`src/platforms/claude_sdk.py`) is the reference
 implementation. Key patterns to follow:
 
+- **Profile-bound construction**: `__init__(self, profile=None, llm_logger=None)` with
+  profile→config translation in `_config_from_profile()` static method
+- **ClassVar declarations**: `name: ClassVar[str]` and `capabilities: ClassVar[frozenset[Capability]]`
+  are required by the `Platform` ABC
+- **Cooperative cancellation**: Use `asyncio.Event` for `_cancel_event`; check it on
+  every loop iteration in `wait()`
 - **Environment scrubbing**: Clear agent-specific env vars to avoid conflicts
   with nested invocations
 - **Resilient parsing**: Handle unknown/unexpected message formats gracefully

@@ -12,7 +12,7 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 - **Workflows:** `workflow_stage_resume_handler.py`, `orphan_workflow_recovery.py`, `workflow_pipeline_view.py`
 - **Plugins:** `src/plugins/` (base, registry, loader, internal/)
 - **Internal plugins:** `src/plugins/internal/` (aq-files, aq-git, aq-notes, aq-vibecop)
-- **Subsystems:** `src/adapters/`, `src/discord/`, `src/git/`, `src/tokens/`, `src/chat_providers/`, `src/messaging/`
+- **Subsystems:** `src/platforms/`, `src/discord/`, `src/git/`, `src/tokens/`, `src/chat_providers/`, `src/messaging/`
 - **Specs:** `docs/specs/` (source of truth — specs first, then code)
 - **Design specs:** `docs/specs/design/` (principles, playbooks, memory, self-improvement, coordination, vault, profiles, roadmap)
 - **Config:** `~/.agent-queue/config.yaml`

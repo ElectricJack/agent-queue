@@ -21,7 +21,7 @@ Two components work together:
 - **`LLMLogger`** — writes JSONL entries and manages retention.
 - **`LoggedChatProvider`** — wraps any `ChatProvider` with transparent timing and logging (decorator pattern).
 
-Agent sessions are logged separately via a direct `LLMLogger` call in the Claude adapter, since agent execution does not go through `ChatProvider`.
+Agent sessions are logged separately via a direct `LLMLogger` call in the Claude platform, since agent execution does not go through `ChatProvider`.
 
 ## 2. Log Directory Structure
 
@@ -202,15 +202,15 @@ The `caller` string can be changed at runtime to tag different call sites. For e
 - In `initialize()`: wraps the provider with `LoggedChatProvider(caller="chat_agent.chat")` when a logger is present and enabled.
 - In `summarize()`: temporarily sets `_caller` to `"chat_agent.summarize"` for the duration of the call, restoring the previous value in a `finally` block.
 
-### 5.3 Claude Adapter (`src/adapters/claude.py`)
+### 5.3 Claude Platform (`src/platforms/claude.py`)
 
 - Accepts optional `llm_logger` in constructor.
 - In `wait()`: records `start_time` at entry, calls `_log_session()` before every return path (success, cancellation, exception, CLI error, zero-token failure).
 - The `_log_session()` helper computes duration and calls `llm_logger.log_agent_session()`.
 
-### 5.4 AdapterFactory (`src/adapters/__init__.py`)
+### 5.4 PlatformRegistry (`src/platforms/__init__.py`)
 
-- Accepts optional `llm_logger` in constructor, passes it through to adapters on `create()`.
+- Accepts optional `llm_logger` in constructor, passes it through to platforms on `create()`.
 
 ### 5.5 HookEngine (`src/hooks.py`)
 
@@ -222,7 +222,7 @@ The `caller` string can be changed at runtime to tag different call sites. For e
 
 ### 5.7 Main (`src/main.py`)
 
-- Creates the orchestrator first, then creates `AdapterFactory` with the orchestrator's `llm_logger`.
+- Creates the orchestrator first, then creates `PlatformRegistry` with the orchestrator's `llm_logger`.
 
 ## 6. Configuration
 
