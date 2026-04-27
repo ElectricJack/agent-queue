@@ -140,6 +140,7 @@ Or connect via MCP from Claude Code, Cursor, or any MCP-compatible client for pr
 - [[guides/cli|CLI]] — Terminal interface reference
 - [[guides/agent-tools|Agent Tools]] — Tool reference for AI agents
 - [[guides/adapter-development|Adapter Development]] — Adding new agent backends
+- `dashboard/CLAUDE.md` (in-repo) — Typed `@aq/ts-client` workflow for the React dashboard
 
 **Specifications:**
 - [[specs/design/README|Design Specs]] — Guiding principles, playbooks, memory, self-improvement, coordination

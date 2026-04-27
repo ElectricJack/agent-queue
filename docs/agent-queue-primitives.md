@@ -140,7 +140,7 @@ graph TB
 
 **Agents run Playbooks.** A Playbook is a markdown-authored LLM decision graph. The FileWatcher compiles it to JSON; the EventBus triggers it; the PlaybookRunner executes it; a PlaybookRun row records the execution. Playbooks can create Tasks and Workflows.
 
-**Profiles expose tools to Agents.** An AgentProfile (sourced from `vault/agent-types/<type>/profile.md`, synced to `agent_profiles` DB) carries `allowed_tools` (whitelist into the Tool Registry) and `mcp_servers` (dict of MCP server configs). At task-start, the PromptBuilder binds the profile's tool set into the agent's TaskContext. Plugins *register* tools into the registry; profiles *select* from the registry.
+**Profiles expose tools to Agents.** An AgentProfile (sourced from `vault/agent-types/<type>/profile.md`, synced to `agent_profiles` DB) carries `allowed_tools` (whitelist of **bare** tool names — the Claude adapter rewrites embedded `agent-queue` tools to `mcp__agent-queue__<name>` when invoking the CLI) and `mcp_servers` (`list[str]` of names from the **MCP server registry** at `vault/[projects/<pid>/]mcp-servers/*.md`). At task-start, the PromptBuilder binds the profile's tool set into the agent's TaskContext, resolving server names through the registry (project scope first, system fallback). Plugins *register* tools into the registry; profiles *select* from the registry.
 
 **Memory is scoped, tiered, and weighted.** Four scopes (system / agent-type / project / project-override), four tiers (L0 identity → L1 facts → L2 topic → L3 search). L0/L1 are always injected into the prompt; L2 is topic-filtered at context build time; L3 is a tool the agent calls mid-run. Vault markdown is the source; Milvus is the index.
 
@@ -158,7 +158,8 @@ graph TB
 | **Task** | `tasks` (+ `task_criteria`, `task_context`, `task_metadata`, `task_tools`, `task_dependencies`, `task_results`) | Unit of work. State machine DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED/FAILED/BLOCKED. |
 | **Workspace** | `workspaces` | Filesystem execution context. Its lock (`locked_by_agent_id`, `locked_by_task_id`, `lock_mode`) *is* the agent. |
 | **Repo** | `repos` | Git config (url, default branch, source_type: CLONE/LINK/INIT/WORKTREE). |
-| **AgentProfile** | `agent_profiles` | Capability bundle. `allowed_tools` + `mcp_servers` + `system_prompt_suffix` + model override. Mirror of vault markdown. |
+| **AgentProfile** | `agent_profiles` | Capability bundle. `allowed_tools` (bare names) + `mcp_servers` (`list[str]` of registry names) + `system_prompt_suffix` + model override. Mirror of vault markdown. |
+| **MCP Server Registry** | _(in-memory; vault-sourced)_ | `vault/[projects/<pid>/]mcp-servers/*.md`. Profiles reference servers by name; the orchestrator resolves them at task launch (project shadows system). Probed in parallel at startup with a 10s per-probe timeout. |
 | **Workflow** | `workflows` | Multi-agent coordination instance. Stage gates, agent affinity, workspace strategy. Spawned by a coordination playbook. |
 | **PlaybookRun** | `playbook_runs` | One execution of a compiled playbook — conversation history, node trace, pause state. |
 | **Agent** | `agents` | *Legacy.* Being replaced by Workspace-as-agent model. |
@@ -179,9 +180,10 @@ Vault is Obsidian-compatible markdown. Scoped by directory: `system/` · `orches
 |---|---|---|
 | **Playbook (source)** | `vault/**/playbooks/*.md` | YAML frontmatter (id, triggers, scope, cooldown) + English body. Source of truth. |
 | **Compiled Playbook** | `~/.agent-queue/compiled/<id>.compiled.json` | LLM-generated DAG (nodes, transitions, terminals, pause points). Versioned via source_hash. |
-| **Agent Profile (source)** | `vault/agent-types/<type>/profile.md` | `## Role` (English) · `## Config` (JSON) · `## Tools` (JSON) · `## MCP Servers` (JSON) · `## Rules` · `## Reflection`. Synced to DB on change. |
+| **Agent Profile (source)** | `vault/agent-types/<type>/profile.md` | `## Role` (English) · `## Config` (JSON) · `## Tools` (JSON, bare names) · `## MCP Servers` (JSON list of registry names) · `## Rules` · `## Reflection`. Synced to DB on change. |
 | **Project Factsheet** | `vault/projects/<id>/memory/factsheet.md` | YAML: urls, tech_stack, contacts, key_paths, environments. Quick-reference card. |
-| **Project Override** | `vault/projects/<id>/overrides/<type>.md` | Project-specific tweaks to an agent-type profile. Supplements, doesn't replace. |
+| **Project Profile Override** | `vault/projects/<id>/agent-types/<type>/profile.md` | Per-project agent-type override. Same hybrid markdown format as the system profile; `delete_project_profile` cleans both nested and any legacy flat path. |
+| **MCP Server Definition** | `vault/[projects/<pid>/]mcp-servers/<name>.md` | One server per file (command, args, env, transport). Project scope shadows system by name. |
 | **Memory (knowledge)** | `vault/**/memory/knowledge/*.md`, `memory/insights/*.md` | Semantically-indexed markdown with `topic:` frontmatter. |
 | **Facts KV** | `vault/**/memory/facts.md` | JSON blocks of deterministic facts (test_command, deploy_branch, etc). L1 tier — always loaded. |
 | **Project Notes** | `vault/projects/<id>/notes/*.md`, `README.md` | Human-authored context. |
@@ -242,13 +244,14 @@ This is the part that usually trips people up. Each arrow is "X makes Y visible 
 |---|---|---|---|
 | **Tools** | Plugin | Tool Registry | Plugin's `register()` call |
 | **Tools** (allowlist) | AgentProfile | a specific Agent/Task | `profile.allowed_tools` → filtered at PromptBuilder |
-| **MCP servers** | AgentProfile | a specific Agent/Task | `profile.mcp_servers` → passed through TaskContext to the adapter |
-| **MCP tools** (all ~150 CommandHandler commands) | CommandHandler | external IDEs / Claude Code | Embedded MCP server auto-exposes every command |
+| **MCP servers** | AgentProfile + Registry | a specific Agent/Task | `profile.mcp_servers` (`list[str]`) → resolved via the MCP server registry → passed through TaskContext to the adapter |
+| **MCP tools** (all ~150 CommandHandler commands) | CommandHandler | external IDEs / Claude Code | Embedded MCP server auto-exposes every command. Builtin entry in the registry; computed in-process so the daemon doesn't probe its own endpoint. |
+| **Sandboxed playbook capabilities** | Playbook frontmatter `profile_id` | the playbook's chat turns | Runner threads `profile.allowed_tools` as `tool_overrides` into every `supervisor.chat()`. Supervisor gates `tool_use.name ∈ active_tools` and rejects unknown names with a synthetic error. See [[specs/design/sandboxed-playbooks]]. |
 | **Identity/role** | AgentProfile `## Role` | the running agent | L0 tier in PromptBuilder |
 | **Facts** | `vault/**/memory/facts.md` | the running agent | L1 tier — always in prompt |
 | **Topic knowledge** | `vault/**/memory/knowledge/*.md` | the running agent | L2 tier — topic-filtered, injected at task start |
 | **Deep search** | Milvus collections | the running agent | L3 tier — `memory_search` tool call mid-run |
-| **Project overrides** | `vault/projects/<id>/overrides/<type>.md` | the running agent | Layered on top of base profile in PromptBuilder |
+| **Project overrides** | `vault/projects/<id>/agent-types/<type>/profile.md` | the running agent | Replaces the base profile for this `(project, agent_type)` pair via `show_effective_profile` resolution |
 | **Events** | every subsystem | Playbooks + Notifications | EventBus pub-sub |
 | **Playbook triggers** | CompiledPlaybook.triggers | EventBus | Runner subscribes on load |
 | **Tasks** to Workflow | PlaybookRunner (coord playbook) | Workflow | `create_task` tool inside the playbook |

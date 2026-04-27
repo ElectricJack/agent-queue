@@ -244,13 +244,16 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 │   └── facts.md
 ├── agent-types/
 │   └── {type}/
-│       ├── profile.md      # Role, capabilities, tools, MCP servers
+│       ├── profile.md      # Role, capabilities, allowed_tools (bare names), mcp_servers (list of registry names)
 │       ├── playbooks/      # Agent-type automation
 │       ├── memory/         # Cross-project agent wisdom
 │       └── facts.md
+├── mcp-servers/            # System-scope MCP server registry (one file per server)
 └── projects/
     └── {id}/
-        ├── profile.md      # Project-specific profile
+        ├── agent-types/    # Project profile overrides (per agent-type)
+        │   └── {type}/profile.md
+        ├── mcp-servers/    # Project-scope MCP registry (shadows system by name)
         ├── facts.md        # Project KV facts (tech stack, conventions, etc.)
         ├── playbooks/      # Project-specific automation
         ├── memory/         # Project memories and insights

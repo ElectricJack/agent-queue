@@ -33,6 +33,10 @@ can browse, edit, and visualize alongside the system's own read/write operations
 │   │   └── memory/                     # System-wide knowledge
 │   │       └── global-conventions.md
 │   │
+│   ├── mcp-servers/                    # System-scope MCP server registry
+│   │   ├── github.md                   # name → command/args/env
+│   │   └── playwright.md               # referenced by profile.mcp_servers
+│   │
 │   ├── orchestrator/
 │   │   ├── profile.md                  # Orchestrator profile definition
 │   │   ├── playbooks/                  # Orchestrator-specific playbooks
@@ -67,9 +71,11 @@ can browse, edit, and visualize alongside the system's own read/write operations
 │   │   │   ├── references/             # Auto-generated spec/doc stubs
 │   │   │   │   ├── spec-orchestrator.md
 │   │   │   │   └── spec-database.md
-│   │   │   └── overrides/              # Per-project agent-type tweaks
-│   │   │       ├── coding.md
-│   │   │       └── qa.md
+│   │   │   ├── agent-types/            # Project profile overrides (per agent-type)
+│   │   │   │   └── coding/
+│   │   │   │       └── profile.md
+│   │   │   └── mcp-servers/            # Project-scope MCP registry; shadows system by name
+│   │   │       └── github.md
 │   │   └── agent-queue/
 │   │       └── ...
 │   │
@@ -104,6 +110,7 @@ can browse, edit, and visualize alongside the system's own read/write operations
 |---|---|
 | Playbook markdown (source of truth) | Compiled playbook JSON (runtime artifact) |
 | Agent profiles (source of truth) | PostgreSQL (runtime sync target for profiles) |
+| MCP server registry (system + per-project) | — |
 | Curated memory & insights | Raw task records |
 | Fact files (KV source of truth) | Milvus storage (vectors + KV index) |
 | Project notes & overrides | Logs |

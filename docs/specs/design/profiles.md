@@ -60,14 +60,13 @@ and commit clean, working code.
 
 ## MCP Servers
 ```json
-{
-  "github": {
-    "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-github"],
-    "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}
-  }
-}
+["github", "playwright"]
 ```
+
+The values are **registry names**, not inline configs. Server definitions
+live in `vault/mcp-servers/<name>.md` (system) or
+`vault/projects/<pid>/mcp-servers/<name>.md` (project scope shadows system
+by name). See [[specs/mcp-server]] for the registry format and CRUD.
 
 ## Rules
 - Always run existing tests before committing
@@ -86,7 +85,7 @@ After completing a task, consider:
 **What gets parsed deterministically (JSON blocks):**
 - `## Config` → model, permission mode, token limits → DB fields
 - `## Tools` → allowed/denied tool lists → DB fields
-- `## MCP Servers` → exact server configurations → DB fields
+- `## MCP Servers` → list of registry names → DB field (`mcp_servers: list[str]`)
 
 **What gets injected as prompt context (English sections):**
 - `## Role` → system prompt prefix

@@ -36,7 +36,7 @@ Sets the active project on the command handler.
 **reload_credentials() → bool**
 Re-creates the LLM provider (e.g. after token refresh). Returns True on success.
 
-**chat(text, user_name, history=None, on_progress=None, _reflection_trigger="user.request") → str**
+**chat(text, user_name, history=None, on_progress=None, tool_overrides=None, _reflection_trigger="user.request") → str**
 Main entry point for direct address. Processes user message through
 multi-turn tool-use loop. The loop is structured around the LLM calling
 a `reply_to_user` tool to deliver its final response — if the LLM stops
@@ -52,6 +52,30 @@ rounds and after tool execution. Returns `"Cancelled."` if cancelled.
 
 Serializes conversation context via `_serialize_conversation_context()`
 so tasks created during a chat session inherit the conversation thread.
+
+### Tool Sandbox Enforcement
+
+When `tool_overrides` is supplied — typically by the
+[[design/sandboxed-playbooks|playbook runner]] threading
+`profile.allowed_tools` from a sandboxed playbook — the supervisor:
+
+1. Builds the LLM's function-declaration schema from the override list
+   only, so the model can't even see tools outside the active set.
+2. Gates `_execute_tool` dispatch on `tool_use.name ∈ active_tools` in
+   both the main chat loop **and** the reflection follow-up. If the LLM
+   hallucinates a name that isn't in the active set (Gemini in
+   particular has been observed inventing `read_file`,
+   `list_directory`, `create_task` blocks), the supervisor returns a
+   synthetic error result instead of forwarding the call to
+   `CommandHandler.execute()`. Each rejection logs the active set and
+   whether overrides were in effect, so leakage is observable rather
+   than silent.
+
+This is a **runtime** defense — even a perfectly-aligned schema can be
+bypassed by a model that emits a tool block out-of-schema. The reject
+loop closes the loop. See
+[[design/sandboxed-playbooks#runtime-enforcement]] for the broader
+threat model.
 
 **cancel() → None**
 Cancels a running `chat()` call via an internal `asyncio.Event`.
