@@ -14,6 +14,7 @@ import {
 } from "../../api/hooks";
 import ProfileEditDrawer from "../../components/profile/ProfileEditDrawer";
 import DeleteProjectProfileModal from "../../components/profile/DeleteProjectProfileModal";
+import CreateProjectProfileModal from "../../components/profile/CreateProjectProfileModal";
 
 export default function ProjectProfiles() {
   const { projectId = "" } = useParams();
@@ -25,6 +26,7 @@ export default function ProjectProfiles() {
   );
   const [createError, setCreateError] = useState<string | null>(null);
   const [pendingType, setPendingType] = useState<string | null>(null);
+  const [creatingNew, setCreatingNew] = useState(false);
 
   if (isLoading) return <p className="text-sm text-gray-500">Loading...</p>;
   if (error) {
@@ -61,6 +63,13 @@ export default function ProjectProfiles() {
           One row per agent type. Project overrides take precedence over the global default for
           tasks in this project. Reset to global to remove an override.
         </p>
+        <button
+          onClick={() => setCreatingNew(true)}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
+        >
+          <PlusIcon className="h-3.5 w-3.5" />
+          New profile
+        </button>
       </div>
 
       {createError && (
@@ -119,6 +128,14 @@ export default function ProjectProfiles() {
           hasGlobal={resetting.hasGlobal}
         />
       )}
+
+      <CreateProjectProfileModal
+        open={creatingNew}
+        onClose={() => setCreatingNew(false)}
+        projectId={projectId}
+        existingAgentTypes={rows.map((r) => r.agent_type)}
+        onCreated={(agentType) => setEditingType(agentType)}
+      />
     </div>
   );
 }
