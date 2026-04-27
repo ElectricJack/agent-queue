@@ -293,6 +293,23 @@ class ProfileCommandsMixin:
             "profile.md",
         )
 
+    def _vault_project_profile_paths(self, project_id: str, agent_type: str) -> list[str]:
+        """Return every vault path a project-scoped profile may live at.
+
+        New profiles are written to the nested layout, but older vaults may
+        still hold a flat-layout file at ``agent-types/<scoped_id>/profile.md``
+        from before the layout switch. The startup scanner picks up either,
+        so deletes have to consider both — otherwise resetting to global
+        only kills the DB row and the flat file resurrects it on next scan.
+        """
+        from src.profiles.sync import project_scoped_profile_id
+
+        scoped_id = project_scoped_profile_id(project_id, agent_type)
+        return [
+            self._vault_project_profile_path(project_id, agent_type),
+            os.path.join(self.config.data_dir, "vault", "agent-types", scoped_id, "profile.md"),
+        ]
+
     async def _cmd_create_project_profile(self, args: dict) -> dict:
         """Create a project-scoped profile, optionally seeded from a global one.
 
@@ -419,15 +436,18 @@ class ProfileCommandsMixin:
             return {"error": "project_id and agent_type are required"}
 
         scoped_id = project_scoped_profile_id(project_id, agent_type)
-        target = self._vault_project_profile_path(project_id, agent_type)
+        candidate_paths = self._vault_project_profile_paths(project_id, agent_type)
+        existing_paths = [p for p in candidate_paths if os.path.isfile(p)]
 
         profile = await self.db.get_profile(scoped_id)
-        vault_exists = os.path.isfile(target)
-        if not profile and not vault_exists:
+        if not profile and not existing_paths:
             return {"error": f"Project profile '{scoped_id}' not found"}
 
-        if vault_exists:
-            os.remove(target)
+        for path in existing_paths:
+            os.remove(path)
+            parent = os.path.dirname(path)
+            if os.path.isdir(parent) and not os.listdir(parent):
+                os.rmdir(parent)
         if profile:
             await self.db.delete_profile(scoped_id)
 
@@ -435,6 +455,7 @@ class ProfileCommandsMixin:
             "deleted": scoped_id,
             "project_id": project_id,
             "agent_type": agent_type,
+            "removed_paths": existing_paths,
         }
 
     async def _cmd_list_project_profiles(self, args: dict) -> dict:

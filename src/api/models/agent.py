@@ -139,6 +139,7 @@ class DeleteProjectProfileResponse(BaseModel):
     deleted: str
     project_id: str
     agent_type: str
+    removed_paths: list[str] = []
 
 
 class ProbedToolModel(BaseModel):

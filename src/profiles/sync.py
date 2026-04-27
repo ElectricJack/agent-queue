@@ -53,6 +53,31 @@ PROFILE_PATTERNS: list[str] = [
 ]
 
 
+def is_invalid_scoped_flat_path(rel_path: str) -> bool:
+    """Return True for stray scoped profiles sitting in the global folder.
+
+    ``vault/agent-types/`` is reserved for **system / global** agent
+    types — one folder per agent type, dir name == bare type. Project
+    overrides belong at ``vault/projects/<project>/agent-types/<type>/``.
+
+    Some past code path mistakenly wrote project-scoped profiles into
+    the global folder using the colon-encoded id as a dir name (e.g.
+    ``agent-types/project:my-playbooks:supervisor/profile.md``). That
+    layout was never legitimate, but the scanner used to pick the files
+    up anyway and resurrect deleted overrides on every restart. We
+    detect them structurally — a `:` in the segment after
+    ``agent-types/`` always means a scoped id, which doesn't belong
+    here — and skip them on both the startup scan and live watcher.
+    """
+    parts = rel_path.replace("\\", "/").split("/")
+    return (
+        len(parts) >= 3
+        and parts[0] == "agent-types"
+        and parts[-1] == "profile.md"
+        and ":" in parts[1]
+    )
+
+
 def project_scoped_profile_id(project_id: str, agent_type: str) -> str:
     """Format the scoped profile id for a per-project agent-type profile."""
     return f"project:{project_id}:{agent_type}"
@@ -382,6 +407,13 @@ async def on_profile_changed(
         are copied into the profile's memory folder.
     """
     for change in changes:
+        if is_invalid_scoped_flat_path(change.rel_path):
+            logger.warning(
+                "Ignoring stray scoped profile change in global agent-types folder: %s",
+                change.rel_path,
+            )
+            continue
+
         path_id = derive_profile_id(change.rel_path)
 
         if db is None:
@@ -548,6 +580,14 @@ def _find_profile_files(vault_root: str) -> list[tuple[str, str]]:
 
             full_path = os.path.join(dirpath, fname)
             rel_path = os.path.relpath(full_path, vault_root).replace(os.sep, "/")
+
+            if is_invalid_scoped_flat_path(rel_path):
+                logger.warning(
+                    "Ignoring stray scoped profile in global agent-types folder: %s "
+                    "(should live under projects/<project>/agent-types/)",
+                    rel_path,
+                )
+                continue
 
             for pattern in PROFILE_PATTERNS:
                 if fnmatch.fnmatch(rel_path, pattern):
