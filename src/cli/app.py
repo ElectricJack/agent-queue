@@ -263,6 +263,11 @@ from .auto_commands import register_auto_commands  # noqa: E402
 register_auto_commands(cli, console)
 
 
+# Hand-crafted subgroups that hang off auto-generated parent groups.
+# Must come AFTER register_auto_commands() so the parent groups exist.
+from . import system_config as _system_config_cli  # noqa: E402, F401
+
+
 # ---------------------------------------------------------------------------
 # Plugin CLI extensions
 # ---------------------------------------------------------------------------

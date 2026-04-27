@@ -16,6 +16,9 @@ dependencies = [
     "discord.py>=2.5.2,<2.6",
     "claude_agent_sdk>=0.1.55",
     "PyYAML>=6.0",
+    # Used by src/config_editor for round-trip YAML editing that preserves
+    # comments, key order, and quoting style. Read path still uses PyYAML.
+    "ruamel.yaml>=0.18",
     "fastapi>=0.135.0",
     "pydantic>=2.0",
     "starlette>=0.27.0",

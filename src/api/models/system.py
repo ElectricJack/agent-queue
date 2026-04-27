@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskStatusSummary(BaseModel):
@@ -87,6 +87,40 @@ class RenderPromptResponse(BaseModel):
     name: str = ""
     rendered: str = ""
     variables_used: dict[str, Any] = {}
+
+
+class EnvVarReference(BaseModel):
+    path: str
+    var: str
+    resolved: bool
+
+
+class GetConfigResponse(BaseModel):
+    model_config = {"extra": "allow"}
+    path: str = ""
+    config: dict[str, Any] = {}
+    section: str | None = None
+    hot_reloadable: list[str] = []
+    restart_required: list[str] = []
+    unclassified: list[str] = []
+    env_var_references: list[EnvVarReference] = []
+    error: str | None = None
+
+
+class GetConfigSchemaResponse(BaseModel):
+    model_config = {"extra": "allow"}
+    schema_: dict[str, Any] = Field(default_factory=dict, alias="schema")
+
+
+class UpdateConfigResponse(BaseModel):
+    model_config = {"extra": "allow"}
+    applied: bool = False
+    changed: bool = False
+    requires_restart: bool | None = None
+    applied_sections: list[str] = []
+    validation_errors: list[str] = []
+    dry_run: bool | None = None
+    error: str | None = None
 
 
 class ReloadConfigResponse(BaseModel):
@@ -218,6 +252,9 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "read_prompt": ReadPromptResponse,
     "render_prompt": RenderPromptResponse,
     "reload_config": ReloadConfigResponse,
+    "get_config": GetConfigResponse,
+    "get_config_schema": GetConfigSchemaResponse,
+    "update_config": UpdateConfigResponse,
     "restart_daemon": RestartDaemonResponse,
     "shutdown": ShutdownResponse,
     "update_and_restart": UpdateAndRestartResponse,

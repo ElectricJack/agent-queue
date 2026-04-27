@@ -129,6 +129,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "token_audit": "system",
     "claude_usage": "system",
     "reload_config": "system",
+    "get_config": "system",
+    "get_config_schema": "system",
+    "update_config": "system",
     "orchestrator_control": "system",
     "provide_input": "system",
     "list_prompts": "system",
@@ -1812,6 +1815,64 @@ _ALL_TOOL_DEFINITIONS = [
     # Commands below were added to ensure ALL CommandHandler commands
     # have explicit MCP tool definitions with rich schemas.
     # ------------------------------------------------------------------
+    {
+        "name": "get_config",
+        "description": (
+            "Return the raw YAML configuration as written on disk, preserving "
+            "${ENV_VAR} placeholders. Used by the dashboard config editor and "
+            "the `aq system config get` CLI. Pass `section` to fetch one "
+            "top-level section only. Includes hot-reloadable vs restart-required "
+            "classification and a list of every ${ENV_VAR} reference with whether "
+            "it currently resolves."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "description": "Top-level config section to return (e.g. 'scheduling'). Omit for full config.",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_config_schema",
+        "description": (
+            "Return a JSON Schema describing every AppConfig field. The dashboard "
+            "uses this to render a schema-driven form without hardcoding the "
+            "config shape. Top-level properties carry x-reload: hot/restart/unclassified."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "update_config",
+        "description": (
+            "Replace one top-level section in the YAML config and trigger a hot "
+            "reload for hot-reloadable sections. Validates the candidate doc by "
+            "running load_config() against a temp file before writing, so a bad "
+            "edit never lands on disk. Pass `data: null` to delete the section. "
+            "Pass `dry_run: true` to validate without writing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "description": "Top-level section to replace (e.g. 'scheduling').",
+                },
+                "data": {
+                    "type": ["object", "array", "string", "number", "boolean", "null"],
+                    "description": "New value for the section. null to delete.",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Validate but don't persist.",
+                    "default": False,
+                },
+            },
+            "required": ["section", "data"],
+        },
+    },
     {
         "name": "reload_config",
         "description": (

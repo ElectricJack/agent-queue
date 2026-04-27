@@ -16,6 +16,8 @@ import {
   editMcpServer,
   editProjectProfile,
   editTask,
+  getConfig,
+  getConfigSchema,
   getMcpServer,
   getProject,
   getStatus,
@@ -37,12 +39,14 @@ import {
   probeMcpServer,
   provideInput,
   rejectPlan,
+  reloadConfig,
   reopenWithFeedback,
   restartTask,
   resumeProject,
   showEffectiveProfile,
   skipTask,
   stopTask,
+  updateConfig,
   updatePlaybookSource,
   getPlaybookSource,
 } from "./client";
@@ -57,7 +61,11 @@ import type {
   EditProjectProfileRequest,
   EditTaskRequest,
   EventTrigger,
+  GetConfigResponse,
+  GetConfigSchemaResponse,
   GetMcpServerResponse,
+  UpdateConfigResponse,
+  ReloadConfigResponse,
   GetProjectResponse2 as ProjectResponse,
   GetStatusResponse2 as SystemStatusResponse,
   GetTaskResponse2 as TaskResponse,
@@ -684,5 +692,54 @@ export function useDeleteMcpServer() {
     mutationFn: async (input: { name: string; project_id?: string }) =>
       (await deleteMcpServer({ body: input, throwOnError: true })).data,
     onSuccess: (_d, variables) => invalidateMcpViews(queryClient, variables.project_id),
+  });
+}
+
+// --- System config (~/.agent-queue/config.yaml editor) ---
+
+export function useSystemConfig() {
+  return useQuery({
+    queryKey: ["system-config"],
+    queryFn: async () => {
+      const { data } = await getConfig({ body: {}, throwOnError: true });
+      return data as GetConfigResponse;
+    },
+  });
+}
+
+export function useSystemConfigSchema() {
+  return useQuery({
+    queryKey: ["system-config-schema"],
+    queryFn: async () => {
+      const { data } = await getConfigSchema({ body: {}, throwOnError: true });
+      return data as GetConfigSchemaResponse;
+    },
+    // Schema is derived from code — only changes between deploys.
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useUpdateSystemConfig() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { section: string; data: unknown; dry_run?: boolean }) =>
+      // The generated type narrows `data` to an object, but the API also accepts
+      // arrays, scalars, and null. Cast at the boundary.
+      (await updateConfig({ body: input as never, throwOnError: true }))
+        .data as UpdateConfigResponse,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["system-config"] });
+    },
+  });
+}
+
+export function useReloadSystemConfig() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () =>
+      (await reloadConfig({ body: {}, throwOnError: true })).data as ReloadConfigResponse,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["system-config"] });
+    },
   });
 }
