@@ -215,6 +215,82 @@ async def _resilient_query(prompt, options, adapter=None):
                 print(f"Claude adapter: transport cleanup error (suppressed): {close_err}")
 
 
+# Tool names the Claude CLI exposes natively (not through the embedded
+# agent-queue MCP server). Bare names in profile.allowed_tools are kept as-is
+# when they match this set; other bare names are assumed to be agent-queue
+# MCP tools and get an additional ``mcp__agent-queue__`` prefixed form added
+# to the CLI's --allowed-tools so the CLI accepts them under its MCP-visible
+# identity.
+_CLAUDE_BUILTIN_TOOL_NAMES = frozenset(
+    {
+        "Read",
+        "Write",
+        "Edit",
+        "Bash",
+        "Glob",
+        "Grep",
+        "WebSearch",
+        "WebFetch",
+        "NotebookEdit",
+        "Agent",
+        "TodoRead",
+        "TodoWrite",
+        "Skill",
+        "TaskCreate",
+        "TaskUpdate",
+        "TaskList",
+        "TaskGet",
+        "TaskStop",
+        "TaskOutput",
+        "EnterWorktree",
+        "ExitWorktree",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "AskUserQuestion",
+        "Monitor",
+        "PushNotification",
+        "RemoteTrigger",
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "ToolSearch",
+        "ScheduleWakeup",
+    }
+)
+
+# Embedded MCP server name. Profile.allowed_tools uses bare names for tools
+# exposed by this server; the CLI sees them as ``mcp__<this>__<name>``.
+_AGENT_QUEUE_MCP_SERVER = "agent-queue"
+
+
+def _translate_allowed_tools_for_cli(names: list[str]) -> list[str]:
+    """Map a profile's bare tool names into the form the Claude CLI expects.
+
+    ``profile.allowed_tools`` stores bare names (the canonical form used by the
+    supervisor's tool registry). The Claude CLI sees agent-queue tools through
+    the MCP transport as ``mcp__agent-queue__<name>``. For each bare name that
+    isn't a Claude built-in (and isn't already prefixed), this helper appends
+    the prefixed form so the CLI accepts the call under its MCP-visible
+    identity.
+
+    Names already starting with ``mcp__`` (third-party MCP tools) and Claude
+    built-ins (Read, Edit, …) pass through unchanged. Order is preserved;
+    bare-name originals are also kept so a future tightening of the
+    ``mcp__agent-queue__*`` wildcard doesn't break Claude-built-in names.
+    """
+    out: list[str] = []
+    for name in names:
+        out.append(name)
+        if name.startswith("mcp__"):
+            continue
+        if name in _CLAUDE_BUILTIN_TOOL_NAMES:
+            continue
+        prefixed = f"mcp__{_AGENT_QUEUE_MCP_SERVER}__{name}"
+        if prefixed not in out:
+            out.append(prefixed)
+    return out
+
+
 @dataclass
 class ClaudeAdapterConfig:
     """Configuration for the Claude Code agent adapter.
@@ -321,12 +397,14 @@ class ClaudeAdapter(AgentAdapter):
             # (either via `claude login` or ANTHROPIC_API_KEY).
             system_claude = shutil.which("claude")
 
-            # Build allowed_tools: start with the configured set, then
-            # auto-approve MCP tools from any configured MCP servers.
-            # Without this, MCP tools would need interactive permission
-            # approval — impossible in headless SDK mode — so the agent
-            # can't discover or use them even though the server is connected.
-            allowed = list(self._config.allowed_tools)
+            # Build allowed_tools: start with the configured set, translating
+            # bare agent-queue tool names into their MCP-prefixed form so the
+            # CLI accepts them. Then auto-approve MCP tools from any
+            # configured MCP servers — without this, MCP tools would need
+            # interactive permission approval (impossible in headless SDK
+            # mode), so the agent can't discover or use them even though the
+            # server is connected.
+            allowed = _translate_allowed_tools_for_cli(self._config.allowed_tools)
             if self._task.mcp_servers:
                 for server_name in self._task.mcp_servers:
                     pattern = f"mcp__{server_name}__*"
@@ -812,9 +890,7 @@ class ClaudeAdapter(AgentAdapter):
             blocks: list[dict] = []
             for block in getattr(message, "content", None) or []:
                 if isinstance(block, _ThinkingBlock):
-                    blocks.append(
-                        {"type": "thinking", "text": getattr(block, "thinking", "")}
-                    )
+                    blocks.append({"type": "thinking", "text": getattr(block, "thinking", "")})
                 elif isinstance(block, _TextBlock):
                     blocks.append({"type": "text", "text": getattr(block, "text", "")})
                 elif isinstance(block, _ToolUseBlock):
@@ -840,9 +916,7 @@ class ClaudeAdapter(AgentAdapter):
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, _ToolResultBlock):
-                        blocks.append(
-                            self._tool_result_block(block, getattr(block, "content", ""))
-                        )
+                        blocks.append(self._tool_result_block(block, getattr(block, "content", "")))
                     elif isinstance(block, _TextBlock):
                         blocks.append({"type": "text", "text": getattr(block, "text", "")})
             # Some SDK versions surface tool results via tool_use_result dict.
@@ -880,9 +954,7 @@ class ClaudeAdapter(AgentAdapter):
         """Shape a ToolResultBlock for the transcript, truncating if needed."""
         if isinstance(content_val, list):
             # SDK sometimes returns a list of content parts (text + image).
-            text_parts = [
-                p.get("text", "") if isinstance(p, dict) else str(p) for p in content_val
-            ]
+            text_parts = [p.get("text", "") if isinstance(p, dict) else str(p) for p in content_val]
             content_str = "\n".join(text_parts)
         else:
             content_str = str(content_val or "")
@@ -898,7 +970,10 @@ class ClaudeAdapter(AgentAdapter):
         s = str(s or "")
         if len(s) <= self._TOOL_RESULT_MAX_CHARS:
             return s
-        return s[: self._TOOL_RESULT_MAX_CHARS] + f"\n…[truncated {len(s) - self._TOOL_RESULT_MAX_CHARS} chars]"
+        return (
+            s[: self._TOOL_RESULT_MAX_CHARS]
+            + f"\n…[truncated {len(s) - self._TOOL_RESULT_MAX_CHARS} chars]"
+        )
 
     async def stop(self) -> None:
         self._cancel_event.set()

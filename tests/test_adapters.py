@@ -216,3 +216,102 @@ class TestClaudeAdapterL0L1Injection:
         facts_pos = prompt.index("Critical Facts")
         task_pos = prompt.index("Do the thing.")
         assert facts_pos < task_pos
+
+
+# ------------------------------------------------------------------
+# _translate_allowed_tools_for_cli — bare-name → MCP-prefix mapping
+# ------------------------------------------------------------------
+
+
+class TestTranslateAllowedToolsForCli:
+    """Profile.allowed_tools stores bare names; the CLI sees agent-queue tools
+    through the MCP transport. The translator adds prefixed forms for bare
+    names that aren't Claude built-ins."""
+
+    def _translate(self, names):
+        from src.adapters.claude import _translate_allowed_tools_for_cli
+
+        return _translate_allowed_tools_for_cli(names)
+
+    def test_bare_agent_queue_tool_gets_prefixed_companion(self):
+        result = self._translate(["get_weather"])
+        assert "get_weather" in result
+        assert "mcp__agent-queue__get_weather" in result
+
+    def test_claude_builtin_passes_through_unchanged(self):
+        result = self._translate(["Read", "Edit", "Bash"])
+        assert result == ["Read", "Edit", "Bash"]
+
+    def test_already_prefixed_name_passes_through(self):
+        result = self._translate(["mcp__other__foo"])
+        assert result == ["mcp__other__foo"]
+
+    def test_mixed_list_preserves_order_and_dedupes(self):
+        result = self._translate(["Read", "get_weather", "mcp__other__foo", "send_message"])
+        assert result == [
+            "Read",
+            "get_weather",
+            "mcp__agent-queue__get_weather",
+            "mcp__other__foo",
+            "send_message",
+            "mcp__agent-queue__send_message",
+        ]
+
+    def test_empty_input_yields_empty_output(self):
+        assert self._translate([]) == []
+
+
+# ------------------------------------------------------------------
+# Profile parser strips mcp__agent-queue__ prefix at sync time so the DB
+# stores canonical bare names. Vault → DB sync runs on startup and on
+# file change, so any legacy prefixed entries get rewritten there.
+# ------------------------------------------------------------------
+
+
+class TestProfileParserStripsAgentQueuePrefix:
+    def _to_db_dict(self, allowed: list[str]) -> dict:
+        import json as _json
+
+        from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
+
+        markdown = (
+            "---\n"
+            "id: project:p:test\n"
+            "name: test\n"
+            "---\n"
+            "\n"
+            "# test\n\n"
+            "## Tools\n"
+            "```json\n"
+            f'{{"allowed": {_json.dumps(allowed)}}}\n'
+            "```\n"
+        )
+        parsed = parse_profile(markdown)
+        return parsed_profile_to_agent_profile(parsed)
+
+    def test_strips_agent_queue_prefix(self):
+        out = self._to_db_dict(["mcp__agent-queue__get_weather", "mcp__agent-queue__send_message"])
+        assert out["allowed_tools"] == ["get_weather", "send_message"]
+
+    def test_preserves_third_party_mcp_prefix(self):
+        out = self._to_db_dict(["mcp__github__create_issue"])
+        assert out["allowed_tools"] == ["mcp__github__create_issue"]
+
+    def test_preserves_claude_builtins(self):
+        out = self._to_db_dict(["Read", "Edit"])
+        assert out["allowed_tools"] == ["Read", "Edit"]
+
+    def test_idempotent_on_bare_names(self):
+        out = self._to_db_dict(["get_weather", "send_message"])
+        assert out["allowed_tools"] == ["get_weather", "send_message"]
+
+    def test_mixed_list(self):
+        out = self._to_db_dict(
+            ["Read", "mcp__agent-queue__get_weather", "mcp__github__x", "send_message"]
+        )
+        assert out["allowed_tools"] == [
+            "Read",
+            "get_weather",
+            "mcp__github__x",
+            "send_message",
+        ]

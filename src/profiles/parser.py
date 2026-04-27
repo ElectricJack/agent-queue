@@ -479,6 +479,12 @@ def _validate_config(config: dict) -> list[str]:
 # Known keys in the Tools block.
 TOOLS_KNOWN_KEYS = frozenset({"allowed", "denied"})
 
+# Embedded ``agent-queue`` MCP server prefix.  Tool names in
+# ``## Tools.allowed`` may legacy-include this prefix; the parser strips it at
+# sync time so the DB stores canonical bare names.  See
+# ``docs/specs/design/profiles.md`` (Tool naming).
+_AQ_PREFIX = "mcp__agent-queue__"
+
 
 def _validate_tools(
     tools: dict,
@@ -769,9 +775,16 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     if parsed.config.get("permission_mode"):
         result["permission_mode"] = parsed.config["permission_mode"]
 
-    # Tools → allowed_tools
+    # Tools → allowed_tools.  Strip the embedded MCP server prefix at sync
+    # time so the DB always stores canonical bare names — the supervisor's
+    # tool registry uses bare names, and the Claude CLI adapter re-adds
+    # ``mcp__agent-queue__`` at the transport layer.  Keeps third-party MCP
+    # tool prefixes (``mcp__github__...``) intact.
     if parsed.tools.get("allowed"):
-        result["allowed_tools"] = parsed.tools["allowed"]
+        result["allowed_tools"] = [
+            t[len(_AQ_PREFIX) :] if isinstance(t, str) and t.startswith(_AQ_PREFIX) else t
+            for t in parsed.tools["allowed"]
+        ]
 
     # MCP Servers → mcp_servers (always list[str] of registry names).
     if parsed.mcp_servers:

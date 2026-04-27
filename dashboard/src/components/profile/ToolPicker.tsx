@@ -250,6 +250,9 @@ function buildGroups(
   }
 
   // Always include the embedded agent-queue server (auto-injected at task launch).
+  // Embedded tools are stored as BARE names in profile.allowed_tools — the
+  // supervisor registry uses bare names, and the Claude CLI adapter adds the
+  // mcp__agent-queue__ prefix at the transport layer.
   const embeddedKey = Object.keys(catalog).find((k) => catalog[k]?.is_builtin) ?? "agent-queue";
   const embedded = catalog[embeddedKey];
   if (embedded) {
@@ -259,11 +262,13 @@ function buildGroups(
       kind: "builtin-mcp",
       serverName: embedded.server_name,
       serverProjectId: embedded.project_id ?? null,
-      tools: probedToolsToEntries(embedded.server_name, embedded.tools ?? []),
+      tools: probedToolsToEntries(embedded.server_name, embedded.tools ?? [], true),
     });
   }
 
-  // Other enabled servers, in alphabetical order.
+  // Other enabled servers, in alphabetical order. Third-party MCP tools keep
+  // their full mcp__server__tool prefix in the saved value — there's no
+  // unambiguous way to strip a prefix when multiple servers might collide.
   const builtinName = embedded?.server_name;
   const extras = enabledServers
     .filter((n) => n !== builtinName)
@@ -287,16 +292,20 @@ function buildGroups(
       kind: "mcp",
       serverName: name,
       serverProjectId: entry.project_id ?? null,
-      tools: probedToolsToEntries(name, entry.tools ?? []),
+      tools: probedToolsToEntries(name, entry.tools ?? [], false),
     });
   }
 
   return groups;
 }
 
-function probedToolsToEntries(serverName: string, tools: ProbedTool[]): ToolEntry[] {
+function probedToolsToEntries(
+  serverName: string,
+  tools: ProbedTool[],
+  bareName: boolean,
+): ToolEntry[] {
   return tools.map((t) => ({
-    toolName: `mcp__${serverName}__${t.name}`,
+    toolName: bareName ? t.name : `mcp__${serverName}__${t.name}`,
     description: t.description ?? null,
   }));
 }
