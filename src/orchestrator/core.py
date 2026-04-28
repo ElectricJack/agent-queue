@@ -545,7 +545,7 @@ class Orchestrator(
         not block waiting for an LLM-driven graph walk.
         """
         try:
-            from src.supervisor import Supervisor
+            from src.platforms.supervisor import Supervisor
             from src.playbooks.runner import PlaybookRunner
 
             graph = playbook.to_dict()

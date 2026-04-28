@@ -86,7 +86,7 @@ class TelegramBot:
         )
 
         # Supervisor and CommandHandler (created lazily after start)
-        from src.supervisor import Supervisor
+        from src.platforms.supervisor import Supervisor
 
         self._supervisor = Supervisor(orchestrator, config, llm_logger=orchestrator.llm_logger)
         self.handler = self._supervisor.handler

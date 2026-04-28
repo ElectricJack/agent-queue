@@ -1,11 +1,11 @@
 """Backward-compatibility shim — ChatAgent is now Supervisor.
 
 .. deprecated::
-    Import :class:`~src.supervisor.Supervisor` directly instead.
+    Import :class:`~src.platforms.supervisor.Supervisor` directly instead.
     This module re-exports ``Supervisor`` as ``ChatAgent`` for legacy callers.
 """
 
-from src.supervisor import (  # noqa: F401
+from src.platforms.supervisor import (  # noqa: F401
     Supervisor as ChatAgent,
     TOOLS,
     SYSTEM_PROMPT_TEMPLATE,

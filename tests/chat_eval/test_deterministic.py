@@ -311,7 +311,7 @@ class TestEmptyResponse:
 
     async def test_no_provider_raises(self):
         """Test that chat() raises if provider not initialized."""
-        from src.supervisor import Supervisor
+        from src.platforms.supervisor import Supervisor
 
         # Create supervisor without initializing provider
         agent = Supervisor.__new__(Supervisor)

@@ -378,7 +378,7 @@ class PlaybookCommandsMixin:
             paused_node = (timeout_graph or {}).get("nodes", {}).get(db_run.current_node or "", {})
             on_timeout_node = paused_node.get("on_timeout")
             if on_timeout_node:
-                from src.supervisor import Supervisor as SupervisorCls
+                from src.platforms.supervisor import Supervisor as SupervisorCls
 
                 supervisor = SupervisorCls(self.orchestrator, self.config)
                 if not supervisor.initialize():
@@ -445,7 +445,7 @@ class PlaybookCommandsMixin:
             }
 
         # Create a Supervisor for LLM calls during resume
-        from src.supervisor import Supervisor
+        from src.platforms.supervisor import Supervisor
 
         supervisor = Supervisor(self.orchestrator, self.config)
         if not supervisor.initialize():
@@ -820,7 +820,7 @@ class PlaybookCommandsMixin:
         graph = playbook.to_dict()
 
         # Create a Supervisor for LLM calls
-        from src.supervisor import Supervisor
+        from src.platforms.supervisor import Supervisor
 
         llm_logger = getattr(self.orchestrator, "llm_logger", None)
         supervisor = Supervisor(self.orchestrator, self.config, llm_logger=llm_logger)
@@ -1661,7 +1661,7 @@ class PlaybookCommandsMixin:
             paused_node = graph.get("nodes", {}).get(db_run.current_node or "", {})
             on_timeout_node = paused_node.get("on_timeout")
             if on_timeout_node and on_timeout_node in graph.get("nodes", {}):
-                from src.supervisor import Supervisor
+                from src.platforms.supervisor import Supervisor
 
                 supervisor = Supervisor(self.orchestrator, self.config)
                 if not supervisor.initialize():

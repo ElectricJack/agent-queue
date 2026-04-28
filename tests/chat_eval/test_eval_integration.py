@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from src.supervisor import Supervisor
+from src.platforms.supervisor import Supervisor
 from src.chat_providers import create_chat_provider
 from src.config import AppConfig, ChatProviderConfig
 from src.orchestrator import Orchestrator

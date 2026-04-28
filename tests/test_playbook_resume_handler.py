@@ -198,7 +198,7 @@ class TestEventDrivenResume:
         """Firing human.review.completed resumes the paused run."""
         mock_db.get_playbook_run.return_value = paused_run
 
-        with patch("src.supervisor.Supervisor") as MockSupervisor:
+        with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
             mock_sup = MagicMock()
             mock_sup.initialize.return_value = True
             mock_sup.chat = AsyncMock(side_effect=["1", "Plan executed."])
@@ -237,7 +237,7 @@ class TestEventDrivenResume:
         """The resume call receives the paused run with full conversation history."""
         mock_db.get_playbook_run.return_value = paused_run
 
-        with patch("src.supervisor.Supervisor") as MockSupervisor:
+        with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
             mock_sup = MagicMock()
             mock_sup.initialize.return_value = True
             MockSupervisor.return_value = mock_sup
@@ -273,7 +273,7 @@ class TestEventDrivenResume:
         """When the run has a pinned_graph, it is used instead of PlaybookManager."""
         mock_db.get_playbook_run.return_value = paused_run
 
-        with patch("src.supervisor.Supervisor") as MockSupervisor:
+        with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
             mock_sup = MagicMock()
             mock_sup.initialize.return_value = True
             MockSupervisor.return_value = mock_sup
@@ -433,7 +433,7 @@ class TestValidation:
         """If Supervisor.initialize() fails, the resume is aborted gracefully."""
         mock_db.get_playbook_run.return_value = paused_run
 
-        with patch("src.supervisor.Supervisor") as MockSupervisor:
+        with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
             mock_sup = MagicMock()
             mock_sup.initialize.return_value = False
             MockSupervisor.return_value = mock_sup
@@ -517,7 +517,7 @@ class TestDeDuplication:
             await resume_gate.wait()
             return MagicMock(status="completed", tokens_used=100)
 
-        with patch("src.supervisor.Supervisor") as MockSupervisor:
+        with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
             mock_sup = MagicMock()
             mock_sup.initialize.return_value = True
             MockSupervisor.return_value = mock_sup
@@ -615,7 +615,7 @@ class TestGraphResolution:
         mock_pb.to_dict.return_value = active_graph
         mock_playbook_manager._active = {"active-playbook": mock_pb}
 
-        with patch("src.supervisor.Supervisor") as MockSupervisor:
+        with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
             mock_sup = MagicMock()
             mock_sup.initialize.return_value = True
             MockSupervisor.return_value = mock_sup

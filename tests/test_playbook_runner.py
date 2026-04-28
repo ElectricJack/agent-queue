@@ -6327,7 +6327,7 @@ class TestResumePlaybookCommand:
         )
 
         with (
-            patch("src.supervisor.Supervisor") as MockSupervisor,
+            patch("src.platforms.supervisor.Supervisor") as MockSupervisor,
             patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
         ):
             mock_sup = MockSupervisor.return_value
@@ -6396,7 +6396,7 @@ class TestResumePlaybookCommand:
         )
 
         with (
-            patch("src.supervisor.Supervisor") as MockSupervisor,
+            patch("src.platforms.supervisor.Supervisor") as MockSupervisor,
             patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
         ):
             mock_sup = MockSupervisor.return_value
@@ -6466,7 +6466,7 @@ class TestResumePlaybookCommand:
         )
 
         with (
-            patch("src.supervisor.Supervisor") as MockSupervisor,
+            patch("src.platforms.supervisor.Supervisor") as MockSupervisor,
             patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
         ):
             mock_sup = MockSupervisor.return_value
@@ -6554,7 +6554,7 @@ class TestResumePlaybookCommand:
         )
         handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
 
-        with patch("src.supervisor.Supervisor") as MockSupervisor:
+        with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
             mock_sup = MockSupervisor.return_value
             mock_sup.initialize.return_value = False  # Fails to init
             result = await handler._cmd_resume_playbook(
@@ -6661,7 +6661,7 @@ class TestResumePlaybookCommand:
         handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
 
         with (
-            patch("src.supervisor.Supervisor") as MockSupervisor,
+            patch("src.platforms.supervisor.Supervisor") as MockSupervisor,
             patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
         ):
             mock_sup = MockSupervisor.return_value

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 def _make_supervisor():
-    from src.supervisor import Supervisor
+    from src.platforms.supervisor import Supervisor
 
     orch = MagicMock()
     orch.config = MagicMock()
@@ -52,7 +52,7 @@ def _make_resp(text_parts=None, tool_uses=None):
 
 
 def test_supervisor_class_exists():
-    from src.supervisor import Supervisor
+    from src.platforms.supervisor import Supervisor
 
     assert Supervisor is not None
 
@@ -79,7 +79,7 @@ def test_backward_compat_import():
 
 def test_backward_compat_is_supervisor():
     from src.chat_agent import ChatAgent
-    from src.supervisor import Supervisor
+    from src.platforms.supervisor import Supervisor
 
     assert ChatAgent is Supervisor
 
@@ -289,7 +289,7 @@ def test_reflect_method_exists():
 
 def test_full_integration_supervisor_replaces_chat_agent():
     """Verify Supervisor can be used everywhere ChatAgent was."""
-    from src.supervisor import Supervisor
+    from src.platforms.supervisor import Supervisor
     from src.chat_agent import ChatAgent
 
     assert Supervisor is ChatAgent

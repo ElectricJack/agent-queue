@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.config import AppConfig, ChatProviderConfig
-from src.supervisor import Supervisor
+from src.platforms.supervisor import Supervisor
 
 
 @dataclass

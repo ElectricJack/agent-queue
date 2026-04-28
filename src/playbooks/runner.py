@@ -61,7 +61,7 @@ from src.playbooks.runner_transitions import (  # noqa: F401
 if TYPE_CHECKING:
     from src.database.base import DatabaseBackend
     from src.event_bus import EventBus
-    from src.supervisor import Supervisor
+    from src.platforms.supervisor import Supervisor
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
     event:
         The trigger event data (dict) that started this run.
     supervisor:
-        A :class:`~src.supervisor.Supervisor` instance for LLM calls.
+        A :class:`~src.platforms.supervisor.Supervisor` instance for LLM calls.
     db:
         Database backend for persisting the :class:`PlaybookRun` record.
         When *None*, run state is not persisted (useful for testing).

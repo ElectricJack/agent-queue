@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-from src.supervisor import Supervisor
+from src.platforms.supervisor import Supervisor
 from src.chat_providers.base import ChatProvider
 from src.config import AppConfig
 from src.orchestrator import Orchestrator

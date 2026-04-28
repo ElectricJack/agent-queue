@@ -37,7 +37,7 @@ import structlog
 from discord import app_commands
 from discord.ext import commands
 
-from src.supervisor import Supervisor
+from src.platforms.supervisor import Supervisor
 from src.config import AppConfig
 from src.discord.notifications import format_server_started, format_server_started_embed
 from src.models import TaskStatus

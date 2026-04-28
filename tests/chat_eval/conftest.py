@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.supervisor import Supervisor
+from src.platforms.supervisor import Supervisor
 from src.config import AppConfig
 from src.models import AgentResult, AgentOutput
 from src.platforms.base import Platform

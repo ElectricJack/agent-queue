@@ -5,7 +5,7 @@ Updated: imports from src.supervisor instead of src.chat_agent (post-supervisor 
 
 from __future__ import annotations
 
-from src.supervisor import TOOLS
+from src.platforms.supervisor import TOOLS
 from tests.chat_eval.test_cases._loader import load_all_cases
 
 

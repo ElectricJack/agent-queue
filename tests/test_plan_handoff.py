@@ -106,14 +106,14 @@ def test_process_task_completion_disabled():
 
 def test_orchestrator_calls_supervisor_on_completion():
     """After task completes, orchestrator delegates to Supervisor."""
-    from src.supervisor import Supervisor
+    from src.platforms.supervisor import Supervisor
 
     assert hasattr(Supervisor, "on_task_completed")
 
 
 def test_on_task_completed_returns_plan_status():
     """on_task_completed returns whether a plan was found."""
-    from src.supervisor import Supervisor
+    from src.platforms.supervisor import Supervisor
     from unittest.mock import AsyncMock, MagicMock
 
     sup = MagicMock(spec=Supervisor)
