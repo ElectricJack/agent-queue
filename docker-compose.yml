@@ -1,3 +1,5 @@
+name: agent-queue2
+
 services:
   postgres:
     container_name: aq-postgres
