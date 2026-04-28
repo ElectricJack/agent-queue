@@ -42,6 +42,7 @@ class WorkspaceSummary(BaseModel):
     name: str | None = None
     locked_by_agent_id: str | None = None
     locked_by_task_id: str | None = None
+    enabled: bool = True
 
 
 class ListProjectsResponse(BaseModel):

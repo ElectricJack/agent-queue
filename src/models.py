@@ -379,6 +379,7 @@ class Workspace:
     locked_by_task_id: str | None = None
     locked_at: float | None = None
     lock_mode: WorkspaceMode | None = None  # lock mode used for current lock (None = unlocked)
+    enabled: bool = True  # disabled workspaces are skipped by acquire_workspace
 
 
 @dataclass

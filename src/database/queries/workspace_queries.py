@@ -35,9 +35,25 @@ class WorkspaceQueryMixin:
                     locked_by_agent_id=workspace.locked_by_agent_id,
                     locked_by_task_id=workspace.locked_by_task_id,
                     locked_at=workspace.locked_at,
+                    enabled=workspace.enabled,
                     created_at=time.time(),
                 )
             )
+
+    async def update_workspace(self, workspace_id: str, **fields) -> int:
+        """Update arbitrary columns on a workspace. Returns rows affected.
+
+        Used by ``_cmd_edit_workspace`` to atomically change path, source_type,
+        name, or enabled flag. Lock columns are not updated through this path
+        — that's what release_workspace and acquire_workspace are for.
+        """
+        if not fields:
+            return 0
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                update(workspaces).where(workspaces.c.id == workspace_id).values(**fields)
+            )
+            return result.rowcount
 
     async def get_workspace(self, workspace_id: str) -> Workspace | None:
         """Fetch a single workspace by ID."""
@@ -113,6 +129,7 @@ class WorkspaceQueryMixin:
                         (workspaces.c.id == preferred_workspace_id)
                         & (workspaces.c.project_id == project_id)
                         & (workspaces.c.locked_by_agent_id.is_(None))
+                        & (workspaces.c.enabled.is_(True))
                     )
                 )
                 row = result.fetchone()
@@ -124,6 +141,7 @@ class WorkspaceQueryMixin:
                 .where(
                     (workspaces.c.project_id == project_id)
                     & (workspaces.c.locked_by_agent_id.is_(None))
+                    & (workspaces.c.enabled.is_(True))
                 )
                 .order_by(workspaces.c.id)
             )
@@ -234,6 +252,7 @@ class WorkspaceQueryMixin:
                     (workspaces.c.project_id == project_id)
                     & (workspaces.c.locked_by_agent_id.isnot(None))
                     & (workspaces.c.lock_mode == WorkspaceMode.BRANCH_ISOLATED.value)
+                    & (workspaces.c.enabled.is_(True))
                 )
                 .order_by(_source_type_order, workspaces.c.id)
                 .limit(1)
@@ -314,7 +333,7 @@ class WorkspaceQueryMixin:
             return row[0] if row else None
 
     async def count_available_workspaces(self, project_id: str) -> int:
-        """Count unlocked workspaces for a project."""
+        """Count unlocked, enabled workspaces for a project."""
         async with self._engine.begin() as conn:
             result = await conn.execute(
                 select(func.count())
@@ -322,6 +341,7 @@ class WorkspaceQueryMixin:
                 .where(
                     (workspaces.c.project_id == project_id)
                     & (workspaces.c.locked_by_agent_id.is_(None))
+                    & (workspaces.c.enabled.is_(True))
                 )
             )
             row = result.fetchone()
@@ -341,4 +361,5 @@ class WorkspaceQueryMixin:
             locked_by_task_id=row["locked_by_task_id"],
             locked_at=row["locked_at"],
             lock_mode=WorkspaceMode(raw_mode) if raw_mode else None,
+            enabled=bool(row["enabled"]),
         )
