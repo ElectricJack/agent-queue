@@ -1,6 +1,9 @@
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { TrashIcon } from "@heroicons/react/24/outline";
 import { usePlaybooks, type PlaybookSummary } from "../../api/hooks";
 import StatusBadge from "../../components/StatusBadge";
+import DeletePlaybookModal from "../../components/DeletePlaybookModal";
 
 export default function ProjectPlaybooks() {
   const { projectId = "" } = useParams();
@@ -24,6 +27,7 @@ export default function ProjectPlaybooks() {
 }
 
 function PlaybookTable({ rows }: { rows: PlaybookSummary[] }) {
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm">
@@ -35,6 +39,7 @@ function PlaybookTable({ rows }: { rows: PlaybookSummary[] }) {
             <th className="px-4 py-3">Version</th>
             <th className="px-4 py-3">Last run</th>
             <th className="px-4 py-3">Running</th>
+            <th className="w-12 px-4 py-3"></th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-800">
@@ -80,10 +85,26 @@ function PlaybookTable({ rows }: { rows: PlaybookSummary[] }) {
                   <span className="text-gray-500">0</span>
                 )}
               </td>
+              <td className="px-4 py-3">
+                <button
+                  onClick={() => setDeleteId(p.id)}
+                  title="Delete"
+                  className="rounded p-1 text-red-400 transition-colors hover:bg-red-500/20"
+                >
+                  <TrashIcon className="h-3.5 w-3.5" />
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
+      {deleteId && (
+        <DeletePlaybookModal
+          open={true}
+          onClose={() => setDeleteId(null)}
+          playbookId={deleteId}
+        />
+      )}
     </div>
   );
 }
