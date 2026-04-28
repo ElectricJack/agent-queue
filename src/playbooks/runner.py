@@ -144,6 +144,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         daily_token_tracker: DailyTokenTracker | None = None,
         daily_token_cap: int | None = None,
         event_bus: EventBus | None = None,
+        platforms: Any = None,
     ):
         self.graph = graph
         self.event = event
@@ -153,6 +154,12 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         self._daily_token_tracker = daily_token_tracker
         self._daily_token_cap = daily_token_cap
         self.event_bus = event_bus
+        # Optional PlatformRegistry used by ``_execute_single_node`` to
+        # dispatch nodes whose profile.platform isn't ``"supervisor"`` —
+        # those run as one-shot subprocess sessions per node.  When *None*
+        # and a node profile asks for non-supervisor dispatch, the runner
+        # raises a clear configuration error.
+        self._platforms = platforms
 
         # Conversation history — kept for DB persistence and backward compat.
         # NOT used as LLM context between nodes (per-node context is built fresh).
@@ -1680,18 +1687,33 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         if handler is not None:
             handler.set_caller_profile(caller_pid)
         try:
-            coro = self.supervisor.chat(
-                text=prompt,
-                user_name=f"playbook-runner:{node_id}",
-                history=context,
-                on_progress=supervisor_progress,
-                llm_config=node_llm_config,
-                tool_overrides=self._tool_overrides,
+            # Dispatch on the playbook profile's platform: ``"supervisor"``
+            # (the default for playbooks) runs in-process via the existing
+            # supervisor.chat() path; any other platform spawns a one-shot
+            # subprocess session for this single node.
+            platform_name = (
+                self._profile.platform if self._profile is not None else "supervisor"
             )
-            if timeout:
-                response = await asyncio.wait_for(coro, timeout=timeout)
+            if platform_name == "supervisor":
+                coro = self.supervisor.chat(
+                    text=prompt,
+                    user_name=f"playbook-runner:{node_id}",
+                    history=context,
+                    on_progress=supervisor_progress,
+                    llm_config=node_llm_config,
+                    tool_overrides=self._tool_overrides,
+                )
+                if timeout:
+                    response = await asyncio.wait_for(coro, timeout=timeout)
+                else:
+                    response = await coro
             else:
-                response = await coro
+                response = await self._execute_node_via_platform(
+                    node_id=node_id,
+                    prompt=prompt,
+                    timeout=timeout,
+                    on_progress=supervisor_progress,
+                )
         except asyncio.TimeoutError:
             trace_entry.status = "failed"
             raise TimeoutError(f"Node '{node_id}' timed out after {timeout}s") from None
@@ -1713,6 +1735,72 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         trace_entry.tokens_used += token_estimate
 
         return response
+
+    async def _execute_node_via_platform(
+        self,
+        *,
+        node_id: str,
+        prompt: str,
+        timeout: float | None,
+        on_progress: Callable[[str, str | None], Awaitable[None]] | None,
+    ) -> str:
+        """Dispatch a non-supervisor-platform playbook node via PlatformRegistry.
+
+        Spawns a one-shot subprocess session for this single node:
+        ``platform.start(ctx) → wait() → stop()``.  The node's prompt
+        becomes ``TaskContext.description``; the playbook profile
+        (``self._profile``) supplies platform name, allowed_tools, and
+        model.  Returns the agent's summary so the caller can feed it
+        into ``_extract_output`` and the messages log just like the
+        supervisor path.
+
+        Raises ``RuntimeError`` if no PlatformRegistry was wired into
+        the runner (callers using non-supervisor playbook platforms must
+        construct the runner with ``platforms=...``).
+        """
+        from src.models import AgentResult, TaskContext
+
+        if self._platforms is None:
+            raise RuntimeError(
+                f"Playbook node '{node_id}' has profile.platform="
+                f"{self._profile.platform!r} but PlaybookRunner was constructed "
+                "without platforms= — wire it up at the construction site "
+                "(orchestrator/core.py)."
+            )
+
+        ctx = TaskContext(
+            task_id=f"{self.run_id}:{node_id}",
+            description=prompt,
+            # No L0/L1/L2 tier injection — playbook nodes are self-contained
+            # and the prompt already encodes any tier context the author
+            # wanted to include.
+            checkout_path=None,  # Per-node sessions don't get a workspace.
+            profile=self._profile,
+        )
+        platform = self._platforms.create(
+            self._profile.platform,
+            profile=self._profile,
+            llm_logger=getattr(self.supervisor, "_llm_logger", None),
+        )
+        await platform.start(ctx)
+        try:
+            wait_coro = platform.wait(on_message=None)
+            if timeout:
+                output = await asyncio.wait_for(wait_coro, timeout=timeout)
+            else:
+                output = await wait_coro
+        finally:
+            try:
+                await platform.stop()
+            except Exception:
+                pass
+
+        if output.result == AgentResult.COMPLETED:
+            return output.summary or ""
+        # Non-completed (failed / paused / waiting_input) — surface the error
+        # message so playbook transitions can react.  The runner's
+        # _extract_output / transition logic gets a string either way.
+        return output.error_message or output.summary or f"(platform result={output.result.value})"
 
     async def _execute_for_each(
         self,

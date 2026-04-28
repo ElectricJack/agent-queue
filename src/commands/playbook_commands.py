@@ -846,6 +846,7 @@ class PlaybookCommandsMixin:
             supervisor=supervisor,
             db=self.db,
             event_bus=event_bus,
+            platforms=getattr(self.orchestrator, "_platforms", None),
         )
 
         try:

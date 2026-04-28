@@ -571,6 +571,7 @@ class Orchestrator(
                 supervisor=supervisor,
                 db=self.db,
                 event_bus=self.bus,
+                platforms=getattr(self, "_platforms", None),
             )
 
             async def _run() -> None:

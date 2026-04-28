@@ -381,10 +381,15 @@ class TestSandboxedPlaybook:
     def _make_profile(profile_id: str, allowed_tools: list[str]):
         from src.models import AgentProfile
 
+        # These tests verify the supervisor-platform sandboxing path
+        # (tool_overrides into supervisor.chat).  Phase 2 added a
+        # subprocess-platform path that bypasses supervisor entirely, so
+        # opt these tests into the supervisor platform explicitly.
         return AgentProfile(
             id=profile_id,
             name=profile_id,
             allowed_tools=list(allowed_tools),
+            platform="supervisor",
         )
 
     async def test_no_profile_id_means_unscoped(
@@ -9037,3 +9042,79 @@ class TestForEachCollectsParsedJson:
 
         analyzed = runner.node_outputs.get("analyzed")
         assert analyzed == [{"id": "a", "churn_count": 42}]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: per-platform node dispatch (mixed-platform playbooks)
+# ---------------------------------------------------------------------------
+
+
+class TestPlatformAwareNodeDispatch:
+    """Playbooks whose profile sets ``platform != "supervisor"`` must
+    dispatch each node through the PlatformRegistry (one-shot subprocess
+    session per node) instead of supervisor.chat().  Profiles with
+    ``platform: supervisor`` keep the historical in-process path."""
+
+    async def test_supervisor_platform_uses_supervisor_chat(
+        self, mock_supervisor, simple_graph, event_data
+    ):
+        from src.models import AgentProfile
+
+        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor)
+        runner._profile = AgentProfile(id="p", name="P", platform="supervisor")
+        await runner.run()
+        # supervisor.chat() got called — historical path, no platform registry.
+        mock_supervisor.chat.assert_called_once()
+
+    async def test_subprocess_platform_dispatches_via_registry(
+        self, mock_supervisor, simple_graph, event_data
+    ):
+        from src.models import AgentOutput, AgentProfile, AgentResult
+
+        # Mock platform that records calls and returns a known summary.
+        platform_obj = AsyncMock()
+        platform_obj.start = AsyncMock()
+        platform_obj.wait = AsyncMock(
+            return_value=AgentOutput(
+                result=AgentResult.COMPLETED,
+                summary="claude said done.",
+                tokens_used=42,
+            )
+        )
+        platform_obj.stop = AsyncMock()
+
+        from unittest.mock import MagicMock
+
+        registry = MagicMock()
+        registry.create = MagicMock(return_value=platform_obj)
+
+        runner = PlaybookRunner(
+            simple_graph,
+            event_data,
+            mock_supervisor,
+            platforms=registry,
+        )
+        runner._profile = AgentProfile(id="p", name="P", platform="claude_sdk")
+        await runner.run()
+
+        # supervisor.chat() must NOT be called for non-supervisor platforms.
+        mock_supervisor.chat.assert_not_called()
+        # Platform was built from the playbook profile and dispatched once.
+        registry.create.assert_called_once()
+        platform_obj.start.assert_called_once()
+        platform_obj.wait.assert_called_once()
+        platform_obj.stop.assert_called_once()
+
+    async def test_subprocess_platform_without_registry_raises(
+        self, mock_supervisor, simple_graph, event_data
+    ):
+        from src.models import AgentProfile
+
+        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor)
+        runner._profile = AgentProfile(id="p", name="P", platform="claude_sdk")
+
+        # No platforms= wired → non-supervisor dispatch must fail with a
+        # clear configuration error rather than silently falling through.
+        result = await runner.run()
+        assert result.status == "failed"
+        assert "platforms" in (result.error or "")
