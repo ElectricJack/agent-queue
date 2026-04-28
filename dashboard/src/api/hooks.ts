@@ -3,6 +3,7 @@ import { apiGet } from "./legacy-fetch";
 import {
   approvePlan,
   approveTask,
+  archiveTask,
   createMcpServer,
   createPlaybook,
   createProjectProfile,
@@ -10,15 +11,19 @@ import {
   deleteMcpServer,
   deletePlan,
   deletePlaybook,
+  deleteProfile,
   deleteProject,
   deleteProjectProfile,
   deleteTask,
   editMcpServer,
+  editProfile,
+  editProject,
   editProjectProfile,
   editTask,
   getConfig,
   getConfigSchema,
   getMcpServer,
+  getProfile,
   getProject,
   getStatus,
   getTask,
@@ -42,6 +47,7 @@ import {
   reloadConfig,
   reopenWithFeedback,
   restartTask,
+  resumePlaybook,
   resumeProject,
   showEffectiveProfile,
   skipTask,
@@ -58,7 +64,9 @@ import type {
   CreateProjectProfileRequest,
   CreateTaskRequest,
   CreateProjectProfileResponse2 as CreateProjectProfileResponse,
+  EditProfileRequest,
   EditProjectProfileRequest,
+  EditProjectRequest,
   EditTaskRequest,
   EventTrigger,
   GetConfigResponse,
@@ -304,6 +312,15 @@ export function useDeleteProject() {
   });
 }
 
+export function useEditProject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: EditProjectRequest) =>
+      (await editProject({ body: input, throwOnError: true })).data,
+    onSuccess: (_d, variables) => invalidateProjectQueries(queryClient, variables.project_id),
+  });
+}
+
 // --- Workspaces ---
 
 export function useWorkspaces(projectId: string) {
@@ -328,6 +345,48 @@ export function useProfiles() {
       return (data as ListProfilesResponse).profiles ?? [];
     },
     refetchInterval: 60_000,
+  });
+}
+
+export function useGetProfile(profileId: string) {
+  return useQuery({
+    queryKey: ["profile", profileId],
+    queryFn: async () => {
+      const { data } = await getProfile({
+        body: { profile_id: profileId },
+        throwOnError: true,
+      });
+      return data as ProfileDetail;
+    },
+    enabled: !!profileId,
+  });
+}
+
+export function useEditProfile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: EditProfileRequest) =>
+      (await editProfile({ body: input, throwOnError: true })).data,
+    onSuccess: (_d, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["profiles"] });
+      queryClient.invalidateQueries({ queryKey: ["profile", variables.profile_id] });
+      queryClient.invalidateQueries({ queryKey: ["project-profiles"] });
+      queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+    },
+  });
+}
+
+export function useDeleteProfile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { profile_id: string }) =>
+      (await deleteProfile({ body: input, throwOnError: true })).data,
+    onSuccess: (_d, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["profiles"] });
+      queryClient.invalidateQueries({ queryKey: ["profile", variables.profile_id] });
+      queryClient.invalidateQueries({ queryKey: ["project-profiles"] });
+      queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+    },
   });
 }
 
@@ -433,6 +492,15 @@ export function useDeleteTask() {
   });
 }
 
+export function useArchiveTask() {
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string }) =>
+      (await archiveTask({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
+}
+
 export function useCreateTask() {
   const cb = useTaskMutationCallbacks();
   return useMutation({
@@ -533,6 +601,22 @@ export function useDeletePlaybook() {
       (await deletePlaybook({ body: input, throwOnError: true })).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+    },
+  });
+}
+
+/**
+ * Resume a paused playbook **run** (a single in-flight instance waiting on
+ * human input). NOT the same as toggling a playbook definition's `enabled`
+ * field — that's a separate Phase 2 concern handled via setPlaybookEnabled.
+ */
+export function useResumePlaybookRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { run_id: string; human_input: string }) =>
+      (await resumePlaybook({ body: input, throwOnError: true })).data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["playbook-runs"] });
     },
   });
 }
