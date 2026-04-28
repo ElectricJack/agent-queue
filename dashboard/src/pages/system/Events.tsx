@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { SignalIcon, TrashIcon, ArrowDownIcon } from "@heroicons/react/24/outline";
 import {
   useEventStreamStatus,
@@ -129,6 +129,7 @@ const ALL_CATEGORIES = [
 ];
 
 export default function Events() {
+  const location = useLocation();
   const status = useEventStreamStatus();
   const { events, clearEvents } = useEventBuffer();
   const [autoScroll, setAutoScroll] = useState(true);
@@ -274,6 +275,7 @@ export default function Events() {
                     {taskId && (
                       <Link
                         to={`/tasks/${taskId}`}
+                        state={{ from: location.pathname }}
                         className="text-xs text-indigo-400 hover:underline"
                       >
                         {taskId}

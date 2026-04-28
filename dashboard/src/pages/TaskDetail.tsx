@@ -1,4 +1,4 @@
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useLocation } from "react-router-dom";
 import { ArrowLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { useTask, type TaskRef } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
@@ -6,20 +6,23 @@ import TaskActions from "../components/TaskActions";
 
 export default function TaskDetail() {
   const { taskId } = useParams<{ taskId: string }>();
+  const location = useLocation();
   const { data: task, isLoading } = useTask(taskId ?? "");
 
   if (isLoading) return <p className="p-6 text-sm text-gray-500">Loading...</p>;
   if (!task) return <p className="p-6 text-sm text-gray-500">Task not found.</p>;
 
   const agent = task.assigned_agent;
+  const from = (location.state as { from?: string } | null)?.from ?? "/system";
+  const backLabel = labelForBack(from);
 
   return (
     <div className="space-y-6">
       <Link
-        to="/tasks"
+        to={from}
         className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-gray-200"
       >
-        <ArrowLeftIcon className="h-4 w-4" /> Back to tasks
+        <ArrowLeftIcon className="h-4 w-4" /> {backLabel}
       </Link>
 
       {/* Header */}
@@ -78,6 +81,7 @@ export default function TaskDetail() {
               <p>
                 <Link
                   to={`/tasks/${task.parent_task_id}`}
+                  state={{ from }}
                   className="text-indigo-400 hover:underline"
                 >
                   {task.parent_task_id}
@@ -105,20 +109,33 @@ export default function TaskDetail() {
 
       {/* Subtasks */}
       {task.subtasks && task.subtasks.length > 0 && (
-        <TaskRefList title="Subtasks" items={task.subtasks} />
+        <TaskRefList title="Subtasks" items={task.subtasks} from={from} />
       )}
 
       {/* Dependencies */}
       {task.depends_on && task.depends_on.length > 0 && (
-        <TaskRefList title="Depends On" items={task.depends_on} />
+        <TaskRefList title="Depends On" items={task.depends_on} from={from} />
       )}
 
       {/* Blocks */}
       {task.blocks && task.blocks.length > 0 && (
-        <TaskRefList title="Blocks" items={task.blocks} />
+        <TaskRefList title="Blocks" items={task.blocks} from={from} />
       )}
     </div>
   );
+}
+
+/**
+ * Pick a back-button label that matches where the user came from.
+ * Falls back to "Back" when the source path is unfamiliar.
+ */
+function labelForBack(from: string): string {
+  if (from.match(/^\/projects\/[^/]+\/tasks$/)) return "Back to tasks";
+  if (from.match(/^\/projects\/[^/]+\/?$/)) return "Back to project";
+  if (from === "/system") return "Back to overview";
+  if (from === "/system/events") return "Back to events";
+  if (from.startsWith("/tasks/")) return "Back";
+  return "Back";
 }
 
 function Field({ label, value }: { label: string; value: string }) {
@@ -130,7 +147,7 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TaskRefList({ title, items }: { title: string; items: TaskRef[] }) {
+function TaskRefList({ title, items, from }: { title: string; items: TaskRef[]; from: string }) {
   return (
     <section>
       <h2 className="mb-2 text-sm font-semibold uppercase text-gray-500">{title}</h2>
@@ -142,6 +159,7 @@ function TaskRefList({ title, items }: { title: string; items: TaskRef[] }) {
           >
             <Link
               to={`/tasks/${ref.id}`}
+              state={{ from }}
               className="truncate text-sm font-medium text-indigo-400 hover:underline"
             >
               {ref.title}

@@ -6,7 +6,7 @@ import {
   PauseIcon,
   PlayIcon,
 } from "@heroicons/react/24/outline";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import {
   useAllAgents,
   useActiveTasksAllProjects,
@@ -18,6 +18,7 @@ import {
 import StatusBadge from "../../components/StatusBadge";
 
 export default function SystemOverview() {
+  const location = useLocation();
   const health = useHealth();
   const projects = useProjects();
   const projectIds = (projects.data ?? []).map((p) => p.id);
@@ -113,6 +114,7 @@ export default function SystemOverview() {
               <Link
                 key={task.id}
                 to={`/tasks/${task.id}`}
+                state={{ from: location.pathname }}
                 className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 transition-colors hover:border-indigo-500/50"
               >
                 <div className="min-w-0 flex-1">

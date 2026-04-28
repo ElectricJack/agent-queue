@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   PlusIcon,
   StopIcon,
@@ -102,6 +102,8 @@ function RowActions({ task }: { task: Task }) {
   const restartTask = useRestartTask();
   const approveTask = useApproveTask();
   const approvePlan = useApprovePlan();
+  const navigate = useNavigate();
+  const location = useLocation();
   const s = task.status?.toUpperCase() ?? "";
 
   return (
@@ -134,7 +136,7 @@ function RowActions({ task }: { task: Task }) {
         <QuickAction
           icon={<ChatBubbleLeftIcon className="h-3.5 w-3.5" />}
           title="Answer (open detail)"
-          onClick={() => window.location.assign(`/tasks/${task.id}`)}
+          onClick={() => navigate(`/tasks/${task.id}`, { state: { from: location.pathname } })}
         />
       )}
       {["COMPLETED", "FAILED", "BLOCKED"].includes(s) && (
@@ -150,6 +152,7 @@ function RowActions({ task }: { task: Task }) {
 
 function TaskTable({ projectId, showCompleted }: { projectId: string; showCompleted: boolean }) {
   const { data: tasks, isLoading } = useTasks(projectId, { showAll: showCompleted });
+  const location = useLocation();
 
   if (isLoading) return <p className="text-sm text-gray-500">Loading...</p>;
   if (!tasks?.length) return <p className="text-sm text-gray-500">No tasks in this project.</p>;
@@ -172,6 +175,7 @@ function TaskTable({ projectId, showCompleted }: { projectId: string; showComple
               <td className="max-w-sm px-4 py-3">
                 <Link
                   to={`/tasks/${task.id}`}
+                  state={{ from: location.pathname }}
                   className="font-medium text-indigo-400 hover:underline"
                 >
                   {task.title}
