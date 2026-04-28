@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import {
+  ArrowTopRightOnSquareIcon,
   PencilSquareIcon,
   PlusIcon,
   ArrowUturnLeftIcon,
@@ -59,10 +60,19 @@ export default function ProjectProfiles() {
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
-        <p className="max-w-2xl text-xs text-gray-500">
-          One row per agent type. Project overrides take precedence over the global default for
-          tasks in this project. Reset to global to remove an override.
-        </p>
+        <div className="max-w-2xl space-y-1">
+          <p className="text-xs text-gray-500">
+            One row per agent type. Project overrides take precedence over the global default for
+            tasks in this project. Reset to global to remove an override.
+          </p>
+          <Link
+            to="/system/profiles"
+            className="inline-flex items-center gap-1 text-xs text-indigo-400 hover:underline"
+          >
+            View / edit system profiles
+            <ArrowTopRightOnSquareIcon className="h-3 w-3" />
+          </Link>
+        </div>
         <button
           onClick={() => setCreatingNew(true)}
           className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"

@@ -13,7 +13,8 @@ import {
 } from "../../api/hooks";
 
 interface Props {
-  projectId: string;
+  /** Limit candidate tools to a project's view; omit for system-only listing. */
+  projectId?: string;
   value: string[];
   onChange: (tools: string[]) => void;
   enabledServers: string[];
