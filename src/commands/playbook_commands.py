@@ -112,6 +112,7 @@ class PlaybookCommandsMixin:
                 "node_count": len(pb.nodes),
                 "status": "active",
                 "running_count": len(running_runs),
+                "enabled": getattr(pb, "enabled", True),
             }
             if scope_id:
                 entry["scope_identifier"] = scope_id

@@ -29,6 +29,7 @@ class PlaybookSummary(BaseModel):
     cooldown_seconds: int | None = None
     cooldown_remaining: float | None = None
     max_tokens: int | None = None
+    enabled: bool = True
     last_run: PlaybookLastRun | None = None
 
 
