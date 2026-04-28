@@ -76,9 +76,25 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
     orch = Orchestrator(config, platforms=None)
-    registry = default_registry()
+    # Daemon-wide Supervisor — used by the messaging adapter for chat AND
+    # registered as the singleton ``"supervisor"`` platform so tasks with
+    # ``profile.platform="supervisor"`` execute in-process via the same
+    # instance.  Construct before the registry so default_registry() can
+    # register the singleton.
+    from src.platforms.supervisor import Supervisor
+
+    shared_supervisor = Supervisor(orch, config, llm_logger=orch.llm_logger)
+    registry = default_registry(supervisor=shared_supervisor)
     orch._platforms = registry
     await orch.initialize()
+    # Initialise the shared Supervisor's chat provider.  Failures here are
+    # non-fatal — supervisor-platform tasks will surface a clear error if
+    # the provider couldn't be created (e.g. missing credentials).
+    if not shared_supervisor.initialize():
+        logger.warning(
+            "Shared Supervisor: chat provider failed to initialise — "
+            "supervisor-platform tasks will fail until credentials are configured"
+        )
 
     # Start health check server (if enabled)
     async def _plan_content(task_id: str) -> str | None:

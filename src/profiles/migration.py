@@ -225,6 +225,7 @@ def _render_profile_markdown(profile: AgentProfile) -> str:
         mcp_servers=profile.mcp_servers if profile.mcp_servers else None,
         system_prompt_suffix=profile.system_prompt_suffix,
         install=profile.install if profile.install else None,
+        platform=profile.platform,
     )
 
 

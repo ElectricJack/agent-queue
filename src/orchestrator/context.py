@@ -189,25 +189,31 @@ class ContextMixin:
     async def _build_task_context_with_prompt_builder(
         self,
         task,
-        workspace: str,
+        workspace: str | None,
         project,
         profile,
     ) -> str:
         """Build the task description using PromptBuilder.
 
         Replaces the inline string concatenation that was in _execute_task().
+
+        ``workspace`` is ``None`` for tool-call-only platforms (e.g. the
+        Supervisor) — git introspection is skipped in that case.
         """
         from src.prompt_builder import PromptBuilder
 
         builder = PromptBuilder(project_id=task.project_id)
 
         # System metadata
-        sys_parts = [f"- Workspace directory: {workspace}"]
+        sys_parts: list[str] = []
+        if workspace:
+            sys_parts.append(f"- Workspace directory: {workspace}")
         if project:
             sys_parts.append(f"- Project: {project.name} (id: {project.id})")
             repo_url = project.repo_url
-            # Auto-detect repo_url from git remote if not set
-            if not repo_url:
+            # Auto-detect repo_url from git remote if not set (and workspace
+            # is available to inspect).
+            if not repo_url and workspace:
                 try:
                     detected = await self.git.aget_remote_url(workspace)
                     if detected:
@@ -221,15 +227,21 @@ class ContextMixin:
                 sys_parts.append(f"- Default branch: {project.repo_default_branch}")
         if task.branch_name:
             sys_parts.append(f"- Git branch: {task.branch_name}")
+        if not sys_parts:
+            sys_parts.append("- (no workspace — tool-call-only task)")
         builder.add_context("system_context", "## System Context\n" + "\n".join(sys_parts))
 
-        # Execution rules — parameterized by git context
-        default_branch = await self._get_default_branch(project, workspace)
-        has_remote = (
-            await self.git.ahas_remote(workspace)
-            if await self.git.avalidate_checkout(workspace)
-            else False
+        # Execution rules — parameterized by git context.  No git for
+        # workspace-less platforms; default_branch falls back to project setting.
+        default_branch = (
+            await self._get_default_branch(project, workspace)
+            if workspace
+            else (project.repo_default_branch if project else "main")
         )
+        if workspace and await self.git.avalidate_checkout(workspace):
+            has_remote = await self.git.ahas_remote(workspace)
+        else:
+            has_remote = False
         is_final = (not task.is_plan_subtask) or await self._is_last_subtask(task)
         if task.is_plan_subtask and task.parent_task_id:
             parent = await self.db.get_task(task.parent_task_id)

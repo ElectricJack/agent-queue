@@ -291,52 +291,87 @@ class ExecutionMixin:
             await self._execute_sync_workflow(action, task, agent)
             return
 
-        # Prepare workspace (repo checkout/worktree/init)
-        project = await self.db.get_project(action.project_id)
-        try:
-            workspace = await self._prepare_workspace(task, agent)
-        except Exception as e:
-            await self._emit_text_notify(
-                f"**Workspace Error:** Task `{task.id}` — {e}",
-                project_id=action.project_id,
+        # Resolve the agent profile up front so we know which platform to
+        # dispatch through and whether a workspace is needed.  Tool-call-only
+        # platforms (e.g. supervisor) skip workspace prep entirely.
+        profile = await self._resolve_profile(task)
+        if profile:
+            logger.info(
+                "Task %s: profile='%s' platform=%s tools=%s mcp=%s",
+                task.id,
+                profile.id,
+                profile.platform,
+                profile.allowed_tools or "(default)",
+                list(profile.mcp_servers) if profile.mcp_servers else "(none)",
             )
-            workspace = None
+        else:
+            logger.info("Task %s: no profile (using system defaults)", task.id)
 
-        if not workspace:
-            # No workspace available — PAUSE the task with a backoff timer
-            # instead of returning to READY.  Returning to READY causes an
-            # infinite assign→fail→READY→assign loop that spams Discord every
-            # orchestrator cycle (~5s).  PAUSED + resume_after lets
-            # _resume_paused_tasks() promote it back to READY after a delay,
-            # giving time for workspaces to free up.
-            no_ws_backoff = 60  # seconds before retrying workspace acquisition
-            await self.db.transition_task(
-                action.task_id,
-                TaskStatus.PAUSED,
-                context="no_workspace_available",
-                resume_after=time.time() + no_ws_backoff,
-            )
-            await self._emit_task_event(
-                "task.paused",
-                task,
-                reason="no_workspace",
-                resume_after=time.time() + no_ws_backoff,
-            )
-            await self.db.update_agent(action.agent_id, state=AgentState.IDLE)
-            await self._emit_text_notify(
-                f"**No Workspace:** Task `{task.id}` paused for "
-                f"{no_ws_backoff}s — project `{action.project_id}` has no "
-                f"available workspaces. Use `/add-workspace` to create one.",
-                project_id=action.project_id,
-            )
-            return
+        platform_name = profile.platform if profile else self.config.default_platform
+        platform = self._platforms.create(
+            platform_name, profile=profile, llm_logger=self.llm_logger
+        )
+        # Store platform reference so admin commands (stop_task, timeout handler)
+        # can call platform.stop() to terminate the agent process.
+        self._adapters[action.agent_id] = platform
+
+        project = await self.db.get_project(action.project_id)
+        if getattr(platform, "requires_workspace", True):
+            # Prepare workspace (repo checkout/worktree/init)
+            try:
+                workspace = await self._prepare_workspace(task, agent)
+            except Exception as e:
+                await self._emit_text_notify(
+                    f"**Workspace Error:** Task `{task.id}` — {e}",
+                    project_id=action.project_id,
+                )
+                workspace = None
+
+            if not workspace:
+                # No workspace available — PAUSE the task with a backoff timer
+                # instead of returning to READY.  Returning to READY causes an
+                # infinite assign→fail→READY→assign loop that spams Discord every
+                # orchestrator cycle (~5s).  PAUSED + resume_after lets
+                # _resume_paused_tasks() promote it back to READY after a delay,
+                # giving time for workspaces to free up.
+                no_ws_backoff = 60  # seconds before retrying workspace acquisition
+                await self.db.transition_task(
+                    action.task_id,
+                    TaskStatus.PAUSED,
+                    context="no_workspace_available",
+                    resume_after=time.time() + no_ws_backoff,
+                )
+                await self._emit_task_event(
+                    "task.paused",
+                    task,
+                    reason="no_workspace",
+                    resume_after=time.time() + no_ws_backoff,
+                )
+                await self.db.update_agent(action.agent_id, state=AgentState.IDLE)
+                await self._emit_text_notify(
+                    f"**No Workspace:** Task `{task.id}` paused for "
+                    f"{no_ws_backoff}s — project `{action.project_id}` has no "
+                    f"available workspaces. Use `/add-workspace` to create one.",
+                    project_id=action.project_id,
+                )
+                # Drop the platform we registered above; the task is paused.
+                self._adapters.pop(action.agent_id, None)
+                return
+        else:
+            # Tool-call-only platform (e.g. Supervisor): no workspace.
+            workspace = None
 
         # Re-fetch task/agent in case _prepare_workspace updated them
         task = await self.db.get_task(action.task_id)
         agent = await self.db.get_agent(action.agent_id)
 
-        # Fetch the workspace object for display in notifications
-        ws_obj = await self.db.get_workspace_for_task(task.id)
+        # Fetch the workspace object for display in notifications.  None for
+        # workspace-less platforms (no workspace was provisioned).
+        ws_obj = (
+            await self.db.get_workspace_for_task(task.id)
+            if getattr(platform, "requires_workspace", True)
+            else None
+        )
 
         # Detect whether this is a reopened task (via thread feedback) so we
         # can suppress noisy main-channel notifications for reopened work.
@@ -360,7 +395,9 @@ class ExecutionMixin:
                 TaskStartedEvent(
                     task=build_task_detail(task),
                     agent=build_agent_summary(agent),
-                    workspace_path=ws_obj.workspace_path if ws_obj else workspace,
+                    workspace_path=(
+                        ws_obj.workspace_path if ws_obj else (workspace or "")
+                    ),
                     workspace_name=(ws_obj.name or "") if ws_obj else "",
                     is_reopened=False,
                     task_description=task.description or "",
@@ -393,26 +430,10 @@ class ExecutionMixin:
             ),
         )
 
-        # Resolve the agent profile (task-level → project-level → system default)
-        # and create an adapter instance.  The profile controls model selection,
-        # tool allowlists, MCP servers, and system prompt augmentation.
-        # See ``_resolve_profile`` for the fallback chain.
-        profile = await self._resolve_profile(task)
-        if profile:
-            logger.info(
-                "Task %s: profile='%s' tools=%s mcp=%s",
-                task.id,
-                profile.id,
-                profile.allowed_tools or "(default)",
-                list(profile.mcp_servers) if profile.mcp_servers else "(none)",
-            )
-        else:
-            logger.info("Task %s: no profile (using system defaults)", task.id)
-        platform_name = self.config.default_platform
-        adapter = self._platforms.create(platform_name, profile=profile, llm_logger=self.llm_logger)
-        # Store adapter reference so admin commands (stop_task, timeout handler)
-        # can call adapter.stop() to terminate the agent process.
-        self._adapters[action.agent_id] = adapter
+        # Profile + platform were resolved earlier (before workspace prep) so
+        # the workspace decision could honor platform.requires_workspace.
+        # Alias kept because later code in this method reads ``adapter``.
+        adapter = platform
 
         # ------------------------------------------------------------------ #
         # Build the agent's system context prompt.
@@ -617,6 +638,9 @@ class ExecutionMixin:
             image_paths=task.attachments if task.attachments else [],
             mcp_servers=task_mcp,
             add_dirs=extra_dirs,
+            # Singleton platforms (e.g. Supervisor) read profile here at
+            # ``start(task)`` time since they can't carry it in __init__.
+            profile=profile,
         )
 
         # On reopened tasks, pass the previous session ID so the adapter can

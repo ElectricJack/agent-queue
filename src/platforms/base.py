@@ -59,6 +59,11 @@ class Platform(ABC):
 
     name: ClassVar[str]
     capabilities: ClassVar[frozenset[Capability]]
+    # Whether this platform needs a per-task workspace (repo checkout/branch).
+    # Defaults to True for backward compatibility — the Claude/Codex platforms
+    # inherit the default; the in-process Supervisor platform overrides to
+    # False because supervisor tasks are tool-call-only and have no cwd.
+    requires_workspace: ClassVar[bool] = True
 
     @abstractmethod
     async def start(self, task: TaskContext) -> None:

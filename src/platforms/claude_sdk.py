@@ -880,7 +880,7 @@ class ClaudeSDKPlatform(Platform):
             config_summary={
                 "allowed_tools": self._config.allowed_tools,
                 "permission_mode": self._config.permission_mode,
-                "cwd": self._task.checkout_path if self._task else "",
+                "cwd": (self._task.checkout_path or "") if self._task else "",
             },
             output=output,
             duration_ms=duration_ms,

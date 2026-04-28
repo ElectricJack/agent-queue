@@ -30,6 +30,7 @@ class ProfileQueryMixin:
                     system_prompt_suffix=profile.system_prompt_suffix,
                     install=json.dumps(profile.install),
                     memory_scope_id=profile.memory_scope_id,
+                    platform=profile.platform,
                     created_at=now,
                     updated_at=now,
                 )
@@ -92,6 +93,7 @@ class ProfileQueryMixin:
                 system_prompt_suffix=profile.system_prompt_suffix,
                 install=profile.install,
                 memory_scope_id=profile.memory_scope_id,
+                platform=profile.platform,
             )
             return "updated"
         else:
@@ -138,4 +140,5 @@ class ProfileQueryMixin:
             system_prompt_suffix=row["system_prompt_suffix"],
             install=json.loads(row["install"]),
             memory_scope_id=row.get("memory_scope_id"),
+            platform=row.get("platform") or "claude_sdk",
         )

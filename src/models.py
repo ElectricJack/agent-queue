@@ -415,13 +415,20 @@ class AgentProfile:
     # multiple profiles share one memory scope (e.g. claude-opus and
     # claude-sonnet both set ``memory_scope_id='claude'``).  None = use id.
     memory_scope_id: str | None = None
+    # Which platform executes tasks for this profile.  ``"claude_sdk"`` (the
+    # default, matching ``config.default_platform``) spawns a Claude Code
+    # subprocess; ``"supervisor"`` runs in-process via the daemon-wide
+    # Supervisor (tool-call-only, no workspace).  Other values must match a
+    # name in the PlatformRegistry.  Sourced from the ``## Config`` JSON
+    # block of the profile markdown.
+    platform: str = "claude_sdk"
 
 
 @dataclass
 class TaskContext:
-    """The input bundle passed to an agent adapter when executing a task.
+    """The input bundle passed to a platform when executing a task.
 
-    This is the adapter's entire view of the work to be done: what to build
+    This is the platform's entire view of the work to be done: what to build
     (description, acceptance_criteria), how to verify it (test_commands),
     where to work (checkout_path, branch_name), and what tools/context are
     available. The orchestrator constructs this from the Task, its criteria,
@@ -440,7 +447,10 @@ class TaskContext:
     l2_context: str = ""  # L2 Topic Context tier (~500 tokens, semantic search results)
     acceptance_criteria: list[str] = field(default_factory=list)
     test_commands: list[str] = field(default_factory=list)
-    checkout_path: str = ""
+    # Filesystem path where the agent should run.  Optional: supervisor-platform
+    # tasks have no workspace and pass ``None``; subprocess-platform tasks always
+    # carry a path.  Existing readers normalise empty/None as appropriate.
+    checkout_path: str | None = ""
     branch_name: str = ""
     attached_context: list[str] = field(default_factory=list)
     image_paths: list[str] = field(
@@ -453,6 +463,10 @@ class TaskContext:
     # their own knowledge without needing a separate MCP indirection.
     add_dirs: list[str] = field(default_factory=list)
     resume_session_id: str | None = None  # fork from this session on reopen
+    # The resolved AgentProfile for this task. Platforms read it for
+    # allowed_tools, model overrides, etc.  Singleton platforms (Supervisor)
+    # rely on this since they can't carry the profile in their constructor.
+    profile: "AgentProfile | None" = None
 
 
 @dataclass

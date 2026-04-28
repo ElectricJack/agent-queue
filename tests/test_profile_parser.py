@@ -1447,8 +1447,15 @@ class TestValidateConfig:
     # -- Constants --
 
     def test_config_known_keys(self):
-        """CONFIG_KNOWN_KEYS contains the three spec-defined fields."""
-        assert CONFIG_KNOWN_KEYS == {"model", "permission_mode", "max_tokens_per_task"}
+        """CONFIG_KNOWN_KEYS contains the spec-defined fields, including
+        ``platform`` which selects the Platform implementation at task
+        dispatch time."""
+        assert CONFIG_KNOWN_KEYS == {
+            "model",
+            "permission_mode",
+            "max_tokens_per_task",
+            "platform",
+        }
 
     def test_valid_permission_modes_set(self):
         """VALID_PERMISSION_MODES contains all expected modes."""

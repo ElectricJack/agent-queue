@@ -28,7 +28,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import structlog
 
@@ -36,7 +36,9 @@ from src.chat_providers import ChatProvider, LoggedChatProvider, create_chat_pro
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, ChatProviderConfig
 from src.llm_logger import LLMLogger
+from src.models import AgentOutput, AgentResult, TaskContext
 from src.orchestrator import Orchestrator
+from src.platforms.base import Capability, MessageCallback, Platform
 from src.reflection import ReflectionEngine, ReflectionVerdict
 from src.tools.registry import ToolRegistry as _ToolRegistry
 
@@ -68,6 +70,18 @@ _last_messages_var: contextvars.ContextVar[list[dict] | None] = contextvars.Cont
 )
 _last_tool_actions_var: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
     "_last_tool_actions_var", default=None
+)
+
+# Per-task state for the Supervisor-as-Platform code path.  The orchestrator
+# calls Supervisor.start(task), then Supervisor.wait(), then Supervisor.stop()
+# on the daemon-wide singleton.  These ContextVars carry the active
+# TaskContext and per-task cancel signal so concurrent supervisor-runtime
+# tasks don't race on shared instance state.
+_task_var: contextvars.ContextVar[TaskContext | None] = contextvars.ContextVar(
+    "_task_var", default=None
+)
+_cancel_var: contextvars.ContextVar["asyncio.Event | None"] = contextvars.ContextVar(
+    "_cancel_var", default=None
 )
 
 
@@ -156,16 +170,41 @@ def _infer_provider_from_model(model: str) -> str | None:
     return None
 
 
-class Supervisor:
-    """Platform-agnostic LLM supervisor for managing the AgentQueue system.
+class Supervisor(Platform):
+    """In-process LLM supervisor — both the chat brain AND a Platform.
 
     Owns the tool definitions, system prompt, LLM client, and multi-turn
-    tool-use loop.  Callers (Discord bot, CLI, web API) are responsible for
-    building message history and routing responses.
+    tool-use loop.  Two roles in one class:
 
-    Business logic is delegated to the shared CommandHandler so that Discord
-    slash commands and the supervisor use the same code path.
+    1. **Chat brain.** Discord/Telegram/CLI/playbook-runner call ``chat()``
+       (and friends like ``summarize()``, ``break_plan_into_tasks()``).
+       Multi-turn conversation history flows through the caller.
+
+    2. **Platform** (``runtime: supervisor`` profile).  The orchestrator
+       calls ``start(task) → wait() → stop()`` on the daemon-wide
+       singleton — registered in :class:`PlatformRegistry` via
+       ``default_registry(supervisor=...)``.  Per-task state lives in
+       module-level ContextVars (``_task_var``, ``_cancel_var``) so
+       concurrent supervisor-runtime task dispatches don't race.
+
+    Tool-call-only by design (``requires_workspace = False``): the
+    supervisor never edits files on disk; the bounded tool surface
+    comes from ``profile.allowed_tools``.
+
+    Business logic is delegated to the shared CommandHandler so that
+    Discord slash commands and the supervisor use the same code path.
     """
+
+    # Platform contract — Supervisor is registered as a singleton in the
+    # PlatformRegistry under ``name``.  The capabilities set lists what
+    # supervisor-runtime tasks can rely on; "MCP" so profiles can attach
+    # MCP servers, no PLAN_MODE/RESUME because supervisor doesn't run
+    # subprocess sessions.
+    name: ClassVar[str] = "supervisor"
+    capabilities: ClassVar[frozenset[Capability]] = frozenset(
+        {Capability.MCP, Capability.THINKING}
+    )
+    requires_workspace: ClassVar[bool] = False
 
     def __init__(
         self, orchestrator: Orchestrator, config: AppConfig, llm_logger: LLMLogger | None = None
@@ -1837,3 +1876,98 @@ class Supervisor:
             input_data = {**input_data, "include_completed": True}
             input_data.pop("show_all", None)
         return await self.handler.execute(name, input_data)
+
+    # ------------------------------------------------------------------
+    # Platform contract — orchestrator dispatches profile.platform="supervisor"
+    # tasks via these methods.  Per-task state lives in ContextVars so the
+    # daemon-wide singleton can run many concurrent task dispatches without
+    # racing.  ``profile`` rides on TaskContext.profile (set by the
+    # orchestrator) — singletons can't carry per-task profile in __init__.
+    # ------------------------------------------------------------------
+
+    async def start(self, task: TaskContext) -> None:
+        """Record the task and reset cancellation for this dispatch."""
+        _task_var.set(task)
+        cancel = asyncio.Event()
+        _cancel_var.set(cancel)
+        logger.info(
+            "Supervisor platform starting for task %s (profile=%s, tools=%s)",
+            getattr(task, "task_id", "?"),
+            task.profile.id if task.profile else "(none)",
+            (task.profile.allowed_tools if task.profile else None) or "(default)",
+        )
+
+    async def wait(self, on_message: MessageCallback | None = None) -> AgentOutput:
+        """Run a single ``chat()`` round for the current task and return the result."""
+        from src.playbooks.token_tracker import _estimate_tokens
+
+        task = _task_var.get()
+        cancel = _cancel_var.get()
+        if task is None:
+            return AgentOutput(
+                result=AgentResult.FAILED,
+                error_message="Supervisor.wait called before start()",
+            )
+
+        # Bridge supervisor's (event, detail) on_progress signature into the
+        # MessageCallback contract (str → None) the orchestrator expects.
+        async def _bridge_progress(event: str, detail: str | None) -> None:
+            if not on_message:
+                return
+            if event == "tool_use" and detail:
+                await on_message(f"-# {detail}")
+            elif event == "responding":
+                await on_message("-# composing response…")
+
+        # Bound the LLM to the profile's allowed_tools when set.  None means
+        # "default tool surface"; an empty list means "no tools, text-only".
+        tool_overrides: list[str] | None = None
+        if task.profile is not None and task.profile.allowed_tools:
+            tool_overrides = list(task.profile.allowed_tools)
+
+        user_text = task.description or ""
+
+        try:
+            response = await self.chat(
+                text=user_text,
+                user_name=f"task-platform:{task.task_id or 'unknown'}",
+                history=None,
+                on_progress=_bridge_progress,
+                tool_overrides=tool_overrides,
+                cancel_event=cancel,
+            )
+        except asyncio.CancelledError:
+            return AgentOutput(
+                result=AgentResult.FAILED,
+                summary="Cancelled",
+                error_message="Supervisor task cancelled",
+            )
+        except Exception as exc:
+            logger.error("Supervisor platform task failed: %s", exc, exc_info=True)
+            return AgentOutput(
+                result=AgentResult.FAILED,
+                error_message=f"Supervisor platform failed: {exc}",
+            )
+
+        if cancel is not None and cancel.is_set():
+            return AgentOutput(
+                result=AgentResult.FAILED,
+                summary="Cancelled",
+                error_message="Supervisor task was stopped",
+            )
+
+        return AgentOutput(
+            result=AgentResult.COMPLETED,
+            summary=response or "Completed",
+            tokens_used=_estimate_tokens(user_text, response or ""),
+        )
+
+    async def stop(self) -> None:
+        """Cancel only this dispatch — siblings keep running."""
+        cancel = _cancel_var.get()
+        if cancel is not None:
+            cancel.set()
+
+    async def is_alive(self) -> bool:
+        cancel = _cancel_var.get()
+        return cancel is not None and not cancel.is_set()
