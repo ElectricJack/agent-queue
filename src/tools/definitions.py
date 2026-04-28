@@ -109,6 +109,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "update_playbook_source": "playbook",
     "create_playbook": "playbook",
     "delete_playbook": "playbook",
+    "set_playbook_enabled": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
     "plugin_info": "plugin",
@@ -2690,6 +2691,30 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["playbook_id"],
+        },
+    },
+    {
+        "name": "set_playbook_enabled",
+        "description": (
+            "Toggle a playbook's `enabled` frontmatter flag. When set to false, "
+            "trigger events stop spawning new runs and run_playbook refuses unless "
+            "force=true. In-flight runs are not cancelled — disabling means stop "
+            "new starts, not preempt existing instances."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {"type": "string", "description": "The playbook identifier."},
+                "enabled": {
+                    "type": "boolean",
+                    "description": "True to resume; false to pause.",
+                },
+                "expected_source_hash": {
+                    "type": "string",
+                    "description": "Optional optimistic-concurrency token from the last get_playbook_source call.",
+                },
+            },
+            "required": ["playbook_id", "enabled"],
         },
     },
     # -----------------------------------------------------------------------

@@ -667,4 +667,10 @@ class PlaybookCompiler:
         if "profile_id" in frontmatter and frontmatter["profile_id"]:
             result["profile_id"] = str(frontmatter["profile_id"]).strip()
 
+        # ``enabled`` defaults to True; only the frontmatter author can set
+        # it. Drop any LLM-supplied value for the same reason as profile_id.
+        result.pop("enabled", None)
+        if "enabled" in frontmatter:
+            result["enabled"] = bool(frontmatter["enabled"])
+
         return result

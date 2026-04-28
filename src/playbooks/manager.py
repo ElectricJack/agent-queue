@@ -477,6 +477,13 @@ class PlaybookManager:
         candidates = self.get_playbooks_by_trigger(trigger)
         result = []
         for playbook in candidates:
+            if not getattr(playbook, "enabled", True):
+                logger.debug(
+                    "Playbook '%s' skipped for trigger '%s' — disabled",
+                    playbook.id,
+                    trigger,
+                )
+                continue
             if self.is_on_cooldown(playbook.id, scope):
                 logger.debug(
                     "Playbook '%s' skipped for trigger '%s' — on cooldown "
@@ -792,6 +799,13 @@ class PlaybookManager:
         if playbook is None:
             logger.debug(
                 "Trigger '%s' fired but playbook '%s' is no longer active — skipping",
+                trigger.event_type,
+                playbook_id,
+            )
+            return
+        if not getattr(playbook, "enabled", True):
+            logger.debug(
+                "Trigger '%s' fired but playbook '%s' is disabled — skipping",
                 trigger.event_type,
                 playbook_id,
             )

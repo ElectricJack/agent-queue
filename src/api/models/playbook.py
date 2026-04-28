@@ -202,6 +202,15 @@ class DeletePlaybookResponse(BaseModel):
     removed_from_registry: bool = False
 
 
+class SetPlaybookEnabledResponse(BaseModel):
+    playbook_id: str
+    enabled: bool
+    compiled: bool = False
+    noop: bool = False
+    source_hash: str | None = None
+    errors: list[str] | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_playbooks": ListPlaybooksResponse,
     "list_playbook_runs": ListPlaybookRunsResponse,
@@ -218,4 +227,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "update_playbook_source": UpdatePlaybookSourceResponse,
     "create_playbook": CreatePlaybookResponse,
     "delete_playbook": DeletePlaybookResponse,
+    "set_playbook_enabled": SetPlaybookEnabledResponse,
 }

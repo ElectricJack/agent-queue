@@ -401,6 +401,11 @@ class CompiledPlaybook:
     # relative names resolve against the playbook's project at runtime;
     # absolute ids (``project:<pid>:<slug>``) pass through.
     profile_id: str | None = None
+    # When false, trigger events do not start new runs and manual run_playbook
+    # calls are refused unless ``force=True``. In-flight runs are unaffected —
+    # disabling is "stop new starts", not "cancel existing". Authored in
+    # frontmatter as ``enabled: false``; flipped via ``set_playbook_enabled``.
+    enabled: bool = True
 
     def __post_init__(self) -> None:
         """Normalize trigger entries to :class:`PlaybookTrigger` objects.
