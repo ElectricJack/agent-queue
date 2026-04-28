@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiGet } from "./legacy-fetch";
 import {
+  addWorkspace,
   approvePlan,
   approveTask,
   archiveTask,
@@ -20,6 +21,7 @@ import {
   editProject,
   editProjectProfile,
   editTask,
+  editWorkspace,
   getConfig,
   getConfigSchema,
   getMcpServer,
@@ -44,11 +46,14 @@ import {
   probeMcpServer,
   provideInput,
   rejectPlan,
+  releaseWorkspace,
   reloadConfig,
+  removeWorkspace,
   reopenWithFeedback,
   restartTask,
   resumePlaybook,
   resumeProject,
+  setPlaybookEnabled,
   showEffectiveProfile,
   skipTask,
   stopTask,
@@ -60,6 +65,7 @@ import type {
   AgentSummary,
   CatalogEntryModel,
   TaskRef,
+  AddWorkspaceRequest,
   CreateMcpServerRequest,
   CreateProjectProfileRequest,
   CreateTaskRequest,
@@ -68,6 +74,7 @@ import type {
   EditProjectProfileRequest,
   EditProjectRequest,
   EditTaskRequest,
+  EditWorkspaceRequest,
   EventTrigger,
   GetConfigResponse,
   GetConfigSchemaResponse,
@@ -335,6 +342,56 @@ export function useWorkspaces(projectId: string) {
   });
 }
 
+function invalidateWorkspaceViews(
+  queryClient: ReturnType<typeof useQueryClient>,
+  projectId: string,
+) {
+  queryClient.invalidateQueries({ queryKey: ["workspaces", projectId] });
+  queryClient.invalidateQueries({ queryKey: ["agents", projectId] });
+}
+
+export function useAddWorkspace(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: Omit<AddWorkspaceRequest, "project_id">) =>
+      (await addWorkspace({
+        body: { project_id: projectId, ...input },
+        throwOnError: true,
+      })).data,
+    onSuccess: () => invalidateWorkspaceViews(queryClient, projectId),
+  });
+}
+
+export function useEditWorkspace(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: EditWorkspaceRequest) =>
+      (await editWorkspace({ body: input, throwOnError: true })).data,
+    onSuccess: () => invalidateWorkspaceViews(queryClient, projectId),
+  });
+}
+
+export function useRemoveWorkspace(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { workspace_id: string }) =>
+      (await removeWorkspace({
+        body: { ...input, project_id: projectId },
+        throwOnError: true,
+      })).data,
+    onSuccess: () => invalidateWorkspaceViews(queryClient, projectId),
+  });
+}
+
+export function useReleaseWorkspace(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { workspace_id: string }) =>
+      (await releaseWorkspace({ body: input, throwOnError: true })).data,
+    onSuccess: () => invalidateWorkspaceViews(queryClient, projectId),
+  });
+}
+
 // --- Profiles (system-wide) ---
 
 export function useProfiles() {
@@ -599,6 +656,22 @@ export function useDeletePlaybook() {
   return useMutation({
     mutationFn: async (input: { playbook_id: string }) =>
       (await deletePlaybook({ body: input, throwOnError: true })).data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+    },
+  });
+}
+
+/**
+ * Toggle a playbook *definition's* `enabled` flag — pauses/resumes whether
+ * trigger events spawn new runs. Distinct from useResumePlaybookRun, which
+ * resumes a single in-flight run that's waiting on human input.
+ */
+export function useSetPlaybookEnabled() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { playbook_id: string; enabled: boolean }) =>
+      (await setPlaybookEnabled({ body: input, throwOnError: true })).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["playbooks"] });
     },
