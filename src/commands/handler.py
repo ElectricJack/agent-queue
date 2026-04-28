@@ -26,6 +26,7 @@ See ``specs/command-handler.md`` for the command reference specification.
 
 from __future__ import annotations
 
+import contextvars
 import os
 from collections.abc import Callable
 
@@ -34,6 +35,23 @@ import logging
 from src.config import AppConfig
 from src.orchestrator import Orchestrator
 from src.logging_config import CorrelationContext
+
+# Per-asyncio-task state. ContextVars give each concurrent caller (Discord
+# message, supervisor-platform task, hook LLM, reflection retry) its own
+# value without races, instead of stomping a shared singleton attribute.
+# Each new asyncio.Task inherits its parent's snapshot and can mutate freely.
+_active_project_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_active_project_id_var", default=None
+)
+_current_conversation_context_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_current_conversation_context_var", default=None
+)
+_caller_profile_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_caller_profile_id_var", default=None
+)
+_plan_subtask_creation_mode_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_plan_subtask_creation_mode_var", default=False
+)
 
 # Mixin imports — each provides one domain of _cmd_* methods
 from src.commands.system_commands import SystemCommandsMixin
@@ -150,7 +168,6 @@ class CommandHandler(
     def __init__(self, orchestrator: Orchestrator, config: AppConfig):
         self.orchestrator = orchestrator
         self.config = config
-        self._active_project_id: str | None = None
         # Optional callback invoked after a project is deleted.
         # Signature: callback(project_id: str) -> None
         # The Discord bot registers this to clean in-memory channel caches.
@@ -163,18 +180,49 @@ class CommandHandler(
         # Signature: async callback(project_id, note_filename, note_path) -> None
         # The Discord bot registers this to auto-refresh viewed notes.
         self.on_note_written: Callable | None = None
+
+    # The following four properties are backed by module-level ContextVars
+    # so concurrent callers (Discord, supervisor-platform tasks, playbook
+    # nodes, reflection retries) don't stomp each other's state. Reads/
+    # writes look identical to the previous instance attributes; the
+    # property setter routes the assignment into the ContextVar for the
+    # current asyncio task.
+    @property
+    def _active_project_id(self) -> str | None:
+        return _active_project_id_var.get()
+
+    @_active_project_id.setter
+    def _active_project_id(self, value: str | None) -> None:
+        _active_project_id_var.set(value)
+
+    @property
+    def _current_conversation_context(self) -> str | None:
         # Conversation context set by the Supervisor during its chat loop.
         # When set, _cmd_create_task stores it as task_context so agents
         # have the same thread chain context that the supervisor had when
         # creating the task.
-        self._current_conversation_context: str | None = None
+        return _current_conversation_context_var.get()
+
+    @_current_conversation_context.setter
+    def _current_conversation_context(self, value: str | None) -> None:
+        _current_conversation_context_var.set(value)
+
+    @property
+    def _plan_subtask_creation_mode(self) -> bool:
         # When True, _cmd_create_task creates tasks as DEFINED instead of
         # READY.  Set by supervisor.break_plan_into_tasks() so plan subtasks
         # are born DEFINED, eliminating the race condition that required
         # project-wide plan processing locks.
-        self._plan_subtask_creation_mode: bool = False
+        return _plan_subtask_creation_mode_var.get()
+
+    @_plan_subtask_creation_mode.setter
+    def _plan_subtask_creation_mode(self, value: bool) -> None:
+        _plan_subtask_creation_mode_var.set(value)
+
+    @property
+    def _caller_profile_id(self) -> str | None:
         # The profile id of the caller currently invoking commands.  Set by
-        # the playbook runner (and, eventually, the task adapter) so that
+        # the playbook runner (and, eventually, the task platform) so that
         # ``_cmd_create_task`` can:
         #   1. default-inherit the caller's profile when the LLM omits
         #      ``profile_id`` — preserves the capability sandbox by default;
@@ -182,7 +230,11 @@ class CommandHandler(
         #      ``profile_id`` whose allowed_tools / mcp_servers exceed the
         #      caller's.
         # See ``docs/specs/design/sandboxed-playbooks.md``.
-        self._caller_profile_id: str | None = None
+        return _caller_profile_id_var.get()
+
+    @_caller_profile_id.setter
+    def _caller_profile_id(self, value: str | None) -> None:
+        _caller_profile_id_var.set(value)
 
     @property
     def db(self):

@@ -51,6 +51,25 @@ _hook_provider_override: contextvars.ContextVar[ChatProvider | None] = contextva
     "_hook_provider_override", default=None
 )
 
+# Reflection retry guard — prevents nested reflection retries from spinning.
+# Per-asyncio-task so concurrent chat() calls don't share the flag.
+_reflection_retry_active_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_reflection_retry_active_var", default=False
+)
+
+# Per-call message log and tool-action list — populated by ``_chat_inner``
+# during each chat round and read back by callers (PlaybookRunner's
+# ``_extract_output`` reads ``supervisor._last_messages`` to extract
+# structured output from tool results).  Using ContextVars instead of
+# instance attributes means concurrent ``chat()`` calls get isolated
+# per-asyncio-task copies — they no longer stomp each other.
+_last_messages_var: contextvars.ContextVar[list[dict] | None] = contextvars.ContextVar(
+    "_last_messages_var", default=None
+)
+_last_tool_actions_var: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "_last_tool_actions_var", default=None
+)
+
 
 # ---------------------------------------------------------------------------
 # Tool definitions -- the LLM's interface to the system.
@@ -166,21 +185,13 @@ class Supervisor:
         self.handler = CommandHandler(orchestrator, config)
         self.reflection = ReflectionEngine(config.supervisor.reflection)
         self._registry = _ToolRegistry()
-        # Full message history from the last chat() call, including tool
-        # calls and results.  Used by PlaybookRunner to preserve inter-node
-        # context.  Reset at the start of each _chat_inner() call.
-        self._last_messages: list[dict] = []
-        # Tool actions from the last chat() call (for memory extraction).
-        self._last_tool_actions: list[str] = []
+        # ``_last_messages`` and ``_last_tool_actions`` are exposed via
+        # properties below (backed by per-asyncio-task ContextVars).
         # Stack of cancel events — one per concurrent chat() call.
         # Using a stack instead of a single event prevents concurrent/recursive
         # chat() calls (e.g. hook LLM + user chat, or reflection retry) from
         # clobbering each other's cancel state.
         self._cancel_events: list[asyncio.Event] = []
-        # Serialises all LLM-using entry points so that only one request
-        # is processed at a time.  Concurrent callers (Discord messages,
-        # hooks, task-completion pipeline) queue on this lock.
-        self._llm_lock = asyncio.Lock()
 
     def initialize(self) -> bool:
         """Create LLM provider. Returns True if provider is ready.
@@ -370,6 +381,27 @@ class Supervisor:
     def _active_project_id(self) -> str | None:
         return self.handler._active_project_id
 
+    # Per-call results exposed via ContextVars so concurrent ``chat()`` calls
+    # don't stomp each other's transcripts.  The previous singleton attributes
+    # raced under the supervisor-platform's parallel task dispatch.
+    @property
+    def _last_messages(self) -> list[dict]:
+        msgs = _last_messages_var.get()
+        return msgs if msgs is not None else []
+
+    @_last_messages.setter
+    def _last_messages(self, value: list[dict]) -> None:
+        _last_messages_var.set(value)
+
+    @property
+    def _last_tool_actions(self) -> list[str]:
+        actions = _last_tool_actions_var.get()
+        return actions if actions is not None else []
+
+    @_last_tool_actions.setter
+    def _last_tool_actions(self, value: list[str]) -> None:
+        _last_tool_actions_var.set(value)
+
     def reload_credentials(self) -> bool:
         """Re-create the LLM provider (e.g. after token refresh). Returns True on success."""
         return self.initialize()
@@ -490,15 +522,39 @@ class Supervisor:
         """Load the supervisor profile from the vault.
 
         Returns the raw markdown content or ``None`` if unavailable.
+
+        Cached: re-reads from disk only when the file's mtime changes.
+        Under concurrent ``chat()`` calls this avoids hammering the
+        filesystem on every ``_build_system_prompt()`` invocation while
+        still picking up edits made via the vault watcher.
         """
         profile_path = os.path.join(
             self.config.data_dir, "vault", "agent-types", "supervisor", "profile.md"
         )
         try:
-            text = await asyncio.to_thread(self._read_file, profile_path)
-            return text if text else None
+            return await asyncio.to_thread(self._read_supervisor_profile_cached, profile_path)
         except Exception:
             return None
+
+    # Cache for the supervisor profile markdown.  ``(path, mtime) → text``
+    # so an edit on disk invalidates the cache automatically; concurrent
+    # readers share the same cached value when mtime is unchanged.
+    _supervisor_profile_cache: dict[str, tuple[float, str | None]] = {}
+
+    @classmethod
+    def _read_supervisor_profile_cached(cls, path: str) -> str | None:
+        """Cached file read with mtime invalidation. Runs in a thread."""
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            cls._supervisor_profile_cache.pop(path, None)
+            return None
+        cached = cls._supervisor_profile_cache.get(path)
+        if cached and cached[0] == mtime:
+            return cached[1]
+        text = cls._read_file(path)
+        cls._supervisor_profile_cache[path] = (mtime, text if text else None)
+        return text if text else None
 
     @staticmethod
     def _read_file(path: str) -> str | None:
@@ -666,12 +722,13 @@ class Supervisor:
         llm_config: dict | None = None,
         tool_overrides: list[str] | None = None,
         context: dict[str, str] | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> str:
         """Process a user message with tool use. Returns response text.
 
-        Acquires ``_llm_lock`` so that only one LLM interaction runs at a
-        time.  Internal callers that already hold the lock should use
-        ``_chat_unlocked()`` instead.
+        Concurrent callers (Discord messages, supervisor-platform tasks,
+        hooks) run in parallel — per-call state lives in ContextVars,
+        not on shared instance attributes, so no serialisation is needed.
 
         Args:
             llm_config: Optional dict to override LLM parameters for this
@@ -699,18 +756,24 @@ class Supervisor:
                 into the system prompt (e.g. channel context, thread
                 context).  Keys are context names, values are content
                 strings.
+            cancel_event: Optional caller-supplied cancel signal.  When
+                provided, only this chat() call is interrupted by setting
+                the event — sibling chats continue.  When *None*, an
+                internal event is created and registered with
+                ``self._cancel_events`` so ``supervisor.cancel()`` cancels
+                this call along with all others.
         """
-        async with self._llm_lock:
-            return await self._chat_unlocked(
-                text,
-                user_name,
-                history,
-                on_progress,
-                _reflection_trigger,
-                llm_config=llm_config,
-                tool_overrides=tool_overrides,
-                context=context,
-            )
+        return await self._chat_unlocked(
+            text,
+            user_name,
+            history,
+            on_progress,
+            _reflection_trigger,
+            llm_config=llm_config,
+            tool_overrides=tool_overrides,
+            context=context,
+            cancel_event=cancel_event,
+        )
 
     async def _chat_unlocked(
         self,
@@ -722,6 +785,7 @@ class Supervisor:
         llm_config: dict | None = None,
         tool_overrides: list[str] | None = None,
         context: dict[str, str] | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> str:
         """Process a user message without acquiring ``_llm_lock``.
 
@@ -752,7 +816,11 @@ class Supervisor:
         # Each chat() call gets its own cancel event on the stack so that
         # concurrent calls (hook LLM + user chat) or recursive calls
         # (reflection retry) don't clobber each other's cancellation state.
-        cancel_event = asyncio.Event()
+        # When the caller supplies their own cancel_event, we register that
+        # one so they can cancel just this call independently of siblings —
+        # supervisor.cancel() still cancels every chat (it iterates the list).
+        if cancel_event is None:
+            cancel_event = asyncio.Event()
         self._cancel_events.append(cancel_event)
 
         try:
@@ -1018,9 +1086,9 @@ class Supervisor:
                     if (
                         verdict
                         and not verdict.passed
-                        and not getattr(self, "_reflection_retry_active", False)
+                        and not _reflection_retry_active_var.get()
                     ):
-                        self._reflection_retry_active = True
+                        retry_token = _reflection_retry_active_var.set(True)
                         try:
                             retry_prompt = (
                                 "Your previous response was evaluated and found "
@@ -1046,7 +1114,7 @@ class Supervisor:
                                 tool_overrides=tool_overrides,
                             )
                         finally:
-                            self._reflection_retry_active = False
+                            _reflection_retry_active_var.reset(retry_token)
                     return response
 
                 # If tools were used but LLM produced empty text, nudge once
@@ -1198,9 +1266,9 @@ class Supervisor:
                     if (
                         verdict
                         and not verdict.passed
-                        and not getattr(self, "_reflection_retry_active", False)
+                        and not _reflection_retry_active_var.get()
                     ):
-                        self._reflection_retry_active = True
+                        retry_token = _reflection_retry_active_var.set(True)
                         try:
                             retry_prompt = (
                                 "Your previous response was evaluated and found "
@@ -1226,7 +1294,7 @@ class Supervisor:
                                 tool_overrides=tool_overrides,
                             )
                         finally:
-                            self._reflection_retry_active = False
+                            _reflection_retry_active_var.reset(retry_token)
 
                 return response if response else "Done."
 
@@ -1256,12 +1324,11 @@ class Supervisor:
         """
         if not self._provider:
             return None
-        async with self._llm_lock:
-            return await self._summarize_unlocked(
-                transcript,
-                system_prompt=system_prompt,
-                instruction=instruction,
-            )
+        return await self._summarize_unlocked(
+            transcript,
+            system_prompt=system_prompt,
+            instruction=instruction,
+        )
 
     async def _summarize_unlocked(
         self,
@@ -1271,11 +1338,11 @@ class Supervisor:
         instruction: str | None = None,
     ) -> str | None:
         """Inner summarize without lock — called by ``summarize()``."""
-        # Tag logged calls with the summarize caller identity
-        prev_caller = None
-        if isinstance(self._provider, LoggedChatProvider):
-            prev_caller = self._provider._caller
-            self._provider._caller = "supervisor.summarize"
+        # Tag logged calls per-asyncio-task so concurrent Supervisor paths
+        # don't stomp each other's caller label on the shared provider.
+        from src.chat_providers.logged import caller_override
+
+        token = caller_override.set("supervisor.summarize")
 
         effective_system = system_prompt or (
             "You are a helpful assistant that summarizes conversations."
@@ -1304,8 +1371,7 @@ class Supervisor:
             logger.error("Summary generation failed: %s", e)
             return None
         finally:
-            if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
-                self._provider._caller = prev_caller
+            caller_override.reset(token)
 
     async def expand_rule_prompt(
         self,
@@ -1320,8 +1386,7 @@ class Supervisor:
         """
         if not self._provider:
             return None
-        async with self._llm_lock:
-            return await self._expand_rule_prompt_unlocked(rule_content, project_id)
+        return await self._expand_rule_prompt_unlocked(rule_content, project_id)
 
     async def _expand_rule_prompt_unlocked(
         self,
@@ -1329,10 +1394,9 @@ class Supervisor:
         project_id: str | None = None,
     ) -> str | None:
         """Inner expand_rule_prompt without lock."""
-        prev_caller = None
-        if isinstance(self._provider, LoggedChatProvider):
-            prev_caller = self._provider._caller
-            self._provider._caller = "supervisor.expand_rule"
+        from src.chat_providers.logged import caller_override
+
+        token = caller_override.set("supervisor.expand_rule")
         try:
             resp = await self._provider.create_message(
                 messages=[
@@ -1375,8 +1439,7 @@ class Supervisor:
             logger.error("Rule prompt expansion failed: %s", e)
             return None
         finally:
-            if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
-                self._provider._caller = prev_caller
+            caller_override.reset(token)
 
     async def break_plan_into_tasks(
         self,
@@ -1469,40 +1532,34 @@ class Supervisor:
         )
 
         try:
-            async with self._llm_lock:
-                # Tag logged calls so they're identifiable
-                prev_caller = None
-                if isinstance(self._provider, LoggedChatProvider):
-                    prev_caller = self._provider._caller
-                    self._provider._caller = "supervisor.break_plan"
+            from src.chat_providers.logged import caller_override
 
-                # Suppress conversation context during plan splitting — subtasks
-                # should inherit the *parent's* conversation context (set in
-                # post-processing below), not the plan-splitter's internal prompt.
-                saved_conv_ctx = self.handler._current_conversation_context
-                self.handler._current_conversation_context = None
+            caller_token = caller_override.set("supervisor.break_plan")
 
-                # Create plan subtasks directly as DEFINED so the orchestrator
-                # won't schedule them before the blocking dependency on the
-                # parent is established.  This eliminates the need for
-                # project-wide plan processing locks.
-                self.handler._plan_subtask_creation_mode = True
+            # Suppress conversation context during plan splitting — subtasks
+            # should inherit the *parent's* conversation context (set in
+            # post-processing below), not the plan-splitter's internal prompt.
+            saved_conv_ctx = self.handler._current_conversation_context
+            self.handler._current_conversation_context = None
 
-                try:
-                    response = await self._chat_unlocked(
-                        text=prompt,
-                        user_name="system:plan-splitter",
-                        on_progress=on_progress,
-                        _reflection_trigger="plan.split",
-                    )
-                finally:
-                    self.handler._plan_subtask_creation_mode = False
+            # Create plan subtasks directly as DEFINED so the orchestrator
+            # won't schedule them before the blocking dependency on the
+            # parent is established.  This eliminates the need for
+            # project-wide plan processing locks.
+            self.handler._plan_subtask_creation_mode = True
 
+            try:
+                response = await self._chat_unlocked(
+                    text=prompt,
+                    user_name="system:plan-splitter",
+                    on_progress=on_progress,
+                    _reflection_trigger="plan.split",
+                )
+            finally:
+                self.handler._plan_subtask_creation_mode = False
                 # Restore (chat() finally-block clears it, so just ensure clean)
                 self.handler._current_conversation_context = saved_conv_ctx
-
-                if prev_caller is not None and isinstance(self._provider, LoggedChatProvider):
-                    self._provider._caller = prev_caller
+                caller_override.reset(caller_token)
 
             logger.info(
                 "break_plan_into_tasks: supervisor finished for parent %s: %s",
@@ -1599,13 +1656,12 @@ class Supervisor:
 
         logger = logging.getLogger(__name__)
 
-        async with self._llm_lock:
-            return await self._on_task_completed_unlocked(
-                task_id,
-                project_id,
-                workspace_path,
-                logger,
-            )
+        return await self._on_task_completed_unlocked(
+            task_id,
+            project_id,
+            workspace_path,
+            logger,
+        )
 
     async def _on_task_completed_unlocked(
         self,
@@ -1702,44 +1758,48 @@ class Supervisor:
         if not self._provider or not messages:
             return {"action": "ignore"}
 
-        async with self._llm_lock:
-            lines = []
-            for m in messages:
-                author = m.get("author", "unknown")
-                content = m.get("content", "")
-                lines.append(f"[{author}]: {content}")
-            conversation = "\n".join(lines)
+        lines = []
+        for m in messages:
+            author = m.get("author", "unknown")
+            content = m.get("content", "")
+            lines.append(f"[{author}]: {content}")
+        conversation = "\n".join(lines)
 
-            prompt = (
-                f"## Passive Observation — Project: {project_id}\n\n"
-                f"The following conversation happened in the project channel. "
-                f"You are observing passively — do NOT take action on the project.\n\n"
-                f"### Conversation\n{conversation}\n\n"
-                f"### Instructions\n"
-                f"Decide one of:\n"
-                f'1. **ignore** — nothing notable. Respond: {{"action": "ignore"}}\n'
-                f"2. **memory** — worth remembering. Respond: "
-                f'{{"action": "memory", "content": "what to remember"}}\n'
-                f"3. **suggest** — actionable work item. Respond: "
-                f'{{"action": "suggest", "content": "suggestion text", '
-                f'"suggestion_type": "task|answer|context|warning", '
-                f'"task_title": "optional task title"}}\n\n'
-                f"Respond with ONLY the JSON object, no other text."
+        prompt = (
+            f"## Passive Observation — Project: {project_id}\n\n"
+            f"The following conversation happened in the project channel. "
+            f"You are observing passively — do NOT take action on the project.\n\n"
+            f"### Conversation\n{conversation}\n\n"
+            f"### Instructions\n"
+            f"Decide one of:\n"
+            f'1. **ignore** — nothing notable. Respond: {{"action": "ignore"}}\n'
+            f"2. **memory** — worth remembering. Respond: "
+            f'{{"action": "memory", "content": "what to remember"}}\n'
+            f"3. **suggest** — actionable work item. Respond: "
+            f'{{"action": "suggest", "content": "suggestion text", '
+            f'"suggestion_type": "task|answer|context|warning", '
+            f'"task_title": "optional task title"}}\n\n'
+            f"Respond with ONLY the JSON object, no other text."
+        )
+
+        from src.chat_providers.logged import caller_override
+
+        token = caller_override.set("supervisor.observe")
+        try:
+            resp = await self._provider.create_message(
+                messages=[{"role": "user", "content": prompt}],
+                system=(
+                    "You are observing a project channel passively. "
+                    "Respond with a single JSON object. No other text."
+                ),
+                max_tokens=1024,
             )
-
-            try:
-                resp = await self._provider.create_message(
-                    messages=[{"role": "user", "content": prompt}],
-                    system=(
-                        "You are observing a project channel passively. "
-                        "Respond with a single JSON object. No other text."
-                    ),
-                    max_tokens=1024,
-                )
-                text = "\n".join(resp.text_parts).strip()
-                return self._parse_observe_response(text)
-            except Exception:
-                return {"action": "ignore"}
+            text = "\n".join(resp.text_parts).strip()
+            return self._parse_observe_response(text)
+        except Exception:
+            return {"action": "ignore"}
+        finally:
+            caller_override.reset(token)
 
     def _parse_observe_response(self, text: str) -> dict:
         """Parse the LLM's observation response into a structured dict.
