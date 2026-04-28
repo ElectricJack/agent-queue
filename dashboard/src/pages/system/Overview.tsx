@@ -6,7 +6,7 @@ import {
   PauseIcon,
   PlayIcon,
 } from "@heroicons/react/24/outline";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import {
   useAllAgents,
   useActiveTasksAllProjects,
@@ -18,6 +18,7 @@ import {
 import StatusBadge from "../../components/StatusBadge";
 
 export default function SystemOverview() {
+  const location = useLocation();
   const health = useHealth();
   const projects = useProjects();
   const projectIds = (projects.data ?? []).map((p) => p.id);
@@ -113,12 +114,13 @@ export default function SystemOverview() {
               <Link
                 key={task.id}
                 to={`/tasks/${task.id}`}
+                state={{ from: location.pathname }}
                 className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 transition-colors hover:border-indigo-500/50"
               >
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{task.title}</p>
                   <p className="text-xs text-gray-500">
-                    {task.project_id} {task.agent_name ? `\u00b7 ${task.agent_name}` : ""}
+                    {task.project_id} {task.assigned_agent ? `\u00b7 ${task.assigned_agent}` : ""}
                   </p>
                 </div>
                 <StatusBadge status={task.status} />
@@ -137,7 +139,7 @@ function OrchestratorControl({
   isPending,
   onToggle,
 }: {
-  status?: "paused" | "running";
+  status?: string;
   isLoading: boolean;
   isPending: boolean;
   onToggle: () => void;

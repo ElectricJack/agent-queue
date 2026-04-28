@@ -12,6 +12,7 @@ continue to work without migration.
 from __future__ import annotations
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     Float,
@@ -22,6 +23,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    true,
 )
 
 metadata = MetaData()
@@ -227,6 +229,7 @@ workspaces = Table(
     Column("locked_by_task_id", Text, ForeignKey("tasks.id"), nullable=True),
     Column("locked_at", Float, nullable=True),
     Column("lock_mode", Text, nullable=True),
+    Column("enabled", Boolean, nullable=False, server_default=true()),
     Column("created_at", Float, nullable=False),
     UniqueConstraint("project_id", "workspace_path"),
 )
@@ -238,7 +241,7 @@ agent_profiles = Table(
     "agent_profiles",
     metadata,
     Column("id", Text, primary_key=True),
-    Column("name", Text, nullable=False, unique=True),
+    Column("name", Text, nullable=False),
     Column("description", Text, nullable=False, server_default="''"),
     Column("model", Text, nullable=False, server_default="''"),
     Column("permission_mode", Text, nullable=False, server_default="''"),

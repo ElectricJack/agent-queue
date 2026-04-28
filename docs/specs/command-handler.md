@@ -2145,7 +2145,7 @@ available or the channel cannot be found.
 - `restore_task` — restore an archived task
 - `archive_settings` — view/update auto-archive settings
 
-### Agent Profile Commands
+### Agent Profile Commands (system scope)
 - `list_profiles` — list agent profiles
 - `create_profile` — create an agent profile
 - `get_profile` — get profile details
@@ -2155,6 +2155,25 @@ available or the channel cannot be found.
 - `check_profile` — check profile install manifest
 - `install_profile` — install profile dependencies
 - `export_profile` / `import_profile` — YAML/gist export/import
+
+### Project-Scoped Profile Commands
+- `list_project_profiles` — per-agent-type rows for a project (override / inherit / no-default)
+- `create_project_profile` — create a project override (optional seed-from-global flag)
+- `edit_project_profile` — partial update of a project override
+- `delete_project_profile` — reset agent-type back to global; cleans both nested and flat vault paths and surfaces them in `removed_paths`
+- `show_effective_profile` — resolve `(project, agent_type)` to its effective profile
+
+### MCP Server Registry Commands (`src/commands/mcp_commands.py`)
+Source of truth: `vault/[projects/<pid>/]mcp-servers/*.md`. The in-memory
+registry is rebuilt from disk; CRUD here writes the markdown and lets the
+vault watcher pick the change up.
+- `list_mcp_servers` — registry entries, system + project scope
+- `get_mcp_server` — one entry's parsed config
+- `create_mcp_server` — write a new entry
+- `edit_mcp_server` — partial update
+- `delete_mcp_server` — refuses if any profile still references the name
+- `probe_mcp_server` — spawn the server and refresh its tool catalog
+- `list_mcp_tool_catalog` — cached catalog of every registered server's tools
 
 ### Memory Commands
 - `memory_search` — semantic search of project memory
@@ -2182,6 +2201,9 @@ available or the channel cannot be found.
 - `reload_config` — manual config hot-reload
 - `claude_usage` — Claude Code usage stats from session data
 - `shutdown` — graceful/force shutdown
+- `get_config` — current YAML grouped by section, env-var refs preserved as `${VAR}` (see [[config#7-runtime-editing]])
+- `get_config_schema` — JSON schema generated from `AppConfig`, used by the dashboard editor
+- `update_config` — partial update by section; validates via temp-file `load_config()`, writes a `.bak` on success, response indicates whether the change is live or restart-required
 
 ### Deprecated Agent Commands (return error stubs)
 - `edit_agent`, `pause_agent`, `resume_agent`, `delete_agent`

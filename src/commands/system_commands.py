@@ -88,6 +88,160 @@ class SystemCommandsMixin:
             },
         }
 
+    async def _cmd_get_config(self, args: dict) -> dict:
+        """Return the raw YAML config from disk for the editor UI.
+
+        ``${ENV_VAR}`` references are preserved verbatim so the UI never
+        sees resolved secrets.  Pass ``section`` to restrict to one
+        top-level section.
+        """
+        from src.config_editor import (
+            classify_sections,
+            find_env_var_refs,
+            read_raw_config,
+        )
+
+        path = self.orchestrator.config._config_path
+        if not path:
+            return {"error": "No config file path is set on this daemon."}
+        if not os.path.exists(path):
+            return {"error": f"Config file does not exist: {path}"}
+
+        raw = read_raw_config(path)
+        section = args.get("section") or None
+        if section is not None:
+            raw = {section: raw.get(section)}
+
+        classification = classify_sections()
+        return {
+            "path": path,
+            "config": raw,
+            "section": section,
+            "hot_reloadable": classification["hot_reloadable"],
+            "restart_required": classification["restart_required"],
+            "unclassified": classification["other"],
+            "env_var_references": find_env_var_refs(raw),
+        }
+
+    async def _cmd_get_config_schema(self, args: dict) -> dict:
+        """Return a JSON Schema describing every AppConfig field.
+
+        The dashboard uses this to render a form without hardcoding the
+        config shape.  Each top-level property carries ``x-reload`` set to
+        ``hot`` / ``restart`` / ``unclassified``.
+        """
+        from src.config_editor import build_config_schema
+
+        return {"schema": build_config_schema()}
+
+    async def _cmd_update_config(self, args: dict) -> dict:
+        """Replace one top-level section in the YAML config and reload.
+
+        Args:
+            section: Top-level section name (e.g. ``"scheduling"``). Required.
+            data: New value for the section. Pass ``None`` to delete the
+                section. Required (use explicit null for delete).
+            dry_run: If True, validate without writing.
+
+        Returns ``{applied, requires_restart, validation_errors, changed}``.
+
+        Validation runs by writing a candidate YAML to a temp file and
+        running ``load_config`` on it — that exercises every section mapper
+        and dataclass ``validate()`` without duplicating the logic here.
+        """
+        import shutil
+        import tempfile
+
+        from src.config import load_config
+        from src.config_editor import HOT_RELOADABLE_SECTIONS, read_raw_config, write_section
+
+        section = args.get("section")
+        if not section:
+            return {"error": "Missing required arg: section"}
+        if "data" not in args:
+            return {"error": "Missing required arg: data (use null to delete)"}
+        data = args["data"]
+        dry_run = bool(args.get("dry_run", False))
+
+        path = self.orchestrator.config._config_path
+        if not path or not os.path.exists(path):
+            return {"error": "No config file path is set on this daemon."}
+
+        # Build the candidate full doc and validate it via load_config.
+        raw = read_raw_config(path)
+        if data is None:
+            raw.pop(section, None)
+        else:
+            raw[section] = data
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, dir=os.path.dirname(path)
+        ) as tmp:
+            tmp_path = tmp.name
+        try:
+            import yaml as _yaml
+
+            with open(tmp_path, "w") as f:
+                _yaml.safe_dump(raw, f)
+            try:
+                load_config(tmp_path)
+            except Exception as e:
+                return {
+                    "applied": False,
+                    "changed": False,
+                    "validation_errors": [str(e)],
+                }
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+
+        requires_restart = section not in HOT_RELOADABLE_SECTIONS
+
+        if dry_run:
+            return {
+                "applied": False,
+                "dry_run": True,
+                "changed": True,
+                "requires_restart": requires_restart,
+                "validation_errors": [],
+            }
+
+        # Persist via the round-trip writer (preserves comments + quoting).
+        # Take a backup so we can restore if the live reload chokes.
+        backup_path = f"{path}.bak"
+        shutil.copy2(path, backup_path)
+        try:
+            write_section(path, section, data)
+        except Exception as e:
+            shutil.copy2(backup_path, path)
+            return {
+                "applied": False,
+                "changed": False,
+                "validation_errors": [f"Write failed: {e}"],
+            }
+        finally:
+            try:
+                os.unlink(backup_path)
+            except FileNotFoundError:
+                pass
+
+        # Trigger the existing hot-reload path so live sections take effect.
+        watcher = self.orchestrator._config_watcher
+        applied_sections: list[str] = []
+        if watcher and not requires_restart:
+            reload_result = await watcher.reload()
+            applied_sections = reload_result.get("applied", []) or []
+
+        return {
+            "applied": bool(applied_sections),
+            "changed": True,
+            "requires_restart": requires_restart,
+            "applied_sections": applied_sections,
+            "validation_errors": [],
+        }
+
     async def _cmd_reload_config(self, args: dict) -> dict:
         """Manually trigger a config hot-reload from disk.
 

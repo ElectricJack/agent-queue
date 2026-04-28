@@ -28,6 +28,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "find_merge_conflict_workspaces": "project",
     "release_workspace": "project",
     "remove_workspace": "project",
+    "edit_workspace": "project",
     "queue_sync_workspaces": "project",
     "set_project_channel": "project",
     "set_control_interface": "project",
@@ -49,6 +50,20 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_agent": "agent",
     "pause_agent": "agent",
     "resume_agent": "agent",
+    # agent profiles (project-scoped CRUD wrappers)
+    "create_project_profile": "agent",
+    "edit_project_profile": "agent",
+    "delete_project_profile": "agent",
+    "list_project_profiles": "agent",
+    "show_effective_profile": "agent",
+    # mcp — registry + tool catalog (vault-sourced)
+    "list_mcp_servers": "mcp",
+    "get_mcp_server": "mcp",
+    "list_mcp_tool_catalog": "mcp",
+    "probe_mcp_server": "mcp",
+    "create_mcp_server": "mcp",
+    "edit_mcp_server": "mcp",
+    "delete_mcp_server": "mcp",
     # vault — reference stub management
     "scan_stub_staleness": "system",
     # memory — provided by the external aq-memory plugin (install via `aq plugin install`)
@@ -94,6 +109,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "update_playbook_source": "playbook",
     "create_playbook": "playbook",
     "delete_playbook": "playbook",
+    "set_playbook_enabled": "playbook",
     # plugin — installation, configuration, lifecycle
     "plugin_list": "plugin",
     "plugin_info": "plugin",
@@ -115,6 +131,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "token_audit": "system",
     "claude_usage": "system",
     "reload_config": "system",
+    "get_config": "system",
+    "get_config_schema": "system",
+    "update_config": "system",
     "orchestrator_control": "system",
     "provide_input": "system",
     "list_prompts": "system",
@@ -754,6 +773,45 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "edit_workspace",
+        "description": (
+            "Edit a workspace's path, source_type, name, or enabled state. "
+            "Path edits are rejected when the workspace is currently locked by "
+            "a task (disable first; release the lock; or wait for the task to "
+            "finish). Setting enabled=false stops the orchestrator from "
+            "assigning new tasks to the workspace; existing locks are not "
+            "preempted."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Workspace ID"},
+                "workspace_path": {
+                    "type": "string",
+                    "description": "New filesystem path (absolute, will be realpath-resolved)",
+                },
+                "source_type": {
+                    "type": "string",
+                    "enum": ["clone", "link", "init"],
+                    "description": "New source type",
+                },
+                "name": {
+                    "type": ["string", "null"],
+                    "description": "New display name (or null to clear)",
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether the orchestrator may assign tasks here",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Skip the directory-must-exist guard on path edits",
+                },
+            },
+            "required": ["workspace_id"],
+        },
+    },
+    {
         "name": "queue_sync_workspaces",
         "description": (
             "Queue a high-priority Sync Workspaces task that orchestrates a full "
@@ -1339,7 +1397,7 @@ _ALL_TOOL_DEFINITIONS = [
             "Each entry carries ``id``, ``project_id``, ``status``, "
             "``assigned_agent``, ``updated_at``, and ``seconds_in_state`` "
             "so remediation (``restart_task`` vs "
-            "``set_task_status(..., status=\"READY\")``) can branch on "
+            '``set_task_status(..., status="READY")``) can branch on '
             "the agent state."
         ),
         "input_schema": {
@@ -1373,8 +1431,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": (
-                        "Optional project filter.  When omitted, all "
-                        "projects are scanned."
+                        "Optional project filter.  When omitted, all projects are scanned."
                     ),
                 },
             },
@@ -1799,6 +1856,64 @@ _ALL_TOOL_DEFINITIONS = [
     # Commands below were added to ensure ALL CommandHandler commands
     # have explicit MCP tool definitions with rich schemas.
     # ------------------------------------------------------------------
+    {
+        "name": "get_config",
+        "description": (
+            "Return the raw YAML configuration as written on disk, preserving "
+            "${ENV_VAR} placeholders. Used by the dashboard config editor and "
+            "the `aq system config get` CLI. Pass `section` to fetch one "
+            "top-level section only. Includes hot-reloadable vs restart-required "
+            "classification and a list of every ${ENV_VAR} reference with whether "
+            "it currently resolves."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "description": "Top-level config section to return (e.g. 'scheduling'). Omit for full config.",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_config_schema",
+        "description": (
+            "Return a JSON Schema describing every AppConfig field. The dashboard "
+            "uses this to render a schema-driven form without hardcoding the "
+            "config shape. Top-level properties carry x-reload: hot/restart/unclassified."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "update_config",
+        "description": (
+            "Replace one top-level section in the YAML config and trigger a hot "
+            "reload for hot-reloadable sections. Validates the candidate doc by "
+            "running load_config() against a temp file before writing, so a bad "
+            "edit never lands on disk. Pass `data: null` to delete the section. "
+            "Pass `dry_run: true` to validate without writing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "description": "Top-level section to replace (e.g. 'scheduling').",
+                },
+                "data": {
+                    "type": ["object", "array", "string", "number", "boolean", "null"],
+                    "description": "New value for the section. null to delete.",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Validate but don't persist.",
+                    "default": False,
+                },
+            },
+            "required": ["section", "data"],
+        },
+    },
     {
         "name": "reload_config",
         "description": (
@@ -2576,6 +2691,248 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["playbook_id"],
+        },
+    },
+    {
+        "name": "set_playbook_enabled",
+        "description": (
+            "Toggle a playbook's `enabled` frontmatter flag. When set to false, "
+            "trigger events stop spawning new runs and run_playbook refuses unless "
+            "force=true. In-flight runs are not cancelled — disabling means stop "
+            "new starts, not preempt existing instances."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {"type": "string", "description": "The playbook identifier."},
+                "enabled": {
+                    "type": "boolean",
+                    "description": "True to resume; false to pause.",
+                },
+                "expected_source_hash": {
+                    "type": "string",
+                    "description": "Optional optimistic-concurrency token from the last get_playbook_source call.",
+                },
+            },
+            "required": ["playbook_id", "enabled"],
+        },
+    },
+    # -----------------------------------------------------------------------
+    # Project-scoped agent profile CRUD wrappers
+    # -----------------------------------------------------------------------
+    {
+        "name": "create_project_profile",
+        "description": (
+            "Create a project-scoped agent profile.  Composes "
+            "``project:<project_id>:<agent_type>`` as the profile id and "
+            "writes the vault markdown.  When ``seed_from_global`` is true "
+            "(default), starts from the matching global ``<agent_type>`` "
+            "profile so the override is a delta."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "agent_type": {"type": "string"},
+                "seed_from_global": {"type": "boolean", "default": True},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "model": {"type": "string"},
+                "permission_mode": {"type": "string"},
+                "allowed_tools": {"type": "array", "items": {"type": "string"}},
+                "mcp_servers": {"type": "array", "items": {"type": "string"}},
+                "system_prompt_suffix": {"type": "string"},
+                "install": {"type": "object"},
+            },
+            "required": ["project_id", "agent_type"],
+        },
+    },
+    {
+        "name": "edit_project_profile",
+        "description": "Edit fields on a project-scoped agent profile.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "agent_type": {"type": "string"},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "model": {"type": "string"},
+                "permission_mode": {"type": "string"},
+                "allowed_tools": {"type": "array", "items": {"type": "string"}},
+                "mcp_servers": {"type": "array", "items": {"type": "string"}},
+                "system_prompt_suffix": {"type": "string"},
+                "install": {"type": "object"},
+            },
+            "required": ["project_id", "agent_type"],
+        },
+    },
+    {
+        "name": "delete_project_profile",
+        "description": ("Remove a project-scoped agent profile (vault file + DB row)."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "agent_type": {"type": "string"},
+            },
+            "required": ["project_id", "agent_type"],
+        },
+    },
+    {
+        "name": "list_project_profiles",
+        "description": (
+            "List per-agent-type profile rows for a project, including the "
+            "global, scoped, and effective views — plus the project-scoped "
+            "MCP tool catalog snapshot in the same response."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "show_effective_profile",
+        "description": (
+            "Run the orchestrator's profile resolution cascade for a "
+            "(project_id, agent_type) pair and return the merged profile "
+            "the next task launch would use.  Debug helper."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "agent_type": {"type": "string"},
+            },
+            "required": ["project_id", "agent_type"],
+        },
+    },
+    # -----------------------------------------------------------------------
+    # MCP server registry + tool catalog
+    # -----------------------------------------------------------------------
+    {
+        "name": "list_mcp_servers",
+        "description": (
+            "List MCP servers visible to a scope.  Omit project_id for "
+            "system scope; supply it to include project-scoped servers "
+            "and inherited system entries."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "get_mcp_server",
+        "description": "Return one MCP server's full config (for editing).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "project_id": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "list_mcp_tool_catalog",
+        "description": (
+            "Return the cached tool list for one or more servers.  Probed "
+            "once at daemon startup; refreshed manually via probe_mcp_server."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "server_names": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    },
+    {
+        "name": "probe_mcp_server",
+        "description": (
+            "Re-probe a single MCP server and overwrite its tool catalog "
+            "entry.  Use after editing a server config or when the server's "
+            "tool list has changed externally."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "project_id": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "create_mcp_server",
+        "description": (
+            "Add an MCP server registry entry by writing its vault markdown.  "
+            "Watcher updates the in-memory registry and probes the new entry."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "transport": {"type": "string", "enum": ["stdio", "http"]},
+                "project_id": {
+                    "type": "string",
+                    "description": "Omit for system scope.",
+                },
+                "description": {"type": "string"},
+                "notes": {"type": "string"},
+                "command": {"type": "string"},
+                "args": {"type": "array", "items": {"type": "string"}},
+                "env": {"type": "object"},
+                "url": {"type": "string"},
+                "headers": {"type": "object"},
+            },
+            "required": ["name", "transport"],
+        },
+    },
+    {
+        "name": "edit_mcp_server",
+        "description": (
+            "Update fields on an existing MCP server registry entry.  "
+            "Loads the current markdown, merges the patch, writes back, "
+            "and re-probes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "project_id": {"type": "string"},
+                "transport": {"type": "string", "enum": ["stdio", "http"]},
+                "description": {"type": "string"},
+                "notes": {"type": "string"},
+                "command": {"type": "string"},
+                "args": {"type": "array", "items": {"type": "string"}},
+                "env": {"type": "object"},
+                "url": {"type": "string"},
+                "headers": {"type": "object"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "delete_mcp_server",
+        "description": (
+            "Remove an MCP server's vault file and registry/catalog entry.  "
+            "Refuses if any profile still references the name; the response "
+            "lists the offending profiles."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "project_id": {"type": "string"},
+            },
+            "required": ["name"],
         },
     },
 ]

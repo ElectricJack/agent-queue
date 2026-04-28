@@ -42,6 +42,7 @@ class WorkspaceSummary(BaseModel):
     name: str | None = None
     locked_by_agent_id: str | None = None
     locked_by_task_id: str | None = None
+    enabled: bool = True
 
 
 class ListProjectsResponse(BaseModel):
@@ -125,6 +126,14 @@ class ReleaseWorkspaceResponse(BaseModel):
     released_from_task: str | None = None
 
 
+class EditWorkspaceResponse(BaseModel):
+    updated: str
+    fields: list[str] = []
+    workspace_path: str = ""
+    source_type: str = ""
+    enabled: bool = True
+
+
 class FindMergeConflictWorkspacesResponse(BaseModel):
     project_id: str
     workspaces_scanned: int = 0
@@ -179,6 +188,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_workspaces": ListWorkspacesResponse,
     "remove_workspace": RemoveWorkspaceResponse,
     "release_workspace": ReleaseWorkspaceResponse,
+    "edit_workspace": EditWorkspaceResponse,
     "find_merge_conflict_workspaces": FindMergeConflictWorkspacesResponse,
     "queue_sync_workspaces": QueueSyncWorkspacesResponse,
     "set_project_constraint": SetProjectConstraintResponse,

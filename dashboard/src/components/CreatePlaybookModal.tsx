@@ -103,15 +103,11 @@ export default function CreatePlaybookModal({ open, onClose }: Props) {
       : makeTemplate(cleanId, frontScope, triggers);
 
     try {
-      const result = await create.mutateAsync({
+      await create.mutateAsync({
         playbook_id: cleanId,
         scope: scopeString,
         markdown,
       });
-      if (result.error) {
-        setFatal(result.error);
-        return;
-      }
       // Success — navigate to the new detail page so the author can iterate
       // and trigger the compile from the Source tab.
       navigate(`/playbooks/${encodeURIComponent(cleanId)}`);

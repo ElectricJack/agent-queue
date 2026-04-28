@@ -201,9 +201,7 @@ class Supervisor:
         self._provider = provider
         return self._provider is not None
 
-    def _merge_profile_into_chat_config(
-        self, base: ChatProviderConfig
-    ) -> ChatProviderConfig:
+    def _merge_profile_into_chat_config(self, base: ChatProviderConfig) -> ChatProviderConfig:
         """Overlay the supervisor profile's Config block on top of *base*.
 
         Reads ``{data_dir}/vault/agent-types/supervisor/profile.md``,
@@ -221,9 +219,7 @@ class Supervisor:
         except ImportError:
             return base
 
-        data_dir = getattr(self.config, "data_dir", "") or os.path.expanduser(
-            "~/.agent-queue"
-        )
+        data_dir = getattr(self.config, "data_dir", "") or os.path.expanduser("~/.agent-queue")
         profile_path = Path(data_dir) / "vault" / "agent-types" / "supervisor" / "profile.md"
         if not profile_path.is_file():
             return base
@@ -611,7 +607,22 @@ class Supervisor:
             if reflect_resp.tool_uses and self.reflection.can_reflect_deeper(1):
                 messages.append({"role": "assistant", "content": reflect_resp.tool_uses})
                 for tool_use in reflect_resp.tool_uses:
-                    result = await self._execute_tool(tool_use.name, tool_use.input)
+                    # Same sandbox guard as the main chat loop — reject
+                    # tool calls for names not in the active set so the
+                    # reflection pass can't be coerced into invoking
+                    # forbidden tools either.
+                    if tool_use.name not in active_tools:
+                        logger.warning(
+                            "Sandbox (reflection): rejecting tool_use for %r — "
+                            "not in active set (active=%s)",
+                            tool_use.name,
+                            sorted(active_tools.keys()),
+                        )
+                        result = {
+                            "error": (f"Tool '{tool_use.name}' is not available in this context."),
+                        }
+                    else:
+                        result = await self._execute_tool(tool_use.name, tool_use.input)
                     messages.append(
                         {
                             "role": "user",
@@ -760,12 +771,15 @@ class Supervisor:
             bus = getattr(self.orchestrator, "bus", None)
             if bus and self._last_tool_actions:
                 try:
-                    await bus.emit("supervisor.chat.completed", {
-                        "project_id": self._active_project_id or "",
-                        "user_text": text,
-                        "response": response or "",
-                        "tools_used": list(self._last_tool_actions),
-                    })
+                    await bus.emit(
+                        "supervisor.chat.completed",
+                        {
+                            "project_id": self._active_project_id or "",
+                            "user_text": text,
+                            "response": response or "",
+                            "tools_used": list(self._last_tool_actions),
+                        },
+                    )
                 except Exception:
                     pass  # non-critical, don't break the chat flow
             return response
@@ -857,9 +871,7 @@ class Supervisor:
             all_known = {t["name"] for t in registry.get_all_tools()}
             unknown = set(tool_overrides) - all_known
             if unknown:
-                raise ValueError(
-                    f"Unknown tool names in tool_overrides: {sorted(unknown)}"
-                )
+                raise ValueError(f"Unknown tool names in tool_overrides: {sorted(unknown)}")
 
             # Build tool set from only the specified tools (empty list = no tools).
             all_tools_map = {t["name"]: t for t in registry.get_all_tools()}
@@ -888,7 +900,8 @@ class Supervisor:
                     if match["score"] < 0.3:
                         continue
                     tool_def = registry.get_tool_definition(
-                        match["name"], compressed=compressed,
+                        match["name"],
+                        compressed=compressed,
                     )
                     if tool_def and match["name"] not in active_tools:
                         active_tools[match["name"]] = tool_def
@@ -896,11 +909,14 @@ class Supervisor:
                 # Fallback: keyword-based, but load individual tools
                 # instead of entire categories.
                 relevant_cats = registry.search_relevant_categories(
-                    text, max_categories=1, min_score=0.3,
+                    text,
+                    max_categories=1,
+                    min_score=0.3,
                 )
                 for cat_name in relevant_cats:
                     cat_tools = registry.get_category_tools(
-                        cat_name, compressed=compressed,
+                        cat_name,
+                        compressed=compressed,
                     )
                     if cat_tools:
                         for t in cat_tools:
@@ -967,7 +983,9 @@ class Supervisor:
 
             # Apply max_tokens from llm_config (or config default).
             default_max = self.config.chat_provider.max_tokens
-            effective_max_tokens = llm_config.get("max_tokens", default_max) if llm_config else default_max
+            effective_max_tokens = (
+                llm_config.get("max_tokens", default_max) if llm_config else default_max
+            )
 
             resp = await active_provider.create_message(
                 messages=messages,
@@ -988,9 +1006,7 @@ class Supervisor:
                 # produces the same text wrapped in reply_to_user.
                 if tool_actions and response:
                     # Run reflection on the auto-delivered response
-                    messages.append(
-                        {"role": "assistant", "content": response}
-                    )
+                    messages.append({"role": "assistant", "content": response})
                     verdict = await self.reflect(
                         trigger=_reflection_trigger,
                         action_summary=", ".join(tool_actions),
@@ -1036,9 +1052,7 @@ class Supervisor:
                 # If tools were used but LLM produced empty text, nudge once
                 if tool_actions and not response and nudge_count < 1:
                     nudge_count += 1
-                    messages.append(
-                        {"role": "assistant", "content": "(no text)"}
-                    )
+                    messages.append({"role": "assistant", "content": "(no text)"})
                     messages.append(
                         {
                             "role": "user",
@@ -1085,7 +1099,30 @@ class Supervisor:
                 label = _tool_label(tool_use.name, tool_use.input)
                 if on_progress:
                     await on_progress("tool_use", label)
-                result = await self._execute_tool(tool_use.name, tool_use.input)
+                # Defense-in-depth: providers (notably Gemini) sometimes
+                # hallucinate tool_use blocks for names that were never in
+                # the function-declaration schema we sent — typically when
+                # the prompt mentions other tools by name.  Reject any call
+                # whose name is not in the current active_tools set so a
+                # sandboxed playbook (or any tool_overrides caller) can't
+                # be tricked into invoking forbidden tools.
+                if tool_use.name not in active_tools:
+                    logger.warning(
+                        "Sandbox: rejecting tool_use for %r — not in active set "
+                        "(active=%s, overrides_set=%s)",
+                        tool_use.name,
+                        sorted(active_tools.keys()),
+                        tool_overrides is not None,
+                    )
+                    result = {
+                        "error": (
+                            f"Tool '{tool_use.name}' is not available in this "
+                            "context. Only call tools that appear in your "
+                            "function-declaration schema."
+                        ),
+                    }
+                else:
+                    result = await self._execute_tool(tool_use.name, tool_use.input)
                 tool_actions.append(label)
                 tool_names_used.append(tool_use.name)
                 accumulated_tool_results.append(
@@ -1098,16 +1135,13 @@ class Supervisor:
                 # If load_tools was called, expand active tool set.
                 # Skip expansion when tool_overrides is active — the override
                 # set is the complete, fixed tool set for this call.
-                if (
-                    tool_overrides is None
-                    and tool_use.name == "load_tools"
-                    and "loaded" in result
-                ):
+                if tool_overrides is None and tool_use.name == "load_tools" and "loaded" in result:
                     if result.get("single_tool"):
                         # Single-tool mode — inject just the one tool
                         name = result["tools_added"][0]
                         tool_def = registry.get_tool_definition(
-                            name, compressed=compressed,
+                            name,
+                            compressed=compressed,
                         )
                         if tool_def:
                             active_tools[tool_def["name"]] = tool_def

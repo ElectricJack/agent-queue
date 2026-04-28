@@ -138,6 +138,38 @@ aq project list -s ACTIVE              # Filter by status
 aq project details <project-id>        # Full project info
 ```
 
+### MCP Commands
+
+The `aq mcp` group is auto-generated from the `mcp_commands` mixin. The
+`mcp-` prefix is stripped, so e.g. `list_mcp_servers` → `aq mcp list-servers`.
+
+```bash
+aq mcp list-servers                    # Registry entries (system + project scope)
+aq mcp get-server <name>               # Show one entry's config
+aq mcp create-server <name> ...        # Write a new entry to vault/mcp-servers/
+aq mcp edit-server <name> ...          # Partial update
+aq mcp delete-server <name>            # Refuses if any profile still uses the name
+aq mcp probe-server <name>             # Spawn and refresh the tool catalog
+aq mcp list-tool-catalog               # Cached tool catalog across all servers
+```
+
+### System Config Commands
+
+```bash
+aq system config get                   # Print the full YAML, env-var refs preserved
+aq system config get --section logging # Print just one section
+aq system config set logging.level DEBUG
+aq system config edit                  # Open $EDITOR on the full file
+aq system config schema                # JSON schema from AppConfig
+aq system config schema --section logging
+```
+
+All writes go through the same validate-then-swap path: changes are loaded
+into a temp file via `load_config()` first, then a `.bak` is written, then
+the new file lands. An invalid edit never reaches disk. Comments, quoting,
+and `${ENV_VAR}` references are preserved by the ruamel-based round-trip
+writer.
+
 ## Interactive Features
 
 ### Task Creation Wizard

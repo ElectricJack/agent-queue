@@ -7,6 +7,8 @@ import logging
 import os
 import time
 
+import yaml
+
 from src.logging_config import CorrelationContext
 
 logger = logging.getLogger(__name__)
@@ -110,6 +112,7 @@ class PlaybookCommandsMixin:
                 "node_count": len(pb.nodes),
                 "status": "active",
                 "running_count": len(running_runs),
+                "enabled": getattr(pb, "enabled", True),
             }
             if scope_id:
                 entry["scope_identifier"] = scope_id
@@ -774,6 +777,14 @@ class PlaybookCommandsMixin:
                 ),
             }
 
+        if not getattr(playbook, "enabled", True) and not args.get("force"):
+            return {
+                "error": (
+                    f"Playbook '{playbook_id}' is disabled. Pass force=true to "
+                    "test-run a disabled playbook."
+                ),
+            }
+
         # Build event payload — merge user-provided event with defaults
         event = args.get("event") or {}
         if isinstance(event, str):
@@ -1321,6 +1332,125 @@ class PlaybookCommandsMixin:
             resp["triggers"] = [
                 t.event_type if hasattr(t, "event_type") else str(t) for t in pb.triggers
             ]
+        return resp
+
+    async def _cmd_set_playbook_enabled(self, args: dict) -> dict:
+        """Toggle the ``enabled`` flag in a playbook's frontmatter.
+
+        When ``enabled=false`` is set, trigger events stop spawning new runs
+        for this playbook and ``run_playbook`` refuses unless ``force=true``
+        is passed. **In-flight runs are not cancelled** — disabling means
+        "stop new starts", not "preempt running instances".
+
+        Args:
+            playbook_id: The playbook identifier.
+            enabled: True to resume; false to pause.
+            expected_source_hash: Optional optimistic-concurrency token
+                (matches ``update_playbook_source`` semantics).
+        """
+        import os
+        import pathlib
+        import tempfile
+        from src.playbooks.compiler import PlaybookCompiler
+
+        playbook_id = args.get("playbook_id", "").strip()
+        if not playbook_id:
+            return {"error": "playbook_id is required"}
+        if "enabled" not in args:
+            return {"error": "enabled is required"}
+        new_enabled = bool(args["enabled"])
+        expected_hash = args.get("expected_source_hash", "").strip()
+
+        path = self._resolve_playbook_source_path(playbook_id)
+        if path is None:
+            return {"error": f"Playbook '{playbook_id}' not found in vault"}
+
+        try:
+            current = path.read_text(encoding="utf-8")
+        except Exception as exc:
+            return {"error": f"Failed to read source: {exc}"}
+
+        if expected_hash:
+            current_hash = PlaybookCompiler._compute_source_hash(current)
+            if current_hash != expected_hash:
+                return {
+                    "error": "conflict",
+                    "reason": "vault_changed_underneath",
+                    "current_source_hash": current_hash,
+                    "expected_source_hash": expected_hash,
+                }
+
+        frontmatter, body = PlaybookCompiler._parse_frontmatter(current)
+        if not frontmatter:
+            return {"error": "Source has no parseable frontmatter — cannot toggle enabled"}
+
+        # Already in the desired state? No-op.
+        currently_enabled = bool(frontmatter.get("enabled", True))
+        if currently_enabled == new_enabled:
+            return {
+                "playbook_id": playbook_id,
+                "enabled": new_enabled,
+                "compiled": False,
+                "noop": True,
+            }
+
+        frontmatter["enabled"] = new_enabled
+        new_markdown = "---\n" + yaml.dump(frontmatter, sort_keys=False) + "---" + body
+
+        # Atomic write — same pattern as _cmd_update_playbook_source.
+        try:
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                prefix=f".{playbook_id}.",
+                suffix=".md.tmp",
+                dir=str(path.parent),
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    f.write(new_markdown)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, str(path))
+            except Exception:
+                pathlib.Path(tmp_path).unlink(missing_ok=True)
+                raise
+        except Exception as exc:
+            return {"error": f"Failed to write source: {exc}"}
+
+        pm = getattr(self.orchestrator, "playbook_manager", None)
+        if pm is None:
+            # Vault file is updated; in-memory will sync next time the
+            # watcher picks it up. Still report success.
+            return {
+                "playbook_id": playbook_id,
+                "enabled": new_enabled,
+                "compiled": False,
+                "source_hash": PlaybookCompiler._compute_source_hash(new_markdown),
+            }
+
+        try:
+            result = await pm.compile_playbook(
+                new_markdown,
+                source_path=str(path),
+                rel_path=str(path),
+                force=True,
+            )
+        except Exception as exc:
+            logger.error("Compile after enable-toggle failed: %s", exc, exc_info=True)
+            return {
+                "playbook_id": playbook_id,
+                "enabled": new_enabled,
+                "compiled": False,
+                "error": f"Compilation failed: {exc}",
+            }
+
+        resp: dict = {
+            "playbook_id": playbook_id,
+            "enabled": new_enabled,
+            "source_hash": result.source_hash,
+            "compiled": result.success,
+        }
+        if not result.success:
+            resp["errors"] = result.errors
         return resp
 
     async def _cmd_create_playbook(self, args: dict) -> dict:

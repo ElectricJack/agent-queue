@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useCreateTask, useProjects } from "../api/hooks";
+import { useCreateTask, useProjects, type CreateTaskRequest } from "../api/hooks";
 import Modal from "./Modal";
 
 interface CreateTaskModalProps {
@@ -33,7 +33,7 @@ export default function CreateTaskModal({ open, onClose, defaultProjectId }: Cre
   };
 
   const handleSubmit = () => {
-    const body: Record<string, unknown> = { title };
+    const body: CreateTaskRequest = { title };
     if (description) body.description = description;
     if (projectId) body.project_id = projectId;
     if (priority !== 100) body.priority = priority;

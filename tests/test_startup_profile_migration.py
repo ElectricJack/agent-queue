@@ -145,28 +145,40 @@ class TestStartupProfileAutoMigration:
         assert "coding" in content.lower()
         assert "Coding Agent" in content
 
-    async def test_skips_when_vault_already_has_profiles(self, orch, tmp_path):
-        """Auto-migration is skipped when vault already has profile markdown files."""
+    async def test_per_profile_idempotency(self, orch, tmp_path):
+        """Auto-migration is per-profile idempotent.
+
+        Profiles whose vault markdown already exists are skipped, but
+        previously-unwritten profiles in the same DB still get their
+        markdown generated.  (The all-or-nothing guard was retired so
+        a YAML-defined override doesn't get stuck without a vault file
+        forever just because supervisor/claude-* profiles already exist.)
+        """
         await orch.initialize()
 
-        # Create a DB profile
+        # Create a DB profile that has no vault markdown yet.
         await orch.db.create_profile(AgentProfile(id="test-agent", name="Test Agent"))
 
-        # Pre-create a vault profile markdown (simulating prior migration)
+        # Pre-create a vault profile markdown for a different profile.
         vault_dir = os.path.join(orch.config.data_dir, "vault", "agent-types", "existing-agent")
         os.makedirs(vault_dir, exist_ok=True)
         existing_md = os.path.join(vault_dir, "profile.md")
+        existing_text = "---\nid: existing-agent\nname: Existing\n---\n"
         with open(existing_md, "w") as f:
-            f.write("---\nid: existing-agent\nname: Existing\n---\n")
+            f.write(existing_text)
 
-        # Re-run vault structure — test-agent should NOT get a vault markdown
-        # because vault already has profile content (existing-agent)
+        # Re-run vault structure — test-agent SHOULD get a vault markdown,
+        # and the existing one should be left alone.
         await orch._ensure_vault_structure()
 
         test_md = os.path.join(
             orch.config.data_dir, "vault", "agent-types", "test-agent", "profile.md"
         )
-        assert not os.path.isfile(test_md)
+        assert os.path.isfile(test_md)
+
+        # Existing markdown content was not touched.
+        with open(existing_md) as f:
+            assert f.read() == existing_text
 
     async def test_idempotent_double_init(self, orch, tmp_path):
         """Running initialize() twice doesn't duplicate or corrupt vault files."""

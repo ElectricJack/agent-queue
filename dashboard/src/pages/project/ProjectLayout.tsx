@@ -48,8 +48,8 @@ export default function ProjectLayout() {
             </button>
           )}
         </div>
-        {project?.repo_path && (
-          <p className="font-mono text-xs text-gray-500">{project.repo_path}</p>
+        {project?.repo_url && (
+          <p className="font-mono text-xs text-gray-500">{project.repo_url}</p>
         )}
       </header>
 

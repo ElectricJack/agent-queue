@@ -50,6 +50,70 @@ class TokenQueryMixin:
             row = result.fetchone()
             return row[0]
 
+    async def get_token_breakdown(
+        self,
+        *,
+        task_id: str | None = None,
+        project_id: str | None = None,
+    ) -> dict:
+        """Aggregate token_ledger rows for the most useful breakdowns.
+
+        Selects one of three modes by argument:
+          * ``task_id`` set     → group by ``agent_id`` (with entry count)
+          * ``project_id`` set  → group by ``(task_id, agent_id)``
+          * neither             → group by ``project_id``
+
+        Returns ``{"breakdown": [...], "total": int}`` so the caller (the
+        ``get_token_usage`` command) can layer on its scope keys.
+        """
+        if task_id:
+            stmt = (
+                select(
+                    token_ledger.c.agent_id,
+                    func.coalesce(func.sum(token_ledger.c.tokens_used), 0).label("total"),
+                    func.count().label("entries"),
+                )
+                .where(token_ledger.c.task_id == task_id)
+                .group_by(token_ledger.c.agent_id)
+            )
+            async with self._engine.begin() as conn:
+                rows = (await conn.execute(stmt)).fetchall()
+            breakdown = [
+                {"agent_id": r.agent_id, "tokens": r.total, "entries": r.entries} for r in rows
+            ]
+            return {"breakdown": breakdown, "total": sum(r["tokens"] for r in breakdown)}
+
+        if project_id:
+            stmt = (
+                select(
+                    token_ledger.c.task_id,
+                    token_ledger.c.agent_id,
+                    func.coalesce(func.sum(token_ledger.c.tokens_used), 0).label("total"),
+                )
+                .where(token_ledger.c.project_id == project_id)
+                .group_by(token_ledger.c.task_id, token_ledger.c.agent_id)
+                .order_by(func.sum(token_ledger.c.tokens_used).desc())
+            )
+            async with self._engine.begin() as conn:
+                rows = (await conn.execute(stmt)).fetchall()
+            breakdown = [
+                {"task_id": r.task_id, "agent_id": r.agent_id, "tokens": r.total} for r in rows
+            ]
+            return {"breakdown": breakdown, "total": sum(r["tokens"] for r in breakdown)}
+
+        stmt = (
+            select(
+                token_ledger.c.project_id,
+                func.coalesce(func.sum(token_ledger.c.tokens_used), 0).label("total"),
+            )
+            .group_by(token_ledger.c.project_id)
+            .order_by(func.sum(token_ledger.c.tokens_used).desc())
+        )
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(stmt)).fetchall()
+        breakdown = [{"project_id": r.project_id, "tokens": r.total} for r in rows]
+        return {"breakdown": breakdown, "total": sum(r["tokens"] for r in breakdown)}
+
     async def get_token_audit(
         self,
         days: int = 7,

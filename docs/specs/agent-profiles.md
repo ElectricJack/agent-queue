@@ -23,8 +23,8 @@ Agent Profiles are capability bundles that configure agents with specific tools,
 | `description` | str | "" | What this profile is for |
 | `model` | str | "" | Model override (empty = use adapter default) |
 | `permission_mode` | str | "" | Permission mode override (empty = use adapter default) |
-| `allowed_tools` | list[str] | [] | Tool whitelist (empty = use adapter default) |
-| `mcp_servers` | dict[str, dict] | {} | MCP server configs: name -> {command, args} |
+| `allowed_tools` | list[str] | [] | Tool whitelist (empty = use adapter default). Stored as **bare** tool names — see [Tool Naming](#tool-naming) below. |
+| `mcp_servers` | list[str] | [] | Names of MCP servers from the [registry](#mcp-server-registry). Resolved at task launch (project scope first, system fallback). |
 | `system_prompt_suffix` | str | "" | Appended to agent's context as "Agent Role Instructions" |
 | `install` | dict | {} | Auto-install manifest (reserved for future use) |
 
@@ -66,8 +66,8 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
     description TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT '',
     permission_mode TEXT NOT NULL DEFAULT '',
-    allowed_tools TEXT NOT NULL DEFAULT '[]',       -- JSON array
-    mcp_servers TEXT NOT NULL DEFAULT '{}',          -- JSON dict
+    allowed_tools TEXT NOT NULL DEFAULT '[]',       -- JSON array of bare tool names
+    mcp_servers TEXT NOT NULL DEFAULT '{}',          -- JSON; written as a list[str] of registry names. The literal default is '{}' for legacy reasons; the application coerces on read.
     system_prompt_suffix TEXT NOT NULL DEFAULT '',
     install TEXT NOT NULL DEFAULT '{}',              -- JSON dict
     created_at REAL NOT NULL,
@@ -89,24 +89,53 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 - `update_profile(profile_id, **kwargs)` — partial update; JSON fields auto-serialized
 - `delete_profile(profile_id)` — cascades: clears profile_id from tasks and default_profile_id from projects before deleting
 
-## Configuration (YAML)
+## Source of Truth: Vault Markdown
 
-Profiles can be defined in `config.yaml`:
+The runtime source of truth for profiles is **vault markdown** at
+`vault/agent-types/<id>/profile.md` (system) and
+`vault/projects/<pid>/agent-types/<id>/profile.md` (project override). See
+[[design/profiles]] for the markdown format. The vault watcher syncs changes
+into the `agent_profiles` table at startup and on file change.
 
-```yaml
-agent_profiles:
-  reviewer:
-    name: "Code Reviewer"
-    allowed_tools: [Read, Glob, Grep, Bash]
-    system_prompt_suffix: "You are a code reviewer..."
-  web-developer:
-    name: "Web Developer"
-    allowed_tools: [Read, Write, Edit, Bash, Glob, Grep]
-    mcp_servers:
-      playwright: { command: npx, args: ["@anthropic/mcp-playwright"] }
-```
+`config.yaml` profiles are still accepted for backward compatibility — a
+startup migration extracts any `agent_profiles:` section into vault markdown
+files (idempotent; never clobbers a hand-authored entry). New work should
+edit the markdown directly.
 
-YAML profiles are synced to the database at startup via `_sync_profiles_from_config()`. Existing profiles are updated; new ones are created. Profiles created via Discord commands are not affected.
+### Tool Naming
+
+`allowed_tools` is stored as **bare** tool names (`get_weather`,
+`create_task`, `send_message`). The supervisor matches the LLM's
+`tool_use.name` against this list directly. The Claude adapter rewrites
+embedded `agent-queue` tools to their MCP-prefixed form
+(`mcp__agent-queue__<name>`) when building `--allowed-tools` for the CLI
+subprocess. Profile authors must **not** write the `mcp__agent-queue__`
+prefix.
+
+Exceptions:
+- Claude built-ins (`Read`, `Edit`, `Bash`, `Glob`, `Grep`, `WebSearch`,
+  `WebFetch`, `Agent`, etc.) keep their bare names.
+- Third-party MCP servers use the full `mcp__<server>__<tool>` form (no
+  unambiguous strip rule across servers).
+
+The profile parser strips the `mcp__agent-queue__` prefix on read, so
+legacy entries auto-canonicalize on the next vault → DB sync.
+
+## MCP Server Registry
+
+Profiles do **not** store inline MCP server configs anymore. `mcp_servers`
+is a `list[str]` of names from the registry sourced at:
+
+- `vault/mcp-servers/*.md` — system-scope server definitions
+- `vault/projects/<pid>/mcp-servers/*.md` — project-scope (shadows system
+  by name)
+
+The orchestrator resolves names at task launch (project scope first,
+system fallback). A startup migration moves legacy inline configs from
+config.yaml profiles and old `profile.md` `## MCP Servers` blocks into
+registry files. The embedded `agent-queue` server is a builtin registry
+entry computed in-process from CommandHandler tool definitions plus
+plugin tools. See [[mcp-server]] for the registry API and CRUD commands.
 
 
 ## Discovery & Validation
@@ -179,8 +208,7 @@ agent_profile:
   description: "Read-only code review agent"
   model: "claude-sonnet-4-5-20250514"
   allowed_tools: [Read, Glob, Grep, Bash]
-  mcp_servers:
-    linter: { command: npx, args: ["eslint-mcp"] }
+  mcp_servers: ["linter"]   # name of an entry in vault/mcp-servers/
   system_prompt_suffix: "You are a code reviewer."
   install:
     npm: ["eslint-mcp"]
@@ -202,12 +230,19 @@ Imports from YAML text or gist URL:
 
 ## Commands (Complete)
 
-### Profile CRUD
+### Profile CRUD (system scope)
 - `list_profiles` — show all profiles with summary info
 - `create_profile` — create new profile (id, name required; tools/MCP/prompt/install optional)
 - `get_profile` — full details of one profile (includes install manifest)
 - `edit_profile` — partial update of profile fields (including install)
 - `delete_profile` — remove profile, clear references
+
+### Project-Scoped Profile CRUD
+- `list_project_profiles` — list per-agent-type rows for a project (override / inherit / no-default)
+- `create_project_profile` — create a project override (optionally seeded from the global default)
+- `edit_project_profile` — partial update of a project override
+- `delete_project_profile` — remove the override (resets the agent-type to global). Cleans up nested **and** flat vault paths so a stray scoped file can't resurrect during the next watcher pass.
+- `show_effective_profile` — resolve `project + agent_type` to the effective profile (override → inherit → no-default)
 
 ### Discovery & Validation
 - `list_available_tools` — discover tools and MCP servers for profile configuration
@@ -219,6 +254,12 @@ Imports from YAML text or gist URL:
 ### Export / Import
 - `export_profile` — serialize to YAML, optionally create public gist
 - `import_profile` — import from gist URL or YAML text, auto-install dependencies
+
+### MCP Server Registry
+See [[mcp-server]] for full details. Commands: `list_mcp_servers`,
+`get_mcp_server`, `create_mcp_server`, `edit_mcp_server`,
+`delete_mcp_server`, `probe_mcp_server`, `list_mcp_tool_catalog`.
+`delete_mcp_server` refuses if any profile still references the name.
 
 ### Modified Commands
 - `create_task` — accepts optional `profile_id`

@@ -3,6 +3,7 @@ import Layout from "./components/Layout";
 import SystemOverview from "./pages/system/Overview";
 import SystemEvents from "./pages/system/Events";
 import SystemPlaybooks from "./pages/system/Playbooks";
+import SystemProfiles from "./pages/system/Profiles";
 import SystemConfig from "./pages/system/Config";
 import ProjectLayout from "./pages/project/ProjectLayout";
 import ProjectOverview from "./pages/project/Overview";
@@ -24,6 +25,7 @@ export default function App() {
           <Route index element={<SystemOverview />} />
           <Route path="events" element={<SystemEvents />} />
           <Route path="playbooks" element={<SystemPlaybooks />} />
+          <Route path="profiles" element={<SystemProfiles />} />
           <Route path="config" element={<SystemConfig />} />
         </Route>
 

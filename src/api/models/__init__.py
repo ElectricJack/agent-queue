@@ -50,7 +50,9 @@ def get_all_response_models() -> dict[str, type[BaseModel]]:
         agent,
         files,
         git,
+        mcp,
         memory,
+        playbook,
         plugin,
         project,
         system,
@@ -58,6 +60,6 @@ def get_all_response_models() -> dict[str, type[BaseModel]]:
     )
 
     merged: dict[str, type[BaseModel]] = {}
-    for mod in (task, project, agent, git, memory, files, system, plugin):
+    for mod in (task, project, agent, git, memory, files, system, plugin, mcp, playbook):
         merged.update(mod.RESPONSE_MODELS)
     return merged

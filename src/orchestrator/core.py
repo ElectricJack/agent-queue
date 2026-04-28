@@ -291,6 +291,18 @@ class Orchestrator(
         # each task (keyed by task_id) to rate-limit alerts.
         self._stuck_notified_at: dict[str, float] = {}
         self.vault_watcher = None
+        # MCP server registry — populated from vault/mcp-servers/*.md and
+        # vault/projects/*/mcp-servers/*.md on startup, kept current by the
+        # vault watcher.  Resolves the ``list[str]`` of names on each
+        # profile to the dicts the agent adapter expects at task launch.
+        from src.profiles.mcp_catalog import McpToolCatalog
+        from src.profiles.mcp_registry import McpRegistry
+
+        self.mcp_registry = McpRegistry()
+        # Tool catalog snapshot keyed by (project_id, server_name).  Probed
+        # once at startup; refreshed per-server by the vault watcher hook
+        # and the probe-mcp-server command.
+        self.mcp_tool_catalog = McpToolCatalog()
         self.workspace_spec_watcher = None  # WorkspaceSpecWatcher | None (vault.md §4)
         self.timer_service = None  # TimerService | None — initialized in initialize()
         # Reference to the command handler, set by the bot after initialization.
@@ -432,6 +444,11 @@ class Orchestrator(
     async def _sync_profiles_from_config(self) -> None:
         """Sync agent profiles from YAML config into the database (idempotent upsert).
 
+        ``mcp_servers`` from YAML may be either a ``list[str]`` (new shape)
+        or a legacy ``dict[str, dict]`` of inline configs.  We normalise to
+        a list of registry names; the inline-config migration extracts the
+        actual server defs separately.
+
         Runs at startup during ``initialize()``.  For each profile defined in
         ``config.agent_profiles``, either creates a new DB row or updates the
         existing one with the latest YAML values.  This ensures the DB always
@@ -442,6 +459,10 @@ class Orchestrator(
         scheduling cycle.  The upsert pattern means operators can freely edit
         profile settings in YAML and restart the daemon to apply changes.
         """
+        from src.profiles.mcp_inline_migration import (
+            coerce_mcp_server_names as _coerce_mcp_server_names,
+        )
+
         for pc in self.config.agent_profiles:
             existing = await self.db.get_profile(pc.id)
             if existing:
@@ -452,7 +473,7 @@ class Orchestrator(
                     model=pc.model,
                     permission_mode=pc.permission_mode,
                     allowed_tools=pc.allowed_tools,
-                    mcp_servers=pc.mcp_servers,
+                    mcp_servers=_coerce_mcp_server_names(pc.mcp_servers),
                     system_prompt_suffix=pc.system_prompt_suffix,
                     install=pc.install,
                 )
@@ -465,7 +486,7 @@ class Orchestrator(
                         model=pc.model,
                         permission_mode=pc.permission_mode,
                         allowed_tools=pc.allowed_tools,
-                        mcp_servers=pc.mcp_servers,
+                        mcp_servers=_coerce_mcp_server_names(pc.mcp_servers),
                         system_prompt_suffix=pc.system_prompt_suffix,
                         install=pc.install,
                     )
@@ -849,6 +870,27 @@ class Orchestrator(
             data_dir=self.config.data_dir,
         )
 
+        # Register MCP server registry watcher handlers.  Each scope has its
+        # own glob pattern; both share one in-memory store.  The on_reload
+        # hook is left None for now — B3 (tool catalog) will set it so a
+        # changed server triggers a re-probe of its tools.
+        from src.profiles.mcp_registry import (
+            builtin_from_config,
+            register_mcp_server_handlers,
+        )
+
+        register_mcp_server_handlers(
+            self.vault_watcher,
+            self.mcp_registry,
+            vault_root=self.config.vault_root,
+        )
+        # Seed the synthetic agent-queue entry so the dashboard can show
+        # "Built-in" plus its plugin tools, and profiles can reference it
+        # by name.
+        builtin = builtin_from_config(self.config)
+        if builtin is not None:
+            self.mcp_registry.set_builtin(builtin)
+
         # Register facts.md watcher handlers (memory-plugin spec §7).
         # Detects changes to facts files across all vault scopes so they
         # can be synced to the KV backend.  Initially registered with no
@@ -1144,6 +1186,44 @@ class Orchestrator(
             register_facts_handlers(self.vault_watcher, service=mem_svc)
             logger.info("Wired memory service to facts.md watcher handlers")
 
+        # Now that plugins are loaded we know the full set of tools the
+        # embedded agent-queue MCP server exposes.  Re-register the
+        # mcp-server vault handlers with the on_reload hook (so a vault
+        # change triggers a tool-catalog refresh) and run the initial
+        # parallel probe pass.
+        from src.mcp_registration import get_effective_exclusions
+        from src.profiles.mcp_catalog import (
+            build_agent_queue_tools,
+            make_reload_hook,
+        )
+        from src.profiles.mcp_registry import register_mcp_server_handlers
+
+        _mcp_exclusions = get_effective_exclusions(config=self.config)
+        _plugin_tool_defs: list[dict] = []
+        if hasattr(self, "plugin_registry") and self.plugin_registry:
+            try:
+                _plugin_tool_defs = self.plugin_registry.get_all_tool_definitions()
+            except Exception:
+                logger.debug("Could not enumerate plugin tool definitions", exc_info=True)
+
+        def _resolve_agent_queue_tools():
+            return build_agent_queue_tools(
+                excluded=_mcp_exclusions,
+                plugin_tools=_plugin_tool_defs,
+            )
+
+        register_mcp_server_handlers(
+            self.vault_watcher,
+            self.mcp_registry,
+            vault_root=self.config.vault_root,
+            on_reload=make_reload_hook(
+                self.mcp_registry,
+                self.mcp_tool_catalog,
+                builtin_resolver=_resolve_agent_queue_tools,
+            ),
+        )
+        # Stash the resolver so the explicit probe command (B5) can reuse it.
+        self._mcp_builtin_resolver = _resolve_agent_queue_tools
 
         # HookEngine + RuleManager removed (playbooks spec §13 Phase 3).
         # All automation is now handled by playbooks — see PlaybookExecutor
@@ -1168,6 +1248,30 @@ class Orchestrator(
         if self.vault_watcher:
             await self.vault_watcher.check()
 
+        # One-shot inline-mcp-servers migration.  Runs BEFORE the profile
+        # scan so the scan sees the new ``list[str]`` shape and writes
+        # the right thing to the DB.  Idempotent — already-migrated
+        # profiles are no-ops.  Updates the in-memory registry so the
+        # subsequent catalog probe sees the extracted entries on the
+        # same startup.
+        from src.profiles.mcp_inline_migration import (
+            migrate_vault_profiles as migrate_inline_vault,
+            migrate_yaml_config_profiles as migrate_inline_yaml,
+        )
+
+        try:
+            migrate_inline_vault(self.config.vault_root, registry=self.mcp_registry)
+        except Exception:
+            logger.warning("Vault inline mcp_servers migration failed", exc_info=True)
+        try:
+            migrate_inline_yaml(
+                self.config.agent_profiles,
+                self.config.vault_root,
+                registry=self.mcp_registry,
+            )
+        except Exception:
+            logger.warning("YAML inline mcp_servers migration failed", exc_info=True)
+
         # Startup scan: sync any existing profile.md files from the vault
         # to the database.  The VaultWatcher's initial check() only takes
         # a snapshot (no dispatch), so pre-existing profile files would
@@ -1180,6 +1284,30 @@ class Orchestrator(
             self.db,
             event_bus=self.bus,
         )
+
+        # Startup scan: load every mcp-server file under the vault into the
+        # in-memory registry.  Same rationale as the profile scan above —
+        # the watcher's initial snapshot does not dispatch, so pre-existing
+        # files need an explicit pass.  Errors are logged per-file; one
+        # malformed entry never blocks the rest.
+        from src.profiles.mcp_catalog import populate_catalog
+        from src.profiles.mcp_registry import load_from_vault as load_mcp_registry
+
+        load_mcp_registry(self.mcp_registry, self.config.vault_root)
+
+        # Probe every registry entry (parallel) and populate the in-memory
+        # tool catalog.  Builtin entries are resolved in-process via the
+        # resolver set up above; external entries hit the network.  A
+        # hung server cannot stall this pass beyond the 10s per-probe
+        # timeout enforced inside ``probe_server``.
+        try:
+            await populate_catalog(
+                self.mcp_registry,
+                self.mcp_tool_catalog,
+                builtin_resolver=getattr(self, "_mcp_builtin_resolver", None),
+            )
+        except Exception:
+            logger.warning("MCP tool catalog populate failed", exc_info=True)
 
         # Startup scan: generate orchestrator summaries for all existing
         # project READMEs (self-improvement spec §5).  The VaultWatcher
@@ -1311,7 +1439,6 @@ class Orchestrator(
             has_legacy_data,
             run_vault_migration,
             vault_has_content,
-            vault_has_profile_markdown,
         )
 
         # Ensure the vault manager layout is created first (static dirs).
@@ -1358,17 +1485,19 @@ class Orchestrator(
             logger.debug("No legacy data detected — no auto-migration needed")
 
         # Auto-migrate DB profiles to vault markdown (roadmap 4.2.4):
-        # If DB profiles exist but no vault profile markdown files exist,
-        # generate the markdown files automatically.  This is idempotent —
-        # profiles that already have vault files are skipped inside the
-        # migration function.  We only trigger when vault has NO profile
-        # markdowns at all, to avoid interfering with user-managed content.
-        if all_profiles and not vault_has_profile_markdown(data_dir):
+        # The migration is idempotent at the per-profile level — profiles
+        # that already have vault files are skipped inside the migration
+        # function.  Run unconditionally whenever DB profiles exist so a
+        # YAML-defined profile that does not yet have a vault file gets
+        # one written, even when other profiles (e.g. the bundled
+        # supervisor / claude-* profiles created by ensure_vault_structure)
+        # already exist.
+        if all_profiles:
             from src.profiles.migration import migrate_db_profiles_to_vault
 
             logger.info(
-                "Profile auto-migration triggered: %d DB profile(s) found, "
-                "no vault markdown files — generating vault profile markdown",
+                "Profile auto-migration triggered: %d DB profile(s) found "
+                "(per-profile idempotent skip applies)",
                 len(all_profiles),
             )
             try:

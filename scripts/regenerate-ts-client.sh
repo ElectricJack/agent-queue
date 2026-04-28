@@ -6,7 +6,7 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 SPEC_FILE="$ROOT_DIR/openapi.json"
 OUTPUT_DIR="$ROOT_DIR/packages/aq-ts-client/src"
 
-if [[ "$1" == "--from-file" ]] 2>/dev/null; then
+if [[ "${1:-}" == "--from-file" ]]; then
     echo "Using saved spec at $SPEC_FILE"
 else
     echo "Fetching OpenAPI spec from running daemon..."

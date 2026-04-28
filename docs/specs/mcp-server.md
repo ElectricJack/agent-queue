@@ -126,16 +126,37 @@ They are grouped by category (see `src/tools/registry.py`):
 |------|---------|
 | `list_agents` | List all agents |
 | `get_agent_error` | Get agent error details |
-| `list_profiles` | List agent profiles |
+| `list_profiles` | List agent profiles (system scope) |
 | `create_profile` | Create an agent profile |
 | `get_profile` | Get profile details |
 | `edit_profile` | Edit an agent profile |
 | `delete_profile` | Delete a profile |
+| `list_project_profiles` | Per-agent-type rows for a project (override / inherit / none) |
+| `create_project_profile` | Create a project override (optionally seed from global) |
+| `edit_project_profile` | Edit a project override |
+| `delete_project_profile` | Reset a project agent-type back to the global default |
+| `show_effective_profile` | Resolve `(project, agent_type)` to its effective profile |
 | `list_available_tools` | List tools available to agents |
 | `check_profile` | Validate a profile |
 | `install_profile` | Install a profile |
 | `export_profile` | Export a profile |
 | `import_profile` | Import a profile |
+
+### MCP Server Registry
+
+Profiles reference MCP servers by name only; full configs live in the
+vault registry. See the [MCP Server Registry](#mcp-server-registry-1)
+section below for details.
+
+| Tool | Purpose |
+|------|---------|
+| `list_mcp_servers` | List registry entries (system + project scope) |
+| `get_mcp_server` | Get one entry's config |
+| `create_mcp_server` | Add a new entry (writes to `vault/[projects/<pid>/]mcp-servers/<name>.md`) |
+| `edit_mcp_server` | Update an entry |
+| `delete_mcp_server` | Remove an entry (refuses if any profile still references the name) |
+| `probe_mcp_server` | Probe an entry and refresh its tool catalog |
+| `list_mcp_tool_catalog` | List the tools every registered server exposes (cached probe results) |
 
 ### Git Operations
 
@@ -245,6 +266,43 @@ effective_exclusions = DEFAULT_EXCLUDED_COMMANDS
                      | config.mcp_server.excluded_commands
                      | AGENT_QUEUE_MCP_EXCLUDED (env var)
 ```
+
+## MCP Server Registry
+
+The registry is the source of truth for MCP server configurations referenced
+by agent profiles. Profiles store **names** (`mcp_servers: list[str]`); the
+orchestrator resolves them through the registry at task launch.
+
+### Vault Layout
+
+| Path | Scope | Notes |
+|------|-------|-------|
+| `vault/mcp-servers/<name>.md` | System | Available to every project |
+| `vault/projects/<pid>/mcp-servers/<name>.md` | Project | Shadows the system entry of the same name |
+
+### Source Files
+
+| File | Purpose |
+|------|---------|
+| `src/profiles/mcp_registry.py` | In-memory registry; vault watcher refreshes on change |
+| `src/profiles/mcp_probe.py` | Spawns and probes a server (10s per-probe timeout, runs in parallel; never blocks startup) |
+| `src/profiles/mcp_catalog.py` | Caches probed tool catalogs |
+| `src/profiles/mcp_inline_migration.py` | One-shot startup extractor that moves legacy inline configs from config.yaml profiles and old `profile.md` `## MCP Servers` blocks into registry files (idempotent) |
+
+### Resolution Order
+
+1. Project scope (`vault/projects/<pid>/mcp-servers/`)
+2. System scope (`vault/mcp-servers/`)
+3. Builtin: the embedded `agent-queue` server is always available; it is
+   computed in-process from `CommandHandler` tool definitions plus plugin
+   tools — there is no circular probe of the daemon's own MCP endpoint.
+
+### CRUD
+
+CRUD goes through `mcp_commands` on the CommandHandler, which writes the
+markdown file directly. The vault watcher then syncs the in-memory
+registry. `delete_mcp_server` refuses if any profile still references
+the name.
 
 ## Resources (Read-Only Views)
 

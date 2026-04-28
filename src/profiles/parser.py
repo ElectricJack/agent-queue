@@ -126,7 +126,17 @@ class ParsedProfile:
     # Structured (JSON) sections
     config: dict = field(default_factory=dict)
     tools: dict = field(default_factory=dict)
-    mcp_servers: dict = field(default_factory=dict)
+    # Names of MCP servers this profile uses.  The vault-format ``## MCP
+    # Servers`` block now holds a JSON list of registry names; older files
+    # that still contain a dict-of-configs are accepted for backward
+    # compatibility (the keys are taken as the names) and the inline
+    # configs are extracted into the registry by
+    # ``src/profiles/mcp_inline_migration.py``.
+    mcp_servers: list[str] = field(default_factory=list)
+    # Legacy: when the ## MCP Servers block was a dict-of-configs the
+    # original mapping is preserved here so the inline-config migration
+    # can extract it.  ``None`` means the new list form was used.
+    mcp_servers_legacy: dict | None = None
     install: dict = field(default_factory=dict)
 
     # Prompt (English) sections
@@ -469,6 +479,12 @@ def _validate_config(config: dict) -> list[str]:
 # Known keys in the Tools block.
 TOOLS_KNOWN_KEYS = frozenset({"allowed", "denied"})
 
+# Embedded ``agent-queue`` MCP server prefix.  Tool names in
+# ``## Tools.allowed`` may legacy-include this prefix; the parser strips it at
+# sync time so the DB stores canonical bare names.  See
+# ``docs/specs/design/profiles.md`` (Tool naming).
+_AQ_PREFIX = "mcp__agent-queue__"
+
 
 def _validate_tools(
     tools: dict,
@@ -679,13 +695,29 @@ def parse_profile(
                     f"## Tools JSON must be an object, got {type(section.json_data).__name__}"
                 )
         elif heading_lower == "mcp servers" and section.json_data is not None:
-            if isinstance(section.json_data, dict):
-                result.mcp_servers = section.json_data
-                # Validate individual server definitions
+            if isinstance(section.json_data, list):
+                # New format: list of registry names.
+                names: list[str] = []
+                for i, item in enumerate(section.json_data):
+                    if not isinstance(item, str) or not item.strip():
+                        result.errors.append(
+                            f"## MCP Servers[{i}] must be a non-empty string, "
+                            f"got {type(item).__name__}"
+                        )
+                    else:
+                        names.append(item.strip())
+                result.mcp_servers = names
+            elif isinstance(section.json_data, dict):
+                # Legacy format: dict of name -> inline config.  Take the
+                # keys as the server names; preserve the original mapping
+                # for the inline-config migration to extract.
+                result.mcp_servers = list(section.json_data.keys())
+                result.mcp_servers_legacy = dict(section.json_data)
                 result.errors.extend(_validate_mcp_servers(section.json_data))
             else:
                 result.errors.append(
-                    f"## MCP Servers JSON must be an object, got {type(section.json_data).__name__}"
+                    "## MCP Servers JSON must be a list of names "
+                    f"(or legacy object), got {type(section.json_data).__name__}"
                 )
         elif heading_lower == "install" and section.json_data is not None:
             if isinstance(section.json_data, dict):
@@ -743,13 +775,20 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     if parsed.config.get("permission_mode"):
         result["permission_mode"] = parsed.config["permission_mode"]
 
-    # Tools → allowed_tools
+    # Tools → allowed_tools.  Strip the embedded MCP server prefix at sync
+    # time so the DB always stores canonical bare names — the supervisor's
+    # tool registry uses bare names, and the Claude CLI adapter re-adds
+    # ``mcp__agent-queue__`` at the transport layer.  Keeps third-party MCP
+    # tool prefixes (``mcp__github__...``) intact.
     if parsed.tools.get("allowed"):
-        result["allowed_tools"] = parsed.tools["allowed"]
+        result["allowed_tools"] = [
+            t[len(_AQ_PREFIX) :] if isinstance(t, str) and t.startswith(_AQ_PREFIX) else t
+            for t in parsed.tools["allowed"]
+        ]
 
-    # MCP Servers → mcp_servers
+    # MCP Servers → mcp_servers (always list[str] of registry names).
     if parsed.mcp_servers:
-        result["mcp_servers"] = parsed.mcp_servers
+        result["mcp_servers"] = list(parsed.mcp_servers)
 
     # Install → install manifest
     if parsed.install:
@@ -840,7 +879,7 @@ def agent_profile_to_markdown(
     model: str = "",
     permission_mode: str = "",
     allowed_tools: list[str] | None = None,
-    mcp_servers: dict[str, dict] | None = None,
+    mcp_servers: list[str] | dict[str, dict] | None = None,
     system_prompt_suffix: str = "",
     install: dict | None = None,
     role: str = "",
@@ -943,12 +982,19 @@ def agent_profile_to_markdown(
         lines.append("")
 
     # --- MCP Servers section ---
+    # Always render as a JSON list of registry names.  Accept legacy dicts
+    # for callers that haven't been updated yet — keys become the names.
     if mcp_servers:
-        lines.append("## MCP Servers")
-        lines.append("```json")
-        lines.append(json.dumps(mcp_servers, indent=2))
-        lines.append("```")
-        lines.append("")
+        if isinstance(mcp_servers, dict):
+            names_list = list(mcp_servers.keys())
+        else:
+            names_list = list(mcp_servers)
+        if names_list:
+            lines.append("## MCP Servers")
+            lines.append("```json")
+            lines.append(json.dumps(names_list, indent=2))
+            lines.append("```")
+            lines.append("")
 
     # --- Rules section ---
     if rules:

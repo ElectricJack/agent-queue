@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskStatusSummary(BaseModel):
@@ -89,6 +89,40 @@ class RenderPromptResponse(BaseModel):
     variables_used: dict[str, Any] = {}
 
 
+class EnvVarReference(BaseModel):
+    path: str
+    var: str
+    resolved: bool
+
+
+class GetConfigResponse(BaseModel):
+    model_config = {"extra": "allow"}
+    path: str = ""
+    config: dict[str, Any] = {}
+    section: str | None = None
+    hot_reloadable: list[str] = []
+    restart_required: list[str] = []
+    unclassified: list[str] = []
+    env_var_references: list[EnvVarReference] = []
+    error: str | None = None
+
+
+class GetConfigSchemaResponse(BaseModel):
+    model_config = {"extra": "allow"}
+    schema_: dict[str, Any] = Field(default_factory=dict, alias="schema")
+
+
+class UpdateConfigResponse(BaseModel):
+    model_config = {"extra": "allow"}
+    applied: bool = False
+    changed: bool = False
+    requires_restart: bool | None = None
+    applied_sections: list[str] = []
+    validation_errors: list[str] = []
+    dry_run: bool | None = None
+    error: str | None = None
+
+
 class ReloadConfigResponse(BaseModel):
     message: str = ""
     changed_sections: list[str] | None = None
@@ -124,6 +158,88 @@ class RunCommandResponse(BaseModel):
     stderr: str = ""
 
 
+class EventTrigger(BaseModel):
+    name: str
+    category: str
+
+
+class ListEventTriggersResponse(BaseModel):
+    events: list[EventTrigger] = []
+    count: int = 0
+
+
+class LogEntry(BaseModel):
+    model_config = {"extra": "allow"}
+    timestamp: str | None = None
+    level: str | None = None
+    event: str | None = None
+    message: str | None = None
+    component: str | None = None
+
+
+class ReadLogsResponse(BaseModel):
+    log_file: str
+    level_filter: str
+    count: int = 0
+    entries: list[LogEntry] = []
+
+
+class StuckTask(BaseModel):
+    id: str
+    project_id: str
+    status: str
+    assigned_agent: str | None = None
+    updated_at: float
+    seconds_in_state: float
+
+
+class StuckTasksThresholds(BaseModel):
+    assigned: int
+    in_progress: int
+
+
+class GetStuckTasksResponse(BaseModel):
+    stuck: list[StuckTask] = []
+    now_used: float
+    thresholds: StuckTasksThresholds
+
+
+class StubScanEntry(BaseModel):
+    stub_name: str
+    status: str
+    source_path: str | None = None
+    recorded_hash: str | None = None
+    current_hash: str | None = None
+    last_synced: str | None = None
+    is_enriched: bool = False
+
+
+class StubScanProject(BaseModel):
+    project_id: str
+    total: int = 0
+    stale: int = 0
+    missing_source: int = 0
+    unenriched: int = 0
+    orphaned: int = 0
+    current: int = 0
+    stubs: list[StubScanEntry] = []
+
+
+class StubScanTotals(BaseModel):
+    total: int = 0
+    stale: int = 0
+    missing_source: int = 0
+    unenriched: int = 0
+    orphaned: int = 0
+    current: int = 0
+
+
+class ScanStubStalenessResponse(BaseModel):
+    projects: list[StubScanProject] = []
+    totals: StubScanTotals | None = None
+    summary: str = ""
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_status": GetStatusResponse,
     "get_token_usage": GetTokenUsageResponse,
@@ -136,8 +252,15 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "read_prompt": ReadPromptResponse,
     "render_prompt": RenderPromptResponse,
     "reload_config": ReloadConfigResponse,
+    "get_config": GetConfigResponse,
+    "get_config_schema": GetConfigSchemaResponse,
+    "update_config": UpdateConfigResponse,
     "restart_daemon": RestartDaemonResponse,
     "shutdown": ShutdownResponse,
     "update_and_restart": UpdateAndRestartResponse,
     "run_command": RunCommandResponse,
+    "list_event_triggers": ListEventTriggersResponse,
+    "read_logs": ReadLogsResponse,
+    "get_stuck_tasks": GetStuckTasksResponse,
+    "scan_stub_staleness": ScanStubStalenessResponse,
 }

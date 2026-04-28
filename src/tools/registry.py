@@ -35,7 +35,6 @@ from dataclasses import dataclass
 
 from src.tools.definitions import (
     _ALL_TOOL_DEFINITIONS,
-    _CLI_CATEGORY_OVERRIDES,
     _TOOL_CATEGORIES,
 )
 
@@ -99,6 +98,13 @@ CATEGORIES: dict[str, CategoryMeta] = {
         description=(
             "Token usage, log access, event history, config reload, diagnostics, "
             "prompt management, daemon control"
+        ),
+    ),
+    "mcp": CategoryMeta(
+        name="mcp",
+        description=(
+            "MCP server registry (vault-sourced) and probed tool catalog — "
+            "list, create, edit, delete, and re-probe servers"
         ),
     ),
 }
@@ -243,6 +249,7 @@ class ToolRegistry:
                     "required": ["message"],
                 },
             }
+
     # ------------------------------------------------------------------
     # Schema compression for small-context LLMs
     # ------------------------------------------------------------------
@@ -637,7 +644,5 @@ class ToolRegistry:
             reverse=True,
         )
         return [
-            cat
-            for cat, score in ranked
-            if score >= min_score and cat not in self._SKIP_PRELOAD
+            cat for cat, score in ranked if score >= min_score and cat not in self._SKIP_PRELOAD
         ][:max_categories]

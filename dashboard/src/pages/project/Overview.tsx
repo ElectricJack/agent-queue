@@ -1,4 +1,4 @@
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import {
   CpuChipIcon,
   ClipboardDocumentListIcon,
@@ -9,6 +9,7 @@ import StatusBadge from "../../components/StatusBadge";
 
 export default function ProjectOverview() {
   const { projectId = "" } = useParams();
+  const location = useLocation();
   const { data: tasks } = useTasks(projectId);
   const { data: agents } = useAgents(projectId);
   const { data: workspaces } = useWorkspaces(projectId);
@@ -52,12 +53,13 @@ export default function ProjectOverview() {
               <Link
                 key={task.id}
                 to={`/tasks/${task.id}`}
+                state={{ from: location.pathname }}
                 className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 transition-colors hover:border-indigo-500/50"
               >
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{task.title}</p>
-                  {task.agent_name && (
-                    <p className="text-xs text-gray-500">{task.agent_name}</p>
+                  {task.assigned_agent && (
+                    <p className="text-xs text-gray-500">{task.assigned_agent}</p>
                   )}
                 </div>
                 <StatusBadge status={task.status} />

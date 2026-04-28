@@ -8,6 +8,9 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 - **Core files:** `orchestrator.py`, `src/commands/` (handler + mixin modules), `supervisor.py`, `database/`, `models.py`
 - **Playbooks:** `src/playbooks/` (compiler, runner, manager, models, store, handler, state_machine, health, graph, graph_view, resume_handler)
 - **Memory:** External `aq-memory` plugin (install via `aq plugin install`), plus in-tree `facts_parser.py`, `profile_parser.py`
+- **Profiles:** `src/profiles/` — `parser.py`, `sync.py`, `migration.py`. Markdown source of truth in `vault/agent-types/<id>/profile.md` (system) and `vault/projects/<pid>/agent-types/<id>/profile.md` (project override).
+- **MCP registry:** `src/profiles/mcp_registry.py` (in-memory registry + vault watcher), `mcp_probe.py` (parallel probes, 10s timeout), `mcp_catalog.py` (cache), `mcp_inline_migration.py` (legacy extractor). Source of truth: `vault/[projects/<pid>/]mcp-servers/*.md`. Profiles reference servers by name.
+- **Config editor:** `src/config_editor.py` — ruamel round-trip writer behind `get_config` / `update_config` / `get_config_schema`. Validates via temp-file `load_config()` before swap.
 - **Intelligence:** `prompt_builder.py`, `tools/registry.py`, `reflection.py`, `llm_logger.py`, `chat_observer.py`
 - **Workflows:** `workflow_stage_resume_handler.py`, `orphan_workflow_recovery.py`, `workflow_pipeline_view.py`
 - **Plugins:** `src/plugins/` (base, registry, loader, internal/)

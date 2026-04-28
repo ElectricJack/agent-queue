@@ -435,6 +435,48 @@ class TestMergeFrontmatter:
         result = PlaybookCompiler._merge_frontmatter(compiled, fm, "h", 1)
         assert "llm_config" not in result
 
+    def test_profile_id_from_frontmatter_kept(self):
+        """profile_id in frontmatter passes through to compiled JSON."""
+        compiled = {"nodes": {}}
+        fm = {
+            "id": "x",
+            "triggers": ["e"],
+            "scope": "project",
+            "profile_id": "email-triager",
+        }
+        result = PlaybookCompiler._merge_frontmatter(compiled, fm, "h", 1)
+        assert result["profile_id"] == "email-triager"
+
+    def test_profile_id_from_llm_dropped(self):
+        """LLM-supplied profile_id is dropped — only frontmatter authors set capability scope.
+
+        Otherwise an attacker-influenced markdown body could trick the compiler
+        LLM into widening the playbook's scope.
+        """
+        compiled = {"nodes": {}, "profile_id": "admin"}
+        fm = {"id": "x", "triggers": ["e"], "scope": "system"}
+        result = PlaybookCompiler._merge_frontmatter(compiled, fm, "h", 1)
+        assert "profile_id" not in result
+
+    def test_profile_id_frontmatter_overrides_llm(self):
+        """Frontmatter wins over any LLM-supplied profile_id."""
+        compiled = {"nodes": {}, "profile_id": "admin"}
+        fm = {
+            "id": "x",
+            "triggers": ["e"],
+            "scope": "project",
+            "profile_id": "email-triager",
+        }
+        result = PlaybookCompiler._merge_frontmatter(compiled, fm, "h", 1)
+        assert result["profile_id"] == "email-triager"
+
+    def test_profile_id_blank_treated_as_unset(self):
+        """Empty-string profile_id in frontmatter is ignored."""
+        compiled = {"nodes": {}}
+        fm = {"id": "x", "triggers": ["e"], "scope": "system", "profile_id": ""}
+        result = PlaybookCompiler._merge_frontmatter(compiled, fm, "h", 1)
+        assert "profile_id" not in result
+
 
 # ---------------------------------------------------------------------------
 # System / user prompt construction
@@ -1390,6 +1432,7 @@ async def test_compiler_rewrites_aq_uris_before_llm_call(tmp_path: Path):
     class FakeProvider:
         async def create_message(self, *, messages, system, max_tokens):
             captured_messages.append(messages)
+
             # Return a minimal valid playbook JSON so compile() can proceed.
             # nodes must be a dict keyed by node_id; one entry node + one terminal.
             class _Resp:
@@ -1399,6 +1442,7 @@ async def test_compiler_rewrites_aq_uris_before_llm_call(tmp_path: Path):
                     '"done": {"terminal": true}'
                     "}}"
                 ]
+
             return _Resp()
 
     compiler = PlaybookCompiler(FakeProvider(), config=config)

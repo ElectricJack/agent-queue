@@ -60,14 +60,13 @@ and commit clean, working code.
 
 ## MCP Servers
 ```json
-{
-  "github": {
-    "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-github"],
-    "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}
-  }
-}
+["github", "playwright"]
 ```
+
+The values are **registry names**, not inline configs. Server definitions
+live in `vault/mcp-servers/<name>.md` (system) or
+`vault/projects/<pid>/mcp-servers/<name>.md` (project scope shadows system
+by name). See [[specs/mcp-server]] for the registry format and CRUD.
 
 ## Rules
 - Always run existing tests before committing
@@ -86,7 +85,7 @@ After completing a task, consider:
 **What gets parsed deterministically (JSON blocks):**
 - `## Config` → model, permission mode, token limits → DB fields
 - `## Tools` → allowed/denied tool lists → DB fields
-- `## MCP Servers` → exact server configurations → DB fields
+- `## MCP Servers` → list of registry names → DB field (`mcp_servers: list[str]`)
 
 **What gets injected as prompt context (English sections):**
 - `## Role` → system prompt prefix
@@ -131,6 +130,28 @@ the file, not the DB. The file watcher handles sync in one direction only:
   produce a warning (not a hard failure — the tool may not be loaded yet).
 - MCP server commands are validated for basic structure (command exists, args are
   strings). Server health is not checked at sync time.
+
+### Tool naming in `## Tools`
+
+`allowed` uses **bare tool names** (the form the supervisor's tool registry
+exposes — e.g. `get_weather`, `create_task`, `send_message`). The supervisor
+validates these directly against the registry; sandboxed playbooks rely on
+the same form.
+
+The Claude CLI sees agent-queue tools through the MCP transport as
+`mcp__agent-queue__<name>`. The Claude adapter handles the translation
+automatically — bare names in `allowed` are mapped to their MCP-prefixed
+form when building `--allowed-tools` for the CLI subprocess. **Profile
+authors do not write the `mcp__agent-queue__` prefix.**
+
+Exceptions:
+- **Claude built-ins** (`Read`, `Edit`, `Bash`, `Glob`, `Grep`, `WebSearch`,
+  `WebFetch`, `Agent`, etc.) keep their bare names — they live outside the
+  embedded MCP server.
+- **Third-party MCP servers** (anything other than the embedded `agent-queue`
+  server) use the full `mcp__<server>__<tool>` form in `allowed`. There's
+  no unambiguous way to strip a prefix when multiple servers might define
+  the same bare tool name.
 
 ---
 

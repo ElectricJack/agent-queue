@@ -172,6 +172,7 @@ The only structured portion. Kept minimal:
 | `enabled` | no | Default `true`. Set `false` to disable without deleting |
 | `cooldown` | no | Minimum seconds between executions. Default varies by trigger |
 | `version` | no | Auto-incremented on each compilation |
+| `profile_id` | no | Sandbox the run to this profile's `allowed_tools` and `mcp_servers`. Capability inheritance and runtime tool gating are described in [[sandboxed-playbooks]]. The compiler **drops** any `profile_id` injected from the markdown body during merge so attacker-influenced text can't widen scope past what the frontmatter author wrote. |
 
 ### Referencing Resources
 

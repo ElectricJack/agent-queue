@@ -113,7 +113,20 @@ class ProfileQueryMixin:
 
     @staticmethod
     def _row_to_profile(row) -> AgentProfile:
-        """Convert a database row to an AgentProfile model."""
+        """Convert a database row to an AgentProfile model.
+
+        ``mcp_servers`` is normalised to ``list[str]`` (registry names).
+        Legacy rows that still hold an inline ``dict[str, dict]`` are
+        coerced to a list of keys so the daemon can keep running until
+        the inline-config migration writes them out to the registry.
+        """
+        raw_mcp = json.loads(row["mcp_servers"] or "[]")
+        if isinstance(raw_mcp, dict):
+            mcp_servers = list(raw_mcp.keys())
+        elif isinstance(raw_mcp, list):
+            mcp_servers = [str(n) for n in raw_mcp if isinstance(n, str)]
+        else:
+            mcp_servers = []
         return AgentProfile(
             id=row["id"],
             name=row["name"],
@@ -121,7 +134,7 @@ class ProfileQueryMixin:
             model=row["model"],
             permission_mode=row["permission_mode"],
             allowed_tools=json.loads(row["allowed_tools"]),
-            mcp_servers=json.loads(row["mcp_servers"]),
+            mcp_servers=mcp_servers,
             system_prompt_suffix=row["system_prompt_suffix"],
             install=json.loads(row["install"]),
             memory_scope_id=row.get("memory_scope_id"),

@@ -11,7 +11,8 @@ The config module is responsible for loading, parsing, and structuring the appli
 The module never writes configuration, never searches for the config file itself, and never falls back to alternative paths. All of that is the caller's responsibility. The module's only public entry point is the `load_config(path: str) -> AppConfig` function.
 
 ## Source Files
-- `src/config.py`
+- `src/config.py` — read path: `load_config(path)` returns an `AppConfig`
+- `src/config_editor.py` — runtime write path (see [Runtime Editing](#runtime-editing))
 
 ---
 
@@ -484,3 +485,52 @@ logging:
   log_file_max_bytes: 50000000
   log_file_backup_count: 5
 ```
+
+## 7. Runtime Editing
+
+`src/config.py` is read-only by design. Runtime edits go through
+`src/config_editor.py`, which exposes a CommandHandler API used by the
+dashboard, the MCP surface, and the `aq` CLI.
+
+### Commands
+
+| Command | Purpose |
+|---------|---------|
+| `get_config` | Returns the current YAML grouped by section, env-var refs preserved as `${VAR_NAME}` (not resolved) so the UI shows what's literally on disk |
+| `get_config_schema` | JSON schema generated from the `AppConfig` dataclass; powers the dashboard editor's per-section validation |
+| `update_config` | Partial update by section. Validates by `load_config`-ing a temp file first; on success, writes a `.bak` then the new file. Returns whether the change applies live or needs a daemon restart |
+
+### Round-Trip Preservation
+
+The writer uses `ruamel.yaml` to round-trip the file: comments, key order,
+quoting style, and `${ENV_VAR}` placeholders survive edits. The read path
+stays on `PyYAML` — env-var substitution is applied there, not in the
+editor.
+
+### Failure Mode
+
+`update_config` validates by running `load_config()` against a temp file
+before touching the live config. An invalid edit never reaches disk; the
+caller gets the underlying `AppConfig` validation error. On a successful
+write the previous file is preserved at `<config>.bak` for manual recovery.
+
+### Live vs Restart Required
+
+Some sections apply on the next event-loop tick (logging level, scheduler
+intervals, reflection knobs). Others (DB DSN, MCP server, plugin enable
+list) require a daemon restart. The `update_config` response surfaces the
+distinction so the dashboard can show `Applied live` vs `Restart required`
+toasts.
+
+### CLI
+
+```bash
+aq system config get [--section logging]
+aq system config set logging.level DEBUG
+aq system config edit              # opens $EDITOR on the full file
+aq system config schema [--section logging]
+```
+
+`set` accepts dotted keys and writes through the same validate-then-swap
+path. `edit` round-trips through the same writer, so $EDITOR sessions
+preserve comments.

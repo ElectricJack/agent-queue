@@ -84,25 +84,6 @@ class PromoteNoteResponse(BaseModel):
     profile_preview: str | None = None
 
 
-class ViewProfileResponse(BaseModel):
-    project_id: str
-    profile: str | None = None
-    message: str | None = None
-
-
-class EditProjectProfileResponse(BaseModel):
-    project_id: str
-    status: str = "profile_updated"
-    path: str = ""
-
-
-class RegenerateProfileResponse(BaseModel):
-    project_id: str
-    status: str = ""
-    profile: str | None = None
-    message: str | None = None
-
-
 class CompareSpecsNotesResponse(BaseModel):
     specs: list[NoteSummary] = []
     notes: list[NoteSummary] = []
@@ -124,8 +105,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "append_note": AppendNoteResponse,
     "delete_note": DeleteNoteResponse,
     "promote_note": PromoteNoteResponse,
-    "view_profile": ViewProfileResponse,
-    "edit_project_profile": EditProjectProfileResponse,
-    "regenerate_profile": RegenerateProfileResponse,
     "compare_specs_notes": CompareSpecsNotesResponse,
 }
