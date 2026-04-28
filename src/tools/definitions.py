@@ -28,6 +28,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "find_merge_conflict_workspaces": "project",
     "release_workspace": "project",
     "remove_workspace": "project",
+    "edit_workspace": "project",
     "queue_sync_workspaces": "project",
     "set_project_channel": "project",
     "set_control_interface": "project",
@@ -765,6 +766,45 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": "Project ID (used for name lookup; optional if active project is set)",
+                },
+            },
+            "required": ["workspace_id"],
+        },
+    },
+    {
+        "name": "edit_workspace",
+        "description": (
+            "Edit a workspace's path, source_type, name, or enabled state. "
+            "Path edits are rejected when the workspace is currently locked by "
+            "a task (disable first; release the lock; or wait for the task to "
+            "finish). Setting enabled=false stops the orchestrator from "
+            "assigning new tasks to the workspace; existing locks are not "
+            "preempted."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Workspace ID"},
+                "workspace_path": {
+                    "type": "string",
+                    "description": "New filesystem path (absolute, will be realpath-resolved)",
+                },
+                "source_type": {
+                    "type": "string",
+                    "enum": ["clone", "link", "init"],
+                    "description": "New source type",
+                },
+                "name": {
+                    "type": ["string", "null"],
+                    "description": "New display name (or null to clear)",
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether the orchestrator may assign tasks here",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Skip the directory-must-exist guard on path edits",
                 },
             },
             "required": ["workspace_id"],

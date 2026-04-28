@@ -244,6 +244,109 @@ class AgentCommandsMixin:
             "released_from_task": ws.locked_by_task_id,
         }
 
+    async def _cmd_edit_workspace(self, args: dict) -> dict:
+        """Edit a workspace's path / source_type / name / enabled state.
+
+        Required: ``workspace_id``. Optional: ``workspace_path``,
+        ``source_type`` (clone/link/init), ``name``, ``enabled``, ``force``.
+
+        ``force=True`` skips the "directory must exist" check on path edits.
+        Path edits are rejected when the workspace is currently locked —
+        disable first and let the running task finish, or release the lock,
+        before relocating.
+        """
+        workspace_id = args.get("workspace_id")
+        if not workspace_id:
+            return {"error": "workspace_id is required"}
+
+        ws = await self.db.get_workspace(workspace_id)
+        if not ws:
+            return {"error": f"Workspace '{workspace_id}' not found"}
+
+        force = bool(args.get("force"))
+        updates: dict = {}
+        changed_fields: list[str] = []
+
+        if "name" in args:
+            new_name = args.get("name")
+            if new_name != ws.name:
+                updates["name"] = new_name
+                changed_fields.append("name")
+
+        if "enabled" in args:
+            new_enabled = bool(args["enabled"])
+            if new_enabled != ws.enabled:
+                updates["enabled"] = new_enabled
+                changed_fields.append("enabled")
+
+        new_source_type = ws.source_type
+        if "source_type" in args:
+            try:
+                new_source_type = RepoSourceType(args["source_type"])
+            except ValueError:
+                return {"error": f"Unsupported source_type '{args['source_type']}'"}
+            if new_source_type != ws.source_type:
+                updates["source_type"] = new_source_type.value
+                changed_fields.append("source_type")
+
+        new_path = ws.workspace_path
+        if "workspace_path" in args:
+            requested = args["workspace_path"]
+            if not isinstance(requested, str) or not requested.strip():
+                return {"error": "workspace_path must be a non-empty string"}
+            if ws.locked_by_agent_id:
+                return {
+                    "error": (
+                        f"Workspace '{ws.id}' is locked by task "
+                        f"'{ws.locked_by_task_id}'. Disable the workspace and wait "
+                        f"for the task to finish, or release the lock first."
+                    )
+                }
+            candidate = os.path.realpath(requested)
+            if candidate != ws.workspace_path:
+                if not force and not os.path.isdir(candidate):
+                    return {
+                        "error": (
+                            f"Path '{candidate}' does not exist. Set force=true to "
+                            "edit anyway (e.g. when relocating before the directory "
+                            "exists)."
+                        )
+                    }
+                # Reject if another workspace already has this realpath.
+                others = await self.db.list_workspaces()
+                for other in others:
+                    if (
+                        other.id != ws.id
+                        and os.path.realpath(other.workspace_path) == candidate
+                    ):
+                        return {
+                            "error": (
+                                f"Path '{candidate}' is already a workspace "
+                                f"({other.id} in project '{other.project_id}')."
+                            )
+                        }
+                updates["workspace_path"] = candidate
+                changed_fields.append("workspace_path")
+                new_path = candidate
+
+        if not updates:
+            return {
+                "updated": ws.id,
+                "fields": [],
+                "workspace_path": new_path,
+                "source_type": new_source_type.value,
+                "enabled": ws.enabled,
+            }
+
+        await self.db.update_workspace(ws.id, **updates)
+        return {
+            "updated": ws.id,
+            "fields": changed_fields,
+            "workspace_path": new_path,
+            "source_type": new_source_type.value,
+            "enabled": updates.get("enabled", ws.enabled),
+        }
+
     async def _cmd_find_merge_conflict_workspaces(self, args: dict) -> dict:
         """Scan project workspaces for branches with merge conflicts against main.
 
