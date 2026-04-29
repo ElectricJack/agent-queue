@@ -951,19 +951,19 @@ class AppConfig:
                     )
                 )
 
-        # default_runtime must be a known platform name.
+        # default_runtime must be a known runtime name.
         from src.runtimes import default_registry
 
         try:
             available = default_registry().names()
         except Exception:  # pragma: no cover - registry import fail = bigger problem
-            available = ["claude_sdk", "claude_cli", "codex_cli"]
+            available = ["claude_sdk", "acpx"]
         if self.default_runtime not in available:
             errors.append(
                 ConfigError(
                     section="app",
                     field="default_runtime",
-                    message=f"unknown platform {self.default_runtime!r}; available: {available}",
+                    message=f"unknown runtime {self.default_runtime!r}; available: {available}",
                 )
             )
 

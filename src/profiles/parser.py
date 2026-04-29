@@ -65,8 +65,11 @@ VALID_PERMISSION_MODES = frozenset(
 # tasks for this profile.  Validated at parse time against the static set
 # (the in-tree runtimes); runtime-time registration of additional runtimes
 # via plugins is checked separately at task dispatch.
+#
+# ``claude_cli`` and ``codex_cli`` were retired in Phase 1.7 — both are
+# replaced by ``acpx`` with ``agent_name="claude"`` / ``agent_name="codex"``.
 VALID_RUNTIMES = frozenset(
-    {"claude_sdk", "claude_cli", "codex_cli", "supervisor", "acpx"}
+    {"claude_sdk", "supervisor", "acpx"}
 )
 
 # Regex to find fenced code blocks: ```json ... ``` (with optional language tag)

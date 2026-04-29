@@ -1,8 +1,8 @@
-"""Shared subprocess + NDJSON helpers for CLI-based platforms.
+"""Shared subprocess + NDJSON helpers for CLI-based runtimes.
 
-Both :class:`ClaudeCLIRuntime` and :class:`CodexCLIRuntime` use these
+The :class:`ACPXRuntime` (and any future CLI-backed runtime) uses these
 to manage subprocess lifecycle, stream stdout line-by-line, parse NDJSON
-events, and isolate environment variables.  Keep platform-specific
+events, and isolate environment variables.  Keep runtime-specific
 parsing / classification out of this module — only generic plumbing.
 """
 

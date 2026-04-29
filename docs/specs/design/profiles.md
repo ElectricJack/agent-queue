@@ -56,10 +56,13 @@ tasks for this profile.  Supported values:
 
 - ``"claude_sdk"`` (default; matches ``config.default_runtime``) —
   spawns a Claude Code subprocess via the Agent SDK.  Owns a per-task
-  workspace.
-- ``"claude_cli"`` — wraps ``claude -p --output-format stream-json``
-  for environments that prefer the CLI over the SDK.  Workspace-based.
-- ``"codex_cli"`` — wraps ``codex exec --json``.  Workspace-based.
+  workspace.  The escape hatch when ACP doesn't expose a needed feature
+  (SDK-internals reach for ``_resilient_query``, bespoke error
+  classification, etc.).
+- ``"acpx"`` — fans out to any ACP-compatible coding agent via the
+  ``acpx`` CLI.  ``profile.agent_name`` selects the underlying agent
+  (``"claude"`` / ``"codex"`` / ``"gemini"`` / ``"opencode"`` /
+  ``"cursor"`` / etc. — see [[runtimes/acpx]]).  Workspace-based.
 - ``"supervisor"`` — runs in-process via the daemon-wide
   :class:`Supervisor` singleton.  Tool-call-only, no workspace.
   Suitable for triage / classify / summarise / route / send-message

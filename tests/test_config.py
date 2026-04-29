@@ -80,7 +80,7 @@ def test_default_runtime_default_value():
 
 
 def test_default_runtime_validation_accepts_known():
-    for name in ("claude_sdk", "claude_cli", "codex_cli"):
+    for name in ("claude_sdk", "acpx"):
         cfg = AppConfig()
         cfg.default_runtime = name
         errors = [e for e in cfg.validate() if e.field == "default_runtime"]
@@ -92,4 +92,4 @@ def test_default_runtime_validation_rejects_unknown():
     cfg.default_runtime = "made-up"
     errors = [e for e in cfg.validate() if e.field == "default_runtime"]
     assert len(errors) == 1
-    assert "unknown platform" in errors[0].message.lower()
+    assert "unknown runtime" in errors[0].message.lower()

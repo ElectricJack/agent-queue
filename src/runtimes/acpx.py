@@ -266,8 +266,8 @@ class ACPXRuntime(Runtime):
     def _build_prompt(self) -> str:
         """Assemble the agent prompt from TaskContext.
 
-        Mirrors the structure used by ClaudeCLIRuntime / ClaudeSDKRuntime
-        so behaviour is consistent across runtimes — same L0/L1 tiers,
+        Mirrors the structure used by :class:`ClaudeSDKRuntime` so
+        behaviour is consistent across runtimes — same L0/L1 tiers,
         description, acceptance criteria, test commands, attached
         context.
         """
@@ -302,7 +302,7 @@ class ACPXRuntime(Runtime):
           plan updates).  Emit text chunks; suppress thinking unless
           large.
         * ``tool_call`` — agent invoked a tool.  Emit ``-# {tool_name}``
-          to mirror the ClaudeCLIRuntime UX.
+          to mirror the existing live-stream UX.
         * ``tool_result`` — tool finished.  Logged only.
         * Final response / ``stopReason`` event — Discord stream stays
           quiet here; the orchestrator posts its own completion summary

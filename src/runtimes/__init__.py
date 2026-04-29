@@ -90,8 +90,6 @@ def default_registry(
     """
     from src.runtimes.acpx import ACPXRuntime
     from src.runtimes.claude_sdk import ClaudeSDKRuntime
-    from src.runtimes.claude_cli import ClaudeCLIRuntime
-    from src.runtimes.codex_cli import CodexCLIRuntime
 
     singletons: dict[str, Runtime] = {}
     if supervisor is not None:
@@ -101,8 +99,6 @@ def default_registry(
         runtimes={
             ACPXRuntime.name: ACPXRuntime,
             ClaudeSDKRuntime.name: ClaudeSDKRuntime,
-            ClaudeCLIRuntime.name: ClaudeCLIRuntime,
-            CodexCLIRuntime.name: CodexCLIRuntime,
         },
         singletons=singletons,
     )
