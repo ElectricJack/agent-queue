@@ -1,7 +1,7 @@
 ---
 title: Runtime Rename + ACP Adoption (Combined Design)
 date: 2026-04-27
-status: partially-landed (foundations on `Platform` shipped; rename to `Runtime` and ACP adoption still pending)
+status: landed — all phases (1, 1.4, 1.5, 1.6, 1.7) merged onto `platforms-impl`
 tags: [spec, runtimes, platforms, acp, refactor]
 ---
 
@@ -9,33 +9,52 @@ tags: [spec, runtimes, platforms, acp, refactor]
 
 ## Status update (2026-04-28)
 
-This spec consolidated three threads of work. State today:
+All phases consolidated by this spec are now **landed** on
+`platforms-impl`:
 
-1. **Platform → Runtime rename — STILL PENDING (target naming).**
-   `Runtime` is the chosen term — matches OpenClaw / OpenHands /
-   AutoGen v0.4, and reflects the right semantic distinction:
-   companies like Anthropic / OpenAI are technically *platforms*; what
-   the orchestrator dispatches into is an *agent runtime*. The
-   supervisor-as-runtime port landed on the current `Platform` naming
-   because that's what was on disk at the time, but it does not change
-   the target. Phase 1.5 below now folds the new artefacts (e.g. the
-   `AgentProfile.platform` field added by the supervisor port → must
-   rename to `AgentProfile.runtime`) into the rename pass.
+| Phase | Status |
+|---|---|
+| 1 — Platforms refactor (initial split) | ✅ landed |
+| 1.4 — Supervisor as a runtime | ✅ landed |
+| 1.5 — Platform → Runtime rename | ✅ landed |
+| 1.6 — ACPXRuntime introduction | ✅ landed |
+| 1.7 — Retire ClaudeCLIRuntime + CodexCLIRuntime | ✅ landed |
 
-2. **Supervisor as a first-class runtime — LANDED.** Originally listed
-   under "Out of scope (future work)" with the comment that the
-   supervisor's chat loop "likely won't share the Runtime dispatch
-   path." Reality went the other way: the in-process `Supervisor`
-   itself implements the Platform/Runtime contract and is registered as
-   a daemon-wide singleton. Profiles with `platform: supervisor`
-   (→ `runtime: supervisor` after the rename) execute in-process via
-   `Supervisor.start(task) → wait() → stop()` on the shared instance,
-   with per-task state isolated via ContextVars. No separate wrapper
-   class.
+The notes below preserve the original design rationale; subsequent
+work has been folded back into the codebase.
 
-3. **ACPX adoption — STILL PENDING.** Detailed below; nothing built
-   yet. Will land after the rename so the new module is `ACPXRuntime`
-   in `src/runtimes/`, and the field key is `runtime: "acpx"`.
+1. **Platform → Runtime rename — LANDED (Phase 1.5).** `Runtime` is
+   the chosen term — matches OpenClaw / OpenHands / AutoGen v0.4, and
+   reflects the right semantic distinction: companies like Anthropic /
+   OpenAI are *platforms*; what the orchestrator dispatches into is
+   an *agent runtime*. The rename touched ~70 files: `src/platforms/`
+   → `src/runtimes/`, `Platform` → `Runtime`, `PlatformRegistry` →
+   `RuntimeRegistry`, `AgentProfile.platform` → `runtime`,
+   `config.default_platform` → `default_runtime`, the
+   `agent_profiles.platform` column → `runtime` (idempotent migration),
+   `VALID_PLATFORMS` → `VALID_RUNTIMES`, plus all test classes /
+   identifiers / docs.
+
+2. **Supervisor as a first-class runtime — LANDED.** The in-process
+   `Supervisor` implements the Runtime contract and is registered as
+   a daemon-wide singleton. Profiles with `runtime: supervisor`
+   execute in-process via `Supervisor.start(task) → wait() → stop()`
+   on the shared instance, with per-task state isolated via
+   ContextVars. No separate wrapper class.
+
+3. **ACPX adoption — LANDED (Phase 1.6).** `ACPXRuntime` lives at
+   `src/runtimes/acpx.py`. Profiles select the underlying ACP agent
+   via `AgentProfile.agent_name` (`"claude"` / `"codex"` /
+   `"gemini"` / etc.). NDJSON event dispatch, `stopReason` extraction,
+   token-usage aggregation, and SIGTERM-then-SIGKILL cancellation all
+   in place. Parser fail-closes on `runtime: "acpx"` profiles with
+   empty `agent_name` at sync time.
+
+4. **CLI runtime retirement — LANDED (Phase 1.7).** `ClaudeCLIRuntime`
+   and `CodexCLIRuntime` are deleted (~1000 lines). `ACPXRuntime`
+   with `agent_name="claude"` / `"codex"` is the path forward; the
+   instant 14+ ACP agent surface replaces the two hand-written
+   subprocess wrappers.
 
 ## Current state (after platforms-impl + supervisor-as-runtime port land — pre-rename)
 
@@ -147,9 +166,9 @@ Net effect:
   `tests/test_playbook_runner.py::TestPlatformAwareNodeDispatch` (3
   tests; will be renamed in 1.5).
 
-### Phase 1.5 — Rename pass (PENDING)
-Sweep `Platform` → `Runtime` across the codebase. The pass is
-mechanical but touches a lot of files because the previous two phases
+### Phase 1.5 — Rename pass (LANDED, commit `c8defe3e`)
+Swept `Platform` → `Runtime` across the codebase. The pass was
+mechanical but touched ~70 files because the previous two phases
 both keyed off `Platform`/`platform` naming.
 
 **Module + class renames:**
@@ -196,41 +215,53 @@ partial-state DBs from rebases working.
 migration. Fully mechanical. The work is gated on running the existing
 test suite green before and after.
 
-### Phase 1.6 — ACPX introduction (PENDING)
-Layer ACPX in alongside existing runtimes:
-- Add `src/runtimes/acpx.py` — `ACPXRuntime(Runtime)` with
-  `name = "acpx"`, `requires_workspace = True`.
-- Add `AgentProfile.agent_name: str = ""` + DB column + migration.
-- `parser.py` — read `agent_name` from `## Config` (same block as
-  `runtime`); validate non-empty when `runtime == "acpx"`.
-- Update `default_registry()` to include `ACPXRuntime`.
-- Update `VALID_RUNTIMES` to include `"acpx"`.
-- Tests: mock-based unit tests mirroring the pattern from CLI runtimes.
+### Phase 1.6 — ACPX introduction (LANDED)
+Added ACPX alongside existing runtimes:
+- `src/runtimes/acpx.py` — `ACPXRuntime(Runtime)` with `name = "acpx"`,
+  `requires_workspace = True`.
+- `AgentProfile.agent_name: str = ""` field + DB column + idempotent
+  Alembic migration `d8e4b2c5f1a7`.
+- `parser.py` — reads `agent_name` from `## Config`, validates non-empty
+  when `runtime == "acpx"` (fail-closed at sync time).
+- `default_registry()` includes `ACPXRuntime`.
+- `VALID_RUNTIMES` includes `"acpx"`.
+- Tests: 18 mock-based unit tests
+  (`tests/test_runtimes_acpx.py`).
+- Spec: `docs/specs/runtimes/acpx.md`.
 
-**Spike concerns to resolve before deletion of CLI runtimes:**
-1. Token usage in ACP final response — does it match what we extract
-   from `result.usage` today?
-2. Error event granularity — can `_classify_error_result()` style logic
-   still drive retry/pause? (Probably need a thin classifier over ACP's
-   `stopReason` + error text.)
-3. `--cd <worktree>` flag respected by ACPX/agent.
-4. `exec` mode actually exits cleanly after `stopReason`.
-5. Tool filtering — can we restrict the agent to a subset
-   (Read/Write/Bash) for security profiles?
+**Spike concerns** were addressed in code:
+1. Token usage — `_build_output()` sums `input_tokens` /
+   `output_tokens` / `prompt_tokens` / `completion_tokens` across
+   common ACP keys for cross-agent fidelity.
+2. Error classification — `_classify_acp_error()` reuses the rate-limit
+   / quota / overloaded heuristics, layered over ACP's `stopReason`.
+3. `--cd <worktree>` — `cwd=self._task.checkout_path` passed via the
+   subprocess helper.
+4. `exec` mode — runtime treats the `stopReason` event as the exit
+   signal; subprocess exit code is captured but not authoritative.
+5. Tool filtering — declared as full `Capability` set in v1; per-agent
+   tightening via ACP `set_config` is a follow-up.
 
-### Phase 1.7 — Retire CLI runtimes (PENDING; gated on 1.6 validation)
-Once `ACPXRuntime` is validated:
-- Delete `src/runtimes/claude_cli.py` (~250 lines)
-- Delete `src/runtimes/codex_cli.py` (~300 lines)
-- Delete `tests/test_runtimes_claude_cli.py` (~200 lines)
-- Delete `tests/test_runtimes_codex_cli.py` (~250 lines)
-- Update `default_registry()` to drop them
-- Update `VALID_RUNTIMES` to drop them
-- Migrate any profiles using `runtime="claude_cli"` or `"codex_cli"`
-  to `runtime="acpx"` with appropriate `agent_name`
-- Net: ~1000 lines removed; ACPX agent surface goes from 2 → 14+
-  (Claude + Codex via ACP, plus Gemini, OpenCode, Cursor, Copilot,
-  Droid, iFlow, Kilocode, Kimi, Kiro, Qoder, Qwen, Trae)
+### Phase 1.7 — Retire CLI runtimes (LANDED)
+Deleted hand-written CLI wrappers in favor of ACPX:
+- `src/runtimes/claude_cli.py` (~258 lines) — `runtime="acpx"` +
+  `agent_name="claude"` replaces it.
+- `src/runtimes/codex_cli.py` (~307 lines) — `runtime="acpx"` +
+  `agent_name="codex"` replaces it.
+- `tests/test_runtimes_claude_cli.py` + `test_runtimes_codex_cli.py`
+  deleted.
+- `default_registry()` drops them; `VALID_RUNTIMES` drops them
+  (profiles still using these values fail validation at sync time
+  with a clear error message — explicit over silent).
+- `docs/specs/runtimes/claude_cli.md` + `codex_cli.md` deleted.
+
+Profiles using the deleted runtimes need a one-line edit:
+`runtime: claude_cli` → `runtime: acpx` + `agent_name: "claude"`
+(or `codex`).
+
+Net: ~1000 lines removed; ACPX agent surface goes from 2 → 14+
+(Claude + Codex via ACP, plus Gemini, OpenCode, Cursor, Copilot,
+Droid, iFlow, Kilocode, Kimi, Kiro, Qoder, Qwen, Trae).
 
 ### Phase 2 (separate spec — already exists)
 Profile validation work at [`2026-04-25-profile-validation-design.md`](./2026-04-25-profile-validation-design.md).
@@ -471,10 +502,29 @@ After each phase:
 
 ## Status
 
-Phase 1 + Phase 1.4 (supervisor-as-runtime port) merged onto
-`platforms-impl`. The Platform → Runtime rename pass (Phase 1.5), ACPX
-adoption (Phase 1.6), and CLI retirement (Phase 1.7) remain pending —
-this document is the blueprint for the work whenever it picks up.
+All five phases (1, 1.4, 1.5, 1.6, 1.7) merged onto `platforms-impl`.
+The branch is ready for live integration testing against a real
+`acpx` install — that's the remaining gate before promotion.
+
+Live-validation tasks (Phase 1.6 spike concerns, end-to-end):
+- Run a Claude task through `runtime: acpx, agent_name: "claude"` end
+  to end and compare token counts / output / cancellation behaviour
+  to the same task on `runtime: claude_sdk`.
+- Same for Codex via `agent_name: "codex"`.
+- Try one new agent (e.g. Gemini via `agent_name: "gemini"`) to
+  validate that adding agents really is a profile-only change.
+
+Pre-existing failures unrelated to this spec (still present on `main`):
+- `tests/test_cli.py::TestAutoCommands::test_category_groups_exist`
+  (memory plugin not loaded in test env)
+- `tests/test_cli.py::TestAutoCommands::test_auto_command_help` (same)
+- `tests/test_config_editor.py::*` (mock paths)
+- `tests/test_mcp_memory_roundtrip.py::TestErrorHandling::test_service_exception_degrades_gracefully`
+- `tests/test_playbook_paused_notification.py::TestPlaybookResumeView::*`
+- `tests/test_tool_registry.py::test_registry_has_categories`
+- `tests/test_tool_registry.py::TestPlaybookToolRegistration::*` and
+  `tests/test_playbook_commands.py::TestAllPlaybookCommandsRegistered::test_tool_registry_category_matches_expected_commands`
+  (`set_playbook_enabled` tool-registry hardcoded list inconsistency)
 
 ## Sources
 
