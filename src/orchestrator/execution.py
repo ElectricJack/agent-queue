@@ -246,7 +246,7 @@ class ExecutionMixin:
         """
         from src.orchestrator.core import _parse_reset_time
 
-        if not self._platforms:
+        if not self._runtimes:
             logger.error("Cannot execute task %s: no platforms registry configured", action.task_id)
             await self._emit_text_notify(
                 f"**Error:** Cannot execute task `{action.task_id}` — no agent adapter configured.",
@@ -300,15 +300,15 @@ class ExecutionMixin:
                 "Task %s: profile='%s' platform=%s tools=%s mcp=%s",
                 task.id,
                 profile.id,
-                profile.platform,
+                profile.runtime,
                 profile.allowed_tools or "(default)",
                 list(profile.mcp_servers) if profile.mcp_servers else "(none)",
             )
         else:
             logger.info("Task %s: no profile (using system defaults)", task.id)
 
-        platform_name = profile.platform if profile else self.config.default_platform
-        platform = self._platforms.create(
+        platform_name = profile.runtime if profile else self.config.default_runtime
+        platform = self._runtimes.create(
             platform_name, profile=profile, llm_logger=self.llm_logger
         )
         # Store platform reference so admin commands (stop_task, timeout handler)

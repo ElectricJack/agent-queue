@@ -1448,13 +1448,13 @@ class TestValidateConfig:
 
     def test_config_known_keys(self):
         """CONFIG_KNOWN_KEYS contains the spec-defined fields, including
-        ``platform`` which selects the Platform implementation at task
+        ``runtime`` which selects the Runtime implementation at task
         dispatch time."""
         assert CONFIG_KNOWN_KEYS == {
             "model",
             "permission_mode",
             "max_tokens_per_task",
-            "platform",
+            "runtime",
         }
 
     def test_valid_permission_modes_set(self):

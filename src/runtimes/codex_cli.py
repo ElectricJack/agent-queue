@@ -44,12 +44,12 @@ from typing import ClassVar
 
 from src.logging_config import get_correlation_context
 from src.models import AgentOutput, AgentResult, TaskContext
-from src.platforms._subprocess import (
+from src.runtimes._subprocess import (
     isolated_env,
     parse_ndjson_line,
     run_streaming_subprocess,
 )
-from src.platforms.base import Capability, MessageCallback, Platform
+from src.runtimes.base import Capability, MessageCallback, Runtime
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +68,8 @@ def _classify_error_result(error_msg: str) -> AgentResult:
     return AgentResult.FAILED
 
 
-class CodexCLIPlatform(Platform):
-    """Platform that wraps the `codex exec --json` CLI."""
+class CodexCLIRuntime(Runtime):
+    """Runtime that wraps the `codex exec --json` CLI."""
 
     name: ClassVar[str] = "codex_cli"
     capabilities: ClassVar[frozenset[Capability]] = frozenset({
@@ -109,7 +109,7 @@ class CodexCLIPlatform(Platform):
         env = isolated_env()
         cwd = self._task.checkout_path or "."
 
-        # Match the ClaudeCLIPlatform pattern: collect dispatched coroutines so
+        # Match the ClaudeCLIRuntime pattern: collect dispatched coroutines so
         # we can drain them after the subprocess returns.  asyncio.create_task
         # is correct here — _on_line is invoked from within the event loop by
         # _read_stdout in run_streaming_subprocess.

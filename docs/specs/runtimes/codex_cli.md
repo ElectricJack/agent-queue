@@ -6,8 +6,8 @@ tags: [spec, platforms, codex_cli]
 
 Wraps `codex exec --json --skip-git-repo-check --sandbox workspace-write`.
 
-Implementation: `src/platforms/codex_cli.py`. Shared subprocess helpers at
-`src/platforms/_subprocess.py`.
+Implementation: `src/runtimes/codex_cli.py`. Shared subprocess helpers at
+`src/runtimes/_subprocess.py`.
 
 Capability set: `frozenset({STREAMING_JSON, RESUME, THINKING, MCP, PLAN_MODE})`.
 Codex doesn't share Claude's skills / MEMORY.md / hooks infrastructure, so those
@@ -39,4 +39,4 @@ Always passes `--skip-git-repo-check` (agent-queue task workspaces aren't
 always git repos) and `--sandbox workspace-write` (sane default for autonomous
 agents).
 
-(Detailed behavioral spec to be expanded as the platform matures.)
+(Detailed behavioral spec to be expanded as the runtime matures.)

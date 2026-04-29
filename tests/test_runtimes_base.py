@@ -1,10 +1,10 @@
-"""Tests for the Platform ABC, Capability enum, and ABC-conforming MockPlatform."""
+"""Tests for the Runtime ABC, Capability enum, and ABC-conforming MockRuntime."""
 
 from __future__ import annotations
 
 import pytest
 
-from src.platforms.base import Capability, MessageCallback, Platform
+from src.runtimes.base import Capability, MessageCallback, Runtime
 from src.models import AgentOutput, AgentResult, TaskContext
 
 
@@ -33,13 +33,13 @@ class TestCapabilityEnum:
             assert " " not in member.value
 
 
-class TestPlatformABC:
+class TestRuntimeABC:
     def test_cannot_instantiate_bare_abc(self):
         with pytest.raises(TypeError):
-            Platform()  # type: ignore[abstract]
+            Runtime()  # type: ignore[abstract]
 
     def test_subclass_missing_methods_cannot_instantiate(self):
-        class Incomplete(Platform):
+        class Incomplete(Runtime):
             name = "incomplete"
             capabilities = frozenset()
 
@@ -47,7 +47,7 @@ class TestPlatformABC:
             Incomplete()  # type: ignore[abstract]
 
     def test_subclass_with_all_methods_instantiates(self):
-        class Complete(Platform):
+        class Complete(Runtime):
             name = "complete"
             capabilities = frozenset({Capability.STREAMING_JSON})
 
@@ -68,8 +68,8 @@ class TestPlatformABC:
         assert Capability.STREAMING_JSON in inst.capabilities
 
 
-class MockPlatform(Platform):
-    """Minimal Platform impl for use across the test suite (replaces MockAdapter)."""
+class MockRuntime(Runtime):
+    """Minimal Runtime impl for use across the test suite (replaces MockAdapter)."""
 
     name = "mock"
     capabilities = frozenset()
@@ -97,9 +97,9 @@ class MockPlatform(Platform):
         return self.started and not self.stopped
 
 
-class TestMockPlatform:
+class TestMockRuntime:
     async def test_lifecycle(self):
-        platform = MockPlatform()
+        platform = MockRuntime()
         ctx = TaskContext(description="test task")
         await platform.start(ctx)
         assert platform.started
@@ -111,14 +111,14 @@ class TestMockPlatform:
         assert platform.stopped
 
     async def test_failed_result(self):
-        platform = MockPlatform(result=AgentResult.FAILED)
+        platform = MockRuntime(result=AgentResult.FAILED)
         ctx = TaskContext(description="test")
         await platform.start(ctx)
         output = await platform.wait()
         assert output.result == AgentResult.FAILED
 
     async def test_paused_result(self):
-        platform = MockPlatform(result=AgentResult.PAUSED_RATE_LIMIT)
+        platform = MockRuntime(result=AgentResult.PAUSED_RATE_LIMIT)
         ctx = TaskContext(description="test")
         await platform.start(ctx)
         output = await platform.wait()

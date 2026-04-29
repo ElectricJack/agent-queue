@@ -801,7 +801,7 @@ class AppConfig:
     )
     # Phase-1 stub: which platform to spawn for tasks. Replaced by
     # profile.platform in phase 2 of the platforms refactor.
-    default_platform: str = "claude_sdk"
+    default_runtime: str = "claude_sdk"
     _config_path: str = field(default="", repr=False)
 
     # -- Vault path properties (derived from data_dir) -----------------------
@@ -951,19 +951,19 @@ class AppConfig:
                     )
                 )
 
-        # default_platform must be a known platform name.
-        from src.platforms import default_registry
+        # default_runtime must be a known platform name.
+        from src.runtimes import default_registry
 
         try:
             available = default_registry().names()
         except Exception:  # pragma: no cover - registry import fail = bigger problem
             available = ["claude_sdk", "claude_cli", "codex_cli"]
-        if self.default_platform not in available:
+        if self.default_runtime not in available:
             errors.append(
                 ConfigError(
                     section="app",
-                    field="default_platform",
-                    message=f"unknown platform {self.default_platform!r}; available: {available}",
+                    field="default_runtime",
+                    message=f"unknown platform {self.default_runtime!r}; available: {available}",
                 )
             )
 

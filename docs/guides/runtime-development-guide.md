@@ -4,7 +4,7 @@
 > full step-by-step guide with code examples, interface documentation, and testing
 > instructions.
 
-How to add a new agent platform to the Agent Queue system.
+How to add a new agent runtime to the Agent Queue system.
 
 ## Architecture Overview
 
@@ -19,7 +19,7 @@ Orchestrator ──► Platform ──► Agent Process
 
 ## The Platform Interface
 
-Located in `src/platforms/base.py`:
+Located in `src/runtimes/base.py`:
 
 ```python
 class Platform(ABC):
@@ -47,14 +47,14 @@ class Platform(ABC):
 
 ### 1. Create the Platform File
 
-Create `src/platforms/your_agent.py` implementing `Platform`.
+Create `src/runtimes/your_agent.py` implementing `Runtime`.
 
 ### 2. Register in PlatformRegistry
 
-Add your platform to `default_registry()` in `src/platforms/__init__.py`:
+Add your runtime to `default_registry()` in `src/runtimes/__init__.py`:
 
 ```python
-# src/platforms/__init__.py
+# src/runtimes/__init__.py
 def default_registry() -> PlatformRegistry:
     from src.platforms.claude_sdk import ClaudeSDKPlatform
     from src.platforms.your_agent import YourAgentPlatform  # add this
@@ -111,6 +111,6 @@ Keep messages under 2000 chars, batch rapid updates.
 
 ## Reference
 
-See `src/platforms/claude_sdk.py` (~600 lines) for a complete implementation
+See `src/runtimes/claude_sdk.py` (~600 lines) for a complete implementation
 including environment scrubbing, resilient streaming, rate limit detection,
 and graceful shutdown.

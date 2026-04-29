@@ -45,7 +45,7 @@ KNOWN_SECTIONS = STRUCTURED_SECTIONS | PROMPT_SECTIONS
 
 # Known Config-block keys with deterministic validation.
 CONFIG_KNOWN_KEYS = frozenset(
-    {"model", "permission_mode", "max_tokens_per_task", "platform"}
+    {"model", "permission_mode", "max_tokens_per_task", "runtime"}
 )
 
 # Valid permission_mode values (passed to the Claude Code SDK).
@@ -61,11 +61,11 @@ VALID_PERMISSION_MODES = frozenset(
     }
 )
 
-# Valid platform values selecting which Platform implementation executes
+# Valid runtime values selecting which Runtime implementation executes
 # tasks for this profile.  Validated at parse time against the static set
-# (the in-tree platforms); runtime registration of additional platforms
+# (the in-tree runtimes); runtime-time registration of additional runtimes
 # via plugins is checked separately at task dispatch.
-VALID_PLATFORMS = frozenset(
+VALID_RUNTIMES = frozenset(
     {"claude_sdk", "claude_cli", "codex_cli", "supervisor"}
 )
 
@@ -483,17 +483,17 @@ def _validate_config(config: dict) -> list[str]:
         elif mtt <= 0:
             errors.append(f"Config 'max_tokens_per_task' must be positive, got {mtt}")
 
-    # --- platform --- selects which Platform implementation runs tasks.
+    # --- runtime --- selects which Runtime implementation runs tasks.
     # Fail-closed on unknown values so a typo can't silently fall through
-    # to the default and run the wrong platform for this profile.
-    if "platform" in config:
-        plat = config["platform"]
-        if not isinstance(plat, str):
-            errors.append(f"Config 'platform' must be a string, got {type(plat).__name__}")
-        elif plat not in VALID_PLATFORMS:
-            sorted_platforms = sorted(VALID_PLATFORMS)
+    # to the default and run the wrong runtime for this profile.
+    if "runtime" in config:
+        rt = config["runtime"]
+        if not isinstance(rt, str):
+            errors.append(f"Config 'runtime' must be a string, got {type(rt).__name__}")
+        elif rt not in VALID_RUNTIMES:
+            sorted_runtimes = sorted(VALID_RUNTIMES)
             errors.append(
-                f"Config 'platform' must be one of {sorted_platforms}, got '{plat}'"
+                f"Config 'runtime' must be one of {sorted_runtimes}, got '{rt}'"
             )
 
     return errors
@@ -792,13 +792,13 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     if parsed.frontmatter.extra.get("memory_scope_id"):
         result["memory_scope_id"] = str(parsed.frontmatter.extra["memory_scope_id"])
 
-    # Config → model, permission_mode, platform
+    # Config → model, permission_mode, runtime
     if parsed.config.get("model"):
         result["model"] = parsed.config["model"]
     if parsed.config.get("permission_mode"):
         result["permission_mode"] = parsed.config["permission_mode"]
-    if parsed.config.get("platform"):
-        result["platform"] = parsed.config["platform"]
+    if parsed.config.get("runtime"):
+        result["runtime"] = parsed.config["runtime"]
 
     # Tools → allowed_tools.  Strip the embedded MCP server prefix at sync
     # time so the DB always stores canonical bare names — the supervisor's
@@ -911,7 +911,7 @@ def agent_profile_to_markdown(
     rules: str = "",
     reflection: str = "",
     tags: list[str] | None = None,
-    platform: str = "",
+    runtime: str = "",
 ) -> str:
     """Render profile fields into the hybrid markdown format.
 
@@ -991,10 +991,10 @@ def agent_profile_to_markdown(
         config["model"] = model
     if permission_mode:
         config["permission_mode"] = permission_mode
-    # Only emit platform when it differs from the default — keeps existing
-    # claude_sdk-platform profile files unchanged when round-tripped.
-    if platform and platform != "claude_sdk":
-        config["platform"] = platform
+    # Only emit runtime when it differs from the default — keeps existing
+    # claude_sdk-runtime profile files unchanged when round-tripped.
+    if runtime and runtime != "claude_sdk":
+        config["runtime"] = runtime
     if config:
         lines.append("## Config")
         lines.append("```json")

@@ -1,6 +1,6 @@
-"""Tests for CodexCLIPlatform.
+"""Tests for CodexCLIRuntime.
 
-Same mocking approach as ClaudeCLIPlatform — patch run_streaming_subprocess
+Same mocking approach as ClaudeCLIRuntime — patch run_streaming_subprocess
 so tests are independent of Codex authentication and CLI surface drift.
 """
 
@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
-from src.platforms.base import Capability
-from src.platforms.codex_cli import CodexCLIPlatform
+from src.runtimes.base import Capability
+from src.runtimes.codex_cli import CodexCLIRuntime
 from src.models import AgentResult, TaskContext
 
 
@@ -27,28 +27,28 @@ def _ndjson_lines(*objs) -> list[bytes]:
     return [(json.dumps(o) + "\n").encode() for o in objs]
 
 
-class TestCodexCLIPlatformContract:
+class TestCodexCLIRuntimeContract:
     def test_name(self):
-        assert CodexCLIPlatform.name == "codex_cli"
+        assert CodexCLIRuntime.name == "codex_cli"
 
     def test_capabilities_includes_streaming_json(self):
-        assert Capability.STREAMING_JSON in CodexCLIPlatform.capabilities
+        assert Capability.STREAMING_JSON in CodexCLIRuntime.capabilities
 
     def test_capabilities_excludes_skills_and_memory_md(self):
         # Codex doesn't share Claude's skills / MEMORY.md infrastructure.
-        assert Capability.SKILLS not in CodexCLIPlatform.capabilities
-        assert Capability.MEMORY_MD not in CodexCLIPlatform.capabilities
+        assert Capability.SKILLS not in CodexCLIRuntime.capabilities
+        assert Capability.MEMORY_MD not in CodexCLIRuntime.capabilities
 
     @pytest.mark.asyncio
     async def test_lifecycle_basic(self):
-        platform = CodexCLIPlatform(profile=None)
+        platform = CodexCLIRuntime(profile=None)
         await platform.start(_make_task())
         assert await platform.is_alive()
         await platform.stop()
         assert not await platform.is_alive()
 
 
-class TestCodexCLIPlatformWait:
+class TestCodexCLIRuntimeWait:
     @pytest.mark.asyncio
     async def test_happy_path_simple_message(self):
         """Verified shape from `codex exec --json` v0.125.0 — single agent_message turn."""
@@ -75,9 +75,9 @@ class TestCodexCLIPlatformWait:
                 on_line(line)
             return 0
 
-        platform = CodexCLIPlatform(profile=None)
+        platform = CodexCLIRuntime(profile=None)
         await platform.start(_make_task())
-        with patch("src.platforms.codex_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.codex_cli.run_streaming_subprocess", side_effect=fake_run):
             output = await platform.wait()
 
         assert output.result == AgentResult.COMPLETED
@@ -158,9 +158,9 @@ class TestCodexCLIPlatformWait:
                 on_line(line)
             return 0
 
-        platform = CodexCLIPlatform(profile=None)
+        platform = CodexCLIRuntime(profile=None)
         await platform.start(_make_task())
-        with patch("src.platforms.codex_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.codex_cli.run_streaming_subprocess", side_effect=fake_run):
             output = await platform.wait(on_message=on_message)
 
         assert output.result == AgentResult.COMPLETED
@@ -186,9 +186,9 @@ class TestCodexCLIPlatformWait:
                 on_line(line)
             return 1
 
-        platform = CodexCLIPlatform(profile=None)
+        platform = CodexCLIRuntime(profile=None)
         await platform.start(_make_task())
-        with patch("src.platforms.codex_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.codex_cli.run_streaming_subprocess", side_effect=fake_run):
             output = await platform.wait()
         assert output.result == AgentResult.FAILED
         assert "Unauthorized" in (output.error_message or "")
@@ -214,9 +214,9 @@ class TestCodexCLIPlatformWait:
                 on_line(line)
             return 0
 
-        platform = CodexCLIPlatform(profile=None)
+        platform = CodexCLIRuntime(profile=None)
         await platform.start(_make_task())
-        with patch("src.platforms.codex_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.codex_cli.run_streaming_subprocess", side_effect=fake_run):
             output = await platform.wait()
         assert output.result == AgentResult.COMPLETED
 
@@ -225,9 +225,9 @@ class TestCodexCLIPlatformWait:
         async def fake_run(cmd, env, cwd, on_line, cancel_event, **kwargs):  # noqa: ARG001
             return 1
 
-        platform = CodexCLIPlatform(profile=None)
+        platform = CodexCLIRuntime(profile=None)
         await platform.start(_make_task())
-        with patch("src.platforms.codex_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.codex_cli.run_streaming_subprocess", side_effect=fake_run):
             output = await platform.wait()
         assert output.result == AgentResult.FAILED
 
@@ -237,7 +237,7 @@ class TestCodexCLIPlatformWait:
             await cancel_event.wait()
             return -15
 
-        platform = CodexCLIPlatform(profile=None)
+        platform = CodexCLIRuntime(profile=None)
         await platform.start(_make_task())
 
         async def cancel_soon():
@@ -245,7 +245,7 @@ class TestCodexCLIPlatformWait:
             await platform.stop()
 
         asyncio.create_task(cancel_soon())
-        with patch("src.platforms.codex_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.codex_cli.run_streaming_subprocess", side_effect=fake_run):
             output = await platform.wait()
 
         assert output.result == AgentResult.FAILED

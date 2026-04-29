@@ -13,7 +13,7 @@ import pytest
 
 from src.chat_providers import ChatProvider
 from src.chat_providers.types import ChatResponse, TextBlock, ToolUseBlock
-from src.platforms.supervisor import Supervisor, _hook_provider_override, _infer_provider_from_model
+from src.runtimes.supervisor import Supervisor, _hook_provider_override, _infer_provider_from_model
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ class TestResolveCallProvider:
         result = sup._resolve_call_provider({"model": "claude-sonnet-4-20250514"})
         assert result is None
 
-    @patch("src.platforms.supervisor.create_chat_provider")
+    @patch("src.runtimes.supervisor.create_chat_provider")
     def test_different_model_creates_provider(self, mock_create):
         """A different model triggers provider creation."""
         new_provider = RecordingProvider("gemini-2.5-flash")
@@ -138,7 +138,7 @@ class TestResolveCallProvider:
         assert cfg.provider == "gemini"
         assert cfg.model == "gemini-2.5-flash"
 
-    @patch("src.platforms.supervisor.create_chat_provider")
+    @patch("src.runtimes.supervisor.create_chat_provider")
     def test_explicit_provider_override(self, mock_create):
         """Explicit provider key takes precedence over model-based inference."""
         new_provider = RecordingProvider("custom-model")
@@ -156,7 +156,7 @@ class TestResolveCallProvider:
         cfg = mock_create.call_args[0][0]
         assert cfg.provider == "ollama"
 
-    @patch("src.platforms.supervisor.create_chat_provider")
+    @patch("src.runtimes.supervisor.create_chat_provider")
     def test_provider_only_override(self, mock_create):
         """Specifying only provider (no model) triggers swap if different."""
         new_provider = RecordingProvider("gemini-2.5-flash")
@@ -169,7 +169,7 @@ class TestResolveCallProvider:
         cfg = mock_create.call_args[0][0]
         assert cfg.provider == "gemini"
 
-    @patch("src.platforms.supervisor.create_chat_provider")
+    @patch("src.runtimes.supervisor.create_chat_provider")
     def test_create_failure_returns_none(self, mock_create):
         """When create_chat_provider returns None, _resolve_call_provider
         gracefully falls back (returns None)."""
@@ -179,7 +179,7 @@ class TestResolveCallProvider:
         result = sup._resolve_call_provider({"model": "gemini-2.5-flash"})
         assert result is None
 
-    @patch("src.platforms.supervisor.create_chat_provider")
+    @patch("src.runtimes.supervisor.create_chat_provider")
     def test_logging_wraps_provider(self, mock_create):
         """When LLM logging is enabled, the swapped provider is wrapped
         with LoggedChatProvider."""
@@ -195,7 +195,7 @@ class TestResolveCallProvider:
         result = sup._resolve_call_provider({"model": "gemini-2.5-flash"})
         assert isinstance(result, LoggedChatProvider)
 
-    @patch("src.platforms.supervisor.create_chat_provider")
+    @patch("src.runtimes.supervisor.create_chat_provider")
     def test_base_url_forwarded_for_ollama(self, mock_create):
         """base_url from llm_config is forwarded to the ChatProviderConfig."""
         new_provider = RecordingProvider("qwen2.5:32b")

@@ -255,11 +255,11 @@ agent_profiles = Table(
     # (e.g. claude-opus + claude-sonnet both set ``memory_scope_id='claude'``
     # so insights accumulate in a single pool).
     Column("memory_scope_id", Text, nullable=True),
-    # Which platform executes tasks for this profile.  Default
-    # ``"claude_sdk"`` matches ``config.default_platform``; ``"supervisor"``
+    # Which runtime executes tasks for this profile.  Default
+    # ``"claude_sdk"`` matches ``config.default_runtime``; ``"supervisor"``
     # routes to the in-process Supervisor singleton (tool-call-only, no
-    # workspace).  Other values must match a name in the PlatformRegistry.
-    Column("platform", Text, nullable=False, server_default="'claude_sdk'"),
+    # workspace).  Other values must match a name in the RuntimeRegistry.
+    Column("runtime", Text, nullable=False, server_default="'claude_sdk'"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )

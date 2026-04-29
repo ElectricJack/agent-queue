@@ -1,6 +1,6 @@
 """Shared subprocess + NDJSON helpers for CLI-based platforms.
 
-Both :class:`ClaudeCLIPlatform` and :class:`CodexCLIPlatform` use these
+Both :class:`ClaudeCLIRuntime` and :class:`CodexCLIRuntime` use these
 to manage subprocess lifecycle, stream stdout line-by-line, parse NDJSON
 events, and isolate environment variables.  Keep platform-specific
 parsing / classification out of this module — only generic plumbing.

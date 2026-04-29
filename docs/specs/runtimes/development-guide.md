@@ -4,7 +4,7 @@ tags: [spec, platforms, development-guide]
 
 # Platform Development Guide
 
-How to add a new agent platform to agent-queue so that a third-party AI coding
+How to add a new agent runtime to agent-queue so that a third-party AI coding
 agent can be orchestrated alongside (or instead of) Claude Code.
 
 ---
@@ -12,31 +12,31 @@ agent can be orchestrated alongside (or instead of) Claude Code.
 ## 1. Architecture Overview
 
 The orchestrator never talks to a specific agent implementation directly. All
-agent backends sit behind the `Platform` abstract base class defined in
-`src/platforms/base.py`. The orchestrator interacts with platforms exclusively
+agent backends sit behind the `Runtime` abstract base class defined in
+`src/runtimes/base.py`. The orchestrator interacts with platforms exclusively
 through four async methods — `start`, `wait`, `stop`, `is_alive` — and uses
-`PlatformRegistry` (in `src/platforms/__init__.py`) to instantiate them by type
+`RuntimeRegistry` (in `src/runtimes/__init__.py`) to instantiate them by type
 string.
 
 ```
 Orchestrator
   │
   ├─ PlatformRegistry.create("claude")  → ClaudeSDKPlatform
-  ├─ PlatformRegistry.create("my-agent") → MyAgentPlatform   ← you add this
+  ├─ PlatformRegistry.create("my-agent") → MyAgentRuntime   ← you add this
   │
-  └─ Platform ABC (start / wait / stop / is_alive)
+  └─ Runtime ABC (start / wait / stop / is_alive)
 ```
 
-**Canonical example:** `src/platforms/claude_sdk.py` — read this file end-to-end
-before writing your own platform. It demonstrates every pattern described below.
-See also `docs/specs/platforms/claude_sdk.md` for the full behavioral spec.
+**Canonical example:** `src/runtimes/claude_sdk.py` — read this file end-to-end
+before writing your own runtime. It demonstrates every pattern described below.
+See also `docs/specs/runtimes/claude_sdk.md` for the full behavioral spec.
 
 ---
 
-## 2. The Platform ABC
+## 2. The Runtime ABC
 
 ```python
-# src/platforms/base.py
+# src/runtimes/base.py
 
 MessageCallback = Callable[[str], Awaitable[None]]
 
@@ -75,7 +75,7 @@ Separating `start` from `wait` lets the orchestrator set up the Discord thread
 
 All types are defined in `src/models.py`.
 
-### TaskContext — what your platform receives
+### TaskContext — what your runtime receives
 
 ```python
 @dataclass
@@ -90,7 +90,7 @@ class TaskContext:
     mcp_servers: dict[str, dict] = field(...)      # MCP server configurations
 ```
 
-Your platform should:
+Your runtime should:
 
 - Use `description` as the primary prompt.
 - Append `acceptance_criteria`, `test_commands`, and `attached_context` into your
@@ -98,7 +98,7 @@ Your platform should:
 - Set the working directory to `checkout_path` when launching the agent process.
 - Forward `mcp_servers` if your agent supports the Model Context Protocol.
 
-### AgentOutput — what your platform returns
+### AgentOutput — what your runtime returns
 
 ```python
 @dataclass
@@ -140,12 +140,12 @@ may split or truncate. Typical patterns:
 
 ## 4. Step-by-Step: Creating a New Platform
 
-### 4.1 Create the platform module
+### 4.1 Create the runtime module
 
-Create `src/platforms/my_agent.py`:
+Create `src/runtimes/my_agent.py`:
 
 ```python
-"""My Agent platform — runs tasks via the My Agent CLI/SDK."""
+"""My Agent runtime — runs tasks via the My Agent CLI/SDK runtime."""
 
 from __future__ import annotations
 
@@ -161,15 +161,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MyAgentConfig:
-    """Configuration for the My Agent platform."""
+    """Configuration for the My Agent runtime."""
     model: str = "default-model"
     api_key: str = ""
     timeout_seconds: int = 600
     # Add agent-specific config fields here
 
 
-class MyAgentPlatform(Platform):
-    """Platform implementation for My Agent."""
+class MyAgentRuntime(Platform):
+    """Runtime implementation for My Agent."""
 
     def __init__(self, config: MyAgentConfig | None = None, llm_logger=None):
         self._config = config or MyAgentConfig()
@@ -182,7 +182,7 @@ class MyAgentPlatform(Platform):
         """Store task context; do NOT launch the agent process yet."""
         self._task = task
         self._cancel_event.clear()
-        logger.info("MyAgent platform starting for task %s", task.task_id)
+        logger.info("MyAgent runtime starting for task %s", task.task_id)
 
     async def wait(self, on_message: MessageCallback | None = None) -> AgentOutput:
         """Launch the agent, stream output, return result."""
@@ -221,7 +221,7 @@ class MyAgentPlatform(Platform):
             )
 
         except Exception as e:
-            logger.exception("MyAgent platform error")
+            logger.exception("MyAgent runtime error")
             # Map specific errors to appropriate AgentResult values
             if self._is_token_error(e):
                 return AgentOutput(
@@ -277,11 +277,11 @@ class MyAgentPlatform(Platform):
 
 ### 4.2 Register in PlatformRegistry
 
-Edit `src/platforms/__init__.py` to import your platform and add a branch to
+Edit `src/runtimes/__init__.py` to import your runtime and add a branch to
 `create()`:
 
 ```python
-from src.platforms.my_agent import MyAgentPlatform, MyAgentConfig
+from src.platforms.my_agent import MyAgentRuntime, MyAgentConfig
 
 class PlatformRegistry:
     def __init__(self, claude_config=None, my_agent_config=None, llm_logger=None):
@@ -294,14 +294,14 @@ class PlatformRegistry:
             config = self._config_for_profile(profile)
             return ClaudeSDKPlatform(config, llm_logger=self._llm_logger)
         if agent_type == "my-agent":
-            return MyAgentPlatform(self._my_agent_config, llm_logger=self._llm_logger)
+            return MyAgentRuntime(self._my_agent_config, llm_logger=self._llm_logger)
         raise ValueError(f"Unknown agent type: {agent_type}")
 ```
 
 ### 4.3 Add configuration
 
-If your platform needs config values from `config.yaml`, add a new section to
-`AppConfig` in `src/config.py` and wire it through to `PlatformRegistry` in
+If your runtime needs config values from `config.yaml`, add a new section to
+`AppConfig` in `src/config.py` and wire it through to `RuntimeRegistry` in
 `src/main.py` or `src/orchestrator.py`.
 
 ### 4.4 Write tests
@@ -318,8 +318,8 @@ The orchestrator's heartbeat monitor calls `is_alive()` periodically. If it
 returns `False` while a task is `IN_PROGRESS`, the orchestrator considers the
 agent dead and may restart or fail the task.
 
-**Pitfall:** If your platform returns `False` from `is_alive()` before `wait()`
-has finished, the orchestrator will race against your platform. Make sure
+**Pitfall:** If your runtime returns `False` from `is_alive()` before `wait()`
+has finished, the orchestrator will race against your runtime. Make sure
 `is_alive()` returns `True` for the entire duration between `start()` and the
 completion of `wait()`.
 
@@ -401,7 +401,7 @@ raise an error — never run in the orchestrator's own working directory.
 
 ### 5.7 Streaming vs. Batched Output
 
-The `on_message` callback is optional. Your platform must work correctly whether
+The `on_message` callback is optional. Your runtime must work correctly whether
 or not a callback is provided. Never assume `on_message` is set — always guard
 calls:
 
@@ -414,9 +414,9 @@ if on_message and text:
 
 ## 6. Agent Profiles
 
-The orchestrator supports `AgentProfile` objects that override platform config on
+The orchestrator supports `AgentProfile` objects that override runtime config on
 a per-task basis (model, permission mode, allowed tools, MCP servers, etc.). Your
-platform should accept profile overrides through `PlatformRegistry._config_for_profile`.
+runtime should accept profile overrides through `RuntimeRegistry._config_for_profile`.
 
 See `AgentProfile` in `src/models.py` for the full field list:
 
@@ -434,7 +434,7 @@ class AgentProfile:
     install: dict = field(default_factory=dict)
 ```
 
-When profile fields are empty, fall through to the platform's base config
+When profile fields are empty, fall through to the runtime's base config
 defaults.
 
 ---
@@ -444,7 +444,7 @@ defaults.
 ### 7.1 Structured logging with correlation context
 
 The system uses structured JSON logging with per-task correlation IDs (see
-`src/logging_config.py`). Your platform should use the standard `logging` module
+`src/logging_config.py`). Your runtime should use the standard `logging` module
 — correlation fields (`task_id`, `project_id`, `cycle_id`) are automatically
 injected into every log record by the `CorrelationFilter`.
 
@@ -461,7 +461,7 @@ async def start(self, task: TaskContext) -> None:
     # Just use the standard logger — fields are injected automatically.
     ctx = get_correlation_context()
     logger.info(
-        "MyAgent platform starting for task %s",
+        "MyAgent runtime starting for task %s",
         ctx.get("task_id", task.task_id),
     )
 ```
@@ -471,8 +471,8 @@ IDs explicitly (e.g., for passing to external APIs or custom log calls).
 
 ### 7.2 LLM session logging
 
-The `PlatformRegistry` passes an optional `llm_logger` (an `LLMLogger` instance
-from `src/llm_logger.py`) to each platform. If present, your platform should call
+The `RuntimeRegistry` passes an optional `llm_logger` (an `LLMLogger` instance
+from `src/llm_logger.py`) to each runtime. If present, your runtime should call
 `llm_logger.log_agent_session()` after each execution to record prompt, output,
 duration, and token usage for analytics.
 
@@ -518,7 +518,7 @@ Create `tests/test_my_agent_platform.py`:
 ```python
 import asyncio
 import pytest
-from src.platforms.my_agent import MyAgentPlatform, MyAgentConfig
+from src.platforms.my_agent import MyAgentRuntime, MyAgentConfig
 from src.models import AgentOutput, AgentResult, TaskContext
 
 
@@ -535,25 +535,25 @@ def make_task(**overrides) -> TaskContext:
 
 @pytest.mark.asyncio
 async def test_start_stores_task():
-    platform = MyAgentPlatform()
+    runtime = MyAgentRuntime()
     task = make_task()
-    await platform.start(task)
-    assert await platform.is_alive()
+    await runtime.start(task)
+    assert await runtime.is_alive()
 
 
 @pytest.mark.asyncio
 async def test_stop_cancels():
-    platform = MyAgentPlatform()
-    await platform.start(make_task())
-    await platform.stop()
-    assert not await platform.is_alive()
+    runtime = MyAgentRuntime()
+    await runtime.start(make_task())
+    await runtime.stop()
+    assert not await runtime.is_alive()
 
 
 @pytest.mark.asyncio
 async def test_wait_returns_agent_output():
-    platform = MyAgentPlatform()
-    await platform.start(make_task())
-    result = await platform.wait()
+    runtime = MyAgentRuntime()
+    await runtime.start(make_task())
+    result = await runtime.wait()
     assert isinstance(result, AgentOutput)
     assert result.result in AgentResult
 
@@ -562,24 +562,24 @@ async def test_wait_returns_agent_output():
 async def test_on_message_callback_called():
     """Verify that wait() streams output through the callback."""
     messages = []
-    platform = MyAgentPlatform()
-    await platform.start(make_task())
-    await platform.wait(on_message=lambda text: messages.append(text))
+    runtime = MyAgentRuntime()
+    await runtime.start(make_task())
+    await runtime.wait(on_message=lambda text: messages.append(text))
     # Assert messages were received (specifics depend on your agent)
 
 
 @pytest.mark.asyncio
 async def test_cancellation_during_wait():
     """Verify that stop() causes wait() to return FAILED."""
-    platform = MyAgentPlatform()
-    await platform.start(make_task())
+    runtime = MyAgentRuntime()
+    await runtime.start(make_task())
 
     async def cancel_after_delay():
         await asyncio.sleep(0.1)
-        await platform.stop()
+        await runtime.stop()
 
     asyncio.create_task(cancel_after_delay())
-    result = await platform.wait()
+    result = await runtime.wait()
     assert result.result == AgentResult.FAILED
 ```
 
@@ -596,9 +596,9 @@ a trivial task (e.g., "create a file called hello.txt") and verifies:
 
 ## 9. Checklist
 
-Before submitting your platform:
+Before submitting your runtime:
 
-- [ ] Subclasses `Platform` from `src/platforms/base.py`
+- [ ] Subclasses `Runtime` from `src/runtimes/base.py`
 - [ ] Implements all four abstract methods (`start`, `wait`, `stop`, `is_alive`)
 - [ ] `start()` stores context but does NOT launch the agent
 - [ ] `wait()` checks `_cancel_event` on every loop iteration

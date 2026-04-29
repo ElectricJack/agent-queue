@@ -2,7 +2,7 @@
 
 This package is used by the ChatAgent (Discord chat interface) and the
 PlaybookExecutor (automated playbook runs) -- NOT by agent execution, which
-goes through the platform layer in ``src/platforms/``.
+goes through the platform layer in ``src/runtimes/``.
 
 The factory function ``create_chat_provider`` selects between Anthropic
 (direct API, Vertex AI, Bedrock, or Claude Code OAuth) and Ollama

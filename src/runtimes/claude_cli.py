@@ -1,6 +1,6 @@
 """Claude CLI platform — runs tasks via the `claude` CLI in -p stream-json mode.
 
-Functionally equivalent to :class:`ClaudeSDKPlatform` (the SDK is a wrapper
+Functionally equivalent to :class:`ClaudeSDKRuntime` (the SDK is a wrapper
 around this CLI), but reaches the agent without the SDK as an intermediary.
 This is the path of least resistance when the SDK lacks a feature the CLI
 exposes.
@@ -20,12 +20,12 @@ from typing import ClassVar
 
 from src.logging_config import get_correlation_context
 from src.models import AgentOutput, AgentResult, TaskContext
-from src.platforms._subprocess import (
+from src.runtimes._subprocess import (
     isolated_env,
     parse_ndjson_line,
     run_streaming_subprocess,
 )
-from src.platforms.base import Capability, MessageCallback, Platform
+from src.runtimes.base import Capability, MessageCallback, Runtime
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 def _classify_error_result(error_msg: str) -> AgentResult:
     """Classify a CLI error message into the appropriate AgentResult.
 
-    Mirrors the ClaudeSDKPlatform classifier so behavior is consistent
+    Mirrors the ClaudeSDKRuntime classifier so behavior is consistent
     across the two Claude platforms.
     """
     lower = error_msg.lower()
@@ -48,8 +48,8 @@ def _classify_error_result(error_msg: str) -> AgentResult:
     return AgentResult.FAILED
 
 
-class ClaudeCLIPlatform(Platform):
-    """Platform that wraps the `claude -p --output-format stream-json` CLI."""
+class ClaudeCLIRuntime(Runtime):
+    """Runtime that wraps the `claude -p --output-format stream-json` CLI."""
 
     name: ClassVar[str] = "claude_cli"
     capabilities: ClassVar[frozenset[Capability]] = frozenset(Capability)
@@ -186,7 +186,7 @@ class ClaudeCLIPlatform(Platform):
         return cmd
 
     def _build_prompt(self) -> str:
-        """Assemble the agent prompt from TaskContext (mirrors ClaudeSDKPlatform)."""
+        """Assemble the agent prompt from TaskContext (mirrors ClaudeSDKRuntime)."""
         assert self._task is not None
         parts: list[str] = []
         if self._task.l0_role:

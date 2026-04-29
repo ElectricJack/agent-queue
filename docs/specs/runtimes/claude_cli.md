@@ -7,10 +7,10 @@ tags: [spec, platforms, claude_cli]
 Wraps `claude -p --output-format stream-json --verbose` via subprocess. Functionally
 equivalent to ClaudeSDKPlatform in v1 (the SDK is itself a wrapper around this CLI).
 
-Implementation: `src/platforms/claude_cli.py`. Shared subprocess helpers at
-`src/platforms/_subprocess.py`.
+Implementation: `src/runtimes/claude_cli.py`. Shared subprocess helpers at
+`src/runtimes/_subprocess.py`.
 
-Capability set: `frozenset(Capability)` — same as the SDK platform in v1.
+Capability set: `frozenset(Capability)` — same as the SDK runtime in v1.
 
 ## Verified event schema (claude v2.1.116)
 
@@ -26,4 +26,4 @@ Capability set: `frozenset(Capability)` — same as the SDK platform in v1.
 Token accounting: `usage.input_tokens + usage.output_tokens` (matches existing
 ClaudeSDKPlatform behavior — cache token fields are not summed).
 
-(Detailed behavioral spec to be expanded as the platform matures.)
+(Detailed behavioral spec to be expanded as the runtime matures.)

@@ -2,13 +2,13 @@
 id: email-triager
 name: Email Triager
 description: Tool-call-only profile that triages incoming emails and creates tasks
-tags: [example, supervisor-platform]
+tags: [example, supervisor-runtime]
 ---
 
 # Email Triager
 
 <!--
-  TEMPLATE: Example supervisor-platform (tool-call-only) profile.
+  TEMPLATE: Example supervisor-runtime (tool-call-only) profile.
 
   To use:
   1. Copy this file to vault/agent-types/<id>/profile.md (or
@@ -20,9 +20,9 @@ tags: [example, supervisor-platform]
      subprocess, no workspace, just the supervisor's tool-use loop
      bounded by ``allowed_tools``.
 
-  Why supervisor platform: lightweight tool-call-only work (triage,
+  Why supervisor runtime: lightweight tool-call-only work (triage,
   classify, summarise, route, send-message) doesn't need a code-editing
-  agent and a workspace.  Supervisor-platform tasks run in-process,
+  agent and a workspace.  Supervisor-runtime tasks run in-process,
   parallelise without contention, and are sandboxed by the profile's
   allowed_tools list.
 -->
@@ -36,11 +36,11 @@ write replies.
 ## Config
 ```json
 {
-  "platform": "supervisor"
+  "runtime": "supervisor"
 }
 ```
 
-The ``platform: supervisor`` field is what dispatches this profile through
+The ``runtime: supervisor`` field is what dispatches this profile through
 the daemon-wide :class:`Supervisor` singleton instead of spawning a
 subprocess session.  Tasks assigned to this profile run in-process via
 ``Supervisor.chat()`` and are sandboxed to the ``allowed_tools`` listed

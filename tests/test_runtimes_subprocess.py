@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.platforms._subprocess import (
+from src.runtimes._subprocess import (
     isolated_env,
     parse_ndjson_line,
     run_streaming_subprocess,
@@ -31,7 +31,7 @@ class TestParseNdjsonLine:
     def test_malformed_json_returns_none(self, caplog):
         import logging
 
-        with caplog.at_level(logging.DEBUG, logger="src.platforms._subprocess"):
+        with caplog.at_level(logging.DEBUG, logger="src.runtimes._subprocess"):
             result = parse_ndjson_line(b"not json\n")
         assert result is None
         assert any("malformed" in r.message.lower() for r in caplog.records)
@@ -138,7 +138,7 @@ class TestRunStreamingSubprocess:
             if line == b'{"b":2}\n':
                 raise RuntimeError("boom")
 
-        with caplog.at_level(logging.ERROR, logger="src.platforms._subprocess"):
+        with caplog.at_level(logging.ERROR, logger="src.runtimes._subprocess"):
             exit_code = await run_streaming_subprocess(
                 cmd=["python3", str(script)],
                 env=isolated_env(),

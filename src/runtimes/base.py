@@ -1,4 +1,4 @@
-"""Platform ABC -- the contract between the orchestrator and any AI agent.
+"""Runtime ABC -- the contract between the orchestrator and any AI agent.
 
 The interface is intentionally minimal: ``start``, ``wait``, ``stop``,
 ``is_alive``.  Two ClassVars (``name``, ``capabilities``) declare the
@@ -54,7 +54,7 @@ class Capability(StrEnum):
     PERMISSION_CALLBACKS = "permission_callbacks"
 
 
-class Platform(ABC):
+class Runtime(ABC):
     """Base class for AI agent platforms (e.g. ClaudeSDK, ClaudeCLI, CodexCLI)."""
 
     name: ClassVar[str]

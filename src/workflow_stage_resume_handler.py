@@ -264,7 +264,7 @@ class WorkflowStageResumeHandler:
                 return
 
             # 5. Create a Supervisor for LLM calls
-            from src.platforms.supervisor import Supervisor
+            from src.runtimes.supervisor import Supervisor
 
             supervisor = Supervisor(self._orchestrator, self._config)
             if not supervisor.initialize():

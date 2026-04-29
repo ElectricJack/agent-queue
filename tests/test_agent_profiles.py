@@ -3,7 +3,7 @@
 Covers:
 - Database CRUD for agent_profiles table
 - Profile resolution cascade (task → project → None)
-- ClaudeSDKPlatform._config_from_profile() merging
+- ClaudeSDKRuntime._config_from_profile() merging
 - CommandHandler profile commands
 - Task/project profile_id and default_profile_id
 - Config loading from YAML
@@ -15,8 +15,8 @@ Covers:
 
 import pytest
 
-from src.platforms.base import Platform
-from src.platforms.claude_sdk import ClaudeAdapterConfig, ClaudeSDKPlatform
+from src.runtimes.base import Runtime
+from src.runtimes.claude_sdk import ClaudeAdapterConfig, ClaudeSDKRuntime
 from src.config import AppConfig, AgentProfileConfig, load_config
 from src.database import Database
 from src.models import (
@@ -338,7 +338,7 @@ class TestProfileResolution:
 
 
 # ---------------------------------------------------------------------------
-# ClaudeSDKPlatform._config_from_profile() merging
+# ClaudeSDKRuntime._config_from_profile() merging
 # ---------------------------------------------------------------------------
 
 _DEFAULTS = ClaudeAdapterConfig()
@@ -346,19 +346,19 @@ _DEFAULTS = ClaudeAdapterConfig()
 
 class TestConfigFromProfile:
     def test_no_profile_returns_defaults(self):
-        result = ClaudeSDKPlatform._config_from_profile(None)
+        result = ClaudeSDKRuntime._config_from_profile(None)
         assert result.model == _DEFAULTS.model
         assert result.permission_mode == _DEFAULTS.permission_mode
         assert result.allowed_tools == _DEFAULTS.allowed_tools
 
     def test_profile_overrides_model(self):
         profile = AgentProfile(id="test", name="Test", model="claude-opus-4-20250514")
-        result = ClaudeSDKPlatform._config_from_profile(profile)
+        result = ClaudeSDKRuntime._config_from_profile(profile)
         assert result.model == "claude-opus-4-20250514"
 
     def test_profile_empty_model_falls_through_to_default(self):
         profile = AgentProfile(id="test", name="Test", model="")
-        result = ClaudeSDKPlatform._config_from_profile(profile)
+        result = ClaudeSDKRuntime._config_from_profile(profile)
         assert result.model == _DEFAULTS.model
 
     def test_profile_overrides_allowed_tools(self):
@@ -367,17 +367,17 @@ class TestConfigFromProfile:
             name="Reviewer",
             allowed_tools=["Read", "Glob", "Grep"],
         )
-        result = ClaudeSDKPlatform._config_from_profile(profile)
+        result = ClaudeSDKRuntime._config_from_profile(profile)
         assert result.allowed_tools == ["Read", "Glob", "Grep"]
 
     def test_profile_empty_tools_falls_through_to_default(self):
         profile = AgentProfile(id="test", name="Test", allowed_tools=[])
-        result = ClaudeSDKPlatform._config_from_profile(profile)
+        result = ClaudeSDKRuntime._config_from_profile(profile)
         assert result.allowed_tools == _DEFAULTS.allowed_tools
 
     def test_profile_overrides_permission_mode(self):
         profile = AgentProfile(id="test", name="Test", permission_mode="plan")
-        result = ClaudeSDKPlatform._config_from_profile(profile)
+        result = ClaudeSDKRuntime._config_from_profile(profile)
         assert result.permission_mode == "plan"
 
     def test_full_override(self):
@@ -388,7 +388,7 @@ class TestConfigFromProfile:
             permission_mode="plan",
             allowed_tools=["Read", "Glob"],
         )
-        result = ClaudeSDKPlatform._config_from_profile(profile)
+        result = ClaudeSDKRuntime._config_from_profile(profile)
         assert result.model == "claude-opus-4-20250514"
         assert result.permission_mode == "plan"
         assert result.allowed_tools == ["Read", "Glob"]
@@ -794,7 +794,7 @@ class TestProfileCommands:
 # ---------------------------------------------------------------------------
 
 
-class MockAdapter(Platform):
+class MockAdapter(Runtime):
     def __init__(self, result=AgentResult.COMPLETED, tokens=1000):
         self._result = result
         self._tokens = tokens
@@ -819,7 +819,7 @@ class MockAdapterFactory:
         self.last_profile = None
         self.create_calls = []
 
-    def create(self, agent_type: str, profile=None, llm_logger=None) -> Platform:
+    def create(self, agent_type: str, profile=None, llm_logger=None) -> Runtime:
         self.last_profile = profile
         self.create_calls.append({"agent_type": agent_type, "profile": profile})
         return MockAdapter(result=self.result, tokens=self.tokens)
@@ -861,7 +861,7 @@ class TestProfileEnforcement:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        orch = Orchestrator(config, platforms=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         if orch._running_tasks:

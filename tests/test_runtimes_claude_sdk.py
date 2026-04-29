@@ -1,4 +1,4 @@
-"""Tests for ClaudeSDKPlatform._build_prompt() L0/L1 injection.
+"""Tests for ClaudeSDKRuntime._build_prompt() L0/L1 injection.
 
 Migrated from tests/test_adapters.py::TestClaudeAdapterL0L1Injection
 as part of the platforms refactor (Task 4).
@@ -7,13 +7,13 @@ as part of the platforms refactor (Task 4).
 from src.models import TaskContext
 
 
-class TestClaudeSDKPlatformL0L1Injection:
-    """Verify ClaudeSDKPlatform._build_prompt() injects L0 and L1 from TaskContext."""
+class TestClaudeSDKRuntimeL0L1Injection:
+    """Verify ClaudeSDKRuntime._build_prompt() injects L0 and L1 from TaskContext."""
 
     def _make_platform(self):
-        from src.platforms.claude_sdk import ClaudeSDKPlatform
+        from src.runtimes.claude_sdk import ClaudeSDKRuntime
 
-        return ClaudeSDKPlatform(profile=None)
+        return ClaudeSDKRuntime(profile=None)
 
     def test_build_prompt_injects_l0_role(self):
         platform = self._make_platform()

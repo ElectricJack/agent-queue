@@ -389,7 +389,7 @@ class TestSandboxedPlaybook:
             id=profile_id,
             name=profile_id,
             allowed_tools=list(allowed_tools),
-            platform="supervisor",
+            runtime="supervisor",
         )
 
     async def test_no_profile_id_means_unscoped(
@@ -6332,7 +6332,7 @@ class TestResumePlaybookCommand:
         )
 
         with (
-            patch("src.platforms.supervisor.Supervisor") as MockSupervisor,
+            patch("src.runtimes.supervisor.Supervisor") as MockSupervisor,
             patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
         ):
             mock_sup = MockSupervisor.return_value
@@ -6401,7 +6401,7 @@ class TestResumePlaybookCommand:
         )
 
         with (
-            patch("src.platforms.supervisor.Supervisor") as MockSupervisor,
+            patch("src.runtimes.supervisor.Supervisor") as MockSupervisor,
             patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
         ):
             mock_sup = MockSupervisor.return_value
@@ -6471,7 +6471,7 @@ class TestResumePlaybookCommand:
         )
 
         with (
-            patch("src.platforms.supervisor.Supervisor") as MockSupervisor,
+            patch("src.runtimes.supervisor.Supervisor") as MockSupervisor,
             patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
         ):
             mock_sup = MockSupervisor.return_value
@@ -6559,7 +6559,7 @@ class TestResumePlaybookCommand:
         )
         handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
 
-        with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
+        with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
             mock_sup = MockSupervisor.return_value
             mock_sup.initialize.return_value = False  # Fails to init
             result = await handler._cmd_resume_playbook(
@@ -6666,7 +6666,7 @@ class TestResumePlaybookCommand:
         handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
 
         with (
-            patch("src.platforms.supervisor.Supervisor") as MockSupervisor,
+            patch("src.runtimes.supervisor.Supervisor") as MockSupervisor,
             patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
         ):
             mock_sup = MockSupervisor.return_value
@@ -9049,24 +9049,24 @@ class TestForEachCollectsParsedJson:
 # ---------------------------------------------------------------------------
 
 
-class TestPlatformAwareNodeDispatch:
+class TestRuntimeAwareNodeDispatch:
     """Playbooks whose profile sets ``platform != "supervisor"`` must
-    dispatch each node through the PlatformRegistry (one-shot subprocess
+    dispatch each node through the RuntimeRegistry (one-shot subprocess
     session per node) instead of supervisor.chat().  Profiles with
     ``platform: supervisor`` keep the historical in-process path."""
 
-    async def test_supervisor_platform_uses_supervisor_chat(
+    async def test_supervisor_runtime_uses_supervisor_chat(
         self, mock_supervisor, simple_graph, event_data
     ):
         from src.models import AgentProfile
 
         runner = PlaybookRunner(simple_graph, event_data, mock_supervisor)
-        runner._profile = AgentProfile(id="p", name="P", platform="supervisor")
+        runner._profile = AgentProfile(id="p", name="P", runtime="supervisor")
         await runner.run()
         # supervisor.chat() got called — historical path, no platform registry.
         mock_supervisor.chat.assert_called_once()
 
-    async def test_subprocess_platform_dispatches_via_registry(
+    async def test_subprocess_runtime_dispatches_via_registry(
         self, mock_supervisor, simple_graph, event_data
     ):
         from src.models import AgentOutput, AgentProfile, AgentResult
@@ -9092,29 +9092,29 @@ class TestPlatformAwareNodeDispatch:
             simple_graph,
             event_data,
             mock_supervisor,
-            platforms=registry,
+            runtimes=registry,
         )
-        runner._profile = AgentProfile(id="p", name="P", platform="claude_sdk")
+        runner._profile = AgentProfile(id="p", name="P", runtime="claude_sdk")
         await runner.run()
 
         # supervisor.chat() must NOT be called for non-supervisor platforms.
         mock_supervisor.chat.assert_not_called()
-        # Platform was built from the playbook profile and dispatched once.
+        # Runtime was built from the playbook profile and dispatched once.
         registry.create.assert_called_once()
         platform_obj.start.assert_called_once()
         platform_obj.wait.assert_called_once()
         platform_obj.stop.assert_called_once()
 
-    async def test_subprocess_platform_without_registry_raises(
+    async def test_subprocess_runtime_without_registry_raises(
         self, mock_supervisor, simple_graph, event_data
     ):
         from src.models import AgentProfile
 
         runner = PlaybookRunner(simple_graph, event_data, mock_supervisor)
-        runner._profile = AgentProfile(id="p", name="P", platform="claude_sdk")
+        runner._profile = AgentProfile(id="p", name="P", runtime="claude_sdk")
 
-        # No platforms= wired → non-supervisor dispatch must fail with a
+        # No runtimes= wired → non-supervisor dispatch must fail with a
         # clear configuration error rather than silently falling through.
         result = await runner.run()
         assert result.status == "failed"
-        assert "platforms" in (result.error or "")
+        assert "runtimes" in (result.error or "")

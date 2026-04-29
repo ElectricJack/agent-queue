@@ -74,22 +74,22 @@ class TestConfigLoading:
             load_config("/nonexistent/config.yaml")
 
 
-def test_default_platform_default_value():
+def test_default_runtime_default_value():
     cfg = AppConfig()
-    assert cfg.default_platform == "claude_sdk"
+    assert cfg.default_runtime == "claude_sdk"
 
 
-def test_default_platform_validation_accepts_known():
+def test_default_runtime_validation_accepts_known():
     for name in ("claude_sdk", "claude_cli", "codex_cli"):
         cfg = AppConfig()
-        cfg.default_platform = name
-        errors = [e for e in cfg.validate() if e.field == "default_platform"]
+        cfg.default_runtime = name
+        errors = [e for e in cfg.validate() if e.field == "default_runtime"]
         assert errors == [], f"{name} flagged as invalid"
 
 
-def test_default_platform_validation_rejects_unknown():
+def test_default_runtime_validation_rejects_unknown():
     cfg = AppConfig()
-    cfg.default_platform = "made-up"
-    errors = [e for e in cfg.validate() if e.field == "default_platform"]
+    cfg.default_runtime = "made-up"
+    errors = [e for e in cfg.validate() if e.field == "default_runtime"]
     assert len(errors) == 1
     assert "unknown platform" in errors[0].message.lower()

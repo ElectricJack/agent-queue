@@ -33,7 +33,7 @@ import time
 from src.config import ConfigValidationError, load_config
 from src.logging_config import setup_logging
 from src.messaging import create_messaging_adapter
-from src.platforms import default_registry
+from src.runtimes import default_registry
 from src.messaging.base import MessagingAdapter
 from src.models import AgentState, TaskStatus
 from src.orchestrator import Orchestrator
@@ -75,17 +75,17 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         db_path = config.database.url or config.database_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-    orch = Orchestrator(config, platforms=None)
+    orch = Orchestrator(config, runtimes=None)
     # Daemon-wide Supervisor — used by the messaging adapter for chat AND
     # registered as the singleton ``"supervisor"`` platform so tasks with
     # ``profile.platform="supervisor"`` execute in-process via the same
     # instance.  Construct before the registry so default_registry() can
     # register the singleton.
-    from src.platforms.supervisor import Supervisor
+    from src.runtimes.supervisor import Supervisor
 
     shared_supervisor = Supervisor(orch, config, llm_logger=orch.llm_logger)
     registry = default_registry(supervisor=shared_supervisor)
-    orch._platforms = registry
+    orch._runtimes = registry
     await orch.initialize()
     # Initialise the shared Supervisor's chat provider.  Failures here are
     # non-fatal — supervisor-platform tasks will surface a clear error if

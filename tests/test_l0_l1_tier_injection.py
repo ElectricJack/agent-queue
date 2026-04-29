@@ -17,8 +17,8 @@ Test cases from docs/specs/design/roadmap.md §3.3.7:
 import pytest
 from unittest.mock import AsyncMock
 
-from src.platforms.base import Platform
-from src.platforms.claude_sdk import ClaudeSDKPlatform
+from src.runtimes.base import Runtime
+from src.runtimes.claude_sdk import ClaudeSDKRuntime
 from src.config import AppConfig
 from src.models import (
     Agent,
@@ -61,7 +61,7 @@ L1_FACTS_REALISTIC = (
 # -- Test helpers --------------------------------------------------------
 
 
-class CapturingMockAdapter(Platform):
+class CapturingMockAdapter(Runtime):
     """MockAdapter that captures the TaskContext passed to start()."""
 
     def __init__(self):
@@ -86,7 +86,7 @@ class CapturingMockAdapterFactory:
     def __init__(self):
         self.adapters: list[CapturingMockAdapter] = []
 
-    def create(self, agent_type: str, profile=None, llm_logger=None) -> Platform:
+    def create(self, agent_type: str, profile=None, llm_logger=None) -> Runtime:
         adapter = CapturingMockAdapter()
         self.adapters.append(adapter)
         return adapter
@@ -141,7 +141,7 @@ async def orch_env(tmp_path):
         workspace_dir=str(tmp_path / "workspaces"),
     )
     factory = CapturingMockAdapterFactory()
-    o = Orchestrator(config, platforms=factory)
+    o = Orchestrator(config, runtimes=factory)
     await o.initialize()
     yield o, factory
     await o.wait_for_running_tasks(timeout=10)
@@ -563,8 +563,8 @@ class TestL0L1InSystemPrompt:
     """(f) L0+L1 content appears in the system prompt section (not user message)."""
 
     def test_l0_l1_present_in_adapter_system_prompt(self):
-        """L0 and L1 appear in ClaudeSDKPlatform._build_prompt() output."""
-        adapter = ClaudeSDKPlatform()
+        """L0 and L1 appear in ClaudeSDKRuntime._build_prompt() output."""
+        adapter = ClaudeSDKRuntime()
         adapter._task = TaskContext(
             description="## Task\nImplement the feature.",
             l0_role=L0_ROLE_REALISTIC,
@@ -578,7 +578,7 @@ class TestL0L1InSystemPrompt:
 
     def test_l0_before_l1_before_description_in_prompt(self):
         """System prompt ordering: L0 → L1 → description."""
-        adapter = ClaudeSDKPlatform()
+        adapter = ClaudeSDKRuntime()
         adapter._task = TaskContext(
             description="## Task\nImplement the feature.",
             l0_role="You are a QA agent.",
@@ -615,7 +615,7 @@ class TestL0L1InSystemPrompt:
 
     def test_l0_l1_with_all_task_context_extras(self):
         """L0+L1 coexist with acceptance criteria and test commands in prompt."""
-        adapter = ClaudeSDKPlatform()
+        adapter = ClaudeSDKRuntime()
         adapter._task = TaskContext(
             description="## Task\nBuild the API.",
             l0_role="You are an API developer.",
@@ -792,7 +792,7 @@ class TestL0L1ProfileWithoutProjectFacts:
         assert ctx.l1_facts == facts
 
         # Verify both would appear in the adapter's built prompt
-        adapter = ClaudeSDKPlatform()
+        adapter = ClaudeSDKRuntime()
         adapter._task = ctx
         prompt = adapter._build_prompt()
 

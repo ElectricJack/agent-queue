@@ -430,7 +430,7 @@ class TestEventDrivenResume:
         handler.subscribe()
 
         try:
-            with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
+            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
                 mock_sup = MagicMock()
                 mock_sup.initialize.return_value = True
                 MockSupervisor.return_value = mock_sup
@@ -473,7 +473,7 @@ class TestEventDrivenResume:
         handler.subscribe()
 
         try:
-            with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
+            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
                 mock_sup = MagicMock()
                 mock_sup.initialize.return_value = True
                 MockSupervisor.return_value = mock_sup
@@ -809,7 +809,7 @@ class TestResumePlaybookCommand:
         mock_orchestrator.bus = EventBus()
         mock_config = MagicMock()
 
-        with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
+        with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
             mock_sup = MagicMock()
             mock_sup.initialize.return_value = True
             mock_sup.chat = AsyncMock(side_effect=["1", "Plan executed."])
@@ -1009,7 +1009,7 @@ class TestMultiplePausedRuns:
         handler.subscribe()
 
         try:
-            with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
+            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
                 mock_sup = MagicMock()
                 mock_sup.initialize.return_value = True
                 MockSupervisor.return_value = mock_sup
@@ -1063,7 +1063,7 @@ class TestMultiplePausedRuns:
         handler.subscribe()
 
         try:
-            with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
+            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
                 mock_sup = MagicMock()
                 mock_sup.initialize.return_value = True
                 MockSupervisor.return_value = mock_sup
@@ -1347,7 +1347,7 @@ class TestStateSurvivesRestart:
         new_handler.subscribe()
 
         try:
-            with patch("src.platforms.supervisor.Supervisor") as MockSupervisor:
+            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
                 mock_sup = MagicMock()
                 mock_sup.initialize.return_value = True
                 MockSupervisor.return_value = mock_sup

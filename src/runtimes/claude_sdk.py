@@ -1,8 +1,8 @@
 """Claude Code adapter -- runs AI agent tasks via the Claude Agent SDK.
 
-This implements Platform by wrapping the Claude Code CLI as a subprocess,
+This implements Runtime by wrapping the Claude Code CLI as a subprocess,
 communicating through the SDK's streaming protocol.  The orchestrator sees
-only the Platform interface; all Claude-specific concerns live here.
+only the Runtime interface; all Claude-specific concerns live here.
 
 Key design decisions:
 
@@ -35,7 +35,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from src.platforms.base import Capability, MessageCallback, Platform
+from src.runtimes.base import Capability, MessageCallback, Runtime
 from src.logging_config import get_correlation_context
 from src.models import AgentOutput, AgentResult, TaskContext
 
@@ -322,8 +322,8 @@ class ClaudeAdapterConfig:
     max_turns: int = 20000  # Allow long-running multi-step tasks (100x default)
 
 
-class ClaudeSDKPlatform(Platform):
-    """Platform implementation that runs tasks via the Claude Code CLI.
+class ClaudeSDKRuntime(Runtime):
+    """Runtime implementation that runs tasks via the Claude Code CLI.
 
     Each task gets a fresh SDK query (subprocess).  The platform streams
     messages back through the on_message callback and collects the final

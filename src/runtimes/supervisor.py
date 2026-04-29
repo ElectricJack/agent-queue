@@ -38,7 +38,7 @@ from src.config import AppConfig, ChatProviderConfig
 from src.llm_logger import LLMLogger
 from src.models import AgentOutput, AgentResult, TaskContext
 from src.orchestrator import Orchestrator
-from src.platforms.base import Capability, MessageCallback, Platform
+from src.runtimes.base import Capability, MessageCallback, Runtime
 from src.reflection import ReflectionEngine, ReflectionVerdict
 from src.tools.registry import ToolRegistry as _ToolRegistry
 
@@ -72,7 +72,7 @@ _last_tool_actions_var: contextvars.ContextVar[list[str] | None] = contextvars.C
     "_last_tool_actions_var", default=None
 )
 
-# Per-task state for the Supervisor-as-Platform code path.  The orchestrator
+# Per-task state for the Supervisor-as-Runtime code path.  The orchestrator
 # calls Supervisor.start(task), then Supervisor.wait(), then Supervisor.stop()
 # on the daemon-wide singleton.  These ContextVars carry the active
 # TaskContext and per-task cancel signal so concurrent supervisor-runtime
@@ -170,8 +170,8 @@ def _infer_provider_from_model(model: str) -> str | None:
     return None
 
 
-class Supervisor(Platform):
-    """In-process LLM supervisor — both the chat brain AND a Platform.
+class Supervisor(Runtime):
+    """In-process LLM supervisor — both the chat brain AND a Runtime.
 
     Owns the tool definitions, system prompt, LLM client, and multi-turn
     tool-use loop.  Two roles in one class:
@@ -180,9 +180,9 @@ class Supervisor(Platform):
        (and friends like ``summarize()``, ``break_plan_into_tasks()``).
        Multi-turn conversation history flows through the caller.
 
-    2. **Platform** (``runtime: supervisor`` profile).  The orchestrator
+    2. **Runtime** (``runtime: supervisor`` profile).  The orchestrator
        calls ``start(task) → wait() → stop()`` on the daemon-wide
-       singleton — registered in :class:`PlatformRegistry` via
+       singleton — registered in :class:`RuntimeRegistry` via
        ``default_registry(supervisor=...)``.  Per-task state lives in
        module-level ContextVars (``_task_var``, ``_cancel_var``) so
        concurrent supervisor-runtime task dispatches don't race.
@@ -195,8 +195,8 @@ class Supervisor(Platform):
     Discord slash commands and the supervisor use the same code path.
     """
 
-    # Platform contract — Supervisor is registered as a singleton in the
-    # PlatformRegistry under ``name``.  The capabilities set lists what
+    # Runtime contract — Supervisor is registered as a singleton in the
+    # RuntimeRegistry under ``name``.  The capabilities set lists what
     # supervisor-runtime tasks can rely on; "MCP" so profiles can attach
     # MCP servers, no PLAN_MODE/RESUME because supervisor doesn't run
     # subprocess sessions.
@@ -1878,7 +1878,7 @@ class Supervisor(Platform):
         return await self.handler.execute(name, input_data)
 
     # ------------------------------------------------------------------
-    # Platform contract — orchestrator dispatches profile.platform="supervisor"
+    # Runtime contract — orchestrator dispatches profile.runtime="supervisor"
     # tasks via these methods.  Per-task state lives in ContextVars so the
     # daemon-wide singleton can run many concurrent task dispatches without
     # racing.  ``profile`` rides on TaskContext.profile (set by the

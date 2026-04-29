@@ -40,7 +40,7 @@ Orchestrator                    Platform                    Agent Process
 
 ### 1. Create the Platform File
 
-Create `src/platforms/your_agent.py`:
+Create `src/runtimes/your_agent.py`:
 
 ```python
 """YourAgent platform — wraps the YourAgent CLI/SDK for agent-queue orchestration."""
@@ -107,7 +107,7 @@ class YourAgentPlatform(Platform):
         )
 
     async def start(self, task: TaskContext) -> None:
-        """Prepare the platform for task execution.
+        """Prepare the runtime for task execution.
 
         Store the task context and reset cancellation state. The actual
         agent process is NOT launched here — that happens in wait().
@@ -214,7 +214,7 @@ class YourAgentPlatform(Platform):
         """Construct the full prompt from TaskContext fields.
 
         The orchestrator populates TaskContext with everything the agent
-        needs. Your platform should map these fields to whatever format
+        needs. Your runtime should map these fields to whatever format
         your agent expects.
         """
         parts = [task.description]
@@ -239,10 +239,10 @@ class YourAgentPlatform(Platform):
 
 ### 2. Register in PlatformRegistry
 
-Edit `src/platforms/__init__.py` to add your platform to `default_registry()`:
+Edit `src/runtimes/__init__.py` to add your runtime to `default_registry()`:
 
 ```python
-# src/platforms/__init__.py
+# src/runtimes/__init__.py
 def default_registry() -> PlatformRegistry:
     from src.platforms.claude_sdk import ClaudeSDKPlatform
     from src.platforms.your_agent import YourAgentPlatform  # add this
@@ -252,7 +252,7 @@ def default_registry() -> PlatformRegistry:
     })
 ```
 
-`PlatformRegistry` is a simple dict-based lookup — no factory class needed.
+`RuntimeRegistry` is a simple dict-based lookup — no factory class needed.
 Instantiation happens via `PlatformRegistry.create(name, profile, llm_logger)`,
 which calls `cls(profile=profile, llm_logger=llm_logger)` on the registered class.
 
@@ -265,14 +265,14 @@ new platform, register agents with your type string:
 /add-agent name="my-agent" type="your_agent"
 ```
 
-The orchestrator will automatically use your platform when scheduling tasks
+The orchestrator will automatically use your runtime when scheduling tasks
 to agents of this type.
 
 ## Key Interfaces
 
 ### TaskContext (Input)
 
-The `TaskContext` dataclass is everything the platform receives about the task:
+The `TaskContext` dataclass is everything the runtime receives about the task:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -287,7 +287,7 @@ The `TaskContext` dataclass is everything the platform receives about the task:
 
 ### AgentOutput (Output)
 
-The `AgentOutput` dataclass is what the platform returns:
+The `AgentOutput` dataclass is what the runtime returns:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -322,7 +322,7 @@ meaningful — they appear directly in the Discord thread.
 
 Platforms receive per-task configuration overrides via `AgentProfile`. The
 profile is passed at construction time; profile→config translation belongs in
-a `_config_from_profile` static method on your platform class (see
+a `_config_from_profile` static method on your runtime class (see
 `ClaudeSDKPlatform._config_from_profile()` for the canonical example):
 
 ```python
@@ -344,12 +344,12 @@ Profile fields available for override include:
 - **system_prompt_suffix** — extra instructions
 - **permission_mode** — tool permission mode
 
-When a profile field is empty, fall through to the platform's base config
+When a profile field is empty, fall through to the runtime's base config
 defaults.
 
 ## Testing Your Platform
 
-1. **Unit test** the platform in isolation with mock subprocesses
+1. **Unit test** the runtime in isolation with mock subprocesses
 2. **Integration test** with a real agent binary and a test workspace
 3. **End-to-end test** by registering an agent and creating a test task
 
@@ -383,13 +383,13 @@ async def test_stop():
 
 ## Reference: ClaudeSDKPlatform
 
-The existing [[specs/platforms/claude_sdk|ClaudeSDKPlatform]] (`src/platforms/claude_sdk.py`) is the reference
+The existing [[specs/platforms/claude_sdk|ClaudeSDKPlatform]] (`src/runtimes/claude_sdk.py`) is the reference
 implementation. Key patterns to follow:
 
 - **Profile-bound construction**: `__init__(self, profile=None, llm_logger=None)` with
   profile→config translation in `_config_from_profile()` static method
 - **ClassVar declarations**: `name: ClassVar[str]` and `capabilities: ClassVar[frozenset[Capability]]`
-  are required by the `Platform` ABC
+  are required by the `Runtime` ABC
 - **Cooperative cancellation**: Use `asyncio.Event` for `_cancel_event`; check it on
   every loop iteration in `wait()`
 - **Environment scrubbing**: Clear agent-specific env vars to avoid conflicts

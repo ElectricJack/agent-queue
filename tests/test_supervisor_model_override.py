@@ -20,7 +20,7 @@ import pytest
 
 from src.chat_providers import ChatProvider
 from src.chat_providers.types import ChatResponse, TextBlock
-from src.platforms.supervisor import Supervisor, _infer_provider_from_model
+from src.runtimes.supervisor import Supervisor, _infer_provider_from_model
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ class TestModelOverrideRouting:
         swap_calls: list[dict] = []
         swap_provider = RecordingProvider("gemini-2.5-flash", swap_calls)
 
-        with patch("src.platforms.supervisor.create_chat_provider", return_value=swap_provider):
+        with patch("src.runtimes.supervisor.create_chat_provider", return_value=swap_provider):
             result = await sup.chat(
                 text="hello",
                 user_name="tester",
@@ -124,7 +124,7 @@ class TestModelOverrideRouting:
         swap_calls: list[dict] = []
         swap_provider = RecordingProvider("qwen2.5:32b", swap_calls)
 
-        with patch("src.platforms.supervisor.create_chat_provider", return_value=swap_provider):
+        with patch("src.runtimes.supervisor.create_chat_provider", return_value=swap_provider):
             await sup.chat(
                 text="hello",
                 user_name="tester",
@@ -147,7 +147,7 @@ class TestModelOverrideRouting:
         swap_calls: list[dict] = []
         swap_provider = RecordingProvider("claude-opus-4-20250514", swap_calls)
 
-        with patch("src.platforms.supervisor.create_chat_provider", return_value=swap_provider):
+        with patch("src.runtimes.supervisor.create_chat_provider", return_value=swap_provider):
             await sup.chat(
                 text="hello",
                 user_name="tester",
@@ -164,7 +164,7 @@ class TestModelOverrideRouting:
         """When model is 'gemini-*', the ChatProviderConfig.provider is 'gemini'."""
         sup, _, _ = _make_supervisor()
 
-        with patch("src.platforms.supervisor.create_chat_provider") as mock_create:
+        with patch("src.runtimes.supervisor.create_chat_provider") as mock_create:
             mock_create.return_value = RecordingProvider("gemini-2.5-flash")
             sup._resolve_call_provider({"model": "gemini-2.5-flash"})
 
@@ -177,7 +177,7 @@ class TestModelOverrideRouting:
         """An explicit 'provider' key overrides what would be inferred from model."""
         sup, _, _ = _make_supervisor()
 
-        with patch("src.platforms.supervisor.create_chat_provider") as mock_create:
+        with patch("src.runtimes.supervisor.create_chat_provider") as mock_create:
             mock_create.return_value = RecordingProvider("some-model")
             sup._resolve_call_provider(
                 {
@@ -268,7 +268,7 @@ class TestInvalidModelHandling:
         provider type since _infer_provider_from_model returns None."""
         sup, _, _ = _make_supervisor()
 
-        with patch("src.platforms.supervisor.create_chat_provider") as mock_create:
+        with patch("src.runtimes.supervisor.create_chat_provider") as mock_create:
             mock_create.return_value = RecordingProvider("gpt-4o")
             sup._resolve_call_provider({"model": "gpt-4o"})
 
@@ -284,7 +284,7 @@ class TestInvalidModelHandling:
         the system gracefully falls back to the default provider."""
         sup, _, default_calls = _make_supervisor()
 
-        with patch("src.platforms.supervisor.create_chat_provider", return_value=None):
+        with patch("src.runtimes.supervisor.create_chat_provider", return_value=None):
             result = await sup.chat(
                 text="hello",
                 user_name="tester",
@@ -331,7 +331,7 @@ class TestOverrideSingleCallScope:
         swap_provider = RecordingProvider("gemini-2.5-flash", swap_calls)
 
         # Call 1: with llm_config (uses swap provider)
-        with patch("src.platforms.supervisor.create_chat_provider", return_value=swap_provider):
+        with patch("src.runtimes.supervisor.create_chat_provider", return_value=swap_provider):
             await sup.chat(
                 text="first",
                 user_name="tester",
@@ -363,7 +363,7 @@ class TestOverrideSingleCallScope:
         assert len(default_calls) == 1
 
         # Call 2: gemini override
-        with patch("src.platforms.supervisor.create_chat_provider", return_value=gemini_provider):
+        with patch("src.runtimes.supervisor.create_chat_provider", return_value=gemini_provider):
             await sup.chat(
                 text="msg2",
                 user_name="tester",
@@ -376,7 +376,7 @@ class TestOverrideSingleCallScope:
         assert len(default_calls) == 2
 
         # Call 4: ollama override
-        with patch("src.platforms.supervisor.create_chat_provider", return_value=ollama_provider):
+        with patch("src.runtimes.supervisor.create_chat_provider", return_value=ollama_provider):
             await sup.chat(
                 text="msg4",
                 user_name="tester",
@@ -400,7 +400,7 @@ class TestOverrideSingleCallScope:
 
         swap_provider = RecordingProvider("gemini-2.5-flash")
 
-        with patch("src.platforms.supervisor.create_chat_provider", return_value=swap_provider):
+        with patch("src.runtimes.supervisor.create_chat_provider", return_value=swap_provider):
             await sup.chat(
                 text="hello",
                 user_name="tester",
@@ -443,7 +443,7 @@ class TestAdditionalParameterPassthrough:
         swap_calls: list[dict] = []
         swap_provider = RecordingProvider("gemini-2.5-flash", swap_calls)
 
-        with patch("src.platforms.supervisor.create_chat_provider", return_value=swap_provider):
+        with patch("src.runtimes.supervisor.create_chat_provider", return_value=swap_provider):
             await sup.chat(
                 text="hello",
                 user_name="tester",
@@ -462,7 +462,7 @@ class TestAdditionalParameterPassthrough:
         swap_calls: list[dict] = []
         swap_provider = RecordingProvider("gemini-2.5-flash", swap_calls)
 
-        with patch("src.platforms.supervisor.create_chat_provider", return_value=swap_provider):
+        with patch("src.runtimes.supervisor.create_chat_provider", return_value=swap_provider):
             await sup.chat(
                 text="hello",
                 user_name="tester",
@@ -476,7 +476,7 @@ class TestAdditionalParameterPassthrough:
         """base_url from llm_config is passed to the ChatProviderConfig."""
         sup, _, _ = _make_supervisor()
 
-        with patch("src.platforms.supervisor.create_chat_provider") as mock_create:
+        with patch("src.runtimes.supervisor.create_chat_provider") as mock_create:
             mock_create.return_value = RecordingProvider("qwen2.5:32b")
             sup._resolve_call_provider(
                 {
@@ -494,7 +494,7 @@ class TestAdditionalParameterPassthrough:
         """api_key from llm_config is passed to the ChatProviderConfig."""
         sup, _, _ = _make_supervisor()
 
-        with patch("src.platforms.supervisor.create_chat_provider") as mock_create:
+        with patch("src.runtimes.supervisor.create_chat_provider") as mock_create:
             mock_create.return_value = RecordingProvider("gemini-2.5-flash")
             sup._resolve_call_provider(
                 {
@@ -529,7 +529,7 @@ class TestConcurrentCallIsolation:
         ollama_provider = RecordingProvider("qwen2.5:32b", ollama_calls)
 
         # Call 1: Gemini
-        with patch("src.platforms.supervisor.create_chat_provider", return_value=gemini_provider):
+        with patch("src.runtimes.supervisor.create_chat_provider", return_value=gemini_provider):
             await sup.chat(
                 text="gemini task",
                 user_name="tester",
@@ -537,7 +537,7 @@ class TestConcurrentCallIsolation:
             )
 
         # Call 2: Ollama
-        with patch("src.platforms.supervisor.create_chat_provider", return_value=ollama_provider):
+        with patch("src.runtimes.supervisor.create_chat_provider", return_value=ollama_provider):
             await sup.chat(
                 text="ollama task",
                 user_name="tester",

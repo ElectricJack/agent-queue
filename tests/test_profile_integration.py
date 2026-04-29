@@ -8,14 +8,14 @@ Two gaps the unit tests don't cover:
 2. Negative isolation: a non-profiled task does NOT inherit tools/MCP from
    another profile, and profile A tasks don't get profile B's config.
 
-Uses CapturingMockAdapter + CapturingPlatformRegistry to capture the merged
+Uses CapturingMockAdapter + CapturingRuntimeRegistry to capture the merged
 ClaudeAdapterConfig and the TaskContext at each stage of execution.
 """
 
 import pytest
 
-from src.platforms.base import Platform
-from src.platforms.claude_sdk import ClaudeAdapterConfig, ClaudeSDKPlatform
+from src.runtimes.base import Runtime
+from src.runtimes.claude_sdk import ClaudeAdapterConfig, ClaudeSDKRuntime
 from src.config import AppConfig, McpServerConfig
 from src.database import Database
 from src.models import (
@@ -71,7 +71,7 @@ def _no_inject_mcp() -> McpServerConfig:
 # ---------------------------------------------------------------------------
 
 
-class CapturingMockAdapter(Platform):
+class CapturingMockAdapter(Runtime):
     """Records the TaskContext passed to start() for later assertions."""
 
     def __init__(self, config: ClaudeAdapterConfig):
@@ -91,8 +91,8 @@ class CapturingMockAdapter(Platform):
         return True
 
 
-class CapturingPlatformRegistry:
-    """Captures the merged ClaudeAdapterConfig produced by ClaudeSDKPlatform.
+class CapturingRuntimeRegistry:
+    """Captures the merged ClaudeAdapterConfig produced by ClaudeSDKRuntime.
 
     After each create() call, the merged config, profile, and adapter are
     available for inspection.
@@ -106,8 +106,8 @@ class CapturingPlatformRegistry:
         self.configs_created: list[ClaudeAdapterConfig] = []
         self.profiles_received: list[AgentProfile | None] = []
 
-    def create(self, agent_type: str, profile: AgentProfile | None = None, llm_logger=None) -> Platform:
-        merged = ClaudeSDKPlatform._config_from_profile(profile)
+    def create(self, agent_type: str, profile: AgentProfile | None = None, llm_logger=None) -> Runtime:
+        merged = ClaudeSDKRuntime._config_from_profile(profile)
         self.profiles_received.append(profile)
         self.configs_created.append(merged)
         adapter = CapturingMockAdapter(merged)
@@ -166,14 +166,14 @@ class TestToolEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingPlatformRegistry()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, platforms=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -260,14 +260,14 @@ class TestMCPEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingPlatformRegistry()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, platforms=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -364,14 +364,14 @@ class TestProfileIsolation:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingPlatformRegistry()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, platforms=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -442,14 +442,14 @@ class TestMultiProfileIsolation:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingPlatformRegistry()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, platforms=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -531,14 +531,14 @@ class TestInstallCheckIntegration:
     async def handler(self, tmp_path):
         from src.commands.handler import CommandHandler
 
-        factory = CapturingPlatformRegistry()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, platforms=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         handler = CommandHandler(orch, config)
         yield handler, factory
@@ -608,14 +608,14 @@ class TestProjectDefaultProfileEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingPlatformRegistry()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, platforms=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -736,14 +736,14 @@ class TestMCPAutoInjection:
     async def env_with_mcp(self, tmp_path):
         from src.config import McpServerConfig
 
-        factory = CapturingPlatformRegistry()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=McpServerConfig(enabled=True, host="127.0.0.1", port=8082),
         )
-        orch = Orchestrator(config, platforms=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -753,14 +753,14 @@ class TestMCPAutoInjection:
     async def env_mcp_disabled(self, tmp_path):
         from src.config import McpServerConfig
 
-        factory = CapturingPlatformRegistry()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=McpServerConfig(enabled=False),
         )
-        orch = Orchestrator(config, platforms=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -770,7 +770,7 @@ class TestMCPAutoInjection:
     async def env_inject_disabled(self, tmp_path):
         from src.config import McpServerConfig
 
-        factory = CapturingPlatformRegistry()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -782,7 +782,7 @@ class TestMCPAutoInjection:
                 inject_into_tasks=False,
             ),
         )
-        orch = Orchestrator(config, platforms=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -929,14 +929,14 @@ class TestModelOverrideEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingPlatformRegistry()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, platforms=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)

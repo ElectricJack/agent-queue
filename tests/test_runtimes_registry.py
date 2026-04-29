@@ -1,15 +1,15 @@
-"""Tests for PlatformRegistry."""
+"""Tests for RuntimeRegistry."""
 
 from __future__ import annotations
 
 import pytest
 
-from src.platforms import PlatformRegistry
-from src.platforms.base import Capability, MessageCallback, Platform
+from src.runtimes import RuntimeRegistry
+from src.runtimes.base import Capability, MessageCallback, Runtime
 from src.models import AgentOutput, AgentResult, TaskContext
 
 
-class _FakePlatform(Platform):
+class _FakeRuntime(Runtime):
     name = "fake"
     capabilities = frozenset({Capability.STREAMING_JSON})
 
@@ -30,27 +30,27 @@ class _FakePlatform(Platform):
         return False
 
 
-class TestPlatformRegistry:
+class TestRuntimeRegistry:
     def test_empty_registry_unknown_returns_none(self):
-        reg = PlatformRegistry(platforms={})
+        reg = RuntimeRegistry(runtimes={})
         assert reg.get("anything") is None
 
     def test_register_and_get(self):
-        reg = PlatformRegistry(platforms={"fake": _FakePlatform})
-        assert reg.get("fake") is _FakePlatform
+        reg = RuntimeRegistry(runtimes={"fake": _FakeRuntime})
+        assert reg.get("fake") is _FakeRuntime
 
     def test_names_returns_registered_keys(self):
-        reg = PlatformRegistry(platforms={"fake": _FakePlatform, "other": _FakePlatform})
+        reg = RuntimeRegistry(runtimes={"fake": _FakeRuntime, "other": _FakeRuntime})
         assert sorted(reg.names()) == ["fake", "other"]
 
     def test_create_returns_instance_with_profile_and_logger(self):
-        reg = PlatformRegistry(platforms={"fake": _FakePlatform})
+        reg = RuntimeRegistry(runtimes={"fake": _FakeRuntime})
         inst = reg.create("fake", profile="P", llm_logger="L")
-        assert isinstance(inst, _FakePlatform)
+        assert isinstance(inst, _FakeRuntime)
         assert inst.profile == "P"
         assert inst.llm_logger == "L"
 
     def test_create_unknown_raises_value_error(self):
-        reg = PlatformRegistry(platforms={"fake": _FakePlatform})
-        with pytest.raises(ValueError, match="Unknown platform"):
+        reg = RuntimeRegistry(runtimes={"fake": _FakeRuntime})
+        with pytest.raises(ValueError, match="Unknown runtime"):
             reg.create("nope", profile=None)

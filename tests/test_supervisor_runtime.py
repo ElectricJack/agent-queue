@@ -1,14 +1,14 @@
-"""Tests for Supervisor in its Platform role.
+"""Tests for Supervisor in its Runtime role.
 
 The Supervisor class is registered as a daemon-wide singleton in
-``PlatformRegistry``.  When a profile sets ``platform: supervisor``,
+``RuntimeRegistry``.  When a profile sets ``platform: supervisor``,
 the orchestrator dispatches via ``Supervisor.start(task) → wait() →
 stop()`` on that singleton.  Per-task state (TaskContext, cancel
 event) lives in module-level ContextVars so concurrent task dispatches
 on the same instance don't race.
 
 These tests verify:
-- Supervisor satisfies the Platform contract (start/wait/stop/is_alive)
+- Supervisor satisfies the Runtime contract (start/wait/stop/is_alive)
 - ``requires_workspace`` is False so the orchestrator skips workspace prep
 - ``profile.allowed_tools`` flows through to ``chat()`` as ``tool_overrides``
 - Two concurrent ``wait()`` calls don't race on per-task state
@@ -29,8 +29,8 @@ from src.models import (
     AgentResult,
     TaskContext,
 )
-from src.platforms.base import Platform
-from src.platforms.supervisor import (
+from src.runtimes.base import Runtime
+from src.runtimes.supervisor import (
     Supervisor,
     _cancel_var,
     _task_var,
@@ -42,7 +42,7 @@ def _make_supervisor() -> Supervisor:
     from types import SimpleNamespace
 
     sup = MagicMock(spec=Supervisor)
-    # MagicMock(spec=...) doesn't expose Platform's actual methods well —
+    # MagicMock(spec=...) doesn't expose Runtime's actual methods well —
     # real instance is simpler.  Instead, use a real Supervisor with stub
     # provider/handler/config.
     return sup
@@ -78,11 +78,11 @@ def _real_supervisor(chat_response: str = "ok") -> Supervisor:
     return sup
 
 
-class TestSupervisorPlatformContract:
-    """Supervisor must satisfy the Platform ABC and skip workspace prep."""
+class TestSupervisorRuntimeContract:
+    """Supervisor must satisfy the Runtime ABC and skip workspace prep."""
 
-    def test_is_platform_subclass(self):
-        assert issubclass(Supervisor, Platform)
+    def test_is_runtime_subclass(self):
+        assert issubclass(Supervisor, Runtime)
 
     def test_requires_workspace_is_false(self):
         # The orchestrator reads this ClassVar to decide whether to call
@@ -93,12 +93,12 @@ class TestSupervisorPlatformContract:
         # Registered in default_registry() under this exact name.
         assert Supervisor.name == "supervisor"
         # Capabilities include MCP so profiles can attach MCP servers.
-        from src.platforms.base import Capability
+        from src.runtimes.base import Capability
 
         assert Capability.MCP in Supervisor.capabilities
 
 
-class TestSupervisorPlatformLifecycle:
+class TestSupervisorRuntimeLifecycle:
     @pytest.mark.asyncio
     async def test_start_records_task_in_contextvar(self):
         sup = _real_supervisor()
@@ -114,7 +114,7 @@ class TestSupervisorPlatformLifecycle:
         profile = AgentProfile(
             id="email-triager",
             name="Email Triager",
-            platform="supervisor",
+            runtime="supervisor",
             allowed_tools=["list_tasks", "create_task"],
         )
         task = TaskContext(
@@ -164,7 +164,7 @@ class TestSupervisorPlatformLifecycle:
         assert out.result == AgentResult.FAILED
 
 
-class TestSupervisorPlatformStop:
+class TestSupervisorRuntimeStop:
     @pytest.mark.asyncio
     async def test_stop_marks_not_alive(self):
         sup = _real_supervisor()
@@ -207,7 +207,7 @@ class TestRegistrySingleton:
     """default_registry(supervisor=...) registers the singleton properly."""
 
     def test_create_returns_same_instance(self):
-        from src.platforms import default_registry
+        from src.runtimes import default_registry
 
         sup = _real_supervisor()
         registry = default_registry(supervisor=sup)
@@ -217,15 +217,15 @@ class TestRegistrySingleton:
         assert out is sup
 
     def test_supervisor_listed_in_names(self):
-        from src.platforms import default_registry
+        from src.runtimes import default_registry
 
         sup = _real_supervisor()
         registry = default_registry(supervisor=sup)
         assert "supervisor" in registry.names()
 
-    def test_no_supervisor_means_unknown_platform(self):
-        from src.platforms import default_registry
+    def test_no_supervisor_means_unknown_runtime(self):
+        from src.runtimes import default_registry
 
         registry = default_registry()  # no supervisor registered
-        with pytest.raises(ValueError, match="Unknown platform"):
+        with pytest.raises(ValueError, match="Unknown runtime"):
             registry.create("supervisor", profile=None)

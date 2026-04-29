@@ -47,14 +47,14 @@ and commit clean, working code.
   "model": "claude-sonnet-4-6",
   "permission_mode": "auto",
   "max_tokens_per_task": 100000,
-  "platform": "claude_sdk"
+  "runtime": "claude_sdk"
 }
 ```
 
-The ``platform`` field selects which Platform implementation executes
+The ``runtime`` field selects which Runtime implementation executes
 tasks for this profile.  Supported values:
 
-- ``"claude_sdk"`` (default; matches ``config.default_platform``) —
+- ``"claude_sdk"`` (default; matches ``config.default_runtime``) —
   spawns a Claude Code subprocess via the Agent SDK.  Owns a per-task
   workspace.
 - ``"claude_cli"`` — wraps ``claude -p --output-format stream-json``
@@ -64,7 +64,7 @@ tasks for this profile.  Supported values:
   :class:`Supervisor` singleton.  Tool-call-only, no workspace.
   Suitable for triage / classify / summarise / route / send-message
   work where the profile's ``allowed_tools`` defines a bounded surface.
-  See ``vault/templates/example-supervisor-platform-profile.md``.
+  See ``vault/templates/example-supervisor-runtime-profile.md``.
 
 ## Tools
 ```json

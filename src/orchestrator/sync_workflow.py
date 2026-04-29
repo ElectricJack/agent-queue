@@ -259,7 +259,7 @@ For EACH workspace listed above, perform these steps IN ORDER:
                     return
 
             # Launch the Claude Code agent for the merge work.
-            if not self._platforms:
+            if not self._runtimes:
                 await _notify(f"❌ **Sync `{task.id}`** — No platforms registry configured.")
                 await self.db.transition_task(
                     action.task_id, TaskStatus.FAILED, context="no_platforms_registry"
@@ -270,8 +270,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 return
 
             profile = await self._resolve_profile(task)
-            platform_name = self.config.default_platform
-            adapter = self._platforms.create(platform_name, profile=profile, llm_logger=self.llm_logger)
+            platform_name = self.config.default_runtime
+            adapter = self._runtimes.create(platform_name, profile=profile, llm_logger=self.llm_logger)
             self._adapters[action.agent_id] = adapter
 
             ctx = TaskContext(

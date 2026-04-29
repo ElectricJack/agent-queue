@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-from src.platforms.supervisor import Supervisor
+from src.runtimes.supervisor import Supervisor
 from src.chat_providers.base import ChatProvider
 from src.config import AppConfig
 from src.orchestrator import Orchestrator
@@ -285,7 +285,7 @@ async def _main(args: argparse.Namespace) -> None:
         # Import MockAdapterFactory locally to avoid circular deps at top level
         from tests.chat_eval.conftest import MockAdapterFactory
 
-        orch = Orchestrator(config, platforms=MockAdapterFactory())
+        orch = Orchestrator(config, runtimes=MockAdapterFactory())
         await orch.initialize()
 
         try:

@@ -1,4 +1,4 @@
-"""Tests for ClaudeCLIPlatform.
+"""Tests for ClaudeCLIRuntime.
 
 Subprocess invocation is mocked via `_subprocess.run_streaming_subprocess`
 so tests don't depend on the local `claude` CLI being authenticated.
@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
-from src.platforms.base import Capability
-from src.platforms.claude_cli import ClaudeCLIPlatform
+from src.runtimes.base import Capability
+from src.runtimes.claude_cli import ClaudeCLIRuntime
 from src.models import AgentResult, TaskContext
 
 
@@ -27,15 +27,15 @@ def _make_task(**overrides) -> TaskContext:
     return TaskContext(**defaults)
 
 
-class TestClaudeCLIPlatformContract:
+class TestClaudeCLIRuntimeContract:
     def test_name_and_capabilities(self):
-        assert ClaudeCLIPlatform.name == "claude_cli"
+        assert ClaudeCLIRuntime.name == "claude_cli"
         # Same surface as the SDK in v1.
-        assert ClaudeCLIPlatform.capabilities == frozenset(Capability)
+        assert ClaudeCLIRuntime.capabilities == frozenset(Capability)
 
     @pytest.mark.asyncio
     async def test_lifecycle_basic(self):
-        platform = ClaudeCLIPlatform(profile=None)
+        platform = ClaudeCLIRuntime(profile=None)
         await platform.start(_make_task())
         assert await platform.is_alive()
         await platform.stop()
@@ -46,7 +46,7 @@ def _ndjson_lines(*objs) -> list[bytes]:
     return [(json.dumps(o) + "\n").encode() for o in objs]
 
 
-class TestClaudeCLIPlatformWait:
+class TestClaudeCLIRuntimeWait:
     @pytest.mark.asyncio
     async def test_happy_path_completed(self):
         emitted_lines = _ndjson_lines(
@@ -65,9 +65,9 @@ class TestClaudeCLIPlatformWait:
                 on_line(line)
             return 0
 
-        platform = ClaudeCLIPlatform(profile=None)
+        platform = ClaudeCLIRuntime(profile=None)
         await platform.start(_make_task())
-        with patch("src.platforms.claude_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.claude_cli.run_streaming_subprocess", side_effect=fake_run):
             output = await platform.wait()
 
         assert output.result == AgentResult.COMPLETED
@@ -80,7 +80,7 @@ class TestClaudeCLIPlatformWait:
             await cancel_event.wait()
             return -15
 
-        platform = ClaudeCLIPlatform(profile=None)
+        platform = ClaudeCLIRuntime(profile=None)
         await platform.start(_make_task())
 
         async def cancel_soon():
@@ -88,7 +88,7 @@ class TestClaudeCLIPlatformWait:
             await platform.stop()
 
         asyncio.create_task(cancel_soon())
-        with patch("src.platforms.claude_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.claude_cli.run_streaming_subprocess", side_effect=fake_run):
             output = await platform.wait()
 
         assert output.result == AgentResult.FAILED
@@ -105,9 +105,9 @@ class TestClaudeCLIPlatformWait:
                 on_line(line)
             return 1
 
-        platform = ClaudeCLIPlatform(profile=None)
+        platform = ClaudeCLIRuntime(profile=None)
         await platform.start(_make_task())
-        with patch("src.platforms.claude_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.claude_cli.run_streaming_subprocess", side_effect=fake_run):
             output = await platform.wait()
 
         assert output.result == AgentResult.PAUSED_RATE_LIMIT
@@ -123,9 +123,9 @@ class TestClaudeCLIPlatformWait:
                 on_line(line)
             return 1
 
-        platform = ClaudeCLIPlatform(profile=None)
+        platform = ClaudeCLIRuntime(profile=None)
         await platform.start(_make_task())
-        with patch("src.platforms.claude_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.claude_cli.run_streaming_subprocess", side_effect=fake_run):
             output = await platform.wait()
 
         assert output.result == AgentResult.PAUSED_TOKENS
@@ -135,9 +135,9 @@ class TestClaudeCLIPlatformWait:
         async def fake_run(cmd, env, cwd, on_line, cancel_event, **kwargs):  # noqa: ARG001
             return 137  # killed
 
-        platform = ClaudeCLIPlatform(profile=None)
+        platform = ClaudeCLIRuntime(profile=None)
         await platform.start(_make_task())
-        with patch("src.platforms.claude_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.claude_cli.run_streaming_subprocess", side_effect=fake_run):
             output = await platform.wait()
 
         assert output.result == AgentResult.FAILED
@@ -162,9 +162,9 @@ class TestClaudeCLIPlatformWait:
                 on_line(line)
             return 0
 
-        platform = ClaudeCLIPlatform(profile=None)
+        platform = ClaudeCLIRuntime(profile=None)
         await platform.start(_make_task())
-        with patch("src.platforms.claude_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.claude_cli.run_streaming_subprocess", side_effect=fake_run):
             output = await platform.wait()
 
         assert output.result == AgentResult.COMPLETED
@@ -187,9 +187,9 @@ class TestClaudeCLIPlatformWait:
                 on_line(line)
             return 0
 
-        platform = ClaudeCLIPlatform(profile=None)
+        platform = ClaudeCLIRuntime(profile=None)
         await platform.start(_make_task())
-        with patch("src.platforms.claude_cli.run_streaming_subprocess", side_effect=fake_run):
+        with patch("src.runtimes.claude_cli.run_streaming_subprocess", side_effect=fake_run):
             await platform.wait(on_message=on_message)
 
         # At least the two assistant messages reached the callback.

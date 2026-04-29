@@ -8,15 +8,15 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 - **Core files:** `orchestrator.py`, `src/commands/` (handler + mixin modules), `supervisor.py`, `database/`, `models.py`
 - **Playbooks:** `src/playbooks/` (compiler, runner, manager, models, store, handler, state_machine, health, graph, graph_view, resume_handler)
 - **Memory:** External `aq-memory` plugin (install via `aq plugin install`), plus in-tree `facts_parser.py`, `profile_parser.py`
-- **Profiles:** `src/profiles/` — `parser.py`, `sync.py`, `migration.py`. Markdown source of truth in `vault/agent-types/<id>/profile.md` (system) and `vault/projects/<pid>/agent-types/<id>/profile.md` (project override). The profile's `## Config.platform` field selects which Platform implementation executes tasks: `"claude_sdk"` (default; subprocess), `"claude_cli"`, `"codex_cli"`, or `"supervisor"` (in-process tool-call-only via the daemon-wide Supervisor singleton).
-- **Platforms:** `src/platforms/` — `base.py` (Platform ABC, Capability enum, `requires_workspace` ClassVar), `claude_sdk.py`/`claude_cli.py`/`codex_cli.py` (subprocess platforms; require workspace), `supervisor.py` (Supervisor — both the chat brain AND a registered Platform singleton; tool-call-only, no workspace). `PlatformRegistry.create(name, profile=...)` dispatches on `profile.platform` and returns the supervisor singleton verbatim when registered via `default_registry(supervisor=...)`.
+- **Profiles:** `src/profiles/` — `parser.py`, `sync.py`, `migration.py`. Markdown source of truth in `vault/agent-types/<id>/profile.md` (system) and `vault/projects/<pid>/agent-types/<id>/profile.md` (project override). The profile's `## Config.runtime` field selects which Runtime implementation executes tasks: `"claude_sdk"` (default; subprocess), `"claude_cli"`, `"codex_cli"`, or `"supervisor"` (in-process tool-call-only via the daemon-wide Supervisor singleton).
+- **Runtimes:** `src/runtimes/` — `base.py` (Runtime ABC, Capability enum, `requires_workspace` ClassVar), `claude_sdk.py`/`claude_cli.py`/`codex_cli.py` (subprocess runtimes; require workspace), `supervisor.py` (Supervisor — both the chat brain AND a registered Runtime singleton; tool-call-only, no workspace). `RuntimeRegistry.create(name, profile=...)` dispatches on `profile.runtime` and returns the supervisor singleton verbatim when registered via `default_registry(supervisor=...)`.
 - **MCP registry:** `src/profiles/mcp_registry.py` (in-memory registry + vault watcher), `mcp_probe.py` (parallel probes, 10s timeout), `mcp_catalog.py` (cache), `mcp_inline_migration.py` (legacy extractor). Source of truth: `vault/[projects/<pid>/]mcp-servers/*.md`. Profiles reference servers by name.
 - **Config editor:** `src/config_editor.py` — ruamel round-trip writer behind `get_config` / `update_config` / `get_config_schema`. Validates via temp-file `load_config()` before swap.
 - **Intelligence:** `prompt_builder.py`, `tools/registry.py`, `reflection.py`, `llm_logger.py`, `chat_observer.py`
 - **Workflows:** `workflow_stage_resume_handler.py`, `orphan_workflow_recovery.py`, `workflow_pipeline_view.py`
 - **Plugins:** `src/plugins/` (base, registry, loader, internal/)
 - **Internal plugins:** `src/plugins/internal/` (aq-files, aq-git, aq-notes, aq-vibecop)
-- **Subsystems:** `src/platforms/`, `src/discord/`, `src/git/`, `src/tokens/`, `src/chat_providers/`, `src/messaging/`
+- **Subsystems:** `src/runtimes/`, `src/discord/`, `src/git/`, `src/tokens/`, `src/chat_providers/`, `src/messaging/`
 - **Specs:** `docs/specs/` (source of truth — specs first, then code)
 - **Design specs:** `docs/specs/design/` (principles, playbooks, memory, self-improvement, coordination, vault, profiles, roadmap)
 - **Config:** `~/.agent-queue/config.yaml`

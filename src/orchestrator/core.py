@@ -193,13 +193,13 @@ class Orchestrator(
       work is assigned) but monitoring, approvals, and promotions continue.
     """
 
-    def __init__(self, config: AppConfig, platforms=None):
+    def __init__(self, config: AppConfig, runtimes=None):
         """Initialize the orchestrator with its configuration and subsystems.
 
         Args:
             config: The application configuration (loaded from YAML).
-            platforms: :class:`~src.platforms.PlatformRegistry` used to
-                instantiate agent adapters.  When None, the orchestrator can
+            runtimes: :class:`~src.runtimes.RuntimeRegistry` used to
+                instantiate agent runtimes.  When None, the orchestrator can
                 manage state and scheduling but cannot execute tasks.
 
         The constructor wires up all subsystems but does NOT perform any
@@ -216,7 +216,7 @@ class Orchestrator(
         self.budget = BudgetManager(global_budget=config.global_token_budget_daily)
         self.git = GitManager()
         self.git.set_lock_provider(self._resolve_git_lock)
-        self._platforms = platforms
+        self._runtimes = runtimes
         # Live adapter instances keyed by agent_id.  Stored so we can call
         # adapter.stop() from admin commands (stop_task, timeout recovery).
         self._adapters: dict[str, object] = {}
@@ -545,7 +545,7 @@ class Orchestrator(
         not block waiting for an LLM-driven graph walk.
         """
         try:
-            from src.platforms.supervisor import Supervisor
+            from src.runtimes.supervisor import Supervisor
             from src.playbooks.runner import PlaybookRunner
 
             graph = playbook.to_dict()
@@ -571,7 +571,7 @@ class Orchestrator(
                 supervisor=supervisor,
                 db=self.db,
                 event_bus=self.bus,
-                platforms=getattr(self, "_platforms", None),
+                runtimes=getattr(self, "_runtimes", None),
             )
 
             async def _run() -> None:

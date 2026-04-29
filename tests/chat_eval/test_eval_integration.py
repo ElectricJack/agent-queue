@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from src.platforms.supervisor import Supervisor
+from src.runtimes.supervisor import Supervisor
 from src.chat_providers import create_chat_provider
 from src.config import AppConfig, ChatProviderConfig
 from src.orchestrator import Orchestrator
@@ -87,7 +87,7 @@ async def eval_setup(tmp_path, eval_provider_config):
         chat_provider=eval_provider_config,
     )
 
-    orch = Orchestrator(config, platforms=MockAdapterFactory())
+    orch = Orchestrator(config, runtimes=MockAdapterFactory())
     await orch.initialize()
 
     inner_provider = create_chat_provider(config.chat_provider)

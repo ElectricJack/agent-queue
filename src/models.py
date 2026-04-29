@@ -415,13 +415,13 @@ class AgentProfile:
     # multiple profiles share one memory scope (e.g. claude-opus and
     # claude-sonnet both set ``memory_scope_id='claude'``).  None = use id.
     memory_scope_id: str | None = None
-    # Which platform executes tasks for this profile.  ``"claude_sdk"`` (the
-    # default, matching ``config.default_platform``) spawns a Claude Code
+    # Which runtime executes tasks for this profile.  ``"claude_sdk"`` (the
+    # default, matching ``config.default_runtime``) spawns a Claude Code
     # subprocess; ``"supervisor"`` runs in-process via the daemon-wide
     # Supervisor (tool-call-only, no workspace).  Other values must match a
-    # name in the PlatformRegistry.  Sourced from the ``## Config`` JSON
+    # name in the RuntimeRegistry.  Sourced from the ``## Config`` JSON
     # block of the profile markdown.
-    platform: str = "claude_sdk"
+    runtime: str = "claude_sdk"
 
 
 @dataclass

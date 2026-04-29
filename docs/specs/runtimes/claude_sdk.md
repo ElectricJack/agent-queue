@@ -6,23 +6,23 @@ tags: [spec, platforms, claude-code]
 
 ## 1. Overview
 
-The platforms layer provides a pluggable interface between the [[specs/orchestrator]] and AI coding agents. All agent-specific behaviour is isolated behind a common abstract base class (`Platform`). This allows the orchestrator to drive any supported agent type through the same four-method contract without knowing which agent is running underneath.
+The platforms layer provides a pluggable interface between the [[specs/orchestrator]] and AI coding agents. All agent-specific behaviour is isolated behind a common abstract base class (`Runtime`). This allows the orchestrator to drive any supported agent type through the same four-method contract without knowing which agent is running underneath.
 
-Currently one concrete implementation exists: `ClaudeSDKPlatform`, which runs Claude Code via the `claude_agent_sdk` Python package. The `PlatformRegistry` class handles instantiation by agent-type string.
+Currently one concrete implementation exists: `ClaudeSDKPlatform`, which runs Claude Code via the `claude_agent_sdk` Python package. The `RuntimeRegistry` class handles instantiation by agent-type string.
 
 ---
 
 ## Source Files
 
-- `src/platforms/base.py` — abstract interface and `MessageCallback` type alias
-- `src/platforms/__init__.py` — `PlatformRegistry`
-- `src/platforms/claude_sdk.py` — `ClaudeSDKPlatform`, `ClaudeAdapterConfig`, `_resilient_query`
+- `src/runtimes/base.py` — abstract interface and `MessageCallback` type alias
+- `src/runtimes/__init__.py` — `RuntimeRegistry`
+- `src/runtimes/claude_sdk.py` — `ClaudeSDKPlatform`, `ClaudeAdapterConfig`, `_resilient_query`
 
 ---
 
 ## 2. Platform Interface
 
-Defined in `src/platforms/base.py`.
+Defined in `src/runtimes/base.py`.
 
 ```python
 class Platform(ABC):
@@ -42,9 +42,9 @@ An async callable that accepts a single string. The orchestrator supplies this t
 
 ### start(task: TaskContext) -> None
 
-Prepares the platform to run the given task. Stores `TaskContext` internally and resets any cancellation state. Does not launch the underlying process; actual execution begins inside `wait()`.
+Prepares the runtime to run the given task. Stores `TaskContext` internally and resets any cancellation state. Does not launch the underlying process; actual execution begins inside `wait()`.
 
-`TaskContext` fields used by the platform:
+`TaskContext` fields used by the runtime:
 
 | Field | Type | Purpose |
 |-------|------|---------|
@@ -80,7 +80,7 @@ Returns `True` when `start()` has been called and `stop()` has not. Specifically
 
 ## 3. PlatformRegistry
 
-Defined in `src/platforms/__init__.py`.
+Defined in `src/runtimes/__init__.py`.
 
 ```python
 class PlatformRegistry:
@@ -93,13 +93,13 @@ class PlatformRegistry:
 - `"claude"` — returns `ClaudeSDKPlatform(self._claude_config)`
 - Anything else — raises `ValueError("Unknown agent type: <type>")`
 
-A single `PlatformRegistry` instance is constructed at startup (by the orchestrator) with a pre-built `ClaudeAdapterConfig`. Individual `ClaudeSDKPlatform` instances are created fresh for each task execution via `registry.create("claude")`.
+A single `RuntimeRegistry` instance is constructed at startup (by the orchestrator) with a pre-built `ClaudeAdapterConfig`. Individual `ClaudeSDKPlatform` instances are created fresh for each task execution via `registry.create("claude")`.
 
 ---
 
 ## 4. ClaudeSDKPlatform
 
-Defined in `src/platforms/claude_sdk.py`.
+Defined in `src/runtimes/claude_sdk.py`.
 
 ### 4.1 Configuration (ClaudeAdapterConfig)
 
@@ -191,7 +191,7 @@ As `_resilient_query` yields parsed SDK message objects, `wait()` processes each
 
 **Cancellation check (first):** At the top of the loop body, before any other processing, `wait()` checks `self._cancel_event.is_set()`. If the event is set it immediately returns `AgentOutput(result=FAILED, summary="Cancelled", error_message="Agent was stopped")`.
 
-**Session initialisation:** A `SystemMessage` with `subtype == "init"` carries the session ID inside its `data` dict. The platform extracts and stores this as `self._session_id` for logging.
+**Session initialisation:** A `SystemMessage` with `subtype == "init"` carries the session ID inside its `data` dict. The runtime extracts and stores this as `self._session_id` for logging.
 
 **Streaming to Discord:** For every message, `_extract_message_text(message)` is called. If it returns a non-empty string and `on_message` is set, `await on_message(text)` forwards it to the caller (typically a Discord thread writer in the orchestrator).
 

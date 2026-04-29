@@ -61,7 +61,7 @@ from src.playbooks.runner_transitions import (  # noqa: F401
 if TYPE_CHECKING:
     from src.database.base import DatabaseBackend
     from src.event_bus import EventBus
-    from src.platforms.supervisor import Supervisor
+    from src.runtimes.supervisor import Supervisor
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
     event:
         The trigger event data (dict) that started this run.
     supervisor:
-        A :class:`~src.platforms.supervisor.Supervisor` instance for LLM calls.
+        A :class:`~src.runtimes.supervisor.Supervisor` instance for LLM calls.
     db:
         Database backend for persisting the :class:`PlaybookRun` record.
         When *None*, run state is not persisted (useful for testing).
@@ -144,7 +144,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         daily_token_tracker: DailyTokenTracker | None = None,
         daily_token_cap: int | None = None,
         event_bus: EventBus | None = None,
-        platforms: Any = None,
+        runtimes: Any = None,
     ):
         self.graph = graph
         self.event = event
@@ -154,12 +154,12 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         self._daily_token_tracker = daily_token_tracker
         self._daily_token_cap = daily_token_cap
         self.event_bus = event_bus
-        # Optional PlatformRegistry used by ``_execute_single_node`` to
-        # dispatch nodes whose profile.platform isn't ``"supervisor"`` —
+        # Optional RuntimeRegistry used by ``_execute_single_node`` to
+        # dispatch nodes whose profile.runtime isn't ``"supervisor"`` —
         # those run as one-shot subprocess sessions per node.  When *None*
         # and a node profile asks for non-supervisor dispatch, the runner
         # raises a clear configuration error.
-        self._platforms = platforms
+        self._runtimes = runtimes
 
         # Conversation history — kept for DB persistence and backward compat.
         # NOT used as LLM context between nodes (per-node context is built fresh).
@@ -1692,7 +1692,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             # supervisor.chat() path; any other platform spawns a one-shot
             # subprocess session for this single node.
             platform_name = (
-                self._profile.platform if self._profile is not None else "supervisor"
+                self._profile.runtime if self._profile is not None else "supervisor"
             )
             if platform_name == "supervisor":
                 coro = self.supervisor.chat(
@@ -1744,7 +1744,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         timeout: float | None,
         on_progress: Callable[[str, str | None], Awaitable[None]] | None,
     ) -> str:
-        """Dispatch a non-supervisor-platform playbook node via PlatformRegistry.
+        """Dispatch a non-supervisor-platform playbook node via RuntimeRegistry.
 
         Spawns a one-shot subprocess session for this single node:
         ``platform.start(ctx) → wait() → stop()``.  The node's prompt
@@ -1754,17 +1754,17 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         into ``_extract_output`` and the messages log just like the
         supervisor path.
 
-        Raises ``RuntimeError`` if no PlatformRegistry was wired into
+        Raises ``RuntimeError`` if no RuntimeRegistry was wired into
         the runner (callers using non-supervisor playbook platforms must
-        construct the runner with ``platforms=...``).
+        construct the runner with ``runtimes=...``).
         """
         from src.models import AgentResult, TaskContext
 
-        if self._platforms is None:
+        if self._runtimes is None:
             raise RuntimeError(
-                f"Playbook node '{node_id}' has profile.platform="
-                f"{self._profile.platform!r} but PlaybookRunner was constructed "
-                "without platforms= — wire it up at the construction site "
+                f"Playbook node '{node_id}' has profile.runtime="
+                f"{self._profile.runtime!r} but PlaybookRunner was constructed "
+                "without runtimes= — wire it up at the construction site "
                 "(orchestrator/core.py)."
             )
 
@@ -1777,8 +1777,8 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             checkout_path=None,  # Per-node sessions don't get a workspace.
             profile=self._profile,
         )
-        platform = self._platforms.create(
-            self._profile.platform,
+        platform = self._runtimes.create(
+            self._profile.runtime,
             profile=self._profile,
             llm_logger=getattr(self.supervisor, "_llm_logger", None),
         )
