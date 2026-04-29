@@ -261,6 +261,7 @@ async def sync_profile_to_db(
         install=profile_dict.get("install", {}),
         memory_scope_id=profile_dict.get("memory_scope_id"),
         runtime=profile_dict.get("runtime", "claude_sdk"),
+        agent_name=profile_dict.get("agent_name", ""),
     )
 
     # 5. Soft-validate tool names (warnings, not errors -- per spec).

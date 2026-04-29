@@ -88,6 +88,7 @@ def default_registry(
     supervisor-runtime tasks).  When *None*, supervisor-runtime tasks
     fail with a clear "unknown runtime" error instead of misbehaving.
     """
+    from src.runtimes.acpx import ACPXRuntime
     from src.runtimes.claude_sdk import ClaudeSDKRuntime
     from src.runtimes.claude_cli import ClaudeCLIRuntime
     from src.runtimes.codex_cli import CodexCLIRuntime
@@ -98,6 +99,7 @@ def default_registry(
 
     return RuntimeRegistry(
         runtimes={
+            ACPXRuntime.name: ACPXRuntime,
             ClaudeSDKRuntime.name: ClaudeSDKRuntime,
             ClaudeCLIRuntime.name: ClaudeCLIRuntime,
             CodexCLIRuntime.name: CodexCLIRuntime,

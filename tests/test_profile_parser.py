@@ -1448,13 +1448,15 @@ class TestValidateConfig:
 
     def test_config_known_keys(self):
         """CONFIG_KNOWN_KEYS contains the spec-defined fields, including
-        ``runtime`` which selects the Runtime implementation at task
-        dispatch time."""
+        ``runtime`` (selects the Runtime implementation at dispatch
+        time) and ``agent_name`` (ACP agent identifier when runtime is
+        ``"acpx"``)."""
         assert CONFIG_KNOWN_KEYS == {
             "model",
             "permission_mode",
             "max_tokens_per_task",
             "runtime",
+            "agent_name",
         }
 
     def test_valid_permission_modes_set(self):

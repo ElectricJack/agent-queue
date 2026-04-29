@@ -422,6 +422,13 @@ class AgentProfile:
     # name in the RuntimeRegistry.  Sourced from the ``## Config`` JSON
     # block of the profile markdown.
     runtime: str = "claude_sdk"
+    # ACP agent identifier — only meaningful when ``runtime == "acpx"``.
+    # Selects which underlying coding agent ACPX dispatches to (``"claude"``,
+    # ``"codex"``, ``"gemini"``, ``"opencode"``, ``"cursor"``, ...).
+    # The parser rejects ``runtime: "acpx"`` profiles with empty
+    # ``agent_name`` at sync-time; for every other runtime this field is
+    # unused / empty.
+    agent_name: str = ""
 
 
 @dataclass

@@ -45,7 +45,7 @@ KNOWN_SECTIONS = STRUCTURED_SECTIONS | PROMPT_SECTIONS
 
 # Known Config-block keys with deterministic validation.
 CONFIG_KNOWN_KEYS = frozenset(
-    {"model", "permission_mode", "max_tokens_per_task", "runtime"}
+    {"model", "permission_mode", "max_tokens_per_task", "runtime", "agent_name"}
 )
 
 # Valid permission_mode values (passed to the Claude Code SDK).
@@ -66,7 +66,7 @@ VALID_PERMISSION_MODES = frozenset(
 # (the in-tree runtimes); runtime-time registration of additional runtimes
 # via plugins is checked separately at task dispatch.
 VALID_RUNTIMES = frozenset(
-    {"claude_sdk", "claude_cli", "codex_cli", "supervisor"}
+    {"claude_sdk", "claude_cli", "codex_cli", "supervisor", "acpx"}
 )
 
 # Regex to find fenced code blocks: ```json ... ``` (with optional language tag)
@@ -486,6 +486,7 @@ def _validate_config(config: dict) -> list[str]:
     # --- runtime --- selects which Runtime implementation runs tasks.
     # Fail-closed on unknown values so a typo can't silently fall through
     # to the default and run the wrong runtime for this profile.
+    runtime_value: str | None = None
     if "runtime" in config:
         rt = config["runtime"]
         if not isinstance(rt, str):
@@ -495,6 +496,31 @@ def _validate_config(config: dict) -> list[str]:
             errors.append(
                 f"Config 'runtime' must be one of {sorted_runtimes}, got '{rt}'"
             )
+        else:
+            runtime_value = rt
+
+    # --- agent_name --- ACP agent identifier when runtime is "acpx".
+    # Must be a non-empty string when set; required when runtime is
+    # "acpx" (ACPXRuntime needs to know which underlying agent to call).
+    agent_name_value = config.get("agent_name", "")
+    if "agent_name" in config:
+        if not isinstance(agent_name_value, str):
+            errors.append(
+                f"Config 'agent_name' must be a string, got "
+                f"{type(agent_name_value).__name__}"
+            )
+        elif not agent_name_value.strip() and runtime_value == "acpx":
+            errors.append(
+                "Config 'agent_name' must be non-empty when runtime is 'acpx' "
+                "(ACPX needs to know which agent to dispatch to: 'claude', "
+                "'codex', 'gemini', etc.)"
+            )
+    elif runtime_value == "acpx":
+        errors.append(
+            "Config 'agent_name' is required when runtime is 'acpx' "
+            "(ACPX needs to know which agent to dispatch to: 'claude', "
+            "'codex', 'gemini', etc.)"
+        )
 
     return errors
 
@@ -792,13 +818,15 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     if parsed.frontmatter.extra.get("memory_scope_id"):
         result["memory_scope_id"] = str(parsed.frontmatter.extra["memory_scope_id"])
 
-    # Config → model, permission_mode, runtime
+    # Config → model, permission_mode, runtime, agent_name
     if parsed.config.get("model"):
         result["model"] = parsed.config["model"]
     if parsed.config.get("permission_mode"):
         result["permission_mode"] = parsed.config["permission_mode"]
     if parsed.config.get("runtime"):
         result["runtime"] = parsed.config["runtime"]
+    if parsed.config.get("agent_name"):
+        result["agent_name"] = parsed.config["agent_name"]
 
     # Tools → allowed_tools.  Strip the embedded MCP server prefix at sync
     # time so the DB always stores canonical bare names — the supervisor's
@@ -912,6 +940,7 @@ def agent_profile_to_markdown(
     reflection: str = "",
     tags: list[str] | None = None,
     runtime: str = "",
+    agent_name: str = "",
 ) -> str:
     """Render profile fields into the hybrid markdown format.
 
@@ -995,6 +1024,9 @@ def agent_profile_to_markdown(
     # claude_sdk-runtime profile files unchanged when round-tripped.
     if runtime and runtime != "claude_sdk":
         config["runtime"] = runtime
+    # Emit agent_name only when set (only meaningful for runtime="acpx").
+    if agent_name:
+        config["agent_name"] = agent_name
     if config:
         lines.append("## Config")
         lines.append("```json")

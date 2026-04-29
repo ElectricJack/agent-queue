@@ -260,6 +260,9 @@ agent_profiles = Table(
     # routes to the in-process Supervisor singleton (tool-call-only, no
     # workspace).  Other values must match a name in the RuntimeRegistry.
     Column("runtime", Text, nullable=False, server_default="'claude_sdk'"),
+    # ACP agent identifier — only meaningful when ``runtime == "acpx"``.
+    # Empty string for every other runtime.  Validated at parse time.
+    Column("agent_name", Text, nullable=False, server_default="''"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
