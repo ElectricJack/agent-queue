@@ -126,7 +126,7 @@ async def _setup_project_and_agent(
             source_type=RepoSourceType.LINK,
         )
     )
-    await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+    await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
 
 
 # -- Fixtures -----------------------------------------------------------
@@ -316,7 +316,7 @@ class TestL1FactsFromMemory:
 
         mock_mem.load_l1_facts.assert_called_once_with(
             project_id="p-1",
-            agent_type="web-developer",
+            profile_id="web-developer",
         )
 
 
@@ -690,7 +690,7 @@ class TestL0L1ProfileWithoutProjectFacts:
         assert "default_model: claude-sonnet" in ctx.l1_facts
 
     async def test_memory_service_called_with_agent_type(self, orch_env):
-        """load_l1_facts is called with agent_type=profile.id."""
+        """load_l1_facts is called with profile_id=profile.id."""
         orch, factory = orch_env
 
         mock_mem = AsyncMock()
@@ -720,11 +720,11 @@ class TestL0L1ProfileWithoutProjectFacts:
         # Verify agent_type comes from profile.id
         mock_mem.load_l1_facts.assert_called_once_with(
             project_id="p-1",
-            agent_type="reviewer",
+            profile_id="reviewer",
         )
 
     async def test_agent_type_none_when_no_profile(self, orch_env):
-        """Without a profile, agent_type=None is passed to load_l1_facts."""
+        """Without a profile, profile_id=None is passed to load_l1_facts."""
         orch, factory = orch_env
 
         mock_mem = AsyncMock()
@@ -749,7 +749,7 @@ class TestL0L1ProfileWithoutProjectFacts:
 
         mock_mem.load_l1_facts.assert_called_once_with(
             project_id="p-1",
-            agent_type=None,
+            profile_id=None,
         )
 
     async def test_both_l0_and_l1_in_final_prompt(self, orch_env):

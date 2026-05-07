@@ -144,7 +144,7 @@ def _task_completed_event(
     project_id: str = "my-project",
     title: str = "Implement async retry logic",
     agent_id: str = "agent-1",
-    agent_type: str = "coding",
+    profile_id: str = "coding",
 ) -> dict:
     return {
         "task_id": task_id,

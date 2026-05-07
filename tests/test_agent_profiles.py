@@ -885,7 +885,7 @@ class TestProfileEnforcement:
             Agent(
                 id="a-1",
                 name="claude-1",
-                agent_type="claude",
+                profile_id="claude",
             )
         )
         await orch.db.create_task(
@@ -910,7 +910,7 @@ class TestProfileEnforcement:
             Agent(
                 id="a-1",
                 name="claude-1",
-                agent_type="claude",
+                profile_id="claude",
             )
         )
         await orch.db.create_task(
@@ -943,7 +943,7 @@ class TestProfileEnforcement:
             Agent(
                 id="a-1",
                 name="claude-1",
-                agent_type="claude",
+                profile_id="claude",
             )
         )
         await orch.db.create_task(

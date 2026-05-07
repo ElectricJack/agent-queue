@@ -43,8 +43,8 @@ def make_task(id="t-1", project_id="p-1", status=TaskStatus.READY, priority=100,
     )
 
 
-def make_agent(id="a-1", name="claude-1", agent_type="claude", state=AgentState.IDLE, **kw):
-    return Agent(id=id, name=name, agent_type=agent_type, state=state, **kw)
+def make_agent(id="a-1", name="claude-1", profile_id="claude", state=AgentState.IDLE, **kw):
+    return Agent(id=id, name=name, profile_id=profile_id, state=state, **kw)
 
 
 def make_state(**overrides) -> SchedulerState:
@@ -160,12 +160,12 @@ class TestMaxAgentsByType:
                 # a-busy is already working (BUSY) on this project
                 make_agent(
                     id="a-busy",
-                    agent_type="claude",
+                    profile_id="claude",
                     state=AgentState.BUSY,
                     current_task_id="t-existing",
                 ),
                 # a-idle wants work
-                make_agent(id="a-idle", agent_type="claude"),
+                make_agent(id="a-idle", profile_id="claude"),
             ],
             project_active_agent_counts={"p-1": 1},
             project_constraints={
@@ -188,11 +188,11 @@ class TestMaxAgentsByType:
             agents=[
                 make_agent(
                     id="a-busy",
-                    agent_type="claude",
+                    profile_id="claude",
                     state=AgentState.BUSY,
                     current_task_id="t-existing",
                 ),
-                make_agent(id="a-codex", agent_type="codex"),
+                make_agent(id="a-codex", profile_id="codex"),
             ],
             project_active_agent_counts={"p-1": 1},
             project_constraints={
@@ -210,8 +210,8 @@ class TestMaxAgentsByType:
             projects=[make_project(max_agents=4)],
             tasks=[make_task(id="t-1"), make_task(id="t-2")],
             agents=[
-                make_agent(id="a-1", agent_type="claude"),
-                make_agent(id="a-2", agent_type="claude"),
+                make_agent(id="a-1", profile_id="claude"),
+                make_agent(id="a-2", profile_id="claude"),
             ],
             project_constraints={
                 "p-1": ProjectConstraint(project_id="p-1", max_agents_by_type={"claude": 2})
@@ -297,8 +297,8 @@ class TestConstraintStacking:
             projects=[make_project(max_agents=4)],
             tasks=[make_task(id="t-1"), make_task(id="t-2")],
             agents=[
-                make_agent(id="a-1", agent_type="claude"),
-                make_agent(id="a-2", agent_type="codex"),
+                make_agent(id="a-1", profile_id="claude"),
+                make_agent(id="a-2", profile_id="codex"),
             ],
             project_constraints={
                 "p-1": ProjectConstraint(

@@ -30,7 +30,7 @@ def make_task(id="t-1", project_id="p-1", status=TaskStatus.READY, priority=100,
 
 
 def make_agent(id="a-1", name="claude-1", state=AgentState.IDLE, **kw):
-    return Agent(id=id, name=name, agent_type="claude", state=state, **kw)
+    return Agent(id=id, name=name, profile_id="claude", state=state, **kw)
 
 
 class TestScheduler:
@@ -426,11 +426,11 @@ class TestAgentTypeMatching:
     @staticmethod
     def _agent(id: str, agent_type: str, state: AgentState = AgentState.IDLE) -> Agent:
         """Create an Agent with the given type (bypasses make_agent's default)."""
-        return Agent(id=id, name=f"agent-{id}", agent_type=agent_type, state=state)
+        return Agent(id=id, name=f"agent-{id}", profile_id=profile_id, state=state)
 
     def test_type_mismatch_blocks_assignment(self):
-        """(a) task with agent_type='code-review' is NOT assigned to a 'coding' agent."""
-        task = make_task(id="t-1", agent_type="code-review")
+        """(a) task with profile_id='code-review' is NOT assigned to a 'coding' agent."""
+        task = make_task(id="t-1", profile_id="code-review")
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -443,8 +443,8 @@ class TestAgentTypeMatching:
         assert len(actions) == 0
 
     def test_type_match_allows_assignment(self):
-        """(b) task with agent_type='coding' IS assigned to an available coding agent."""
-        task = make_task(id="t-1", agent_type="coding")
+        """(b) task with profile_id='coding' IS assigned to an available coding agent."""
+        task = make_task(id="t-1", profile_id="coding")
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -460,7 +460,7 @@ class TestAgentTypeMatching:
 
     def test_no_agent_type_matches_any_agent(self):
         """(c) task with no agent_type is assigned to any available agent."""
-        task = make_task(id="t-1")  # agent_type=None (default)
+        task = make_task(id="t-1")  # profile_id=None (default)
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -476,7 +476,7 @@ class TestAgentTypeMatching:
 
     def test_unmatched_type_stays_queued(self):
         """(d) task with agent_type that no agent matches stays queued."""
-        task = make_task(id="t-1", agent_type="qa")
+        task = make_task(id="t-1", profile_id="qa")
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -493,7 +493,7 @@ class TestAgentTypeMatching:
 
     def test_mixed_typed_and_untyped_tasks(self):
         """Typed tasks go to matching agents; untyped tasks go to any agent."""
-        typed_task = make_task(id="t-typed", agent_type="coding", priority=100)
+        typed_task = make_task(id="t-typed", profile_id="coding", priority=100)
         untyped_task = make_task(id="t-untyped", priority=100)
         state = SchedulerState(
             projects=[make_project()],
@@ -510,8 +510,8 @@ class TestAgentTypeMatching:
 
     def test_multiple_agents_different_types(self):
         """Each typed task routes to the agent with matching type."""
-        review_task = make_task(id="t-review", agent_type="code-review", priority=100)
-        coding_task = make_task(id="t-coding", agent_type="coding", priority=100)
+        review_task = make_task(id="t-review", profile_id="code-review", priority=100)
+        coding_task = make_task(id="t-coding", profile_id="coding", priority=100)
         state = SchedulerState(
             projects=[make_project()],
             tasks=[review_task, coding_task],
@@ -535,7 +535,7 @@ class TestAgentTypeMatching:
         # a-2 has the right type → task should go to a-2.
         task = make_task(
             id="t-1",
-            agent_type="code-review",
+            profile_id="code-review",
             affinity_agent_id="a-1",
         )
         state = SchedulerState(
@@ -559,7 +559,7 @@ class TestAgentTypeMatching:
         """Affinity agent with correct type gets priority."""
         task = make_task(
             id="t-1",
-            agent_type="coding",
+            profile_id="coding",
             affinity_agent_id="a-1",
         )
         state = SchedulerState(
@@ -581,7 +581,7 @@ class TestAgentTypeMatching:
 
     def test_agent_idle_but_wrong_type_stays_idle(self):
         """An idle agent with wrong type doesn't pick up typed tasks."""
-        task = make_task(id="t-1", agent_type="qa")
+        task = make_task(id="t-1", profile_id="qa")
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -595,8 +595,8 @@ class TestAgentTypeMatching:
 
     def test_type_matching_across_projects(self):
         """Type matching works correctly with multiple projects."""
-        p1_task = make_task(id="t-p1", project_id="p-1", agent_type="coding")
-        p2_task = make_task(id="t-p2", project_id="p-2", agent_type="code-review")
+        p1_task = make_task(id="t-p1", project_id="p-1", profile_id="coding")
+        p2_task = make_task(id="t-p2", project_id="p-2", profile_id="code-review")
         state = SchedulerState(
             projects=[
                 make_project(id="p-1"),
@@ -618,7 +618,7 @@ class TestAgentTypeMatching:
 
     def test_multi_type_agent_matches_first_type(self):
         """(e) Agent with comma-separated types matches a task requiring any of its types."""
-        task = make_task(id="t-1", agent_type="coding")
+        task = make_task(id="t-1", profile_id="coding")
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -634,7 +634,7 @@ class TestAgentTypeMatching:
 
     def test_multi_type_agent_matches_second_type(self):
         """(e) Agent with comma-separated types matches a task requiring the second type."""
-        task = make_task(id="t-1", agent_type="code-review")
+        task = make_task(id="t-1", profile_id="code-review")
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -650,7 +650,7 @@ class TestAgentTypeMatching:
 
     def test_multi_type_agent_no_match(self):
         """(e) Agent with multiple types still rejects tasks requiring an unlisted type."""
-        task = make_task(id="t-1", agent_type="qa")
+        task = make_task(id="t-1", profile_id="qa")
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -664,8 +664,8 @@ class TestAgentTypeMatching:
 
     def test_multi_type_agent_routes_different_tasks(self):
         """(e) Multi-type agent picks up tasks of any of its types across rounds."""
-        coding_task = make_task(id="t-coding", agent_type="coding", priority=100)
-        review_task = make_task(id="t-review", agent_type="code-review", priority=100)
+        coding_task = make_task(id="t-coding", profile_id="coding", priority=100)
+        review_task = make_task(id="t-review", profile_id="code-review", priority=100)
         state = SchedulerState(
             projects=[make_project(max_agents=2)],
             tasks=[coding_task, review_task],
@@ -684,7 +684,7 @@ class TestAgentTypeMatching:
 
     def test_multi_type_with_spaces_in_list(self):
         """(e) Whitespace around commas in agent_type is trimmed."""
-        task = make_task(id="t-1", agent_type="code-review")
+        task = make_task(id="t-1", profile_id="code-review")
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -699,8 +699,8 @@ class TestAgentTypeMatching:
 
     def test_multi_type_agent_vs_single_type_routing(self):
         """(e) Multi-type and single-type agents coexist; tasks route correctly."""
-        review_task = make_task(id="t-review", agent_type="code-review", priority=100)
-        qa_task = make_task(id="t-qa", agent_type="qa", priority=100)
+        review_task = make_task(id="t-review", profile_id="code-review", priority=100)
+        qa_task = make_task(id="t-qa", profile_id="qa", priority=100)
         state = SchedulerState(
             projects=[make_project(max_agents=2)],
             tasks=[review_task, qa_task],
@@ -722,7 +722,7 @@ class TestAgentTypeMatching:
 
     def test_type_mismatch_logged(self, caplog):
         """(f) Type mismatch rejection is logged with task_id, required_type, and agent_type."""
-        task = make_task(id="t-review-42", agent_type="code-review")
+        task = make_task(id="t-review-42", profile_id="code-review")
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -741,7 +741,7 @@ class TestAgentTypeMatching:
 
     def test_type_match_not_logged(self, caplog):
         """(f) Successful type matches do not produce mismatch log entries."""
-        task = make_task(id="t-1", agent_type="coding")
+        task = make_task(id="t-1", profile_id="coding")
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -757,7 +757,7 @@ class TestAgentTypeMatching:
 
     def test_no_agent_type_not_logged(self, caplog):
         """(f) Tasks without agent_type do not produce mismatch log entries."""
-        task = make_task(id="t-1")  # agent_type=None
+        task = make_task(id="t-1")  # profile_id=None
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -773,7 +773,7 @@ class TestAgentTypeMatching:
 
     def test_multi_type_mismatch_logged_with_full_type_string(self, caplog):
         """(f) When a multi-type agent mismatches, the full agent_type string is logged."""
-        task = make_task(id="t-qa-99", agent_type="qa")
+        task = make_task(id="t-qa-99", profile_id="qa")
         state = SchedulerState(
             projects=[make_project()],
             tasks=[task],
@@ -1292,7 +1292,7 @@ class TestAgentAffinity:
             tasks=[
                 make_task(
                     id="t-review",
-                    agent_type="code-review",
+                    profile_id="code-review",
                     affinity_agent_id="a-busy",
                     created_at=now - 200,  # past 120s wait window
                 ),
@@ -1300,14 +1300,14 @@ class TestAgentAffinity:
             agents=[
                 # a-busy is the preferred agent (code-review type, but busy)
                 Agent(
-                    id="a-busy", name="busy-reviewer", agent_type="code-review",
+                    id="a-busy", name="busy-reviewer", profile_id="code-review",
                     state=AgentState.BUSY, current_task_id="t-other",
                 ),
                 # a-coding is idle but wrong type — should NOT pick up the task
-                Agent(id="a-coding", name="coder", agent_type="coding", state=AgentState.IDLE),
+                Agent(id="a-coding", name="coder", profile_id="coding", state=AgentState.IDLE),
                 # a-review is idle with correct type — SHOULD pick up the task
                 Agent(
-                    id="a-review", name="reviewer", agent_type="code-review",
+                    id="a-review", name="reviewer", profile_id="code-review",
                     state=AgentState.IDLE,
                 ),
             ],

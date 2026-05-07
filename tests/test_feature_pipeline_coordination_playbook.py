@@ -12,8 +12,8 @@ Test cases:
   (c) Review + QA tasks can run concurrently (no dependency between them).
   (d) Merge task depends on both review AND QA completing.
   (e) Task chain has correct ``workflow_id`` linking all tasks.
-  (f) Coding task has ``agent_type="coding"``, review has
-      ``agent_type="code-review"``, QA has ``agent_type="qa"``.
+  (f) Coding task has ``profile_id="coding"``, review has
+      ``profile_id="code-review"``, QA has ``profile_id="qa"``.
   (g) Failure in coding task stops the pipeline (review + QA not created).
   (h) Feature-pipeline fires on appropriate trigger event
       (e.g., ``task.created`` with ``task_type="feature"``).
@@ -67,7 +67,7 @@ def _make_task(
     priority: int = 100,
     workflow_id: str | None = None,
     workspace_mode: WorkspaceMode | None = None,
-    agent_type: str | None = None,
+    profile_id: str | None = None,
     affinity_agent_id: str | None = None,
     affinity_reason: str | None = None,
     description: str = "test task",
@@ -82,7 +82,7 @@ def _make_task(
         status=status,
         workflow_id=workflow_id,
         workspace_mode=workspace_mode,
-        agent_type=agent_type,
+        profile_id=profile_id,
         affinity_agent_id=affinity_agent_id,
         affinity_reason=affinity_reason,
         **kw,
@@ -92,11 +92,11 @@ def _make_task(
 def _make_agent(
     id: str = "a-1",
     name: str = "claude-1",
-    agent_type: str = "coding",
+    profile_id: str = "coding",
     state: AgentState = AgentState.IDLE,
     **kw,
 ) -> Agent:
-    return Agent(id=id, name=name, agent_type=agent_type, state=state, **kw)
+    return Agent(id=id, name=name, profile_id=profile_id, state=state, **kw)
 
 
 def _make_workflow(
@@ -185,15 +185,15 @@ async def handler(db, tmp_path):
 
     # Create test agents with different types
     await db.create_agent(
-        Agent(id="agent-coding-1", name="coder-1", agent_type="coding", state=AgentState.IDLE)
+        Agent(id="agent-coding-1", name="coder-1", profile_id="coding", state=AgentState.IDLE)
     )
     await db.create_agent(
         Agent(
-            id="agent-review-1", name="reviewer-1", agent_type="code-review", state=AgentState.IDLE
+            id="agent-review-1", name="reviewer-1", profile_id="code-review", state=AgentState.IDLE
         )
     )
     await db.create_agent(
-        Agent(id="agent-qa-1", name="qa-1", agent_type="qa", state=AgentState.IDLE)
+        Agent(id="agent-qa-1", name="qa-1", profile_id="qa", state=AgentState.IDLE)
     )
 
     # Create a playbook run and workflow so tasks with workflow_id pass FK checks
@@ -335,14 +335,14 @@ class TestCodingThenReviewQA:
         coding = _make_task(
             "coding-1",
             status=TaskStatus.IN_PROGRESS,
-            agent_type="coding",
+            profile_id="coding",
             workflow_id="wf-feature-1",
         )
         await orch.db.create_task(coding)
 
         # Create review + QA tasks in DEFINED state (no workflow_id needed here)
-        review = _make_task("review-1", status=TaskStatus.DEFINED, agent_type="code-review")
-        qa = _make_task("qa-1", status=TaskStatus.DEFINED, agent_type="qa")
+        review = _make_task("review-1", status=TaskStatus.DEFINED, profile_id="code-review")
+        qa = _make_task("qa-1", status=TaskStatus.DEFINED, profile_id="qa")
         await orch.db.create_task(review)
         await orch.db.create_task(qa)
 
@@ -370,13 +370,13 @@ class TestCodingThenReviewQA:
         coding = _make_task(
             "coding-1",
             status=TaskStatus.COMPLETED,
-            agent_type="coding",
+            profile_id="coding",
         )
         await orch.db.create_task(coding)
 
         # Create review + QA in DEFINED state
-        review = _make_task("review-1", status=TaskStatus.DEFINED, agent_type="code-review")
-        qa = _make_task("qa-1", status=TaskStatus.DEFINED, agent_type="qa")
+        review = _make_task("review-1", status=TaskStatus.DEFINED, profile_id="code-review")
+        qa = _make_task("qa-1", status=TaskStatus.DEFINED, profile_id="qa")
         await orch.db.create_task(review)
         await orch.db.create_task(qa)
 
@@ -409,17 +409,17 @@ class TestReviewQADependOnCoding:
 
     def test_scheduler_does_not_assign_defined_review_or_qa(self):
         """DEFINED review and QA tasks are not assigned by the scheduler."""
-        coding = _make_task("coding-1", status=TaskStatus.IN_PROGRESS, agent_type="coding")
+        coding = _make_task("coding-1", status=TaskStatus.IN_PROGRESS, profile_id="coding")
         review = _make_task(
             "review-1",
             status=TaskStatus.DEFINED,
-            agent_type="code-review",
+            profile_id="code-review",
         )
-        qa = _make_task("qa-1", status=TaskStatus.DEFINED, agent_type="qa")
+        qa = _make_task("qa-1", status=TaskStatus.DEFINED, profile_id="qa")
 
         agents = [
-            _make_agent(id="a-review", name="reviewer", agent_type="code-review"),
-            _make_agent(id="a-qa", name="qa-agent", agent_type="qa"),
+            _make_agent(id="a-review", name="reviewer", profile_id="code-review"),
+            _make_agent(id="a-qa", name="qa-agent", profile_id="qa"),
         ]
         state = _make_scheduler_state(tasks=[coding, review, qa], agents=agents)
         actions = Scheduler.schedule(state)
@@ -503,9 +503,9 @@ class TestReviewQADependOnCoding:
         """Neither review nor QA is promoted while coding is only READY (not COMPLETED)."""
         await _setup_project(orch.db)
 
-        coding = _make_task("coding-1", status=TaskStatus.READY, agent_type="coding")
-        review = _make_task("review-1", status=TaskStatus.DEFINED, agent_type="code-review")
-        qa = _make_task("qa-1", status=TaskStatus.DEFINED, agent_type="qa")
+        coding = _make_task("coding-1", status=TaskStatus.READY, profile_id="coding")
+        review = _make_task("review-1", status=TaskStatus.DEFINED, profile_id="code-review")
+        qa = _make_task("qa-1", status=TaskStatus.DEFINED, profile_id="qa")
         await orch.db.create_task(coding)
         await orch.db.create_task(review)
         await orch.db.create_task(qa)
@@ -582,17 +582,17 @@ class TestReviewQAConcurrency:
         review = _make_task(
             "review-1",
             status=TaskStatus.READY,
-            agent_type="code-review",
+            profile_id="code-review",
         )
         qa = _make_task(
             "qa-1",
             status=TaskStatus.READY,
-            agent_type="qa",
+            profile_id="qa",
         )
 
         agents = [
-            _make_agent(id="a-review", name="reviewer", agent_type="code-review"),
-            _make_agent(id="a-qa", name="qa-agent", agent_type="qa"),
+            _make_agent(id="a-review", name="reviewer", profile_id="code-review"),
+            _make_agent(id="a-qa", name="qa-agent", profile_id="qa"),
         ]
         state = _make_scheduler_state(tasks=[review, qa], agents=agents)
         actions = Scheduler.schedule(state)
@@ -606,17 +606,17 @@ class TestReviewQAConcurrency:
         review = _make_task(
             "review-1",
             status=TaskStatus.READY,
-            agent_type="code-review",
+            profile_id="code-review",
         )
         qa = _make_task(
             "qa-1",
             status=TaskStatus.READY,
-            agent_type="qa",
+            profile_id="qa",
         )
 
         agents = [
-            _make_agent(id="a-review", name="reviewer", agent_type="code-review"),
-            _make_agent(id="a-qa", name="qa-agent", agent_type="qa"),
+            _make_agent(id="a-review", name="reviewer", profile_id="code-review"),
+            _make_agent(id="a-qa", name="qa-agent", profile_id="qa"),
         ]
         state = _make_scheduler_state(tasks=[review, qa], agents=agents)
         actions = Scheduler.schedule(state)
@@ -629,9 +629,9 @@ class TestReviewQAConcurrency:
         """Both review and QA are promoted to READY in the same check cycle."""
         await _setup_project(orch.db)
 
-        coding = _make_task("coding-1", status=TaskStatus.COMPLETED, agent_type="coding")
-        review = _make_task("review-1", status=TaskStatus.DEFINED, agent_type="code-review")
-        qa = _make_task("qa-1", status=TaskStatus.DEFINED, agent_type="qa")
+        coding = _make_task("coding-1", status=TaskStatus.COMPLETED, profile_id="coding")
+        review = _make_task("review-1", status=TaskStatus.DEFINED, profile_id="code-review")
+        qa = _make_task("qa-1", status=TaskStatus.DEFINED, profile_id="qa")
         await orch.db.create_task(coding)
         await orch.db.create_task(review)
         await orch.db.create_task(qa)
@@ -705,8 +705,8 @@ class TestMergeDependsOnReviewAndQA:
         """Merge task stays DEFINED if only review is complete but QA is not."""
         await _setup_project(orch.db)
 
-        review = _make_task("review-1", status=TaskStatus.COMPLETED, agent_type="code-review")
-        qa = _make_task("qa-1", status=TaskStatus.IN_PROGRESS, agent_type="qa")
+        review = _make_task("review-1", status=TaskStatus.COMPLETED, profile_id="code-review")
+        qa = _make_task("qa-1", status=TaskStatus.IN_PROGRESS, profile_id="qa")
         merge = _make_task("merge-1", status=TaskStatus.DEFINED)
         await orch.db.create_task(review)
         await orch.db.create_task(qa)
@@ -726,8 +726,8 @@ class TestMergeDependsOnReviewAndQA:
         """Merge task stays DEFINED if only QA is complete but review is not."""
         await _setup_project(orch.db)
 
-        review = _make_task("review-1", status=TaskStatus.IN_PROGRESS, agent_type="code-review")
-        qa = _make_task("qa-1", status=TaskStatus.COMPLETED, agent_type="qa")
+        review = _make_task("review-1", status=TaskStatus.IN_PROGRESS, profile_id="code-review")
+        qa = _make_task("qa-1", status=TaskStatus.COMPLETED, profile_id="qa")
         merge = _make_task("merge-1", status=TaskStatus.DEFINED)
         await orch.db.create_task(review)
         await orch.db.create_task(qa)
@@ -747,8 +747,8 @@ class TestMergeDependsOnReviewAndQA:
         """Merge task is promoted to READY when both review and QA complete."""
         await _setup_project(orch.db)
 
-        review = _make_task("review-1", status=TaskStatus.COMPLETED, agent_type="code-review")
-        qa = _make_task("qa-1", status=TaskStatus.COMPLETED, agent_type="qa")
+        review = _make_task("review-1", status=TaskStatus.COMPLETED, profile_id="code-review")
+        qa = _make_task("qa-1", status=TaskStatus.COMPLETED, profile_id="qa")
         merge = _make_task("merge-1", status=TaskStatus.DEFINED)
         await orch.db.create_task(review)
         await orch.db.create_task(qa)
@@ -778,7 +778,7 @@ class TestMergeDependsOnReviewAndQA:
             _make_task(
                 "review-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="code-review",
+                profile_id="code-review",
                 workflow_id="wf-feature-1",
             )
         )
@@ -786,7 +786,7 @@ class TestMergeDependsOnReviewAndQA:
             _make_task(
                 "qa-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="qa",
+                profile_id="qa",
                 workflow_id="wf-feature-1",
             )
         )
@@ -815,7 +815,7 @@ class TestMergeDependsOnReviewAndQA:
             _make_task(
                 "review-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="code-review",
+                profile_id="code-review",
                 workflow_id="wf-feature-1",
             )
         )
@@ -823,7 +823,7 @@ class TestMergeDependsOnReviewAndQA:
             _make_task(
                 "qa-1",
                 status=TaskStatus.IN_PROGRESS,
-                agent_type="qa",
+                profile_id="qa",
                 workflow_id="wf-feature-1",
             )
         )
@@ -906,7 +906,7 @@ class TestWorkflowIdLinking:
         task = _make_task(
             "coding-1",
             status=TaskStatus.DEFINED,
-            agent_type="coding",
+            profile_id="coding",
             workflow_id="wf-feature-1",
         )
         await orch.db.create_task(task)
@@ -937,8 +937,8 @@ class TestWorkflowIdLinking:
 
 
 # ===========================================================================
-# (f) Coding task has agent_type="coding", review has
-#     agent_type="code-review", QA has agent_type="qa"
+# (f) Coding task has profile_id="coding", review has
+#     profile_id="code-review", QA has profile_id="qa"
 # ===========================================================================
 
 
@@ -947,7 +947,7 @@ class TestAgentTypeMatching:
     that the scheduler enforces type matching."""
 
     async def test_coding_task_agent_type(self, handler, db):
-        """Coding task is created with agent_type='coding'."""
+        """Coding task is created with profile_id='coding'."""
         result = await handler.execute(
             "create_task",
             {
@@ -961,7 +961,7 @@ class TestAgentTypeMatching:
         assert task.agent_type == "coding"
 
     async def test_review_task_agent_type(self, handler, db):
-        """Review task is created with agent_type='code-review'."""
+        """Review task is created with profile_id='code-review'."""
         result = await handler.execute(
             "create_task",
             {
@@ -975,7 +975,7 @@ class TestAgentTypeMatching:
         assert task.agent_type == "code-review"
 
     async def test_qa_task_agent_type(self, handler, db):
-        """QA task is created with agent_type='qa'."""
+        """QA task is created with profile_id='qa'."""
         result = await handler.execute(
             "create_task",
             {
@@ -993,9 +993,9 @@ class TestAgentTypeMatching:
         review = _make_task(
             "review-1",
             status=TaskStatus.READY,
-            agent_type="code-review",
+            profile_id="code-review",
         )
-        coding_agent = _make_agent(id="a-coder", name="coder-1", agent_type="coding")
+        coding_agent = _make_agent(id="a-coder", name="coder-1", profile_id="coding")
 
         state = _make_scheduler_state(tasks=[review], agents=[coding_agent])
         actions = Scheduler.schedule(state)
@@ -1004,8 +1004,8 @@ class TestAgentTypeMatching:
 
     def test_coding_agent_not_assigned_qa_task(self):
         """A coding-type agent is NOT assigned a QA task (type mismatch)."""
-        qa = _make_task("qa-1", status=TaskStatus.READY, agent_type="qa")
-        coding_agent = _make_agent(id="a-coder", name="coder-1", agent_type="coding")
+        qa = _make_task("qa-1", status=TaskStatus.READY, profile_id="qa")
+        coding_agent = _make_agent(id="a-coder", name="coder-1", profile_id="coding")
 
         state = _make_scheduler_state(tasks=[qa], agents=[coding_agent])
         actions = Scheduler.schedule(state)
@@ -1014,8 +1014,8 @@ class TestAgentTypeMatching:
 
     def test_qa_agent_not_assigned_coding_task(self):
         """A QA-type agent is NOT assigned a coding task (type mismatch)."""
-        coding = _make_task("coding-1", status=TaskStatus.READY, agent_type="coding")
-        qa_agent = _make_agent(id="a-qa", name="qa-1", agent_type="qa")
+        coding = _make_task("coding-1", status=TaskStatus.READY, profile_id="coding")
+        qa_agent = _make_agent(id="a-qa", name="qa-1", profile_id="qa")
 
         state = _make_scheduler_state(tasks=[coding], agents=[qa_agent])
         actions = Scheduler.schedule(state)
@@ -1024,8 +1024,8 @@ class TestAgentTypeMatching:
 
     def test_review_agent_not_assigned_coding_task(self):
         """A code-review agent is NOT assigned a coding task (type mismatch)."""
-        coding = _make_task("coding-1", status=TaskStatus.READY, agent_type="coding")
-        review_agent = _make_agent(id="a-review", name="reviewer", agent_type="code-review")
+        coding = _make_task("coding-1", status=TaskStatus.READY, profile_id="coding")
+        review_agent = _make_agent(id="a-review", name="reviewer", profile_id="code-review")
 
         state = _make_scheduler_state(tasks=[coding], agents=[review_agent])
         actions = Scheduler.schedule(state)
@@ -1034,14 +1034,14 @@ class TestAgentTypeMatching:
 
     def test_correct_agent_types_assigned_to_correct_tasks(self):
         """Each task type is assigned to the matching agent type."""
-        coding = _make_task("coding-1", status=TaskStatus.READY, agent_type="coding")
-        review = _make_task("review-1", status=TaskStatus.READY, agent_type="code-review")
-        qa = _make_task("qa-1", status=TaskStatus.READY, agent_type="qa")
+        coding = _make_task("coding-1", status=TaskStatus.READY, profile_id="coding")
+        review = _make_task("review-1", status=TaskStatus.READY, profile_id="code-review")
+        qa = _make_task("qa-1", status=TaskStatus.READY, profile_id="qa")
 
         agents = [
-            _make_agent(id="a-coder", name="coder-1", agent_type="coding"),
-            _make_agent(id="a-review", name="reviewer", agent_type="code-review"),
-            _make_agent(id="a-qa", name="qa-agent", agent_type="qa"),
+            _make_agent(id="a-coder", name="coder-1", profile_id="coding"),
+            _make_agent(id="a-review", name="reviewer", profile_id="code-review"),
+            _make_agent(id="a-qa", name="qa-agent", profile_id="qa"),
         ]
         state = _make_scheduler_state(tasks=[coding, review, qa], agents=agents)
         actions = Scheduler.schedule(state)
@@ -1054,8 +1054,8 @@ class TestAgentTypeMatching:
 
     def test_idle_coding_agent_skipped_for_review_task(self):
         """Even if coding agent is idle and no review agent exists, review stays unassigned."""
-        review = _make_task("review-1", status=TaskStatus.READY, agent_type="code-review")
-        coding_agent = _make_agent(id="a-coder", name="coder-1", agent_type="coding")
+        review = _make_task("review-1", status=TaskStatus.READY, profile_id="code-review")
+        coding_agent = _make_agent(id="a-coder", name="coder-1", profile_id="coding")
 
         state = _make_scheduler_state(tasks=[review], agents=[coding_agent])
         actions = Scheduler.schedule(state)
@@ -1076,9 +1076,9 @@ class TestCodingFailureStopsPipeline:
         """Review and QA stay DEFINED when coding task has FAILED status."""
         await _setup_project(orch.db)
 
-        coding = _make_task("coding-1", status=TaskStatus.FAILED, agent_type="coding")
-        review = _make_task("review-1", status=TaskStatus.DEFINED, agent_type="code-review")
-        qa = _make_task("qa-1", status=TaskStatus.DEFINED, agent_type="qa")
+        coding = _make_task("coding-1", status=TaskStatus.FAILED, profile_id="coding")
+        review = _make_task("review-1", status=TaskStatus.DEFINED, profile_id="code-review")
+        qa = _make_task("qa-1", status=TaskStatus.DEFINED, profile_id="qa")
         await orch.db.create_task(coding)
         await orch.db.create_task(review)
         await orch.db.create_task(qa)
@@ -1111,7 +1111,7 @@ class TestCodingFailureStopsPipeline:
             _make_task(
                 "coding-1",
                 status=TaskStatus.FAILED,
-                agent_type="coding",
+                profile_id="coding",
                 workflow_id="wf-feature-1",
             )
         )
@@ -1134,7 +1134,7 @@ class TestCodingFailureStopsPipeline:
             _make_task(
                 "coding-1",
                 status=TaskStatus.FAILED,
-                agent_type="coding",
+                profile_id="coding",
                 workflow_id="wf-feature-1",
             )
         )
@@ -1149,9 +1149,9 @@ class TestCodingFailureStopsPipeline:
         """The coding task's failure output is preserved for inspection."""
         await _setup_project(orch.db)
 
-        await orch.db.create_agent(Agent(id="agent-coding-1", name="coder-1", agent_type="coding"))
+        await orch.db.create_agent(Agent(id="agent-coding-1", name="coder-1", profile_id="coding"))
 
-        coding = _make_task("coding-1", status=TaskStatus.FAILED, agent_type="coding")
+        coding = _make_task("coding-1", status=TaskStatus.FAILED, profile_id="coding")
         await orch.db.create_task(coding)
 
         output = AgentOutput(
@@ -1175,13 +1175,13 @@ class TestCodingFailureStopsPipeline:
         review = _make_task(
             "review-1",
             status=TaskStatus.DEFINED,
-            agent_type="code-review",
+            profile_id="code-review",
         )
-        qa = _make_task("qa-1", status=TaskStatus.DEFINED, agent_type="qa")
+        qa = _make_task("qa-1", status=TaskStatus.DEFINED, profile_id="qa")
 
         agents = [
-            _make_agent(id="a-review", name="reviewer", agent_type="code-review"),
-            _make_agent(id="a-qa", name="qa-agent", agent_type="qa"),
+            _make_agent(id="a-review", name="reviewer", profile_id="code-review"),
+            _make_agent(id="a-qa", name="qa-agent", profile_id="qa"),
         ]
         state = _make_scheduler_state(tasks=[review, qa], agents=agents)
         actions = Scheduler.schedule(state)
@@ -1472,7 +1472,7 @@ class TestFullPipelineLifecycle:
             _make_task(
                 "coding-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="coding",
+                profile_id="coding",
                 workflow_id="wf-feature-1",
             )
         )
@@ -1497,7 +1497,7 @@ class TestFullPipelineLifecycle:
             _make_task(
                 "review-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="code-review",
+                profile_id="code-review",
                 workflow_id="wf-feature-1",
             )
         )
@@ -1505,7 +1505,7 @@ class TestFullPipelineLifecycle:
             _make_task(
                 "qa-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="qa",
+                profile_id="qa",
                 workflow_id="wf-feature-1",
             )
         )
@@ -1537,7 +1537,7 @@ class TestFullPipelineLifecycle:
             _make_task(
                 "coding-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="coding",
+                profile_id="coding",
                 workflow_id="wf-feature-1",
             )
         )
@@ -1545,7 +1545,7 @@ class TestFullPipelineLifecycle:
             _make_task(
                 "review-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="code-review",
+                profile_id="code-review",
                 workflow_id="wf-feature-1",
             )
         )
@@ -1553,7 +1553,7 @@ class TestFullPipelineLifecycle:
             _make_task(
                 "qa-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="qa",
+                profile_id="qa",
                 workflow_id="wf-feature-1",
             )
         )

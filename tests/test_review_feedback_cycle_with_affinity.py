@@ -62,7 +62,7 @@ def _make_task(
     status: TaskStatus = TaskStatus.DEFINED,
     priority: int = 100,
     workflow_id: str | None = None,
-    agent_type: str | None = None,
+    profile_id: str | None = None,
     affinity_agent_id: str | None = None,
     affinity_reason: str | None = None,
     description: str = "test task",
@@ -77,7 +77,7 @@ def _make_task(
         priority=priority,
         status=status,
         workflow_id=workflow_id,
-        agent_type=agent_type,
+        profile_id=profile_id,
         affinity_agent_id=affinity_agent_id,
         affinity_reason=affinity_reason,
         created_at=created_at,
@@ -88,11 +88,11 @@ def _make_task(
 def _make_agent(
     id: str = "a-1",
     name: str = "claude-1",
-    agent_type: str = "coding",
+    profile_id: str = "coding",
     state: AgentState = AgentState.IDLE,
     **kw,
 ) -> Agent:
-    return Agent(id=id, name=name, agent_type=agent_type, state=state, **kw)
+    return Agent(id=id, name=name, profile_id=profile_id, state=state, **kw)
 
 
 def _make_workflow(
@@ -181,18 +181,18 @@ async def handler(db, tmp_path):
 
     # Create test agents — one "coding" agent and one "code-review" agent
     await db.create_agent(
-        Agent(id="agent-coder", name="claude-coder", agent_type="coding", state=AgentState.IDLE)
+        Agent(id="agent-coder", name="claude-coder", profile_id="coding", state=AgentState.IDLE)
     )
     await db.create_agent(
         Agent(
             id="agent-reviewer",
             name="claude-reviewer",
-            agent_type="code-review",
+            profile_id="code-review",
             state=AgentState.IDLE,
         )
     )
     await db.create_agent(
-        Agent(id="agent-qa", name="claude-qa", agent_type="qa", state=AgentState.IDLE)
+        Agent(id="agent-qa", name="claude-qa", profile_id="qa", state=AgentState.IDLE)
     )
 
     # Create a playbook run and workflow so tasks with workflow_id pass FK checks
@@ -439,7 +439,7 @@ class TestFixTaskAffinityToOriginalAgent:
         task = _make_task(
             "fix-1",
             status=TaskStatus.READY,
-            agent_type="coding",
+            profile_id="coding",
             affinity_agent_id="agent-coder",
             affinity_reason="context",
             created_at=time.time(),
@@ -573,7 +573,7 @@ class TestAffinityIdleAgentImmediateAssignment:
                 _make_task(
                     "fix-1",
                     status=TaskStatus.READY,
-                    agent_type="coding",
+                    profile_id="coding",
                     affinity_agent_id="agent-coder",
                     created_at=now - 10,
                 ),
@@ -604,7 +604,7 @@ class TestAffinityIdleAgentImmediateAssignment:
                     "fix-1",
                     status=TaskStatus.READY,
                     priority=50,
-                    agent_type="coding",
+                    profile_id="coding",
                     affinity_agent_id="agent-coder",
                     created_at=now,
                 ),
@@ -650,17 +650,17 @@ class TestAffinityIdleAgentImmediateAssignment:
 
         # Register agents
         await orch.db.create_agent(
-            Agent(id="agent-coder", name="claude-coder", agent_type="coding")
+            Agent(id="agent-coder", name="claude-coder", profile_id="coding")
         )
         await orch.db.create_agent(
-            Agent(id="agent-other", name="claude-other", agent_type="coding")
+            Agent(id="agent-other", name="claude-other", profile_id="coding")
         )
 
         # Create fix task with affinity
         fix_task = _make_task(
             "fix-1",
             status=TaskStatus.READY,
-            agent_type="coding",
+            profile_id="coding",
             affinity_agent_id="agent-coder",
             affinity_reason="context",
             created_at=time.time(),
@@ -1031,7 +1031,7 @@ class TestFixCompletionReTriggersReview:
         review = _make_task(
             "review-2",
             status=TaskStatus.DEFINED,
-            agent_type="code-review",
+            profile_id="code-review",
         )
         await orch.db.create_task(review)
         await orch.db.add_dependency("review-2", "fix-1")
@@ -1055,7 +1055,7 @@ class TestFixCompletionReTriggersReview:
         qa = _make_task(
             "qa-2",
             status=TaskStatus.DEFINED,
-            agent_type="qa",
+            profile_id="qa",
         )
         await orch.db.create_task(qa)
         await orch.db.add_dependency("qa-2", "fix-1")
@@ -1077,7 +1077,7 @@ class TestFixCompletionReTriggersReview:
         review = _make_task(
             "review-2",
             status=TaskStatus.DEFINED,
-            agent_type="code-review",
+            profile_id="code-review",
         )
         await orch.db.create_task(review)
         await orch.db.add_dependency("review-2", "fix-1")
@@ -1102,7 +1102,7 @@ class TestFixCompletionReTriggersReview:
             _make_task(
                 "review-2",
                 status=TaskStatus.COMPLETED,
-                agent_type="code-review",
+                profile_id="code-review",
                 workflow_id="wf-feature-1",
             )
         )
@@ -1110,7 +1110,7 @@ class TestFixCompletionReTriggersReview:
             _make_task(
                 "qa-2",
                 status=TaskStatus.COMPLETED,
-                agent_type="qa",
+                profile_id="qa",
                 workflow_id="wf-feature-1",
             )
         )
@@ -1132,17 +1132,17 @@ class TestFixCompletionReTriggersReview:
             _make_task(
                 "review-2",
                 status=TaskStatus.READY,
-                agent_type="code-review",
+                profile_id="code-review",
             ),
             _make_task(
                 "qa-2",
                 status=TaskStatus.READY,
-                agent_type="qa",
+                profile_id="qa",
             ),
         ]
         agents = [
-            _make_agent(id="agent-reviewer", name="claude-reviewer", agent_type="code-review"),
-            _make_agent(id="agent-qa", name="claude-qa", agent_type="qa"),
+            _make_agent(id="agent-reviewer", name="claude-reviewer", profile_id="code-review"),
+            _make_agent(id="agent-qa", name="claude-qa", profile_id="qa"),
         ]
         state = _make_scheduler_state(
             projects=[_make_project(max_agents=2)],
@@ -1354,7 +1354,7 @@ class TestMaxReviewCyclesBounded:
             _make_task(
                 "review-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="code-review",
+                profile_id="code-review",
                 workflow_id="wf-feature-1",
             )
         )
@@ -1362,7 +1362,7 @@ class TestMaxReviewCyclesBounded:
             _make_task(
                 "fix-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="coding",
+                profile_id="coding",
                 affinity_agent_id="agent-coder",
                 affinity_reason="context",
                 workflow_id="wf-feature-1",
@@ -1374,7 +1374,7 @@ class TestMaxReviewCyclesBounded:
             _make_task(
                 "review-2",
                 status=TaskStatus.DEFINED,
-                agent_type="code-review",
+                profile_id="code-review",
                 workflow_id="wf-feature-1",
             )
         )

@@ -55,11 +55,11 @@ async def _ensure_project(db, project_id="p-1"):
 
 
 async def _setup_project_agent_task(db, project_id="p-1", agent_id="a-1", task_id="t-1",
-                                     agent_type="claude"):
+                                     profile_id="claude"):
     """Create a project (if needed), agent, and READY task for constraint testing."""
     await _ensure_project(db, project_id)
     await db.create_agent(
-        Agent(id=agent_id, name=f"agent-{agent_id}", agent_type=agent_type)
+        Agent(id=agent_id, name=f"agent-{agent_id}", profile_id=profile_id)
     )
     await db.create_task(
         Task(
@@ -192,10 +192,10 @@ class TestMaxAgentsByTypeEnforcement:
     async def test_type_limit_blocks_excess(self, orch, db):
         """max_agents_by_type={"claude": 1} blocks a second claude agent."""
         await _setup_project_agent_task(
-            db, agent_id="a-1", task_id="t-1", agent_type="claude"
+            db, agent_id="a-1", task_id="t-1", profile_id="claude"
         )
         await _setup_project_agent_task(
-            db, project_id="p-1", agent_id="a-2", task_id="t-2", agent_type="claude"
+            db, project_id="p-1", agent_id="a-2", task_id="t-2", profile_id="claude"
         )
 
         # a-1 is already busy on p-1
@@ -216,10 +216,10 @@ class TestMaxAgentsByTypeEnforcement:
     async def test_type_limit_allows_different_type(self, orch, db):
         """max_agents_by_type={"claude": 1} does not restrict codex agents."""
         await _setup_project_agent_task(
-            db, agent_id="a-1", task_id="t-1", agent_type="claude"
+            db, agent_id="a-1", task_id="t-1", profile_id="claude"
         )
         await _setup_project_agent_task(
-            db, project_id="p-1", agent_id="a-codex", task_id="t-2", agent_type="codex"
+            db, project_id="p-1", agent_id="a-codex", task_id="t-2", profile_id="codex"
         )
 
         # a-1 (claude) is already busy on p-1
@@ -238,7 +238,7 @@ class TestMaxAgentsByTypeEnforcement:
     async def test_type_limit_allows_under_limit(self, orch, db):
         """max_agents_by_type={"claude": 2} allows the first claude agent."""
         await _setup_project_agent_task(
-            db, agent_id="a-1", task_id="t-1", agent_type="claude"
+            db, agent_id="a-1", task_id="t-1", profile_id="claude"
         )
 
         await db.set_project_constraint(
@@ -253,11 +253,11 @@ class TestMaxAgentsByTypeEnforcement:
         """Agents on other projects don't count toward the type limit."""
         # p-1: target project with type limit
         await _setup_project_agent_task(
-            db, project_id="p-1", agent_id="a-1", task_id="t-1", agent_type="claude"
+            db, project_id="p-1", agent_id="a-1", task_id="t-1", profile_id="claude"
         )
         # p-2: has a busy claude agent
         await _setup_project_agent_task(
-            db, project_id="p-2", agent_id="a-2", task_id="t-2", agent_type="claude"
+            db, project_id="p-2", agent_id="a-2", task_id="t-2", profile_id="claude"
         )
         await db.assign_task_to_agent("t-2", "a-2")
         await db.transition_task("t-2", TaskStatus.IN_PROGRESS, context="test")
@@ -295,10 +295,10 @@ class TestConstraintStackingEnforcement:
     async def test_exclusive_plus_type_limit(self, orch, db):
         """exclusive + max_agents_by_type both checked — exclusive blocks first."""
         await _setup_project_agent_task(
-            db, agent_id="a-1", task_id="t-1", agent_type="claude"
+            db, agent_id="a-1", task_id="t-1", profile_id="claude"
         )
         await _setup_project_agent_task(
-            db, project_id="p-1", agent_id="a-2", task_id="t-2", agent_type="claude"
+            db, project_id="p-1", agent_id="a-2", task_id="t-2", profile_id="claude"
         )
 
         # a-1 is already busy

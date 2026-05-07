@@ -49,8 +49,8 @@ def make_task(id="t-1", project_id="p-1", status=TaskStatus.READY, priority=100,
     )
 
 
-def make_agent(id="a-1", name="claude-1", agent_type="claude", state=AgentState.IDLE, **kw):
-    return Agent(id=id, name=name, agent_type=agent_type, state=state, **kw)
+def make_agent(id="a-1", name="claude-1", profile_id="claude", state=AgentState.IDLE, **kw):
+    return Agent(id=id, name=name, profile_id=profile_id, state=state, **kw)
 
 
 def make_state(**overrides) -> SchedulerState:
@@ -100,7 +100,7 @@ async def handler(db, tmp_path):
 
     # Create test agent (needed for affinity_agent_id validation)
     await db.create_agent(
-        Agent(id="agent-1", name="claude-1", agent_type="claude", state=AgentState.IDLE)
+        Agent(id="agent-1", name="claude-1", profile_id="claude", state=AgentState.IDLE)
     )
 
     return cmd
@@ -711,21 +711,21 @@ class TestSchedulerAffinityAgent:
 
     def test_agent_type_matching_filters_assignment(self):
         """agent_type is a hard constraint: task only assigned to matching agent."""
-        task = make_task(id="t-1", agent_type="code-review")
+        task = make_task(id="t-1", profile_id="code-review")
         state = make_state(
             tasks=[task],
-            agents=[make_agent(id="a-1", agent_type="coding")],
+            agents=[make_agent(id="a-1", profile_id="coding")],
         )
-        # Task has agent_type="code-review" but agent is "coding" → no match
+        # Task has profile_id="code-review" but agent is "coding" → no match
         actions = Scheduler.schedule(state)
         assert len(actions) == 0
 
     def test_agent_type_matching_allows_matching_agent(self):
         """agent_type match → task IS assigned."""
-        task = make_task(id="t-1", agent_type="coding")
+        task = make_task(id="t-1", profile_id="coding")
         state = make_state(
             tasks=[task],
-            agents=[make_agent(id="a-1", agent_type="coding")],
+            agents=[make_agent(id="a-1", profile_id="coding")],
         )
         actions = Scheduler.schedule(state)
         assert len(actions) == 1
@@ -734,10 +734,10 @@ class TestSchedulerAffinityAgent:
 
     def test_no_agent_type_matches_any_agent(self):
         """Tasks without agent_type are assigned to any available agent."""
-        task = make_task(id="t-1")  # agent_type=None
+        task = make_task(id="t-1")  # profile_id=None
         state = make_state(
             tasks=[task],
-            agents=[make_agent(id="a-1", agent_type="code-review")],
+            agents=[make_agent(id="a-1", profile_id="code-review")],
         )
         actions = Scheduler.schedule(state)
         assert len(actions) == 1
@@ -757,7 +757,7 @@ class TestCoordinationParamsDbRoundTrip:
         # Create a project to satisfy FK
         await database.create_project(Project(id="p-1", name="test"))
         # Create agent for affinity FK validation
-        await database.create_agent(Agent(id="agent-1", name="claude-1", agent_type="claude"))
+        await database.create_agent(Agent(id="agent-1", name="claude-1", profile_id="claude"))
         yield database
         await database.close()
 
@@ -768,7 +768,7 @@ class TestCoordinationParamsDbRoundTrip:
             project_id="p-1",
             title="Coordinated task",
             description="Full coordination",
-            agent_type="coding",
+            profile_id="coding",
             affinity_agent_id="agent-1",
             affinity_reason="context",
             workspace_mode=WorkspaceMode.BRANCH_ISOLATED,
@@ -811,7 +811,7 @@ class TestCoordinationParamsDbRoundTrip:
 
         await testdb.update_task(
             "t-3",
-            agent_type="qa",
+            profile_id="qa",
             affinity_agent_id="agent-1",
             affinity_reason="workspace",
             workspace_mode=WorkspaceMode.EXCLUSIVE,
@@ -831,7 +831,7 @@ class TestCoordinationParamsDbRoundTrip:
             title="Archivable task",
             description="test",
             status=TaskStatus.COMPLETED,
-            agent_type="code-review",
+            profile_id="code-review",
             affinity_agent_id="agent-1",
             affinity_reason="type",
             workspace_mode=WorkspaceMode.BRANCH_ISOLATED,

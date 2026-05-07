@@ -136,7 +136,7 @@ class TestAcquireWorkspacePreferred:
                 Agent(
                     id=aid,
                     name=aid,
-                    agent_type="claude",
+                    profile_id="claude",
                     state=AgentState.IDLE,
                 )
             )

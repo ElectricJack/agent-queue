@@ -445,7 +445,7 @@ class TestReflectionE2ETriggerToRunner:
         mgr._index_triggers(pb)
         mgr.subscribe_to_events()
 
-        # Emit a task.completed event with agent_type=coding
+        # Emit a task.completed event with profile_id=coding
         await event_bus.emit("task.completed", _task_completed_event())
 
         # Runner should have completed successfully
@@ -483,7 +483,7 @@ class TestReflectionE2ETriggerToRunner:
         assert "coding" in seed["content"]
 
     async def test_trigger_does_not_fire_for_wrong_agent_type(self, event_bus: EventBus) -> None:
-        """Coding reflection playbook does NOT run for agent_type=review."""
+        """Coding reflection playbook does NOT run for profile_id=review."""
         runner_results: list[RunResult] = []
 
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
@@ -502,7 +502,7 @@ class TestReflectionE2ETriggerToRunner:
         mgr._index_triggers(pb)
         mgr.subscribe_to_events()
 
-        await event_bus.emit("task.completed", _task_completed_event(agent_type="review"))
+        await event_bus.emit("task.completed", _task_completed_event(profile_id="review"))
 
         assert len(runner_results) == 0
 
@@ -610,7 +610,7 @@ class TestReflectionRunnerGraphWalk:
         event = _task_completed_event(
             task_id="t-prop-test",
             project_id="myapp",
-            agent_type="coding",
+            profile_id="coding",
         )
 
         runner = PlaybookRunner(graph, event, supervisor)
@@ -858,7 +858,7 @@ class TestReflectionEventPayloads:
 
     def test_event_payload_has_agent_type_for_scope_matching(self) -> None:
         """The event payload must contain agent_type for playbook scope matching."""
-        event = _task_completed_event(agent_type="coding")
+        event = _task_completed_event(profile_id="coding")
         assert "agent_type" in event
         assert event["agent_type"] == "coding"
 
@@ -894,7 +894,7 @@ class TestReflectionConversationContext:
     async def test_seed_message_contains_agent_type(self) -> None:
         """The seed message includes agent_type for scope context."""
         supervisor = ReflectionMockSupervisor()
-        event = _task_completed_event(agent_type="coding")
+        event = _task_completed_event(profile_id="coding")
         runner = PlaybookRunner(_make_reflection_graph(), event, supervisor)
         await runner.run()
 
@@ -988,7 +988,7 @@ class TestReflectionScopeMatching:
         return EventBus(validate_events=False)
 
     async def test_coding_reflection_matches_coding_agent_type(self, event_bus: EventBus) -> None:
-        """scope=agent-type:coding matches events with agent_type=coding."""
+        """scope=agent-type:coding matches events with profile_id=coding."""
         triggered: list[str] = []
 
         async def on_trigger(playbook, data):
@@ -1000,13 +1000,13 @@ class TestReflectionScopeMatching:
         mgr._index_triggers(pb)
         mgr.subscribe_to_events()
 
-        await event_bus.emit("task.completed", _task_completed_event(agent_type="coding"))
+        await event_bus.emit("task.completed", _task_completed_event(profile_id="coding"))
         assert "coding-reflection" in triggered
 
     async def test_coding_reflection_ignores_different_agent_type(
         self, event_bus: EventBus
     ) -> None:
-        """scope=agent-type:coding does NOT match events with agent_type=review."""
+        """scope=agent-type:coding does NOT match events with profile_id=review."""
         triggered: list[str] = []
 
         async def on_trigger(playbook, data):
@@ -1018,7 +1018,7 @@ class TestReflectionScopeMatching:
         mgr._index_triggers(pb)
         mgr.subscribe_to_events()
 
-        await event_bus.emit("task.completed", _task_completed_event(agent_type="review"))
+        await event_bus.emit("task.completed", _task_completed_event(profile_id="review"))
         assert len(triggered) == 0
 
     async def test_multiple_agent_type_playbooks_only_matching_runs(
@@ -1047,7 +1047,7 @@ class TestReflectionScopeMatching:
 
         mgr.subscribe_to_events()
 
-        await event_bus.emit("task.completed", _task_completed_event(agent_type="coding"))
+        await event_bus.emit("task.completed", _task_completed_event(profile_id="coding"))
 
         assert len(results) == 1
         assert results[0] == ("coding-reflection", "coding")

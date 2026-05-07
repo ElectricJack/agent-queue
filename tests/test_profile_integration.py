@@ -148,7 +148,7 @@ async def _setup_project_and_agent(
         Agent(
             id=agent_id,
             name="claude-1",
-            agent_type="claude",
+            profile_id="claude",
         )
     )
 

@@ -77,7 +77,7 @@ async def _make_project(db, pid=None):
 
 async def _make_agent(db, aid=None):
     aid = aid or f"a-{_uid()}"
-    await db.create_agent(Agent(id=aid, name=f"agent-{aid}", agent_type="claude"))
+    await db.create_agent(Agent(id=aid, name=f"agent-{aid}", profile_id="claude"))
     return aid
 
 

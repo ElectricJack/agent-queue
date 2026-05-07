@@ -103,7 +103,7 @@ class TestTask:
 
 class TestAgent:
     def test_create_agent(self):
-        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-1", profile_id="claude")
         assert agent.state == AgentState.IDLE
         assert agent.current_task_id is None
         assert agent.total_tokens_used == 0

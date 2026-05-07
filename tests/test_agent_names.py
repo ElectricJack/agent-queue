@@ -164,7 +164,7 @@ class TestGenerateUniqueAgentName:
             nonlocal call_count
             call_count += 1
             if agent_id in existing_ids:
-                return Agent(id=agent_id, name=agent_id.title(), agent_type="claude")
+                return Agent(id=agent_id, name=agent_id.title(), profile_id="claude")
             return None
 
         db = AsyncMock()
@@ -185,7 +185,7 @@ class TestGenerateUniqueAgentName:
             nonlocal call_count
             call_count += 1
             if call_count <= 20:
-                return Agent(id=agent_id, name="taken", agent_type="claude")
+                return Agent(id=agent_id, name="taken", profile_id="claude")
             return None
 
         db = AsyncMock()
@@ -211,7 +211,7 @@ class TestGenerateUniqueAgentName:
 
             # Create an agent with that name
             agent_id1 = name1.lower().replace(" ", "-")
-            agent1 = Agent(id=agent_id1, name=name1, agent_type="claude")
+            agent1 = Agent(id=agent_id1, name=name1, profile_id="claude")
             await db.create_agent(agent1)
 
             # Generate another name - should be different
@@ -234,7 +234,7 @@ class TestGenerateUniqueAgentName:
                 assert agent_id not in generated_ids, f"Duplicate agent ID: {agent_id}"
                 generated_ids.add(agent_id)
                 # Register the agent so future names must avoid it
-                agent = Agent(id=agent_id, name=name, agent_type="claude")
+                agent = Agent(id=agent_id, name=name, profile_id="claude")
                 await db.create_agent(agent)
         finally:
             await db.close()

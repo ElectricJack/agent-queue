@@ -67,7 +67,7 @@ def _make_task(
     priority: int = 100,
     workflow_id: str | None = None,
     workspace_mode: WorkspaceMode | None = None,
-    agent_type: str | None = None,
+    profile_id: str | None = None,
     affinity_agent_id: str | None = None,
     affinity_reason: str | None = None,
     description: str = "test task",
@@ -82,7 +82,7 @@ def _make_task(
         status=status,
         workflow_id=workflow_id,
         workspace_mode=workspace_mode,
-        agent_type=agent_type,
+        profile_id=profile_id,
         affinity_agent_id=affinity_agent_id,
         affinity_reason=affinity_reason,
         **kw,
@@ -92,11 +92,11 @@ def _make_task(
 def _make_agent(
     id: str = "a-1",
     name: str = "claude-1",
-    agent_type: str = "coding",
+    profile_id: str = "coding",
     state: AgentState = AgentState.IDLE,
     **kw,
 ) -> Agent:
-    return Agent(id=id, name=name, agent_type=agent_type, state=state, **kw)
+    return Agent(id=id, name=name, profile_id=profile_id, state=state, **kw)
 
 
 def _make_workflow(
@@ -189,7 +189,7 @@ async def handler(db, tmp_path):
             Agent(
                 id=f"agent-{i}",
                 name=f"claude-{i}",
-                agent_type="coding",
+                profile_id="coding",
                 state=AgentState.IDLE,
             )
         )
@@ -503,7 +503,7 @@ class TestReviewerDependsOnAll:
         review = _make_task(
             "review-1",
             status=TaskStatus.DEFINED,
-            agent_type="code-review",
+            profile_id="code-review",
         )
         await orch.db.create_task(review)
 
@@ -532,7 +532,7 @@ class TestReviewerDependsOnAll:
         review = _make_task(
             "review-1",
             status=TaskStatus.DEFINED,
-            agent_type="code-review",
+            profile_id="code-review",
         )
         await orch.db.create_task(review)
 
@@ -632,7 +632,7 @@ class TestReviewerReceivesContext:
 
         # Create agents referenced in results
         for i in range(1, 4):
-            await db.create_agent(Agent(id=f"agent-{i}", name=f"claude-{i}", agent_type="coding"))
+            await db.create_agent(Agent(id=f"agent-{i}", name=f"claude-{i}", profile_id="coding"))
 
         # Create and complete exploration tasks with results
         for i in range(1, 4):
@@ -780,7 +780,7 @@ class TestPartialFailure:
         review = _make_task(
             "review-1",
             status=TaskStatus.DEFINED,
-            agent_type="code-review",
+            profile_id="code-review",
         )
         await orch.db.create_task(review)
 
@@ -800,7 +800,7 @@ class TestPartialFailure:
 
         # Create agents referenced in results
         for i in range(1, 4):
-            await db.create_agent(Agent(id=f"agent-{i}", name=f"claude-{i}", agent_type="coding"))
+            await db.create_agent(Agent(id=f"agent-{i}", name=f"claude-{i}", profile_id="coding"))
 
         # explore-1 and explore-2 completed with results
         for i in [1, 2]:
@@ -904,7 +904,7 @@ class TestSingleTaskDegradation:
         review = _make_task(
             "review-1",
             status=TaskStatus.DEFINED,
-            agent_type="code-review",
+            profile_id="code-review",
         )
         await orch.db.create_task(review)
         await orch.db.add_dependency("review-1", "explore-1")
@@ -920,7 +920,7 @@ class TestSingleTaskDegradation:
         review = _make_task(
             "review-1",
             status=TaskStatus.DEFINED,
-            agent_type="code-review",
+            profile_id="code-review",
         )
         agents = [_make_agent(id="a-1", name="claude-1")]
         state = _make_scheduler_state(tasks=[explore, review], agents=agents)
@@ -1007,7 +1007,7 @@ class TestWorkflowStatusLifecycle:
             _make_task(
                 "review-1",
                 status=TaskStatus.IN_PROGRESS,
-                agent_type="code-review",
+                profile_id="code-review",
                 workflow_id="wf-explore-1",
             )
         )
@@ -1111,7 +1111,7 @@ class TestWorkflowStatusLifecycle:
             _make_task(
                 "review-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="code-review",
+                profile_id="code-review",
                 workflow_id="wf-explore-1",
             )
         )
@@ -1165,7 +1165,7 @@ class TestWorkflowStatusLifecycle:
             _make_task(
                 "review-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="code-review",
+                profile_id="code-review",
                 workflow_id="wf-explore-1",
             )
         )

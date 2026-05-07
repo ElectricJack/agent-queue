@@ -151,7 +151,7 @@ class TestReflectionPlaybookTrigger:
     async def test_coding_reflection_fires_on_task_completed_with_matching_type(
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
-        """Reflection playbook fires when task.completed has agent_type=coding."""
+        """Reflection playbook fires when task.completed has profile_id=coding."""
         mgr = _make_manager(event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_playbook()
         mgr._active[pb.id] = pb
@@ -173,7 +173,7 @@ class TestReflectionPlaybookTrigger:
     async def test_coding_reflection_fires_on_task_failed_with_matching_type(
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
-        """Reflection playbook fires when task.failed has agent_type=coding."""
+        """Reflection playbook fires when task.failed has profile_id=coding."""
         mgr = _make_manager(event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_playbook()
         mgr._active[pb.id] = pb
@@ -195,7 +195,7 @@ class TestReflectionPlaybookTrigger:
     async def test_reflection_does_not_fire_for_wrong_agent_type(
         self, event_bus: EventBus, trigger_log: list, on_trigger
     ) -> None:
-        """Coding reflection playbook does NOT fire for agent_type=review."""
+        """Coding reflection playbook does NOT fire for profile_id=review."""
         mgr = _make_manager(event_bus=event_bus, on_trigger=on_trigger)
         pb = _make_playbook()
         mgr._active[pb.id] = pb
@@ -292,7 +292,7 @@ class TestReflectionPlaybookTrigger:
 
         This validates that the system task-outcome playbook and the
         coding reflection playbook can coexist: a task.completed event
-        with agent_type=coding triggers both.
+        with profile_id=coding triggers both.
         """
         mgr = _make_manager(event_bus=event_bus, on_trigger=on_trigger)
 

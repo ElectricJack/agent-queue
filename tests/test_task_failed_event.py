@@ -81,7 +81,7 @@ class TestTaskFailedEvent:
     async def test_stop_task_emits_task_failed(self, orch):
         """Stopping a task should emit task.failed with context='stop_task'."""
         await _setup_project(orch.db)
-        agent = Agent(id="a-1", name="agent-1", agent_type="claude", state=AgentState.IDLE)
+        agent = Agent(id="a-1", name="agent-1", profile_id="claude", state=AgentState.IDLE)
         await orch.db.create_agent(agent)
         task = Task(
             id="t-stop",
@@ -107,7 +107,7 @@ class TestTaskFailedEvent:
     async def test_max_retries_emits_task_failed(self, orch):
         """When max retries exhausted, task.failed should be emitted with context='max_retries'."""
         await _setup_project(orch.db)
-        agent = Agent(id="a-2", name="agent-2", agent_type="claude", state=AgentState.IDLE)
+        agent = Agent(id="a-2", name="agent-2", profile_id="claude", state=AgentState.IDLE)
         await orch.db.create_agent(agent)
         task = Task(
             id="t-retry",

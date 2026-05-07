@@ -232,8 +232,8 @@ class TestTwoAgentsAcquireBranchIsolated:
                 source_type=RepoSourceType.CLONE,
             )
         )
-        await db.create_agent(Agent(id="a-1", name="agent-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="agent-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="agent-2", profile_id="claude"))
         await db.create_task(
             Task(
                 id="t-1",
@@ -292,8 +292,8 @@ class TestTwoAgentsAcquireBranchIsolated:
         db = orch.db
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_project(Project(id="p-2", name="beta"))
-        await db.create_agent(Agent(id="a-1", name="agent-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="agent-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="agent-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
 
@@ -561,8 +561,8 @@ class TestLockReleasedOnCompletion:
 
         # Set up project + workspace
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="agent-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="agent-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="agent-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="Base", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-1", title="Worktree", description="D"))
 
@@ -621,7 +621,7 @@ class TestLockReleasedOnCompletion:
         the lock — it does not delete the workspace record."""
         db = orch.db
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="agent-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
@@ -652,8 +652,8 @@ class TestLockReleasedOnCompletion:
         acquired again."""
         db = orch.db
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="agent-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="agent-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="agent-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
         await db.create_workspace(
@@ -714,7 +714,7 @@ class TestThreeOrMoreAgentsConcurrent:
         agents = []
         tasks = []
         for i in range(1, 4):
-            await db.create_agent(Agent(id=f"a-{i}", name=f"agent-{i}", agent_type="claude"))
+            await db.create_agent(Agent(id=f"a-{i}", name=f"agent-{i}", profile_id="claude"))
             await db.create_task(
                 Task(
                     id=f"t-{i}",
@@ -768,7 +768,7 @@ class TestThreeOrMoreAgentsConcurrent:
 
         for i in range(1, 4):
             await db.create_project(Project(id=f"p-{i}", name=f"project-{i}"))
-            await db.create_agent(Agent(id=f"a-{i}", name=f"agent-{i}", agent_type="claude"))
+            await db.create_agent(Agent(id=f"a-{i}", name=f"agent-{i}", profile_id="claude"))
             await db.create_task(
                 Task(id=f"t-{i}", project_id=f"p-{i}", title=f"Task {i}", description="D")
             )
@@ -867,8 +867,8 @@ class TestConflictingBranchRejected:
         clone = git_repo["clone"]
 
         await db.create_project(Project(id="p-1", name="alpha", repo_url=git_repo["remote"]))
-        await db.create_agent(Agent(id="a-1", name="agent-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="agent-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="agent-2", profile_id="claude"))
         await db.create_task(
             Task(
                 id="t-1",
@@ -964,7 +964,7 @@ class TestWorktreeCleanup:
         db = orch.db
 
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="agent-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
 
         wt_path = "/repos/.worktrees-myrepo/task-1"
@@ -1008,8 +1008,8 @@ class TestWorktreeCleanup:
         db = orch.db
 
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="agent-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="agent-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="agent-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
 
@@ -1066,8 +1066,8 @@ class TestWorktreeCleanup:
         db = orch.db
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_project(Project(id="p-2", name="beta"))
-        await db.create_agent(Agent(id="a-1", name="agent-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="agent-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="agent-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
 
@@ -1097,8 +1097,8 @@ class TestWorktreeCleanup:
         db = orch.db
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_project(Project(id="p-2", name="beta"))
-        await db.create_agent(Agent(id="a-1", name="agent-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="agent-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="agent-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
 
@@ -1143,7 +1143,7 @@ class TestGitMutexRegistration:
                 source_type=RepoSourceType.CLONE,
             )
         )
-        await db.create_agent(Agent(id="a-1", name="agent-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
         await db.create_task(
             Task(
                 id="t-1",
@@ -1196,7 +1196,7 @@ class TestGitMutexRegistration:
                 source_type=RepoSourceType.CLONE,
             )
         )
-        await db.create_agent(Agent(id="a-1", name="agent-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
         await db.create_task(
             Task(
                 id="t-1",
