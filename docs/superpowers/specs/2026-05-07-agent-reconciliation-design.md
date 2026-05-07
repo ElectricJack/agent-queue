@@ -141,9 +141,11 @@ class AgentReconciler:
      preserves the "workspace identity, dynamic profile" intent.
    - Else → leave it; scheduler will report blocked, next tick retries.
 3. Workspace-requiring runtimes only count toward dispatchable work
-   if the project has at least one available workspace; otherwise the
-   reconciler skips the create (we'd be making agents that can't
-   dispatch). Use `runtime.requires_workspace` via the resolved profile.
+   if the project has at least one available workspace (unlocked **and**
+   `enabled=True` — same predicate the existing
+   `db.count_available_workspaces` uses); otherwise the reconciler
+   skips the create (we'd be making agents that can't dispatch). Use
+   `runtime.requires_workspace` via the resolved profile.
 4. Reassignment is capped at **1 per agent per tick** to prevent
    thrashing under high churn (three different-profile tasks arriving
    simultaneously with capacity=1 → first wins, others wait for next tick).
@@ -248,8 +250,11 @@ but cannot create — capacity full and no reassignable idle agent"`.
 - *Profile deleted while an idle agent references it.* `agents.profile_id`
   is a soft reference. The reconciler treats the orphan idle agent as
   **eligible for reassignment first** (preferred over an idle agent with
-  a valid-but-mismatching profile). If no work is pending, the orphan
-  stays idle until reaped at next daemon shutdown / reconciliation pass.
+  a valid-but-mismatching profile). If no work is pending, the
+  reconciler does **not** reap the orphan mid-run (reaping idle rows
+  while there's no demand would just churn). It stays idle until the
+  next daemon startup cleanup pass at `core.py:1349`, which is
+  extended (per Section 4.2) to drop orphan-profile idle agents.
 - *Profile deleted while an agent is BUSY.* Don't interfere with the
   in-flight task — the runtime is already loaded. The agent will go IDLE
   on completion, then fall under the rule above.
