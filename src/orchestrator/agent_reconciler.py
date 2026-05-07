@@ -32,7 +32,6 @@ class AgentReconciler:
 
     async def reconcile(self) -> ReconcileReport:
         import uuid
-        import time as _t
 
         from src.models import Agent, AgentState, ProjectStatus, TaskStatus
 
@@ -42,6 +41,23 @@ class AgentReconciler:
         tasks = await self._db.list_tasks()
         agents = await self._db.list_agents()
         workspaces = await self._db.list_workspaces()
+        profiles = {p.id: p for p in await self._db.list_profiles()}
+
+        # Sweep orphan BUSY agents (state=BUSY but task missing) → reset to IDLE.
+        for a in agents:
+            if a.state != AgentState.BUSY:
+                continue
+            ok = False
+            if a.current_task_id:
+                t = await self._db.get_task(a.current_task_id)
+                ok = t is not None
+            if not ok:
+                await self._db.update_agent(
+                    a.id, state=AgentState.IDLE, current_task_id=None
+                )
+                a.state = AgentState.IDLE
+                a.current_task_id = None
+                logger.warning("reconciler: reset orphan BUSY agent %s", a.id)
 
         # Per-agent project attribution: BUSY agents via current_task_id;
         # IDLE agents via the workspace lock.
@@ -72,6 +88,9 @@ class AgentReconciler:
             if t.status == TaskStatus.READY:
                 ready_by_project.setdefault(t.project_id, []).append(t)
 
+        # Track per-tick reassignment cap: one reassignment per agent.
+        reassigned_this_tick: set[str] = set()
+
         for project in projects:
             if project.status != ProjectStatus.ACTIVE:
                 continue
@@ -97,8 +116,22 @@ class AgentReconciler:
             for needed in needed_profiles:
                 if needed in existing_profiles:
                     continue
+
                 # Try create.
                 if len(project_agents) < project.max_concurrent_agents:
+                    # Workspace gate (only applies to NEW agent creation —
+                    # reassignment reuses an existing agent's workspace lock):
+                    # if the runtime requires a workspace, ensure the project
+                    # has at least one available (unlocked + enabled).
+                    requires_ws = self._runtime_requires_workspace(profiles.get(needed))
+                    if requires_ws:
+                        avail = await self._db.count_available_workspaces(project.id)
+                        if avail == 0:
+                            report.skipped.append(
+                                (project.id, f"no available workspace for {needed}")
+                            )
+                            continue
+
                     # Adopt one unassigned-idle agent if available; else create.
                     if unassigned_idle:
                         adopted = unassigned_idle.pop(0)
@@ -121,8 +154,62 @@ class AgentReconciler:
                     project_agents.append(agent)
                     existing_profiles.add(needed)
                     report.created.append((project.id, needed))
+                    continue
+
+                # At cap — try to reassign an idle, mismatched-profile agent.
+                # Prefer agents whose profile_id is no longer in agent_profiles.
+                idle_in_project = [
+                    a for a in project_agents
+                    if a.state == AgentState.IDLE
+                    and a.profile_id != needed
+                    and a.id not in reassigned_this_tick
+                ]
+                if not idle_in_project:
+                    continue
+                orphans = [a for a in idle_in_project if a.profile_id not in profiles]
+                target = orphans[0] if orphans else idle_in_project[0]
+                old = target.profile_id
+                await self._db.update_agent(target.id, profile_id=needed)
+                target.profile_id = needed
+                reassigned_this_tick.add(target.id)
+                report.reassigned.append((target.id, old, needed))
+                # Update existing_profiles tracker.
+                existing_profiles.discard(old)
+                existing_profiles.add(needed)
 
         return report
+
+    def _runtime_requires_workspace(self, profile) -> bool:
+        """Look up runtime.requires_workspace via the profile's runtime name.
+
+        Maps the runtime-name string to the ClassVar on the runtime class
+        directly. This avoids depending on a populated RuntimeRegistry
+        (the daemon-wide registry only includes the supervisor singleton
+        if one is wired, but the supervisor runtime class itself always
+        knows its workspace requirement).
+
+        Defensive: unknown profile / runtime → assume requires workspace
+        (the safer default), so we don't over-create agents that can't
+        actually dispatch.
+        """
+        if profile is None:
+            return True
+        try:
+            from src.runtimes.acpx import ACPXRuntime
+            from src.runtimes.claude_sdk import ClaudeSDKRuntime
+            from src.runtimes.supervisor import Supervisor
+
+            runtime_classes = {
+                ACPXRuntime.name: ACPXRuntime,
+                ClaudeSDKRuntime.name: ClaudeSDKRuntime,
+                Supervisor.name: Supervisor,
+            }
+            cls = runtime_classes.get(profile.runtime)
+            if cls is None:
+                return True
+            return cls.requires_workspace
+        except Exception:
+            return True
 
     def _warn_once(self, project_id: str, reason: str) -> None:
         if self._warned_projects.get(project_id) == reason:
