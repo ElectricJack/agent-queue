@@ -239,9 +239,6 @@ class Project:
     repo_url: str = ""
     repo_default_branch: str = "main"
     default_profile_id: str | None = None  # fallback profile for tasks in this project
-    default_agent_type: str | None = (
-        None  # default agent_type for new tasks (selects project-scoped profile)
-    )
 
 
 @dataclass
@@ -315,7 +312,6 @@ class Task:
     auto_approve_plan: bool = False  # if True, auto-approve any plan this task generates
     skip_verification: bool = False  # if True, skip git verification on completion
     workflow_id: str | None = None  # FK to workflows table (coordination playbooks)
-    agent_type: str | None = None  # required agent type (e.g. "coding", "code-review", "qa")
     affinity_agent_id: str | None = None  # preferred agent ID for context continuity
     affinity_reason: str | None = None  # why: "context", "workspace", "type"
     workspace_mode: WorkspaceMode | None = None  # lock mode for workspace access
@@ -325,17 +321,15 @@ class Task:
 
 @dataclass
 class Agent:
-    """Represents a registered agent process (e.g., a Claude Code instance).
-
-    .. deprecated::
-        Legacy dataclass — will be removed once the orchestrator is fully
-        migrated to the workspace-as-agent model.  New code should use
-        :class:`WorkspaceAgent` instead.
+    """Persisted agent slot — a project execution context with a current
+    profile assignment. Created lazily by ``AgentReconciler`` when work
+    needs an idle slot. Sized per project by
+    ``Project.max_concurrent_agents``.
     """
 
     id: str
     name: str
-    agent_type: str  # "claude", "codex", "cursor", "aider"
+    profile_id: str  # soft reference to agent_profiles.id
     state: AgentState = AgentState.IDLE
     current_task_id: str | None = None
     pid: int | None = None
@@ -350,7 +344,8 @@ class WorkspaceAgent:
 
     An "agent" is simply a workspace execution context.  Idle (unlocked)
     workspaces are idle agents; locked workspaces are busy agents.  There is
-    no separate agent registry — agents are derived from the workspaces table.
+    derived API view of an Agent that currently holds a workspace lock —
+    not a persisted entity. The persisted record stays :class:`Agent`.
     """
 
     workspace_id: str
