@@ -354,11 +354,6 @@ def _register_all():
 
     # Agent confirmations
     for _agent_confirm in (
-        "create_agent",
-        "delete_agent",
-        "edit_agent",
-        "pause_agent",
-        "resume_agent",
         "create_profile",
         "edit_profile",
         "delete_profile",

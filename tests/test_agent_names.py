@@ -241,54 +241,7 @@ class TestGenerateUniqueAgentName:
 
 
 class TestCommandHandlerIntegration:
-    """Test that agent CRUD commands are deprecated (workspace-as-agent model)."""
-
-    async def test_create_agent_returns_deprecation_error(self, tmp_path):
-        """create_agent should return a deprecation error."""
-        from src.commands.handler import CommandHandler
-        from src.config import AppConfig
-        from src.orchestrator import Orchestrator
-
-        config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
-            workspace_dir=str(tmp_path / "workspaces"),
-            data_dir=str(tmp_path / "data"),
-        )
-        orchestrator = Orchestrator(config)
-        await orchestrator.db.initialize()
-
-        try:
-            handler = CommandHandler(orchestrator, config)
-            result = await handler.execute("create_agent", {})
-
-            assert "error" in result
-            assert "no longer supported" in result["error"]
-            assert "add_workspace" in result["error"]
-        finally:
-            await orchestrator.db.close()
-
-    async def test_delete_agent_returns_deprecation_error(self, tmp_path):
-        """delete_agent should return a deprecation error."""
-        from src.commands.handler import CommandHandler
-        from src.config import AppConfig
-        from src.orchestrator import Orchestrator
-
-        config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
-            workspace_dir=str(tmp_path / "workspaces"),
-            data_dir=str(tmp_path / "data"),
-        )
-        orchestrator = Orchestrator(config)
-        await orchestrator.db.initialize()
-
-        try:
-            handler = CommandHandler(orchestrator, config)
-            result = await handler.execute("delete_agent", {"agent_id": "test"})
-
-            assert "error" in result
-            assert "no longer supported" in result["error"]
-        finally:
-            await orchestrator.db.close()
+    """Test that agent CRUD commands are gone (workspace-as-agent model)."""
 
     async def test_add_workspace_init_generates_path_and_inits_repo(self, tmp_path):
         """source=init should auto-generate a path and run ``git init``."""
