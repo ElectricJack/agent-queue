@@ -24,6 +24,10 @@ LOG_PATH = os.path.join(CONFIG_DIR, "daemon.log")
 PID_FILE = os.path.join(CONFIG_DIR, "daemon.pid")
 LOCK_DIR = os.path.join(CONFIG_DIR, "daemon.lock")
 
+DASHBOARD_PORT = 5173  # Vite default; matches dashboard/vite.config.ts
+DASHBOARD_PID_FILE = os.path.join(CONFIG_DIR, "dashboard.pid")
+DASHBOARD_LOG_PATH = os.path.join(CONFIG_DIR, "dashboard.log")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -374,15 +378,131 @@ def _tail_log(lines: int = 20) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dashboard helpers
+# ---------------------------------------------------------------------------
+
+
+def _dashboard_running(port: int = DASHBOARD_PORT) -> bool:
+    """Return True if something is listening on the dashboard port."""
+    import socket
+
+    s = socket.socket()
+    s.settimeout(0.3)
+    try:
+        s.connect(("127.0.0.1", port))
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
+def _repo_root() -> Path | None:
+    """Best-effort locate the agent-queue repo root from this source file.
+
+    Works for editable installs (pip install -e .) where this file lives at
+    ``<repo>/src/cli/daemon.py``. Returns None if the layout doesn't match.
+    """
+    candidate = Path(__file__).resolve().parents[2]
+    if (candidate / "package.json").exists() and (candidate / "dashboard").is_dir():
+        return candidate
+    return None
+
+
+def _start_dashboard() -> bool:
+    """Daemonize ``npm -w dashboard run dev`` and write a PID file. Returns True on success."""
+    repo = _repo_root()
+    if repo is None:
+        console.print(
+            "[yellow]Cannot locate the agent-queue repo to launch the dashboard.[/]"
+        )
+        return False
+    if not (repo / "dashboard" / "node_modules").exists():
+        console.print(
+            f"[yellow]Dashboard deps not installed.[/] Run: [bold]cd {repo} && npm install[/]"
+        )
+        return False
+    import shutil
+
+    if shutil.which("npm") is None:
+        console.print("[yellow]npm not found on PATH; cannot launch dashboard.[/]")
+        return False
+
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(DASHBOARD_LOG_PATH, "a") as log_file:
+        proc = subprocess.Popen(
+            ["npm", "-w", "dashboard", "run", "dev"],
+            cwd=str(repo),
+            stdout=log_file,
+            stderr=log_file,
+            start_new_session=True,
+        )
+    with open(DASHBOARD_PID_FILE, "w") as f:
+        f.write(str(proc.pid))
+
+    # Wait briefly for vite to come up
+    for _ in range(20):  # ~10s
+        time.sleep(0.5)
+        try:
+            os.kill(proc.pid, 0)
+        except OSError:
+            console.print("[bold red]Dashboard exited during startup. Last log lines:[/]")
+            try:
+                with open(DASHBOARD_LOG_PATH) as f:
+                    for line in f.readlines()[-20:]:
+                        console.print(line.rstrip())
+            except OSError:
+                pass
+            try:
+                os.remove(DASHBOARD_PID_FILE)
+            except OSError:
+                pass
+            return False
+        if _dashboard_running():
+            console.print(
+                f"[bold green]Dashboard started[/] at "
+                f"http://localhost:{DASHBOARD_PORT} (PID {proc.pid})"
+            )
+            console.print(f"[dim]Logs: tail -f {DASHBOARD_LOG_PATH}[/]")
+            console.print(f"[dim]Stop: kill $(cat {DASHBOARD_PID_FILE})[/]")
+            return True
+
+    console.print(
+        f"[yellow]Dashboard launched (PID {proc.pid}) but didn't bind port "
+        f"{DASHBOARD_PORT} within 10s.[/]"
+    )
+    console.print(f"[dim]Logs: tail -f {DASHBOARD_LOG_PATH}[/]")
+    return True
+
+
+def _maybe_prompt_dashboard(no_dashboard: bool) -> None:
+    """If the dashboard isn't running, prompt the user to launch it."""
+    if no_dashboard:
+        return
+    if _dashboard_running():
+        return
+    if _repo_root() is None:
+        # Not running from a source checkout; nothing to launch.
+        return
+    console.print("")
+    if click.confirm(
+        f"Dashboard isn't running on http://localhost:{DASHBOARD_PORT}. Launch it?",
+        default=False,
+    ):
+        _start_dashboard()
+
+
+# ---------------------------------------------------------------------------
 # CLI commands
 # ---------------------------------------------------------------------------
 
 
 @cli.command("start")
-def daemon_start() -> None:
+@click.option("--no-dashboard", is_flag=True, help="Skip the dashboard prompt.")
+def daemon_start(no_dashboard: bool) -> None:
     """Start the agent-queue daemon."""
     if not start_daemon():
         raise SystemExit(1)
+    _maybe_prompt_dashboard(no_dashboard)
 
 
 @cli.command("stop")
@@ -392,12 +512,14 @@ def daemon_stop() -> None:
 
 
 @cli.command("restart")
-def daemon_restart() -> None:
+@click.option("--no-dashboard", is_flag=True, help="Skip the dashboard prompt.")
+def daemon_restart(no_dashboard: bool) -> None:
     """Restart the agent-queue daemon."""
     stop_daemon(quiet=True)
     time.sleep(1)
     if not start_daemon():
         raise SystemExit(1)
+    _maybe_prompt_dashboard(no_dashboard)
 
 
 @cli.command("logs")

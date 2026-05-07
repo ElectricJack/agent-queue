@@ -102,6 +102,8 @@ cd agent-queue
 
 The setup script installs dependencies, creates the vault structure, and walks you through Discord configuration, API keys, and getting your first agent running.
 
+To uninstall, run `./uninstall.sh` from the repo root. It returns the repo to a fresh-clone state (`git reset --hard` + `git clean -ffdx`) and prompts before removing the `~/.agent-queue/` config directory. Pass `-y` to skip prompts; `--keep-user-dir` to preserve `~/.agent-queue/`.
+
 ### First steps
 
 Once the bot is online, everything happens through conversation in your control channel:

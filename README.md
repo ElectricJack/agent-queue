@@ -71,6 +71,8 @@ cd agent-queue
 
 The setup script handles dependencies, Discord config, API keys, and first agent creation.
 
+To remove everything and return the repo to a fresh-clone state, run `./uninstall.sh` (it'll prompt before removing your `~/.agent-queue/` config directory; pass `-y` to skip prompts).
+
 Once running, talk to the bot in your Discord channel:
 
 ```

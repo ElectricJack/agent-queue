@@ -44,6 +44,16 @@ Other useful commands:
 ./run.sh restart  # restart the daemon
 ```
 
+### Uninstall
+
+To remove everything and return the repo to a fresh-clone state:
+
+```bash
+./uninstall.sh
+```
+
+This runs `git reset --hard HEAD` + `git clean -ffdx` (removes `.venv`, caches, logs, build artifacts, and any other untracked or ignored files), and prompts before removing `~/.agent-queue/` (your config, vault, database, and Discord token). Pass `-y` to skip prompts; `--keep-user-dir` to preserve `~/.agent-queue/`.
+
 ## Configuration
 
 Agent Queue uses a YAML configuration file. The setup wizard creates this for you, but you can also edit it manually. See the [[specs/config|Configuration Spec]] for full details.
