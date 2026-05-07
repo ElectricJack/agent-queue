@@ -22,7 +22,7 @@ import pytest
 from src.messaging.base import MessagingAdapter
 from src.messaging.factory import create_messaging_adapter
 from src.messaging import MessagingAdapter as InitAdapter, create_messaging_adapter as init_factory
-from src.config import AppConfig, TelegramConfig, ConfigValidationError
+from src.config import AppConfig, TelegramConfig
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +151,6 @@ class TestCreateMessagingAdapter:
         ):
             with patch("src.messaging.factory.DiscordMessagingAdapter", mock_cls, create=True):
                 # Re-import to pick up the patch — or just call directly
-                from src.messaging.factory import create_messaging_adapter as factory
 
                 # Patch the import inside the function
                 import src.messaging.factory as fmod
@@ -180,7 +179,6 @@ class TestCreateMessagingAdapter:
         with patch.dict(
             "sys.modules", {"src.telegram.adapter": MagicMock(TelegramMessagingAdapter=mock_cls)}
         ):
-            from src.messaging.factory import create_messaging_adapter as factory
             import src.messaging.factory as fmod
 
             original = fmod.create_messaging_adapter

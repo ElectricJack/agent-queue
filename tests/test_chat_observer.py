@@ -1,8 +1,7 @@
 """Tests for ChatObserver — Stage 1 keyword filter and batching."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
-import pytest
+from unittest.mock import AsyncMock
 
 
 def _make_observer(keywords=None, enabled=True):

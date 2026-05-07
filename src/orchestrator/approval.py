@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from src.git.manager import GitError
 from src.task_summary import write_task_summary
 from src.profiles.sync import underlying_agent_type
 from src.models import (
@@ -160,7 +158,6 @@ class ApprovalMixin:
         to any workspace associated with the project if the task's own
         workspace has already been released.
         """
-        from src.notifications.builder import build_task_detail
 
         # Need a checkout path to run gh commands
         checkout_path = None

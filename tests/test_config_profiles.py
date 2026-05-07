@@ -1,11 +1,10 @@
 """Tests for environment-specific config profiles (profiles/ directory)."""
 
-import os
 
 import pytest
 import yaml
 
-from src.config import AppConfig, _deep_merge, load_config
+from src.config import _deep_merge, load_config
 from src.main import _parse_args
 
 

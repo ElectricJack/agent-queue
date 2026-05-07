@@ -17,9 +17,8 @@ Tests cover:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 from src.commands.handler import CommandHandler
 from src.playbooks.models import CompiledPlaybook, PlaybookNode

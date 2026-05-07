@@ -554,7 +554,6 @@ class TestCompleteWorkspaceMidChainRebase:
     @pytest.mark.asyncio
     async def test_intermediate_subtask_triggers_rebase(self):
         """An intermediate subtask (not last) should trigger mid-chain rebase."""
-        from src.orchestrator import Orchestrator
 
         git = MagicMock(spec=GitManager)
         git.validate_checkout.return_value = True

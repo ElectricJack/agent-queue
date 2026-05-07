@@ -8,7 +8,6 @@ Covers both the plain-text ``format_plan_generated()`` and the rich embed
 from __future__ import annotations
 
 import discord
-import pytest
 
 from src.models import Task, TaskStatus, TaskType
 from src.discord.notifications import (

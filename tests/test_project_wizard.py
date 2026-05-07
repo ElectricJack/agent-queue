@@ -16,8 +16,7 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
@@ -31,7 +30,6 @@ from src.discord.project_wizard import (
     WorkspaceCountView,
     WorkspaceLocationView,
     WorkspaceLocationModal,
-    WizardError,
     _cleanup_state,
     _execute_wizard,
     _get_or_create_state,

@@ -1,5 +1,4 @@
 import asyncio
-import pytest
 from src.event_bus import EventBus
 
 

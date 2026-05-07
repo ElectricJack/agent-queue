@@ -4,7 +4,6 @@ import logging
 import time
 from unittest.mock import patch
 
-import pytest
 
 from src.discord.rate_guard import (
     DiscordHTTPLogHandler,

@@ -11,7 +11,6 @@ Covers:
 - Preserves existing config values as defaults
 """
 
-import pytest
 from unittest.mock import patch
 from src.setup_wizard import _step_per_project_channels
 

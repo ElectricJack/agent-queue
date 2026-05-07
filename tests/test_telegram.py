@@ -10,12 +10,10 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 import tempfile
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from src.config import AppConfig, TelegramConfig
 from src.messaging.base import MessagingAdapter
@@ -445,8 +443,7 @@ class TestTelegramBotMessageHistory:
     """Test message buffer and history building."""
 
     def _make_bot(self) -> Any:
-        import collections as c
-        from src.telegram.bot import TelegramBot, CachedMessage
+        from src.telegram.bot import TelegramBot
 
         with patch("src.telegram.bot.TelegramBot.__init__", return_value=None):
             bot = TelegramBot.__new__(TelegramBot)
@@ -631,7 +628,7 @@ class TestTelegramBotIntegration:
 
     async def test_process_chat_message_no_provider(self):
         """Verify graceful handling when no LLM provider is configured."""
-        from src.telegram.bot import TelegramBot, CachedMessage
+        from src.telegram.bot import TelegramBot
 
         with patch("src.telegram.bot.TelegramBot.__init__", return_value=None):
             bot = TelegramBot.__new__(TelegramBot)

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.runtimes.claude_sdk import ClaudeSDKRuntime, ClaudeAdapterConfig
+from src.runtimes.claude_sdk import ClaudeSDKRuntime
 from src.models import TaskContext
 
 

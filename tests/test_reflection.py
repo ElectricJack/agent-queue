@@ -1,10 +1,7 @@
 """Tests for ReflectionEngine — action-reflect cycle."""
 
-import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 
 def _make_engine(level="full", max_depth=3, per_cycle_cap=10000, hourly_cap=100000):

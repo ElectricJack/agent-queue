@@ -19,12 +19,11 @@ These tests verify:
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from src.models import (
-    AgentOutput,
     AgentProfile,
     AgentResult,
     TaskContext,
@@ -39,7 +38,6 @@ from src.runtimes.supervisor import (
 
 def _make_supervisor() -> Supervisor:
     """Build a Supervisor with a chat() mock and minimal config."""
-    from types import SimpleNamespace
 
     sup = MagicMock(spec=Supervisor)
     # MagicMock(spec=...) doesn't expose Runtime's actual methods well —

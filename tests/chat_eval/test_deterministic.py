@@ -13,10 +13,9 @@ Updated: ChatAgent → Supervisor (post-supervisor refactor).
 
 from __future__ import annotations
 
-import json
 import pytest
 
-from src.chat_providers.types import ChatResponse, TextBlock, ToolUseBlock
+from src.chat_providers.types import ChatResponse, TextBlock
 
 
 class TestSingleToolCall:

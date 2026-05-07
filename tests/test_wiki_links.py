@@ -1,7 +1,5 @@
 """Tests for wiki-link parser, resolver, and annotation utilities."""
 
-import tempfile
-from pathlib import Path
 
 from src.wiki_links import (
     add_see_also,

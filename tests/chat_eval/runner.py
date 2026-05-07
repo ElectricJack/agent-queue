@@ -21,7 +21,6 @@ from src.orchestrator import Orchestrator
 from tests.chat_eval.metrics import (
     EvalRunResult,
     TestCaseResult,
-    TurnResult,
     aggregate_results,
     evaluate_turn,
     save_run,

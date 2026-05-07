@@ -2,15 +2,11 @@ from src.models import (
     TaskStatus,
     TaskEvent,
     AgentState,
-    AgentResult,
     ProjectStatus,
     VerificationType,
     Project,
     Task,
     Agent,
-    RepoConfig,
-    TaskContext,
-    AgentOutput,
 )
 
 

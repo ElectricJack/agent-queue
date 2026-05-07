@@ -8,13 +8,9 @@ import os
 from src.models import (
     Project,
     ProjectStatus,
-    RepoSourceType,
     TaskStatus,
-    WorkspaceMode,
-    WORKSPACE_MODE_VALUES,
 )
 from src.commands.helpers import _count_by
-from src.discord.embeds import STATUS_EMOJIS, progress_bar
 
 logger = logging.getLogger(__name__)
 

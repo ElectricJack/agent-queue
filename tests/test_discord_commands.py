@@ -1,11 +1,9 @@
-import pytest
 from src.models import (
     Task,
     Agent,
     AgentOutput,
     AgentResult,
     TaskStatus,
-    AgentState,
     Workspace,
     RepoSourceType,
 )

@@ -5,7 +5,6 @@ Focuses on the critical behavior: when fill_all_depths is disabled,
 and place voxels in front of existing surfaces, NOT always on the back layer.
 """
 
-import pytest
 
 from src.editor.brush import (
     BrushConfig,

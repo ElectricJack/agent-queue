@@ -12,11 +12,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import MagicMock
 
-import pytest
 
-from src.config import AppConfig, ChatProviderConfig
+from src.config import ChatProviderConfig
 from src.runtimes.supervisor import Supervisor
 
 

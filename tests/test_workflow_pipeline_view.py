@@ -13,7 +13,6 @@ from __future__ import annotations
 from src.models import Task, TaskStatus, TaskType, Workflow, WorkspaceMode
 from src.workflow_pipeline_view import (
     AFFINITY_SYMBOLS,
-    AGENT_TYPE_COLORS,
     STAGE_STATUS_COLORS,
     STAGE_STATUS_SYMBOLS,
     _infer_stages_from_tasks,
