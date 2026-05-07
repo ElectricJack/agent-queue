@@ -20,7 +20,7 @@ class AgentQueryMixin:
                 insert(agents).values(
                     id=agent.id,
                     name=agent.name,
-                    agent_type=agent.agent_type,
+                    profile_id=agent.profile_id,
                     state=agent.state.value,
                     current_task_id=agent.current_task_id,
                     pid=agent.pid,
@@ -93,7 +93,7 @@ class AgentQueryMixin:
         return Agent(
             id=row["id"],
             name=row["name"],
-            agent_type=row["agent_type"],
+            profile_id=row["profile_id"],
             state=AgentState(row["state"]),
             current_task_id=row["current_task_id"],
             pid=row["pid"],

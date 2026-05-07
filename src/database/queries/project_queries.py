@@ -45,7 +45,6 @@ class ProjectQueryMixin:
                     repo_url=project.repo_url,
                     repo_default_branch=project.repo_default_branch,
                     default_profile_id=project.default_profile_id,
-                    default_agent_type=project.default_agent_type,
                     created_at=time.time(),
                 )
             )
@@ -206,5 +205,4 @@ class ProjectQueryMixin:
             if row.get("repo_default_branch")
             else "main",
             default_profile_id=row.get("default_profile_id"),
-            default_agent_type=row.get("default_agent_type"),
         )
