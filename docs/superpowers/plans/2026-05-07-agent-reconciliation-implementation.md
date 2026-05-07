@@ -114,7 +114,7 @@ def downgrade() -> None:
 - [ ] **Step 4: Apply against the dev database**
 
 Run: `alembic upgrade head`
-Expected: `INFO  [alembic.runtime.migration] Running upgrade <HEAD> -> e4f2a8b1d6c9, rename agents.agent_type to profile_id; drop tasks.agent_type and archived_tasks.agent_type`.
+Expected: `INFO  [alembic.runtime.migration] Running upgrade <HEAD> -> e4f2a8b1d6c9, rename agents.agent_type to profile_id; drop legacy agent_type columns` (alembic prints the docstring's first line — match the exact text you wrote in step 3).
 
 - [ ] **Step 5: Verify schema**
 
@@ -586,7 +586,7 @@ Expected: clean (or only stylistic warnings).
 
 ```bash
 aq restart --no-dashboard
-sleep 6
+sleep 10
 sqlite3 ~/.agent-queue/agent-queue.db ".schema agents" | grep profile_id
 ```
 
@@ -723,6 +723,10 @@ from src.models import (
 async def _seed_project_with_profile(db, *, project_id, profile_id, max_agents=2,
                                       runtime="claude_sdk", workspace_count=1):
     """Create a project with a default profile and N enabled workspaces."""
+    # AgentProfile requires only `id` and `name`; other fields default
+    # (description="", model="", permission_mode="", allowed_tools=[],
+    # mcp_servers=[], system_prompt_suffix="", install={}). The `runtime`
+    # field was added in a recent migration; verify it's still keyword-able.
     await db.create_agent_profile(AgentProfile(
         id=profile_id, name=profile_id, runtime=runtime,
     ))
@@ -994,7 +998,11 @@ async def test_reassigns_at_cap(db):
         id="agent-1", name="opus-1", profile_id="claude-opus",
         state=AgentState.IDLE, created_at=_time.time(),
     ))
-    # Lock the workspace to that agent so attribution works
+    # Lock the workspace to that agent so attribution works.
+    # `db.update_workspace(ws_id, **fields)` accepts arbitrary kwargs
+    # (see src/database/queries/workspace_queries.py:43). We're setting
+    # locked_by_agent_id directly rather than using acquire_workspace
+    # because acquire_workspace requires a task_id we don't want to set.
     workspaces = await db.list_workspaces()
     await db.update_workspace(workspaces[0].id, locked_by_agent_id="agent-1")
     # Sonnet task arrives
