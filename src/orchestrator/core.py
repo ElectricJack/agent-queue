@@ -246,10 +246,11 @@ class Orchestrator(
         self._task_started_messages: dict[str, Any] = {}
         self._paused: bool = False
         self._restart_requested: bool = False
-        # Provider-level cooldowns: maps agent_type (e.g. "claude") to the
+        # Provider-level cooldowns: maps profile_id (e.g. "claude-opus") to the
         # Unix timestamp when scheduling should resume.  Set when a session
-        # limit is detected; the scheduler skips agents of that type until
-        # the cooldown expires.  Supports per-provider limits so exhausting
+        # limit is detected; the scheduler skips agents whose profile is
+        # cooled-down until the cooldown expires.  Supports per-profile limits
+        # so exhausting
         # one provider doesn't block others.
         self._provider_cooldowns: dict[str, float] = {}
         # Throttle: approval polling runs at most once per 60s.
@@ -497,42 +498,29 @@ class Orchestrator(
 
         Resolution order (first non-None wins):
         1. **Task-level** — ``task.profile_id`` (explicit override per task)
-        2. **Project-scoped agent-type** — if an ``agent_type`` is known
-           (task.agent_type or project.default_agent_type), look up
-           ``project:{project_id}:{agent_type}``.  This is the row synced
-           from ``vault/projects/{project}/agent-types/{type}/profile.md``.
-        3. **Global agent-type** — if an ``agent_type`` is known, fall
-           back to the global ``{agent_type}`` profile.
-        4. **Project default** — ``project.default_profile_id`` (only when
-           no agent_type was resolvable).
-        5. **System default** — returns None; the adapter uses built-in
-           defaults.
+        2. **Project default** — ``project.default_profile_id``
+        3. **None** (adapter uses built-in defaults)
+
+        Project-scoped overrides are checked first at each level: if a
+        profile with id ``project:{project_id}:{profile_id}`` exists, it
+        takes precedence over the global ``{profile_id}`` profile. This
+        is the row synced from
+        ``vault/projects/{project}/agent-types/{profile_id}/profile.md``.
 
         Profiles control: model selection, permission mode (e.g. plan-only),
         allowed tools allowlist, MCP server configuration, and a system prompt
         suffix that sets the agent's "role" for the task.
         """
-        if task.profile_id:
-            return await self.db.get_profile(task.profile_id)
-
         project = await self.db.get_project(task.project_id)
-        agent_type = task.agent_type or (project.default_agent_type if project else None)
+        profile_id = task.profile_id or (project.default_profile_id if project else None)
+        if not profile_id:
+            return None
 
-        if agent_type and project:
-            scoped_id = f"project:{project.id}:{agent_type}"
-            scoped = await self.db.get_profile(scoped_id)
+        if project:
+            scoped = await self.db.get_profile(f"project:{project.id}:{profile_id}")
             if scoped:
                 return scoped
-
-        if agent_type:
-            global_profile = await self.db.get_profile(agent_type)
-            if global_profile:
-                return global_profile
-
-        if project and project.default_profile_id:
-            return await self.db.get_profile(project.default_profile_id)
-
-        return None
+        return await self.db.get_profile(profile_id)
 
     async def _on_playbook_trigger(self, playbook: Any, event_data: dict) -> None:
         """PlaybookManager trigger dispatch — launch a run for a matched event.
@@ -2004,9 +1992,9 @@ class Orchestrator(
                 agent.state == AgentState.IDLE
                 and getattr(agent, "project_id", None) == task.project_id
             ):
-                cool = state.provider_cooldowns.get(agent.agent_type, 0)
+                cool = state.provider_cooldowns.get(agent.profile_id, 0)
                 if cool > state.now:
-                    return f"provider '{agent.agent_type}' in cooldown for {int(cool - state.now)}s"
+                    return f"provider '{agent.profile_id}' in cooldown for {int(cool - state.now)}s"
         return "ready but not picked this tick (capacity/priority ordering)"
 
     _NO_PR_REMINDER_INTERVAL: int = 3600  # 1 hour
