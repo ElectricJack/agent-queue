@@ -401,8 +401,12 @@ def _select_postgresql(existing_sqlite_path: str | None = None) -> dict:
     # No PG running — try Docker
     compose_file = _find_docker_compose()
     if compose_file:
-        # Check if docker is available
-        docker_available = subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+        import shutil
+
+        # Check if docker is available (binary exists AND daemon reachable)
+        docker_available = bool(shutil.which("docker")) and (
+            subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+        )
 
         if docker_available:
             info("No PostgreSQL running, but docker-compose.yml found")
