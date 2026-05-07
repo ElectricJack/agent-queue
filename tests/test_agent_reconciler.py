@@ -58,7 +58,6 @@ async def _seed_project_with_profile(
             id=f"ws-{project_id}-{i}", project_id=project_id,
             workspace_path=f"/tmp/{project_id}-{i}",
             source_type=RepoSourceType.LINK, enabled=True,
-            created_at=_time.time(),
         ))
 
 
@@ -82,3 +81,16 @@ async def test_no_op_when_no_projects(db):
     assert report.created == []
     assert report.reassigned == []
     assert report.skipped == []
+
+
+async def test_creates_one_agent_for_one_ready_task(db):
+    await _seed_project_with_profile(db, project_id="p", profile_id="claude-opus")
+    await _seed_ready_task(db, task_id="t-1", project_id="p")
+
+    report = await AgentReconciler(db).reconcile()
+
+    agents = await db.list_agents()
+    assert len(agents) == 1
+    assert agents[0].profile_id == "claude-opus"
+    assert agents[0].state == AgentState.IDLE
+    assert report.created == [("p", "claude-opus")]
