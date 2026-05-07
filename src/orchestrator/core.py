@@ -217,6 +217,11 @@ class Orchestrator(
         self.git = GitManager()
         self.git.set_lock_provider(self._resolve_git_lock)
         self._runtimes = runtimes
+        # Lazy-creates agent rows when work needs them; runs at the top of
+        # each scheduling tick before Scheduler.schedule().  See
+        # docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md.
+        from src.orchestrator.agent_reconciler import AgentReconciler
+        self._agent_reconciler = AgentReconciler(self.db)
         # Live adapter instances keyed by agent_id.  Stored so we can call
         # adapter.stop() from admin commands (stop_task, timeout recovery).
         self._adapters: dict[str, object] = {}
@@ -1336,6 +1341,51 @@ class Orchestrator(
                 logger.info("Recovery: resetting agent '%s' from %s to IDLE", a.name, a.state.value)
                 await self.db.update_agent(a.id, state=AgentState.IDLE, current_task_id=None)
 
+        # Reap idle agents whose profile_id no longer exists in agent_profiles
+        # (e.g. profile was deleted while the daemon was down).  Per spec §6:
+        # the reconciler does not reap mid-run; reaping happens at startup.
+        profile_ids = {p.id for p in await self.db.list_profiles()}
+        for a in agents:
+            if a.state == AgentState.IDLE and a.profile_id not in profile_ids:
+                logger.info(
+                    "Recovery: deleting idle agent '%s' (profile '%s' no longer exists)",
+                    a.name, a.profile_id,
+                )
+                await self.db.delete_agent(a.id)
+
+        # Reap excess idle agents over project.max_concurrent_agents.
+        # Attribute idle agents to projects via their workspace lock, then
+        # delete oldest-first beyond the cap.  Important for handling
+        # max_concurrent_agents being lowered while the daemon was down.
+        all_workspaces = await self.db.list_workspaces()
+        ws_owner = {
+            w.locked_by_agent_id: w.project_id
+            for w in all_workspaces if w.locked_by_agent_id
+        }
+        projects = await self.db.list_projects()
+        max_by_project = {p.id: p.max_concurrent_agents for p in projects}
+        idle_by_project: dict[str, list] = {}
+        for a in agents:
+            if a.state != AgentState.IDLE:
+                continue
+            pid = ws_owner.get(a.id)
+            if pid is None:
+                continue
+            idle_by_project.setdefault(pid, []).append(a)
+        for pid, idle_agents in idle_by_project.items():
+            cap = max_by_project.get(pid)
+            if cap is None or len(idle_agents) <= cap:
+                continue
+            # Sort oldest-first by created_at.
+            idle_agents.sort(key=lambda a: getattr(a, "created_at", 0) or 0)
+            excess = idle_agents[: len(idle_agents) - cap]
+            for a in excess:
+                logger.info(
+                    "Recovery: deleting excess idle agent '%s' (project=%s over cap=%d)",
+                    a.name, pid, cap,
+                )
+                await self.db.delete_agent(a.id)
+
         # Release all workspace locks and clean orphaned sentinels.
         # After a restart no agents are running, so all DB locks are stale.
         # Also remove sentinel files from ALL workspaces — they may exist
@@ -1812,6 +1862,16 @@ class Orchestrator(
         deficit accounting, and workspace availability to decide which
         project's READY tasks should be assigned next.
         """
+        # Reconciler runs first: ensures the agents table has idle rows
+        # for any project with dispatchable READY tasks, subject to
+        # project.max_concurrent_agents.  See spec §4.1.
+        rep = await self._agent_reconciler.reconcile()
+        if rep.created or rep.reassigned:
+            logger.info(
+                "reconciler: created=%d reassigned=%d skipped=%d",
+                len(rep.created), len(rep.reassigned), len(rep.skipped),
+            )
+
         # Build a consistent point-in-time snapshot of all system state the
         # scheduler needs.  Each query reads from the DB independently (no
         # transaction), but the ~5s cycle frequency means the snapshot is

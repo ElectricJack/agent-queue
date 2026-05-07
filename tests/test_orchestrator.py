@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import text
 from src.orchestrator import Orchestrator
 from src.models import (
+    AgentProfile,
     Project,
     Task,
     Agent,
@@ -266,6 +267,57 @@ def _make_plan_toucher(workspace):
             os.utime(root_plan, None)
 
     return _touch_plan_files
+
+
+class TestAgentReconcilerWiring:
+    """Regression: ensures the AgentReconciler runs at the top of each
+    scheduling tick so READY tasks dispatch without manual `aq agent create`.
+    See docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md §7.
+    """
+
+    async def test_ready_task_dispatches_with_only_workspace_and_default_profile(
+        self, orch
+    ):
+        """The original quick-ember bug: project with workspace +
+        default_profile_id + READY task should dispatch within one cycle —
+        no manual agent creation. Tests the full reconciler → scheduler →
+        executor chain.
+        """
+        # Profile must exist before project references it.
+        await orch.db.create_profile(
+            AgentProfile(id="claude", name="claude", runtime="claude_sdk")
+        )
+        # Project with default_profile_id and a workspace.
+        await orch.db.create_project(
+            Project(id="p-1", name="alpha", default_profile_id="claude")
+        )
+        await orch.db.create_workspace(
+            Workspace(
+                id="ws-p-1",
+                project_id="p-1",
+                workspace_path=str(orch.config.workspace_dir + "/p-1"),
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        # READY task with no profile_id (falls back to project default).
+        await orch.db.create_task(
+            Task(
+                id="regression-task",
+                project_id="p-1",
+                title="Test reconciler dispatch",
+                description="Should auto-dispatch via the reconciler.",
+                status=TaskStatus.READY,
+            )
+        )
+
+        await _run_cycle_and_wait(orch)
+
+        task = await orch.db.get_task("regression-task")
+        # Real dispatch path may pass through ASSIGNED → IN_PROGRESS;
+        # accept any non-READY state.
+        assert task.status != TaskStatus.READY
+        agents = await orch.db.list_agents()
+        assert len(agents) >= 1
 
 
 class TestAwaitingApprovalNopr:
