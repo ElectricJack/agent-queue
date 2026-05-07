@@ -52,15 +52,42 @@ recent rewrite described but did not finish.
   see `runtimes/supervisor.py:516,527` and `vault_manager`'s profile
   directory layout). `_task_agent_type_matches()` is updated to
   compare on `agent.profile_id`.
-- **Dropping the unused `tasks.agent_type` and `archived_tasks.agent_type`
-  columns** along with `_task_agent_type_matches()`, the `agent_type`
-  parameter on Discord/MCP task commands, and the related Task
-  dataclass field. Empirical check (live DB + `git grep`) showed the
+- **Dropping the unused `tasks.agent_type`, `archived_tasks.agent_type`,
+  AND `projects.default_agent_type` columns** along with
+  `_task_agent_type_matches()`, the `agent_type` parameter on
+  Discord/MCP task commands, and the related Task dataclass field.
+  Empirical check (live DB + `git grep`) showed the
   coordination-category-filter feature these supported was specced in
   `docs/specs/design/agent-coordination.md` but never implemented; one
   task in the live DB has `agent_type=NULL` and zero archived tasks have
   it set. Tasks already have a separate, working `profile_id` column
   (FK to `agent_profiles.id`) — the reconciler reads that.
+- **Rewriting `Orchestrator._resolve_profile`** to use `profile_id`
+  end-to-end instead of the dual-purpose `agent_type` indirection. The
+  old cascade (`task.agent_type` or `project.default_agent_type` →
+  `project:{pid}:{agent_type}` lookup → global `{agent_type}` → project
+  default) is replaced by:
+
+  ```python
+  async def _resolve_profile(self, task):
+      project = await self.db.get_project(task.project_id)
+      profile_id = task.profile_id or (project.default_profile_id if project else None)
+      if not profile_id:
+          return None
+      if project:
+          scoped = await self.db.get_profile(f"project:{project.id}:{profile_id}")
+          if scoped:
+              return scoped
+      return await self.db.get_profile(profile_id)
+  ```
+
+  Project-scoped profile feature keeps working — authors put their
+  override at `vault/projects/{pid}/agent-types/{profile_id}/profile.md`
+  and the resolver finds it via the `project:{pid}:{profile_id}`
+  registered id. The `agent_type` indirection is removed; the
+  project-scoped key is now just the profile_id. The
+  `vault/projects/{pid}/agent-types/...` directory naming stays as-is
+  (cosmetic rename to `profiles/` is a follow-up).
 - Removal of the dead `aq agent create / edit / delete / pause / resume`
   CLI subcommands.
 
@@ -178,10 +205,13 @@ class AgentReconciler:
   currently holds a workspace lock — not a persisted entity."*
 - `src/database/tables.py` — rename `agents.agent_type` →
   `agents.profile_id` (with a comment noting it's a soft reference to
-  `agent_profiles.id`). Drop `tasks.agent_type` and
-  `archived_tasks.agent_type` columns. Drop the `agent_type` field
-  from any Discord/MCP tool schemas in `tools/definitions.py` that
-  reference task `agent_type`.
+  `agent_profiles.id`). Drop `tasks.agent_type`,
+  `archived_tasks.agent_type`, AND `projects.default_agent_type`
+  columns. Drop the `agent_type` field from any Discord/MCP tool
+  schemas in `tools/definitions.py` that reference task `agent_type`,
+  and update the project-scoped-profile id explanation at
+  `tools/definitions.py:2727` from `project:<pid>:<agent_type>` to
+  `project:<pid>:<profile_id>`.
 - `src/database/queries/agent_queries.py`, `task_queries.py`,
   `archive_queries.py` — column references for the agents rename;
   remove `agent_type` from task/archived_task SELECT/INSERT and from
@@ -192,9 +222,18 @@ class AgentReconciler:
   `provider_cooldowns` keying to use `agent.profile_id` consistently.
 - `src/orchestrator/execution.py` — `agent.agent_type` →
   `agent.profile_id` (~3 sites).
-- `src/commands/task_commands.py` — remove the now-stale comment at
-  `:867-868`; remove the `agent_type` parameter handling from create
-  and edit task commands.
+- `src/commands/task_commands.py` — remove the `agent_type` parameter
+  validation (lines 855-865), the kwarg passing to `Task(...)` (line
+  927), the response field include (lines 986-987, 1044), the edit
+  handler (lines 1315-1324), the docstring listing (line 1365), and
+  the comment block at lines 866-871 that references the deleted
+  fields.
+- `src/commands/project_commands.py` — remove the `default_agent_type`
+  edit handler (lines 305-315), update the error message at line 323,
+  and remove the info-display logic at lines 490-491.
+- `src/orchestrator/core.py:495-535` — rewrite `_resolve_profile` per
+  the cascade in §1 above.
+- `src/models.py` — drop `Project.default_agent_type` field (line 242).
 - `src/discord/commands.py:3308,3311` — remove the `agent_type`
   parameter from the `/edit` slash-command's signature and choices.
 - `src/runtimes/supervisor.py:516,527` — `agent_type="supervisor"` →
@@ -209,19 +248,18 @@ class AgentReconciler:
 
 ### 4.3 New Alembic migration
 
-`migrations/versions/2026_05_07_rename_agent_type_and_drop_task_agent_type.py`,
+`migrations/versions/2026_05_07_rename_agent_type_and_drop_legacy_columns.py`,
 modeled on the existing
 `2026_04_28_rename_platform_column_to_runtime.py` from the recent
 runtime-rename merge — same shape (batch ALTER on SQLite, native
-`ALTER TABLE RENAME COLUMN` on PostgreSQL). Three operations in one
+`ALTER TABLE RENAME COLUMN` on PostgreSQL). Four operations in one
 revision: (1) rename `agents.agent_type` → `profile_id`,
 (2) drop `tasks.agent_type` column, (3) drop
-`archived_tasks.agent_type` column. All three idempotent (inspect
+`archived_tasks.agent_type` column, (4) drop
+`projects.default_agent_type` column. All four idempotent (inspect
 schema first; no-op if already in target shape). Note: `alembic heads`
-must return a single revision before authoring `down_revision`; if
-multiple heads exist (the repo has historical merge revisions like
-`b5cc4799efad_merge_migration_heads`), depend on the latest single
-head per `alembic heads --resolve-dependencies`.
+must return a single revision before authoring `down_revision`; the
+current head is `d8e4b2c5f1a7` per `alembic heads`.
 
 ### 4.4 Removed code
 
@@ -418,15 +456,19 @@ quietly catches reconciler regressions whenever scheduler tests run.
 and the test suite passes at each step:
 
 1. **Schema changes** — rename `agents.agent_type` → `profile_id`;
-   drop `tasks.agent_type` and `archived_tasks.agent_type` columns;
-   delete `_task_agent_type_matches()` and the related Task field /
-   Discord-MCP `agent_type` parameters. New Alembic revision;
-   targeted (not blanket) updates to `tables.py`, models, queries,
-   scheduler, and all read/write sites. Behavior change is limited to:
-   (a) tasks no longer have a category-filter field, and (b) the
-   `_task_agent_type_matches` no-op disappears. The reconciler is not
-   yet wired in, so dispatch behavior remains broken until step 3 —
-   that's intentional, keeping the schema/code-shape change isolated.
+   drop `tasks.agent_type`, `archived_tasks.agent_type`, and
+   `projects.default_agent_type` columns; delete
+   `_task_agent_type_matches()`; rewrite `_resolve_profile` per §4.2;
+   remove related Task/Project dataclass fields and the Discord/MCP
+   `agent_type` parameters. New Alembic revision; targeted (not blanket)
+   updates to `tables.py`, models, queries, scheduler, orchestrator,
+   project_commands, task_commands, and all read/write sites. Behavior
+   change is limited to: (a) tasks no longer have a category-filter
+   field, (b) the `_task_agent_type_matches` no-op disappears,
+   (c) project-scoped profile lookup is now keyed by profile_id, not
+   agent_type. The reconciler is not yet wired in, so dispatch behavior
+   remains broken until step 3 — that's intentional, keeping the
+   schema/code-shape change isolated.
 2. **Add `AgentReconciler`** + unit tests. Not yet wired in. Test suite
    passes.
 3. **Wire the reconciler** into the orchestrator tick. Add the
@@ -440,10 +482,11 @@ and the test suite passes at each step:
 
 ### Backward compatibility
 
-- *Existing data.* The migration preserves all `agents` and `projects`
-  data; the `tasks.agent_type` and `archived_tasks.agent_type` columns
-  are dropped (live DB has 1 task with NULL and 0 archived rows with a
-  value, so no data is lost in practice).
+- *Existing data.* The migration preserves all `agents` data and
+  preserves project rows. Three columns are dropped:
+  `tasks.agent_type` (live: 1 task with NULL), `archived_tasks.agent_type`
+  (live: 0 rows), and `projects.default_agent_type` (live: NULL on
+  both projects). No data is lost in practice.
 - *External tools.* Anything querying the DB directly for
   `agents.agent_type` or `tasks.agent_type` will break. Surface in PR
   description and `CHANGELOG.md`. The typed `aq-client` SDK regenerates
