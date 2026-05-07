@@ -4,11 +4,11 @@
 
 **Goal:** Restore automatic agent supply so READY tasks dispatch without manual `aq agent create` — the half-finished workspace-as-agent rewrite is causing the agents table to stay empty and the scheduler to permanently block.
 
-**Architecture:** Add a pre-tick `AgentReconciler` that lazily creates agent rows when work needs them, sized by `project.max_concurrent_agents` rather than by workspace count. Rename `agents.agent_type` → `agents.profile_id` to match the field's actual meaning. Drop `tasks.agent_type` and `archived_tasks.agent_type` columns + the `_task_agent_type_matches()` filter (coordination-category vision specced but never implemented; live DB has zero meaningful values). `Scheduler.schedule()` stays a pure function; the reconciler runs first each tick.
+**Architecture:** Add a pre-tick `AgentReconciler` that lazily creates agent rows when work needs them, sized by `project.max_concurrent_agents` rather than by workspace count. Rename `agents.agent_type` → `agents.profile_id` to match the field's actual meaning. Drop three legacy columns: `tasks.agent_type`, `archived_tasks.agent_type`, and `projects.default_agent_type`. Delete the dead `_task_agent_type_matches()` filter. Rewrite `Orchestrator._resolve_profile` to use `profile_id` end-to-end (eliminates the dual-purpose `agent_type` indirection). `Scheduler.schedule()` stays a pure function; the reconciler runs first each tick.
 
 **Tech Stack:** Python 3.12, SQLAlchemy Core, Alembic, pytest (asyncio auto mode), aiosqlite, asyncpg. Repo at `/Users/jack.kern/Shared/AI/agent-queue`.
 
-**Spec:** `docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md` (commit `849bda91`)
+**Spec:** `docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md` (latest: commit `d59186bf` — drops `project.default_agent_type` and rewrites `_resolve_profile` per the refined design)
 
 **Branch:** Create `agent-reconciler` off `main` before starting Phase 1: `git checkout main && git pull && git checkout -b agent-reconciler`. No worktree needed.
 
@@ -36,10 +36,10 @@ Read `migrations/versions/2026_04_28_rename_platform_column_to_runtime.py` end-t
 
 - [ ] **Step 3: Write the migration**
 
-Create the file with this content (replace `<HEAD_REVISION>` with what step 1 returned):
+Create the file with this content (replace `<HEAD_REVISION>` with what step 1 returned — currently `d8e4b2c5f1a7`):
 
 ```python
-"""rename agents.agent_type to profile_id; drop tasks.agent_type and archived_tasks.agent_type
+"""rename agents.agent_type to profile_id; drop legacy agent_type columns
 
 Revision ID: e4f2a8b1d6c9
 Revises: <HEAD_REVISION>
@@ -48,23 +48,21 @@ Create Date: 2026-05-07 00:00:00.000000
 OPERATIONAL NOTE
 ================
 
-Three operations, each idempotent (inspects the schema first):
+Four operations, each idempotent (inspects the schema first):
 
-1. Rename ``agents.agent_type`` → ``agents.profile_id``.  The column has
-   always *been* the profile id by string match in actual usage
-   (see ``runtimes/supervisor.py:516,527`` and ``vault_manager``'s
-   profile directory layout); this revision settles on a name that
-   matches the field's meaning.
+1. Rename ``agents.agent_type`` → ``agents.profile_id``.  Always *was*
+   the profile id by string match in actual usage.
 
-2. Drop ``tasks.agent_type``.  The coordination-category-filter feature
-   this column was meant to support (described in
-   ``docs/specs/design/agent-coordination.md``) was never implemented;
-   live DB has 1 task with NULL and zero archived rows with values.
+2. Drop ``tasks.agent_type``.  Coordination-category-filter never
+   implemented; live DB has 1 task with NULL.
 
 3. Drop ``archived_tasks.agent_type`` for symmetry.
 
-See docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md.
+4. Drop ``projects.default_agent_type``.  Was used as the
+   project-scoped-profile lookup key; ``_resolve_profile`` is rewritten
+   to use ``profile_id`` directly, making this column dead.
 
+See docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md.
 """
 from typing import Sequence, Union
 
@@ -84,36 +82,30 @@ def _has_column(table: str, col: str) -> bool:
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
-    # 1. agents: rename agent_type → profile_id
     if _has_column("agents", "agent_type") and not _has_column("agents", "profile_id"):
         with op.batch_alter_table("agents", schema=None) as batch_op:
             batch_op.alter_column("agent_type", new_column_name="profile_id")
-
-    # 2. tasks: drop agent_type column
     if _has_column("tasks", "agent_type"):
         with op.batch_alter_table("tasks", schema=None) as batch_op:
             batch_op.drop_column("agent_type")
-
-    # 3. archived_tasks: drop agent_type column
     if _has_column("archived_tasks", "agent_type"):
         with op.batch_alter_table("archived_tasks", schema=None) as batch_op:
             batch_op.drop_column("agent_type")
+    if _has_column("projects", "default_agent_type"):
+        with op.batch_alter_table("projects", schema=None) as batch_op:
+            batch_op.drop_column("default_agent_type")
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
-    # 3. archived_tasks: re-add agent_type
+    if not _has_column("projects", "default_agent_type"):
+        with op.batch_alter_table("projects", schema=None) as batch_op:
+            batch_op.add_column(sa.Column("default_agent_type", sa.Text(), nullable=True))
     if not _has_column("archived_tasks", "agent_type"):
         with op.batch_alter_table("archived_tasks", schema=None) as batch_op:
             batch_op.add_column(sa.Column("agent_type", sa.Text(), nullable=True))
-
-    # 2. tasks: re-add agent_type
     if not _has_column("tasks", "agent_type"):
         with op.batch_alter_table("tasks", schema=None) as batch_op:
             batch_op.add_column(sa.Column("agent_type", sa.Text(), nullable=True))
-
-    # 1. agents: rename profile_id → agent_type
     if _has_column("agents", "profile_id") and not _has_column("agents", "agent_type"):
         with op.batch_alter_table("agents", schema=None) as batch_op:
             batch_op.alter_column("profile_id", new_column_name="agent_type")
@@ -135,6 +127,9 @@ Expected: no output (column dropped).
 Run: `sqlite3 ~/.agent-queue/agent-queue.db ".schema archived_tasks" | grep -E 'agent_type'`
 Expected: no output.
 
+Run: `sqlite3 ~/.agent-queue/agent-queue.db ".schema projects" | grep -E 'default_agent_type'`
+Expected: no output (column dropped).
+
 - [ ] **Step 6: Verify downgrade reverses cleanly**
 
 Run: `alembic downgrade -1`
@@ -150,15 +145,17 @@ Expected: success again.
 
 ```bash
 git add migrations/versions/2026_05_07_rename_agent_type_and_drop_task_agent_type.py
-git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "Add Alembic migration: rename agents.agent_type, drop tasks.agent_type
+git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "Add Alembic migration: rename agents.agent_type, drop legacy columns
 
-Three idempotent operations:
-1. agents.agent_type → agents.profile_id (matches actual usage)
+Four idempotent operations:
+1. agents.agent_type → agents.profile_id
 2. tasks.agent_type dropped (coordination-category feature never wired)
 3. archived_tasks.agent_type dropped (symmetry)
+4. projects.default_agent_type dropped (replaced by profile_id-keyed
+   project-scoped lookup; see _resolve_profile rewrite in subsequent task)
 
-Code references to these fields are NOT yet updated — those follow in
-subsequent commits. Daemon will fail to start until Task 1.2-1.6 land.
+Code references NOT yet updated — daemon will fail to start until
+Task 1.2-1.9 land.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
@@ -170,24 +167,25 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Identify exact lines to change**
 
-Run: `grep -nE '"agent_type"' src/database/tables.py`
-Expected: line numbers for the four `agent_type` columns. Per the recent grep:
+Run: `grep -nE '"agent_type"|"default_agent_type"' src/database/tables.py`
+Expected: line numbers for five total columns:
+- Line 47: `projects.default_agent_type` — **delete this Column entirely**
 - Line 93: `tasks.agent_type` — **delete this Column entirely**
 - Line 153: `agents.agent_type` — **rename to `profile_id`**
 - Line 192: `rate_limits.agent_type` — **leave alone** (separate concern)
 - Line 315: `archived_tasks.agent_type` — **delete this Column entirely**
 
-- [ ] **Step 2: Apply the three changes via targeted Edits**
+- [ ] **Step 2: Apply the four changes via targeted Edits**
 
 Don't use `replace_all`. Read each line in context first; apply Edits with enough surrounding context to disambiguate.
 
 For line 153 (agents): change `Column("agent_type", Text, nullable=False)` to `Column("profile_id", Text, nullable=False)  # soft reference to agent_profiles.id`.
 
-For lines 93 and 315 (tasks, archived_tasks): delete the entire `Column("agent_type", Text, nullable=True),` line (including the trailing comma).
+For lines 47 (projects.default_agent_type), 93 (tasks.agent_type), and 315 (archived_tasks.agent_type): delete the entire Column line including the trailing comma.
 
 - [ ] **Step 3: Verify**
 
-Run: `grep -nE '"agent_type"' src/database/tables.py`
+Run: `grep -nE '"agent_type"|"default_agent_type"' src/database/tables.py`
 Expected: only the `rate_limits.agent_type` line remains.
 
 Run: `grep -nE '"profile_id"' src/database/tables.py`
@@ -202,17 +200,19 @@ Expected: a number — confirms the module imports.
 
 ```bash
 git add src/database/tables.py
-git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "tables.py: rename agents.agent_type to profile_id; drop tasks.agent_type"
+git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "tables.py: rename agents.agent_type → profile_id; drop legacy columns
+
+Drops projects.default_agent_type, tasks.agent_type, archived_tasks.agent_type."
 ```
 
-### Task 1.3: Update the Agent and Task dataclasses
+### Task 1.3: Update Agent, Task, and Project dataclasses
 
 **Files:**
 - Modify: `src/models.py`
 
 - [ ] **Step 1: Update Agent**
 
-Read lines 320-345 of `src/models.py`. Find `agent_type: str  # "claude", "codex", "cursor", "aider"` (around line 338). Replace with:
+Find `agent_type: str  # "claude", "codex", "cursor", "aider"` (around line 338). Replace with:
 
 ```python
 profile_id: str  # soft reference to agent_profiles.id
@@ -220,24 +220,28 @@ profile_id: str  # soft reference to agent_profiles.id
 
 Also remove the `.. deprecated::` comment block on the `Agent` dataclass (around line 330) — under this design `Agent` is the persisted slot record, not deprecated.
 
-- [ ] **Step 2: Update Task**
+- [ ] **Step 2: Update Task — drop the field**
 
-Find `agent_type: str | None = None  # required agent type (e.g. "coding", "code-review", "qa")` (around line 318). **Delete the entire field** (this column is dropped from the schema).
+Find `agent_type: str | None = None  # required agent type (e.g. "coding", "code-review", "qa")` (around line 318). **Delete the entire field** (column is dropped).
 
-- [ ] **Step 3: Update WorkspaceAgent docstring**
+- [ ] **Step 3: Update Project — drop the field**
+
+Find `default_agent_type: str | None = ...` (around line 242, three lines including the comment). **Delete the entire field block.**
+
+- [ ] **Step 4: Update WorkspaceAgent docstring**
 
 Around line 348, update to: *"API view of an agent that currently holds a workspace lock — derived from the agents + workspaces tables, not a persisted entity."*
 
-- [ ] **Step 4: Verify**
+- [ ] **Step 5: Verify**
 
-Run: `grep -nE '\bagent_type\b' src/models.py`
-Expected: only the `Project.default_agent_type` line remains (line 242, separate concept) and any docstring/comment text — no dataclass field.
+Run: `grep -nE '\bagent_type\b|\bdefault_agent_type\b' src/models.py`
+Expected: no output (or only docstring text — verify each match).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/models.py
-git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "models.py: rename Agent.agent_type → profile_id; drop Task.agent_type field"
+git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "models.py: rename Agent.agent_type → profile_id; drop Task.agent_type and Project.default_agent_type"
 ```
 
 ### Task 1.4: Update query layer
@@ -246,30 +250,33 @@ git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "mo
 - Modify: `src/database/queries/agent_queries.py`
 - Modify: `src/database/queries/task_queries.py`
 - Modify: `src/database/queries/archive_queries.py`
+- Modify: `src/database/queries/project_queries.py`
 
-- [ ] **Step 1: List exact occurrences in each file**
+- [ ] **Step 1: List exact occurrences in all four files**
 
-Run: `grep -nE '\bagent_type\b' src/database/queries/`
+Run: `grep -nE '\bagent_type\b|\bdefault_agent_type\b' src/database/queries/`
 Expected: a list. For each match, classify:
 - `agent_type=agent.agent_type` (constructing an Agent for INSERT) → rename to `profile_id=agent.profile_id`
 - `agent_type=row["agent_type"]` (reconstructing Agent from row) → rename to `profile_id=row["profile_id"]`
 - `agent_type=task.agent_type` (constructing a Task for INSERT) → **delete the kwarg**
 - `agent_type=row.get("agent_type")` or `row["agent_type"]` (reconstructing Task) → **delete the kwarg**
+- `default_agent_type=project.default_agent_type` (in `project_queries.py:48`) → **delete the kwarg**
+- `default_agent_type=row.get("default_agent_type")` (in `project_queries.py:209`) → **delete the kwarg**
 
 - [ ] **Step 2: Apply targeted Edits per file**
 
-Read each file, then Edit each match. Do **not** use `replace_all=true` — the same string `agent_type` may appear in unrelated `archived_tasks` or `task_queries` contexts that aren't the rename targets.
+Read each file, then Edit each match. Do **not** use `replace_all=true`.
 
 - [ ] **Step 3: Verify**
 
-Run: `grep -nE '\bagent_type\b' src/database/queries/`
+Run: `grep -nE '\bagent_type\b|\bdefault_agent_type\b' src/database/queries/`
 Expected: no output.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/database/queries/agent_queries.py src/database/queries/task_queries.py src/database/queries/archive_queries.py
-git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "queries: rename agent.agent_type → profile_id; drop task agent_type passthrough"
+git add src/database/queries/
+git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "queries: rename agent.agent_type → profile_id; drop task and project default_agent_type passthrough"
 ```
 
 ### Task 1.5: Update scheduler — rename + delete `_task_agent_type_matches`
@@ -314,87 +321,239 @@ never implemented (live DB has 1 task with agent_type=NULL).
 Agent.profile_id replaces the misleading agent.agent_type name."
 ```
 
-### Task 1.6: Update orchestrator + execution + remaining src/ call sites
+### Task 1.6: Rewrite `_resolve_profile` (core.py)
 
 **Files:**
 - Modify: `src/orchestrator/core.py`
-- Modify: `src/orchestrator/execution.py`
-- Modify: `src/runtimes/supervisor.py`
-- Modify: `src/mcp_interfaces.py`
-- Modify: `src/workflow_pipeline_view.py`
-- Modify: `src/cli/formatters.py`
-- Modify: `src/commands/task_commands.py`
-- Modify: `src/discord/commands.py`
-- Modify: `src/tools/definitions.py`
-- Modify: any other surfaced by the grep below
 
-- [ ] **Step 1: Surface all remaining call sites**
+- [ ] **Step 1: Read the existing implementation**
 
-Run: `grep -rEn '\bagent\.agent_type\b|\btask\.agent_type\b|agent_type=' src/ --include='*.py' | grep -v '\.pyc' | grep -v 'default_agent_type\|max_agents_by_type\|AGENT_TYPE_COLORS\|"scope.*agent_type"'`
-Expected: a list of remaining files. Manually classify each match.
+Read `src/orchestrator/core.py` lines 495-535. The current cascade uses `task.agent_type or project.default_agent_type` to look up `project:{pid}:{agent_type}` and then `{agent_type}`. With both fields gone, this needs replacement.
 
-- [ ] **Step 2: For each file, apply targeted Edits**
+- [ ] **Step 2: Replace the entire function body**
 
-For `agent.agent_type` accesses: rename to `agent.profile_id`.
-For `agent_type="supervisor"` in `runtimes/supervisor.py:516,527`: rename to `profile_id="supervisor"`.
-For `task.agent_type` accesses (e.g. `workflow_pipeline_view.py:489`): **delete** the line/kwarg (the field is gone).
-For Discord/MCP `agent_type` parameter in `discord/commands.py:3308,3311`: **remove** the parameter from the slash-command signature. Update the docstring to note the change.
-For `tools/definitions.py` (lines 640, 923, 2736, 2757, 2777, 2808): for each `"agent_type"` JSON-schema key on a task tool, **remove** the key from the schema.
-For `commands/task_commands.py:867-868`: delete the now-stale comment block AND any `task.agent_type` reads in `_cmd_create_task` / `_cmd_edit_task` (the field is gone; the param shouldn't be accepted).
+Replace the function (keep the signature) with:
 
-Do **not** touch:
-- `vault_manager.py:260` — `if scope == "agent_type"` is a vault scope name string, not the field
-- `playbooks/store.py:104` — same
-- `override_handler.py` — uses `agent_type` as a directory-name placeholder, semantically equivalent to profile id but not a field rename target
+```python
+async def _resolve_profile(self, task: Task) -> AgentProfile | None:
+    """Resolve the agent profile for a task.
 
-- [ ] **Step 3: Verify**
+    Resolution order (first non-None wins):
+    1. **Task-level** — ``task.profile_id`` (explicit override per task)
+    2. **Project default** — ``project.default_profile_id``
+    3. **None** (adapter uses built-in defaults)
 
-Run: `grep -rEn '\bagent\.agent_type\b|\btask\.agent_type\b' src/ --include='*.py' | grep -v '\.pyc'`
-Expected: no output.
+    Project-scoped overrides are checked first at each level: if a
+    profile with id ``project:{project_id}:{profile_id}`` exists, it
+    takes precedence over the global ``{profile_id}`` profile. This is
+    the row synced from
+    ``vault/projects/{project}/agent-types/{profile_id}/profile.md``.
 
-Run: `grep -rEn 'agent_type=' src/ --include='*.py' | grep -v '\.pyc' | grep -v 'default_agent_type\|max_agents_by_type'`
-Expected: no output (or only false positives in playbook prompt strings — verify each).
+    Profiles control: model selection, permission mode, allowed tools
+    allowlist, MCP server configuration, and a system prompt suffix
+    that sets the agent's "role" for the task.
+    """
+    project = await self.db.get_project(task.project_id)
+    profile_id = task.profile_id or (project.default_profile_id if project else None)
+    if not profile_id:
+        return None
 
-- [ ] **Step 4: Smoke imports**
+    if project:
+        scoped = await self.db.get_profile(f"project:{project.id}:{profile_id}")
+        if scoped:
+            return scoped
+    return await self.db.get_profile(profile_id)
+```
 
-Run: `python -c "from src.orchestrator import core, execution; from src.runtimes import supervisor; from src import mcp_interfaces, workflow_pipeline_view; from src.discord import commands; from src.tools import definitions"`
+- [ ] **Step 3: Verify imports are still needed (or remove unused ones)**
+
+Run: `grep -nE 'agent_type|default_agent_type' src/orchestrator/core.py`
+Expected: no remaining matches in the resolve_profile function or its docstrings.
+
+- [ ] **Step 4: Smoke**
+
+Run: `python -c "from src.orchestrator import core"`
 Expected: no errors.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add -A
-git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "Update remaining call sites for agent.agent_type → profile_id rename
+git add src/orchestrator/core.py
+git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "Rewrite Orchestrator._resolve_profile to use profile_id end-to-end
 
-Targets: orchestrator core/execution, runtimes/supervisor, mcp_interfaces,
-workflow_pipeline_view, cli/formatters, commands/task_commands,
-discord/commands, tools/definitions. Removes the now-stale agent_type
-parameter from task creation/edit Discord and MCP tool schemas (the
-field is gone from the schema).
-
-vault_manager.py / override_handler.py / playbooks/store.py untouched —
-their 'agent_type' references are vault scope names, not the renamed
-field."
+Eliminates the dual-purpose agent_type indirection. Project-scoped
+profile feature keeps working via project:{pid}:{profile_id} lookup.
+Cascade is now: task.profile_id → project.default_profile_id → None,
+with project-scoped variant beating global at each level."
 ```
 
-### Task 1.7: Update tests for the rename and field drop
+### Task 1.7: Update `commands/project_commands.py`
+
+**Files:**
+- Modify: `src/commands/project_commands.py`
+
+- [ ] **Step 1: List the sites**
+
+Run: `grep -nE 'default_agent_type' src/commands/project_commands.py`
+Expected: lines 305-315 (edit handler), 323 (error message), 490-491 (info display).
+
+- [ ] **Step 2: Delete the edit handler block**
+
+Lines 305-315 read like:
+```python
+if "default_agent_type" in args:
+    dat = args["default_agent_type"]
+    # ... validation ...
+    updates["default_agent_type"] = dat
+```
+Delete the entire block.
+
+- [ ] **Step 3: Update the error message at line 323**
+
+Find the error string mentioning `"default_profile_id, default_agent_type, or repo_default_branch."` — remove `default_agent_type, ` from the message.
+
+- [ ] **Step 4: Delete the info-display lines 490-491**
+
+```python
+if project.default_agent_type:
+    info["default_agent_type"] = project.default_agent_type
+```
+Delete both lines.
+
+- [ ] **Step 5: Verify**
+
+Run: `grep -nE 'default_agent_type' src/commands/project_commands.py`
+Expected: no output.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/commands/project_commands.py
+git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "project_commands: drop default_agent_type set/info handlers"
+```
+
+### Task 1.8: Update `commands/task_commands.py` (full enumeration)
+
+**Files:**
+- Modify: `src/commands/task_commands.py`
+
+- [ ] **Step 1: List ALL agent_type sites in this file**
+
+Run: `grep -nE 'agent_type' src/commands/task_commands.py`
+Expected: roughly the following hits (line numbers approximate):
+- 855-865: validation block reading `args.get("agent_type")`
+- 866-871: comment block lampshading the agent_type/profile distinction
+- 927: `agent_type=agent_type` kwarg in `Task(...)` constructor
+- 986-987: `if agent_type:` + `result["agent_type"] = agent_type` in response
+- 1044: `"agent_type": task.agent_type,` in response dict
+- 1315-1324: edit-path validation + `updates["agent_type"] = val`
+- 1365: docstring mentioning `agent_type` as an editable field
+
+- [ ] **Step 2: Delete each block**
+
+For each line range, Edit the file to delete the agent_type-related logic. After this task, no reference to `agent_type` should remain in `task_commands.py`.
+
+- [ ] **Step 3: Verify**
+
+Run: `grep -nE 'agent_type' src/commands/task_commands.py`
+Expected: no output.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/commands/task_commands.py
+git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "task_commands: drop all agent_type handling (validation, kwarg, response, edit, docs)"
+```
+
+### Task 1.9: Update remaining src/ call sites
+
+**Files:**
+- Modify: `src/scheduler.py` (any remaining after Task 1.5)
+- Modify: `src/orchestrator/execution.py`
+- Modify: `src/runtimes/supervisor.py`
+- Modify: `src/mcp_interfaces.py`
+- Modify: `src/workflow_pipeline_view.py`
+- Modify: `src/cli/formatters.py`
+- Modify: `src/discord/commands.py`
+- Modify: `src/tools/definitions.py`
+- Plus any others surfaced by the grep below
+
+- [ ] **Step 1: Surface remaining `agent.agent_type` and `task.agent_type` accesses (separate pass to avoid masking)**
+
+Run: `grep -rEn '\bagent\.agent_type\b|\btask\.agent_type\b' src/ --include='*.py' | grep -v '\.pyc'`
+Expected: a list of remaining files. Each match is a direct field access.
+
+- [ ] **Step 2: Surface remaining `agent_type=` constructor kwargs (separate pass)**
+
+Run: `grep -rEn '\bagent_type=' src/ --include='*.py' | grep -v '\.pyc' | grep -v 'AGENT_TYPE_COLORS\|max_agents_by_type'`
+Expected: a list. Note: do NOT also `-v 'default_agent_type'` here — that filter would mask `core.py:519`-style lines that contain BOTH substrings. After Task 1.6 there shouldn't be any such lines, but the pass is still defensive.
+
+- [ ] **Step 3: For each surfaced file, apply targeted Edits**
+
+For `agent.agent_type` accesses → rename to `agent.profile_id`.
+For `agent_type="supervisor"` in `runtimes/supervisor.py:516,527` → rename to `profile_id="supervisor"`.
+For `task.agent_type` accesses (e.g. `workflow_pipeline_view.py:489`) → delete the line/kwarg.
+For Discord `/edit` slash-command `agent_type` parameter at `discord/commands.py:3308,3311` → remove the parameter from the signature and choices.
+For `tools/definitions.py` JSON-schema `"agent_type"` keys at lines 640, 923, 2736, 2757, 2777, 2808 → remove each key from its task tool's input schema.
+For `tools/definitions.py:2727` docstring → change `project:<pid>:<agent_type>` to `project:<pid>:<profile_id>`.
+
+Do **not** touch (these use the substring for unrelated identifiers):
+- `vault_manager.py:260` — `if scope == "agent_type"` is a vault scope name string
+- `playbooks/store.py:104` — same
+- `override_handler.py` — uses `agent_type` as a directory-name placeholder for profile id; the path `vault/agent-types/{agent_type}/` stays as-is per the spec
+- `vault.py:1485` — `ensure_default_agent_type_playbooks` is about the `default_agent_type_playbooks/` directory in `src/prompts/`, unrelated to the column
+
+- [ ] **Step 4: Verify**
+
+Run: `grep -rEn '\bagent\.agent_type\b|\btask\.agent_type\b|\bproject\.default_agent_type\b' src/ --include='*.py' | grep -v '\.pyc'`
+Expected: no output.
+
+Run: `grep -rEn '\bagent_type=' src/ --include='*.py' | grep -v '\.pyc' | grep -v 'AGENT_TYPE_COLORS\|max_agents_by_type'`
+Expected: no output.
+
+- [ ] **Step 5: Smoke imports**
+
+Run: `python -c "from src.orchestrator import core, execution; from src.runtimes import supervisor; from src import mcp_interfaces, workflow_pipeline_view; from src.discord import commands; from src.tools import definitions; from src.cli import formatters"`
+Expected: no errors.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A
+git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "Update remaining call sites for agent.agent_type → profile_id
+
+Targets: orchestrator/execution, runtimes/supervisor, mcp_interfaces,
+workflow_pipeline_view, cli/formatters, discord/commands,
+tools/definitions. Removes Discord/MCP agent_type task parameters.
+Updates project-scoped profile id docstring to use profile_id key.
+
+vault_manager.py / override_handler.py / playbooks/store.py untouched —
+their 'agent_type' references are vault scope names or playbook
+directory paths, not the renamed field.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+```
+
+### Task 1.10: Update tests for the rename and field drops
 
 **Files:**
 - Modify: `tests/test_database.py`
 - Modify: `tests/test_database_postgresql.py`
 - Modify: any other test surfaced below
 
-- [ ] **Step 1: Surface tests touching the renamed/dropped fields**
+- [ ] **Step 1: Surface tests touching renamed/dropped fields (two-pass to avoid masking)**
 
-Run: `grep -rEn '\bagent_type\b' tests/ --include='*.py' | grep -v 'default_agent_type\|max_agents_by_type\|AGENT_TYPE_COLORS'`
-Expected: a list, mostly constructor calls.
+Run: `grep -rEn '\bagent\.agent_type\b|\btask\.agent_type\b|\.default_agent_type\b' tests/ --include='*.py'`
+Then: `grep -rEn '\bagent_type=|\bdefault_agent_type=' tests/ --include='*.py' | grep -v 'AGENT_TYPE_COLORS\|max_agents_by_type'`
+Expected: a list, mostly constructor calls and assertions.
 
 - [ ] **Step 2: Apply targeted updates per file**
 
-For `Agent(agent_type="claude-1")` etc. → `Agent(profile_id="claude-1")`.
-For `Task(agent_type="coding")` etc. → drop the kwarg entirely.
+For `Agent(agent_type="claude-1")` → `Agent(profile_id="claude-1")`.
+For `Task(agent_type=...)` → drop the kwarg entirely.
+For `Project(default_agent_type=...)` → drop the kwarg entirely.
 For tests asserting `_task_agent_type_matches` behavior → delete the test (function is gone).
-For tests accessing `task.agent_type` → drop the assertion (field is gone).
+For tests accessing `task.agent_type` or `project.default_agent_type` → drop the assertion (fields are gone).
 
 - [ ] **Step 3: Run only the database tests as a focused checkpoint**
 
@@ -410,12 +569,12 @@ Expected: all pass. If a failure references missed call sites, fix and re-run.
 
 ```bash
 git add -A
-git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "tests: update Agent.agent_type → profile_id; drop Task.agent_type assertions
+git -c user.name="Jack Kern" -c user.email="jack.w.kern@gmail.com" commit -m "tests: update for agents.agent_type → profile_id; drop Task.agent_type and Project.default_agent_type assertions
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
-### Task 1.8: Phase 1 checkpoint
+### Task 1.11: Phase 1 checkpoint
 
 - [ ] Run: `pytest tests/ -n auto 2>&1 | tail -10`
 Expected: full suite passes.
