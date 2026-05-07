@@ -296,10 +296,19 @@ def start_daemon() -> bool:
         with open(PID_FILE, "w") as f:
             f.write(str(proc.pid))
 
-        # Wait and verify — check multiple times to catch crashes
-        # during initialization (e.g. database connection failures).
-        for tick in range(5):
-            time.sleep(1)
+        # Wait until the daemon's HTTP /health endpoint responds — replaces the
+        # old fixed 5s pid check, which falsely reported success when crashes
+        # (e.g. Discord login failure) happened later in async init. See #28.
+        import urllib.error
+        import urllib.request
+
+        from .client import _resolve_api_url
+
+        api_base = _resolve_api_url()
+        deadline = time.monotonic() + 30
+        ready = False
+        while time.monotonic() < deadline:
+            # Early-crash detect: if the process is gone, surface the log immediately.
             try:
                 os.kill(proc.pid, 0)
             except OSError:
@@ -310,6 +319,45 @@ def start_daemon() -> bool:
                 except OSError:
                     pass
                 return False
+            # Probe /health. 200 = healthy, 503 = degraded but the daemon is up
+            # and serving (e.g. messaging-degraded mode from #29) — both count
+            # as "started successfully" here.
+            try:
+                with urllib.request.urlopen(f"{api_base}/health", timeout=1) as resp:
+                    if resp.status in (200, 503):
+                        ready = True
+                        break
+            except (urllib.error.URLError, OSError):
+                pass  # not yet listening
+            time.sleep(0.5)
+
+        if not ready:
+            console.print(
+                f"[bold red]Error:[/] Daemon process is alive (PID {proc.pid}) but "
+                f"/health didn't respond within 30s. Killing it. Last log lines:"
+            )
+            _tail_log(30)
+            try:
+                os.kill(proc.pid, signal.SIGTERM)
+                # Brief grace period, then SIGKILL
+                for _ in range(5):
+                    time.sleep(1)
+                    try:
+                        os.kill(proc.pid, 0)
+                    except OSError:
+                        break
+                else:
+                    try:
+                        os.kill(proc.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+            try:
+                os.remove(PID_FILE)
+            except OSError:
+                pass
+            return False
 
         console.print(f"[bold green]Daemon started[/] (PID {proc.pid})")
         console.print(f"[dim]Logs: tail -f {LOG_PATH}[/]")
