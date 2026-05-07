@@ -1,15 +1,15 @@
-# Adapter Development Guide
+# Platform Development Guide
 
-> **Consolidated:** See [[adapter-development]] for the
+> **Consolidated:** See [[platform-development]] for the
 > full step-by-step guide with code examples, interface documentation, and testing
 > instructions.
 
-How to add a new agent adapter to the Agent Queue system.
+How to add a new agent runtime to the Agent Queue system.
 
 ## Architecture Overview
 
 ```
-Orchestrator ──► AgentAdapter ──► Agent Process
+Orchestrator ──► Platform ──► Agent Process
     │               │                  │
     ├── start()    launch subprocess   │
     ├── wait()     stream output ◄─────┤
@@ -17,12 +17,15 @@ Orchestrator ──► AgentAdapter ──► Agent Process
     └── stop()     kill process        │
 ```
 
-## The AgentAdapter Interface
+## The Platform Interface
 
-Located in `src/adapters/base.py`:
+Located in `src/runtimes/base.py`:
 
 ```python
-class AgentAdapter(ABC):
+class Platform(ABC):
+    name: ClassVar[str]
+    capabilities: ClassVar[frozenset[Capability]]
+
     @abstractmethod
     async def start(self, task: TaskContext) -> None:
         """Launch the agent process with the given task."""
@@ -40,15 +43,26 @@ class AgentAdapter(ABC):
         """Check if the agent process is still running."""
 ```
 
-## Step-by-Step: Adding a New Adapter
+## Step-by-Step: Adding a New Platform
 
-### 1. Create the Adapter File
+### 1. Create the Platform File
 
-Create `src/adapters/your_agent.py` implementing `AgentAdapter`.
+Create `src/runtimes/your_agent.py` implementing `Runtime`.
 
-### 2. Register in the Adapter Factory
+### 2. Register in PlatformRegistry
 
-Update `src/adapters/__init__.py` to include your adapter type.
+Add your runtime to `default_registry()` in `src/runtimes/__init__.py`:
+
+```python
+# src/runtimes/__init__.py
+def default_registry() -> PlatformRegistry:
+    from src.platforms.claude_sdk import ClaudeSDKPlatform
+    from src.platforms.your_agent import YourAgentPlatform  # add this
+    return PlatformRegistry(platforms={
+        ClaudeSDKPlatform.name: ClaudeSDKPlatform,
+        YourAgentPlatform.name: YourAgentPlatform,
+    })
+```
 
 ### 3. Register an Agent
 
@@ -56,7 +70,7 @@ Update `src/adapters/__init__.py` to include your adapter type.
 /add-agent name:my-agent type:your_agent
 ```
 
-## TaskContext — What Your Adapter Receives
+## TaskContext — What Your Platform Receives
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -69,7 +83,7 @@ Update `src/adapters/__init__.py` to include your adapter type.
 | `attached_context` | `list[str]` | Additional context |
 | `mcp_servers` | `dict` | MCP server configurations |
 
-## AgentOutput — What Your Adapter Returns
+## AgentOutput — What Your Platform Returns
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -97,6 +111,6 @@ Keep messages under 2000 chars, batch rapid updates.
 
 ## Reference
 
-See `src/adapters/claude.py` (~600 lines) for a complete implementation
+See `src/runtimes/claude_sdk.py` (~600 lines) for a complete implementation
 including environment scrubbing, resilient streaming, rate limit detection,
 and graceful shutdown.

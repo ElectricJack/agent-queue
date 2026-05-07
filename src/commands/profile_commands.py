@@ -529,9 +529,11 @@ class ProfileCommandsMixin:
         from src.models import Task
 
         project_id = (args.get("project_id") or "").strip()
-        agent_type = (args.get("agent_type") or "").strip()
-        if not project_id or not agent_type:
-            return {"error": "project_id and agent_type are required"}
+        # Accept "profile_id" (new name) or "agent_type" (legacy alias kept
+        # for backward-compat with callers that haven't migrated yet).
+        profile_id = (args.get("profile_id") or args.get("agent_type") or "").strip()
+        if not project_id or not profile_id:
+            return {"error": "project_id and profile_id are required"}
 
         # Synthesize a task object that the resolver expects.  We don't
         # touch the DB or schedule anything.
@@ -540,28 +542,28 @@ class ProfileCommandsMixin:
             project_id=project_id,
             title="",
             description="",
-            agent_type=agent_type,
+            profile_id=profile_id,
         )
         profile = await self.orchestrator._resolve_profile(task)
         if profile is None:
             return {
                 "project_id": project_id,
-                "agent_type": agent_type,
+                "profile_id": profile_id,
                 "profile": None,
                 "source": None,
             }
 
         # Tag the resolution path so callers can see where the row came from.
-        if profile.id == f"project:{project_id}:{agent_type}":
+        if profile.id == f"project:{project_id}:{profile_id}":
             source = "project"
-        elif profile.id == agent_type:
-            source = "global-agent-type"
+        elif profile.id == profile_id:
+            source = "global"
         else:
             source = "fallback"
 
         return {
             "project_id": project_id,
-            "agent_type": agent_type,
+            "profile_id": profile_id,
             "profile": profile_to_dict(profile),
             "source": source,
         }

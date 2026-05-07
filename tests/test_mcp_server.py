@@ -82,7 +82,7 @@ async def populated_db(db):
     agent = Agent(
         id="agent-1",
         name="Claude Agent 1",
-        agent_type="claude",
+        profile_id="claude",
         state=AgentState.BUSY,
         current_task_id=None,
     )
@@ -172,7 +172,7 @@ class TestSerializationHelpers:
         agent = Agent(
             id="a1",
             name="Agent 1",
-            agent_type="claude",
+            profile_id="claude",
             state=AgentState.BUSY,
             current_task_id="t1",
         )

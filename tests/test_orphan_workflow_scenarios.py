@@ -16,11 +16,10 @@ cross-module scenarios with richer state setups.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 

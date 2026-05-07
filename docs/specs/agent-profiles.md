@@ -46,11 +46,11 @@ When `_execute_task()` runs, it resolves the profile in this order:
 
 This is a pure dict lookup. No LLM calls. No scheduler changes.
 
-## Adapter Integration
+## Platform Integration
 
 When a profile is resolved:
 
-1. **Config merging:** `AdapterFactory._config_for_profile()` creates a `ClaudeAdapterConfig` by overlaying profile fields onto the base config. Empty profile fields (model="", permission_mode="", allowed_tools=[]) fall through to base config defaults.
+1. **Config merging:** `PlatformRegistry._config_for_profile()` creates a `ClaudeAdapterConfig` by overlaying profile fields onto the base config. Empty profile fields (model="", permission_mode="", allowed_tools=[]) fall through to base config defaults.
 2. **TaskContext population:** `TaskContext.mcp_servers` is populated from the profile. (Tools flow through `ClaudeAdapterConfig.allowed_tools`.)
 3. **System prompt injection:** If `profile.system_prompt_suffix` is non-empty, it's injected as an "Agent Role Instructions" section in the task context.
 4. **Runtime logging:** After profile resolution, the orchestrator logs which profile/tools/MCP servers were applied to the task.

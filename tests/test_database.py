@@ -361,7 +361,7 @@ class TestTaskMetadata:
 
 class TestAgentCRUD:
     async def test_create_and_get_agent(self, db):
-        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-1", profile_id="claude")
         await db.create_agent(agent)
         result = await db.get_agent("a-1")
         assert result.name == "claude-1"
@@ -370,16 +370,16 @@ class TestAgentCRUD:
     async def test_update_agent_state(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.update_agent("a-1", state=AgentState.BUSY, current_task_id="t-1")
         result = await db.get_agent("a-1")
         assert result.state == AgentState.BUSY
         assert result.current_task_id == "t-1"
 
     async def test_list_idle_agents(self, db):
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_agent(
-            Agent(id="a-2", name="claude-2", agent_type="claude", state=AgentState.BUSY)
+            Agent(id="a-2", name="claude-2", profile_id="claude", state=AgentState.BUSY)
         )
         idle = await db.list_agents(state=AgentState.IDLE)
         assert len(idle) == 1
@@ -389,7 +389,7 @@ class TestAgentCRUD:
 class TestTokenLedger:
     async def test_record_and_sum_tokens(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.record_token_usage("p-1", "a-1", "t-1", 5000)
         await db.record_token_usage("p-1", "a-1", "t-1", 3000)
@@ -412,7 +412,7 @@ class TestAtomicTransition:
         await db.create_task(
             Task(id="t-1", project_id="p-1", title="A", description="D", status=TaskStatus.READY)
         )
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.assign_task_to_agent("t-1", "a-1")
         task = await db.get_task("t-1")
         agent = await db.get_agent("a-1")
@@ -482,7 +482,7 @@ class TestWorkspaces:
 
     async def test_acquire_workspace(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
@@ -501,7 +501,7 @@ class TestWorkspaces:
     async def test_acquire_workspace_lock_mode(self, db):
         """acquire_workspace stores the requested lock_mode on the workspace."""
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
@@ -524,7 +524,7 @@ class TestWorkspaces:
     async def test_release_workspace_clears_lock_mode(self, db):
         """release_workspace clears lock_mode along with other lock columns."""
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
@@ -542,8 +542,8 @@ class TestWorkspaces:
 
     async def test_acquire_workspace_none_available(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
         await db.create_workspace(
@@ -560,7 +560,7 @@ class TestWorkspaces:
 
     async def test_release_workspace(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
@@ -578,7 +578,7 @@ class TestWorkspaces:
 
     async def test_release_workspaces_for_agent(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
@@ -614,7 +614,7 @@ class TestWorkspaces:
 
     async def test_count_available_workspaces(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
@@ -653,8 +653,8 @@ class TestExclusiveWorkspaceModeBackwardCompat:
     async def test_exclusive_blocks_second_agent(self, db):
         """(a) Workspace acquired with lock_mode=exclusive blocks a second agent."""
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
         await db.create_workspace(
@@ -683,8 +683,8 @@ class TestExclusiveWorkspaceModeBackwardCompat:
         clean None return — no exception raised, no partial state change.
         """
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
         await db.create_workspace(
@@ -709,7 +709,7 @@ class TestExclusiveWorkspaceModeBackwardCompat:
         await db.acquire_workspace("p-1", "a-2", "t-2", lock_mode=WorkspaceMode.EXCLUSIVE)
 
         # Third agent — all workspaces are locked, should get None (not raise)
-        await db.create_agent(Agent(id="a-3", name="claude-3", agent_type="claude"))
+        await db.create_agent(Agent(id="a-3", name="claude-3", profile_id="claude"))
         await db.create_task(Task(id="t-3", project_id="p-1", title="C", description="D"))
         result = await db.acquire_workspace("p-1", "a-3", "t-3", lock_mode=WorkspaceMode.EXCLUSIVE)
         assert result is None
@@ -725,8 +725,8 @@ class TestExclusiveWorkspaceModeBackwardCompat:
     async def test_exclusive_release_allows_next_agent(self, db):
         """(c) Releasing an exclusive lock allows the next agent to acquire."""
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
         await db.create_workspace(
@@ -772,8 +772,8 @@ class TestExclusiveWorkspaceModeBackwardCompat:
         produce the same semantics — the only addition is the lock_mode field.
         """
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
         await db.create_workspace(
@@ -817,7 +817,7 @@ class TestExclusiveWorkspaceModeBackwardCompat:
     async def test_no_explicit_lock_mode_defaults_to_exclusive(self, db):
         """(e) Workspace acquired without explicit lock_mode defaults to exclusive."""
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
@@ -854,8 +854,8 @@ class TestExclusiveWorkspaceModeBackwardCompat:
         """
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_project(Project(id="p-2", name="beta"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
 
@@ -908,8 +908,8 @@ class TestBranchIsolatedWorkspaceMode:
         """
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_project(Project(id="p-2", name="beta"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
 
@@ -956,8 +956,8 @@ class TestBranchIsolatedWorkspaceMode:
         """
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_project(Project(id="p-2", name="beta"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
 
@@ -997,8 +997,8 @@ class TestBranchIsolatedWorkspaceMode:
         """
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_project(Project(id="p-2", name="beta"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
 
@@ -1032,7 +1032,7 @@ class TestBranchIsolatedWorkspaceMode:
     async def test_find_branch_isolated_base(self, db):
         """(d) find_branch_isolated_base returns BI-locked workspace for sharing."""
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
@@ -1059,7 +1059,7 @@ class TestBranchIsolatedWorkspaceMode:
     async def test_find_branch_isolated_base_ignores_exclusive(self, db):
         """(e) find_branch_isolated_base ignores exclusively-locked workspaces."""
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
@@ -1086,8 +1086,8 @@ class TestBranchIsolatedWorkspaceMode:
     async def test_branch_isolated_release_allows_reacquisition(self, db):
         """(g) Releasing a BRANCH_ISOLATED lock allows reacquisition."""
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-1", title="B", description="D"))
         await db.create_workspace(
@@ -1125,7 +1125,7 @@ class TestBranchIsolatedWorkspaceMode:
     async def test_worktree_workspace_source_type(self, db):
         """(h) Workspace with source_type=WORKTREE can be created and acquired."""
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
@@ -1159,7 +1159,7 @@ class TestBranchIsolatedWorkspaceMode:
         """
         for i in range(1, 4):
             await db.create_project(Project(id=f"p-{i}", name=f"project-{i}"))
-            await db.create_agent(Agent(id=f"a-{i}", name=f"claude-{i}", agent_type="claude"))
+            await db.create_agent(Agent(id=f"a-{i}", name=f"claude-{i}", profile_id="claude"))
             await db.create_task(
                 Task(id=f"t-{i}", project_id=f"p-{i}", title=f"Task {i}", description="D")
             )
@@ -1226,7 +1226,7 @@ class TestDirectoryIsolatedWorkspaceModeStub:
     async def test_directory_isolated_stored_on_workspace_lock(self, db):
         """acquire_workspace with DIRECTORY_ISOLATED stores the lock mode."""
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
@@ -1256,8 +1256,8 @@ class TestDirectoryIsolatedWorkspaceModeStub:
         """
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_project(Project(id="p-2", name="beta"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
-        await db.create_agent(Agent(id="a-2", name="claude-2", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
+        await db.create_agent(Agent(id="a-2", name="claude-2", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_task(Task(id="t-2", project_id="p-2", title="B", description="D"))
 
@@ -1293,7 +1293,7 @@ class TestDirectoryIsolatedWorkspaceModeStub:
     async def test_directory_isolated_release_clears_lock_mode(self, db):
         """Releasing a DIRECTORY_ISOLATED lock clears lock_mode to None."""
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(

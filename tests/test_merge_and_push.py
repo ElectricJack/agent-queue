@@ -10,7 +10,7 @@ Now that CLONE repos delegate to ``sync_and_merge()``, these tests verify:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

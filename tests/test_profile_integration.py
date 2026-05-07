@@ -8,15 +8,14 @@ Two gaps the unit tests don't cover:
 2. Negative isolation: a non-profiled task does NOT inherit tools/MCP from
    another profile, and profile A tasks don't get profile B's config.
 
-Uses CapturingMockAdapter + CapturingAdapterFactory to capture the merged
+Uses CapturingMockAdapter + CapturingRuntimeRegistry to capture the merged
 ClaudeAdapterConfig and the TaskContext at each stage of execution.
 """
 
 import pytest
 
-from src.adapters import AdapterFactory
-from src.adapters.base import AgentAdapter
-from src.adapters.claude import ClaudeAdapterConfig
+from src.runtimes.base import Runtime
+from src.runtimes.claude_sdk import ClaudeAdapterConfig, ClaudeSDKRuntime
 from src.config import AppConfig, McpServerConfig
 from src.database import Database
 from src.models import (
@@ -72,7 +71,7 @@ def _no_inject_mcp() -> McpServerConfig:
 # ---------------------------------------------------------------------------
 
 
-class CapturingMockAdapter(AgentAdapter):
+class CapturingMockAdapter(Runtime):
     """Records the TaskContext passed to start() for later assertions."""
 
     def __init__(self, config: ClaudeAdapterConfig):
@@ -92,21 +91,23 @@ class CapturingMockAdapter(AgentAdapter):
         return True
 
 
-class CapturingAdapterFactory:
-    """Wraps the real AdapterFactory._config_for_profile() merging logic.
+class CapturingRuntimeRegistry:
+    """Captures the merged ClaudeAdapterConfig produced by ClaudeSDKRuntime.
 
     After each create() call, the merged config, profile, and adapter are
     available for inspection.
     """
 
     def __init__(self, base_config: ClaudeAdapterConfig | None = None):
-        self._real_factory = AdapterFactory(claude_config=base_config)
+        # base_config is no longer injected — the platform always uses its own
+        # defaults.  The parameter is retained so existing call-sites compile,
+        # but its value is ignored (mirroring the production path).
         self.adapters_created: list[CapturingMockAdapter] = []
         self.configs_created: list[ClaudeAdapterConfig] = []
         self.profiles_received: list[AgentProfile | None] = []
 
-    def create(self, agent_type: str, profile: AgentProfile | None = None) -> AgentAdapter:
-        merged = self._real_factory._config_for_profile(profile)
+    def create(self, agent_type: str, profile: AgentProfile | None = None, llm_logger=None) -> Runtime:
+        merged = ClaudeSDKRuntime._config_from_profile(profile)
         self.profiles_received.append(profile)
         self.configs_created.append(merged)
         adapter = CapturingMockAdapter(merged)
@@ -165,14 +166,14 @@ class TestToolEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingAdapterFactory()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -259,14 +260,14 @@ class TestMCPEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingAdapterFactory()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -363,14 +364,14 @@ class TestProfileIsolation:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingAdapterFactory()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -441,14 +442,14 @@ class TestMultiProfileIsolation:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingAdapterFactory()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -530,14 +531,14 @@ class TestInstallCheckIntegration:
     async def handler(self, tmp_path):
         from src.commands.handler import CommandHandler
 
-        factory = CapturingAdapterFactory()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         handler = CommandHandler(orch, config)
         yield handler, factory
@@ -607,14 +608,14 @@ class TestProjectDefaultProfileEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        factory = CapturingAdapterFactory()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -735,14 +736,14 @@ class TestMCPAutoInjection:
     async def env_with_mcp(self, tmp_path):
         from src.config import McpServerConfig
 
-        factory = CapturingAdapterFactory()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=McpServerConfig(enabled=True, host="127.0.0.1", port=8082),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -752,14 +753,14 @@ class TestMCPAutoInjection:
     async def env_mcp_disabled(self, tmp_path):
         from src.config import McpServerConfig
 
-        factory = CapturingAdapterFactory()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=McpServerConfig(enabled=False),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -769,7 +770,7 @@ class TestMCPAutoInjection:
     async def env_inject_disabled(self, tmp_path):
         from src.config import McpServerConfig
 
-        factory = CapturingAdapterFactory()
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
@@ -781,7 +782,7 @@ class TestMCPAutoInjection:
                 inject_into_tasks=False,
             ),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -928,15 +929,14 @@ class TestModelOverrideEnforcement:
 
     @pytest.fixture
     async def env(self, tmp_path):
-        base = ClaudeAdapterConfig(model="claude-sonnet-4-5-20250514")
-        factory = CapturingAdapterFactory(base_config=base)
+        factory = CapturingRuntimeRegistry()
         config = AppConfig(
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
             mcp_server=_no_inject_mcp(),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         await orch.wait_for_running_tasks(timeout=5)
@@ -967,7 +967,7 @@ class TestModelOverrideEnforcement:
 
         assert factory.configs_created[0].model == "claude-opus-4-20250514"
 
-    async def test_no_profile_keeps_base_model(self, env):
+    async def test_no_profile_keeps_default_model(self, env):
         orch, factory = env
         await _setup_project_and_agent(orch.db)
         await orch.db.create_task(
@@ -982,7 +982,8 @@ class TestModelOverrideEnforcement:
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
 
-        assert factory.configs_created[0].model == "claude-sonnet-4-5-20250514"
+        # No profile → platform defaults apply; model is "" (let Claude pick)
+        assert factory.configs_created[0].model == ClaudeAdapterConfig().model
 
 
 # ---------------------------------------------------------------------------

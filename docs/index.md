@@ -102,6 +102,8 @@ cd agent-queue
 
 The setup script installs dependencies, creates the vault structure, and walks you through Discord configuration, API keys, and getting your first agent running.
 
+To uninstall, run `./uninstall.sh` from the repo root. It returns the repo to a fresh-clone state (`git reset --hard` + `git clean -ffdx`) and prompts before removing the `~/.agent-queue/` config directory. Pass `-y` to skip prompts; `--keep-user-dir` to preserve `~/.agent-queue/`.
+
 ### First steps
 
 Once the bot is online, everything happens through conversation in your control channel:
@@ -139,7 +141,7 @@ Or connect via MCP from Claude Code, Cursor, or any MCP-compatible client for pr
 - [[guides/architecture|Architecture]] — How the system is designed
 - [[guides/cli|CLI]] — Terminal interface reference
 - [[guides/agent-tools|Agent Tools]] — Tool reference for AI agents
-- [[guides/adapter-development|Adapter Development]] — Adding new agent backends
+- [[guides/platform-development|Platform Development]] — Adding new agent backends
 - `dashboard/CLAUDE.md` (in-repo) — Typed `@aq/ts-client` workflow for the React dashboard
 
 **Specifications:**

@@ -30,10 +30,10 @@ import signal
 import sys
 import time
 
-from src.adapters import AdapterFactory
 from src.config import ConfigValidationError, load_config
 from src.logging_config import setup_logging
 from src.messaging import create_messaging_adapter
+from src.runtimes import default_registry
 from src.messaging.base import MessagingAdapter
 from src.models import AgentState, TaskStatus
 from src.orchestrator import Orchestrator
@@ -75,10 +75,26 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         db_path = config.database.url or config.database_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-    orch = Orchestrator(config, adapter_factory=None)
-    adapter_factory = AdapterFactory(llm_logger=orch.llm_logger)
-    orch._adapter_factory = adapter_factory
+    orch = Orchestrator(config, runtimes=None)
+    # Daemon-wide Supervisor — used by the messaging adapter for chat AND
+    # registered as the singleton ``"supervisor"`` platform so tasks with
+    # ``profile.platform="supervisor"`` execute in-process via the same
+    # instance.  Construct before the registry so default_registry() can
+    # register the singleton.
+    from src.runtimes.supervisor import Supervisor
+
+    shared_supervisor = Supervisor(orch, config, llm_logger=orch.llm_logger)
+    registry = default_registry(supervisor=shared_supervisor)
+    orch._runtimes = registry
     await orch.initialize()
+    # Initialise the shared Supervisor's chat provider.  Failures here are
+    # non-fatal — supervisor-platform tasks will surface a clear error if
+    # the provider couldn't be created (e.g. missing credentials).
+    if not shared_supervisor.initialize():
+        logger.warning(
+            "Shared Supervisor: chat provider failed to initialise — "
+            "supervisor-platform tasks will fail until credentials are configured"
+        )
 
     # Start health check server (if enabled)
     async def _plan_content(task_id: str) -> str | None:
@@ -98,6 +114,7 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     _health_prov = lambda: _health_checks(orch, adapter)  # noqa: E731
 
     shutdown_event = asyncio.Event()
+    messaging_failed = asyncio.Event()
 
     def handle_signal():
         shutdown_event.set()
@@ -111,20 +128,50 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             await adapter.start()
         except asyncio.CancelledError:
             pass
-        except Exception:
+        except Exception as exc:
+            # Authentication failures (revoked/invalid Discord token, etc.) used to
+            # tear down the entire daemon, blocking CLI/MCP/HTTP API users who
+            # don't need messaging at all. Degrade gracefully instead — see #29.
+            exc_type = type(exc).__name__
+            if exc_type in ("LoginFailure", "PrivilegedIntentsRequired", "HTTPException"):
+                logger.warning(
+                    "Messaging adapter (%s) login failed: %s — continuing without "
+                    "messaging. CLI, MCP, and HTTP API will still work.",
+                    adapter.platform_name,
+                    exc,
+                )
+                messaging_failed.set()
+                return
             logger.exception("Messaging adapter failed to start — triggering shutdown")
             shutdown_event.set()
 
     async def run_scheduler():
         # Wait for the messaging adapter to be ready before scheduling.
-        # Use a timeout so the scheduler doesn't hang forever if the bot
-        # fails to connect (e.g. Discord rate-limits the initial login).
+        # Race against messaging_failed (auth failure short-circuits the wait)
+        # and a 120s timeout (catches a hung connect that never errors out).
+        ready_task = asyncio.create_task(adapter.wait_until_ready())
+        failed_task = asyncio.create_task(messaging_failed.wait())
         try:
-            await asyncio.wait_for(adapter.wait_until_ready(), timeout=120)
-        except asyncio.TimeoutError:
-            logger.error("Messaging adapter not ready after 120s — triggering shutdown")
-            shutdown_event.set()
-            return
+            done, pending = await asyncio.wait(
+                {ready_task, failed_task},
+                timeout=120,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            if not done:
+                logger.warning(
+                    "Messaging adapter not ready after 120s — running in degraded mode "
+                    "(no notification handler). Daemon, CLI, MCP, and HTTP API still work.",
+                )
+            elif failed_task in done:
+                logger.warning(
+                    "Messaging unavailable — running in degraded mode (no notification handler).",
+                )
+        except asyncio.CancelledError:
+            ready_task.cancel()
+            failed_task.cancel()
+            raise
 
         # Register the event-driven notification handler.
         # The handler subscribes to notify.* events on the orchestrator's

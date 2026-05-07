@@ -173,7 +173,7 @@ class TestArchiveTask:
         agent = Agent(
             id="a-1",
             name="test-agent",
-            agent_type="claude",
+            profile_id="claude",
             current_task_id="t-1",
         )
         await db.create_agent(agent)
@@ -520,7 +520,7 @@ class TestArchiveMarkdownNotes:
         ws = str(tmp_path / "workspaces" / "p-1")
         await _seed_project(db, workspace_path=ws)
         await _seed_task(db, "t-1", title="Result task", status=TaskStatus.COMPLETED)
-        await db.create_agent(Agent(id="a-1", name="Test Agent", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="Test Agent", profile_id="claude"))
         await db.save_task_result(
             "t-1",
             "a-1",

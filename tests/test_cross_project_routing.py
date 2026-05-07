@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
-from src.models import Project, Task, TaskStatus
+from src.models import Project, Task
 
 
 # ---------------------------------------------------------------------------

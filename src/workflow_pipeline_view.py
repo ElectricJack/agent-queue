@@ -259,13 +259,6 @@ def build_task_card(
     if task.assigned_agent_id:
         card["assigned_agent"] = task.assigned_agent_id
 
-    # Agent type requirement
-    if task.agent_type:
-        card["agent_type"] = task.agent_type
-        card["agent_type_colors"] = AGENT_TYPE_COLORS.get(
-            task.agent_type, AGENT_TYPE_COLORS["default"]
-        )
-
     # Affinity preference
     if task.affinity_agent_id:
         card["affinity_agent"] = task.affinity_agent_id
@@ -486,10 +479,6 @@ def build_agent_summary(
                 "tasks_completed": 0,
                 "tasks_assigned": 0,
                 "tasks_failed": 0,
-                "agent_type": task.agent_type,
-                "colors": AGENT_TYPE_COLORS.get(
-                    task.agent_type or "default", AGENT_TYPE_COLORS["default"]
-                ),
             }
 
         agent_map[agent_id]["tasks_assigned"] += 1

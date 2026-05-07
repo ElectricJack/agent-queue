@@ -443,7 +443,7 @@ class TestScopeMatchingEventBusIntegration:
         """Multiple playbooks with different scopes: only matching ones fire.
 
         Scenario: system + project(myapp) + project(other) + agent-type:coding
-        Event: task.completed with project_id=myapp, agent_type=coding
+        Event: task.completed with project_id=myapp, profile_id=coding
         Expected: system + project(myapp) + agent-type:coding fire; project(other) doesn't.
         """
         mgr = PlaybookManager(config=None, event_bus=event_bus, on_trigger=on_trigger)
@@ -732,7 +732,7 @@ class TestScopeMatchingEventBusIntegration:
 
         mgr.subscribe_to_events()
 
-        # Emit event with agent_type=coding
+        # Emit event with profile_id=coding
         await event_bus.emit(
             "task.completed",
             {"project_id": "myapp", "agent_type": "coding"},

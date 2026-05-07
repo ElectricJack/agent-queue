@@ -10,7 +10,6 @@ from src.notifications.builder import build_agent_summary, build_task_detail
 from src.notifications.events import (
     AgentQuestionEvent,
     BudgetWarningEvent,
-    ChainStuckEvent,
     TextNotifyEvent,
 )
 from src.models import Task, TaskStatus

@@ -1,6 +1,5 @@
 """Tests for per-section config validation and ConfigError aggregation."""
 
-import os
 
 import pytest
 import yaml

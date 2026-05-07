@@ -799,6 +799,9 @@ class AppConfig:
             "mark_read_on_emit": True,
         }
     )
+    # Phase-1 stub: which platform to spawn for tasks. Replaced by
+    # profile.platform in phase 2 of the platforms refactor.
+    default_runtime: str = "claude_sdk"
     _config_path: str = field(default="", repr=False)
 
     # -- Vault path properties (derived from data_dir) -----------------------
@@ -947,6 +950,22 @@ class AppConfig:
                         "rate_limits", scope, f"expected a dict, got {type(limits).__name__}"
                     )
                 )
+
+        # default_runtime must be a known runtime name.
+        from src.runtimes import default_registry
+
+        try:
+            available = default_registry().names()
+        except Exception:  # pragma: no cover - registry import fail = bigger problem
+            available = ["claude_sdk", "acpx"]
+        if self.default_runtime not in available:
+            errors.append(
+                ConfigError(
+                    section="app",
+                    field="default_runtime",
+                    message=f"unknown runtime {self.default_runtime!r}; available: {available}",
+                )
+            )
 
         return errors
 
@@ -1254,19 +1273,33 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def _load_env_file(config_path: str) -> None:
-    """Load .env file from the same directory as the config file."""
+    """Load .env file from the same directory as the config file.
+
+    .env is the source of truth for daemon credentials; values here override
+    any stale values inherited from the shell. (Previously this skipped keys
+    already in os.environ, which silently masked .env edits when an old value
+    was still exported in the parent shell — see issue #30.)
+    """
     env_path = os.path.join(os.path.dirname(config_path), ".env")
     if not os.path.exists(env_path):
         return
     with open(env_path) as f:
         for line in f:
             line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                key, value = key.strip(), value.strip()
-                # Don't override existing env vars
-                if key and key not in os.environ:
-                    os.environ[key] = value
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip()
+            if not key:
+                continue
+            existing = os.environ.get(key)
+            if existing is not None and existing != value:
+                logger.warning(
+                    "env var %s in shell env differs from %s; using .env value",
+                    key,
+                    env_path,
+                )
+            os.environ[key] = value
 
 
 def load_config(path: str, profile: str | None = None) -> AppConfig:

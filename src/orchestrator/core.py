@@ -193,13 +193,13 @@ class Orchestrator(
       work is assigned) but monitoring, approvals, and promotions continue.
     """
 
-    def __init__(self, config: AppConfig, adapter_factory=None):
+    def __init__(self, config: AppConfig, runtimes=None):
         """Initialize the orchestrator with its configuration and subsystems.
 
         Args:
             config: The application configuration (loaded from YAML).
-            adapter_factory: Factory for creating agent adapters (e.g.
-                ClaudeAdapterFactory).  When None, the orchestrator can
+            runtimes: :class:`~src.runtimes.RuntimeRegistry` used to
+                instantiate agent runtimes.  When None, the orchestrator can
                 manage state and scheduling but cannot execute tasks.
 
         The constructor wires up all subsystems but does NOT perform any
@@ -216,7 +216,12 @@ class Orchestrator(
         self.budget = BudgetManager(global_budget=config.global_token_budget_daily)
         self.git = GitManager()
         self.git.set_lock_provider(self._resolve_git_lock)
-        self._adapter_factory = adapter_factory
+        self._runtimes = runtimes
+        # Lazy-creates agent rows when work needs them; runs at the top of
+        # each scheduling tick before Scheduler.schedule().  See
+        # docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md.
+        from src.orchestrator.agent_reconciler import AgentReconciler
+        self._agent_reconciler = AgentReconciler(self.db)
         # Live adapter instances keyed by agent_id.  Stored so we can call
         # adapter.stop() from admin commands (stop_task, timeout recovery).
         self._adapters: dict[str, object] = {}
@@ -246,10 +251,11 @@ class Orchestrator(
         self._task_started_messages: dict[str, Any] = {}
         self._paused: bool = False
         self._restart_requested: bool = False
-        # Provider-level cooldowns: maps agent_type (e.g. "claude") to the
+        # Provider-level cooldowns: maps profile_id (e.g. "claude-opus") to the
         # Unix timestamp when scheduling should resume.  Set when a session
-        # limit is detected; the scheduler skips agents of that type until
-        # the cooldown expires.  Supports per-provider limits so exhausting
+        # limit is detected; the scheduler skips agents whose profile is
+        # cooled-down until the cooldown expires.  Supports per-profile limits
+        # so exhausting
         # one provider doesn't block others.
         self._provider_cooldowns: dict[str, float] = {}
         # Throttle: approval polling runs at most once per 60s.
@@ -497,42 +503,29 @@ class Orchestrator(
 
         Resolution order (first non-None wins):
         1. **Task-level** — ``task.profile_id`` (explicit override per task)
-        2. **Project-scoped agent-type** — if an ``agent_type`` is known
-           (task.agent_type or project.default_agent_type), look up
-           ``project:{project_id}:{agent_type}``.  This is the row synced
-           from ``vault/projects/{project}/agent-types/{type}/profile.md``.
-        3. **Global agent-type** — if an ``agent_type`` is known, fall
-           back to the global ``{agent_type}`` profile.
-        4. **Project default** — ``project.default_profile_id`` (only when
-           no agent_type was resolvable).
-        5. **System default** — returns None; the adapter uses built-in
-           defaults.
+        2. **Project default** — ``project.default_profile_id``
+        3. **None** (adapter uses built-in defaults)
+
+        Project-scoped overrides are checked first at each level: if a
+        profile with id ``project:{project_id}:{profile_id}`` exists, it
+        takes precedence over the global ``{profile_id}`` profile. This
+        is the row synced from
+        ``vault/projects/{project}/agent-types/{profile_id}/profile.md``.
 
         Profiles control: model selection, permission mode (e.g. plan-only),
         allowed tools allowlist, MCP server configuration, and a system prompt
         suffix that sets the agent's "role" for the task.
         """
-        if task.profile_id:
-            return await self.db.get_profile(task.profile_id)
-
         project = await self.db.get_project(task.project_id)
-        agent_type = task.agent_type or (project.default_agent_type if project else None)
+        profile_id = task.profile_id or (project.default_profile_id if project else None)
+        if not profile_id:
+            return None
 
-        if agent_type and project:
-            scoped_id = f"project:{project.id}:{agent_type}"
-            scoped = await self.db.get_profile(scoped_id)
+        if project:
+            scoped = await self.db.get_profile(f"project:{project.id}:{profile_id}")
             if scoped:
                 return scoped
-
-        if agent_type:
-            global_profile = await self.db.get_profile(agent_type)
-            if global_profile:
-                return global_profile
-
-        if project and project.default_profile_id:
-            return await self.db.get_profile(project.default_profile_id)
-
-        return None
+        return await self.db.get_profile(profile_id)
 
     async def _on_playbook_trigger(self, playbook: Any, event_data: dict) -> None:
         """PlaybookManager trigger dispatch — launch a run for a matched event.
@@ -545,7 +538,7 @@ class Orchestrator(
         not block waiting for an LLM-driven graph walk.
         """
         try:
-            from src.supervisor import Supervisor
+            from src.runtimes.supervisor import Supervisor
             from src.playbooks.runner import PlaybookRunner
 
             graph = playbook.to_dict()
@@ -571,6 +564,7 @@ class Orchestrator(
                 supervisor=supervisor,
                 db=self.db,
                 event_bus=self.bus,
+                runtimes=getattr(self, "_runtimes", None),
             )
 
             async def _run() -> None:
@@ -1347,6 +1341,51 @@ class Orchestrator(
                 logger.info("Recovery: resetting agent '%s' from %s to IDLE", a.name, a.state.value)
                 await self.db.update_agent(a.id, state=AgentState.IDLE, current_task_id=None)
 
+        # Reap idle agents whose profile_id no longer exists in agent_profiles
+        # (e.g. profile was deleted while the daemon was down).  Per spec §6:
+        # the reconciler does not reap mid-run; reaping happens at startup.
+        profile_ids = {p.id for p in await self.db.list_profiles()}
+        for a in agents:
+            if a.state == AgentState.IDLE and a.profile_id not in profile_ids:
+                logger.info(
+                    "Recovery: deleting idle agent '%s' (profile '%s' no longer exists)",
+                    a.name, a.profile_id,
+                )
+                await self.db.delete_agent(a.id)
+
+        # Reap excess idle agents over project.max_concurrent_agents.
+        # Attribute idle agents to projects via their workspace lock, then
+        # delete oldest-first beyond the cap.  Important for handling
+        # max_concurrent_agents being lowered while the daemon was down.
+        all_workspaces = await self.db.list_workspaces()
+        ws_owner = {
+            w.locked_by_agent_id: w.project_id
+            for w in all_workspaces if w.locked_by_agent_id
+        }
+        projects = await self.db.list_projects()
+        max_by_project = {p.id: p.max_concurrent_agents for p in projects}
+        idle_by_project: dict[str, list] = {}
+        for a in agents:
+            if a.state != AgentState.IDLE:
+                continue
+            pid = ws_owner.get(a.id)
+            if pid is None:
+                continue
+            idle_by_project.setdefault(pid, []).append(a)
+        for pid, idle_agents in idle_by_project.items():
+            cap = max_by_project.get(pid)
+            if cap is None or len(idle_agents) <= cap:
+                continue
+            # Sort oldest-first by created_at.
+            idle_agents.sort(key=lambda a: getattr(a, "created_at", 0) or 0)
+            excess = idle_agents[: len(idle_agents) - cap]
+            for a in excess:
+                logger.info(
+                    "Recovery: deleting excess idle agent '%s' (project=%s over cap=%d)",
+                    a.name, pid, cap,
+                )
+                await self.db.delete_agent(a.id)
+
         # Release all workspace locks and clean orphaned sentinels.
         # After a restart no agents are running, so all DB locks are stale.
         # Also remove sentinel files from ALL workspaces — they may exist
@@ -1823,6 +1862,16 @@ class Orchestrator(
         deficit accounting, and workspace availability to decide which
         project's READY tasks should be assigned next.
         """
+        # Reconciler runs first: ensures the agents table has idle rows
+        # for any project with dispatchable READY tasks, subject to
+        # project.max_concurrent_agents.  See spec §4.1.
+        rep = await self._agent_reconciler.reconcile()
+        if rep.created or rep.reassigned:
+            logger.info(
+                "reconciler: created=%d reassigned=%d skipped=%d",
+                len(rep.created), len(rep.reassigned), len(rep.skipped),
+            )
+
         # Build a consistent point-in-time snapshot of all system state the
         # scheduler needs.  Each query reads from the DB independently (no
         # transaction), but the ~5s cycle frequency means the snapshot is
@@ -2003,9 +2052,9 @@ class Orchestrator(
                 agent.state == AgentState.IDLE
                 and getattr(agent, "project_id", None) == task.project_id
             ):
-                cool = state.provider_cooldowns.get(agent.agent_type, 0)
+                cool = state.provider_cooldowns.get(agent.profile_id, 0)
                 if cool > state.now:
-                    return f"provider '{agent.agent_type}' in cooldown for {int(cool - state.now)}s"
+                    return f"provider '{agent.profile_id}' in cooldown for {int(cool - state.now)}s"
         return "ready but not picked this tick (capacity/priority ordering)"
 
     _NO_PR_REMINDER_INTERVAL: int = 3600  # 1 hour

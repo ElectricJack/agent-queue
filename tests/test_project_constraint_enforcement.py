@@ -51,8 +51,8 @@ def make_task(id="t-1", project_id="p-1", status=TaskStatus.READY, priority=100,
     )
 
 
-def make_agent(id="a-1", name="claude-1", state=AgentState.IDLE, agent_type="claude", **kw):
-    return Agent(id=id, name=name, agent_type=agent_type, state=state, **kw)
+def make_agent(id="a-1", name="claude-1", state=AgentState.IDLE, profile_id="claude", **kw):
+    return Agent(id=id, name=name, profile_id=profile_id, state=state, **kw)
 
 
 def _make_state(
@@ -115,10 +115,10 @@ async def _ensure_project(db, project_id="p-1"):
         await db.create_project(Project(id=project_id, name=f"Project {project_id}"))
 
 
-async def _setup(db, project_id="p-1", agent_id="a-1", task_id="t-1", agent_type="claude"):
+async def _setup(db, project_id="p-1", agent_id="a-1", task_id="t-1", profile_id="claude"):
     """Create a project, agent, and READY task for testing."""
     await _ensure_project(db, project_id)
-    await db.create_agent(Agent(id=agent_id, name=f"agent-{agent_id}", agent_type=agent_type))
+    await db.create_agent(Agent(id=agent_id, name=f"agent-{agent_id}", profile_id=profile_id))
     await db.create_task(
         Task(
             id=task_id,
@@ -287,8 +287,8 @@ class TestMaxAgentsByType:
                 make_task(id="t-2"),
             ],
             agents=[
-                make_agent(id="a-1", state=AgentState.BUSY, agent_type="coding"),
-                make_agent(id="a-2", agent_type="coding"),
+                make_agent(id="a-1", state=AgentState.BUSY, profile_id="coding"),
+                make_agent(id="a-2", profile_id="coding"),
             ],
             constraints={
                 "p-1": ProjectConstraint(project_id="p-1", max_agents_by_type={"coding": 2})
@@ -314,16 +314,16 @@ class TestMaxAgentsByType:
                 make_agent(
                     id="a-1",
                     state=AgentState.BUSY,
-                    agent_type="coding",
+                    profile_id="coding",
                     current_task_id="t-1",
                 ),
                 make_agent(
                     id="a-2",
                     state=AgentState.BUSY,
-                    agent_type="coding",
+                    profile_id="coding",
                     current_task_id="t-2",
                 ),
-                make_agent(id="a-3", agent_type="coding"),
+                make_agent(id="a-3", profile_id="coding"),
             ],
             constraints={
                 "p-1": ProjectConstraint(project_id="p-1", max_agents_by_type={"coding": 2})
@@ -346,16 +346,16 @@ class TestMaxAgentsByType:
                 make_agent(
                     id="a-1",
                     state=AgentState.BUSY,
-                    agent_type="coding",
+                    profile_id="coding",
                     current_task_id="t-1",
                 ),
                 make_agent(
                     id="a-2",
                     state=AgentState.BUSY,
-                    agent_type="coding",
+                    profile_id="coding",
                     current_task_id="t-2",
                 ),
-                make_agent(id="a-3", agent_type="codex"),  # different type
+                make_agent(id="a-3", profile_id="codex"),  # different type
             ],
             constraints={
                 "p-1": ProjectConstraint(project_id="p-1", max_agents_by_type={"coding": 2})
@@ -368,9 +368,9 @@ class TestMaxAgentsByType:
 
     async def test_preassign_type_limit_blocks_excess(self, orch, db):
         """Pre-assignment check blocks when the type limit is reached."""
-        await _setup(db, agent_id="a-1", task_id="t-1", agent_type="coding")
-        await _setup(db, project_id="p-1", agent_id="a-2", task_id="t-2", agent_type="coding")
-        await _setup(db, project_id="p-1", agent_id="a-3", task_id="t-3", agent_type="coding")
+        await _setup(db, agent_id="a-1", task_id="t-1", profile_id="coding")
+        await _setup(db, project_id="p-1", agent_id="a-2", task_id="t-2", profile_id="coding")
+        await _setup(db, project_id="p-1", agent_id="a-3", task_id="t-3", profile_id="coding")
         await _make_busy(db, "t-1", "a-1")
         await _make_busy(db, "t-2", "a-2")
         await db.set_project_constraint(
@@ -385,7 +385,7 @@ class TestMaxAgentsByType:
 
     async def test_preassign_type_limit_allows_under_cap(self, orch, db):
         """Pre-assignment check allows when under the type limit."""
-        await _setup(db, agent_id="a-1", task_id="t-1", agent_type="coding")
+        await _setup(db, agent_id="a-1", task_id="t-1", profile_id="coding")
         await db.set_project_constraint(
             ProjectConstraint(project_id="p-1", max_agents_by_type={"coding": 2})
         )
@@ -506,11 +506,11 @@ class TestProjectIsolation:
                 make_agent(
                     id="a-1",
                     state=AgentState.BUSY,
-                    agent_type="coding",
+                    profile_id="coding",
                     current_task_id="t-a1",
                 ),
-                make_agent(id="a-2", agent_type="coding"),
-                make_agent(id="a-3", agent_type="coding"),
+                make_agent(id="a-2", profile_id="coding"),
+                make_agent(id="a-3", profile_id="coding"),
             ],
             constraints={
                 "p-a": ProjectConstraint(project_id="p-a", max_agents_by_type={"coding": 1})
@@ -591,8 +591,8 @@ class TestConstraintStacking:
                 make_task(id="t-2"),
             ],
             agents=[
-                make_agent(id="a-1", state=AgentState.BUSY, agent_type="claude"),
-                make_agent(id="a-2", agent_type="claude"),
+                make_agent(id="a-1", state=AgentState.BUSY, profile_id="claude"),
+                make_agent(id="a-2", profile_id="claude"),
             ],
             constraints={
                 "p-1": ProjectConstraint(
@@ -685,8 +685,8 @@ class TestConstraintStacking:
 
     async def test_preassign_exclusive_plus_type_limit(self, orch, db):
         """Pre-assignment checks both exclusive and type limits together."""
-        await _setup(db, agent_id="a-1", task_id="t-1", agent_type="claude")
-        await _setup(db, project_id="p-1", agent_id="a-2", task_id="t-2", agent_type="claude")
+        await _setup(db, agent_id="a-1", task_id="t-1", profile_id="claude")
+        await _setup(db, project_id="p-1", agent_id="a-2", task_id="t-2", profile_id="claude")
         await _make_busy(db, "t-1", "a-1")
 
         await db.set_project_constraint(

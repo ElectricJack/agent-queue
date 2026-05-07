@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import tempfile
-import time
 
 import pytest
 import yaml
@@ -16,13 +14,8 @@ from src.config import (
     HOT_RELOADABLE_SECTIONS,
     RESTART_REQUIRED_SECTIONS,
     SchedulingConfig,
-    PauseRetryConfig,
     ArchiveConfig,
-    MonitoringConfig,
-    LLMLoggingConfig,
     DiscordConfig,
-    ChatProviderConfig,
-    MemoryConfig,
     diff_configs,
     load_config,
 )
@@ -297,7 +290,7 @@ class TestReloadConfigCommand:
     @pytest.mark.asyncio
     async def test_no_watcher_returns_error(self, tmp_path):
         """When config watcher is not active, command returns error."""
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
         from src.commands.handler import CommandHandler
 
         orch = MagicMock()

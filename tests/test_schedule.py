@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import json
-import time
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 from src.schedule import (
     _cron_field_matches,

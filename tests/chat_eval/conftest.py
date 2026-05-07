@@ -7,17 +7,17 @@ from __future__ import annotations
 
 import pytest
 
-from src.supervisor import Supervisor
+from src.runtimes.supervisor import Supervisor
 from src.config import AppConfig
 from src.models import AgentResult, AgentOutput
-from src.adapters.base import AgentAdapter
+from src.runtimes.base import Runtime
 from src.orchestrator import Orchestrator
 
 from tests.chat_eval.providers import ScriptedProvider
 from tests.chat_eval.recording_handler import RecordingCommandHandler
 
 
-class MockAdapter(AgentAdapter):
+class MockAdapter(Runtime):
     async def start(self, task):
         pass
 
@@ -36,7 +36,7 @@ class MockAdapterFactory:
         self.last_profile = None
         self.create_calls = []
 
-    def create(self, agent_type: str, profile=None) -> AgentAdapter:
+    def create(self, agent_type: str, profile=None, llm_logger=None) -> Runtime:
         self.last_profile = profile
         self.create_calls.append({"agent_type": agent_type, "profile": profile})
         return MockAdapter()
@@ -55,7 +55,7 @@ async def eval_config(tmp_path):
 @pytest.fixture
 async def eval_orchestrator(eval_config):
     """Initialized Orchestrator with mock adapter factory."""
-    orch = Orchestrator(eval_config, adapter_factory=MockAdapterFactory())
+    orch = Orchestrator(eval_config, runtimes=MockAdapterFactory())
     await orch.initialize()
     yield orch
     await orch.shutdown()

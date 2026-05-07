@@ -6,9 +6,8 @@ temp-directory files and a real SQLite database.  Path validation (sandbox
 security) is tested separately at the end.
 """
 
-import os
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig

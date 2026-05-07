@@ -4,11 +4,28 @@ tags: [design, coordination, multi-agent, workflows]
 
 # Agent Coordination — Playbook-Driven Multi-Agent Workflows
 
-**Status:** Draft
+**Status:** Draft (category-filter portion deferred — see note below)
 **Principles:** [[guiding-design-principles]] (#2 visible and editable, #3 structure guides intelligence, #7 events not coupling)
 **Related:** [[playbooks]], [[vault]], [[specs/scheduler-and-budget]], [[specs/models-and-state-machine]], [[specs/orchestrator]]
 
 ---
+
+> **Implementation note (2026-05-07):** The agent/workspace relationship in
+> the implemented system is *workspace-as-resource, agent-as-project-slot*.
+> Agents are project execution slots sized by `project.max_concurrent_agents`,
+> created lazily by `AgentReconciler` (see
+> `docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md`). An
+> agent's profile is mutable per-task — there is no fixed "coding agent" vs
+> "review agent" today.
+>
+> The category-filter design in §3 ("Type matching — a review task should go
+> to a review agent, not a coding agent") and the per-type concurrency limits
+> in §1 are **deferred** — these features were specced but never implemented.
+> The supporting `Task.agent_type` and `Project.default_agent_type` columns
+> were dropped along with the unused `_task_agent_type_matches` filter as
+> part of the May 2026 reconciliation rewrite. When the category-filter work
+> is picked up in the future, it should be designed against the current
+> `agents.profile_id` model rather than reintroducing the old fields.
 
 ## 1. Problem Statement
 

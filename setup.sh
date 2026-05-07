@@ -72,8 +72,87 @@ fi
 source .venv/bin/activate
 
 # --- Install project ---
-echo "Installing agent-queue and dependencies..."
-pip install -e ".[dev]" --quiet
+echo "Installing typed API client (packages/aq-client)..."
+pip install -e packages/aq-client --quiet
+
+echo "Installing agent-queue and dependencies (dev + cli + gemini)..."
+# gemini = google-genai for the default Supervisor profile
+# cli    = prompt-toolkit + agent-queue-api-client for the `aq` CLI
+# dev    = pytest, ruff, pre-commit
+pip install -e ".[dev,cli,gemini]" --quiet
+
+# --- Dashboard / TypeScript workspace deps (Node.js) ---
+if ! command -v npm &>/dev/null; then
+    echo ""
+    echo "npm is not installed. The web dashboard needs Node.js."
+    OS="$(uname -s)"
+    if [[ "$OS" == "Darwin" ]] && command -v brew &>/dev/null; then
+        read -rp "Install Node.js via Homebrew? [Y/n] " ans
+        if [[ "${ans:-Y}" =~ ^[Yy]$ ]]; then
+            brew install node
+        fi
+    elif [[ "$OS" == "Linux" ]] && command -v apt-get &>/dev/null; then
+        read -rp "Install Node.js via apt? [Y/n] " ans
+        if [[ "${ans:-Y}" =~ ^[Yy]$ ]]; then
+            sudo apt-get install -y nodejs npm
+        fi
+    fi
+fi
+
+if command -v npm &>/dev/null; then
+    echo ""
+    echo "Installing dashboard / TypeScript workspace deps (npm install)..."
+    npm install --silent
+    echo "  ✓ dashboard deps installed"
+
+    # Generate the typed API client source from openapi.json. The package
+    # exports ./src/index.ts as its entry point but the src/ directory is
+    # gitignored — fresh clones need this step or vite fails to resolve
+    # @aq/ts-client when the dashboard starts.
+    echo "Generating typed API client (@aq/ts-client)..."
+    npm -w @aq/ts-client run generate --silent
+    echo "  ✓ @aq/ts-client generated"
+else
+    echo ""
+    echo "[skip] npm not available; dashboard won't be available."
+    echo "       Install Node.js and run 'npm install' from the repo root to enable it."
+    echo "       Then run: npm -w @aq/ts-client run generate"
+fi
+
+# --- Symlink CLI binaries to ~/.local/bin so they're on PATH globally ---
+LOCAL_BIN="$HOME/.local/bin"
+mkdir -p "$LOCAL_BIN"
+echo ""
+echo "Linking CLI binaries into $LOCAL_BIN ..."
+for binname in aq agent-queue agent-queue-mcp; do
+    src="$SCRIPT_DIR/.venv/bin/$binname"
+    dst="$LOCAL_BIN/$binname"
+    if [[ -x "$src" ]]; then
+        ln -sf "$src" "$dst"
+        echo "  $dst -> $src"
+    fi
+done
+
+# Ensure ~/.local/bin is on PATH for future shells
+if ! echo ":$PATH:" | grep -q ":$LOCAL_BIN:"; then
+    case "$(basename "$SHELL")" in
+        bash) PATH_RC="$HOME/.bashrc" ;;
+        zsh)  PATH_RC="$HOME/.zshrc"  ;;
+        *)    PATH_RC="" ;;
+    esac
+    if [[ -n "$PATH_RC" ]] && ! grep -qF '# agent-queue setup.sh' "$PATH_RC" 2>/dev/null; then
+        echo ""
+        echo "$LOCAL_BIN is not on your PATH."
+        read -rp "Add it to $PATH_RC? [Y/n] " answer
+        if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
+            echo 'export PATH="$HOME/.local/bin:$PATH"  # agent-queue setup.sh' >> "$PATH_RC"
+            echo "Added to $PATH_RC. Restart your shell or run: source $PATH_RC"
+        else
+            echo "Skipped. To enable later, add this to $PATH_RC:"
+            echo '  export PATH="$HOME/.local/bin:$PATH"'
+        fi
+    fi
+fi
 
 # --- Shell completion for `aq` CLI ---
 SHELL_NAME="$(basename "$SHELL")"
@@ -82,13 +161,13 @@ case "$SHELL_NAME" in
         COMP_FILE="$HOME/.aq-complete.bash"
         RC_FILE="$HOME/.bashrc"
         _AQ_COMPLETE=bash_source aq > "$COMP_FILE" 2>/dev/null
-        SOURCE_LINE="source $COMP_FILE"
+        SOURCE_LINE="source $COMP_FILE  # agent-queue setup.sh"
         ;;
     zsh)
         COMP_FILE="$HOME/.aq-complete.zsh"
         RC_FILE="$HOME/.zshrc"
         _AQ_COMPLETE=zsh_source aq > "$COMP_FILE" 2>/dev/null
-        SOURCE_LINE="source $COMP_FILE"
+        SOURCE_LINE="source $COMP_FILE  # agent-queue setup.sh"
         ;;
     fish)
         COMP_FILE="$HOME/.config/fish/completions/aq.fish"

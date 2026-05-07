@@ -39,6 +39,8 @@ Scheduler.schedule(state: SchedulerState) -> list[AssignAction]
 
 It takes a complete snapshot of the current system state and returns a list of assignment actions to execute. It never mutates any state.
 
+> **Pre-tick reconciliation.** Before `Scheduler.schedule()` runs each tick, the orchestrator invokes `AgentReconciler.reconcile()` (see `src/orchestrator/agent_reconciler.py` and the design doc at `docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md`). The reconciler lazily creates idle agent rows so the scheduler always has slots to assign work to, sized by `project.max_concurrent_agents`. The scheduler itself stays a pure function — all DB writes for agent supply happen in the reconciler.
+
 ### 2.2 SchedulerState Snapshot
 
 `SchedulerState` is a plain dataclass that packages everything the scheduler needs in one object. The orchestrator constructs it by querying the database immediately before calling `schedule()`.

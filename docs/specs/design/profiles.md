@@ -46,9 +46,28 @@ and commit clean, working code.
 {
   "model": "claude-sonnet-4-6",
   "permission_mode": "auto",
-  "max_tokens_per_task": 100000
+  "max_tokens_per_task": 100000,
+  "runtime": "claude_sdk"
 }
 ```
+
+The ``runtime`` field selects which Runtime implementation executes
+tasks for this profile.  Supported values:
+
+- ``"claude_sdk"`` (default; matches ``config.default_runtime``) —
+  spawns a Claude Code subprocess via the Agent SDK.  Owns a per-task
+  workspace.  The escape hatch when ACP doesn't expose a needed feature
+  (SDK-internals reach for ``_resilient_query``, bespoke error
+  classification, etc.).
+- ``"acpx"`` — fans out to any ACP-compatible coding agent via the
+  ``acpx`` CLI.  ``profile.agent_name`` selects the underlying agent
+  (``"claude"`` / ``"codex"`` / ``"gemini"`` / ``"opencode"`` /
+  ``"cursor"`` / etc. — see [[runtimes/acpx]]).  Workspace-based.
+- ``"supervisor"`` — runs in-process via the daemon-wide
+  :class:`Supervisor` singleton.  Tool-call-only, no workspace.
+  Suitable for triage / classify / summarise / route / send-message
+  work where the profile's ``allowed_tools`` defines a bounded surface.
+  See ``vault/templates/example-supervisor-runtime-profile.md``.
 
 ## Tools
 ```json

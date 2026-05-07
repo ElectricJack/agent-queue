@@ -44,7 +44,6 @@ projects = Table(
     Column("repo_url", Text, nullable=True, server_default="''"),
     Column("repo_default_branch", Text, nullable=True, server_default="'main'"),
     Column("default_profile_id", Text, ForeignKey("agent_profiles.id"), nullable=True),
-    Column("default_agent_type", Text, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 
@@ -90,7 +89,6 @@ tasks = Table(
     Column("auto_approve_plan", Integer, nullable=False, server_default="0"),
     Column("skip_verification", Integer, nullable=False, server_default="0"),
     Column("workflow_id", Text, ForeignKey("workflows.workflow_id", use_alter=True), nullable=True),
-    Column("agent_type", Text, nullable=True),
     Column("affinity_agent_id", Text, nullable=True),
     Column("affinity_reason", Text, nullable=True),
     Column("workspace_mode", Text, nullable=True),
@@ -150,7 +148,7 @@ agents = Table(
     metadata,
     Column("id", Text, primary_key=True),
     Column("name", Text, nullable=False),
-    Column("agent_type", Text, nullable=False),
+    Column("profile_id", Text, nullable=False),  # soft reference to agent_profiles.id
     Column("state", Text, nullable=False, server_default="'IDLE'"),
     Column("current_task_id", Text, ForeignKey("tasks.id", use_alter=True), nullable=True),
     Column("checkout_path", Text, nullable=True),
@@ -255,6 +253,14 @@ agent_profiles = Table(
     # (e.g. claude-opus + claude-sonnet both set ``memory_scope_id='claude'``
     # so insights accumulate in a single pool).
     Column("memory_scope_id", Text, nullable=True),
+    # Which runtime executes tasks for this profile.  Default
+    # ``"claude_sdk"`` matches ``config.default_runtime``; ``"supervisor"``
+    # routes to the in-process Supervisor singleton (tool-call-only, no
+    # workspace).  Other values must match a name in the RuntimeRegistry.
+    Column("runtime", Text, nullable=False, server_default="'claude_sdk'"),
+    # ACP agent identifier — only meaningful when ``runtime == "acpx"``.
+    # Empty string for every other runtime.  Validated at parse time.
+    Column("agent_name", Text, nullable=False, server_default="''"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
@@ -304,7 +310,6 @@ archived_tasks = Table(
     Column("auto_approve_plan", Integer, nullable=False, server_default="0"),
     Column("skip_verification", Integer, nullable=False, server_default="0"),
     Column("workflow_id", Text, nullable=True),
-    Column("agent_type", Text, nullable=True),
     Column("affinity_agent_id", Text, nullable=True),
     Column("affinity_reason", Text, nullable=True),
     Column("workspace_mode", Text, nullable=True),

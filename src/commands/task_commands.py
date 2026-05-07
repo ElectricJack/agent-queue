@@ -852,24 +852,6 @@ class TaskCommandsMixin:
                     return {"error": f"Attachment file not found: {path}"}
             attachments = valid_paths
 
-        # Validate optional agent_type (free-form string, just ensure non-empty if given)
-        agent_type = args.get("agent_type")
-        # LLMs sometimes pass the literal string "None" — treat it as null.
-        if isinstance(agent_type, str) and agent_type.strip().lower() in ("none", "null", ""):
-            agent_type = None
-        if agent_type is not None and not isinstance(agent_type, str):
-            return {"error": "agent_type must be a string"}
-        if agent_type is not None:
-            agent_type = agent_type.strip()
-            if not agent_type:
-                return {"error": "agent_type cannot be empty"}
-        # Note: we intentionally do NOT inherit project.default_agent_type
-        # into task.agent_type here.  task.agent_type is a scheduler filter
-        # (must match agent.agent_type like "claude"/"codex"), not a profile
-        # selector.  Profile resolution already consults
-        # project.default_agent_type via Orchestrator._resolve_profile, so
-        # tasks with no explicit agent_type still pick up the scoped profile.
-
         # Validate optional affinity_agent_id
         affinity_agent_id = args.get("affinity_agent_id")
         if affinity_agent_id:
@@ -924,7 +906,6 @@ class TaskCommandsMixin:
             auto_approve_plan=auto_approve_plan,
             skip_verification=skip_verification,
             workflow_id=workflow_id,
-            agent_type=agent_type,
             affinity_agent_id=affinity_agent_id,
             affinity_reason=affinity_reason,
             workspace_mode=workspace_mode,
@@ -983,8 +964,6 @@ class TaskCommandsMixin:
             result["skip_verification"] = True
         if workflow_id:
             result["workflow_id"] = workflow_id
-        if agent_type:
-            result["agent_type"] = agent_type
         if affinity_agent_id:
             result["affinity_agent_id"] = affinity_agent_id
         if affinity_reason:
@@ -1041,7 +1020,6 @@ class TaskCommandsMixin:
             "auto_approve_plan": task.auto_approve_plan,
             "skip_verification": task.skip_verification,
             "workflow_id": task.workflow_id,
-            "agent_type": task.agent_type,
             "affinity_agent_id": task.affinity_agent_id,
             "affinity_reason": task.affinity_reason,
             "workspace_mode": task.workspace_mode.value if task.workspace_mode else None,
@@ -1312,16 +1290,6 @@ class TaskCommandsMixin:
             updates["skip_verification"] = bool(args["skip_verification"])
         if "workflow_id" in args:
             updates["workflow_id"] = args["workflow_id"]  # None clears the workflow
-        if "agent_type" in args:
-            val = args["agent_type"]
-            # LLMs sometimes pass the literal string "None" — treat as null.
-            if isinstance(val, str) and val.strip().lower() in ("none", "null", ""):
-                val = None
-            if val is not None:
-                val = str(val).strip()
-                if not val:
-                    return {"error": "agent_type cannot be empty (use null to clear)"}
-            updates["agent_type"] = val  # None clears the agent_type
         if "affinity_agent_id" in args:
             val = args["affinity_agent_id"]
             if val is not None:
@@ -1362,7 +1330,7 @@ class TaskCommandsMixin:
                 "error": (
                     "No fields to update. Provide project_id, title, description, priority, "
                     "task_type, status, max_retries, verification_type, profile_id, "
-                    "auto_approve_plan, skip_verification, agent_type, affinity_agent_id, "
+                    "auto_approve_plan, skip_verification, affinity_agent_id, "
                     "affinity_reason, or workspace_mode."
                 )
             }

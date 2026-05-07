@@ -236,25 +236,34 @@ The central entity of the system. A task represents a unit of work to be execute
 
 ---
 
-### Agent (deprecated)
+### Agent
 
-> **Deprecated:** The `Agent` model is being replaced by the workspace-as-agent model.
-> See `WorkspaceAgent` and `Workspace` below. The `Agent` class remains for backward
-> compatibility but should not be used for new features.
+Persisted execution slot record. An agent represents one of a project's
+`max_concurrent_agents` execution contexts. Created lazily by `AgentReconciler`
+when a READY task needs an idle slot of a particular profile (see
+`docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md`).
 
-Represents a registered agent worker that can execute tasks.
+The agent's `profile_id` is **mutable** — it gets reassigned in place when a
+task with a different profile arrives and the project is at capacity. This is
+the "workspace identity, dynamic profile" model.
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `str` | Unique agent identifier. |
+| `id` | `str` | Unique agent identifier (e.g. `agent-{uuid7}`). |
 | `name` | `str` | Human-readable agent name for display in Discord. |
-| `agent_type` | `str` | The agent implementation type. Known values: `"claude"`, `"codex"`, `"cursor"`, `"aider"`. |
+| `profile_id` | `str` | Soft reference to `agent_profiles.id`. The agent's currently-assigned profile. May be reassigned per-tick by the reconciler when at capacity. |
 | `state` | `AgentState` | Current operational status. Defaults to IDLE. |
 | `current_task_id` | `str \| None` | The task the agent is currently working on. `None` when IDLE. |
 | `pid` | `int \| None` | OS process ID of the running agent subprocess. `None` when not executing. |
 | `last_heartbeat` | `float \| None` | Unix timestamp of the most recent health signal from the agent. Used to detect dead agents. |
-| `total_tokens_used` | `int` | Cumulative token count across all tasks this agent has ever run. |
-| `session_tokens_used` | `int` | Token count for the current session only. Reset when a new session begins. |
+| `total_tokens_used` | `int` | Cumulative token count across all tasks this agent has ever run. (Cosmetic — real token accounting is in the `token_ledger` table.) |
+| `session_tokens_used` | `int` | Token count for the current session only. Reset when a new session begins. (Cosmetic.) |
+
+**Note:** `Task.agent_type` and `Project.default_agent_type` were dropped as
+part of this rewrite (see the design doc above). The coordination-category
+filter (`_task_agent_type_matches`) the former column supported was specced
+in `design/agent-coordination.md` but never implemented; profile selection
+now uses `task.profile_id → project.default_profile_id` directly.
 
 ---
 
@@ -336,17 +345,19 @@ former per-agent checkout model — agents now acquire workspace locks at task t
 
 ### WorkspaceAgent
 
-A lightweight view model that represents an agent derived from a workspace slot.
-Replaces the deprecated `Agent` model in the workspace-as-agent architecture.
+API view of an `Agent` that currently holds a workspace lock. Derived from
+joining `agents` + `workspaces`; not a persisted entity. Used by the
+notification builder to surface "which agent is doing what work" without
+exposing the full `Agent` row shape to API consumers.
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `str` | Derived agent identifier (from workspace). |
-| `name` | `str` | Display name. |
-| `agent_type` | `str` | Agent implementation type. |
+| `id` | `str` | Derived from the agent. |
+| `name` | `str` | Display name from the agent. |
+| `profile_id` | `str` | The agent's currently-assigned profile (mutable). |
 | `state` | `AgentState` | Current operational status. |
 | `current_task_id` | `str \| None` | Currently assigned task. |
-| `workspace_id` | `str` | The workspace this agent is derived from. |
+| `workspace_id` | `str` | The workspace this agent currently has locked. |
 
 ---
 

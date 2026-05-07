@@ -58,7 +58,7 @@ async def _make_project(db, pid="p-1"):
 
 
 async def _make_agent(db, aid="a-1"):
-    await db.create_agent(Agent(id=aid, name="agent-1", agent_type="claude"))
+    await db.create_agent(Agent(id=aid, name="agent-1", profile_id="claude"))
 
 
 async def _make_task(db, tid="t-1", pid="p-1"):
@@ -417,7 +417,7 @@ class TestDependencyQueries:
 
 class TestAgentQueries:
     async def test_create_get_agent(self, db):
-        agent = Agent(id="a-1", name="bot", agent_type="claude")
+        agent = Agent(id="a-1", name="bot", profile_id="claude")
         await db.create_agent(agent)
         a = await db.get_agent("a-1")
         assert a is not None
@@ -425,12 +425,12 @@ class TestAgentQueries:
         assert a.state == AgentState.IDLE
 
     async def test_list_agents_by_state(self, db):
-        await db.create_agent(Agent(id="a-1", name="a", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="a", profile_id="claude"))
         await db.create_agent(
             Agent(
                 id="a-2",
                 name="b",
-                agent_type="claude",
+                profile_id="claude",
                 state=AgentState.BUSY,
             )
         )
@@ -438,13 +438,13 @@ class TestAgentQueries:
         assert len(idle) == 1
 
     async def test_update_agent(self, db):
-        await db.create_agent(Agent(id="a-1", name="a", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="a", profile_id="claude"))
         await db.update_agent("a-1", state=AgentState.BUSY)
         a = await db.get_agent("a-1")
         assert a.state == AgentState.BUSY
 
     async def test_delete_agent(self, db):
-        await db.create_agent(Agent(id="a-1", name="a", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="a", profile_id="claude"))
         await db.delete_agent("a-1")
         assert await db.get_agent("a-1") is None
 
@@ -706,7 +706,7 @@ class TestAtomicOperations:
                 status=TaskStatus.READY,
             )
         )
-        await db.create_agent(Agent(id="a-1", name="bot", agent_type="claude"))
+        await db.create_agent(Agent(id="a-1", name="bot", profile_id="claude"))
 
         await db.assign_task_to_agent("t-1", "a-1")
 

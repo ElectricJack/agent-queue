@@ -1,11 +1,9 @@
-import pytest
 from src.models import (
     Task,
     Agent,
     AgentOutput,
     AgentResult,
     TaskStatus,
-    AgentState,
     Workspace,
     RepoSourceType,
 )
@@ -33,7 +31,7 @@ class TestNotificationFormatting:
             description="D",
             branch_name="feat/add-feature",
         )
-        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-1", profile_id="claude")
         result = format_task_started(task, agent)
         assert "Task Started" in result
         assert "t-1" in result
@@ -45,7 +43,7 @@ class TestNotificationFormatting:
 
     def test_format_task_started_no_branch(self):
         task = Task(id="t-2", project_id="p-1", title="Quick fix", description="D")
-        agent = Agent(id="a-1", name="claude-2", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-2", profile_id="claude")
         result = format_task_started(task, agent)
         assert "Task Started" in result
         assert "t-2" in result
@@ -60,7 +58,7 @@ class TestNotificationFormatting:
             description="D",
             branch_name="feat/add-feature",
         )
-        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-1", profile_id="claude")
         ws = Workspace(
             id="ws-1",
             project_id="p-1",
@@ -74,7 +72,7 @@ class TestNotificationFormatting:
 
     def test_format_task_started_with_workspace_no_name(self):
         task = Task(id="t-1", project_id="p-1", title="Add feature", description="D")
-        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-1", profile_id="claude")
         ws = Workspace(
             id="ws-1",
             project_id="p-1",
@@ -93,7 +91,7 @@ class TestNotificationFormatting:
             description="D",
             branch_name="feat/add-feature",
         )
-        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-1", profile_id="claude")
         embed = format_task_started_embed(task, agent)
         assert embed is not None
         assert "Task Started" in embed.title
@@ -113,7 +111,7 @@ class TestNotificationFormatting:
 
     def test_format_task_started_embed_no_branch(self):
         task = Task(id="t-2", project_id="p-1", title="Quick fix", description="D")
-        agent = Agent(id="a-1", name="claude-2", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-2", profile_id="claude")
         embed = format_task_started_embed(task, agent)
         field_names = [f.name for f in embed.fields]
         assert "Branch" not in field_names
@@ -127,7 +125,7 @@ class TestNotificationFormatting:
             description="D",
             branch_name="feat/add-feature",
         )
-        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-1", profile_id="claude")
         ws = Workspace(
             id="ws-1",
             project_id="p-1",
@@ -143,7 +141,7 @@ class TestNotificationFormatting:
 
     def test_format_task_started_embed_with_workspace_no_name(self):
         task = Task(id="t-1", project_id="p-1", title="Add feature", description="D")
-        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-1", profile_id="claude")
         ws = Workspace(
             id="ws-1",
             project_id="p-1",
@@ -158,7 +156,7 @@ class TestNotificationFormatting:
 
     def test_format_task_completed(self):
         task = Task(id="t-1", project_id="p-1", title="Fix bug", description="D")
-        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-1", profile_id="claude")
         output = AgentOutput(
             result=AgentResult.COMPLETED,
             summary="Fixed it",
@@ -182,7 +180,7 @@ class TestNotificationFormatting:
             retry_count=1,
             max_retries=3,
         )
-        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-1", profile_id="claude")
         output = AgentOutput(result=AgentResult.FAILED, error_message="Syntax error in foo.py")
         result = format_task_failed(task, agent, output)
         assert "Failed" in result
@@ -199,7 +197,7 @@ class TestNotificationFormatting:
 
     def test_format_agent_question(self):
         task = Task(id="t-1", project_id="p-1", title="Auth", description="D")
-        agent = Agent(id="a-1", name="claude-1", agent_type="claude")
+        agent = Agent(id="a-1", name="claude-1", profile_id="claude")
         result = format_agent_question(task, agent, "Which auth provider?")
         assert "Question" in result
         assert "p-1" in result  # project context

@@ -164,7 +164,7 @@ class TestGenerateUniqueAgentName:
             nonlocal call_count
             call_count += 1
             if agent_id in existing_ids:
-                return Agent(id=agent_id, name=agent_id.title(), agent_type="claude")
+                return Agent(id=agent_id, name=agent_id.title(), profile_id="claude")
             return None
 
         db = AsyncMock()
@@ -185,7 +185,7 @@ class TestGenerateUniqueAgentName:
             nonlocal call_count
             call_count += 1
             if call_count <= 20:
-                return Agent(id=agent_id, name="taken", agent_type="claude")
+                return Agent(id=agent_id, name="taken", profile_id="claude")
             return None
 
         db = AsyncMock()
@@ -211,7 +211,7 @@ class TestGenerateUniqueAgentName:
 
             # Create an agent with that name
             agent_id1 = name1.lower().replace(" ", "-")
-            agent1 = Agent(id=agent_id1, name=name1, agent_type="claude")
+            agent1 = Agent(id=agent_id1, name=name1, profile_id="claude")
             await db.create_agent(agent1)
 
             # Generate another name - should be different
@@ -234,61 +234,14 @@ class TestGenerateUniqueAgentName:
                 assert agent_id not in generated_ids, f"Duplicate agent ID: {agent_id}"
                 generated_ids.add(agent_id)
                 # Register the agent so future names must avoid it
-                agent = Agent(id=agent_id, name=name, agent_type="claude")
+                agent = Agent(id=agent_id, name=name, profile_id="claude")
                 await db.create_agent(agent)
         finally:
             await db.close()
 
 
 class TestCommandHandlerIntegration:
-    """Test that agent CRUD commands are deprecated (workspace-as-agent model)."""
-
-    async def test_create_agent_returns_deprecation_error(self, tmp_path):
-        """create_agent should return a deprecation error."""
-        from src.commands.handler import CommandHandler
-        from src.config import AppConfig
-        from src.orchestrator import Orchestrator
-
-        config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
-            workspace_dir=str(tmp_path / "workspaces"),
-            data_dir=str(tmp_path / "data"),
-        )
-        orchestrator = Orchestrator(config)
-        await orchestrator.db.initialize()
-
-        try:
-            handler = CommandHandler(orchestrator, config)
-            result = await handler.execute("create_agent", {})
-
-            assert "error" in result
-            assert "no longer supported" in result["error"]
-            assert "add_workspace" in result["error"]
-        finally:
-            await orchestrator.db.close()
-
-    async def test_delete_agent_returns_deprecation_error(self, tmp_path):
-        """delete_agent should return a deprecation error."""
-        from src.commands.handler import CommandHandler
-        from src.config import AppConfig
-        from src.orchestrator import Orchestrator
-
-        config = AppConfig(
-            database_path=str(tmp_path / "test.db"),
-            workspace_dir=str(tmp_path / "workspaces"),
-            data_dir=str(tmp_path / "data"),
-        )
-        orchestrator = Orchestrator(config)
-        await orchestrator.db.initialize()
-
-        try:
-            handler = CommandHandler(orchestrator, config)
-            result = await handler.execute("delete_agent", {"agent_id": "test"})
-
-            assert "error" in result
-            assert "no longer supported" in result["error"]
-        finally:
-            await orchestrator.db.close()
+    """Test that agent CRUD commands are gone (workspace-as-agent model)."""
 
     async def test_add_workspace_init_generates_path_and_inits_repo(self, tmp_path):
         """source=init should auto-generate a path and run ``git init``."""

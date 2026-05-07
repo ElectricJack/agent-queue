@@ -25,8 +25,14 @@ class GeminiChatProvider(ChatProvider):
     ):
         from google import genai
 
-        resolved_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
-        self._client = genai.Client(api_key=resolved_key)
+        # Vertex AI mode: SDK auto-detects ADC + GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION
+        if os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1", "yes"):
+            self._client = genai.Client(vertexai=True)
+        else:
+            resolved_key = (
+                api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+            )
+            self._client = genai.Client(api_key=resolved_key)
         self._model = str(model) if model else "gemini-2.5-flash"
         self._thinking_budget = thinking_budget
 

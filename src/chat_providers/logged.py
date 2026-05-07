@@ -2,9 +2,10 @@
 
 ``LoggedChatProvider`` wraps any ``ChatProvider`` and transparently logs
 every ``create_message()`` call — including timing, inputs, outputs, and
-errors — via an ``LLMLogger`` instance.  The caller can set the ``caller``
-attribute to tag log entries with the call site (e.g. "supervisor.chat",
-"playbook_executor", "plan_parser").
+errors — via an ``LLMLogger`` instance.  The caller tag (e.g.
+"supervisor.chat", "supervisor.summarize") can be set per-call via the
+:data:`caller_override` ContextVar so concurrent users don't stomp each
+other's tags.
 
 Usage::
 
@@ -19,12 +20,22 @@ both successful responses and exceptions are captured.
 
 from __future__ import annotations
 
+import contextvars
 import time
 
 from src.llm_logger import LLMLogger
 
 from .base import ChatProvider
 from .types import ChatResponse, serialize_canonical
+
+
+# Per-asyncio-task caller override. When set, takes precedence over the
+# instance's static ``_caller``; this lets concurrent ``Supervisor`` paths
+# (chat / summarize / break_plan / observe) tag their own log entries
+# without racing on a shared attribute.
+caller_override: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "caller_override", default=None
+)
 
 
 class LoggedChatProvider(ChatProvider):
@@ -74,8 +85,11 @@ class LoggedChatProvider(ChatProvider):
             duration_ms = int((time.monotonic() - start) * 1000)
             # Determine provider name from inner class
             provider_name = type(self._inner).__name__
+            # Per-call ContextVar wins over the instance's static caller —
+            # safe under concurrent Supervisor entry points.
+            effective_caller = caller_override.get() or self._caller
             self._logger.log_chat_provider_call(
-                caller=self._caller,
+                caller=effective_caller,
                 model=self._inner.model_name,
                 provider=provider_name,
                 messages=serialize_canonical(messages),

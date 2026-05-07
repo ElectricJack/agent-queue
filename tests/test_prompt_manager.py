@@ -18,8 +18,6 @@ import pytest
 from src.prompt_manager import (
     CATEGORIES,
     PromptManager,
-    PromptTemplate,
-    PromptVariable,
     load_template,
     parse_frontmatter,
     render_template,

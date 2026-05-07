@@ -28,7 +28,7 @@ from src.messaging.types import ThreadSendCallback
 
 if TYPE_CHECKING:
     from src.commands.handler import CommandHandler
-    from src.supervisor import Supervisor
+    from src.runtimes.supervisor import Supervisor
 
 
 # ---------------------------------------------------------------------------

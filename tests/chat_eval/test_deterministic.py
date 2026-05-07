@@ -13,10 +13,9 @@ Updated: ChatAgent → Supervisor (post-supervisor refactor).
 
 from __future__ import annotations
 
-import json
 import pytest
 
-from src.chat_providers.types import ChatResponse, TextBlock, ToolUseBlock
+from src.chat_providers.types import ChatResponse, TextBlock
 
 
 class TestSingleToolCall:
@@ -311,7 +310,7 @@ class TestEmptyResponse:
 
     async def test_no_provider_raises(self):
         """Test that chat() raises if provider not initialized."""
-        from src.supervisor import Supervisor
+        from src.runtimes.supervisor import Supervisor
 
         # Create supervisor without initializing provider
         agent = Supervisor.__new__(Supervisor)

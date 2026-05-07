@@ -8,13 +8,9 @@ import os
 from src.models import (
     Project,
     ProjectStatus,
-    RepoSourceType,
     TaskStatus,
-    WorkspaceMode,
-    WORKSPACE_MODE_VALUES,
 )
 from src.commands.helpers import _count_by
-from src.discord.embeds import STATUS_EMOJIS, progress_bar
 
 logger = logging.getLogger(__name__)
 
@@ -302,17 +298,6 @@ class ProjectCommandsMixin:
                 if not profile:
                     return {"error": f"Profile '{dpid}' not found"}
             updates["default_profile_id"] = dpid  # None clears it
-        if "default_agent_type" in args:
-            dat = args["default_agent_type"]
-            if isinstance(dat, str) and dat.strip().lower() in ("none", "null", ""):
-                dat = None
-            if dat is not None:
-                if not isinstance(dat, str):
-                    return {"error": "default_agent_type must be a string"}
-                dat = dat.strip()
-                if not dat:
-                    return {"error": "default_agent_type cannot be empty"}
-            updates["default_agent_type"] = dat  # None clears it
         if "repo_default_branch" in args:
             updates["repo_default_branch"] = args["repo_default_branch"]
         if not updates:
@@ -320,7 +305,7 @@ class ProjectCommandsMixin:
                 "error": (
                     "No fields to update. Provide name, credit_weight, "
                     "max_concurrent_agents, budget_limit, discord_channel_id, "
-                    "default_profile_id, default_agent_type, or repo_default_branch."
+                    "default_profile_id, or repo_default_branch."
                 )
             }
         await self.db.update_project(pid, **updates)
@@ -487,8 +472,6 @@ class ProjectCommandsMixin:
             info["discord_channel_id"] = project.discord_channel_id
         if project.default_profile_id:
             info["default_profile_id"] = project.default_profile_id
-        if project.default_agent_type:
-            info["default_agent_type"] = project.default_agent_type
         return info
 
     async def _cmd_get_project_channels(self, args: dict) -> dict:

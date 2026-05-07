@@ -239,9 +239,6 @@ class Project:
     repo_url: str = ""
     repo_default_branch: str = "main"
     default_profile_id: str | None = None  # fallback profile for tasks in this project
-    default_agent_type: str | None = (
-        None  # default agent_type for new tasks (selects project-scoped profile)
-    )
 
 
 @dataclass
@@ -315,7 +312,6 @@ class Task:
     auto_approve_plan: bool = False  # if True, auto-approve any plan this task generates
     skip_verification: bool = False  # if True, skip git verification on completion
     workflow_id: str | None = None  # FK to workflows table (coordination playbooks)
-    agent_type: str | None = None  # required agent type (e.g. "coding", "code-review", "qa")
     affinity_agent_id: str | None = None  # preferred agent ID for context continuity
     affinity_reason: str | None = None  # why: "context", "workspace", "type"
     workspace_mode: WorkspaceMode | None = None  # lock mode for workspace access
@@ -325,17 +321,15 @@ class Task:
 
 @dataclass
 class Agent:
-    """Represents a registered agent process (e.g., a Claude Code instance).
-
-    .. deprecated::
-        Legacy dataclass — will be removed once the orchestrator is fully
-        migrated to the workspace-as-agent model.  New code should use
-        :class:`WorkspaceAgent` instead.
+    """Persisted agent slot — a project execution context with a current
+    profile assignment. Created lazily by ``AgentReconciler`` when work
+    needs an idle slot. Sized per project by
+    ``Project.max_concurrent_agents``.
     """
 
     id: str
     name: str
-    agent_type: str  # "claude", "codex", "cursor", "aider"
+    profile_id: str  # soft reference to agent_profiles.id
     state: AgentState = AgentState.IDLE
     current_task_id: str | None = None
     pid: int | None = None
@@ -350,7 +344,8 @@ class WorkspaceAgent:
 
     An "agent" is simply a workspace execution context.  Idle (unlocked)
     workspaces are idle agents; locked workspaces are busy agents.  There is
-    no separate agent registry — agents are derived from the workspaces table.
+    derived API view of an Agent that currently holds a workspace lock —
+    not a persisted entity. The persisted record stays :class:`Agent`.
     """
 
     workspace_id: str
@@ -415,13 +410,27 @@ class AgentProfile:
     # multiple profiles share one memory scope (e.g. claude-opus and
     # claude-sonnet both set ``memory_scope_id='claude'``).  None = use id.
     memory_scope_id: str | None = None
+    # Which runtime executes tasks for this profile.  ``"claude_sdk"`` (the
+    # default, matching ``config.default_runtime``) spawns a Claude Code
+    # subprocess; ``"supervisor"`` runs in-process via the daemon-wide
+    # Supervisor (tool-call-only, no workspace).  Other values must match a
+    # name in the RuntimeRegistry.  Sourced from the ``## Config`` JSON
+    # block of the profile markdown.
+    runtime: str = "claude_sdk"
+    # ACP agent identifier — only meaningful when ``runtime == "acpx"``.
+    # Selects which underlying coding agent ACPX dispatches to (``"claude"``,
+    # ``"codex"``, ``"gemini"``, ``"opencode"``, ``"cursor"``, ...).
+    # The parser rejects ``runtime: "acpx"`` profiles with empty
+    # ``agent_name`` at sync-time; for every other runtime this field is
+    # unused / empty.
+    agent_name: str = ""
 
 
 @dataclass
 class TaskContext:
-    """The input bundle passed to an agent adapter when executing a task.
+    """The input bundle passed to a platform when executing a task.
 
-    This is the adapter's entire view of the work to be done: what to build
+    This is the platform's entire view of the work to be done: what to build
     (description, acceptance_criteria), how to verify it (test_commands),
     where to work (checkout_path, branch_name), and what tools/context are
     available. The orchestrator constructs this from the Task, its criteria,
@@ -440,7 +449,10 @@ class TaskContext:
     l2_context: str = ""  # L2 Topic Context tier (~500 tokens, semantic search results)
     acceptance_criteria: list[str] = field(default_factory=list)
     test_commands: list[str] = field(default_factory=list)
-    checkout_path: str = ""
+    # Filesystem path where the agent should run.  Optional: supervisor-platform
+    # tasks have no workspace and pass ``None``; subprocess-platform tasks always
+    # carry a path.  Existing readers normalise empty/None as appropriate.
+    checkout_path: str | None = ""
     branch_name: str = ""
     attached_context: list[str] = field(default_factory=list)
     image_paths: list[str] = field(
@@ -453,6 +465,10 @@ class TaskContext:
     # their own knowledge without needing a separate MCP indirection.
     add_dirs: list[str] = field(default_factory=list)
     resume_session_id: str | None = None  # fork from this session on reopen
+    # The resolved AgentProfile for this task. Platforms read it for
+    # allowed_tools, model overrides, etc.  Singleton platforms (Supervisor)
+    # rely on this since they can't carry the profile in their constructor.
+    profile: "AgentProfile | None" = None
 
 
 @dataclass

@@ -45,11 +45,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "install_profile": "agent",
     "export_profile": "agent",
     "import_profile": "agent",
-    "create_agent": "agent",
-    "edit_agent": "agent",
-    "delete_agent": "agent",
-    "pause_agent": "agent",
-    "resume_agent": "agent",
     # agent profiles (project-scoped CRUD wrappers)
     "create_project_profile": "agent",
     "edit_project_profile": "agent",
@@ -637,14 +632,6 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                     "default": False,
                 },
-                "agent_type": {
-                    "type": "string",
-                    "description": (
-                        "Type of agent needed for this task (e.g. 'coding', "
-                        "'code-review', 'qa'). Used by coordination playbooks "
-                        "to match tasks with appropriately-typed agents."
-                    ),
-                },
                 "affinity_agent_id": {
                     "type": "string",
                     "description": (
@@ -865,7 +852,7 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Edit a task's properties: project_id, title, description, priority, task_type, "
             "status, max_retries, verification_type, profile_id, auto_approve_plan, "
-            "skip_verification, agent_type, affinity_agent_id, affinity_reason, "
+            "skip_verification, affinity_agent_id, affinity_reason, "
             "or workspace_mode. Use this "
             "to move a task to a different project, rename tasks, change priority, override status "
             "(admin), assign a profile, adjust retry/verification settings, or set coordination "
@@ -919,13 +906,6 @@ _ALL_TOOL_DEFINITIONS = [
                 "skip_verification": {
                     "type": "boolean",
                     "description": "If true, skip git verification on task completion (optional)",
-                },
-                "agent_type": {
-                    "type": ["string", "null"],
-                    "description": (
-                        "Type of agent needed (e.g. 'coding', 'code-review', 'qa'). "
-                        "Set to null to clear (optional)"
-                    ),
                 },
                 "affinity_agent_id": {
                     "type": ["string", "null"],
@@ -2046,71 +2026,6 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["project_id", "channel_name"],
-        },
-    },
-    # --- Agent management (deprecated — workspace model) ---
-    {
-        "name": "create_agent",
-        "description": (
-            "Deprecated — agents are now derived from workspaces. "
-            "Use add_workspace to add agent capacity to a project."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Agent name"},
-                "project_id": {"type": "string", "description": "Project to assign to"},
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "edit_agent",
-        "description": (
-            "Deprecated — agents are now derived from workspaces. "
-            "Use edit_project or workspace commands instead."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID"},
-            },
-            "required": ["agent_id"],
-        },
-    },
-    {
-        "name": "delete_agent",
-        "description": (
-            "Deprecated — agents are now derived from workspaces. Use remove_workspace instead."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID to delete"},
-            },
-            "required": ["agent_id"],
-        },
-    },
-    {
-        "name": "pause_agent",
-        "description": ("Deprecated — agents are now derived from workspaces."),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID to pause"},
-            },
-            "required": ["agent_id"],
-        },
-    },
-    {
-        "name": "resume_agent",
-        "description": ("Deprecated — agents are now derived from workspaces."),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "agent_id": {"type": "string", "description": "Agent ID to resume"},
-            },
-            "required": ["agent_id"],
         },
     },
     # GitHub operations + convenience git commands (create_github_repo, generate_readme,

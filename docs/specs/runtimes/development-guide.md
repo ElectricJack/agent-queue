@@ -1,10 +1,10 @@
 ---
-tags: [spec, adapters, development-guide]
+tags: [spec, platforms, development-guide]
 ---
 
-# Adapter Development Guide
+# Platform Development Guide
 
-How to add a new agent adapter to agent-queue so that a third-party AI coding
+How to add a new agent runtime to agent-queue so that a third-party AI coding
 agent can be orchestrated alongside (or instead of) Claude Code.
 
 ---
@@ -12,35 +12,35 @@ agent can be orchestrated alongside (or instead of) Claude Code.
 ## 1. Architecture Overview
 
 The orchestrator never talks to a specific agent implementation directly. All
-agent backends sit behind the `AgentAdapter` abstract base class defined in
-`src/adapters/base.py`. The orchestrator interacts with adapters exclusively
+agent backends sit behind the `Runtime` abstract base class defined in
+`src/runtimes/base.py`. The orchestrator interacts with platforms exclusively
 through four async methods — `start`, `wait`, `stop`, `is_alive` — and uses
-`AdapterFactory` (in `src/adapters/__init__.py`) to instantiate them by type
+`RuntimeRegistry` (in `src/runtimes/__init__.py`) to instantiate them by type
 string.
 
 ```
 Orchestrator
   │
-  ├─ AdapterFactory.create("claude")  → ClaudeAdapter
-  ├─ AdapterFactory.create("my-agent") → MyAgentAdapter   ← you add this
+  ├─ PlatformRegistry.create("claude")  → ClaudeSDKPlatform
+  ├─ PlatformRegistry.create("my-agent") → MyAgentRuntime   ← you add this
   │
-  └─ AgentAdapter ABC (start / wait / stop / is_alive)
+  └─ Runtime ABC (start / wait / stop / is_alive)
 ```
 
-**Canonical example:** `src/adapters/claude.py` — read this file end-to-end
-before writing your own adapter. It demonstrates every pattern described below.
-See also `docs/specs/adapters/claude.md` for the full behavioral spec.
+**Canonical example:** `src/runtimes/claude_sdk.py` — read this file end-to-end
+before writing your own runtime. It demonstrates every pattern described below.
+See also `docs/specs/runtimes/claude_sdk.md` for the full behavioral spec.
 
 ---
 
-## 2. The AgentAdapter ABC
+## 2. The Runtime ABC
 
 ```python
-# src/adapters/base.py
+# src/runtimes/base.py
 
 MessageCallback = Callable[[str], Awaitable[None]]
 
-class AgentAdapter(ABC):
+class Platform(ABC):
     @abstractmethod
     async def start(self, task: TaskContext) -> None: ...
 
@@ -75,7 +75,7 @@ Separating `start` from `wait` lets the orchestrator set up the Discord thread
 
 All types are defined in `src/models.py`.
 
-### TaskContext — what your adapter receives
+### TaskContext — what your runtime receives
 
 ```python
 @dataclass
@@ -90,15 +90,15 @@ class TaskContext:
     mcp_servers: dict[str, dict] = field(...)      # MCP server configurations
 ```
 
-Your adapter should:
+Your runtime should:
 
 - Use `description` as the primary prompt.
 - Append `acceptance_criteria`, `test_commands`, and `attached_context` into your
-  agent's prompt format (see `ClaudeAdapter._build_prompt()` for an example).
+  agent's prompt format (see `ClaudeSDKPlatform._build_prompt()` for an example).
 - Set the working directory to `checkout_path` when launching the agent process.
 - Forward `mcp_servers` if your agent supports the Model Context Protocol.
 
-### AgentOutput — what your adapter returns
+### AgentOutput — what your runtime returns
 
 ```python
 @dataclass
@@ -138,14 +138,14 @@ may split or truncate. Typical patterns:
 
 ---
 
-## 4. Step-by-Step: Creating a New Adapter
+## 4. Step-by-Step: Creating a New Platform
 
-### 4.1 Create the adapter module
+### 4.1 Create the runtime module
 
-Create `src/adapters/my_agent.py`:
+Create `src/runtimes/my_agent.py`:
 
 ```python
-"""My Agent adapter — runs tasks via the My Agent CLI/SDK."""
+"""My Agent runtime — runs tasks via the My Agent CLI/SDK runtime."""
 
 from __future__ import annotations
 
@@ -153,7 +153,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from src.adapters.base import AgentAdapter, MessageCallback
+from src.platforms.base import Platform, MessageCallback
 from src.models import AgentOutput, AgentResult, TaskContext
 
 logger = logging.getLogger(__name__)
@@ -161,15 +161,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MyAgentConfig:
-    """Configuration for the My Agent adapter."""
+    """Configuration for the My Agent runtime."""
     model: str = "default-model"
     api_key: str = ""
     timeout_seconds: int = 600
     # Add agent-specific config fields here
 
 
-class MyAgentAdapter(AgentAdapter):
-    """AgentAdapter implementation for My Agent."""
+class MyAgentRuntime(Platform):
+    """Runtime implementation for My Agent."""
 
     def __init__(self, config: MyAgentConfig | None = None, llm_logger=None):
         self._config = config or MyAgentConfig()
@@ -182,7 +182,7 @@ class MyAgentAdapter(AgentAdapter):
         """Store task context; do NOT launch the agent process yet."""
         self._task = task
         self._cancel_event.clear()
-        logger.info("MyAgent adapter starting for task %s", task.task_id)
+        logger.info("MyAgent runtime starting for task %s", task.task_id)
 
     async def wait(self, on_message: MessageCallback | None = None) -> AgentOutput:
         """Launch the agent, stream output, return result."""
@@ -221,7 +221,7 @@ class MyAgentAdapter(AgentAdapter):
             )
 
         except Exception as e:
-            logger.exception("MyAgent adapter error")
+            logger.exception("MyAgent runtime error")
             # Map specific errors to appropriate AgentResult values
             if self._is_token_error(e):
                 return AgentOutput(
@@ -275,33 +275,33 @@ class MyAgentAdapter(AgentAdapter):
         return "rate limit" in msg or "429" in msg
 ```
 
-### 4.2 Register in AdapterFactory
+### 4.2 Register in PlatformRegistry
 
-Edit `src/adapters/__init__.py` to import your adapter and add a branch to
+Edit `src/runtimes/__init__.py` to import your runtime and add a branch to
 `create()`:
 
 ```python
-from src.adapters.my_agent import MyAgentAdapter, MyAgentConfig
+from src.platforms.my_agent import MyAgentRuntime, MyAgentConfig
 
-class AdapterFactory:
+class PlatformRegistry:
     def __init__(self, claude_config=None, my_agent_config=None, llm_logger=None):
         self._claude_config = claude_config or ClaudeAdapterConfig()
         self._my_agent_config = my_agent_config or MyAgentConfig()
         self._llm_logger = llm_logger
 
-    def create(self, agent_type: str, profile=None) -> AgentAdapter:
+    def create(self, agent_type: str, profile=None) -> Platform:
         if agent_type == "claude":
             config = self._config_for_profile(profile)
-            return ClaudeAdapter(config, llm_logger=self._llm_logger)
+            return ClaudeSDKPlatform(config, llm_logger=self._llm_logger)
         if agent_type == "my-agent":
-            return MyAgentAdapter(self._my_agent_config, llm_logger=self._llm_logger)
+            return MyAgentRuntime(self._my_agent_config, llm_logger=self._llm_logger)
         raise ValueError(f"Unknown agent type: {agent_type}")
 ```
 
 ### 4.3 Add configuration
 
-If your adapter needs config values from `config.yaml`, add a new section to
-`AppConfig` in `src/config.py` and wire it through to `AdapterFactory` in
+If your runtime needs config values from `config.yaml`, add a new section to
+`AppConfig` in `src/config.py` and wire it through to `RuntimeRegistry` in
 `src/main.py` or `src/orchestrator.py`.
 
 ### 4.4 Write tests
@@ -318,12 +318,12 @@ The orchestrator's heartbeat monitor calls `is_alive()` periodically. If it
 returns `False` while a task is `IN_PROGRESS`, the orchestrator considers the
 agent dead and may restart or fail the task.
 
-**Pitfall:** If your adapter returns `False` from `is_alive()` before `wait()`
-has finished, the orchestrator will race against your adapter. Make sure
+**Pitfall:** If your runtime returns `False` from `is_alive()` before `wait()`
+has finished, the orchestrator will race against your runtime. Make sure
 `is_alive()` returns `True` for the entire duration between `start()` and the
 completion of `wait()`.
 
-**Pattern:** Use a simple flag approach like `ClaudeAdapter`:
+**Pattern:** Use a simple flag approach like `ClaudeSDKPlatform`:
 
 ```python
 async def is_alive(self) -> bool:
@@ -335,7 +335,7 @@ async def is_alive(self) -> bool:
 The orchestrator uses `AgentOutput.tokens_used` for budget tracking and
 scheduling decisions. Always populate this field, even with an estimate.
 
-**Pitfall:** Returning `tokens_used=0` with no summary causes `ClaudeAdapter`
+**Pitfall:** Returning `tokens_used=0` with no summary causes `ClaudeSDKPlatform`
 to treat the run as a failure (silent crash detection). If your agent genuinely
 uses 0 tokens sometimes, include a non-empty summary to avoid this pattern.
 
@@ -389,7 +389,7 @@ leakage. The orchestrator process may have variables set by other components
 (Discord bot token, database paths, etc.) that could confuse your agent.
 
 **Pattern:** Build an explicit environment dict for your subprocess rather than
-inheriting the full `os.environ`. See how `ClaudeAdapter` strips `CLAUDECODE`
+inheriting the full `os.environ`. See how `ClaudeSDKPlatform` strips `CLAUDECODE`
 and `CLAUDE_CODE_ENTRYPOINT` before launching.
 
 ### 5.6 Working Directory
@@ -401,7 +401,7 @@ raise an error — never run in the orchestrator's own working directory.
 
 ### 5.7 Streaming vs. Batched Output
 
-The `on_message` callback is optional. Your adapter must work correctly whether
+The `on_message` callback is optional. Your runtime must work correctly whether
 or not a callback is provided. Never assume `on_message` is set — always guard
 calls:
 
@@ -414,9 +414,9 @@ if on_message and text:
 
 ## 6. Agent Profiles
 
-The orchestrator supports `AgentProfile` objects that override adapter config on
+The orchestrator supports `AgentProfile` objects that override runtime config on
 a per-task basis (model, permission mode, allowed tools, MCP servers, etc.). Your
-adapter should accept profile overrides through `AdapterFactory._config_for_profile`.
+runtime should accept profile overrides through `RuntimeRegistry._config_for_profile`.
 
 See `AgentProfile` in `src/models.py` for the full field list:
 
@@ -434,7 +434,7 @@ class AgentProfile:
     install: dict = field(default_factory=dict)
 ```
 
-When profile fields are empty, fall through to the adapter's base config
+When profile fields are empty, fall through to the runtime's base config
 defaults.
 
 ---
@@ -444,7 +444,7 @@ defaults.
 ### 7.1 Structured logging with correlation context
 
 The system uses structured JSON logging with per-task correlation IDs (see
-`src/logging_config.py`). Your adapter should use the standard `logging` module
+`src/logging_config.py`). Your runtime should use the standard `logging` module
 — correlation fields (`task_id`, `project_id`, `cycle_id`) are automatically
 injected into every log record by the `CorrelationFilter`.
 
@@ -461,7 +461,7 @@ async def start(self, task: TaskContext) -> None:
     # Just use the standard logger — fields are injected automatically.
     ctx = get_correlation_context()
     logger.info(
-        "MyAgent adapter starting for task %s",
+        "MyAgent runtime starting for task %s",
         ctx.get("task_id", task.task_id),
     )
 ```
@@ -471,8 +471,8 @@ IDs explicitly (e.g., for passing to external APIs or custom log calls).
 
 ### 7.2 LLM session logging
 
-The `AdapterFactory` passes an optional `llm_logger` (an `LLMLogger` instance
-from `src/llm_logger.py`) to each adapter. If present, your adapter should call
+The `RuntimeRegistry` passes an optional `llm_logger` (an `LLMLogger` instance
+from `src/llm_logger.py`) to each runtime. If present, your runtime should call
 `llm_logger.log_agent_session()` after each execution to record prompt, output,
 duration, and token usage for analytics.
 
@@ -505,7 +505,7 @@ async def wait(self, on_message=None) -> AgentOutput:
 
 Log the session on **all** code paths — success, failure, cancellation, and
 pause — so that token usage is tracked even for failed runs. See
-`ClaudeAdapter._log_session()` for the reference pattern.
+`ClaudeSDKPlatform._log_session()` for the reference pattern.
 
 ---
 
@@ -513,12 +513,12 @@ pause — so that token usage is tracked even for failed runs. See
 
 ### Unit tests (required)
 
-Create `tests/test_my_agent_adapter.py`:
+Create `tests/test_my_agent_platform.py`:
 
 ```python
 import asyncio
 import pytest
-from src.adapters.my_agent import MyAgentAdapter, MyAgentConfig
+from src.platforms.my_agent import MyAgentRuntime, MyAgentConfig
 from src.models import AgentOutput, AgentResult, TaskContext
 
 
@@ -535,25 +535,25 @@ def make_task(**overrides) -> TaskContext:
 
 @pytest.mark.asyncio
 async def test_start_stores_task():
-    adapter = MyAgentAdapter()
+    runtime = MyAgentRuntime()
     task = make_task()
-    await adapter.start(task)
-    assert await adapter.is_alive()
+    await runtime.start(task)
+    assert await runtime.is_alive()
 
 
 @pytest.mark.asyncio
 async def test_stop_cancels():
-    adapter = MyAgentAdapter()
-    await adapter.start(make_task())
-    await adapter.stop()
-    assert not await adapter.is_alive()
+    runtime = MyAgentRuntime()
+    await runtime.start(make_task())
+    await runtime.stop()
+    assert not await runtime.is_alive()
 
 
 @pytest.mark.asyncio
 async def test_wait_returns_agent_output():
-    adapter = MyAgentAdapter()
-    await adapter.start(make_task())
-    result = await adapter.wait()
+    runtime = MyAgentRuntime()
+    await runtime.start(make_task())
+    result = await runtime.wait()
     assert isinstance(result, AgentOutput)
     assert result.result in AgentResult
 
@@ -562,24 +562,24 @@ async def test_wait_returns_agent_output():
 async def test_on_message_callback_called():
     """Verify that wait() streams output through the callback."""
     messages = []
-    adapter = MyAgentAdapter()
-    await adapter.start(make_task())
-    await adapter.wait(on_message=lambda text: messages.append(text))
+    runtime = MyAgentRuntime()
+    await runtime.start(make_task())
+    await runtime.wait(on_message=lambda text: messages.append(text))
     # Assert messages were received (specifics depend on your agent)
 
 
 @pytest.mark.asyncio
 async def test_cancellation_during_wait():
     """Verify that stop() causes wait() to return FAILED."""
-    adapter = MyAgentAdapter()
-    await adapter.start(make_task())
+    runtime = MyAgentRuntime()
+    await runtime.start(make_task())
 
     async def cancel_after_delay():
         await asyncio.sleep(0.1)
-        await adapter.stop()
+        await runtime.stop()
 
     asyncio.create_task(cancel_after_delay())
-    result = await adapter.wait()
+    result = await runtime.wait()
     assert result.result == AgentResult.FAILED
 ```
 
@@ -596,17 +596,17 @@ a trivial task (e.g., "create a file called hello.txt") and verifies:
 
 ## 9. Checklist
 
-Before submitting your adapter:
+Before submitting your runtime:
 
-- [ ] Subclasses `AgentAdapter` from `src/adapters/base.py`
+- [ ] Subclasses `Runtime` from `src/runtimes/base.py`
 - [ ] Implements all four abstract methods (`start`, `wait`, `stop`, `is_alive`)
 - [ ] `start()` stores context but does NOT launch the agent
 - [ ] `wait()` checks `_cancel_event` on every loop iteration
 - [ ] `wait()` streams output via `on_message` when provided
 - [ ] Returns correct `AgentResult` values (especially `PAUSED_*` for rate limits)
 - [ ] Populates `tokens_used` in `AgentOutput`
-- [ ] Registered in `AdapterFactory.create()` with a unique type string
-- [ ] Has a `*Config` dataclass for adapter-specific settings
+- [ ] Registered in `PlatformRegistry.create()` with a unique type string
+- [ ] Has a `*Config` dataclass for platform-specific settings
 - [ ] Has unit tests covering start/stop/wait/cancellation
 - [ ] Sets working directory to `task.checkout_path`
 - [ ] Handles `ImportError` gracefully if the agent SDK is optional

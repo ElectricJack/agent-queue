@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -136,7 +135,7 @@ class TestAcquireWorkspacePreferred:
                 Agent(
                     id=aid,
                     name=aid,
-                    agent_type="claude",
+                    profile_id="claude",
                     state=AgentState.IDLE,
                 )
             )

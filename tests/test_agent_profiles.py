@@ -3,7 +3,7 @@
 Covers:
 - Database CRUD for agent_profiles table
 - Profile resolution cascade (task → project → None)
-- AdapterFactory._config_for_profile() merging
+- ClaudeSDKRuntime._config_from_profile() merging
 - CommandHandler profile commands
 - Task/project profile_id and default_profile_id
 - Config loading from YAML
@@ -15,9 +15,8 @@ Covers:
 
 import pytest
 
-from src.adapters import AdapterFactory
-from src.adapters.base import AgentAdapter
-from src.adapters.claude import ClaudeAdapterConfig
+from src.runtimes.base import Runtime
+from src.runtimes.claude_sdk import ClaudeAdapterConfig, ClaudeSDKRuntime
 from src.config import AppConfig, AgentProfileConfig, load_config
 from src.database import Database
 from src.models import (
@@ -339,71 +338,49 @@ class TestProfileResolution:
 
 
 # ---------------------------------------------------------------------------
-# AdapterFactory._config_for_profile() merging
+# ClaudeSDKRuntime._config_from_profile() merging
 # ---------------------------------------------------------------------------
 
+_DEFAULTS = ClaudeAdapterConfig()
 
-class TestConfigForProfile:
-    def test_no_profile_returns_base_config(self):
-        base = ClaudeAdapterConfig(
-            model="claude-sonnet-4-5-20250514",
-            permission_mode="acceptEdits",
-            allowed_tools=["Read", "Write", "Edit", "Bash"],
-        )
-        factory = AdapterFactory(claude_config=base)
-        result = factory._config_for_profile(None)
-        assert result is base
+
+class TestConfigFromProfile:
+    def test_no_profile_returns_defaults(self):
+        result = ClaudeSDKRuntime._config_from_profile(None)
+        assert result.model == _DEFAULTS.model
+        assert result.permission_mode == _DEFAULTS.permission_mode
+        assert result.allowed_tools == _DEFAULTS.allowed_tools
 
     def test_profile_overrides_model(self):
-        base = ClaudeAdapterConfig(model="claude-sonnet-4-5-20250514")
-        factory = AdapterFactory(claude_config=base)
         profile = AgentProfile(id="test", name="Test", model="claude-opus-4-20250514")
-        result = factory._config_for_profile(profile)
+        result = ClaudeSDKRuntime._config_from_profile(profile)
         assert result.model == "claude-opus-4-20250514"
 
-    def test_profile_empty_model_falls_through(self):
-        base = ClaudeAdapterConfig(model="claude-sonnet-4-5-20250514")
-        factory = AdapterFactory(claude_config=base)
+    def test_profile_empty_model_falls_through_to_default(self):
         profile = AgentProfile(id="test", name="Test", model="")
-        result = factory._config_for_profile(profile)
-        assert result.model == "claude-sonnet-4-5-20250514"
+        result = ClaudeSDKRuntime._config_from_profile(profile)
+        assert result.model == _DEFAULTS.model
 
     def test_profile_overrides_allowed_tools(self):
-        base = ClaudeAdapterConfig(
-            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-        )
-        factory = AdapterFactory(claude_config=base)
         profile = AgentProfile(
             id="reviewer",
             name="Reviewer",
             allowed_tools=["Read", "Glob", "Grep"],
         )
-        result = factory._config_for_profile(profile)
+        result = ClaudeSDKRuntime._config_from_profile(profile)
         assert result.allowed_tools == ["Read", "Glob", "Grep"]
 
-    def test_profile_empty_tools_falls_through(self):
-        base = ClaudeAdapterConfig(
-            allowed_tools=["Read", "Write", "Edit"],
-        )
-        factory = AdapterFactory(claude_config=base)
+    def test_profile_empty_tools_falls_through_to_default(self):
         profile = AgentProfile(id="test", name="Test", allowed_tools=[])
-        result = factory._config_for_profile(profile)
-        assert result.allowed_tools == ["Read", "Write", "Edit"]
+        result = ClaudeSDKRuntime._config_from_profile(profile)
+        assert result.allowed_tools == _DEFAULTS.allowed_tools
 
     def test_profile_overrides_permission_mode(self):
-        base = ClaudeAdapterConfig(permission_mode="acceptEdits")
-        factory = AdapterFactory(claude_config=base)
         profile = AgentProfile(id="test", name="Test", permission_mode="plan")
-        result = factory._config_for_profile(profile)
+        result = ClaudeSDKRuntime._config_from_profile(profile)
         assert result.permission_mode == "plan"
 
     def test_full_override(self):
-        base = ClaudeAdapterConfig(
-            model="claude-sonnet-4-5-20250514",
-            permission_mode="acceptEdits",
-            allowed_tools=["Read", "Write", "Edit", "Bash"],
-        )
-        factory = AdapterFactory(claude_config=base)
         profile = AgentProfile(
             id="reviewer",
             name="Reviewer",
@@ -411,7 +388,7 @@ class TestConfigForProfile:
             permission_mode="plan",
             allowed_tools=["Read", "Glob"],
         )
-        result = factory._config_for_profile(profile)
+        result = ClaudeSDKRuntime._config_from_profile(profile)
         assert result.model == "claude-opus-4-20250514"
         assert result.permission_mode == "plan"
         assert result.allowed_tools == ["Read", "Glob"]
@@ -817,7 +794,7 @@ class TestProfileCommands:
 # ---------------------------------------------------------------------------
 
 
-class MockAdapter(AgentAdapter):
+class MockAdapter(Runtime):
     def __init__(self, result=AgentResult.COMPLETED, tokens=1000):
         self._result = result
         self._tokens = tokens
@@ -842,7 +819,7 @@ class MockAdapterFactory:
         self.last_profile = None
         self.create_calls = []
 
-    def create(self, agent_type: str, profile=None) -> AgentAdapter:
+    def create(self, agent_type: str, profile=None, llm_logger=None) -> Runtime:
         self.last_profile = profile
         self.create_calls.append({"agent_type": agent_type, "profile": profile})
         return MockAdapter(result=self.result, tokens=self.tokens)
@@ -884,7 +861,7 @@ class TestProfileEnforcement:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        orch = Orchestrator(config, adapter_factory=factory)
+        orch = Orchestrator(config, runtimes=factory)
         await orch.initialize()
         yield orch, factory
         if orch._running_tasks:
@@ -908,7 +885,7 @@ class TestProfileEnforcement:
             Agent(
                 id="a-1",
                 name="claude-1",
-                agent_type="claude",
+                profile_id="claude",
             )
         )
         await orch.db.create_task(
@@ -933,7 +910,7 @@ class TestProfileEnforcement:
             Agent(
                 id="a-1",
                 name="claude-1",
-                agent_type="claude",
+                profile_id="claude",
             )
         )
         await orch.db.create_task(
@@ -966,7 +943,7 @@ class TestProfileEnforcement:
             Agent(
                 id="a-1",
                 name="claude-1",
-                agent_type="claude",
+                profile_id="claude",
             )
         )
         await orch.db.create_task(

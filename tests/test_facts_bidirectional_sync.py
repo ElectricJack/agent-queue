@@ -364,7 +364,7 @@ class TestRecallFromParsedFacts:
         await service.kv_recall(
             "tech_stack",
             project_id="my-app",
-            agent_type="coding",
+            profile_id="coding",
             namespace="project",
         )
 

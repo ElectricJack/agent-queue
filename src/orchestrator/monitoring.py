@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
 
 from src.discord.notifications import (
     format_failed_blocked_report,

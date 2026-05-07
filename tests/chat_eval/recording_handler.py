@@ -7,7 +7,7 @@ Tests verify tool selection AND command execution end-to-end.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 def _make_supervisor():
-    from src.supervisor import Supervisor
+    from src.runtimes.supervisor import Supervisor
 
     orch = MagicMock()
     orch.config = MagicMock()
@@ -52,7 +52,7 @@ def _make_resp(text_parts=None, tool_uses=None):
 
 
 def test_supervisor_class_exists():
-    from src.supervisor import Supervisor
+    from src.runtimes.supervisor import Supervisor
 
     assert Supervisor is not None
 
@@ -79,7 +79,7 @@ def test_backward_compat_import():
 
 def test_backward_compat_is_supervisor():
     from src.chat_agent import ChatAgent
-    from src.supervisor import Supervisor
+    from src.runtimes.supervisor import Supervisor
 
     assert ChatAgent is Supervisor
 
@@ -289,7 +289,7 @@ def test_reflect_method_exists():
 
 def test_full_integration_supervisor_replaces_chat_agent():
     """Verify Supervisor can be used everywhere ChatAgent was."""
-    from src.supervisor import Supervisor
+    from src.runtimes.supervisor import Supervisor
     from src.chat_agent import ChatAgent
 
     assert Supervisor is ChatAgent
@@ -353,14 +353,19 @@ def test_on_task_completed_sets_project():
     sup = _make_supervisor()
     sup.handler.execute = AsyncMock(return_value={"plan_found": False})
 
-    asyncio.run(
-        sup.on_task_completed(
+    # _active_project_id is now per-asyncio-task (ContextVar), so we
+    # observe the set value inside the same async run rather than after
+    # asyncio.run() exits — vars set inside a coroutine don't leak to
+    # the caller's context.
+    async def _run() -> str | None:
+        await sup.on_task_completed(
             task_id="t-123",
             project_id="my-game",
             workspace_path="/tmp/workspace",
         )
-    )
-    assert sup._active_project_id == "my-game"
+        return sup._active_project_id
+
+    assert asyncio.run(_run()) == "my-game"
 
 
 def test_on_task_completed_returns_plan_found():

@@ -139,9 +139,9 @@ class SchedulerState:
     global_budget: int | None = None
     # Total tokens used across all projects in the rolling window.
     global_tokens_used: int = 0
-    # Provider-level cooldowns: maps agent_type (e.g. "claude") to the
-    # Unix timestamp when the cooldown expires.  Agents of a cooled-down
-    # type are excluded from scheduling until the timestamp passes.
+    # Provider-level cooldowns: maps profile_id (e.g. "claude-opus") to the
+    # Unix timestamp when the cooldown expires.  Agents whose profile is
+    # cooled-down are excluded from scheduling until the timestamp passes.
     # This supports per-provider session limits without affecting other
     # provider types.
     provider_cooldowns: dict[str, float] = field(default_factory=dict)
@@ -172,43 +172,6 @@ def _workspace_available(task: Task, locks: dict[str, str | None]) -> bool:
     return locks.get(task.preferred_workspace_id) is None
 
 
-def _task_agent_type_matches(task: Task, agent: Agent) -> bool:
-    """Check if a task's agent_type requirement is satisfied by the agent.
-
-    Agent type matching is a **hard constraint** — tasks with an explicit
-    ``agent_type`` are only assigned to agents whose ``agent_type`` field
-    matches exactly.  Tasks without an ``agent_type`` requirement match
-    any agent regardless of the agent's type.
-
-    Agents may advertise multiple type capabilities via a comma-separated
-    ``agent_type`` string (e.g. ``"coding,code-review"``).  A task matches
-    if its required type appears anywhere in the agent's type list.
-
-    This enforces the type-matching dimension of agent affinity described
-    in the agent-coordination spec §3 (Core Concepts): "a review task
-    should go to a review agent, not a coding agent."
-
-    Unlike agent-id affinity (which is advisory and uses soft ordering),
-    type matching is a filter — mismatched tasks are excluded from
-    consideration entirely, and will stay queued until a matching agent
-    becomes available.
-    """
-    if not task.agent_type or task.agent_type.lower() in ("none", "null"):
-        return True  # no type requirement → any agent is fine
-    # Support comma-separated multiple type capabilities on agents
-    agent_types = {t.strip() for t in agent.agent_type.split(",")} if agent.agent_type else set()
-    if task.agent_type in agent_types:
-        return True
-    logger.debug(
-        "Agent type mismatch: task %s requires type '%s' but agent %s has type '%s'",
-        task.id,
-        task.agent_type,
-        agent.id,
-        agent.agent_type,
-    )
-    return False
-
-
 def _is_scheduling_paused(project_id: str, constraints: dict[str, ProjectConstraint]) -> bool:
     """Return True if a project has an active pause_scheduling constraint."""
     c = constraints.get(project_id)
@@ -227,7 +190,7 @@ def _agent_type_allowed(
     Only agent types listed in ``max_by_type`` are constrained; unlisted
     types are unrestricted.  Returns True if the assignment is allowed.
     """
-    atype = agent.agent_type
+    atype = agent.profile_id
     if atype not in max_by_type:
         return True  # no limit for this type
 
@@ -238,7 +201,7 @@ def _agent_type_allowed(
     # task belongs to the project.
     count = 0
     for a in state.agents:
-        if a.agent_type != atype or a.id in assigned_agents:
+        if a.profile_id != atype or a.id in assigned_agents:
             continue
         if a.state == AgentState.BUSY and a.current_task_id:
             for t in state.tasks:
@@ -281,7 +244,7 @@ class Scheduler:
         idle_agents = [
             a
             for a in state.agents
-            if a.state == AgentState.IDLE and state.provider_cooldowns.get(a.agent_type, 0) <= now
+            if a.state == AgentState.IDLE and state.provider_cooldowns.get(a.profile_id, 0) <= now
         ]
         if not idle_agents:
             return []
@@ -436,14 +399,12 @@ class Scheduler:
                     continue
 
                 # Pick highest priority ready task not yet assigned.
-                # Also filter out tasks whose preferred workspace is locked
-                # and tasks whose agent_type doesn't match the current agent.
+                # Also filter out tasks whose preferred workspace is locked.
                 available = [
                     t
                     for t in ready_by_project.get(project.id, [])
                     if t.id not in assigned_tasks
                     and _workspace_available(t, state.workspace_locks)
-                    and _task_agent_type_matches(t, agent)
                 ]
                 if not available:
                     continue

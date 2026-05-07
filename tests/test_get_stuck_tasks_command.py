@@ -105,7 +105,7 @@ async def test_stuck_assigned_task_surfaced(handler, db):
     from src.models import Agent, AgentState
 
     await db.create_agent(
-        Agent(id="agent-1", name="agent-1", agent_type="coding", state=AgentState.IDLE)
+        Agent(id="agent-1", name="agent-1", profile_id="coding", state=AgentState.IDLE)
     )
     await db.create_task(
         _task("t-stuck", status=TaskStatus.ASSIGNED, assigned_agent_id="agent-1")

@@ -64,28 +64,6 @@ class AgentCommandsMixin:
             agent_list.append(info)
         return {"agents": agent_list, "project_id": project_id}
 
-    async def _cmd_create_agent(self, args: dict) -> dict:
-        """Deprecated — agents are now derived from workspaces.
-
-        Use ``add_workspace`` to add agent capacity to a project.
-        """
-        return {
-            "error": (
-                "create_agent is no longer supported. Agents are now derived "
-                "from project workspaces. Use 'add_workspace' to add agent "
-                "capacity to a project."
-            )
-        }
-
-    async def _cmd_edit_agent(self, args: dict) -> dict:
-        """Deprecated — agents are now derived from workspaces."""
-        return {
-            "error": (
-                "edit_agent is no longer supported. Agents are derived from "
-                "project workspaces. Use workspace management commands instead."
-            )
-        }
-
     async def _cmd_add_workspace(self, args: dict) -> dict:
         """Create a workspace for a project."""
         project_id = args["project_id"]
@@ -723,30 +701,3 @@ class AgentCommandsMixin:
             ),
         }
 
-    async def _cmd_pause_agent(self, args: dict) -> dict:
-        """Deprecated — agents are now derived from workspaces."""
-        return {
-            "error": (
-                "pause_agent is no longer supported. Agents are derived from "
-                "project workspaces. To pause work, pause the project instead."
-            )
-        }
-
-    async def _cmd_resume_agent(self, args: dict) -> dict:
-        """Deprecated — agents are now derived from workspaces."""
-        return {
-            "error": (
-                "resume_agent is no longer supported. Agents are derived from "
-                "project workspaces. To resume work, resume the project instead."
-            )
-        }
-
-    async def _cmd_delete_agent(self, args: dict) -> dict:
-        """Deprecated — agents are now derived from workspaces."""
-        return {
-            "error": (
-                "delete_agent is no longer supported. Agents are derived from "
-                "project workspaces. Use 'remove_workspace' to remove agent "
-                "capacity from a project."
-            )
-        }

@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import text
 from src.orchestrator import Orchestrator
 from src.models import (
+    AgentProfile,
     Project,
     Task,
     Agent,
@@ -17,11 +18,11 @@ from src.models import (
     RepoSourceType,
     Workspace,
 )
-from src.adapters.base import AgentAdapter
+from src.runtimes.base import Runtime
 from src.config import AppConfig, AutoTaskConfig
 
 
-class MockAdapter(AgentAdapter):
+class MockAdapter(Runtime):
     def __init__(self, result=AgentResult.COMPLETED, tokens=1000, on_wait=None):
         self._result = result
         self._tokens = tokens
@@ -51,7 +52,7 @@ class MockAdapterFactory:
         self.last_profile = None
         self.create_calls = []
 
-    def create(self, agent_type: str, profile=None) -> AgentAdapter:
+    def create(self, agent_type: str, profile=None, llm_logger=None) -> Runtime:
         self.last_profile = profile
         self.create_calls.append({"agent_type": agent_type, "profile": profile})
         return MockAdapter(result=self.result, tokens=self.tokens, on_wait=self.on_wait)
@@ -77,7 +78,7 @@ async def orch(tmp_path):
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
-    o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+    o = Orchestrator(config, runtimes=MockAdapterFactory())
     await o.initialize()
     yield o
     # Drain any remaining background tasks before closing DB
@@ -148,7 +149,7 @@ class TestOrchestratorLifecycle:
     async def test_full_task_lifecycle(self, orch):
         """DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED"""
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await orch.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await orch.db.create_task(
             Task(
                 id="t-1",
@@ -165,9 +166,9 @@ class TestOrchestratorLifecycle:
         assert task.status == TaskStatus.COMPLETED
 
     async def test_failed_task_retries(self, orch):
-        orch._adapter_factory = MockAdapterFactory(result=AgentResult.FAILED)
+        orch._runtimes = MockAdapterFactory(result=AgentResult.FAILED)
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await orch.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await orch.db.create_task(
             Task(
                 id="t-1",
@@ -187,9 +188,9 @@ class TestOrchestratorLifecycle:
         assert task.retry_count == 1
 
     async def test_paused_on_token_exhaustion(self, orch):
-        orch._adapter_factory = MockAdapterFactory(result=AgentResult.PAUSED_TOKENS)
+        orch._runtimes = MockAdapterFactory(result=AgentResult.PAUSED_TOKENS)
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await orch.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await orch.db.create_task(
             Task(
                 id="t-1",
@@ -208,7 +209,7 @@ class TestOrchestratorLifecycle:
 
     async def test_dependencies_block_scheduling(self, orch):
         await _create_project_with_workspace(orch.db)
-        await orch.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await orch.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await orch.db.create_task(
             Task(
                 id="t-1",
@@ -266,6 +267,57 @@ def _make_plan_toucher(workspace):
             os.utime(root_plan, None)
 
     return _touch_plan_files
+
+
+class TestAgentReconcilerWiring:
+    """Regression: ensures the AgentReconciler runs at the top of each
+    scheduling tick so READY tasks dispatch without manual `aq agent create`.
+    See docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md §7.
+    """
+
+    async def test_ready_task_dispatches_with_only_workspace_and_default_profile(
+        self, orch
+    ):
+        """The original quick-ember bug: project with workspace +
+        default_profile_id + READY task should dispatch within one cycle —
+        no manual agent creation. Tests the full reconciler → scheduler →
+        executor chain.
+        """
+        # Profile must exist before project references it.
+        await orch.db.create_profile(
+            AgentProfile(id="claude", name="claude", runtime="claude_sdk")
+        )
+        # Project with default_profile_id and a workspace.
+        await orch.db.create_project(
+            Project(id="p-1", name="alpha", default_profile_id="claude")
+        )
+        await orch.db.create_workspace(
+            Workspace(
+                id="ws-p-1",
+                project_id="p-1",
+                workspace_path=str(orch.config.workspace_dir + "/p-1"),
+                source_type=RepoSourceType.LINK,
+            )
+        )
+        # READY task with no profile_id (falls back to project default).
+        await orch.db.create_task(
+            Task(
+                id="regression-task",
+                project_id="p-1",
+                title="Test reconciler dispatch",
+                description="Should auto-dispatch via the reconciler.",
+                status=TaskStatus.READY,
+            )
+        )
+
+        await _run_cycle_and_wait(orch)
+
+        task = await orch.db.get_task("regression-task")
+        # Real dispatch path may pass through ASSIGNED → IN_PROGRESS;
+        # accept any non-READY state.
+        assert task.status != TaskStatus.READY
+        agents = await orch.db.list_agents()
+        assert len(agents) >= 1
 
 
 class TestAwaitingApprovalNopr:
@@ -501,7 +553,7 @@ class TestPlanApprovalBlocking:
             data_dir=str(tmp_path / "data"),
         )
         config.auto_task = AutoTaskConfig(enabled=True, chain_dependencies=True)
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
         yield o, workspace
         await _drain_running_tasks(o)
@@ -678,7 +730,7 @@ class TestIsLastSubtask:
             workspace_dir=str(workspace),
             data_dir=str(tmp_path / "data"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
         yield o
         await _drain_running_tasks(o)
@@ -794,7 +846,7 @@ class TestPrepareWorkspaceCleanDefault:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        orch = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        orch = Orchestrator(config, runtimes=MockAdapterFactory())
         await orch.initialize()
 
         await orch.db.create_project(
@@ -809,7 +861,7 @@ class TestPrepareWorkspaceCleanDefault:
             Agent(
                 id="a-1",
                 name="agent-1",
-                agent_type="claude",
+                profile_id="claude",
             )
         )
 
@@ -926,7 +978,7 @@ class TestPhaseVerifyNormalTask:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
 
         await o.db.create_project(Project(id="p-1", name="alpha"))
@@ -940,7 +992,7 @@ class TestPhaseVerifyNormalTask:
                 source_type=RepoSourceType.LINK,
             )
         )
-        await o.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await o.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
 
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
@@ -964,7 +1016,7 @@ class TestPhaseVerifyNormalTask:
 
         return PipelineContext(
             task=task,
-            agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
+            agent=Agent(id="a-1", name="claude-1", profile_id="claude"),
             output=AgentOutput(result=AgentResult.COMPLETED, tokens_used=100),
             workspace_path=ws_path,
             workspace_id="ws-1",
@@ -1292,7 +1344,7 @@ class TestPhaseVerifyApprovalTask:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
 
         await o.db.create_project(Project(id="p-1", name="alpha"))
@@ -1306,7 +1358,7 @@ class TestPhaseVerifyApprovalTask:
                 source_type=RepoSourceType.LINK,
             )
         )
-        await o.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await o.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
 
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
@@ -1330,7 +1382,7 @@ class TestPhaseVerifyApprovalTask:
 
         return PipelineContext(
             task=task,
-            agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
+            agent=Agent(id="a-1", name="claude-1", profile_id="claude"),
             output=AgentOutput(result=AgentResult.COMPLETED, tokens_used=100),
             workspace_path=ws_path,
             workspace_id="ws-1",
@@ -1401,7 +1453,7 @@ class TestPhaseVerifyIntermediateSubtask:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
 
         await o.db.create_project(Project(id="p-1", name="alpha"))
@@ -1415,7 +1467,7 @@ class TestPhaseVerifyIntermediateSubtask:
                 source_type=RepoSourceType.LINK,
             )
         )
-        await o.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await o.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
 
         # Parent task
         parent = Task(
@@ -1473,7 +1525,7 @@ class TestPhaseVerifyIntermediateSubtask:
 
         return PipelineContext(
             task=task,
-            agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
+            agent=Agent(id="a-1", name="claude-1", profile_id="claude"),
             output=AgentOutput(result=AgentResult.COMPLETED, tokens_used=100),
             workspace_path=ws_path,
             workspace_id="ws-1",
@@ -1538,7 +1590,7 @@ class TestCleanupWorkspaceForNextTask:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
 
         mock_git = MagicMock()
@@ -1610,7 +1662,7 @@ class TestVerificationReopen:
             data_dir=str(tmp_path / "data"),
             auto_task=AutoTaskConfig(max_verification_retries=2),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
 
         await o.db.create_project(Project(id="p-1", name="alpha"))
@@ -1624,7 +1676,7 @@ class TestVerificationReopen:
                 source_type=RepoSourceType.LINK,
             )
         )
-        await o.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await o.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
 
         yield o
         await _drain_running_tasks(o)
@@ -1713,7 +1765,7 @@ class TestCompletionPipelineVerify:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
-        o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+        o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
 
         # Set up project, workspace, agent
@@ -1728,7 +1780,7 @@ class TestCompletionPipelineVerify:
                 source_type=RepoSourceType.LINK,
             )
         )
-        await o.db.create_agent(Agent(id="a-1", name="claude-1", agent_type="claude"))
+        await o.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
 
         # Mock git — default: everything passes verification
         mock_git = MagicMock()
@@ -1750,7 +1802,7 @@ class TestCompletionPipelineVerify:
 
         return PipelineContext(
             task=task,
-            agent=Agent(id="a-1", name="claude-1", agent_type="claude"),
+            agent=Agent(id="a-1", name="claude-1", profile_id="claude"),
             output=AgentOutput(result=AgentResult.COMPLETED, tokens_used=100),
             workspace_path=ws_path,
             workspace_id="ws-1",

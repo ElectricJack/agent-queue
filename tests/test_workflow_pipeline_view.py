@@ -13,7 +13,6 @@ from __future__ import annotations
 from src.models import Task, TaskStatus, TaskType, Workflow, WorkspaceMode
 from src.workflow_pipeline_view import (
     AFFINITY_SYMBOLS,
-    AGENT_TYPE_COLORS,
     STAGE_STATUS_COLORS,
     STAGE_STATUS_SYMBOLS,
     _infer_stages_from_tasks,
@@ -72,7 +71,7 @@ def _make_task(
     description: str = "Do the work",
     status: TaskStatus = TaskStatus.DEFINED,
     assigned_agent_id: str | None = None,
-    agent_type: str | None = None,
+    profile_id: str | None = None,
     affinity_agent_id: str | None = None,
     affinity_reason: str | None = None,
     workflow_id: str | None = "wf-1",
@@ -90,7 +89,7 @@ def _make_task(
         description=description,
         status=status,
         assigned_agent_id=assigned_agent_id,
-        agent_type=agent_type,
+        profile_id=profile_id,
         affinity_agent_id=affinity_agent_id,
         affinity_reason=affinity_reason,
         workflow_id=workflow_id,
@@ -297,12 +296,6 @@ class TestBuildTaskCard:
         task = _make_task(assigned_agent_id="claude-1")
         card = build_task_card(task)
         assert card["assigned_agent"] == "claude-1"
-
-    def test_card_with_agent_type(self):
-        task = _make_task(agent_type="coding")
-        card = build_task_card(task)
-        assert card["agent_type"] == "coding"
-        assert card["agent_type_colors"] == AGENT_TYPE_COLORS["coding"]
 
     def test_card_with_affinity(self):
         task = _make_task(
@@ -595,13 +588,13 @@ class TestBuildAgentSummary:
                 task_id="t1",
                 assigned_agent_id="claude-1",
                 status=TaskStatus.COMPLETED,
-                agent_type="coding",
+                profile_id="coding",
             ),
             _make_task(
                 task_id="t2",
                 assigned_agent_id="claude-1",
                 status=TaskStatus.IN_PROGRESS,
-                agent_type="coding",
+                profile_id="coding",
             ),
         ]
         summary = build_agent_summary(tasks)
@@ -610,7 +603,6 @@ class TestBuildAgentSummary:
         assert agent["tasks_completed"] == 1
         assert agent["tasks_assigned"] == 2
         assert agent["current_task"] == "t2"
-        assert agent["agent_type"] == "coding"
 
     def test_multiple_agents(self):
         tasks = [
@@ -743,13 +735,13 @@ class TestBuildPipelineView:
                 task_id="t1",
                 status=TaskStatus.COMPLETED,
                 assigned_agent_id="claude-1",
-                agent_type="coding",
+                profile_id="coding",
             ),
             _make_task(
                 task_id="t2",
                 status=TaskStatus.IN_PROGRESS,
                 assigned_agent_id="claude-2",
-                agent_type="coding",
+                profile_id="coding",
             ),
         ]
         view = build_pipeline_view(workflow, tasks)
@@ -804,24 +796,24 @@ class TestBuildPipelineView:
                 task_id="t1",
                 status=TaskStatus.COMPLETED,
                 assigned_agent_id="claude-1",
-                agent_type="coding",
+                profile_id="coding",
             ),
             _make_task(
                 task_id="t2",
                 status=TaskStatus.COMPLETED,
                 assigned_agent_id="claude-1",
-                agent_type="coding",
+                profile_id="coding",
             ),
             _make_task(
                 task_id="t3",
                 status=TaskStatus.IN_PROGRESS,
                 assigned_agent_id="claude-2",
-                agent_type="code-review",
+                profile_id="code-review",
             ),
             _make_task(
                 task_id="t4",
                 status=TaskStatus.DEFINED,
-                agent_type="qa",
+                profile_id="qa",
             ),
         ]
         view = build_pipeline_view(workflow, tasks)
@@ -1084,7 +1076,7 @@ class TestEdgeCases:
                 task_id="t1",
                 status=TaskStatus.COMPLETED,
                 assigned_agent_id="claude-1",
-                agent_type="coding",
+                profile_id="coding",
                 task_type=TaskType.FEATURE,
                 workspace_mode=WorkspaceMode.BRANCH_ISOLATED,
             ),
@@ -1092,7 +1084,7 @@ class TestEdgeCases:
                 task_id="t2",
                 status=TaskStatus.IN_PROGRESS,
                 assigned_agent_id="claude-2",
-                agent_type="code-review",
+                profile_id="code-review",
                 affinity_agent_id="claude-1",
                 affinity_reason="context",
             ),

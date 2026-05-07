@@ -5,7 +5,7 @@ Updated: imports from src.supervisor instead of src.chat_agent (post-supervisor 
 
 from __future__ import annotations
 
-from src.supervisor import TOOLS
+from src.runtimes.supervisor import TOOLS
 from tests.chat_eval.test_cases._loader import load_all_cases
 
 
@@ -54,7 +54,7 @@ def test_no_duplicate_case_ids():
     cases = load_all_cases()
     ids = [c.id for c in cases]
     duplicates = [id_ for id_ in ids if ids.count(id_) > 1]
-    assert not duplicates, f"Duplicate test case IDs found:\n" + "\n".join(
+    assert not duplicates, "Duplicate test case IDs found:\n" + "\n".join(
         f"  - {id_}" for id_ in sorted(set(duplicates))
     )
 

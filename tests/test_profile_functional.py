@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from src.adapters.claude import ClaudeAdapter, ClaudeAdapterConfig
-from src.models import AgentOutput, AgentResult, TaskContext
+from src.runtimes.claude_sdk import ClaudeSDKRuntime
+from src.models import AgentOutput, AgentProfile, AgentResult, TaskContext
 
 
 # ---------------------------------------------------------------------------
@@ -24,18 +24,20 @@ def _make_adapter(
     allowed_tools: list[str] | None = None,
     permission_mode: str = "bypassPermissions",
     model: str = "claude-haiku-4-5-20251001",
-) -> ClaudeAdapter:
-    """Create a ClaudeAdapter with profile-like config."""
-    config = ClaudeAdapterConfig(
+) -> ClaudeSDKRuntime:
+    """Create a ClaudeSDKRuntime with profile-like config."""
+    profile = AgentProfile(
+        id="test",
+        name="test",
         model=model,
         permission_mode=permission_mode,
         allowed_tools=allowed_tools or ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     )
-    return ClaudeAdapter(config)
+    return ClaudeSDKRuntime(profile=profile)
 
 
 async def _run_agent(
-    adapter: ClaudeAdapter,
+    adapter: ClaudeSDKRuntime,
     prompt: str,
     workspace: str,
     mcp_servers: dict[str, dict] | None = None,

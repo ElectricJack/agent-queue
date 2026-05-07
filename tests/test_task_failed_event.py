@@ -44,7 +44,7 @@ class MockAdapterFactory:
         self.result = result
         self.tokens = tokens
 
-    def create(self, agent_type: str, profile=None):
+    def create(self, agent_type: str, profile=None, llm_logger=None):
         return MockAdapter(result=self.result, tokens=self.tokens)
 
 
@@ -55,7 +55,7 @@ async def orch(tmp_path):
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
-    o = Orchestrator(config, adapter_factory=MockAdapterFactory())
+    o = Orchestrator(config, runtimes=MockAdapterFactory())
     await o.initialize()
     yield o
     if o._running_tasks:
@@ -81,7 +81,7 @@ class TestTaskFailedEvent:
     async def test_stop_task_emits_task_failed(self, orch):
         """Stopping a task should emit task.failed with context='stop_task'."""
         await _setup_project(orch.db)
-        agent = Agent(id="a-1", name="agent-1", agent_type="claude", state=AgentState.IDLE)
+        agent = Agent(id="a-1", name="agent-1", profile_id="claude", state=AgentState.IDLE)
         await orch.db.create_agent(agent)
         task = Task(
             id="t-stop",
@@ -107,7 +107,7 @@ class TestTaskFailedEvent:
     async def test_max_retries_emits_task_failed(self, orch):
         """When max retries exhausted, task.failed should be emitted with context='max_retries'."""
         await _setup_project(orch.db)
-        agent = Agent(id="a-2", name="agent-2", agent_type="claude", state=AgentState.IDLE)
+        agent = Agent(id="a-2", name="agent-2", profile_id="claude", state=AgentState.IDLE)
         await orch.db.create_agent(agent)
         task = Task(
             id="t-retry",
