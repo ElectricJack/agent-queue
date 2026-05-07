@@ -47,10 +47,20 @@ recent rewrite described but did not finish.
 - A coherent meaning for "agent" that handles 0-workspace tasks
   (supervisor-style), 1-workspace tasks (the default), and the existing
   multi-workspace SYNC special case.
-- Renaming `agents.agent_type` → `agents.profile_id` and
-  `tasks.agent_type` → `tasks.profile_id` (the field has always *been*
-  the profile id by string match — the comment in
-  `task_commands.py:867-868` already laments the misnomer).
+- Renaming `agents.agent_type` → `agents.profile_id` (the field has
+  always *been* the profile id by string match in actual usage —
+  see `runtimes/supervisor.py:516,527` and `vault_manager`'s profile
+  directory layout). `_task_agent_type_matches()` is updated to
+  compare on `agent.profile_id`.
+- **Dropping the unused `tasks.agent_type` and `archived_tasks.agent_type`
+  columns** along with `_task_agent_type_matches()`, the `agent_type`
+  parameter on Discord/MCP task commands, and the related Task
+  dataclass field. Empirical check (live DB + `git grep`) showed the
+  coordination-category-filter feature these supported was specced in
+  `docs/specs/design/agent-coordination.md` but never implemented; one
+  task in the live DB has `agent_type=NULL` and zero archived tasks have
+  it set. Tasks already have a separate, working `profile_id` column
+  (FK to `agent_profiles.id`) — the reconciler reads that.
 - Removal of the dead `aq agent create / edit / delete / pause / resume`
   CLI subcommands.
 
@@ -161,33 +171,57 @@ class AgentReconciler:
   NULL` orphans (reset to IDLE).
 - `src/scheduler.py` — no behavior change; consumes renamed
   `Agent.profile_id` / `Task.profile_id` fields.
-- `src/models.py` — rename `Agent.agent_type` → `Agent.profile_id`;
-  rename `Task.agent_type` → `Task.profile_id`; remove the `Agent`
-  deprecation comment (the table is no longer deprecated under this
-  design); update `WorkspaceAgent` docstring to say *"API view of an
-  agent that currently holds a workspace lock — not a persisted entity."*
-- `src/database/tables.py` — rename both columns. Add a comment noting
-  `profile_id` is a soft reference to `agent_profiles.id` (no FK
-  enforcement so profiles can be renamed/removed without breaking
-  history).
+- `src/models.py` — rename `Agent.agent_type` → `Agent.profile_id`.
+  Delete `Task.agent_type` field. Remove the `Agent` deprecation
+  comment (the table is no longer deprecated under this design).
+  Update `WorkspaceAgent` docstring to say *"API view of an agent that
+  currently holds a workspace lock — not a persisted entity."*
+- `src/database/tables.py` — rename `agents.agent_type` →
+  `agents.profile_id` (with a comment noting it's a soft reference to
+  `agent_profiles.id`). Drop `tasks.agent_type` and
+  `archived_tasks.agent_type` columns. Drop the `agent_type` field
+  from any Discord/MCP tool schemas in `tools/definitions.py` that
+  reference task `agent_type`.
 - `src/database/queries/agent_queries.py`, `task_queries.py`,
-  `archive_queries.py` — column references.
+  `archive_queries.py` — column references for the agents rename;
+  remove `agent_type` from task/archived_task SELECT/INSERT and from
+  the Task/ArchivedTask reconstruction code.
+- `src/scheduler.py` — rename `agent.agent_type` → `agent.profile_id`
+  in the matcher signatures; **delete `_task_agent_type_matches()`
+  entirely** along with the call site at `scheduler.py:446`. Update
+  `provider_cooldowns` keying to use `agent.profile_id` consistently.
 - `src/orchestrator/execution.py` — `agent.agent_type` →
   `agent.profile_id` (~3 sites).
 - `src/commands/task_commands.py` — remove the now-stale comment at
-  `:867-868`; update `task.agent_type` references (~3 sites).
+  `:867-868`; remove the `agent_type` parameter handling from create
+  and edit task commands.
+- `src/discord/commands.py:3308,3311` — remove the `agent_type`
+  parameter from the `/edit` slash-command's signature and choices.
+- `src/runtimes/supervisor.py:516,527` — `agent_type="supervisor"` →
+  `profile_id="supervisor"`.
 - All other call sites (`mcp_interfaces.py`, `workflow_pipeline_view.py`,
-  `override_handler.py`, `cli/formatters.py`, `cli/daemon.py`, …) —
-  mechanical rename.
+  `cli/formatters.py`, etc.) — targeted rename of agent.agent_type
+  references only. Do **not** blanket-rename: `vault_manager.py`'s
+  scope name `"agent_type"`, `override_handler.py`'s vault path
+  segment, `Project.default_agent_type`, `rate_limits.agent_type`, and
+  `ProjectConstraint.max_agents_by_type` are unrelated identifiers
+  that share the substring and must be left alone.
 
 ### 4.3 New Alembic migration
 
-`migrations/versions/2026_05_07_rename_agent_type_to_profile_id.py`,
+`migrations/versions/2026_05_07_rename_agent_type_and_drop_task_agent_type.py`,
 modeled on the existing
 `2026_04_28_rename_platform_column_to_runtime.py` from the recent
 runtime-rename merge — same shape (batch ALTER on SQLite, native
-`ALTER TABLE RENAME COLUMN` on PostgreSQL). Renames both columns in
-one revision.
+`ALTER TABLE RENAME COLUMN` on PostgreSQL). Three operations in one
+revision: (1) rename `agents.agent_type` → `profile_id`,
+(2) drop `tasks.agent_type` column, (3) drop
+`archived_tasks.agent_type` column. All three idempotent (inspect
+schema first; no-op if already in target shape). Note: `alembic heads`
+must return a single revision before authoring `down_revision`; if
+multiple heads exist (the repo has historical merge revisions like
+`b5cc4799efad_merge_migration_heads`), depend on the latest single
+head per `alembic heads --resolve-dependencies`.
 
 ### 4.4 Removed code
 
@@ -350,10 +384,12 @@ Plus an end-to-end multi-tick test for profile reassignment.
 
 ### Migration: `tests/test_database.py`
 
-Boot the daemon at the prior alembic revision with sample data
-(an `agents` row with `agent_type='claude-opus'`, a `tasks` row with
-`agent_type='claude-opus'`), run `alembic upgrade head`, assert the
-data lives at `profile_id` after.
+Boot the daemon at the prior alembic revision with sample data:
+an `agents` row with `agent_type='claude-opus'` and a `tasks` row with
+`agent_type='coding'`. Run `alembic upgrade head`. Assert: (a) the
+agent's value lives at `profile_id` afterwards, (b) the
+`tasks.agent_type` column no longer exists, (c) the task row still
+exists (column drop only loses the column's data, not the row).
 
 ### Updates to existing tests
 
@@ -362,6 +398,9 @@ data lives at `profile_id` after.
   `Agent(profile_id=...)`.
 - `tests/test_notifications.py` — `WorkspaceAgent` keeps its fields
   (it's the API shape, not the persisted shape), no rename.
+- Any test that constructs `Task(agent_type=...)` — drop the kwarg
+  (the field is gone). Any test that asserts on `_task_agent_type_matches`
+  behavior — delete (the function is gone).
 - Any test that exercises `aq agent create` directly — **delete** (the
   CLI command is being removed).
 
@@ -378,11 +417,16 @@ quietly catches reconciler regressions whenever scheduler tests run.
 **Single PR, ordered commits** so each commit is independently reviewable
 and the test suite passes at each step:
 
-1. **Rename columns**
-   (`agents.agent_type → profile_id`, `tasks.agent_type → profile_id`).
-   New Alembic revision; mechanical update to `tables.py`, models, and
-   all read/write sites; existing tests' constructor calls. System
-   behaves identically — pure rename. Test suite passes.
+1. **Schema changes** — rename `agents.agent_type` → `profile_id`;
+   drop `tasks.agent_type` and `archived_tasks.agent_type` columns;
+   delete `_task_agent_type_matches()` and the related Task field /
+   Discord-MCP `agent_type` parameters. New Alembic revision;
+   targeted (not blanket) updates to `tables.py`, models, queries,
+   scheduler, and all read/write sites. Behavior change is limited to:
+   (a) tasks no longer have a category-filter field, and (b) the
+   `_task_agent_type_matches` no-op disappears. The reconciler is not
+   yet wired in, so dispatch behavior remains broken until step 3 —
+   that's intentional, keeping the schema/code-shape change isolated.
 2. **Add `AgentReconciler`** + unit tests. Not yet wired in. Test suite
    passes.
 3. **Wire the reconciler** into the orchestrator tick. Add the
@@ -396,16 +440,21 @@ and the test suite passes at each step:
 
 ### Backward compatibility
 
-- *Existing data.* The Alembic migration preserves all rows — no project,
-  task, agent, or workspace data is destroyed or transformed
-  semantically. Upgrade path: `alembic upgrade head`.
-- *External tools.* Anything querying the database directly for
-  `agent_type` will break. Surface in PR description and `CHANGELOG.md`.
-  The typed `aq-client` SDK regenerates from the OpenAPI spec, so
-  dashboard and CLI users get the rename for free.
-- *In-flight tasks at upgrade time.* Migration renames columns
-  atomically; on next read, BUSY agents are already at `profile_id`. No
-  interruption.
+- *Existing data.* The migration preserves all `agents` and `projects`
+  data; the `tasks.agent_type` and `archived_tasks.agent_type` columns
+  are dropped (live DB has 1 task with NULL and 0 archived rows with a
+  value, so no data is lost in practice).
+- *External tools.* Anything querying the DB directly for
+  `agents.agent_type` or `tasks.agent_type` will break. Surface in PR
+  description and `CHANGELOG.md`. The typed `aq-client` SDK regenerates
+  from the OpenAPI spec, so dashboard and CLI users get the field
+  changes for free.
+- *External MCP / Discord callers.* Any caller that passed
+  `agent_type=` when creating or editing a task will get a "no such
+  parameter" rejection. Treat this as a breaking change in the PR
+  description; the parameter wasn't doing anything functional anyway.
+- *In-flight tasks at upgrade time.* Migration is atomic; agents go
+  IDLE on completion and read the renamed column with no interruption.
 
 ### Rollout flag
 
