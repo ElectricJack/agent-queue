@@ -104,10 +104,19 @@ if command -v npm &>/dev/null; then
     echo "Installing dashboard / TypeScript workspace deps (npm install)..."
     npm install --silent
     echo "  ✓ dashboard deps installed"
+
+    # Generate the typed API client source from openapi.json. The package
+    # exports ./src/index.ts as its entry point but the src/ directory is
+    # gitignored — fresh clones need this step or vite fails to resolve
+    # @aq/ts-client when the dashboard starts.
+    echo "Generating typed API client (@aq/ts-client)..."
+    npm -w @aq/ts-client run generate --silent
+    echo "  ✓ @aq/ts-client generated"
 else
     echo ""
     echo "[skip] npm not available; dashboard won't be available."
     echo "       Install Node.js and run 'npm install' from the repo root to enable it."
+    echo "       Then run: npm -w @aq/ts-client run generate"
 fi
 
 # --- Symlink CLI binaries to ~/.local/bin so they're on PATH globally ---
