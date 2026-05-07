@@ -80,7 +80,7 @@ def agent_to_dict(agent: Any) -> dict[str, Any]:
     return {
         "id": agent.id,
         "name": agent.name,
-        "agent_type": agent.agent_type,
+        "profile_id": agent.profile_id,
         "state": agent.state.value if hasattr(agent.state, "value") else str(agent.state),
         "current_task_id": agent.current_task_id,
         "pid": agent.pid,

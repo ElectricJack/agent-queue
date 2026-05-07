@@ -637,14 +637,6 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                     "default": False,
                 },
-                "agent_type": {
-                    "type": "string",
-                    "description": (
-                        "Type of agent needed for this task (e.g. 'coding', "
-                        "'code-review', 'qa'). Used by coordination playbooks "
-                        "to match tasks with appropriately-typed agents."
-                    ),
-                },
                 "affinity_agent_id": {
                     "type": "string",
                     "description": (
@@ -865,7 +857,7 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Edit a task's properties: project_id, title, description, priority, task_type, "
             "status, max_retries, verification_type, profile_id, auto_approve_plan, "
-            "skip_verification, agent_type, affinity_agent_id, affinity_reason, "
+            "skip_verification, affinity_agent_id, affinity_reason, "
             "or workspace_mode. Use this "
             "to move a task to a different project, rename tasks, change priority, override status "
             "(admin), assign a profile, adjust retry/verification settings, or set coordination "
@@ -919,13 +911,6 @@ _ALL_TOOL_DEFINITIONS = [
                 "skip_verification": {
                     "type": "boolean",
                     "description": "If true, skip git verification on task completion (optional)",
-                },
-                "agent_type": {
-                    "type": ["string", "null"],
-                    "description": (
-                        "Type of agent needed (e.g. 'coding', 'code-review', 'qa'). "
-                        "Set to null to clear (optional)"
-                    ),
                 },
                 "affinity_agent_id": {
                     "type": ["string", "null"],

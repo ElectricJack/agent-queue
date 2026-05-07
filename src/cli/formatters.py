@@ -238,7 +238,7 @@ def format_agent_table(agents: list[Any]) -> Table:
         table.add_row(
             agent.id,
             agent.name,
-            agent.agent_type,
+            agent.profile_id,
             state_text,
             agent.current_task_id or "—",
             _relative_time(agent.last_heartbeat),

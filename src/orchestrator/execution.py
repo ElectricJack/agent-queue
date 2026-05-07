@@ -207,19 +207,19 @@ class ExecutionMixin:
         # 3. max_agents_by_type — per-type concurrency limits
         if constraint.max_agents_by_type:
             agent = await self.db.get_agent(action.agent_id)
-            if agent and agent.agent_type in constraint.max_agents_by_type:
-                limit = constraint.max_agents_by_type[agent.agent_type]
+            if agent and agent.profile_id in constraint.max_agents_by_type:
+                limit = constraint.max_agents_by_type[agent.profile_id]
                 agents = await self.db.list_agents(state=AgentState.BUSY)
                 type_count = 0
                 for a in agents:
-                    if a.agent_type == agent.agent_type and a.current_task_id:
+                    if a.profile_id == agent.profile_id and a.current_task_id:
                         t = await self.db.get_task(a.current_task_id)
                         if t and t.project_id == action.project_id:
                             type_count += 1
                 if type_count >= limit:
                     return (
                         f"max_agents_by_type limit reached for type "
-                        f"'{agent.agent_type}' (limit={limit}, active={type_count})"
+                        f"'{agent.profile_id}' (limit={limit}, active={type_count})"
                     )
 
         return None
@@ -1404,11 +1404,11 @@ class ExecutionMixin:
             resume_at = time.time() + retry_secs
 
             # Set provider-level cooldown
-            if agent and agent.agent_type:
-                self._provider_cooldowns[agent.agent_type] = resume_at
+            if agent and agent.profile_id:
+                self._provider_cooldowns[agent.profile_id] = resume_at
                 logger.info(
                     "Provider cooldown set: %s until %.0f (%ds from now)",
-                    agent.agent_type,
+                    agent.profile_id,
                     resume_at,
                     retry_secs,
                 )
