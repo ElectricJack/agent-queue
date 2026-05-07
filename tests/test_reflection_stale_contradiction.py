@@ -151,7 +151,7 @@ def _task_completed_event(
         "project_id": project_id,
         "title": title,
         "agent_id": agent_id,
-        "agent_type": agent_type,
+        "agent_type": profile_id,
     }
 
 

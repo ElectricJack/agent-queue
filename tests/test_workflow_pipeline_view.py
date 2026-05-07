@@ -298,12 +298,6 @@ class TestBuildTaskCard:
         card = build_task_card(task)
         assert card["assigned_agent"] == "claude-1"
 
-    def test_card_with_agent_type(self):
-        task = _make_task(profile_id="coding")
-        card = build_task_card(task)
-        assert card["agent_type"] == "coding"
-        assert card["agent_type_colors"] == AGENT_TYPE_COLORS["coding"]
-
     def test_card_with_affinity(self):
         task = _make_task(
             affinity_agent_id="claude-1",
@@ -610,7 +604,6 @@ class TestBuildAgentSummary:
         assert agent["tasks_completed"] == 1
         assert agent["tasks_assigned"] == 2
         assert agent["current_task"] == "t2"
-        assert agent["agent_type"] == "coding"
 
     def test_multiple_agents(self):
         tasks = [

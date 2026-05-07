@@ -105,7 +105,7 @@ async def test_get_service_returns_stub_when_plugin_loaded(
     registry = await plugin_registry_with_plugin(_StubMemoryPlugin)
     svc = registry.get_service("memory")
     assert svc is not None
-    assert await svc.load_l1_facts(project_id="p1", profile_id="supervisor") == (
+    assert await svc.load_l1_facts(project_id="p1", agent_type="supervisor") == (
         "l1-facts:p1:supervisor"
     )
 
@@ -135,7 +135,7 @@ async def _drive_supervisor_l1_injection(orch, *, project_id: str) -> str:
         try:
             l1_text = await mem_svc.load_l1_facts(
                 project_id=project_id,
-                profile_id="supervisor",
+                agent_type="supervisor",
             )
             if l1_text:
                 builder.set_l1_facts(l1_text)

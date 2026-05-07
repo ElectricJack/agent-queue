@@ -95,7 +95,7 @@ class TestOverrideChangeInfo:
             file_path="/vault/projects/app/overrides/coding.md",
             change_type="created",
             project_id="app",
-            profile_id="coding",
+            agent_type="coding",
         )
         assert info.file_path == "/vault/projects/app/overrides/coding.md"
         assert info.change_type == "created"
@@ -107,7 +107,7 @@ class TestOverrideChangeInfo:
             file_path="/vault/projects/app/overrides/coding.md",
             change_type="created",
             project_id="app",
-            profile_id="coding",
+            agent_type="coding",
         )
         with pytest.raises(AttributeError):
             info.project_id = "other"  # type: ignore[misc]
@@ -186,7 +186,7 @@ class TestOnOverrideChanged:
 
         msg = caplog.records[0].message
         assert "project=mech-fighters" in msg
-        assert "profile_id=review-specialist" in msg
+        assert "agent_type=review-specialist" in msg
 
     @pytest.mark.asyncio
     async def test_handler_warns_on_bad_path(self, caplog):

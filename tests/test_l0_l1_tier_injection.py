@@ -316,7 +316,7 @@ class TestL1FactsFromMemory:
 
         mock_mem.load_l1_facts.assert_called_once_with(
             project_id="p-1",
-            profile_id="web-developer",
+            agent_type="web-developer",
         )
 
 
@@ -690,7 +690,7 @@ class TestL0L1ProfileWithoutProjectFacts:
         assert "default_model: claude-sonnet" in ctx.l1_facts
 
     async def test_memory_service_called_with_agent_type(self, orch_env):
-        """load_l1_facts is called with profile_id=profile.id."""
+        """load_l1_facts is called with agent_type=profile.id."""
         orch, factory = orch_env
 
         mock_mem = AsyncMock()
@@ -720,11 +720,11 @@ class TestL0L1ProfileWithoutProjectFacts:
         # Verify agent_type comes from profile.id
         mock_mem.load_l1_facts.assert_called_once_with(
             project_id="p-1",
-            profile_id="reviewer",
+            agent_type="reviewer",
         )
 
     async def test_agent_type_none_when_no_profile(self, orch_env):
-        """Without a profile, profile_id=None is passed to load_l1_facts."""
+        """Without a profile, agent_type=None is passed to load_l1_facts."""
         orch, factory = orch_env
 
         mock_mem = AsyncMock()
@@ -749,7 +749,7 @@ class TestL0L1ProfileWithoutProjectFacts:
 
         mock_mem.load_l1_facts.assert_called_once_with(
             project_id="p-1",
-            profile_id=None,
+            agent_type=None,
         )
 
     async def test_both_l0_and_l1_in_final_prompt(self, orch_env):
