@@ -1044,6 +1044,52 @@ class AgentQueueBot(commands.Bot):
                     logger.error("Error recording suppressed suggestion: %s", e)
             return
 
+        # Phase 2 — hash-dedup gate. The DB already has the read-side method
+        # (`get_suggestion_hash_exists`) but it has never been called from
+        # the bot. Now that Phase 1 reliably writes the hash on every insert,
+        # we use it here to short-circuit duplicate suggestions before they
+        # reach Discord. Scope is `(project_id, suggestion_hash)` — exactly
+        # how the DB method indexes — so a duplicate in one project does not
+        # silence a fresh suggestion in another. Errors are swallowed: a
+        # transient DB failure must not crash the suggestion pipeline (worst
+        # case: the duplicate posts, which is the pre-Phase-2 behavior).
+        if self.orchestrator.db:
+            try:
+                already_seen = await self.orchestrator.db.get_suggestion_hash_exists(
+                    project_id=project_id,
+                    suggestion_hash=suggestion_hash,
+                )
+            except Exception as e:
+                logger.error("Error checking suggestion dedup: %s", e)
+                already_seen = False
+
+            if already_seen:
+                logger.info(
+                    "suggestion suppressed: duplicate",
+                    extra={
+                        "gate": "dedup",
+                        "project_id": project_id,
+                        "channel_id": channel_id,
+                        "suggestion_hash": suggestion_hash,
+                        "suggestion_type": suggestion_type,
+                    },
+                )
+                # Phase 8 footprint — same shape as the confidence-gate
+                # branch above. Best-effort; observability never blocks
+                # the suppression decision.
+                try:
+                    await self.orchestrator.db.create_suppressed_chat_analyzer_suggestion(
+                        project_id=project_id,
+                        channel_id=channel_id,
+                        suggestion_type=suggestion_type,
+                        suggestion_text=text,
+                        suggestion_hash=suggestion_hash,
+                        suppressed_by="dedup",
+                    )
+                except Exception as e:
+                    logger.error("Error recording suppressed suggestion: %s", e)
+                return
+
         # Create database record if DB is available
         suggestion_id = None
         if self.orchestrator.db:

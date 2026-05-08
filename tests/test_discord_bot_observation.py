@@ -299,6 +299,118 @@ async def test_missing_confidence_defaults_to_pass_through_when_threshold_zero()
     assert db.create_chat_analyzer_suggestion.await_count == 1
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 — hash-dedup gate in _post_observation_suggestion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_duplicate_hash_suggestion_is_suppressed(caplog):
+    """Suggestions whose hash already exists for the project must NOT post.
+
+    Phase 2 wires ``db.get_suggestion_hash_exists(project_id, suggestion_hash)``
+    into ``_post_observation_suggestion``. When the hash is already present,
+    the bot must:
+      * skip ``channel.send`` entirely (no Discord post)
+      * NOT insert a new ``status="pending"`` row via
+        ``create_chat_analyzer_suggestion`` (the row already exists — that
+        is why we are deduping)
+      * emit a structured INFO log line tagged ``gate="dedup"`` so the
+        Phase-8 metrics command can count dedup-suppressions per gate
+    """
+    import logging
+
+    from src.discord.bot import AgentQueueBot
+
+    stub, channel, db = _make_bot_stub(min_confidence=0.0)
+    # Pre-seed the dedup gate to claim the hash already exists.
+    db.get_suggestion_hash_exists = AsyncMock(return_value=True)
+    # Phase-8 footprint write is best-effort and wrapped in try/except in
+    # production code; provide a plausible AsyncMock so the await succeeds
+    # if the implementation chooses to record a footprint here.
+    db.create_suppressed_chat_analyzer_suggestion = AsyncMock(return_value=42)
+
+    suggestion = {
+        "suggestion_type": "task",
+        "content": "Add a particle renderer benchmark",
+        "task_title": "Benchmark particle renderer",
+        # confidence is well above the (zero) threshold so we know any
+        # suppression we observe came from the dedup gate, not the
+        # confidence gate.
+        "confidence": 0.95,
+        "intent_confidence": 1.0,
+        "novelty": 1.0,
+        "actionability": 0.95,
+    }
+
+    with caplog.at_level(logging.INFO, logger="src.discord.bot"):
+        await AgentQueueBot._post_observation_suggestion(
+            stub,
+            channel_id=12345,
+            project_id="p1",
+            suggestion=suggestion,
+        )
+
+    # No Discord post
+    assert channel.send.await_count == 0, (
+        "duplicate-hash suggestion must not be posted to Discord"
+    )
+    # No new pending DB row — the existing one is the one we deduped against
+    assert db.create_chat_analyzer_suggestion.await_count == 0, (
+        "duplicate-hash suggestion must not create a new pending row"
+    )
+    # Structured log with gate=dedup
+    matched = [
+        rec for rec in caplog.records if getattr(rec, "gate", None) == "dedup"
+    ]
+    assert matched, (
+        "expected an INFO log record carrying extra={'gate': 'dedup'}"
+    )
+    # Sanity: the dedup query was actually consulted
+    assert db.get_suggestion_hash_exists.await_count == 1, (
+        "dedup gate must call get_suggestion_hash_exists"
+    )
+
+
+@pytest.mark.asyncio
+async def test_distinct_hash_is_not_suppressed():
+    """When the hash is NOT already in the table the suggestion must post.
+
+    This proves the dedup gate is selective rather than a blanket mute.
+    """
+    from src.discord.bot import AgentQueueBot
+
+    stub, channel, db = _make_bot_stub(min_confidence=0.0)
+    db.get_suggestion_hash_exists = AsyncMock(return_value=False)
+
+    suggestion = {
+        "suggestion_type": "task",
+        "content": "Refactor the particle pool allocator",
+        "task_title": "Refactor allocator",
+        "confidence": 0.95,
+        "intent_confidence": 1.0,
+        "novelty": 1.0,
+        "actionability": 0.95,
+    }
+
+    await AgentQueueBot._post_observation_suggestion(
+        stub,
+        channel_id=12345,
+        project_id="p1",
+        suggestion=suggestion,
+    )
+
+    assert channel.send.await_count == 1, (
+        "novel-hash suggestion must reach Discord"
+    )
+    assert db.create_chat_analyzer_suggestion.await_count == 1, (
+        "novel-hash suggestion must be persisted as a pending row"
+    )
+    assert db.get_suggestion_hash_exists.await_count == 1, (
+        "dedup gate must query before posting, even when it ultimately allows"
+    )
+
+
 @pytest.mark.asyncio
 async def test_post_observation_suggestion_passes_real_confidence_to_embed(monkeypatch):
     """The embed must receive the suggestion's real confidence, not a constant.
