@@ -995,6 +995,15 @@ class AgentQueueBot(commands.Bot):
         ("two stuck tasks older than 30 min") may still be worth posting
         — but the threshold is substantially higher.  Suppressions are
         tagged ``gate="in_flight_active_task"``.
+
+        Phase 6 — dismiss cooldown gate: when the most recent dismissal
+        in this ``(project_id, channel_id)`` is within
+        ``config.chat_analyzer.dismiss_cooldown_seconds`` (default
+        ``600``) of "now", the suggestion is suppressed.  A user
+        dismissal is the strongest negative signal we have — honor it
+        by going quiet for that channel for a window. Setting the
+        config value to ``0`` disables the gate entirely.
+        Suppressions are tagged ``gate="dismiss_cooldown"``.
         """
         from src.discord.views import SuggestionView, format_suggestion_embed
 
@@ -1169,6 +1178,71 @@ class AgentQueueBot(commands.Bot):
                 except Exception as e:
                     logger.error("Error recording suppressed suggestion: %s", e)
                 return
+
+        # Phase 6 — dismiss-cooldown gate. A user dismissal is the
+        # strongest negative signal we have for "this channel doesn't
+        # want to be interrupted right now." If the most recent
+        # ``resolved_at`` for a dismissed suggestion in this
+        # ``(project_id, channel_id)`` is within ``dismiss_cooldown_seconds``
+        # of "now", suppress every suggestion regardless of content
+        # (this is the broadest mute we have — content-equality dedup
+        # already ran above; this gate is channel-wide). Setting the
+        # config value to ``0`` disables the gate entirely so operators
+        # can opt out without touching other gates.
+        cooldown_seconds = int(
+            getattr(
+                getattr(self.config, "chat_analyzer", None),
+                "dismiss_cooldown_seconds",
+                600,
+            )
+        )
+        if cooldown_seconds > 0 and self.orchestrator.db:
+            try:
+                last_dismiss = await self.orchestrator.db.get_last_dismiss_time(
+                    project_id=project_id,
+                    channel_id=channel_id,
+                )
+            except Exception as e:
+                # Defensive: a transient DB error must not crash the
+                # suggestion pipeline. Degrade to "no recent dismissal"
+                # — the worst case is a single suggestion that should
+                # have been muted slipping through, which is far better
+                # than the whole pipeline crashing.
+                logger.error("Error checking dismiss cooldown: %s", e)
+                last_dismiss = None
+
+            if last_dismiss is not None:
+                age = time.time() - float(last_dismiss)
+                if age < cooldown_seconds:
+                    logger.info(
+                        "suggestion suppressed: dismiss cooldown",
+                        extra={
+                            "gate": "dismiss_cooldown",
+                            "project_id": project_id,
+                            "channel_id": channel_id,
+                            "cooldown_seconds": cooldown_seconds,
+                            "seconds_since_last_dismiss": age,
+                            "suggestion_type": suggestion_type,
+                        },
+                    )
+                    # Phase 8 footprint — same shape as the other
+                    # gate-suppression branches. Best-effort; the
+                    # decision to suppress has already been made and
+                    # observability must not block it.
+                    try:
+                        await self.orchestrator.db.create_suppressed_chat_analyzer_suggestion(
+                            project_id=project_id,
+                            channel_id=channel_id,
+                            suggestion_type=suggestion_type,
+                            suggestion_text=text,
+                            suggestion_hash=suggestion_hash,
+                            suppressed_by="dismiss_cooldown",
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Error recording suppressed suggestion: %s", e
+                        )
+                    return
 
         # Create database record if DB is available
         suggestion_id = None

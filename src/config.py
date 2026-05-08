@@ -515,10 +515,18 @@ class ChatAnalyzerConfig:
       ``gate="in_flight_active_task"``.  Set this to a value ``>=
       min_confidence`` for the escalation to mean anything; a value
       ``<= min_confidence`` is technically valid but a no-op.
+    * ``dismiss_cooldown_seconds`` (Phase 6) — number of seconds after
+      a user dismisses a suggestion in a channel during which no new
+      suggestions are posted to that ``(project_id, channel_id)``
+      pair.  A user dismissal is the strongest negative signal we
+      have; honor it by going quiet for that channel for a window.
+      Default ``600`` (10 minutes).  Set to ``0`` to disable the gate
+      entirely.  Suppressions are tagged ``gate="dismiss_cooldown"``.
     """
 
     min_confidence: float = 0.6
     in_flight_min_confidence: float = 0.85
+    dismiss_cooldown_seconds: int = 600
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -536,6 +544,14 @@ class ChatAnalyzerConfig:
                     "chat_analyzer",
                     "in_flight_min_confidence",
                     "must be in [0, 1]",
+                )
+            )
+        if self.dismiss_cooldown_seconds < 0:
+            errors.append(
+                ConfigError(
+                    "chat_analyzer",
+                    "dismiss_cooldown_seconds",
+                    "must be >= 0",
                 )
             )
         return errors

@@ -26,6 +26,7 @@ def _make_bot_stub(
     db_returns_id: int | None = 99,
     min_confidence: float = 0.0,
     in_flight_min_confidence: float = 0.85,
+    dismiss_cooldown_seconds: int = 0,
 ):
     """Build a minimal object with the attributes ``_post_observation_suggestion`` touches.
 
@@ -40,6 +41,14 @@ def _make_bot_stub(
     legacy tests never trip the in-flight gate; tests that exercise the
     gate override ``stub.agent.handler.execute`` to seed an active task.
 
+    Phase 6 — ``dismiss_cooldown_seconds`` (default ``0`` here, vs the
+    production default of ``600``) is the post-dismissal silence window
+    in seconds.  We default to ``0`` for the stub so legacy tests do not
+    accidentally trip the cooldown gate; Phase 6 tests pass an explicit
+    value (e.g. ``600``).  ``db.get_last_dismiss_time`` defaults to
+    ``None`` (no prior dismissal) so the gate stays quiet unless a test
+    explicitly seeds a recent dismissal.
+
     Returns a tuple of ``(stub, channel, db)`` so tests can assert against
     the mocked dependencies directly.
     """
@@ -51,6 +60,9 @@ def _make_bot_stub(
     db.create_suppressed_chat_analyzer_suggestion = AsyncMock(return_value=0)
     # Phase 2 dedup query — default to "novel" so legacy tests post.
     db.get_suggestion_hash_exists = AsyncMock(return_value=False)
+    # Phase 6 dismiss-cooldown query — default to "no prior dismissal" so
+    # legacy tests are not silenced by the new gate.
+    db.get_last_dismiss_time = AsyncMock(return_value=None)
 
     channel = MagicMock()
     channel.send = AsyncMock(return_value=None)
@@ -67,6 +79,7 @@ def _make_bot_stub(
     chat_analyzer_cfg = SimpleNamespace(
         min_confidence=min_confidence,
         in_flight_min_confidence=in_flight_min_confidence,
+        dismiss_cooldown_seconds=dismiss_cooldown_seconds,
     )
     config = SimpleNamespace(chat_analyzer=chat_analyzer_cfg)
 
@@ -748,5 +761,283 @@ async def test_in_flight_lookup_failure_falls_back_to_base_gate(caplog):
 
     # Lookup failure → treat as "no active tasks" → base gate already
     # cleared → suggestion still posts.
+    assert channel.send.await_count == 1
+    assert db.create_chat_analyzer_suggestion.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — dismiss cooldown gate in _post_observation_suggestion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recent_dismissal_silences_channel(caplog, monkeypatch):
+    """A recent user dismissal in a channel must mute new suggestions.
+
+    Phase 6 wires ``db.get_last_dismiss_time(project_id, channel_id)``
+    into ``_post_observation_suggestion``. When the most recent
+    ``resolved_at`` for a dismissed suggestion in this channel is
+    within ``chat_analyzer.dismiss_cooldown_seconds`` of "now", the bot
+    must:
+
+      * skip ``channel.send`` entirely (no Discord post)
+      * NOT insert a regular ``status="pending"`` row
+      * emit a structured INFO log line tagged
+        ``gate="dismiss_cooldown"`` so Phase-8 metrics can count
+        cooldown suppressions per gate
+      * record a Phase-8 footprint via
+        ``create_suppressed_chat_analyzer_suggestion`` with
+        ``suppressed_by="dismiss_cooldown"``
+    """
+    import logging
+    import time as time_module
+
+    from src.discord import bot as bot_module
+    from src.discord.bot import AgentQueueBot
+
+    # Pin "now" so the cooldown math is deterministic.
+    fake_now = 1_700_000_000.0
+    monkeypatch.setattr(bot_module.time, "time", lambda: fake_now)
+
+    stub, channel, db = _make_bot_stub(
+        min_confidence=0.6,
+        in_flight_min_confidence=0.85,
+        dismiss_cooldown_seconds=600,
+    )
+    # User dismissed a suggestion 60 s ago — well inside the 600 s window.
+    db.get_last_dismiss_time = AsyncMock(return_value=fake_now - 60)
+    # Hash dedup must allow the post so any suppression we observe came
+    # from the cooldown gate.
+    db.get_suggestion_hash_exists = AsyncMock(return_value=False)
+
+    suggestion = {
+        "suggestion_type": "task",
+        "content": "Refactor the particle pool allocator",
+        "task_title": "Refactor allocator",
+        # Above both base + in-flight thresholds — without the cooldown
+        # gate this would post.
+        "confidence": 0.95,
+        "intent_confidence": 1.0,
+        "novelty": 1.0,
+        "actionability": 0.95,
+    }
+
+    with caplog.at_level(logging.INFO, logger="src.discord.bot"):
+        await AgentQueueBot._post_observation_suggestion(
+            stub,
+            channel_id=12345,
+            project_id="my-game",
+            suggestion=suggestion,
+        )
+
+    # Don't crash on the unused import — it documents that we considered
+    # using stdlib ``time`` directly but chose monkeypatching ``bot.time``
+    # so the production code path under test is the one we exercise.
+    _ = time_module
+
+    # No Discord post
+    assert channel.send.await_count == 0, (
+        "recent-dismissal cooldown must not post to Discord"
+    )
+    # No new pending DB row
+    assert db.create_chat_analyzer_suggestion.await_count == 0, (
+        "cooldown suppression must not create a pending suggestion row"
+    )
+
+    # The lookup must scope to (project_id, channel_id) so a dismissal
+    # in another channel does not silence this one.
+    assert db.get_last_dismiss_time.await_count == 1
+    lookup_call = db.get_last_dismiss_time.await_args
+    assert lookup_call.kwargs.get("project_id") == "my-game"
+    assert lookup_call.kwargs.get("channel_id") == 12345
+
+    # Structured log
+    matched = [
+        rec
+        for rec in caplog.records
+        if getattr(rec, "gate", None) == "dismiss_cooldown"
+    ]
+    assert matched, (
+        "expected an INFO log record carrying extra={'gate': 'dismiss_cooldown'}"
+    )
+
+    # Phase-8 footprint with the right suppressed_by tag
+    assert db.create_suppressed_chat_analyzer_suggestion.await_count == 1
+    footprint_kwargs = (
+        db.create_suppressed_chat_analyzer_suggestion.await_args.kwargs
+    )
+    assert footprint_kwargs.get("suppressed_by") == "dismiss_cooldown"
+    assert footprint_kwargs.get("project_id") == "my-game"
+    assert footprint_kwargs.get("channel_id") == 12345
+
+
+@pytest.mark.asyncio
+async def test_dismissal_outside_cooldown_does_not_silence(monkeypatch):
+    """A dismissal older than the cooldown window must NOT silence.
+
+    Inverse of the suppression test: ``resolved_at = now - 700`` with
+    ``dismiss_cooldown_seconds=600`` falls outside the window, so the
+    suggestion posts normally.
+    """
+    from src.discord import bot as bot_module
+    from src.discord.bot import AgentQueueBot
+
+    fake_now = 1_700_000_000.0
+    monkeypatch.setattr(bot_module.time, "time", lambda: fake_now)
+
+    stub, channel, db = _make_bot_stub(
+        min_confidence=0.6,
+        in_flight_min_confidence=0.85,
+        dismiss_cooldown_seconds=600,
+    )
+    # 700 s in the past — outside the 600 s cooldown window.
+    db.get_last_dismiss_time = AsyncMock(return_value=fake_now - 700)
+    db.get_suggestion_hash_exists = AsyncMock(return_value=False)
+
+    suggestion = {
+        "suggestion_type": "task",
+        "content": "Polish the menu animations",
+        "task_title": "Polish menu animations",
+        "confidence": 0.95,
+        "intent_confidence": 1.0,
+        "novelty": 1.0,
+        "actionability": 0.95,
+    }
+
+    await AgentQueueBot._post_observation_suggestion(
+        stub,
+        channel_id=12345,
+        project_id="my-game",
+        suggestion=suggestion,
+    )
+
+    assert channel.send.await_count == 1, (
+        "dismissal outside the cooldown window must not silence the channel"
+    )
+    assert db.create_chat_analyzer_suggestion.await_count == 1, (
+        "post-cooldown suggestion must be persisted as a pending row"
+    )
+    # No suppression footprint should have been written for the cooldown gate.
+    cooldown_footprints = [
+        call
+        for call in db.create_suppressed_chat_analyzer_suggestion.await_args_list
+        if call.kwargs.get("suppressed_by") == "dismiss_cooldown"
+    ]
+    assert not cooldown_footprints, (
+        "post-cooldown suggestion must not record a cooldown suppression footprint"
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_prior_dismissal_does_not_silence():
+    """When no prior dismissal exists the cooldown gate must not fire.
+
+    Regression: ``get_last_dismiss_time`` returns ``None`` for a clean
+    channel; the gate must treat that as "no cooldown active" and let
+    the suggestion through.
+    """
+    from src.discord.bot import AgentQueueBot
+
+    stub, channel, db = _make_bot_stub(
+        min_confidence=0.6,
+        in_flight_min_confidence=0.85,
+        dismiss_cooldown_seconds=600,
+    )
+    # No prior dismissal at all.
+    db.get_last_dismiss_time = AsyncMock(return_value=None)
+
+    suggestion = {
+        "suggestion_type": "task",
+        "content": "Add a benchmark for the renderer",
+        "task_title": "Benchmark renderer",
+        "confidence": 0.95,
+        "intent_confidence": 1.0,
+        "novelty": 1.0,
+        "actionability": 0.95,
+    }
+
+    await AgentQueueBot._post_observation_suggestion(
+        stub,
+        channel_id=12345,
+        project_id="my-game",
+        suggestion=suggestion,
+    )
+
+    assert channel.send.await_count == 1
+    assert db.create_chat_analyzer_suggestion.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_dismiss_cooldown_lookup_failure_falls_back_to_post():
+    """A DB error during the cooldown lookup must not crash the pipeline.
+
+    Mirrors the defensive try/except patterns in Phase 2 (dedup) and
+    Phase 5 (in-flight). Observability never blocks delivery — when we
+    cannot read the cooldown state we degrade to "no cooldown active"
+    and let the suggestion post.
+    """
+    from src.discord.bot import AgentQueueBot
+
+    stub, channel, db = _make_bot_stub(
+        min_confidence=0.6,
+        in_flight_min_confidence=0.85,
+        dismiss_cooldown_seconds=600,
+    )
+    db.get_last_dismiss_time = AsyncMock(side_effect=RuntimeError("DB down"))
+
+    suggestion = {
+        "suggestion_type": "task",
+        "content": "Polish the menu animations",
+        "task_title": "Polish menu animations",
+        "confidence": 0.95,
+    }
+
+    await AgentQueueBot._post_observation_suggestion(
+        stub,
+        channel_id=12345,
+        project_id="my-game",
+        suggestion=suggestion,
+    )
+
+    assert channel.send.await_count == 1
+    assert db.create_chat_analyzer_suggestion.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_dismiss_cooldown_disabled_when_seconds_zero(monkeypatch):
+    """``dismiss_cooldown_seconds=0`` disables the gate entirely.
+
+    Even with a fresh dismissal one second ago, the gate must not
+    suppress when the configured window is zero.  Operators use this
+    to opt out of the cooldown without having to disable other gates.
+    """
+    from src.discord import bot as bot_module
+    from src.discord.bot import AgentQueueBot
+
+    fake_now = 1_700_000_000.0
+    monkeypatch.setattr(bot_module.time, "time", lambda: fake_now)
+
+    stub, channel, db = _make_bot_stub(
+        min_confidence=0.6,
+        in_flight_min_confidence=0.85,
+        dismiss_cooldown_seconds=0,
+    )
+    # Even a 1-second-old dismissal must not block when window=0.
+    db.get_last_dismiss_time = AsyncMock(return_value=fake_now - 1)
+
+    suggestion = {
+        "suggestion_type": "task",
+        "content": "anything",
+        "task_title": "anything",
+        "confidence": 0.95,
+    }
+
+    await AgentQueueBot._post_observation_suggestion(
+        stub,
+        channel_id=12345,
+        project_id="my-game",
+        suggestion=suggestion,
+    )
+
     assert channel.send.await_count == 1
     assert db.create_chat_analyzer_suggestion.await_count == 1
