@@ -324,6 +324,11 @@ class Orchestrator(
         # operations (fetch, gc) across branch-isolated worktrees.
         # Keyed by the base workspace path (the parent repo directory).
         self._git_mutexes: dict[str, asyncio.Lock] = {}
+        # Per-task workspace attachments captured at acquisition time so the
+        # runtime layer can consume them later without re-acquiring.  Keyed
+        # by task id.  See workspaces-v2 spec §6 + §8.  Cleared on task
+        # completion in _release_workspaces_for_task.
+        self._task_attachments: dict[str, "WorkspaceAttachmentSet"] = {}  # noqa: F821
 
     def _git_mutex(self, workspace_path: str) -> asyncio.Lock:
         """Get or create an asyncio.Lock for shared git operations on a workspace."""
@@ -884,6 +889,18 @@ class Orchestrator(
         builtin = builtin_from_config(self.config)
         if builtin is not None:
             self.mcp_registry.set_builtin(builtin)
+
+        # Workspace kinds — markdown ↔ DB reconciliation (workspaces-v2 §4).
+        # Bootstrap first (writes markdown for migration-seeded DB rows),
+        # then scan (parses any operator-authored files).  Both are idempotent
+        # and safe to run on every daemon start.
+        from src.profiles.workspace_kind_registry import WorkspaceKindStore
+
+        self.workspace_kind_store = WorkspaceKindStore(
+            self.db, vault_root=self.config.vault_root
+        )
+        await self.workspace_kind_store.bootstrap()
+        await self.workspace_kind_store.scan()
 
         # Register facts.md watcher handlers (memory-plugin spec §7).
         # Detects changes to facts files across all vault scopes so they

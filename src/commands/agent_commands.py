@@ -76,6 +76,22 @@ class AgentCommandsMixin:
         path = args.get("path")
         name = args.get("name")
 
+        # Workspaces-v2: optional kind_id.  Defaults to 'project-repo' when
+        # omitted (the migration-seeded system kind, recreated on daemon
+        # start if missing).  Explicit value must resolve via project-scoped
+        # or system-wide fallback per spec §10.
+        kind_id = args.get("kind_id") or "project-repo"
+        resolved_kind = await self.db.resolve_workspace_kind(project_id, kind_id)
+        if resolved_kind is None:
+            return {
+                "error": (
+                    f"Kind '{kind_id}' is not defined for project "
+                    f"'{project_id}' and no system default exists. "
+                    "Define it in vault/[projects/<pid>/]workspace-kinds/"
+                    f"{kind_id}.md or use a known kind id (e.g. 'project-repo')."
+                )
+            }
+
         # Generate a human-readable workspace ID up front so it can double
         # as the checkout directory name when no explicit path is given.
         ws_id = await generate_workspace_id(self.db)
@@ -134,6 +150,7 @@ class AgentCommandsMixin:
             workspace_path=path,
             source_type=source_type,
             name=name,
+            kind_id=kind_id,
         )
         await self.db.create_workspace(workspace)
 
@@ -143,6 +160,7 @@ class AgentCommandsMixin:
             "project_id": project_id,
             "workspace_path": path,
             "source_type": source,
+            "kind_id": kind_id,
         }
         if not project.repo_url:
             try:
@@ -168,6 +186,7 @@ class AgentCommandsMixin:
                     "workspace_path": ws.workspace_path,
                     "source_type": ws.source_type.value,
                     "name": ws.name,
+                    "kind_id": ws.kind_id,
                     "locked_by_agent_id": ws.locked_by_agent_id,
                     "locked_by_task_id": ws.locked_by_task_id,
                     "lock_mode": ws.lock_mode.value if ws.lock_mode else None,
@@ -175,6 +194,42 @@ class AgentCommandsMixin:
                 }
                 for ws in workspaces
             ]
+        }
+
+    async def _cmd_list_workspace_kinds(self, args: dict) -> dict:
+        """List workspace kinds visible to a project (system + project overrides).
+
+        Workspaces-v2 spec §10.  When ``project_id`` is omitted, returns the
+        active-project's view; falls back to system-only when no project
+        is active.
+        """
+        project_id = args.get("project_id") or self._active_project_id
+        if project_id:
+            kinds = await self.db.list_workspace_kinds_for_project(project_id)
+        else:
+            # No project context: return system-only.
+            from src.models import SYSTEM_KIND_SCOPE
+
+            kinds = [
+                k for k in await self.db.list_all_workspace_kinds()
+                if k.project_id == SYSTEM_KIND_SCOPE
+            ]
+        return {
+            "project_id": project_id,
+            "workspace_kinds": [
+                {
+                    "id": k.id,
+                    "scope": ("project" if k.project_id == project_id else "system"),
+                    "description": k.description,
+                    "writable": k.writable,
+                    "lockable": k.lockable,
+                    "is_git_repo": k.is_git_repo,
+                    "repo_url": k.repo_url,
+                    "default_lock_mode": k.default_lock_mode,
+                    "auto_attach": k.auto_attach,
+                }
+                for k in kinds
+            ],
         }
 
     async def _cmd_remove_workspace(self, args: dict) -> dict:

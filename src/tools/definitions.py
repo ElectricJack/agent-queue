@@ -25,6 +25,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_project": "project",
     "add_workspace": "project",
     "list_workspaces": "project",
+    "list_workspace_kinds": "project",
     "find_merge_conflict_workspaces": "project",
     "release_workspace": "project",
     "remove_workspace": "project",
@@ -660,6 +661,31 @@ _ALL_TOOL_DEFINITIONS = [
                         "agents on separate directories (future)."
                     ),
                 },
+                "requires_kinds": {
+                    "type": "array",
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "kind": {"type": "string"},
+                                    "alias": {"type": ["string", "null"]},
+                                },
+                                "required": ["kind"],
+                            },
+                        ],
+                    },
+                    "description": (
+                        "Workspace kinds this task needs (workspaces-v2 spec §5). "
+                        "Each entry is either a kind id string (e.g. 'game-repo') or "
+                        "a dict {kind, alias?}. Auto-attached kinds (e.g. 'vault') "
+                        "do NOT need to be listed. When omitted, the task implicitly "
+                        "requires 'project-repo' — preserving today's single-workspace "
+                        "behavior. Each kind must resolve via project-scoped or "
+                        "system-wide vault/workspace-kinds/<id>.md."
+                    ),
+                },
             },
             "required": ["title"],
         },
@@ -669,7 +695,9 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Add a workspace directory for a project. Source types: 'clone' (auto-clones "
             "from the project's repo_url), 'link' (link an existing directory on disk). "
-            "Workspaces are project-scoped and dynamically acquired by agents when assigned tasks."
+            "Workspaces are project-scoped and dynamically acquired by agents when assigned tasks. "
+            "Optional kind_id selects which workspace kind this instance implements; defaults to "
+            "'project-repo' for back-compat (workspaces-v2 spec §10)."
         ),
         "input_schema": {
             "type": "object",
@@ -691,6 +719,14 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Workspace name (optional)",
                 },
+                "kind_id": {
+                    "type": "string",
+                    "description": (
+                        "Workspace kind id (e.g. 'project-repo', 'package-foo', 'vault'). "
+                        "Defaults to 'project-repo'. Must resolve via project-scoped or "
+                        "system-wide vault/workspace-kinds/<id>.md."
+                    ),
+                },
             },
             "required": ["project_id", "source"],
         },
@@ -704,6 +740,24 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": "Filter by project ID (optional)",
+                },
+            },
+        },
+    },
+    {
+        "name": "list_workspace_kinds",
+        "description": (
+            "List workspace kinds visible to a project (system + project-scoped overrides). "
+            "Workspaces-v2 spec §10. Each kind defines capability flags (writable, lockable, "
+            "is_git_repo, auto_attach) used by acquisition. Kinds are authored as markdown in "
+            "vault/[projects/<pid>/]workspace-kinds/<id>.md."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (optional — defaults to active project; system-only when none)",
                 },
             },
         },

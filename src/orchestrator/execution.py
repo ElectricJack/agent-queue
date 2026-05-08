@@ -40,6 +40,30 @@ from src.scheduler import AssignAction
 logger = logging.getLogger(__name__)
 
 
+def _render_workspaces_block(attachments: list) -> str:
+    """Render the per-task Workspaces block for the agent prompt.
+
+    See workspaces-v2 spec §8.3.  Each attachment is shown with its kind,
+    capability flags, and absolute path so the agent can reason about
+    where it can read, write, and lock.
+    """
+    lines = ["## Workspaces"]
+    for a in attachments:
+        flags: list[str] = []
+        if a.writable:
+            flags.append("writable")
+        else:
+            flags.append("read-only")
+        if a.lockable and a.workspace.locked_by_task_id is not None:
+            flags.append("locked")
+        flag_str = ", ".join(flags)
+        alias_str = f" ({a.alias})" if a.alias else ""
+        lines.append(
+            f"- **{a.kind_id}**{alias_str} ({flag_str}) → {a.workspace_path}"
+        )
+    return "\n".join(lines)
+
+
 class ExecutionMixin:
     """Agent execution pipeline methods mixed into Orchestrator."""
 
@@ -625,6 +649,40 @@ class ExecutionMixin:
             vault_project_dir = os.path.join(self.config.vault_root, "projects", task.project_id)
             extra_dirs.append(vault_project_dir)
 
+        # Workspaces-v2: surface the per-task attachment set captured at
+        # acquisition time.  When present, it includes every workspace the
+        # task locked or auto-attached (including the project vault as a
+        # first-class attachment).  Empty for back-compat call sites that
+        # haven't been wired yet (e.g. Supervisor singleton).
+        attachment_set = getattr(self, "_task_attachments", {}).get(task.id)
+        workspace_attachments = (
+            list(attachment_set.attachments) if attachment_set is not None else []
+        )
+
+        # Append a Workspaces block to the description so the agent knows
+        # what each attached path represents.  Spec §8.3.
+        if workspace_attachments:
+            full_description = (
+                full_description.rstrip()
+                + "\n\n"
+                + _render_workspaces_block(workspace_attachments)
+            )
+
+        # Build the runtime's allowed-paths set: extra_dirs (vault back-compat)
+        # ∪ attachment paths, minus the cwd.  Spec §7.1: dedup is explicit.
+        cwd_path = workspace
+        attachment_extra = {
+            a.workspace_path
+            for a in workspace_attachments
+            if a.workspace_path and a.workspace_path != cwd_path
+        }
+        deduped_extra_dirs = list(
+            dict.fromkeys(  # preserve order, dedup
+                [d for d in extra_dirs if d != cwd_path]
+                + sorted(attachment_extra - set(extra_dirs))
+            )
+        )
+
         ctx = TaskContext(
             task_id=task.id,
             description=full_description,
@@ -637,7 +695,8 @@ class ExecutionMixin:
             branch_name=task.branch_name or "",
             image_paths=task.attachments if task.attachments else [],
             mcp_servers=task_mcp,
-            add_dirs=extra_dirs,
+            add_dirs=deduped_extra_dirs,
+            workspace_attachments=workspace_attachments,
             # Singleton platforms (e.g. Supervisor) read profile here at
             # ``start(task)`` time since they can't carry it in __init__.
             profile=profile,

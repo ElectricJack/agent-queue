@@ -34,10 +34,12 @@ from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
 from src.database.queries.task_queries import TaskQueryMixin
+from src.database.queries.task_requirements_queries import TaskRequirementsQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
 from src.database.queries.playbook_queries import PlaybookQueryMixin
 from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.workflow_queries import WorkflowQueryMixin
+from src.database.queries.workspace_kinds_queries import WorkspaceKindQueryMixin
 from src.database.queries.workspace_queries import WorkspaceQueryMixin
 from src.database.tables import agents as agents_t, events as events_t, tasks as tasks_t
 from src.models import AgentState, TaskStatus
@@ -54,6 +56,8 @@ class PostgreSQLDatabaseAdapter(
     DependencyQueryMixin,
     AgentQueryMixin,
     WorkspaceQueryMixin,
+    WorkspaceKindQueryMixin,
+    TaskRequirementsQueryMixin,
     TokenQueryMixin,
     ResultQueryMixin,
     EventQueryMixin,

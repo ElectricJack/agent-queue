@@ -885,6 +885,45 @@ class TaskCommandsMixin:
         # time with a clear error.
         warn_deferred_mode = workspace_mode == WorkspaceMode.DIRECTORY_ISOLATED
 
+        # Validate optional requires_kinds (workspaces-v2 spec §5.1).
+        # Each entry is either a string ("game-repo") — sugar for
+        # {"kind": "game-repo", "alias": None} — or a dict with at least
+        # "kind".  Validates that every kind resolves (project-scoped row
+        # or system row) per spec §5.4.  Instance availability is NOT
+        # checked here — that's an acquisition-time concern.
+        raw_requires_kinds = args.get("requires_kinds") or []
+        normalized_requirements: list[tuple[str, str | None]] = []
+        for entry in raw_requires_kinds:
+            if isinstance(entry, str):
+                kind_id, alias = entry, None
+            elif isinstance(entry, dict):
+                kind_id = entry.get("kind") or entry.get("kind_id")
+                alias = entry.get("alias")
+                if not kind_id:
+                    return {
+                        "error": (
+                            f"requires_kinds entry {entry!r} is missing 'kind'"
+                        )
+                    }
+            else:
+                return {
+                    "error": (
+                        f"requires_kinds entries must be str or dict; got "
+                        f"{type(entry).__name__}: {entry!r}"
+                    )
+                }
+            resolved = await self.db.resolve_workspace_kind(project_id, kind_id)
+            if resolved is None:
+                return {
+                    "error": (
+                        f"Kind '{kind_id}' is not defined for project "
+                        f"'{project_id}' and no system default exists. "
+                        "Define it in vault/[projects/<pid>/]workspace-kinds/"
+                        f"{kind_id}.md or use a known kind id."
+                    )
+                }
+            normalized_requirements.append((kind_id, alias))
+
         initial_status = (
             TaskStatus.DEFINED if self._plan_subtask_creation_mode else TaskStatus.READY
         )
@@ -911,6 +950,12 @@ class TaskCommandsMixin:
             workspace_mode=workspace_mode,
         )
         await self.db.create_task(task)
+
+        # Persist requires_kinds rows now that the FK target exists.
+        if normalized_requirements:
+            await self.db.add_task_workspace_requirements(
+                task_id, normalized_requirements
+            )
 
         # If the supervisor set conversation context (the thread chain it was
         # responding to), store it as task_context so the executing agent gets
@@ -970,6 +1015,10 @@ class TaskCommandsMixin:
             result["affinity_reason"] = affinity_reason
         if workspace_mode:
             result["workspace_mode"] = workspace_mode.value
+        if normalized_requirements:
+            result["requires_kinds"] = [
+                {"kind": k, "alias": a} for k, a in normalized_requirements
+            ]
         if warn_deferred_mode:
             result["warning"] = (
                 "workspace_mode='directory-isolated' is accepted but not yet implemented. "

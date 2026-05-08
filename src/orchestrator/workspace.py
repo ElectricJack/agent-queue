@@ -8,9 +8,12 @@ import os
 from src.git.manager import GitError, GitManager
 from src.models import (
     RepoSourceType,
+    ResolvedRequirement,
     Task,
     TaskStatus,
     Workspace,
+    WorkspaceAttachment,
+    WorkspaceAttachmentSet,
     WorkspaceMode,
 )
 
@@ -30,42 +33,39 @@ class WorkspaceMixin:
             pass
 
     async def _prepare_workspace(self, task: Task, agent) -> str | None:
-        """Acquire a workspace lock and prepare it for the task.
+        """Acquire workspace(s) for the task and prepare the primary one.
+
+        See workspaces-v2 spec §6.5 + §6.6.  This method delegates lock
+        acquisition to :func:`acquire_for_task` (which handles multi-kind
+        atomically with canonical lock order) and then runs the existing
+        git-provisioning sequence on the project-repo attachment.
 
         Steps:
-        1. Acquire an unlocked workspace for the project via
-           ``db.acquire_workspace()``.  This is an atomic DB operation that
-           sets ``locked_by_agent_id`` — only one agent can hold a workspace.
-        2. If no workspace is available and ``lock_mode`` is
-           ``BRANCH_ISOLATED``, try to share a workspace that is already
-           locked with ``BRANCH_ISOLATED`` by creating a git worktree.
-        3. If still no workspace, return ``None`` (caller returns the task
-           to READY and frees the agent).
-        4. Determine the branch name:
-           - Root tasks: generate a fresh branch from task ID + title.
-           - Plan subtasks: reuse the parent task's branch name so all
-             steps accumulate commits on a single shared branch.
-        5. Perform git operations based on ``workspace.source_type``:
-           - CLONE: orchestrator manages the full clone lifecycle (clone on
-             first use, fetch + branch on subsequent uses).
-           - LINK: workspace points to a pre-existing local checkout;
-             orchestrator only manages branch operations, never clones.
-           - WORKTREE: workspace is a git worktree of another workspace;
-             git fetch is serialized via a per-repo mutex.
-        6. Return the workspace path.
+        1. Call ``acquire_for_task`` to obtain a :class:`WorkspaceAttachmentSet`.
+           For tasks with no explicit ``requires_kinds``, this synthesizes a
+           ``project-repo`` requirement preserving today's behavior.
+        2. If acquisition fails for ``project-repo`` *and* lock_mode is
+           ``BRANCH_ISOLATED``, fall back to creating a worktree from an
+           already-locked workspace (legacy behavior).
+        3. Stash the AttachmentSet on the orchestrator (Phase 7 reads it).
+        4. Run the existing branch / sentinel / git-provisioning sequence on
+           the project-repo attachment's workspace.
+        5. Return the workspace path (or ``None`` for tasks with no
+           project-repo attachment, e.g. supervisor-style tool-call-only).
 
         Error resilience: git failures (network issues, auth errors) are
         caught and reported via Discord but do NOT prevent the workspace
-        from being returned.  The agent can still work in the directory —
-        it just won't have proper branch management.
+        from being returned.
         """
+        from src.orchestrator.workspace_attachments import (
+            AcquisitionFailed,
+            acquire_for_task,
+        )
+
         project = await self.db.get_project(task.project_id)
         lock_mode = task.workspace_mode or WorkspaceMode.EXCLUSIVE
 
         # Directory-isolated mode is stubbed but not yet implemented.
-        # Reject early with a clear message rather than silently falling
-        # through to exclusive-like behavior.
-        # See docs/specs/design/agent-coordination.md §7 (Workspace Strategy).
         if lock_mode == WorkspaceMode.DIRECTORY_ISOLATED:
             raise RuntimeError(
                 "workspace_mode='directory-isolated' is not yet implemented. "
@@ -74,22 +74,51 @@ class WorkspaceMixin:
                 "Use 'exclusive' (default) or 'branch-isolated' instead."
             )
 
-        ws = await self.db.acquire_workspace(
-            task.project_id,
-            agent.id,
-            task.id,
-            preferred_workspace_id=task.preferred_workspace_id,
-            lock_mode=lock_mode,
-        )
+        try:
+            attachment_set = await acquire_for_task(self.db, task, agent.id)
+        except AcquisitionFailed as e:
+            # Branch-isolated fallback: when project-repo can't be acquired
+            # and the task wants BRANCH_ISOLATED, try to share an existing
+            # locked workspace via a git worktree.  Other kind failures
+            # (e.g. package-foo) propagate as task-not-ready (return None).
+            if e.kind_id == "project-repo" and lock_mode == WorkspaceMode.BRANCH_ISOLATED:
+                fallback_ws = await self._create_branch_isolated_worktree(
+                    task, agent, project
+                )
+                if fallback_ws is None:
+                    return None
+                # Synthesize a one-attachment set so the rest of the pipeline
+                # works.  vault auto-attach is *not* re-tried here because the
+                # primary acquisition path already failed for it.
+                kind = await self.db.resolve_workspace_kind(
+                    task.project_id, "project-repo"
+                )
+                attachment_set = WorkspaceAttachmentSet(
+                    attachments=[
+                        WorkspaceAttachment(
+                            requirement=ResolvedRequirement(
+                                kind_id="project-repo", position=0,
+                            ),
+                            workspace=fallback_ws,
+                            kind=kind,
+                        ),
+                    ],
+                )
+            else:
+                return None
 
-        # Branch-isolated fallback: when no unlocked workspace is available,
-        # share an existing BRANCH_ISOLATED workspace via a git worktree.
-        if not ws and lock_mode == WorkspaceMode.BRANCH_ISOLATED:
-            ws = await self._create_branch_isolated_worktree(task, agent, project)
+        # Stash the attachment set so Phase 7 (runtime integration) can
+        # consume it without re-acquiring.
+        self._task_attachments[task.id] = attachment_set
 
-        if not ws:
+        primary = attachment_set.first_of_kind("project-repo")
+        if primary is None:
+            # Tasks with no project-repo attachment (e.g. Supervisor tasks
+            # that only need vault) have no primary workspace path — return
+            # None so the dispatcher knows there's no cwd to give the agent.
             return None
 
+        ws = primary.workspace
         workspace = ws.workspace_path
         is_worktree = ws.source_type == RepoSourceType.WORKTREE
 
@@ -414,6 +443,7 @@ class WorkspaceMixin:
         For tasks that used branch-isolated worktrees, this removes the
         git worktree and deletes the dynamically created workspace record
         before releasing locks.  Regular workspaces are released normally.
+        Also discards any cached :class:`WorkspaceAttachmentSet` for the task.
         """
         # Find all workspaces locked by this task
         all_ws = await self.db.list_workspaces()
@@ -430,6 +460,9 @@ class WorkspaceMixin:
 
         # Release any remaining (non-worktree) workspaces via bulk operation
         await self.db.release_workspaces_for_task(task_id)
+
+        # Drop the cached attachment set — the next prepare will rebuild it.
+        self._task_attachments.pop(task_id, None)
 
     async def _cleanup_plan_files_before_task(
         self,
