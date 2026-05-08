@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import hashlib
 import json
 import logging
 import os
@@ -941,6 +942,29 @@ class AgentQueueBot(commands.Bot):
         except Exception as e:
             logger.error("Error processing observation batch: %s", e, exc_info=True)
 
+    @staticmethod
+    def _compute_suggestion_hash(
+        project_id: str, suggestion_type: str, text: str
+    ) -> str:
+        """Return a deterministic SHA-256 hex digest for a suggestion.
+
+        Inputs are normalized (lowercased, whitespace collapsed) so cosmetic
+        differences in the LLM's wording — extra spaces, capitalization,
+        embedded tabs/newlines — still hash to the same value. The
+        ``project_id`` is included so suggestions stay scoped per project.
+
+        The components are joined with NUL bytes so two distinct triples
+        cannot accidentally collide via concatenation (e.g. type ``"a"`` +
+        text ``"bc"`` vs type ``"ab"`` + text ``"c"``).
+        """
+        norm_type = " ".join((suggestion_type or "").lower().split())
+        norm_text = " ".join((text or "").lower().split())
+        norm_project = " ".join((project_id or "").lower().split())
+        payload = b"\x00".join(
+            (norm_project.encode("utf-8"), norm_type.encode("utf-8"), norm_text.encode("utf-8"))
+        )
+        return hashlib.sha256(payload).hexdigest()
+
     async def _post_observation_suggestion(
         self, channel_id: int, project_id: str, suggestion: dict
     ) -> None:
@@ -955,6 +979,12 @@ class AgentQueueBot(commands.Bot):
         text = suggestion.get("content", "")
         task_title = suggestion.get("task_title")
 
+        suggestion_hash = AgentQueueBot._compute_suggestion_hash(
+            project_id=project_id,
+            suggestion_type=suggestion_type,
+            text=text,
+        )
+
         # Create database record if DB is available
         suggestion_id = None
         if self.orchestrator.db:
@@ -964,6 +994,7 @@ class AgentQueueBot(commands.Bot):
                     channel_id=channel_id,
                     suggestion_type=suggestion_type,
                     suggestion_text=text,
+                    suggestion_hash=suggestion_hash,
                 )
             except Exception as e:
                 logger.error("Error creating suggestion record: %s", e)
