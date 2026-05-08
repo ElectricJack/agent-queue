@@ -274,12 +274,26 @@ chat_analyzer_suggestions = Table(
     Column("suggestion_type", Text, nullable=False),
     Column("suggestion_text", Text, nullable=False),
     Column("suggestion_hash", Text, nullable=False),
+    # Status values:
+    #   pending       — proposed and awaiting user action
+    #   accepted      — user clicked Accept (task created)
+    #   dismissed     — user clicked Dismiss
+    #   auto_executed — fired without confirmation
+    #   suppressed    — never shown; ``suppressed_by`` records the gate
     Column("status", Text, nullable=False, server_default="'pending'"),
     Column("created_at", Float, nullable=False),
     Column("resolved_at", Float, nullable=True),
     Column("context_snapshot", Text, nullable=True),
+    # Phase 8: which gate suppressed this suggestion (NULL when not
+    # suppressed). Values are ``"confidence"``, ``"dedup"``,
+    # ``"in_flight_active_task"``, ``"dismiss_cooldown"``, etc. The column
+    # is nullable so the existing rows (and every non-suppressed row going
+    # forward) need no backfill. Indexed for efficient
+    # ``suppression_count_by_gate`` aggregation.
+    Column("suppressed_by", Text, nullable=True),
     Index("idx_chat_analyzer_project", "project_id", "status"),
     Index("idx_chat_analyzer_hash", "suggestion_hash"),
+    Index("idx_chat_analyzer_suppressed_by", "suppressed_by"),
 )
 
 archived_tasks = Table(

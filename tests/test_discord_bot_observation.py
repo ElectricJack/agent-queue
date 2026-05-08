@@ -187,8 +187,13 @@ async def test_low_confidence_suggestion_is_suppressed(caplog):
     With ``chat_analyzer.min_confidence = 0.6`` and a suggestion carrying
     ``confidence = 0.3``, the bot must:
       * skip ``channel.send`` entirely (no Discord post)
-      * NOT insert a DB row (the LLM-side `confidence < threshold` is the
-        gate; we don't pollute the dedup table with rejected suggestions)
+      * NOT insert a regular ``status="pending"`` row (the LLM-side
+        ``confidence < threshold`` is the gate; we don't queue rejected
+        suggestions). Phase 8 instead writes a separate
+        ``status="suppressed"`` footprint via
+        ``create_suppressed_chat_analyzer_suggestion`` — that path is
+        covered in ``test_chat_analyzer_metrics.py`` against a real DB
+        rather than the MagicMock stub used here.
       * emit a structured log line tagged ``gate="confidence"`` so Phase 8
         metrics can count suppressions per gate
     """

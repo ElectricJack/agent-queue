@@ -6,6 +6,7 @@ import datetime
 import json
 import logging
 import os
+import time
 
 from src.commands.helpers import (
     _parse_relative_time,
@@ -80,6 +81,52 @@ class EventCommandsMixin:
         days = args.get("days", 7)
         project_id = args.get("project_id")
         return await self.db.get_token_audit(days=days, project_id=project_id)
+
+    async def _cmd_get_chat_analyzer_metrics(self, args: dict) -> dict:
+        """Return aggregated metrics for chat-analyzer suggestion outcomes.
+
+        Phase 8 of the chat-analyzer suggestion-quality overhaul: every
+        gate that suppresses a suggestion (confidence, dedup, in-flight,
+        dismiss-cooldown) writes a ``status="suppressed"`` row tagged
+        with the gate name. This command rolls those rows up alongside
+        the regular pending/accepted/dismissed counts so an admin can
+        answer "how often is each gate firing? what fraction of posted
+        suggestions does the user accept?" without scraping logs.
+
+        Args:
+            project_id: Optional project filter. ``None`` (the default)
+                aggregates across every project.
+            since_hours: Time window. Defaults to ``24``. Pass ``0`` to
+                disable the window and return lifetime totals.
+
+        Returns a dict with the per-status counts (``total``, ``pending``,
+        ``accepted``, ``dismissed``, ``auto_executed``, ``suppressed``),
+        ``accept_rate`` and ``dismiss_rate`` (``None`` when no
+        suggestions have been resolved yet), and
+        ``suppression_count_by_gate`` keyed by gate label.
+        """
+        project_id = args.get("project_id")
+        since_hours = args.get("since_hours", 24)
+
+        try:
+            since_hours_int = int(since_hours)
+        except (TypeError, ValueError):
+            return {"error": f"since_hours must be an integer, got {since_hours!r}"}
+
+        # since_hours <= 0 → no window (lifetime metrics).
+        since_ts: float | None = None
+        if since_hours_int > 0:
+            since_ts = time.time() - (since_hours_int * 3600)
+
+        stats = await self.db.get_analyzer_suggestion_stats(
+            project_id=project_id, since=since_ts
+        )
+
+        return {
+            "project_id": project_id,
+            "since_hours": since_hours_int,
+            **stats,
+        }
 
     async def _cmd_read_logs(self, args: dict) -> dict:
         """Read and filter the daemon's JSONL log file.

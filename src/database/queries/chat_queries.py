@@ -38,6 +38,48 @@ class ChatQueryMixin:
             )
             return result.lastrowid
 
+    async def create_suppressed_chat_analyzer_suggestion(
+        self,
+        project_id: str,
+        channel_id: int,
+        suggestion_type: str,
+        suggestion_text: str,
+        suggestion_hash: str,
+        suppressed_by: str,
+        context_snapshot: str | None = None,
+    ) -> int:
+        """Record a suppressed suggestion attempt.
+
+        Phase 8 of the chat-analyzer overhaul gives every suppression
+        gate (confidence, dedup, in-flight task, dismiss-cooldown)
+        observable footprint in the same table the bot uses for posted
+        suggestions.  ``status`` is set to ``"suppressed"`` and
+        ``suppressed_by`` records *which* gate fired so the
+        ``get_chat_analyzer_metrics`` admin command can break suppression
+        counts down by gate without scanning logs.
+
+        ``resolved_at`` is set to the same timestamp as ``created_at``
+        because a suppressed suggestion is never seen by a human and
+        therefore needs no separate resolution step.
+        """
+        now = time.time()
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                insert(cas).values(
+                    project_id=project_id,
+                    channel_id=channel_id,
+                    suggestion_type=suggestion_type,
+                    suggestion_text=suggestion_text,
+                    suggestion_hash=suggestion_hash,
+                    status="suppressed",
+                    suppressed_by=suppressed_by,
+                    created_at=now,
+                    resolved_at=now,
+                    context_snapshot=context_snapshot,
+                )
+            )
+            return result.lastrowid
+
     async def resolve_chat_analyzer_suggestion(
         self,
         suggestion_id: int,
@@ -141,22 +183,85 @@ class ChatQueryMixin:
     async def get_analyzer_suggestion_stats(
         self,
         project_id: str | None = None,
+        since: float | None = None,
     ) -> dict:
-        """Return aggregate stats for chat analyzer suggestions."""
+        """Return aggregate stats for chat analyzer suggestions.
+
+        Phase 8 enrichments on top of the original per-status counts:
+
+        * ``suppressed`` is now reported as a first-class status (the
+          schema gained a ``"suppressed"`` value alongside the existing
+          ``pending``/``accepted``/``dismissed``/``auto_executed``).
+        * ``accept_rate`` = ``accepted / (accepted + dismissed)``;
+          ``dismiss_rate`` = ``dismissed / (accepted + dismissed)``.
+          Both are ``None`` when no suggestion has been resolved yet —
+          ``0.0`` would falsely imply a perfect rejection rate.
+        * ``suppression_count_by_gate`` is a dict mapping the gate label
+          (``"confidence"``, ``"dedup"``, ``"in_flight_active_task"``,
+          ``"dismiss_cooldown"``, …) to the number of suppression rows
+          attributed to that gate.
+
+        Pass ``since`` (Unix epoch seconds) to restrict every count to
+        rows whose ``created_at`` is at or after that timestamp.
+        """
+        # Per-status counts.
         stmt = select(cas.c.status, func.count().label("cnt"))
         if project_id:
             stmt = stmt.where(cas.c.project_id == project_id)
+        if since is not None:
+            stmt = stmt.where(cas.c.created_at >= since)
         stmt = stmt.group_by(cas.c.status)
+
+        # Suppression breakdown by gate.
+        gate_stmt = select(cas.c.suppressed_by, func.count().label("cnt")).where(
+            cas.c.status == "suppressed"
+        )
+        if project_id:
+            gate_stmt = gate_stmt.where(cas.c.project_id == project_id)
+        if since is not None:
+            gate_stmt = gate_stmt.where(cas.c.created_at >= since)
+        gate_stmt = gate_stmt.group_by(cas.c.suppressed_by)
+
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
-            stats = {"total": 0, "pending": 0, "accepted": 0, "dismissed": 0, "auto_executed": 0}
+            stats: dict = {
+                "total": 0,
+                "pending": 0,
+                "accepted": 0,
+                "dismissed": 0,
+                "auto_executed": 0,
+                "suppressed": 0,
+            }
             for row in result.mappings().fetchall():
                 status = row["status"]
                 count = row["cnt"]
                 stats["total"] += count
                 if status in stats:
                     stats[status] = count
-            return stats
+
+            gate_result = await conn.execute(gate_stmt)
+            suppression_count_by_gate: dict[str, int] = {}
+            for row in gate_result.mappings().fetchall():
+                gate = row["suppressed_by"]
+                # Defensive: skip rows with status=suppressed but no gate.
+                # Shouldn't happen via create_suppressed_chat_analyzer_suggestion
+                # but a manual SQL backfill could leave NULLs in place.
+                if gate is None:
+                    continue
+                suppression_count_by_gate[gate] = row["cnt"]
+            stats["suppression_count_by_gate"] = suppression_count_by_gate
+
+        # Resolution rates.  None when no suggestion has been resolved
+        # so callers can distinguish "no data" from "everyone hates them".
+        resolved = stats["accepted"] + stats["dismissed"]
+        if resolved > 0:
+            stats["accept_rate"] = stats["accepted"] / resolved
+            stats["dismiss_rate"] = stats["dismissed"] / resolved
+        else:
+            stats["accept_rate"] = None
+            stats["dismiss_rate"] = None
+
+        return stats
 
     async def get_analyzer_suggestion_history(
         self,

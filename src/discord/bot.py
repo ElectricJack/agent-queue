@@ -1005,6 +1005,15 @@ class AgentQueueBot(commands.Bot):
             getattr(self.config, "chat_analyzer", None), "min_confidence", 0.6
         )
         confidence = float(suggestion.get("confidence", 1.0))
+
+        # The hash is needed both for the suppression footprint (Phase 8)
+        # and for the regular DB insert further down. Compute it once.
+        suggestion_hash = AgentQueueBot._compute_suggestion_hash(
+            project_id=project_id,
+            suggestion_type=suggestion_type,
+            text=text,
+        )
+
         if confidence < threshold:
             logger.info(
                 "suggestion suppressed: confidence below threshold",
@@ -1017,13 +1026,23 @@ class AgentQueueBot(commands.Bot):
                     "suggestion_type": suggestion_type,
                 },
             )
+            # Phase 8: leave a footprint so get_chat_analyzer_metrics can
+            # count "how often did the confidence gate fire?" without
+            # scanning logs. We swallow DB errors — observability must
+            # never crash the suggestion pipeline.
+            if self.orchestrator.db:
+                try:
+                    await self.orchestrator.db.create_suppressed_chat_analyzer_suggestion(
+                        project_id=project_id,
+                        channel_id=channel_id,
+                        suggestion_type=suggestion_type,
+                        suggestion_text=text,
+                        suggestion_hash=suggestion_hash,
+                        suppressed_by="confidence",
+                    )
+                except Exception as e:
+                    logger.error("Error recording suppressed suggestion: %s", e)
             return
-
-        suggestion_hash = AgentQueueBot._compute_suggestion_hash(
-            project_id=project_id,
-            suggestion_type=suggestion_type,
-            text=text,
-        )
 
         # Create database record if DB is available
         suggestion_id = None

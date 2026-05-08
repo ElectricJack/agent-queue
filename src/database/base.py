@@ -313,6 +313,16 @@ class DatabaseBackend(Protocol):
         suggestion_hash: str,
         context_snapshot: str | None = None,
     ) -> int: ...
+    async def create_suppressed_chat_analyzer_suggestion(
+        self,
+        project_id: str,
+        channel_id: int,
+        suggestion_type: str,
+        suggestion_text: str,
+        suggestion_hash: str,
+        suppressed_by: str,
+        context_snapshot: str | None = None,
+    ) -> int: ...
     async def resolve_chat_analyzer_suggestion(
         self,
         suggestion_id: int,
@@ -348,6 +358,7 @@ class DatabaseBackend(Protocol):
     async def get_analyzer_suggestion_stats(
         self,
         project_id: str | None = None,
+        since: float | None = None,
     ) -> dict: ...
     async def get_analyzer_suggestion_history(
         self,

@@ -125,6 +125,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_token_usage": "system",
     "token_audit": "system",
     "claude_usage": "system",
+    "get_chat_analyzer_metrics": "system",
     "reload_config": "system",
     "get_config": "system",
     "get_config_schema": "system",
@@ -1461,6 +1462,36 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": "Filter to a specific project (optional)",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_chat_analyzer_metrics",
+        "description": (
+            "Aggregated metrics for chat-analyzer suggestion outcomes. "
+            "Returns per-status counts (pending, accepted, dismissed, "
+            "auto_executed, suppressed), accept_rate, dismiss_rate, and "
+            "suppression_count_by_gate (one entry per gate that fired: "
+            "confidence, dedup, in_flight_active_task, dismiss_cooldown). "
+            "Use this to tune the gate thresholds in chat_analyzer config."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Filter to a specific project. Omit to aggregate "
+                        "across every project."
+                    ),
+                },
+                "since_hours": {
+                    "type": "integer",
+                    "description": (
+                        "Time window in hours (default: 24). Pass 0 to "
+                        "disable the window and return lifetime totals."
+                    ),
                 },
             },
         },
