@@ -25,6 +25,7 @@ def _make_bot_stub(
     *,
     db_returns_id: int | None = 99,
     min_confidence: float = 0.0,
+    in_flight_min_confidence: float = 0.85,
 ):
     """Build a minimal object with the attributes ``_post_observation_suggestion`` touches.
 
@@ -32,21 +33,41 @@ def _make_bot_stub(
     tests neutral — every suggestion clears the gate.  Phase 4 tests
     pass an explicit threshold to exercise the gate.
 
+    Phase 5 — ``in_flight_min_confidence`` (default ``0.85``) is the
+    higher bar suggestions must clear when the project has an active
+    IN_PROGRESS task.  The default stub seeds
+    ``handler.execute("list_tasks", …)`` to return an empty task list so
+    legacy tests never trip the in-flight gate; tests that exercise the
+    gate override ``stub.agent.handler.execute`` to seed an active task.
+
     Returns a tuple of ``(stub, channel, db)`` so tests can assert against
     the mocked dependencies directly.
     """
     db = MagicMock()
     db.create_chat_analyzer_suggestion = AsyncMock(return_value=db_returns_id)
+    # Phase 8 footprint write — referenced by gate-suppression branches.
+    # Default to a no-op success so tests that don't seed the dedup gate
+    # (or other gates) don't have to wire it up themselves.
+    db.create_suppressed_chat_analyzer_suggestion = AsyncMock(return_value=0)
+    # Phase 2 dedup query — default to "novel" so legacy tests post.
+    db.get_suggestion_hash_exists = AsyncMock(return_value=False)
 
     channel = MagicMock()
     channel.send = AsyncMock(return_value=None)
 
     handler = MagicMock()
+    # Phase 5 — the in-flight gate calls handler.execute("list_tasks", ...).
+    # Default to "no active tasks" so the gate stays quiet for every test
+    # that does not explicitly seed an active task.
+    handler.execute = AsyncMock(return_value={"tasks": []})
     agent = SimpleNamespace(handler=handler)
 
     orchestrator = SimpleNamespace(db=db)
 
-    chat_analyzer_cfg = SimpleNamespace(min_confidence=min_confidence)
+    chat_analyzer_cfg = SimpleNamespace(
+        min_confidence=min_confidence,
+        in_flight_min_confidence=in_flight_min_confidence,
+    )
     config = SimpleNamespace(chat_analyzer=chat_analyzer_cfg)
 
     stub = SimpleNamespace(
@@ -465,3 +486,267 @@ async def test_post_observation_suggestion_passes_real_confidence_to_embed(monke
     assert captured.get("confidence") == pytest.approx(0.42), (
         "format_suggestion_embed must receive the dynamic confidence, not 0.8"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — in-flight active task escalates the confidence threshold
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_suggestion_in_channel_with_active_task_uses_higher_threshold(caplog):
+    """When the project has an active IN_PROGRESS task, raise the bar.
+
+    A confidence value that would normally pass the base ``min_confidence``
+    gate (here ``0.7`` vs threshold ``0.6``) must still be suppressed when
+    an in-flight task exists for the project, because the user is watching
+    execution rather than shopping for new work. The bot must:
+
+      * skip ``channel.send`` entirely (no Discord post)
+      * NOT insert a regular ``status="pending"`` row — like the other
+        gates we are rejecting, not queueing
+      * emit a structured INFO log line tagged
+        ``gate="in_flight_active_task"`` so Phase-8 metrics can count
+        in-flight suppressions per gate
+      * record a Phase-8 footprint via
+        ``create_suppressed_chat_analyzer_suggestion`` with
+        ``suppressed_by="in_flight_active_task"`` so the metrics command
+        sees the rejection without scanning logs
+    """
+    import logging
+
+    from src.discord.bot import AgentQueueBot
+
+    stub, channel, db = _make_bot_stub(
+        min_confidence=0.6,
+        in_flight_min_confidence=0.85,
+    )
+    # Seed an active IN_PROGRESS task for the project so the in-flight
+    # lookup returns at least one row.
+    stub.agent.handler.execute = AsyncMock(
+        return_value={
+            "tasks": [
+                {
+                    "id": "calm-pinnacle",
+                    "title": "Run step 9 workflow",
+                    "status": "IN_PROGRESS",
+                }
+            ]
+        }
+    )
+
+    suggestion = {
+        "suggestion_type": "task",
+        "content": "Add a benchmark for the renderer",
+        "task_title": "Benchmark renderer",
+        # 0.7 is above the 0.6 base gate but below the 0.85 in-flight bar.
+        "confidence": 0.7,
+        "intent_confidence": 0.85,
+        "novelty": 0.95,
+        "actionability": 0.87,
+    }
+
+    with caplog.at_level(logging.INFO, logger="src.discord.bot"):
+        await AgentQueueBot._post_observation_suggestion(
+            stub,
+            channel_id=12345,
+            project_id="my-game",
+            suggestion=suggestion,
+        )
+
+    # No Discord post
+    assert channel.send.await_count == 0, (
+        "in-flight suppression must not post to Discord"
+    )
+    # No new pending DB row
+    assert db.create_chat_analyzer_suggestion.await_count == 0, (
+        "in-flight suppression must not create a pending suggestion row"
+    )
+    # The lookup must actually have happened — the gate cannot decide
+    # without consulting the orchestrator.
+    assert stub.agent.handler.execute.await_count >= 1, (
+        "in-flight gate must call handler.execute(list_tasks, ...)"
+    )
+    list_tasks_calls = [
+        call
+        for call in stub.agent.handler.execute.await_args_list
+        if call.args and call.args[0] == "list_tasks"
+    ]
+    assert list_tasks_calls, (
+        "in-flight gate must invoke the list_tasks command"
+    )
+    # And the lookup must scope to the project so a different project's
+    # active work doesn't accidentally silence this channel.
+    args_dict = list_tasks_calls[-1].args[1]
+    assert args_dict.get("project_id") == "my-game"
+    # Status filter is not strictly required (the supervisor's analogous
+    # call also accepts the broader non-terminal sweep), but we expect the
+    # bot to ask specifically for IN_PROGRESS so the gate fires only when
+    # work is actually executing — not merely DEFINED/READY in the queue.
+    assert args_dict.get("status") == "IN_PROGRESS"
+
+    # Structured log
+    matched = [
+        rec
+        for rec in caplog.records
+        if getattr(rec, "gate", None) == "in_flight_active_task"
+    ]
+    assert matched, (
+        "expected an INFO log record carrying extra={'gate': 'in_flight_active_task'}"
+    )
+
+    # Phase-8 footprint with the right suppressed_by tag
+    assert db.create_suppressed_chat_analyzer_suggestion.await_count == 1
+    footprint_kwargs = (
+        db.create_suppressed_chat_analyzer_suggestion.await_args.kwargs
+    )
+    assert footprint_kwargs.get("suppressed_by") == "in_flight_active_task"
+    assert footprint_kwargs.get("project_id") == "my-game"
+
+
+@pytest.mark.asyncio
+async def test_high_confidence_suggestion_still_posts_with_active_task():
+    """Confidence at or above ``in_flight_min_confidence`` clears the bar.
+
+    Same setup as the suppression test (active IN_PROGRESS task seeded,
+    base ``min_confidence=0.6``, in-flight ``0.85``) but confidence is
+    ``0.9`` — the suggestion is high-signal enough to interrupt even when
+    the user is watching another task execute.
+    """
+    from src.discord.bot import AgentQueueBot
+
+    stub, channel, db = _make_bot_stub(
+        min_confidence=0.6,
+        in_flight_min_confidence=0.85,
+    )
+    # Active task seeded — the gate sees in-flight work and switches to
+    # the elevated threshold.
+    stub.agent.handler.execute = AsyncMock(
+        return_value={
+            "tasks": [
+                {
+                    "id": "calm-pinnacle",
+                    "title": "Run step 9 workflow",
+                    "status": "IN_PROGRESS",
+                }
+            ]
+        }
+    )
+    # Phase-2 dedup must allow the post — explicit so the test reads
+    # without depending on the MagicMock default.
+    db.get_suggestion_hash_exists = AsyncMock(return_value=False)
+
+    suggestion = {
+        "suggestion_type": "task",
+        "content": "Two stuck tasks older than 30 minutes — investigate",
+        "task_title": "Investigate stuck tasks",
+        # 0.9 clears the elevated 0.85 bar.
+        "confidence": 0.9,
+        "intent_confidence": 0.95,
+        "novelty": 1.0,
+        "actionability": 0.95,
+    }
+
+    await AgentQueueBot._post_observation_suggestion(
+        stub,
+        channel_id=12345,
+        project_id="my-game",
+        suggestion=suggestion,
+    )
+
+    assert channel.send.await_count == 1, (
+        "high-signal suggestion must reach Discord even with active task"
+    )
+    assert db.create_chat_analyzer_suggestion.await_count == 1, (
+        "high-signal suggestion must be persisted as a pending row"
+    )
+    # No suppression footprint should have been written for the in-flight gate.
+    in_flight_footprints = [
+        call
+        for call in db.create_suppressed_chat_analyzer_suggestion.await_args_list
+        if call.kwargs.get("suppressed_by") == "in_flight_active_task"
+    ]
+    assert not in_flight_footprints, (
+        "high-signal suggestion must not record an in-flight suppression footprint"
+    )
+
+
+@pytest.mark.asyncio
+async def test_in_flight_threshold_does_not_apply_without_active_tasks():
+    """Regression: a mid-confidence suggestion still posts when no task is in flight.
+
+    Same confidence as the suppression test (``0.7``) and same thresholds,
+    but ``handler.execute`` returns no tasks — the elevated bar does not
+    apply, the basic gate (``0.6``) is the only one in play, and the
+    suggestion posts normally.
+    """
+    from src.discord.bot import AgentQueueBot
+
+    stub, channel, db = _make_bot_stub(
+        min_confidence=0.6,
+        in_flight_min_confidence=0.85,
+    )
+    # No active tasks — the in-flight gate must not fire.
+    stub.agent.handler.execute = AsyncMock(return_value={"tasks": []})
+    db.get_suggestion_hash_exists = AsyncMock(return_value=False)
+
+    suggestion = {
+        "suggestion_type": "task",
+        "content": "Refactor the particle pool allocator",
+        "task_title": "Refactor allocator",
+        "confidence": 0.7,
+        "intent_confidence": 0.85,
+        "novelty": 0.95,
+        "actionability": 0.87,
+    }
+
+    await AgentQueueBot._post_observation_suggestion(
+        stub,
+        channel_id=12345,
+        project_id="my-game",
+        suggestion=suggestion,
+    )
+
+    assert channel.send.await_count == 1
+    assert db.create_chat_analyzer_suggestion.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_in_flight_lookup_failure_falls_back_to_base_gate(caplog):
+    """A handler error during the active-task lookup must not crash the
+    suggestion pipeline; it must fall through and let the base gate decide.
+
+    This mirrors the defensive try/except patterns elsewhere in
+    ``_post_observation_suggestion`` (Phase 2 dedup, Phase 4/5/8
+    footprint writes). Observability never blocks delivery.
+    """
+    from src.discord.bot import AgentQueueBot
+
+    stub, channel, db = _make_bot_stub(
+        min_confidence=0.6,
+        in_flight_min_confidence=0.85,
+    )
+    # Simulate an orchestrator error on the lookup.
+    stub.agent.handler.execute = AsyncMock(side_effect=RuntimeError("DB down"))
+    db.get_suggestion_hash_exists = AsyncMock(return_value=False)
+
+    suggestion = {
+        "suggestion_type": "task",
+        "content": "Polish the menu animations",
+        "task_title": "Polish menu animations",
+        # Above the basic gate; the in-flight lookup would normally
+        # decide whether to escalate — but the lookup failed.
+        "confidence": 0.7,
+    }
+
+    await AgentQueueBot._post_observation_suggestion(
+        stub,
+        channel_id=12345,
+        project_id="my-game",
+        suggestion=suggestion,
+    )
+
+    # Lookup failure → treat as "no active tasks" → base gate already
+    # cleared → suggestion still posts.
+    assert channel.send.await_count == 1
+    assert db.create_chat_analyzer_suggestion.await_count == 1

@@ -985,6 +985,16 @@ class AgentQueueBot(commands.Bot):
         duplicative, or low-intent classifications.  Suppressions emit a
         structured log line with ``extra={"gate": "confidence", ...}`` so
         the Phase-8 metrics command can count rejections per gate.
+
+        Phase 5 — in-flight active task gate: when the project has at
+        least one ``IN_PROGRESS`` task, the bar is raised from
+        ``min_confidence`` to ``config.chat_analyzer.in_flight_min_confidence``
+        (default ``0.85``).  Rationale: when the channel header shows
+        ``Stop Task``, the user is watching execution, not shopping for
+        new work.  We do not silence completely — a high-signal warning
+        ("two stuck tasks older than 30 min") may still be worth posting
+        — but the threshold is substantially higher.  Suppressions are
+        tagged ``gate="in_flight_active_task"``.
         """
         from src.discord.views import SuggestionView, format_suggestion_embed
 
@@ -1043,6 +1053,76 @@ class AgentQueueBot(commands.Bot):
                 except Exception as e:
                     logger.error("Error recording suppressed suggestion: %s", e)
             return
+
+        # Phase 5 — in-flight active task escalates the threshold.
+        #
+        # Only consult the orchestrator when the suggestion sits in the
+        # band ``[min_confidence, in_flight_min_confidence)`` — i.e. it
+        # would post under the base gate but might fail the elevated
+        # bar. Anything already at or above ``in_flight_min_confidence``
+        # would clear both gates regardless, so we skip the round-trip
+        # to the handler. This keeps the gate cheap on the happy path
+        # (no DB read at all when the LLM is highly confident) while
+        # still firing when it matters.
+        in_flight_threshold = getattr(
+            getattr(self.config, "chat_analyzer", None),
+            "in_flight_min_confidence",
+            0.85,
+        )
+        if confidence < in_flight_threshold:
+            try:
+                lookup = await self.agent.handler.execute(
+                    "list_tasks",
+                    {"project_id": project_id, "status": "IN_PROGRESS"},
+                )
+                tasks = (
+                    lookup.get("tasks", [])
+                    if isinstance(lookup, dict)
+                    else []
+                )
+                has_active_task = bool(tasks)
+            except Exception as e:
+                # Treat lookup failure as "no active tasks" — observability
+                # never blocks delivery. The base gate has already cleared
+                # the suggestion; degrading to the base behaviour is the
+                # safe fallback.
+                logger.warning(
+                    "in-flight task lookup failed: %s",
+                    e,
+                    extra={"project_id": project_id, "channel_id": channel_id},
+                )
+                has_active_task = False
+
+            if has_active_task:
+                logger.info(
+                    "suggestion suppressed: active task in flight",
+                    extra={
+                        "gate": "in_flight_active_task",
+                        "project_id": project_id,
+                        "channel_id": channel_id,
+                        "confidence": confidence,
+                        "threshold": in_flight_threshold,
+                        "suggestion_type": suggestion_type,
+                    },
+                )
+                # Phase 8 footprint — same shape as the other gate
+                # branches. Best-effort; observability never blocks the
+                # suppression decision.
+                if self.orchestrator.db:
+                    try:
+                        await self.orchestrator.db.create_suppressed_chat_analyzer_suggestion(
+                            project_id=project_id,
+                            channel_id=channel_id,
+                            suggestion_type=suggestion_type,
+                            suggestion_text=text,
+                            suggestion_hash=suggestion_hash,
+                            suppressed_by="in_flight_active_task",
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Error recording suppressed suggestion: %s", e
+                        )
+                return
 
         # Phase 2 — hash-dedup gate. The DB already has the read-side method
         # (`get_suggestion_hash_exists`) but it has never been called from

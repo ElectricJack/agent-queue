@@ -505,9 +505,20 @@ class ChatAnalyzerConfig:
       before a suggestion is posted.  Suggestions below this threshold
       are dropped silently and tagged ``gate="confidence"`` in the
       structured log.
+    * ``in_flight_min_confidence`` (Phase 5) — elevated minimum that
+      replaces ``min_confidence`` whenever the project has at least one
+      ``IN_PROGRESS`` task.  When a ``Stop Task`` button is showing in
+      the channel header the user is watching execution, not shopping
+      for new work, so we substantially raise the bar — only
+      high-signal suggestions (e.g. "two stuck tasks older than 30
+      min") clear it.  Default ``0.85``.  Suppressions are tagged
+      ``gate="in_flight_active_task"``.  Set this to a value ``>=
+      min_confidence`` for the escalation to mean anything; a value
+      ``<= min_confidence`` is technically valid but a no-op.
     """
 
     min_confidence: float = 0.6
+    in_flight_min_confidence: float = 0.85
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -516,6 +527,14 @@ class ChatAnalyzerConfig:
                 ConfigError(
                     "chat_analyzer",
                     "min_confidence",
+                    "must be in [0, 1]",
+                )
+            )
+        if not 0.0 <= self.in_flight_min_confidence <= 1.0:
+            errors.append(
+                ConfigError(
+                    "chat_analyzer",
+                    "in_flight_min_confidence",
                     "must be in [0, 1]",
                 )
             )
