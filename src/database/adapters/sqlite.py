@@ -34,6 +34,7 @@ from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
 from src.database.queries.task_queries import TaskQueryMixin
+from src.database.queries.task_requirements_queries import TaskRequirementsQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
 from src.database.queries.playbook_queries import PlaybookQueryMixin
 from src.database.queries.plugin_queries import PluginQueryMixin
@@ -56,6 +57,7 @@ class SQLiteDatabaseAdapter(
     AgentQueryMixin,
     WorkspaceQueryMixin,
     WorkspaceKindQueryMixin,
+    TaskRequirementsQueryMixin,
     TokenQueryMixin,
     ResultQueryMixin,
     EventQueryMixin,
