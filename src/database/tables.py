@@ -223,6 +223,11 @@ workspaces = Table(
     Column("workspace_path", Text, nullable=False),
     Column("source_type", Text, nullable=False, server_default="'clone'"),
     Column("name", Text, nullable=True),
+    # Soft reference to (workspace_kinds.project_id, workspace_kinds.id) — resolved
+    # at use time against the project-scoped row, then the system row.
+    # Nullable during the workspaces-v2 migration window; tightened to NOT NULL
+    # in a follow-up migration after one minor version (spec §3.2 / §9.5).
+    Column("kind_id", Text, nullable=True),
     Column("locked_by_agent_id", Text, ForeignKey("agents.id"), nullable=True),
     Column("locked_by_task_id", Text, ForeignKey("tasks.id"), nullable=True),
     Column("locked_at", Float, nullable=True),
@@ -230,6 +235,40 @@ workspaces = Table(
     Column("enabled", Boolean, nullable=False, server_default=true()),
     Column("created_at", Float, nullable=False),
     UniqueConstraint("project_id", "workspace_path"),
+)
+
+workspace_kinds = Table(
+    "workspace_kinds",
+    metadata,
+    # Composite PK (project_id, id).  project_id uses sentinel '__system__'
+    # for system-wide rows so the column can be NOT NULL on Postgres.
+    # See docs/specs/design/workspaces-v2.md §3.1.
+    Column("project_id", Text, nullable=False, primary_key=True),
+    Column("id", Text, nullable=False, primary_key=True),
+    Column("description", Text, nullable=False, server_default="''"),
+    Column("writable", Boolean, nullable=False, server_default=true()),
+    Column("lockable", Boolean, nullable=False, server_default=true()),
+    Column("is_git_repo", Boolean, nullable=False, server_default=true()),
+    Column("repo_url", Text, nullable=True),
+    # Lowercase enum value: 'exclusive' | 'branch_isolated' | 'directory_isolated'
+    # — matches WorkspaceMode.value.
+    Column("default_lock_mode", Text, nullable=True),
+    Column("auto_attach", Boolean, nullable=False, server_default="false"),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+
+task_workspace_requirements = Table(
+    "task_workspace_requirements",
+    metadata,
+    Column("task_id", Text, ForeignKey("tasks.id"), primary_key=True),
+    # kind_id is a soft reference (no FK) — resolution depends on
+    # (project_id, kind_id) and may target either the project-scoped
+    # row or the system row.  See spec §3.2 / §3.5.
+    Column("kind_id", Text, nullable=False, primary_key=True),
+    Column("position", Integer, nullable=False, server_default="0", primary_key=True),
+    Column("alias", Text, nullable=True),
+    Index("idx_task_ws_reqs_task_id", "task_id"),
 )
 
 # hooks and hook_runs tables removed (playbooks spec §13 Phase 3).
