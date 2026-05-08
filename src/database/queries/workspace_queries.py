@@ -232,6 +232,164 @@ class WorkspaceQueryMixin:
 
             return None
 
+    async def first_workspace_of_kind(
+        self,
+        project_id: str,
+        kind_id: str,
+    ) -> Workspace | None:
+        """Return the first enabled workspace of a given kind for a project.
+
+        Non-locking read.  Used for non-lockable kinds (e.g. vault, readonly-dir)
+        where multiple tasks may attach simultaneously.
+        """
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(workspaces)
+                .where(
+                    (workspaces.c.project_id == project_id)
+                    & (workspaces.c.kind_id == kind_id)
+                    & (workspaces.c.enabled.is_(True))
+                )
+                .order_by(workspaces.c.id)
+                .limit(1)
+            )
+            row = result.mappings().fetchone()
+            return self._row_to_workspace(row) if row else None
+
+    async def acquire_one_unlocked(
+        self,
+        project_id: str,
+        kind_id: str,
+        mode: str | None,
+        locked_by_task_id: str,
+        locked_by_agent_id: str,
+        prefer_workspace_id: str | None = None,
+    ) -> Workspace | None:
+        """Atomically acquire one unlocked workspace of a given kind.
+
+        Spec §6.4 per-dialect strategy.  Preserves the path-level conflict
+        check from the legacy :meth:`acquire_workspace`: BRANCH_ISOLATED only
+        conflicts with non-BRANCH_ISOLATED on the same path; EXCLUSIVE
+        conflicts with any other lock on the same path.
+
+        Args:
+            project_id: Project scope.
+            kind_id: Required kind id.  Workspaces are filtered by
+                ``workspaces.kind_id == kind_id`` (no kind resolution here —
+                callers resolve via ``resolve_workspace_kind`` and pass
+                ``kind.id``).
+            mode: Lock mode string (``"exclusive"`` / ``"branch_isolated"`` /
+                ``"directory_isolated"``).  Comes from
+                ``WorkspaceKind.default_lock_mode``.
+            locked_by_task_id: Task acquiring the lock.
+            locked_by_agent_id: Agent acquiring the lock.
+            prefer_workspace_id: Try this workspace id first; falls back to
+                first-unlocked if it's busy or doesn't match.
+
+        Returns the locked workspace, or ``None`` if no instance was free.
+        """
+        now = time.time()
+        lock_mode_value = mode  # already lowercase, e.g. "exclusive"
+
+        async with self._engine.begin() as conn:
+            candidate_ids: list[str] = []
+
+            if prefer_workspace_id:
+                row = (
+                    await conn.execute(
+                        select(workspaces.c.id).where(
+                            (workspaces.c.id == prefer_workspace_id)
+                            & (workspaces.c.project_id == project_id)
+                            & (workspaces.c.kind_id == kind_id)
+                            & (workspaces.c.locked_by_agent_id.is_(None))
+                            & (workspaces.c.enabled.is_(True))
+                        )
+                    )
+                ).fetchone()
+                if row:
+                    candidate_ids.append(row[0])
+
+            rows = (
+                await conn.execute(
+                    select(workspaces.c.id)
+                    .where(
+                        (workspaces.c.project_id == project_id)
+                        & (workspaces.c.kind_id == kind_id)
+                        & (workspaces.c.locked_by_agent_id.is_(None))
+                        & (workspaces.c.enabled.is_(True))
+                    )
+                    .order_by(workspaces.c.id)
+                )
+            ).fetchall()
+            for row in rows:
+                if row[0] not in candidate_ids:
+                    candidate_ids.append(row[0])
+
+            for ws_id in candidate_ids:
+                ws_row = (
+                    await conn.execute(
+                        select(workspaces).where(
+                            (workspaces.c.id == ws_id)
+                            & (workspaces.c.locked_by_agent_id.is_(None))
+                        )
+                    )
+                ).mappings().fetchone()
+                if not ws_row:
+                    continue
+
+                # Path-level conflict check — preserved from acquire_workspace.
+                if mode == WorkspaceMode.BRANCH_ISOLATED.value:
+                    conflict = (
+                        await conn.execute(
+                            select(workspaces.c.id).where(
+                                (workspaces.c.workspace_path == ws_row["workspace_path"])
+                                & (workspaces.c.locked_by_agent_id.isnot(None))
+                                & (workspaces.c.id != ws_row["id"])
+                                & (workspaces.c.lock_mode != WorkspaceMode.BRANCH_ISOLATED.value)
+                            )
+                        )
+                    ).fetchone()
+                else:
+                    conflict = (
+                        await conn.execute(
+                            select(workspaces.c.id).where(
+                                (workspaces.c.workspace_path == ws_row["workspace_path"])
+                                & (workspaces.c.locked_by_agent_id.isnot(None))
+                                & (workspaces.c.id != ws_row["id"])
+                            )
+                        )
+                    ).fetchone()
+                if conflict:
+                    continue
+
+                # Atomic lock attempt — UPDATE with WHERE locked IS NULL.
+                result = await conn.execute(
+                    update(workspaces)
+                    .where(
+                        (workspaces.c.id == ws_row["id"])
+                        & (workspaces.c.locked_by_agent_id.is_(None))
+                    )
+                    .values(
+                        locked_by_agent_id=locked_by_agent_id,
+                        locked_by_task_id=locked_by_task_id,
+                        locked_at=now,
+                        lock_mode=lock_mode_value,
+                    )
+                )
+                if result.rowcount != 1:
+                    continue
+
+                ws = self._row_to_workspace(ws_row)
+                ws.locked_by_agent_id = locked_by_agent_id
+                ws.locked_by_task_id = locked_by_task_id
+                ws.locked_at = now
+                ws.lock_mode = (
+                    WorkspaceMode(lock_mode_value) if lock_mode_value else None
+                )
+                return ws
+
+            return None
+
     async def find_branch_isolated_base(
         self,
         project_id: str,
