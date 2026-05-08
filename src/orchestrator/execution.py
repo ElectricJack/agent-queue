@@ -625,6 +625,31 @@ class ExecutionMixin:
             vault_project_dir = os.path.join(self.config.vault_root, "projects", task.project_id)
             extra_dirs.append(vault_project_dir)
 
+        # Workspaces-v2: surface the per-task attachment set captured at
+        # acquisition time.  When present, it includes every workspace the
+        # task locked or auto-attached (including the project vault as a
+        # first-class attachment).  Empty for back-compat call sites that
+        # haven't been wired yet (e.g. Supervisor singleton).
+        attachment_set = getattr(self, "_task_attachments", {}).get(task.id)
+        workspace_attachments = (
+            list(attachment_set.attachments) if attachment_set is not None else []
+        )
+
+        # Build the runtime's allowed-paths set: extra_dirs (vault back-compat)
+        # ∪ attachment paths, minus the cwd.  Spec §7.1: dedup is explicit.
+        cwd_path = workspace
+        attachment_extra = {
+            a.workspace_path
+            for a in workspace_attachments
+            if a.workspace_path and a.workspace_path != cwd_path
+        }
+        deduped_extra_dirs = list(
+            dict.fromkeys(  # preserve order, dedup
+                [d for d in extra_dirs if d != cwd_path]
+                + sorted(attachment_extra - set(extra_dirs))
+            )
+        )
+
         ctx = TaskContext(
             task_id=task.id,
             description=full_description,
@@ -637,7 +662,8 @@ class ExecutionMixin:
             branch_name=task.branch_name or "",
             image_paths=task.attachments if task.attachments else [],
             mcp_servers=task_mcp,
-            add_dirs=extra_dirs,
+            add_dirs=deduped_extra_dirs,
+            workspace_attachments=workspace_attachments,
             # Singleton platforms (e.g. Supervisor) read profile here at
             # ``start(task)`` time since they can't carry it in __init__.
             profile=profile,

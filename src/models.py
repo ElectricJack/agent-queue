@@ -565,6 +565,14 @@ class TaskContext:
     # memory directory so consolidation and memory-aware tasks can edit
     # their own knowledge without needing a separate MCP indirection.
     add_dirs: list[str] = field(default_factory=list)
+    # All workspaces attached to this task at acquisition time
+    # (workspaces-v2 spec §8.1).  Includes the project-repo (the same
+    # path as ``checkout_path``) plus any explicitly-requested kinds and
+    # auto-attached kinds (e.g. vault).  Runtimes derive cwd + extra dirs
+    # from this set with deduplication against ``add_dirs`` (spec §7.1).
+    # Empty list for tasks dispatched before the orchestrator captures an
+    # attachment set (e.g. Supervisor singleton, legacy code paths).
+    workspace_attachments: list["WorkspaceAttachment"] = field(default_factory=list)
     resume_session_id: str | None = None  # fork from this session on reopen
     # The resolved AgentProfile for this task. Platforms read it for
     # allowed_tools, model overrides, etc.  Singleton platforms (Supervisor)
