@@ -659,6 +659,31 @@ _ALL_TOOL_DEFINITIONS = [
                         "agents on separate directories (future)."
                     ),
                 },
+                "requires_kinds": {
+                    "type": "array",
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "kind": {"type": "string"},
+                                    "alias": {"type": ["string", "null"]},
+                                },
+                                "required": ["kind"],
+                            },
+                        ],
+                    },
+                    "description": (
+                        "Workspace kinds this task needs (workspaces-v2 spec §5). "
+                        "Each entry is either a kind id string (e.g. 'game-repo') or "
+                        "a dict {kind, alias?}. Auto-attached kinds (e.g. 'vault') "
+                        "do NOT need to be listed. When omitted, the task implicitly "
+                        "requires 'project-repo' — preserving today's single-workspace "
+                        "behavior. Each kind must resolve via project-scoped or "
+                        "system-wide vault/workspace-kinds/<id>.md."
+                    ),
+                },
             },
             "required": ["title"],
         },
