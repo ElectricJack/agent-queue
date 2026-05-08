@@ -492,6 +492,37 @@ class ObservationConfig:
 
 
 @dataclass
+class ChatAnalyzerConfig:
+    """Configuration for the Discord chat-analyzer suggester gate stack.
+
+    The chat analyzer is the post-``observe()`` pipeline that decides
+    whether to surface a suggestion to Discord.  Each field is a knob on
+    one of the gates introduced by the chat-analyzer suggestion-quality
+    overhaul plan.
+
+    * ``min_confidence`` (Phase 4) — minimum
+      ``intent_confidence × novelty × actionability`` product required
+      before a suggestion is posted.  Suggestions below this threshold
+      are dropped silently and tagged ``gate="confidence"`` in the
+      structured log.
+    """
+
+    min_confidence: float = 0.6
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not 0.0 <= self.min_confidence <= 1.0:
+            errors.append(
+                ConfigError(
+                    "chat_analyzer",
+                    "min_confidence",
+                    "must be in [0, 1]",
+                )
+            )
+        return errors
+
+
+@dataclass
 class SupervisorConfig:
     """Top-level Supervisor configuration."""
 
@@ -767,6 +798,7 @@ class AppConfig:
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
+    chat_analyzer: ChatAnalyzerConfig = field(default_factory=ChatAnalyzerConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -917,6 +949,7 @@ class AppConfig:
         errors.extend(self.scheduling.validate())
         errors.extend(self.pause_retry.validate())
         errors.extend(self.chat_provider.validate())
+        errors.extend(self.chat_analyzer.validate())
         errors.extend(self.supervisor.validate())
         errors.extend(self.auto_task.validate())
         errors.extend(self.archive.validate())
@@ -1006,6 +1039,7 @@ class AppConfig:
         updated.archive = fresh.archive
         updated.monitoring = fresh.monitoring
         updated.llm_logging = fresh.llm_logging
+        updated.chat_analyzer = fresh.chat_analyzer
         updated.max_daily_playbook_tokens = fresh.max_daily_playbook_tokens
         updated.max_concurrent_playbook_runs = fresh.max_concurrent_playbook_runs
 
@@ -1029,6 +1063,7 @@ HOT_RELOADABLE_SECTIONS = {
     "max_daily_playbook_tokens",
     "max_concurrent_playbook_runs",
     "rate_limits",
+    "chat_analyzer",
 }
 """Config sections that can be safely updated at runtime without restart."""
 
@@ -1060,6 +1095,7 @@ _SECTION_FIELDS = {
     "scheduling",
     "pause_retry",
     "chat_provider",
+    "chat_analyzer",
     "health_check",
     "logging",
     "monitoring",

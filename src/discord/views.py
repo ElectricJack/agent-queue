@@ -78,13 +78,20 @@ def format_suggestion_embed(
     suggestion_type: str,
     text: str,
     project_id: str,
-    confidence: float,
+    confidence: float | None = None,
 ) -> discord.Embed:
     """Create a rich embed for a chat analyzer suggestion.
 
     Color-coded by suggestion type: green for answer, blue for task,
     yellow for context, red for warning. Includes a confidence indicator
     in the footer alongside the project identifier.
+
+    Phase 4: ``confidence`` is now the real product score
+    (``intent_confidence \u00d7 novelty \u00d7 actionability``) flowing in from
+    ``Supervisor._parse_observe_response``.  When the caller passes
+    ``None`` (or a non-numeric value sneaks through), we render a
+    neutral ``0.5`` rather than crashing \u2014 the gate at the call site is
+    where the actual policy lives.
     """
     emoji = _SUGGESTION_TYPE_EMOJIS.get(suggestion_type, "\U0001f4ac")
     color = _SUGGESTION_TYPE_COLORS.get(suggestion_type, 0x95A5A6)
@@ -96,11 +103,22 @@ def format_suggestion_embed(
         color=color,
     )
 
+    try:
+        confidence_f = float(confidence) if confidence is not None else 0.5
+    except (TypeError, ValueError):
+        confidence_f = 0.5
+    if confidence_f < 0.0:
+        confidence_f = 0.0
+    elif confidence_f > 1.0:
+        confidence_f = 1.0
+
     # Confidence bar: visual indicator using filled/empty blocks
-    filled = round(confidence * 5)
+    filled = round(confidence_f * 5)
     bar = "\u2588" * filled + "\u2591" * (5 - filled)
     embed.set_footer(
-        text=(f"Chat Analyzer \u2022 {project_id} \u2022 Confidence: {bar} {confidence:.0%}")
+        text=(
+            f"Chat Analyzer \u2022 {project_id} \u2022 Confidence: {bar} {confidence_f:.0%}"
+        )
     )
     return embed
 

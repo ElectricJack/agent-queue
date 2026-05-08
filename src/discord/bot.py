@@ -925,7 +925,10 @@ class AgentQueueBot(commands.Bot):
                 await self._store_observation_memory(project_id, content)
 
             elif action == "suggest":
-                # Post suggestion to channel
+                # Post suggestion to channel.  Forward the confidence
+                # components + derived product so the Phase-4 gate stack
+                # in _post_observation_suggestion can act on real LLM
+                # scores rather than a hardcoded value.
                 suggestion_type = result.get("suggestion_type", "context")
                 text = result.get("content", "")
                 task_title = result.get("task_title")
@@ -936,6 +939,10 @@ class AgentQueueBot(commands.Bot):
                         "suggestion_type": suggestion_type,
                         "content": text,
                         "task_title": task_title,
+                        "confidence": result.get("confidence"),
+                        "intent_confidence": result.get("intent_confidence"),
+                        "novelty": result.get("novelty"),
+                        "actionability": result.get("actionability"),
                     },
                 )
 
@@ -968,7 +975,17 @@ class AgentQueueBot(commands.Bot):
     async def _post_observation_suggestion(
         self, channel_id: int, project_id: str, suggestion: dict
     ) -> None:
-        """Post an observation suggestion as a rich embed with Accept/Dismiss buttons."""
+        """Post an observation suggestion as a rich embed with Accept/Dismiss buttons.
+
+        Phase 4 — confidence gate: the suggestion is suppressed (no
+        Discord post, no DB row) when its computed
+        ``confidence = intent_confidence * novelty * actionability``
+        falls below ``config.chat_analyzer.min_confidence``.  The default
+        threshold of ``0.6`` gates out the long tail of vague,
+        duplicative, or low-intent classifications.  Suppressions emit a
+        structured log line with ``extra={"gate": "confidence", ...}`` so
+        the Phase-8 metrics command can count rejections per gate.
+        """
         from src.discord.views import SuggestionView, format_suggestion_embed
 
         channel = self.get_channel(channel_id)
@@ -978,6 +995,29 @@ class AgentQueueBot(commands.Bot):
         suggestion_type = suggestion.get("suggestion_type", "context")
         text = suggestion.get("content", "")
         task_title = suggestion.get("task_title")
+
+        # Confidence gate. Pull the threshold straight from config so a
+        # hot-reload retunes the gate without a daemon restart. Suggestions
+        # without a confidence field (legacy or short-circuited) default to
+        # 1.0 — we treat unknown confidence as "trust it" rather than
+        # silently muting the legacy path.
+        threshold = getattr(
+            getattr(self.config, "chat_analyzer", None), "min_confidence", 0.6
+        )
+        confidence = float(suggestion.get("confidence", 1.0))
+        if confidence < threshold:
+            logger.info(
+                "suggestion suppressed: confidence below threshold",
+                extra={
+                    "gate": "confidence",
+                    "project_id": project_id,
+                    "channel_id": channel_id,
+                    "confidence": confidence,
+                    "threshold": threshold,
+                    "suggestion_type": suggestion_type,
+                },
+            )
+            return
 
         suggestion_hash = AgentQueueBot._compute_suggestion_hash(
             project_id=project_id,
@@ -1003,7 +1043,7 @@ class AgentQueueBot(commands.Bot):
             suggestion_type=suggestion_type,
             text=text,
             project_id=project_id,
-            confidence=0.8,
+            confidence=confidence,
         )
         view = SuggestionView(
             suggestion_id=suggestion_id or 0,

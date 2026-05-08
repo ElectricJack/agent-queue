@@ -15,6 +15,8 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 
 def _make_supervisor():
     """Construct a Supervisor with the minimal mocks needed for observe()."""
@@ -333,6 +335,94 @@ def test_parse_happy_path_suggest_preserves_confidence_fields():
     assert result["intent_confidence"] == 0.9
     assert result["novelty"] == 0.8
     assert result["actionability"] == 0.85
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — confidence components must be normalised + product computed
+# ---------------------------------------------------------------------------
+
+
+def test_observe_response_includes_confidence_components():
+    """The parsed response carries normalised intent / novelty / actionability
+    plus a derived ``confidence = intent * novelty * actionability``.
+
+    The Phase 4 contract says every ``suggest`` response carries the three
+    component scores in ``[0, 1]`` and a derived ``confidence`` field.  When
+    the LLM omits a component, it must default to ``0.5``; when a component
+    is out of range it must be clamped before the product is computed.
+    """
+    sup = _make_supervisor()
+
+    # All three components present, in-range — straight product.
+    raw_full = (
+        '{"action": "suggest", "content": "Add a benchmark", '
+        '"suggestion_type": "task", '
+        '"intent_confidence": 0.8, "novelty": 0.5, "actionability": 0.5}'
+    )
+    full = sup._parse_observe_response(raw_full)
+    assert full["intent_confidence"] == pytest.approx(0.8)
+    assert full["novelty"] == pytest.approx(0.5)
+    assert full["actionability"] == pytest.approx(0.5)
+    assert full["confidence"] == pytest.approx(0.8 * 0.5 * 0.5)
+    # All three components must land in [0, 1] post-normalisation.
+    for key in ("intent_confidence", "novelty", "actionability", "confidence"):
+        assert 0.0 <= full[key] <= 1.0, f"{key} out of [0,1]: {full[key]}"
+
+    # Missing components default to 0.5.
+    raw_missing = '{"action": "suggest", "content": "thing"}'
+    missing = sup._parse_observe_response(raw_missing)
+    assert missing["intent_confidence"] == pytest.approx(0.5)
+    assert missing["novelty"] == pytest.approx(0.5)
+    assert missing["actionability"] == pytest.approx(0.5)
+    assert missing["confidence"] == pytest.approx(0.125)
+
+    # Out-of-range components are clamped to [0, 1] before the product.
+    raw_clamp = (
+        '{"action": "suggest", "content": "x", '
+        '"intent_confidence": 1.7, "novelty": -0.4, "actionability": 0.9}'
+    )
+    clamped = sup._parse_observe_response(raw_clamp)
+    assert clamped["intent_confidence"] == pytest.approx(1.0)
+    assert clamped["novelty"] == pytest.approx(0.0)
+    assert clamped["actionability"] == pytest.approx(0.9)
+    assert clamped["confidence"] == pytest.approx(0.0)
+
+    # Non-numeric components fall back to the 0.5 default rather than raising.
+    raw_bad_type = (
+        '{"action": "suggest", "content": "y", '
+        '"intent_confidence": "high", "novelty": null, "actionability": 0.4}'
+    )
+    typed = sup._parse_observe_response(raw_bad_type)
+    assert typed["intent_confidence"] == pytest.approx(0.5)
+    assert typed["novelty"] == pytest.approx(0.5)
+    assert typed["actionability"] == pytest.approx(0.4)
+    assert typed["confidence"] == pytest.approx(0.5 * 0.5 * 0.4)
+
+
+def test_observe_prompt_requires_confidence_component_scores():
+    """The LLM prompt must instruct the model to emit the three component scores.
+
+    The downstream gate stack (Phase 4: confidence threshold; Phase 5:
+    in-flight escalation) is only meaningful if the model is asked for
+    these numbers.  Pin the prompt wording so a future refactor cannot
+    silently drop them.
+    """
+    sup = _make_supervisor()
+    sup._provider = _mock_provider_returning('{"action": "ignore"}')
+    sup.handler = MagicMock()
+    sup.handler.execute = AsyncMock(return_value={"tasks": []})
+
+    asyncio.run(sup.observe(messages=_messages(), project_id="my-game"))
+
+    prompt = _captured_prompt(sup._provider)
+    lowered = prompt.lower()
+    assert "intent_confidence" in lowered, (
+        "prompt must ask the model to emit intent_confidence"
+    )
+    assert "novelty" in lowered, "prompt must ask the model to emit novelty"
+    assert "actionability" in lowered, (
+        "prompt must ask the model to emit actionability"
+    )
 
 
 # ---------------------------------------------------------------------------

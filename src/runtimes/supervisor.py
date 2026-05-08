@@ -1831,7 +1831,22 @@ class Supervisor(Runtime):
             f"3. **suggest** — actionable work item. Respond: "
             f'{{"action": "suggest", "content": "suggestion text", '
             f'"suggestion_type": "task|answer|context|warning", '
-            f'"task_title": "optional task title"}}\n\n'
+            f'"task_title": "optional task title", '
+            f'"intent_confidence": 0.0-1.0, '
+            f'"novelty": 0.0-1.0, '
+            f'"actionability": 0.0-1.0}}\n\n'
+            f"**Score components (required for `suggest`).** When you "
+            f"propose a suggestion, you MUST include three component "
+            f"scores in `[0, 1]`:\n"
+            f"  - `intent_confidence` — how sure you are this is the "
+            f"user's intent (0 = guessing, 1 = explicitly asked).\n"
+            f"  - `novelty` — how new this is relative to the prompt's "
+            f"`### Active Tasks` and `### Recently Created` sections "
+            f"(0 = literal duplicate, 1 = unrelated to anything queued).\n"
+            f"  - `actionability` — how concrete and ready-to-execute the "
+            f"suggestion is (0 = vague aspiration, 1 = a clearly defined "
+            f"task ready to run).\n"
+            f"The product of these gates whether the suggestion is shown.\n\n"
             f"**Avoid duplicative suggestions.** If your proposed `task` "
             f"or `suggest` action semantically overlaps any entry listed "
             f"under `### Active Tasks` or `### Recently Created`, you MUST "
@@ -1940,6 +1955,14 @@ class Supervisor(Runtime):
         Returns:
             Parsed dict with ``action`` key, or ``{"action": "ignore"}``
             on parse failure.
+
+        Phase 4 — confidence scoring: every successfully parsed response
+        is augmented with normalised ``intent_confidence``, ``novelty``,
+        ``actionability`` (each defaulting to ``0.5`` when missing or
+        non-numeric, clamped to ``[0, 1]``) plus a derived
+        ``confidence = intent_confidence * novelty * actionability``.
+        Downstream gates (Discord bot's confidence threshold, in-flight
+        escalation) read these fields directly.
         """
         import json as _json
 
@@ -1950,10 +1973,40 @@ class Supervisor(Runtime):
             result = _json.loads(text)
             if isinstance(result, dict) and "action" in result:
                 if result["action"] in ("ignore", "memory", "suggest"):
+                    self._inject_confidence_components(result)
                     return result
         except (_json.JSONDecodeError, TypeError):
             pass
         return {"action": "ignore"}
+
+    @staticmethod
+    def _inject_confidence_components(payload: dict) -> None:
+        """Mutate ``payload`` to carry normalised confidence components + product.
+
+        For each of ``intent_confidence``, ``novelty``, ``actionability``:
+          * missing or non-numeric → default ``0.5``
+          * value outside ``[0, 1]`` → clamped to the nearest bound
+
+        Then writes ``payload["confidence"]`` as the product of the
+        three normalised components, also in ``[0, 1]``.
+        """
+        def _norm(key: str) -> float:
+            raw = payload.get(key, 0.5)
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = 0.5
+            if value < 0.0:
+                value = 0.0
+            elif value > 1.0:
+                value = 1.0
+            payload[key] = value
+            return value
+
+        intent = _norm("intent_confidence")
+        novelty = _norm("novelty")
+        actionability = _norm("actionability")
+        payload["confidence"] = intent * novelty * actionability
 
     async def _execute_tool(self, name: str, input_data: dict) -> dict:
         """Execute a tool call via the shared CommandHandler.
