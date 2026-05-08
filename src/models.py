@@ -370,11 +370,112 @@ class Workspace:
     workspace_path: str
     source_type: RepoSourceType  # clone or link (per-workspace)
     name: str | None = None
+    # Soft ref to (workspace_kinds.project_id, workspace_kinds.id); resolved
+    # at use time against the project-scoped row, then the system row.
+    # Nullable during the workspaces-v2 migration window (spec §3.2 / §9.5).
+    kind_id: str | None = None
     locked_by_agent_id: str | None = None
     locked_by_task_id: str | None = None
     locked_at: float | None = None
     lock_mode: WorkspaceMode | None = None  # lock mode used for current lock (None = unlocked)
     enabled: bool = True  # disabled workspaces are skipped by acquire_workspace
+
+
+# Sentinel project_id for system-wide workspace_kinds rows. See spec §3.1.
+SYSTEM_KIND_SCOPE = "__system__"
+
+
+@dataclass
+class WorkspaceKind:
+    """Definition of a workspace type. See spec §3.1.
+
+    Lives in the ``workspace_kinds`` table.  System rows use
+    ``project_id = SYSTEM_KIND_SCOPE``; project-scoped rows shadow them at
+    resolution time.
+    """
+
+    project_id: str  # SYSTEM_KIND_SCOPE for system-wide rows
+    id: str
+    description: str = ""
+    writable: bool = True
+    lockable: bool = True
+    is_git_repo: bool = True
+    repo_url: str | None = None
+    # Lowercase enum value: "exclusive" | "branch_isolated" | "directory_isolated"
+    default_lock_mode: str | None = None
+    auto_attach: bool = False
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+
+@dataclass
+class ResolvedRequirement:
+    """A task's request for one workspace of a given kind. See spec §6.1.
+
+    ``position`` is part of the canonical lock order ``(kind_id, position)``.
+    ``preferred_workspace_id`` is only set on the synthesized project-repo
+    requirement (carrying ``Task.preferred_workspace_id``).
+    """
+
+    kind_id: str
+    alias: str | None = None
+    position: int = 0
+    preferred_workspace_id: str | None = None
+
+
+@dataclass
+class WorkspaceAttachment:
+    """A workspace bound to a task at acquisition time. See spec §8.1.
+
+    Distinct from ``Task.attachments`` (file attachments — see naming note in
+    spec §6.2).  Renaming was deliberate to avoid the collision.
+    """
+
+    requirement: ResolvedRequirement
+    workspace: Workspace
+    kind: WorkspaceKind
+
+    @property
+    def kind_id(self) -> str:
+        return self.requirement.kind_id
+
+    @property
+    def alias(self) -> str | None:
+        return self.requirement.alias
+
+    @property
+    def workspace_path(self) -> str:
+        return self.workspace.workspace_path
+
+    @property
+    def writable(self) -> bool:
+        return self.kind.writable
+
+    @property
+    def lockable(self) -> bool:
+        return self.kind.lockable
+
+
+@dataclass
+class WorkspaceAttachmentSet:
+    """All workspace attachments acquired for a task. See spec §6.2."""
+
+    attachments: list[WorkspaceAttachment] = field(default_factory=list)
+
+    def by_kind(self, kind_id: str) -> list[WorkspaceAttachment]:
+        return [a for a in self.attachments if a.kind_id == kind_id]
+
+    def first_of_kind(self, kind_id: str) -> WorkspaceAttachment | None:
+        for a in self.attachments:
+            if a.kind_id == kind_id:
+                return a
+        return None
+
+    @property
+    def primary_path(self) -> str | None:
+        """Path of the project-repo attachment if present (spec §8.1)."""
+        a = self.first_of_kind("project-repo")
+        return a.workspace_path if a else None
 
 
 @dataclass
