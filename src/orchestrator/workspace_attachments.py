@@ -109,12 +109,21 @@ async def acquire_for_task(
     :class:`AcquisitionFailed` is raised.  Read-only and auto-attached kinds
     skip locking but still appear in the resulting attachment set.
 
+    Lock mode resolution: ``task.workspace_mode`` wins over
+    ``kind.default_lock_mode`` for *all* lockable kinds when set.  This
+    preserves the legacy behavior where a per-task override applied
+    uniformly.
+
     Note: each per-kind lock is acquired in its own DB transaction (the
     underlying ``acquire_one_unlocked`` opens its own ``begin()``).  The
     explicit rollback loop on failure is what enforces all-or-nothing.
     """
     requirements = await effective_requirements(db, task)
     acquired: list[WorkspaceAttachment] = []
+
+    # Per-task lock mode override; applies to every lockable kind.  None
+    # means "use the kind's default_lock_mode".
+    task_mode_override = task.workspace_mode.value if task.workspace_mode else None
 
     try:
         for req in requirements:
@@ -125,10 +134,11 @@ async def acquire_for_task(
                 raise AcquisitionFailed(req.kind_id)
 
             if kind.lockable:
+                effective_mode = task_mode_override or kind.default_lock_mode
                 ws = await db.acquire_one_unlocked(
                     project_id=task.project_id,
                     kind_id=kind.id,
-                    mode=kind.default_lock_mode,
+                    mode=effective_mode,
                     locked_by_task_id=task.id,
                     locked_by_agent_id=agent_id,
                     prefer_workspace_id=req.preferred_workspace_id,

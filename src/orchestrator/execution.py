@@ -40,6 +40,30 @@ from src.scheduler import AssignAction
 logger = logging.getLogger(__name__)
 
 
+def _render_workspaces_block(attachments: list) -> str:
+    """Render the per-task Workspaces block for the agent prompt.
+
+    See workspaces-v2 spec §8.3.  Each attachment is shown with its kind,
+    capability flags, and absolute path so the agent can reason about
+    where it can read, write, and lock.
+    """
+    lines = ["## Workspaces"]
+    for a in attachments:
+        flags: list[str] = []
+        if a.writable:
+            flags.append("writable")
+        else:
+            flags.append("read-only")
+        if a.lockable and a.workspace.locked_by_task_id is not None:
+            flags.append("locked")
+        flag_str = ", ".join(flags)
+        alias_str = f" ({a.alias})" if a.alias else ""
+        lines.append(
+            f"- **{a.kind_id}**{alias_str} ({flag_str}) → {a.workspace_path}"
+        )
+    return "\n".join(lines)
+
+
 class ExecutionMixin:
     """Agent execution pipeline methods mixed into Orchestrator."""
 
@@ -634,6 +658,15 @@ class ExecutionMixin:
         workspace_attachments = (
             list(attachment_set.attachments) if attachment_set is not None else []
         )
+
+        # Append a Workspaces block to the description so the agent knows
+        # what each attached path represents.  Spec §8.3.
+        if workspace_attachments:
+            full_description = (
+                full_description.rstrip()
+                + "\n\n"
+                + _render_workspaces_block(workspace_attachments)
+            )
 
         # Build the runtime's allowed-paths set: extra_dirs (vault back-compat)
         # ∪ attachment paths, minus the cwd.  Spec §7.1: dedup is explicit.
