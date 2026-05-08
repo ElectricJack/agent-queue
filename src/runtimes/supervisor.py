@@ -27,6 +27,7 @@ import contextvars
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar
 
@@ -1793,6 +1794,13 @@ class Supervisor(Runtime):
         "suggestion_type", "task_title" keys.
 
         Never raises — returns {"action": "ignore"} on any error.
+
+        State-awareness: the prompt includes ``### Active Tasks`` and
+        ``### Recently Created (last 5 min)`` sections so the LLM can
+        avoid suggesting work that is already in flight or that the user
+        just requested.  Handler errors are swallowed — we fall back to a
+        ``no active task data available`` notice rather than failing the
+        whole observation (Phase 3 of the chat-analyzer overhaul plan).
         """
         if not self._provider or not messages:
             return {"action": "ignore"}
@@ -1804,11 +1812,17 @@ class Supervisor(Runtime):
             lines.append(f"[{author}]: {content}")
         conversation = "\n".join(lines)
 
+        active_tasks_section, recent_tasks_section = await self._build_task_state_sections(
+            project_id
+        )
+
         prompt = (
             f"## Passive Observation — Project: {project_id}\n\n"
             f"The following conversation happened in the project channel. "
             f"You are observing passively — do NOT take action on the project.\n\n"
             f"### Conversation\n{conversation}\n\n"
+            f"{active_tasks_section}\n\n"
+            f"{recent_tasks_section}\n\n"
             f"### Instructions\n"
             f"Decide one of:\n"
             f'1. **ignore** — nothing notable. Respond: {{"action": "ignore"}}\n'
@@ -1818,6 +1832,12 @@ class Supervisor(Runtime):
             f'{{"action": "suggest", "content": "suggestion text", '
             f'"suggestion_type": "task|answer|context|warning", '
             f'"task_title": "optional task title"}}\n\n'
+            f"**Avoid duplicative suggestions.** If your proposed `task` "
+            f"or `suggest` action semantically overlaps any entry listed "
+            f"under `### Active Tasks` or `### Recently Created`, you MUST "
+            f'instead respond with {{"action": "ignore"}}. The user already '
+            f"has that work queued or in progress; re-suggesting it is "
+            f"noise.\n\n"
             f"Respond with ONLY the JSON object, no other text."
         )
 
@@ -1839,6 +1859,77 @@ class Supervisor(Runtime):
             return {"action": "ignore"}
         finally:
             caller_override.reset(token)
+
+    # Window for the "Recently Created" prompt section.  Five minutes is
+    # the cutoff called out in the chat-analyzer overhaul plan — long
+    # enough to catch the "I just asked for this seconds ago" failure
+    # mode, short enough that older queued work doesn't dominate.
+    _RECENT_TASK_WINDOW_SECONDS = 5 * 60
+
+    async def _build_task_state_sections(self, project_id: str) -> tuple[str, str]:
+        """Return ``(active_tasks_section, recent_tasks_section)`` for the prompt.
+
+        Calls ``handler.execute("list_tasks", …)`` once with
+        ``show_all=False`` to fetch every non-terminal task for the
+        project, then partitions the result:
+
+        * **Active Tasks** — every returned (non-terminal) task,
+          rendered as ``- TITLE [STATUS]``.
+        * **Recently Created (last 5 min)** — the subset whose
+          ``created_at`` falls inside
+          :attr:`_RECENT_TASK_WINDOW_SECONDS`.
+
+        Any handler error degrades gracefully: both sections render the
+        text ``no active task data available`` so the LLM still gets
+        consistent prompt structure.
+        """
+        try:
+            result = await self.handler.execute(
+                "list_tasks",
+                {"project_id": project_id, "show_all": False},
+            )
+            tasks = result.get("tasks", []) if isinstance(result, dict) else []
+        except Exception as exc:  # pragma: no cover — narrow path, exercised by tests
+            logger.warning(
+                "observe(): list_tasks lookup failed for project %s: %s",
+                project_id,
+                exc,
+            )
+            fallback = "no active task data available"
+            return (
+                f"### Active Tasks\n{fallback}",
+                f"### Recently Created (last 5 min)\n{fallback}",
+            )
+
+        if not tasks:
+            return (
+                "### Active Tasks\n(none)",
+                "### Recently Created (last 5 min)\n(none)",
+            )
+
+        now = time.time()
+        cutoff = now - self._RECENT_TASK_WINDOW_SECONDS
+
+        active_lines: list[str] = []
+        recent_lines: list[str] = []
+        for t in tasks:
+            title = t.get("title") or "(untitled)"
+            status = t.get("status") or "?"
+            active_lines.append(f"- {title} [{status}]")
+
+            created_at = t.get("created_at")
+            try:
+                created_at_f = float(created_at) if created_at is not None else None
+            except (TypeError, ValueError):
+                created_at_f = None
+            if created_at_f is not None and created_at_f >= cutoff:
+                recent_lines.append(f"- {title} [{status}]")
+
+        active_section = "### Active Tasks\n" + "\n".join(active_lines)
+        recent_section = "### Recently Created (last 5 min)\n" + (
+            "\n".join(recent_lines) if recent_lines else "(none)"
+        )
+        return active_section, recent_section
 
     def _parse_observe_response(self, text: str) -> dict:
         """Parse the LLM's observation response into a structured dict.
