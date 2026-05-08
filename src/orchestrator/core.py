@@ -885,6 +885,18 @@ class Orchestrator(
         if builtin is not None:
             self.mcp_registry.set_builtin(builtin)
 
+        # Workspace kinds — markdown ↔ DB reconciliation (workspaces-v2 §4).
+        # Bootstrap first (writes markdown for migration-seeded DB rows),
+        # then scan (parses any operator-authored files).  Both are idempotent
+        # and safe to run on every daemon start.
+        from src.profiles.workspace_kind_registry import WorkspaceKindStore
+
+        self.workspace_kind_store = WorkspaceKindStore(
+            self.db, vault_root=self.config.vault_root
+        )
+        await self.workspace_kind_store.bootstrap()
+        await self.workspace_kind_store.scan()
+
         # Register facts.md watcher handlers (memory-plugin spec §7).
         # Detects changes to facts files across all vault scopes so they
         # can be synced to the KV backend.  Initially registered with no
