@@ -23,7 +23,15 @@ class WorkspaceQueryMixin:
     """Query mixin for workspace operations.  Expects ``self._engine``."""
 
     async def create_workspace(self, workspace: Workspace) -> None:
-        """Insert a new workspace record."""
+        """Insert a new workspace record.
+
+        Back-compat: when ``workspace.kind_id`` is None, defaults to
+        ``"project-repo"`` so existing callers (orchestrator, CLI ``add_workspace``,
+        tests written before workspaces-v2) keep working.  Explicit kind_id is
+        respected.  Spec §9.5: ``kind_id`` becomes NOT NULL in a follow-up
+        migration once every install is on workspaces-v2.
+        """
+        kind_id = workspace.kind_id if workspace.kind_id is not None else "project-repo"
         async with self._engine.begin() as conn:
             await conn.execute(
                 insert(workspaces).values(
@@ -32,7 +40,7 @@ class WorkspaceQueryMixin:
                     workspace_path=workspace.workspace_path,
                     source_type=workspace.source_type.value,
                     name=workspace.name,
-                    kind_id=workspace.kind_id,
+                    kind_id=kind_id,
                     locked_by_agent_id=workspace.locked_by_agent_id,
                     locked_by_task_id=workspace.locked_by_task_id,
                     locked_at=workspace.locked_at,
