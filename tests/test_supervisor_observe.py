@@ -208,3 +208,283 @@ def test_observe_instructs_model_to_ignore_overlap_with_existing_tasks():
     assert '"action": "ignore"' in prompt, (
         "instructions must explicitly say to respond with ignore on overlap"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — _parse_observe_response unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_parse_malformed_json_returns_ignore():
+    """Malformed JSON in the LLM response must degrade to ``ignore``.
+
+    The Stage-2 parser is the last line of defence between an unreliable
+    LLM and the Discord-facing suggester.  When the model emits text that
+    is not valid JSON, the parser must not raise — it must return
+    ``{"action": "ignore"}`` so the bot stays silent.
+    """
+    sup = _make_supervisor()
+
+    # A deliberately broken response — unterminated string + trailing junk.
+    result = sup._parse_observe_response('{"action": "suggest", "content": "oops')
+    assert result == {"action": "ignore"}
+
+    # Plain non-JSON text should also degrade to ignore.
+    assert sup._parse_observe_response("not json at all") == {"action": "ignore"}
+
+    # Empty string is degenerate but must not raise.
+    assert sup._parse_observe_response("") == {"action": "ignore"}
+
+
+def test_parse_unknown_action_returns_ignore():
+    """Valid JSON with an unrecognised ``action`` must degrade to ignore.
+
+    The contract enumerates exactly three actions — ``ignore``, ``memory``,
+    ``suggest``.  Anything else (typo, hallucinated verb, wrong language)
+    must be treated as if the LLM said nothing.
+    """
+    sup = _make_supervisor()
+
+    assert sup._parse_observe_response(
+        '{"action": "delete_everything", "content": "go"}'
+    ) == {"action": "ignore"}
+    assert sup._parse_observe_response('{"action": "suggestion"}') == {
+        "action": "ignore"
+    }
+    # Action key entirely missing — also degrades.
+    assert sup._parse_observe_response('{"content": "stuff"}') == {"action": "ignore"}
+    # JSON array (wrong shape) — must not raise.
+    assert sup._parse_observe_response('["ignore"]') == {"action": "ignore"}
+
+
+def test_parse_strips_code_fences_before_decoding():
+    """The parser strips ``` fences before attempting to decode JSON.
+
+    LLMs frequently wrap JSON output in fenced code blocks even when told
+    not to.  The parser already handles this; the test pins the behavior
+    so a future refactor cannot regress it.
+    """
+    sup = _make_supervisor()
+
+    fenced = '```json\n{"action": "memory", "content": "particle bug noted"}\n```'
+    result = sup._parse_observe_response(fenced)
+    assert result["action"] == "memory"
+    assert result["content"] == "particle bug noted"
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — happy paths for each action, with confidence-component fields
+# ---------------------------------------------------------------------------
+
+
+def test_parse_happy_path_ignore_preserves_confidence_fields():
+    """``ignore`` action with intent/novelty/actionability fields passes through.
+
+    The Phase 4 design adds three component scores
+    (``intent_confidence``, ``novelty``, ``actionability``) to every
+    response.  The parser is contractually backward-compatible: it must
+    preserve those keys verbatim so downstream gates can read them.
+    """
+    sup = _make_supervisor()
+    raw = (
+        '{"action": "ignore", "intent_confidence": 0.2, '
+        '"novelty": 0.1, "actionability": 0.0}'
+    )
+    result = sup._parse_observe_response(raw)
+    assert result["action"] == "ignore"
+    assert result["intent_confidence"] == 0.2
+    assert result["novelty"] == 0.1
+    assert result["actionability"] == 0.0
+
+
+def test_parse_happy_path_memory_preserves_confidence_fields():
+    """``memory`` action keeps its content + the three component scores."""
+    sup = _make_supervisor()
+    raw = (
+        '{"action": "memory", "content": "user prefers dark mode", '
+        '"intent_confidence": 0.7, "novelty": 0.6, "actionability": 0.3}'
+    )
+    result = sup._parse_observe_response(raw)
+    assert result["action"] == "memory"
+    assert result["content"] == "user prefers dark mode"
+    assert result["intent_confidence"] == 0.7
+    assert result["novelty"] == 0.6
+    assert result["actionability"] == 0.3
+
+
+def test_parse_happy_path_suggest_preserves_confidence_fields():
+    """``suggest`` action keeps its full payload including the score components.
+
+    The downstream Discord embed renderer needs ``content``,
+    ``suggestion_type``, and ``task_title``; the gate stack needs the
+    three score components.  All six fields must survive the parser.
+    """
+    sup = _make_supervisor()
+    raw = (
+        '{"action": "suggest", "content": "Add a task to refactor X", '
+        '"suggestion_type": "task", "task_title": "Refactor X module", '
+        '"intent_confidence": 0.9, "novelty": 0.8, "actionability": 0.85}'
+    )
+    result = sup._parse_observe_response(raw)
+    assert result["action"] == "suggest"
+    assert result["content"] == "Add a task to refactor X"
+    assert result["suggestion_type"] == "task"
+    assert result["task_title"] == "Refactor X module"
+    assert result["intent_confidence"] == 0.9
+    assert result["novelty"] == 0.8
+    assert result["actionability"] == 0.85
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — observe() error/short-circuit paths
+# ---------------------------------------------------------------------------
+
+
+def test_observe_swallows_provider_exception():
+    """A provider exception must be swallowed and degrade to ignore.
+
+    ``observe()`` is invoked from the chat-message hot path; if the LLM
+    provider raises (network blip, rate limit, malformed config) the bot
+    must stay quiet rather than propagate the exception up to Discord.
+    """
+    sup = _make_supervisor()
+    provider = MagicMock()
+    provider.create_message = AsyncMock(side_effect=RuntimeError("kaboom"))
+    sup._provider = provider
+
+    sup.handler = MagicMock()
+    sup.handler.execute = AsyncMock(return_value={"tasks": []})
+
+    result = asyncio.run(sup.observe(messages=_messages(), project_id="my-game"))
+    assert result == {"action": "ignore"}
+    # Confirm the provider WAS called — we want the exception path, not a
+    # short-circuit before the provider was reached.
+    assert provider.create_message.await_count == 1
+
+
+def test_observe_empty_messages_short_circuits_without_provider_call():
+    """An empty ``messages`` list must short-circuit before calling the provider.
+
+    There is nothing for the LLM to classify; spending a token round-trip
+    on an empty conversation would be pure waste.  The handler should
+    likewise not be queried — the early exit happens before any work.
+    """
+    sup = _make_supervisor()
+    provider = MagicMock()
+    provider.create_message = AsyncMock()
+    sup._provider = provider
+
+    sup.handler = MagicMock()
+    sup.handler.execute = AsyncMock()
+
+    result = asyncio.run(sup.observe(messages=[], project_id="my-game"))
+    assert result == {"action": "ignore"}
+    provider.create_message.assert_not_awaited()
+    sup.handler.execute.assert_not_awaited()
+
+
+def test_observe_no_provider_short_circuits():
+    """When ``_provider`` is None the call must degrade to ignore.
+
+    ``initialize()`` is the only path that sets ``_provider``; if it
+    failed (no API key, unsupported provider) the supervisor stays
+    operational for non-LLM duties but ``observe()`` becomes a no-op.
+    """
+    sup = _make_supervisor()
+    sup._provider = None
+
+    sup.handler = MagicMock()
+    sup.handler.execute = AsyncMock()
+
+    result = asyncio.run(sup.observe(messages=_messages(), project_id="my-game"))
+    assert result == {"action": "ignore"}
+    sup.handler.execute.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — assembled prompt structure (Conversation + state-aware sections)
+# ---------------------------------------------------------------------------
+
+
+def test_observe_prompt_includes_all_three_state_sections():
+    """A single ``observe()`` call must emit the full state-aware prompt.
+
+    The Phase 3 design requires three top-level sections:
+
+    * ``### Conversation`` — the raw chat lines under analysis
+    * ``### Active Tasks`` — every non-terminal task in the project
+    * ``### Recently Created (last 5 min)`` — tasks created inside the
+      window
+
+    All three must appear in one assembled prompt so the LLM has the
+    full state picture in a single call (no round-trips).
+    """
+    sup = _make_supervisor()
+    sup._provider = _mock_provider_returning('{"action": "ignore"}')
+
+    now = time.time()
+    sup.handler = MagicMock()
+    sup.handler.execute = AsyncMock(
+        return_value={
+            "tasks": [
+                {
+                    "id": "t1",
+                    "title": "Old in-flight task",
+                    "status": "IN_PROGRESS",
+                    "created_at": now - 7200,
+                },
+                {
+                    "id": "t2",
+                    "title": "Brand new task",
+                    "status": "DEFINED",
+                    "created_at": now - 30,
+                },
+            ]
+        }
+    )
+
+    asyncio.run(sup.observe(messages=_messages(), project_id="my-game"))
+
+    prompt = _captured_prompt(sup._provider)
+    # All three section headings present.
+    assert "### Conversation" in prompt
+    assert "### Active Tasks" in prompt
+    assert "### Recently Created (last 5 min)" in prompt
+    # The conversation line must surface under ### Conversation.
+    assert "the particle system needs work" in prompt
+    assert "[alice]" in prompt
+    # Both tasks listed under Active Tasks.
+    assert "Old in-flight task" in prompt
+    assert "Brand new task" in prompt
+    # Only the recent task surfaces under Recently Created.  We assert this
+    # by slicing the prompt at the heading and checking the right entry
+    # appears in that slice.
+    recent_slice = prompt.split("### Recently Created (last 5 min)", 1)[1]
+    assert "Brand new task" in recent_slice
+    assert "Old in-flight task" not in recent_slice.split("### ", 1)[0], (
+        "the older task must not appear in the Recently Created section"
+    )
+
+
+def test_observe_prompt_conversation_section_renders_each_message():
+    """The ``### Conversation`` section must render one line per message.
+
+    Each line carries the author handle and content so the model can
+    distinguish speakers in multi-party batches.  This pins the existing
+    ``[author]: content`` wire-format introduced before Phase 3.
+    """
+    sup = _make_supervisor()
+    sup._provider = _mock_provider_returning('{"action": "ignore"}')
+    sup.handler = MagicMock()
+    sup.handler.execute = AsyncMock(return_value={"tasks": []})
+
+    multi = [
+        {"author": "alice", "content": "the particle system needs work", "timestamp": 1.0},
+        {"author": "bob", "content": "agreed, the renderer is leaky", "timestamp": 2.0},
+    ]
+    asyncio.run(sup.observe(messages=multi, project_id="my-game"))
+
+    prompt = _captured_prompt(sup._provider)
+    convo_section = prompt.split("### Conversation", 1)[1].split("###", 1)[0]
+    assert "[alice]: the particle system needs work" in convo_section
+    assert "[bob]: agreed, the renderer is leaky" in convo_section
