@@ -112,11 +112,33 @@ if command -v npm &>/dev/null; then
     echo "Generating typed API client (@aq/ts-client)..."
     npm -w @aq/ts-client run generate --silent
     echo "  ✓ @aq/ts-client generated"
+
+    # acpx — headless CLI client for the Agent Client Protocol (ACP).  Used
+    # by profiles whose ``runtime`` is ``acpx`` to talk to underlying agents
+    # (claude, codex, gemini, ...).  Installed globally so the daemon can
+    # find it on PATH at task dispatch time.  Skip if already installed.
+    if command -v acpx &>/dev/null; then
+        echo "  ✓ acpx already installed ($(acpx --version 2>/dev/null | head -1 || echo 'version unknown'))"
+    else
+        echo "Installing acpx (ACP CLI client) globally..."
+        if npm install -g acpx --silent 2>/dev/null; then
+            echo "  ✓ acpx installed"
+        else
+            # Permission denied (typical on Linux without user-prefix npm)
+            # — surface the manual step rather than silently failing.
+            echo "  ⚠ npm install -g acpx failed (likely permissions)."
+            echo "    Profiles using runtime: acpx will not work until installed."
+            echo "    Try one of:"
+            echo "      sudo npm install -g acpx"
+            echo "      npm config set prefix ~/.local && npm install -g acpx"
+        fi
+    fi
 else
     echo ""
     echo "[skip] npm not available; dashboard won't be available."
     echo "       Install Node.js and run 'npm install' from the repo root to enable it."
     echo "       Then run: npm -w @aq/ts-client run generate"
+    echo "       Profiles using runtime: acpx also need: npm install -g acpx"
 fi
 
 # --- Symlink CLI binaries to ~/.local/bin so they're on PATH globally ---
