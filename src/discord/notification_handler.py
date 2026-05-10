@@ -11,6 +11,7 @@ handler translates them into Discord-specific presentation.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -121,13 +122,21 @@ class DiscordNotificationHandler:
 
         # Thread management — maps task_id → (send_to_thread, notify_main)
         self._task_threads: dict[str, tuple[Any, Any]] = {}
-        # Stream message tracking for streaming runtimes (e.g. ACPX) that
-        # send TaskMessageEvent with a stream_id.  Maps stream_id →
-        # (discord.Message, displayed_text).  We edit the message in place
-        # as text grows; when it would exceed Discord's 2000-char limit
-        # we close the current message (leave it unchanged) and reset so
-        # the next chunk starts a fresh message under the same stream_id.
-        self._stream_messages: dict[str, tuple[Any, str]] = {}
+        # Per-stream state for streaming runtimes (e.g. ACPX).  Each stream
+        # has a long-lived worker task that owns Discord I/O for that stream
+        # — the event handler just updates ``latest_text`` and pings the
+        # worker.  Newer text always overwrites older pending text, so a
+        # slow Discord (rate limit, transient 5xx) cannot back up the event
+        # bus and "freeze" the live stream from the user's perspective.
+        # Schema: stream_id → state dict with keys::
+        #   msg          : discord.Message | None  (current, owned by worker)
+        #   displayed    : str                       (text shown in `msg`)
+        #   prefix_len   : int                       (chars in PRIOR messages)
+        #   latest_text  : str | None                (newest pending text)
+        #   latest_done  : bool                      (sticky stream_done flag)
+        #   ping         : asyncio.Event             (signals new pending data)
+        #   worker       : asyncio.Task | None       (the renderer)
+        self._stream_states: dict[str, dict[str, Any]] = {}
 
         # Subscribe to all notification events
         events = [
@@ -774,88 +783,137 @@ class DiscordNotificationHandler:
                 await self.bot._send_message(event.message, project_id=event.project_id)
 
     async def _handle_streamed_task_message(self, event: "TaskMessageEvent") -> None:
-        """Edit-in-place handling for streaming runtimes.
+        """Enqueue a stream update and ensure a worker is rendering it.
 
-        ``event.message`` is the cumulative text-so-far for the turn; we
-        track ``stream_id → (current Message, text shown in it, chars
-        already shown in *prior* messages)``.  On each call we:
-
-        1. Compute the suffix not yet displayed: ``text[prefix_len:]``.
-        2. Split that suffix into Discord-sized chunks (≤1990 chars each).
-        3. The first chunk replaces the current message via ``edit``; any
-           additional chunks are sent as new messages (chaining).
-        4. The last chunk becomes the new "current" message — subsequent
-           updates edit it.
-
-        Falls back to the non-stream path when there's no thread for the
-        task (we need a ``send`` target that returns a ``Message``).
+        Decouples Discord I/O (which can stall on rate limits) from the
+        event bus.  Each stream has at most one in-flight render task;
+        new updates overwrite ``latest_text`` so the worker always sees
+        the freshest cumulative text when it picks up the next round.
+        Returns immediately — no awaiting Discord here.
         """
-        # Get the discord.Thread (or channel) we can post to and edit in.
         thread = self.bot._task_thread_objects.get(event.task_id)
         if thread is None:
-            # No thread → can't reliably edit.  Treat as a regular message.
+            # No thread → can't reliably edit.  Fall back to regular send.
             await self.bot._send_message(event.message, project_id=event.project_id)
             return
 
-        text = event.message or ""
-        state = self._stream_messages.get(event.stream_id)
-        prefix_len = state[2] if state else 0
-        current_msg = state[0] if state else None
-        current_displayed = state[1] if state else ""
+        state = self._stream_states.get(event.stream_id)
+        if state is None:
+            state = {
+                "msg": None,
+                "displayed": "",
+                "prefix_len": 0,
+                "latest_text": None,
+                "latest_done": False,
+                "ping": asyncio.Event(),
+                "worker": None,
+            }
+            self._stream_states[event.stream_id] = state
 
-        # Suffix not yet displayed in the current message.  When state is
-        # None (first emit), prefix_len=0 → suffix is the full text.
-        suffix = text[prefix_len:]
-        if not suffix:
-            # Empty / no growth — only act on the done signal.
-            if event.stream_done:
-                self._stream_messages.pop(event.stream_id, None)
-            return
-
-        DISCORD_LIMIT = 1990  # leave headroom under the 2000 hard limit
-
-        # Chunk the suffix into Discord-sized pieces.
-        chunks: list[tuple[int, str]] = []  # (chunk_end_offset_in_text, body)
-        i = prefix_len
-        while i < len(text):
-            end = min(len(text), i + DISCORD_LIMIT)
-            chunks.append((end, text[i:end]))
-            i = end
-
-        for idx, (chunk_end, body) in enumerate(chunks):
-            is_first = idx == 0
-            is_last = idx == len(chunks) - 1
-            try:
-                if is_first and current_msg is not None:
-                    # Edit existing — only if content actually changed.
-                    if body != current_displayed:
-                        await current_msg.edit(content=body)
-                    new_msg = current_msg
-                else:
-                    new_msg = await thread.send(body or "…")
-            except Exception:
-                logger.exception(
-                    "Stream %s: failed to %s message in thread for task %s",
-                    event.stream_id,
-                    "edit" if (is_first and current_msg is not None) else "send",
-                    event.task_id,
-                )
-                return
-
-            if is_last:
-                # Update tracked state: new "current" message + new prefix_len.
-                # prefix_len_new = chars in PRIOR messages = chunk_end - len(body)
-                self._stream_messages[event.stream_id] = (
-                    new_msg,
-                    body,
-                    chunk_end - len(body),
-                )
-            current_msg = new_msg
-            current_displayed = body
-
+        # Always overwrite — text is cumulative, newer strictly contains older.
+        state["latest_text"] = event.message or ""
         if event.stream_done:
-            # Release tracking — the message stays as-is in the thread.
-            self._stream_messages.pop(event.stream_id, None)
+            state["latest_done"] = True
+        state["ping"].set()
+
+        worker = state["worker"]
+        if worker is None or worker.done():
+            state["worker"] = asyncio.create_task(
+                self._stream_worker(event.stream_id, event.task_id, event.project_id, thread)
+            )
+
+    async def _stream_worker(
+        self,
+        stream_id: str,
+        task_id: str,
+        project_id: str,
+        thread: Any,
+    ) -> None:
+        """Long-lived per-stream renderer: drains pending text into Discord.
+
+        Owns the Discord ``Message`` for the current stream segment.  On
+        each iteration: waits for the ping, reads the latest pending
+        text, renders to Discord, loops.  Exits when ``latest_done`` is
+        set after a render.  All exceptions are logged but do not kill
+        the worker — the next ping retries.
+        """
+        DISCORD_LIMIT = 1990  # headroom under Discord's 2000 hard limit
+
+        while True:
+            state = self._stream_states.get(stream_id)
+            if state is None:
+                return  # stream was reaped externally
+            try:
+                await state["ping"].wait()
+            except asyncio.CancelledError:
+                return
+            state["ping"].clear()
+
+            text = state["latest_text"]
+            done = state["latest_done"]
+            if text is None:
+                if done:
+                    self._stream_states.pop(stream_id, None)
+                    return
+                continue  # spurious wake; re-wait
+
+            # Snapshot what we'll render this round.  latest_text may be
+            # overwritten while we're rendering — that's fine, the next
+            # iteration picks it up.
+            current_msg = state["msg"]
+            displayed = state["displayed"]
+            prefix_len = state["prefix_len"]
+
+            suffix = text[prefix_len:]
+            if not suffix:
+                # No growth in the current message segment.  Honour done.
+                if done:
+                    self._stream_states.pop(stream_id, None)
+                    return
+                continue
+
+            # Chunk the suffix into Discord-sized pieces (handles overflow
+            # mid-stream by chaining new messages under the same stream_id).
+            chunks: list[tuple[int, str]] = []
+            i = prefix_len
+            while i < len(text):
+                end = min(len(text), i + DISCORD_LIMIT)
+                chunks.append((end, text[i:end]))
+                i = end
+
+            for idx, (chunk_end, body) in enumerate(chunks):
+                is_first = idx == 0
+                is_last = idx == len(chunks) - 1
+                try:
+                    if is_first and current_msg is not None:
+                        if body != displayed:
+                            await current_msg.edit(content=body)
+                        new_msg = current_msg
+                    else:
+                        new_msg = await thread.send(body or "…")
+                except Exception:
+                    logger.exception(
+                        "Stream %s: Discord I/O failed for task %s — will retry "
+                        "on next update",
+                        stream_id,
+                        task_id,
+                    )
+                    # Don't update state; the next ping will retry against
+                    # the (still-current) Message.  Worker stays alive.
+                    break
+
+                if is_last:
+                    state["msg"] = new_msg
+                    state["displayed"] = body
+                    state["prefix_len"] = chunk_end - len(body)
+                current_msg = new_msg
+                displayed = body
+
+            if state["latest_done"] and not state["ping"].is_set():
+                # Final flush done; release state so a future stream with
+                # the same id (unlikely — stream_ids are uuid4) starts fresh.
+                self._stream_states.pop(stream_id, None)
+                return
 
     async def _on_task_thread_close(self, data: dict) -> None:
         event = TaskThreadCloseEvent(**{k: v for k, v in data.items() if k != "_event_type"})
