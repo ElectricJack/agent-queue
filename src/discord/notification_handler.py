@@ -121,6 +121,13 @@ class DiscordNotificationHandler:
 
         # Thread management — maps task_id → (send_to_thread, notify_main)
         self._task_threads: dict[str, tuple[Any, Any]] = {}
+        # Stream message tracking for streaming runtimes (e.g. ACPX) that
+        # send TaskMessageEvent with a stream_id.  Maps stream_id →
+        # (discord.Message, displayed_text).  We edit the message in place
+        # as text grows; when it would exceed Discord's 2000-char limit
+        # we close the current message (leave it unchanged) and reset so
+        # the next chunk starts a fresh message under the same stream_id.
+        self._stream_messages: dict[str, tuple[Any, str]] = {}
 
         # Subscribe to all notification events
         events = [
@@ -736,6 +743,16 @@ class DiscordNotificationHandler:
 
     async def _on_task_message(self, data: dict) -> None:
         event = TaskMessageEvent(**{k: v for k, v in data.items() if k != "_event_type"})
+
+        # Streaming runtimes (ACPX) set stream_id and send the cumulative
+        # turn text on each update.  Edit a single Discord message in place
+        # rather than posting a new one per chunk.  Chain to additional
+        # messages when the stream's text exceeds Discord's ~2000-char
+        # limit.  Brief notifications never stream — they always post.
+        if event.stream_id and event.message_type != "brief":
+            await self._handle_streamed_task_message(event)
+            return
+
         thread_cbs = self._task_threads.get(event.task_id)
 
         if event.message_type == "brief":
@@ -755,6 +772,90 @@ class DiscordNotificationHandler:
                     await send_thread(event.message)
             else:
                 await self.bot._send_message(event.message, project_id=event.project_id)
+
+    async def _handle_streamed_task_message(self, event: "TaskMessageEvent") -> None:
+        """Edit-in-place handling for streaming runtimes.
+
+        ``event.message`` is the cumulative text-so-far for the turn; we
+        track ``stream_id → (current Message, text shown in it, chars
+        already shown in *prior* messages)``.  On each call we:
+
+        1. Compute the suffix not yet displayed: ``text[prefix_len:]``.
+        2. Split that suffix into Discord-sized chunks (≤1990 chars each).
+        3. The first chunk replaces the current message via ``edit``; any
+           additional chunks are sent as new messages (chaining).
+        4. The last chunk becomes the new "current" message — subsequent
+           updates edit it.
+
+        Falls back to the non-stream path when there's no thread for the
+        task (we need a ``send`` target that returns a ``Message``).
+        """
+        # Get the discord.Thread (or channel) we can post to and edit in.
+        thread = self.bot._task_thread_objects.get(event.task_id)
+        if thread is None:
+            # No thread → can't reliably edit.  Treat as a regular message.
+            await self.bot._send_message(event.message, project_id=event.project_id)
+            return
+
+        text = event.message or ""
+        state = self._stream_messages.get(event.stream_id)
+        prefix_len = state[2] if state else 0
+        current_msg = state[0] if state else None
+        current_displayed = state[1] if state else ""
+
+        # Suffix not yet displayed in the current message.  When state is
+        # None (first emit), prefix_len=0 → suffix is the full text.
+        suffix = text[prefix_len:]
+        if not suffix:
+            # Empty / no growth — only act on the done signal.
+            if event.stream_done:
+                self._stream_messages.pop(event.stream_id, None)
+            return
+
+        DISCORD_LIMIT = 1990  # leave headroom under the 2000 hard limit
+
+        # Chunk the suffix into Discord-sized pieces.
+        chunks: list[tuple[int, str]] = []  # (chunk_end_offset_in_text, body)
+        i = prefix_len
+        while i < len(text):
+            end = min(len(text), i + DISCORD_LIMIT)
+            chunks.append((end, text[i:end]))
+            i = end
+
+        for idx, (chunk_end, body) in enumerate(chunks):
+            is_first = idx == 0
+            is_last = idx == len(chunks) - 1
+            try:
+                if is_first and current_msg is not None:
+                    # Edit existing — only if content actually changed.
+                    if body != current_displayed:
+                        await current_msg.edit(content=body)
+                    new_msg = current_msg
+                else:
+                    new_msg = await thread.send(body or "…")
+            except Exception:
+                logger.exception(
+                    "Stream %s: failed to %s message in thread for task %s",
+                    event.stream_id,
+                    "edit" if (is_first and current_msg is not None) else "send",
+                    event.task_id,
+                )
+                return
+
+            if is_last:
+                # Update tracked state: new "current" message + new prefix_len.
+                # prefix_len_new = chars in PRIOR messages = chunk_end - len(body)
+                self._stream_messages[event.stream_id] = (
+                    new_msg,
+                    body,
+                    chunk_end - len(body),
+                )
+            current_msg = new_msg
+            current_displayed = body
+
+        if event.stream_done:
+            # Release tracking — the message stays as-is in the thread.
+            self._stream_messages.pop(event.stream_id, None)
 
     async def _on_task_thread_close(self, data: dict) -> None:
         event = TaskThreadCloseEvent(**{k: v for k, v in data.items() if k != "_event_type"})

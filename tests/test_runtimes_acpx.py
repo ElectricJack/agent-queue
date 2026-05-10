@@ -106,7 +106,12 @@ class TestACPXRuntimeBuildCommand:
         # The prompt is the last arg.
         assert cmd[-1] == "Implement the foo feature"
 
-    def test_command_includes_model_when_profile_sets_it(self):
+    def test_command_omits_model_flag(self):
+        # acpx 0.1.x's `<agent> exec` subcommand does not accept --model;
+        # passing it makes acpx print help and exit 0 with no JSON-RPC.
+        # The runtime now omits it regardless of profile.model — model
+        # selection on this runtime is delegated to the underlying
+        # agent's own config.  See acpx.py:_build_command for context.
         runtime = ACPXRuntime(profile=_claude_profile(model="claude-sonnet-4-6"))
         captured: dict = {}
 
@@ -126,8 +131,8 @@ class TestACPXRuntimeBuildCommand:
                 await runtime.wait()
 
         asyncio.run(_go())
-        assert "--model" in captured["cmd"]
-        assert "claude-sonnet-4-6" in captured["cmd"]
+        assert "--model" not in captured["cmd"]
+        assert "claude-sonnet-4-6" not in captured["cmd"]
 
     @pytest.mark.asyncio
     async def test_missing_agent_name_raises(self):
@@ -305,14 +310,17 @@ class TestACPXRuntimeWait:
 
 class TestACPXRuntimeStreamsMessages:
     @pytest.mark.asyncio
-    async def test_agent_message_chunks_reach_callback(self):
+    async def test_agent_message_chunks_coalesce_via_stream(self):
+        # Multi-chunk agent text streams via stream_id — each emit carries
+        # the cumulative text-so-far so the Discord receiver can edit a
+        # single message in place.
         emitted_lines = _ndjson_lines(
             {
                 "method": "session/update",
                 "params": {
                     "update": {
                         "sessionUpdate": "agent_message_chunk",
-                        "content": {"text": "Step 1"},
+                        "content": {"text": "Step 1 "},
                     }
                 },
             },
@@ -327,10 +335,10 @@ class TestACPXRuntimeStreamsMessages:
             },
             {"stopReason": "completed", "result": "Done.", "usage": {}},
         )
-        received: list[str] = []
+        received: list[tuple[str, str | None, bool]] = []
 
-        async def on_message(text: str) -> None:
-            received.append(text)
+        async def on_message(text, *, stream_id=None, stream_done=False):
+            received.append((text, stream_id, stream_done))
 
         async def fake_run(cmd, env, cwd, on_line, cancel_event, **kw):  # noqa: ARG001
             for line in emitted_lines:
@@ -338,24 +346,38 @@ class TestACPXRuntimeStreamsMessages:
             return 0
 
         runtime = ACPXRuntime(profile=_claude_profile())
+        # Disable debounce so every chunk emits — easier to assert on shape.
+        runtime._stream_min_interval = 0
         await runtime.start(_make_task())
         with patch("src.runtimes.acpx.shutil.which", return_value="/usr/bin/acpx"), \
                 patch("src.runtimes.acpx.run_streaming_subprocess", side_effect=fake_run):
             await runtime.wait(on_message=on_message)
 
-        joined = "\n".join(received)
-        assert "Step 1" in joined
-        assert "Step 2" in joined
+        # All emits carry the same stream_id (single turn).
+        stream_ids = {sid for _, sid, _ in received if sid is not None}
+        assert len(stream_ids) == 1, f"expected one stream_id, got {stream_ids}"
+
+        # Each emit carries the cumulative text — last one is the full turn.
+        texts = [t for t, _, _ in received]
+        assert texts[-1] == "Step 1 Step 2"
+
+        # Final emit closed the stream.
+        assert received[-1][2] is True
 
     @pytest.mark.asyncio
     async def test_tool_call_emits_tool_name(self):
+        # Real ACP tool_call shape — title/name on the update dict directly,
+        # not nested under "toolCall".  Earlier the runtime read a missing
+        # update["toolCall"] and emitted "?" markers.
         emitted_lines = _ndjson_lines(
             {
                 "method": "session/update",
                 "params": {
                     "update": {
                         "sessionUpdate": "tool_call",
-                        "toolCall": {"title": "Read", "name": "Read"},
+                        "title": "Read",
+                        "kind": "read",
+                        "toolCallId": "tool-1",
                     }
                 },
             },
@@ -363,7 +385,7 @@ class TestACPXRuntimeStreamsMessages:
         )
         received: list[str] = []
 
-        async def on_message(text: str) -> None:
+        async def on_message(text, *, stream_id=None, stream_done=False):  # noqa: ARG001
             received.append(text)
 
         async def fake_run(cmd, env, cwd, on_line, cancel_event, **kw):  # noqa: ARG001
@@ -377,8 +399,78 @@ class TestACPXRuntimeStreamsMessages:
                 patch("src.runtimes.acpx.run_streaming_subprocess", side_effect=fake_run):
             await runtime.wait(on_message=on_message)
 
-        # Tool name surfaced in the Discord-friendly "-# {name}" format.
         assert any("Read" in m for m in received)
+
+    @pytest.mark.asyncio
+    async def test_tool_call_without_title_does_not_emit_question_mark(self):
+        # If a tool_call event somehow lacks title/name/_meta, suppress
+        # rather than emit "?" — the v1 behaviour spammed Discord.
+        emitted_lines = _ndjson_lines(
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tool-1",
+                        # No title, name, or _meta.claudeCode.toolName.
+                    }
+                },
+            },
+            {"stopReason": "completed", "result": "ok", "usage": {}},
+        )
+        received: list[str] = []
+
+        async def on_message(text, *, stream_id=None, stream_done=False):  # noqa: ARG001
+            received.append(text)
+
+        async def fake_run(cmd, env, cwd, on_line, cancel_event, **kw):  # noqa: ARG001
+            for line in emitted_lines:
+                on_line(line)
+            return 0
+
+        runtime = ACPXRuntime(profile=_claude_profile())
+        await runtime.start(_make_task())
+        with patch("src.runtimes.acpx.shutil.which", return_value="/usr/bin/acpx"), \
+                patch("src.runtimes.acpx.run_streaming_subprocess", side_effect=fake_run):
+            await runtime.wait(on_message=on_message)
+
+        assert "?" not in received
+        assert all("?" not in m for m in received)
+
+    @pytest.mark.asyncio
+    async def test_meta_tool_name_fallback(self):
+        # When title/name are absent but _meta.claudeCode.toolName is set
+        # (real shape from claude-agent-acp), use that as the banner.
+        emitted_lines = _ndjson_lines(
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tool-1",
+                        "_meta": {"claudeCode": {"toolName": "Bash"}},
+                    }
+                },
+            },
+            {"stopReason": "completed", "result": "ok", "usage": {}},
+        )
+        received: list[str] = []
+
+        async def on_message(text, *, stream_id=None, stream_done=False):  # noqa: ARG001
+            received.append(text)
+
+        async def fake_run(cmd, env, cwd, on_line, cancel_event, **kw):  # noqa: ARG001
+            for line in emitted_lines:
+                on_line(line)
+            return 0
+
+        runtime = ACPXRuntime(profile=_claude_profile())
+        await runtime.start(_make_task())
+        with patch("src.runtimes.acpx.shutil.which", return_value="/usr/bin/acpx"), \
+                patch("src.runtimes.acpx.run_streaming_subprocess", side_effect=fake_run):
+            await runtime.wait(on_message=on_message)
+
+        assert any("Bash" in m for m in received)
 
     @pytest.mark.asyncio
     async def test_thinking_chunks_suppressed_from_live_stream(self):
@@ -405,7 +497,7 @@ class TestACPXRuntimeStreamsMessages:
         )
         received: list[str] = []
 
-        async def on_message(text: str) -> None:
+        async def on_message(text, *, stream_id=None, stream_done=False):  # noqa: ARG001
             received.append(text)
 
         async def fake_run(cmd, env, cwd, on_line, cancel_event, **kw):  # noqa: ARG001
@@ -414,6 +506,7 @@ class TestACPXRuntimeStreamsMessages:
             return 0
 
         runtime = ACPXRuntime(profile=_claude_profile())
+        runtime._stream_min_interval = 0
         await runtime.start(_make_task())
         with patch("src.runtimes.acpx.shutil.which", return_value="/usr/bin/acpx"), \
                 patch("src.runtimes.acpx.run_streaming_subprocess", side_effect=fake_run):

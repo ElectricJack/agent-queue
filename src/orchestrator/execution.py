@@ -743,11 +743,19 @@ class ExecutionMixin:
         # ------------------------------------------------------------------ #
         _question_notified = False
 
-        async def forward_agent_message(text: str) -> None:
+        async def forward_agent_message(
+            text: str,
+            *,
+            stream_id: str | None = None,
+            stream_done: bool = False,
+        ) -> None:
             nonlocal _question_notified
             # Stream agent output via event — the notification handler
             # routes to the task's thread if one exists, otherwise to the
-            # main channel.
+            # main channel.  ``stream_id``/``stream_done`` are passthrough
+            # kwargs from streaming runtimes (e.g. ACPX) — when set, the
+            # Discord receiver edits a single message in place instead of
+            # posting a new one per call.
             await self._emit_notify(
                 "notify.task_message",
                 TaskMessageEvent(
@@ -755,6 +763,8 @@ class ExecutionMixin:
                     message=text,
                     message_type="agent_output",
                     project_id=action.project_id,
+                    stream_id=stream_id,
+                    stream_done=stream_done,
                 ),
             )
 

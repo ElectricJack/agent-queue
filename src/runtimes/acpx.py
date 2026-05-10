@@ -51,6 +51,25 @@ from src.runtimes.base import Capability, MessageCallback, Runtime
 logger = logging.getLogger(__name__)
 
 
+def _meta_tool_name(d: dict) -> str | None:
+    """Extract the underlying tool name from an ACP event's `_meta` block.
+
+    The Zed Industries claude-agent-acp ACP server stores the real tool
+    name under ``_meta.claudeCode.toolName`` (e.g. ``"Bash"``, ``"Glob"``)
+    while the top-level ``title``/``name`` fields can be the agent's
+    user-facing label (e.g. ``"Find"`` for a Glob call).  We prefer the
+    top-level fields when present and fall back here.
+    """
+    meta = d.get("_meta") if isinstance(d, dict) else None
+    if not isinstance(meta, dict):
+        return None
+    cc = meta.get("claudeCode")
+    if not isinstance(cc, dict):
+        return None
+    name = cc.get("toolName")
+    return name if isinstance(name, str) and name else None
+
+
 def _classify_acp_error(error_msg: str, stop_reason: str | None = None) -> AgentResult:
     """Classify an ACP error into the orchestrator's :class:`AgentResult`.
 
@@ -98,12 +117,26 @@ class ACPXRuntime(Runtime):
         # at the end and to surface the final stopReason / error.
         self._events: list[dict] = []
         self._on_message: MessageCallback | None = None
+        # ACP streams agent_message_chunk events as 1-3 token fragments.
+        # We accumulate them as cumulative turn text and emit edits to a
+        # single tracked Discord message via the stream_id protocol —
+        # see TaskMessageEvent.stream_id and the notification handler's
+        # _handle_streamed_task_message.  Time-debounced so we don't
+        # spam ~30 edit/sec; flushed immediately on tool_call (paragraph
+        # boundary) and on subprocess exit (with stream_done=True).
+        self._stream_text: list[str] = []  # cumulative chunks within the current turn
+        self._stream_id: str | None = None  # uuid4 hex per turn; set lazily
+        self._last_emit: float = 0.0  # monotonic of last on_message call
+        self._stream_min_interval: float = 0.5  # seconds between edits
 
     async def start(self, task: TaskContext) -> None:
         self._task = task
         self._cancel_event.clear()
         self._events = []
         self._session_id = None
+        self._stream_text = []
+        self._stream_id = None
+        self._last_emit = 0.0
         ctx = get_correlation_context()
         # Read agent name softly — missing value is a configuration bug
         # caught later in ``_build_command()``; don't crash the start
@@ -158,6 +191,11 @@ class ACPXRuntime(Runtime):
         finally:
             if _dispatch_tasks:
                 await asyncio.gather(*_dispatch_tasks, return_exceptions=True)
+            # Final flush of any in-flight stream — closes the tracked
+            # Discord message so the next task (or the orchestrator's
+            # completion summary) starts fresh.  Done after dispatch
+            # tasks so the cumulative buffer is fully populated.
+            await self._close_stream()
 
         if self._cancel_event.is_set():
             return AgentOutput(
@@ -298,18 +336,28 @@ class ACPXRuntime(Runtime):
     async def _dispatch(self, event: dict) -> None:
         """Forward an ACP event to the ``on_message`` callback as readable text.
 
-        ACP event types (from the JSON-RPC envelope's ``method`` /
-        ``params`` shape):
+        Streaming model: agent text chunks accumulate into ``_stream_text``
+        (cumulative for the current turn) and we emit ``on_message`` calls
+        carrying ``stream_id`` so the Discord receiver edits a single
+        message in place.  Emits are time-debounced (``_stream_min_interval``)
+        to avoid Discord rate limits, and flushed immediately at boundaries:
 
-        * ``session/update`` — incremental output (agent text, thinking,
-          plan updates).  Emit text chunks; suppress thinking unless
-          large.
-        * ``tool_call`` — agent invoked a tool.  Emit ``-# {tool_name}``
-          to mirror the existing live-stream UX.
-        * ``tool_result`` — tool finished.  Logged only.
-        * Final response / ``stopReason`` event — Discord stream stays
-          quiet here; the orchestrator posts its own completion summary
-          after the task finishes.
+        * ``tool_call`` — closes the current stream (``stream_done=True``),
+          then posts the tool banner as a separate (non-streamed) message,
+          then a fresh stream starts when the next chunk arrives.
+        * Subprocess exit — final flush in :meth:`wait`.
+
+        ACP event types:
+
+        * ``session/update.agent_message_chunk`` — token fragment;
+          appended + debounced emit.
+        * ``session/update.agent_thought_chunk`` — extended thinking;
+          suppressed from the live stream (event log only).
+        * ``session/update.tool_call`` — agent invoked a tool.
+        * ``session/update.tool_call_update``, ``plan``, ``available_commands_update``
+          — silent (status / metadata only, would spam the stream).
+        * Top-level result with ``stopReason`` — Discord stream stays
+          quiet; the orchestrator posts its own completion summary.
         """
         method = event.get("method") or event.get("type")
         params = event.get("params") or {}
@@ -331,24 +379,87 @@ class ACPXRuntime(Runtime):
                 content = update.get("content") or {}
                 text = content.get("text") if isinstance(content, dict) else ""
                 if text:
-                    await self._on_message(text)
+                    self._stream_text.append(text)
+                    await self._maybe_emit_stream(force=False)
             elif kind == "agent_thought_chunk":
-                # Suppress thinking from the live stream; persisted via
-                # event log only.
-                return
+                return  # suppress thinking from live stream
             elif kind == "tool_call":
-                tool = update.get("toolCall") or {}
-                tool_name = tool.get("title") or tool.get("name") or "?"
-                await self._on_message(f"-# {tool_name}")
+                # Close the current stream message before announcing the
+                # tool — so the user sees the agent's paragraph as a
+                # finalised edit, then the tool banner, then (when the
+                # next chunk arrives) a NEW stream message for the next
+                # paragraph.  Tool fields are on the update dict directly,
+                # not nested under "toolCall" — that was the source of
+                # the "?" markers in v1.
+                await self._close_stream()
+                tool_title = (
+                    update.get("title")
+                    or update.get("name")
+                    or _meta_tool_name(update)
+                    or ""
+                )
+                if tool_title:
+                    # Tool banner is a one-shot message, not part of the
+                    # stream — no stream_id, posts as a fresh message.
+                    await self._on_message(f"-# {tool_title}")
+            # tool_call_update, plan, available_commands_update — silent.
             return
 
         if method == "tool_call":
             # Some ACP implementations emit tool_call as a top-level event.
-            tool_name = params.get("name") or params.get("title") or "?"
-            await self._on_message(f"-# {tool_name}")
+            await self._close_stream()
+            tool_title = (
+                params.get("name")
+                or params.get("title")
+                or _meta_tool_name(params)
+                or ""
+            )
+            if tool_title:
+                await self._on_message(f"-# {tool_title}")
             return
 
         # tool_result, plan_update, etc. — log only.
+
+    async def _maybe_emit_stream(self, *, force: bool) -> None:
+        """Emit the cumulative stream text via the on_message callback.
+
+        Debounced: skips when fewer than ``_stream_min_interval`` seconds
+        have passed since the last emit, unless ``force=True`` (used by
+        :meth:`_close_stream` and the final flush in :meth:`wait`).
+        Lazily allocates a ``stream_id`` on the first emit of a turn so
+        the Discord receiver knows to start tracking a stream message.
+        """
+        if not self._stream_text or self._on_message is None:
+            return
+        now = time.monotonic()
+        if not force and (now - self._last_emit) < self._stream_min_interval:
+            return
+        if self._stream_id is None:
+            import uuid
+            self._stream_id = uuid.uuid4().hex
+        text = "".join(self._stream_text)
+        await self._on_message(text, stream_id=self._stream_id, stream_done=False)
+        self._last_emit = now
+
+    async def _close_stream(self) -> None:
+        """Finalise the current turn's stream message, if any.
+
+        Forces a final emit with ``stream_done=True`` so the receiver
+        releases its tracked Discord message and a subsequent emit (e.g.
+        the next paragraph after a tool call) starts a fresh stream.
+        """
+        if not self._stream_text or self._on_message is None:
+            self._stream_text = []
+            self._stream_id = None
+            return
+        if self._stream_id is None:
+            import uuid
+            self._stream_id = uuid.uuid4().hex
+        text = "".join(self._stream_text)
+        await self._on_message(text, stream_id=self._stream_id, stream_done=True)
+        self._stream_text = []
+        self._stream_id = None
+        self._last_emit = 0.0
 
     def _final_result_event(self) -> dict | None:
         """Return the last ACP event carrying a ``stopReason`` (final response).

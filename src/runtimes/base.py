@@ -30,7 +30,19 @@ from src.models import AgentOutput, TaskContext
 
 # Callback invoked with each human-readable message chunk as the agent works.
 # The orchestrator typically wires this to a Discord thread for live output.
-MessageCallback = Callable[[str], Awaitable[None]]
+#
+# Signature: ``async (text: str, *, stream_id: str | None = None,
+#                       stream_done: bool = False) -> None``
+#
+# The two stream kwargs are optional and back-compatible — runtimes that
+# don't stream (e.g. ClaudeSDKRuntime, which emits one message per assembled
+# AssistantMessage) just call ``await on_message(text)``.  Streaming runtimes
+# (e.g. ACPXRuntime, where the wire protocol delivers per-token chunks)
+# include ``stream_id`` so the Discord side can edit a single message in
+# place instead of posting a new one per chunk.  ``stream_done=True`` on
+# the final flush of a stream tells the receiver to release any state for
+# that stream.
+MessageCallback = Callable[..., Awaitable[None]]
 
 
 class Capability(StrEnum):

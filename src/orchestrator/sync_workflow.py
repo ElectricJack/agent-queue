@@ -299,7 +299,12 @@ For EACH workspace listed above, perform these steps IN ORDER:
             await adapter.start(ctx)
 
             # Stream agent output via event.
-            async def forward_msg(text: str) -> None:
+            async def forward_msg(
+                text: str,
+                *,
+                stream_id: str | None = None,
+                stream_done: bool = False,
+            ) -> None:
                 await self._emit_notify(
                     "notify.task_message",
                     TaskMessageEvent(
@@ -307,6 +312,8 @@ For EACH workspace listed above, perform these steps IN ORDER:
                         message=text,
                         message_type="agent_output",
                         project_id=action.project_id,
+                        stream_id=stream_id,
+                        stream_done=stream_done,
                     ),
                 )
 
