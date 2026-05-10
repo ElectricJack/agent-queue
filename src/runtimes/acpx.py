@@ -255,12 +255,15 @@ class ACPXRuntime(Runtime):
         if cli is None:
             raise RuntimeError("`acpx` CLI not found in PATH")
         cmd = [cli, "--format", "json", "--approve-all", agent, "exec"]
-        # Pass through model when the profile sets one — ACPX forwards
-        # to the underlying agent's model selector.
-        if self._profile is not None:
-            model = getattr(self._profile, "model", "") or ""
-            if model:
-                cmd += ["--model", model]
+        # NOTE: acpx 0.1.x's `<agent> exec` subcommand does not accept
+        # `--model` — passing it makes acpx print help and exit 0,
+        # producing zero JSON-RPC output and the dispatcher fails with
+        # "ACPX exited before emitting a stopReason event".
+        # Model selection happens via the underlying agent's own config
+        # (e.g. Claude's settings.json `model` key, or `acpx <agent> set
+        # model <id>` against a *named* session — incompatible with the
+        # one-shot `exec` we use here).  Profiles that need a specific
+        # model should use `runtime: claude_sdk` for now.
         return cmd
 
     def _build_prompt(self) -> str:
