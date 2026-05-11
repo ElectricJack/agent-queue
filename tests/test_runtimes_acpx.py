@@ -224,6 +224,57 @@ class TestACPXRuntimeWait:
         assert output.tokens_used == 14612
 
     @pytest.mark.asyncio
+    async def test_summary_falls_back_to_streamed_chunks(self):
+        """When the JSON-RPC final event has no top-level result text
+        (claude-agent-acp's actual shape), the summary is reconstructed
+        from the streamed agent_message_chunk events instead of being
+        empty.  Without this, downstream consumers (Discord completion
+        banner, reflection, plan discovery) get '(no text)'."""
+        emitted_lines = _ndjson_lines(
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"text": "I checked workflow step 11. "},
+                    }
+                },
+            },
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"text": "It is already complete."},
+                    }
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "stopReason": "end_turn",
+                    "usage": {"totalTokens": 100},
+                },
+            },
+        )
+
+        async def fake_run(cmd, env, cwd, on_line, cancel_event, **kw):  # noqa: ARG001
+            for line in emitted_lines:
+                on_line(line)
+            return 0
+
+        runtime = ACPXRuntime(profile=_claude_profile())
+        await runtime.start(_make_task())
+        with patch("src.runtimes.acpx.shutil.which", return_value="/usr/bin/acpx"), \
+                patch("src.runtimes.acpx.run_streaming_subprocess", side_effect=fake_run):
+            output = await runtime.wait()
+
+        assert output.result == AgentResult.COMPLETED
+        assert output.summary == "I checked workflow step 11. It is already complete."
+        assert output.tokens_used == 100
+
+    @pytest.mark.asyncio
     async def test_stop_reason_in_nested_params_result(self):
         """Some ACP servers nest stopReason under params.result instead of top-level."""
         emitted_lines = _ndjson_lines(

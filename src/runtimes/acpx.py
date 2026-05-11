@@ -221,9 +221,16 @@ class ACPXRuntime(Runtime):
             or ""
         )
         # If `result` was nested (a dict), don't use the dict itself as
-        # text — the conversational text already streamed via on_message.
+        # text — fall back to the streamed agent_message_chunk content.
         if not isinstance(result_text, str):
             result_text = ""
+        # claude-agent-acp's JSON-RPC final event has no separate summary
+        # field — the conversational text only appears in the streamed
+        # agent_message_chunk events.  Reconstruct the agent's final
+        # response from those so task_results.summary isn't empty (used by
+        # Discord completion banners, reflection, plan discovery).
+        if not result_text:
+            result_text = self._collect_agent_text_from_events()
         usage = result_event.get("usage") or {}
         # ACP usage shape varies slightly per agent.  claude-agent-acp uses
         # camelCase (inputTokens, outputTokens, totalTokens); other agents
@@ -479,6 +486,29 @@ class ACPXRuntime(Runtime):
         self._stream_text = []
         self._stream_id = None
         self._last_emit = 0.0
+
+    def _collect_agent_text_from_events(self) -> str:
+        """Concatenate every ``agent_message_chunk`` text in event order.
+
+        ACP's JSON-RPC final response has no summary field — the actual
+        conversational reply only appears in streamed
+        ``session/update.agent_message_chunk`` events.  This rebuilds it
+        so :class:`AgentOutput.summary` carries the agent's prose for
+        downstream consumers (task_results table, Discord completion
+        banner, reflection, plan discovery).
+        """
+        parts: list[str] = []
+        for event in self._events:
+            if (event.get("method") or event.get("type")) != "session/update":
+                continue
+            update = (event.get("params") or {}).get("update") or {}
+            if update.get("sessionUpdate") != "agent_message_chunk":
+                continue
+            content = update.get("content") or {}
+            text = content.get("text") if isinstance(content, dict) else ""
+            if isinstance(text, str) and text:
+                parts.append(text)
+        return "".join(parts).strip()
 
     def _final_result_event(self) -> dict | None:
         """Return the last ACP event carrying a ``stopReason`` (final response).
