@@ -183,6 +183,47 @@ class TestACPXRuntimeWait:
         assert output.tokens_used == 150
 
     @pytest.mark.asyncio
+    async def test_jsonrpc_response_with_top_level_result(self):
+        """Canonical claude-agent-acp final event: JSON-RPC response with
+        ``{id, result: {stopReason: "end_turn", usage: {camelCase}}}``.
+
+        Earlier the runtime only checked ``params.result`` and top-level
+        ``stopReason``, so it missed this shape and reported
+        ``ACPX exited with code 0 before emitting a stopReason event``,
+        marking successfully-finished tasks BLOCKED.
+        """
+        emitted_lines = _ndjson_lines(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "stopReason": "end_turn",
+                    "usage": {
+                        "inputTokens": 3,
+                        "outputTokens": 6,
+                        "cachedReadTokens": 0,
+                        "cachedWriteTokens": 14603,
+                        "totalTokens": 14612,
+                    },
+                },
+            },
+        )
+
+        async def fake_run(cmd, env, cwd, on_line, cancel_event, **kw):  # noqa: ARG001
+            for line in emitted_lines:
+                on_line(line)
+            return 0
+
+        runtime = ACPXRuntime(profile=_claude_profile())
+        await runtime.start(_make_task())
+        with patch("src.runtimes.acpx.shutil.which", return_value="/usr/bin/acpx"), \
+                patch("src.runtimes.acpx.run_streaming_subprocess", side_effect=fake_run):
+            output = await runtime.wait()
+        assert output.result == AgentResult.COMPLETED, output.error_message
+        # totalTokens preferred over summing the input+output buckets.
+        assert output.tokens_used == 14612
+
+    @pytest.mark.asyncio
     async def test_stop_reason_in_nested_params_result(self):
         """Some ACP servers nest stopReason under params.result instead of top-level."""
         emitted_lines = _ndjson_lines(

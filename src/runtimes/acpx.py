@@ -220,16 +220,35 @@ class ACPXRuntime(Runtime):
             or result_event.get("text")
             or ""
         )
+        # If `result` was nested (a dict), don't use the dict itself as
+        # text — the conversational text already streamed via on_message.
+        if not isinstance(result_text, str):
+            result_text = ""
         usage = result_event.get("usage") or {}
-        # ACP usage shape varies slightly per agent; sum the common keys.
-        tokens = (
-            int(usage.get("input_tokens", 0) or 0)
-            + int(usage.get("output_tokens", 0) or 0)
-            + int(usage.get("prompt_tokens", 0) or 0)
-            + int(usage.get("completion_tokens", 0) or 0)
+        # ACP usage shape varies slightly per agent.  claude-agent-acp uses
+        # camelCase (inputTokens, outputTokens, totalTokens); other agents
+        # may use snake_case.  Prefer totalTokens when present (it includes
+        # cache reads/writes); otherwise sum the input+output buckets.
+        def _u(k: str) -> int:
+            v = usage.get(k)
+            try:
+                return int(v) if v is not None else 0
+            except (TypeError, ValueError):
+                return 0
+        tokens = _u("totalTokens") or _u("total_tokens") or (
+            _u("inputTokens") + _u("input_tokens")
+            + _u("outputTokens") + _u("output_tokens")
+            + _u("promptTokens") + _u("prompt_tokens")
+            + _u("completionTokens") + _u("completion_tokens")
         )
 
-        if stop_reason == "completed":
+        # Map stop reasons to AgentResult.  ACP uses "end_turn" (agent
+        # spoke and yielded), "completed" (some servers' alias), "tool_use"
+        # (transient mid-tool-call, shouldn't appear here), "max_tokens",
+        # "cancelled", "refusal".  Anything we don't recognise is treated
+        # as failure so blocked-state monitoring catches it.
+        SUCCESS_REASONS = {"end_turn", "completed", "stop_sequence"}
+        if stop_reason in SUCCESS_REASONS:
             output = AgentOutput(
                 result=AgentResult.COMPLETED,
                 summary=result_text,
@@ -464,18 +483,39 @@ class ACPXRuntime(Runtime):
     def _final_result_event(self) -> dict | None:
         """Return the last ACP event carrying a ``stopReason`` (final response).
 
-        Different ACP servers place ``stopReason`` either at the top
-        level or inside ``params.result`` — we accept both.
+        Three shapes seen in the wild:
+
+        1. JSON-RPC response (the canonical claude-agent-acp shape): the
+           ``result`` field is at the *top level* of the envelope, e.g.
+           ``{"jsonrpc": "2.0", "id": 2, "result": {"stopReason": ...}}``.
+        2. Notification with nested result: ``{"method": "...",
+           "params": {"result": {"stopReason": ...}}}``.
+        3. Top-level ``stopReason`` directly on the envelope.
+
+        Earlier this method only handled (2) and (3) — (1) is what
+        claude-agent-acp actually emits, so the dispatcher saw "exit 0
+        before stopReason" and marked the task BLOCKED even though the
+        agent finished successfully.
         """
         for event in reversed(self._events):
+            # (3) Top-level stopReason.
             if event.get("stopReason") or event.get("stop_reason"):
                 return event
-            params = event.get("params") or {}
-            result = params.get("result") if isinstance(params, dict) else None
-            if isinstance(result, dict) and (
-                result.get("stopReason") or result.get("stop_reason")
+
+            # (1) JSON-RPC response: result at top level.
+            top_result = event.get("result")
+            if isinstance(top_result, dict) and (
+                top_result.get("stopReason") or top_result.get("stop_reason")
             ):
-                return result
+                return top_result
+
+            # (2) Notification with nested params.result.
+            params = event.get("params") or {}
+            nested_result = params.get("result") if isinstance(params, dict) else None
+            if isinstance(nested_result, dict) and (
+                nested_result.get("stopReason") or nested_result.get("stop_reason")
+            ):
+                return nested_result
         return None
 
     def _build_failure_output(self, error: str) -> AgentOutput:
