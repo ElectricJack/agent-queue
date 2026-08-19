@@ -1,0 +1,242 @@
+---
+tags: [design, workspaces, worktrees, git, parallelism, merge-slot]
+---
+
+# Worktree Execution — Per-Slot Worktrees, Merge Slot, Branch Lifecycle
+
+**Status:** Draft — approved direction (2026-08-19)
+**Principles:** [[guiding-design-principles]] (#1 files as source of truth, #2 visible and editable, #5 human judgment, #7 events, #10 fewer moving parts)
+**Related:** [[workspaces-v2]] (this spec amends it), `docs/analysis/framework-overhaul-todo.md` (Workstream W, §3b), session-runtime spec (session env / `work_dir` wiring), work-graph spec (work-state metadata schema), aq-surface spec (CLI plumbing)
+
+---
+
+## 1. Problem Statement
+
+Today parallelism per project is bounded by how many pre-provisioned clones exist. `workspaces` rows are full clones with one exclusive lock each; `branch-isolated` mode is a *fallback* that carves a worktree out of an already-locked clone (`_create_branch_isolated_worktree` in `src/orchestrator/workspace.py`, path convention `<parent>/.worktrees-<base>/<slug>/`); `_recover_stale_state` in `src/orchestrator/core.py` deletes every `source_type=WORKTREE` workspace on daemon boot; nothing serializes integration, so two tasks merging to the default branch race each other in `_phase_verify`'s auto-merge; and a clone per parallel stream costs a full checkout plus a full dependency install per stream.
+
+Target (decisions D5 + Workstream W, 2026-08-19): **one base clone per project; a reusable worktree per agent slot; a fresh branch per task; explicit crash-safe lifecycle; serialized integration through a per-project merge slot.** Parallelism becomes cap-bounded (`max_concurrent_agents`), not clone-bounded. The branch — not the worktree — is the durable artifact.
+
+This spec owns the worktree/slot model, lifecycle, merge slot, reaping, and `aq workspace` semantics. The work-graph spec owns the schema mechanics of the task work-state metadata keys (`work_dir`, `branch`, `pr_url`, `rejection_reason`, `merged_at`) that this spec writes. The session-runtime spec owns how `work_dir` reaches the agent session environment. The aq-surface spec owns CLI plumbing for the commands whose semantics are defined here.
+
+---
+
+## 2. Model
+
+### 2.1 Kind modes
+
+`workspace_kinds` gains a `mode` field, meaningful for `is_git_repo=true` kinds:
+
+| Mode | Semantics |
+|---|---|
+| `worktree` (default) | One **base workspace** (the project clone) plus N **slot worktrees** under `<base_repo>/.aq/worktrees/<slot>/`. Agents run in slots; the base is never an agent cwd while worktrees exist. |
+| `exclusive-clone` (legacy) | Today's behavior: each workspace row is a full clone, exclusively locked per task. Existing rows keep working under this mode with zero changes. |
+| `directory-isolated` (deferred) | Same branch, different directories (monorepos). Stub only, as today. |
+
+`mode` replaces `default_lock_mode` as the primary sharing knob for git kinds; `default_lock_mode` stays for `exclusive-clone` kinds and non-repo kinds. The `branch-isolated` *fallback* path is retired outright: worktree mode is its principled replacement (worktrees are first-class slots, not emergency derivatives of a locked clone).
+
+### 2.2 Slots
+
+A **slot** is a reusable worktree identified by `(base_workspace_id, slot_index)` and named `slot-<n>` (`n` starting at 0). Slot count per base equals the project's `max_concurrent_agents` — concurrency per project = agent cap = slot count. Slots live at:
+
+```
+<base_repo>/.aq/worktrees/slot-0/
+<base_repo>/.aq/worktrees/slot-1/
+...
+```
+
+**Slot ⇄ agent binding.** "Per-agent slot" means *cardinality and exclusive occupancy*, not a durable name binding. `AgentReconciler` (`src/orchestrator/agent_reconciler.py`) lazily creates agent rows up to `max_concurrent_agents`, reassigns them across profiles, and `_recover_stale_state` deletes excess idle agents when caps shrink — agent ids are fungible and volatile. Embedding agent ids in directory names would strand a directory on every reap or reassignment. Instead, slots are ordinal and the binding is lock-scoped: while a task runs, the existing `locked_by_agent_id` / `locked_by_task_id` columns on the slot's `workspaces` row *are* the binding; between tasks the slot is unowned and any agent may claim it. Warm caches (`node_modules`, build artifacts) belong to the slot directory, so reuse amortizes setup cost regardless of which agent occupies it next.
+
+Each slot is a `workspaces` row (`kind_id='project-repo'` or another git kind, `source_type=WORKTREE`, `slot_index` set, `base_workspace_id` pointing at the base clone's row). Acquisition is therefore **unchanged in shape**: `acquire_for_task` / `acquire_one_unlocked` pick a free slot exactly as they pick a free clone today, preserving workspaces-v2 §6 all-or-nothing multi-kind acquisition in canonical `(kind_id, position)` lock order. `vault`, `readonly-dir`, and package kinds are untouched; a multi-repo task gets one slot per git kind it requires.
+
+### 2.3 Base workspace
+
+The base workspace is the project's normal clone with the default branch checked out — the existing `workspaces` row for the project. Under worktree mode it is used **only** for `fetch`, branch queries, `git worktree add/prune/remove`, and merge-slot integration; it is excluded from agent acquisition (rows with `slot_index IS NULL` whose kind resolves to `mode: worktree` are never handed to agents). The per-base-repo `asyncio.Lock` git mutex (`Orchestrator._git_mutex`) stays and serializes every git operation that touches the base or the shared `.git/worktrees/` registry.
+
+### 2.4 Hidden and ignored: `.git/info/exclude`
+
+`.aq/` is ignored via an idempotent marker block appended to `<base>/.git/info/exclude` — no commit, so this works for repos we don't own and never dirties the tree:
+
+```
+# >>> agent-queue managed — do not edit between markers >>>
+/.aq/
+# <<< agent-queue managed <<<
+```
+
+The block is written if absent, rewritten if drifted, and left alone if present (idempotent under repeated daemon starts). Once ignored, `git worktree add` inside the repo's own directory is safe: `git status` in the base stays clean, and slot checkouts never contain `.aq/` because it is untracked.
+
+### 2.5 Sentinel: `.aq-worktree.json`
+
+Every slot carries a sentinel at `<slot>/.aq-worktree.json`:
+
+```json
+{
+  "slot": "slot-1",
+  "slot_index": 1,
+  "base_workspace_id": "ws-a1b2",
+  "project_id": "atom-claude",
+  "task_id": "tsk-9f3e",
+  "branch": "aq/tsk-9f3e",
+  "created_at": 1755590400.0,
+  "assigned_at": 1755612300.0,
+  "daemon_epoch": "2026-08-19T10:00:00Z",
+  "setup_hash": "sha256 of worktree_setup commands"
+}
+```
+
+Written at slot creation, updated at every assignment. It is the filesystem half of adoption and doctoring: a directory with a sentinel but no DB row is an orphan; a DB row with no sentinel is a broken slot; a `setup_hash` mismatch means `worktree_setup` changed and the setup commands re-run at next reset. The sentinel is data for recovery — the DB row remains authoritative for locks.
+
+---
+
+## 3. Lifecycle
+
+### 3.1 Create (first use of a slot)
+
+Under the base git mutex:
+
+1. Ensure the `.git/info/exclude` marker block (§2.4).
+2. `git worktree prune` (clear stale registrations from crashes).
+3. `git fetch origin` in the base (failure handling per §3.5).
+4. `git worktree add --detach <base>/.aq/worktrees/slot-<n> origin/<default>` — detached, so no branch is claimed at creation; branches are per task.
+5. Run the kind's `worktree_setup` commands (§3.6) inside the slot.
+6. Write the sentinel; insert the slot's `workspaces` row; emit `worktree.created`.
+
+Slots are created lazily up to the cap, on demand when acquisition finds fewer free slots than the cap allows.
+
+### 3.2 Reset (every assignment)
+
+A slot is reused across tasks; per assignment it is reset to a pristine per-task state:
+
+1. **Salvage dirty state.** If the worktree is dirty (a crashed or sloppy predecessor), do **not** stash — stashes rot invisibly in the shared repo. Instead: `git add -A`, capture `git diff --cached HEAD` as a patch, archive it as `task_context(type=worktree_salvage)` on the *previous* task (from the sentinel's `task_id`; on the incoming task if unknown), then hard-reset. Work is preserved in a visible, per-task place (principle #2) and the slot is deterministic.
+2. `git fetch origin` (via the base mutex; §3.5 on failure).
+3. `git reset --hard` + `git clean -fd` — **without `-x`**, so gitignored caches (`node_modules`, build dirs) survive and slot reuse keeps its amortization value. The sentinel is exempted (`-e .aq-worktree.json`).
+4. Fresh branch: `git switch -c aq/<task_id> origin/<default>` (or `origin/<base_branch>` when the task specifies `base_branch`). If the branch already exists (task retry), `git switch aq/<task_id>` followed by a rebase onto the start point. A continuation task (§4.3) resumes its predecessor's branch instead: `git switch aq/<orig_task_id>`, no reset of the branch tip.
+5. Re-run `worktree_setup` only if `setup_hash` changed.
+6. Update the sentinel; record `work_dir` (slot path) and `branch` on the task (work-state contract); emit `worktree.reset`.
+
+Branch naming is fixed at `aq/<task_id>` — no title slug, so the branch is derivable from the task id alone (crash recovery, `aq task branch`, reaper matching by `aq/*` prefix).
+
+### 3.3 While running
+
+The slot is the session `work_dir` (delivery owned by the session-runtime spec). Hooks, overlays, and `.aq/prompt.md` live inside the slot. Nothing else touches the slot while `locked_by_task_id` is set.
+
+### 3.4 On close: the branch is the artifact
+
+- `shipped` → the branch is pushed and PR'd or merged (§4). The slot is *not* torn down; it is reset by the next assignment.
+- `blocked | abandoned | failed` → the branch is kept for `retain_failed_days` (default 7) for forensics and retry, then pruned. The slot itself returns to the free pool immediately — the branch survives independently of the worktree, which is the point.
+- Merged `aq/*` branches are pruned locally in the base; remote pruning per `prune_remote_branches` policy.
+
+### 3.5 Failure modes
+
+- **Fetch failure at reset** (base offline, auth broken): non-fatal *if* the slot already has an `origin/<default>` ref — the task branches from the last-known ref and a warning is notified. Slot **creation** requires one successful fetch or an existing up-to-date base; otherwise acquisition fails for that kind and the task takes the existing no-workspace PAUSED backoff path in `_execute_task`.
+- **Base clone missing** (deleted out-of-band): recreate via `GitManager.acreate_checkout` from `kind.repo_url` / `project.repo_url`, then recreate slots lazily.
+- **Force-push protection:** agents and the completion pipeline only ever push `aq/*` branches; `--force-with-lease` is permitted only against the task's own `aq/<task_id>`; nothing in this system runs any force variant against `origin/<default>`. This is an invariant of the pipeline code, asserted in tests — server-side protection (branch rules) is recommended but not assumed.
+- **Submodules:** git worktrees share superproject config and handle submodules poorly. v1 policy: repos needing submodules add `git submodule update --init --recursive` to `worktree_setup`, or pin the kind to `mode: exclusive-clone`. Documented limitation, not solved here.
+- **Dirty worktree at reset:** handled by salvage (§3.2 step 1) — hard-reset plus archived patch, never silent loss, never a stash.
+
+### 3.6 `worktree_setup`
+
+Per-kind list of shell commands in the kind's markdown frontmatter (e.g. `["npm ci", "ln -s ~/.cache/aq-pip .pipcache"]`), run once at slot creation and again only when the command list changes (`setup_hash`). This is the Gas City `session_setup` shape: slot reuse amortizes installs; no global cache system in v1. Commands run with the slot as cwd, a bounded timeout, and never with task- or chat-derived text interpolated (trust rule G.3).
+
+---
+
+## 4. Integration: the Merge Slot
+
+### 4.1 Why a DB row, not an advisory lock
+
+Integration must be serialized per project so only one task lands on the default branch at a time. Two candidate mechanisms:
+
+- **Postgres advisory lock** — connection-scoped, dies with the daemon connection, does not exist on SQLite (the default backend), and is invisible to the dashboard.
+- **DB row with lease** — survives daemon restart, works identically on SQLite and PostgreSQL, is visible and editable (principle #2), queryable by `aq workspace doctor` and the dashboard, and breakable by an explicit expiry rule rather than a connection drop.
+
+**Decision: DB row.** A `merge_slots` table with one row per project: `holder_task_id`, `acquired_at`, `expires_at`. Acquire is a dialect-appropriate atomic conditional `UPDATE` (holder is NULL or lease expired); the pipeline renews the lease while working; release nulls the holder. A cascade housekeeping step breaks expired leases and emits an event, so a daemon crash mid-merge stalls integration for at most one lease TTL (default 600 s).
+
+### 4.2 Merge flow (rebase-before-merge, serialized)
+
+The completion pipeline stays algorithmic. After verification, integration runs under the merge slot and the base git mutex:
+
+1. Acquire merge slot → emit `merge.started`.
+2. In the **slot worktree** (the branch's home — a branch checked out in one worktree cannot be checked out in another): `git fetch origin`, rebase `aq/<task>` onto `origin/<default>` (the existing rebase-before-merge behavior), push with `--force-with-lease`.
+3. Per project policy: open a PR via `gh` (record `pr_url` on the task; the existing AWAITING_APPROVAL / PR-merge polling flow takes over), **or** local merge: in the **base** — `checkout <default>`, `reset --hard origin/<default>`, merge the branch, push.
+4. Success → emit `merge.succeeded`, record `merged_at`; release the slot.
+
+### 4.3 Conflicts
+
+Rebase or merge conflict → abort cleanly, release the merge slot, and:
+
+- Set `rejection_reason` (e.g. `"merge_conflict: rebase onto origin/main failed"`) and the conflicting file list in the task's work-state metadata (schema owned by the work-graph spec).
+- Transition the task to `needs_attention` (until the work-graph state lands, the projection is `BLOCKED` with the same metadata).
+- Emit `merge.conflict` with `{task_id, branch, target, files}`.
+- Optionally (per project policy `spawn_conflict_continuation`) auto-create a continuation task that resumes the **same branch** (§3.2 step 4, continuation path) with the rejection reason in its context — the rejection-aware-resume pattern.
+
+The branch is untouched by the failure; it remains the durable artifact for whoever resolves the conflict.
+
+---
+
+## 5. Reaping — slots, not tasks
+
+The reaper is a cascade housekeeping step that acts on **slots**. A slot worktree is removed only when the slot is *retired*: project caps shrank below its index, the project was archived or removed, the base workspace was removed, or the kind's mode flipped to `exclusive-clone`. Task completion never reaps a slot.
+
+Before removal, a **liveness check** against the process table: any process whose environment carries a matching `AQ_TASK_ID` or whose cwd is inside the slot path blocks the reap. If the process table cannot be read, the reaper *skips* — never reap on partial information. Removal sequence, under the base mutex: `git worktree remove <slot>` (`--force` fallback), `git worktree prune`, delete the slot's `workspaces` row, emit `worktree.reaped`.
+
+Branch pruning is a separate reaper concern: merged `aq/*` branches (`git branch --merged origin/<default>`, filtered to the `aq/` prefix) are deleted locally; remote deletion per policy; unmerged `aq/*` branches whose tasks are terminal-failed are pruned only after `retain_failed_days`.
+
+---
+
+## 6. Daemon Restart: Adopt, Don't Delete
+
+`_recover_stale_state` today removes every `source_type=WORKTREE` workspace on boot. **That stops.** Slot worktrees belong to agent slots, not to a daemon run. On restart the daemon *adopts*: it cross-checks `git worktree list --porcelain` in each base against slot rows and sentinels, repairs the exclude block, runs `git worktree prune` for stale registrations, and re-registers rows for intact directories. Lock release for genuinely dead tasks follows the existing recovery logic (and, once the session-runtime spec lands, its liveness-checked adoption) — but the directories and branches survive. `--reset` remains the admin escape hatch for a wholesale wipe.
+
+---
+
+## 7. Amendments to Workspaces v2
+
+This spec amends [[workspaces-v2]] as follows; everything not listed is unchanged.
+
+1. **§3.1** `workspace_kinds` gains `mode` and `worktree_setup` (§2.1, §3.6).
+2. **§3.2** `workspaces` gains `slot_index` and `base_workspace_id`; slot rows use `source_type=WORKTREE`.
+3. **§6** Acquisition semantics (all-or-nothing, canonical `(kind_id, position)` order, per-dialect strategies, path-conflict checks) are preserved verbatim. Under worktree mode the candidate set for a git kind is its slot rows; the base row is excluded.
+4. **§6.6 step 4** — the branch-isolated worktree *fallback* (`_create_branch_isolated_worktree`, the `.worktrees-<base>/<slug>/` convention, and `_get_worktree_base_path` path parsing) is **retired**. Base derivation becomes a DB lookup via `base_workspace_id`.
+5. **§9** Migration: existing clone rows keep working under `mode: exclusive-clone`; no data rewrite of existing workspaces is required (see the implementation spec).
+6. Shared-workspace tasks that must run in place (deploy scripts) remain expressible: pin the kind to `exclusive-clone` or use an explicitly locked LINK workspace, exactly as today.
+
+---
+
+## 8. Events
+
+All dot-namespaced, following `git.push` / `task.*` conventions:
+
+| Event | Payload (minimum) | When |
+|---|---|---|
+| `worktree.created` | `project_id, workspace_id, slot, path, base_workspace_id` | Slot creation completes (after `worktree_setup`) |
+| `worktree.reset` | `project_id, workspace_id, slot, task_id, branch, salvaged: bool` | Per-assignment reset completes |
+| `worktree.reaped` | `project_id, workspace_id, slot, path, reason` | Slot retired and removed |
+| `merge.started` | `project_id, task_id, branch, target` | Merge slot acquired |
+| `merge.succeeded` | `project_id, task_id, branch, target, pr_url?, merged_at` | Integration landed (or PR opened) |
+| `merge.conflict` | `project_id, task_id, branch, target, files, rejection_reason` | Rebase/merge aborted on conflict |
+
+---
+
+## 9. `aq workspace` Command Semantics
+
+Semantics owned here; CLI plumbing (flags, `--json` envelope) owned by the aq-surface spec. All are `CommandHandler` commands returning `{"success": bool, ...}`.
+
+- **`aq workspace list`** — every workspace row grouped by project and kind, annotated: role (`base` / `slot-<n>` / `clone` / `link`), mode, lock holder (task + agent), current branch, dirty flag, sentinel status.
+- **`aq workspace doctor`** — read-only diagnosis: directories with sentinels but no rows (orphans), rows without directories, stale `.git/worktrees` registrations (fix: `git worktree prune`), missing/drifted exclude blocks, dirty unlocked slots, expired merge-slot leases, `aq/*` branches past retention. Reports findings with the exact remediation each needs; `--fix` applies the safe subset (prune, exclude repair, row re-registration) and never deletes work.
+- **`aq workspace reap`** — explicit reap of retired slots and prunable branches, same liveness guard as the cascade reaper; `--slot`, `--branches-only` narrowing. Refuses live slots.
+
+---
+
+## 10. Edge Cases and Explicit Non-Goals
+
+- **Two daemons pointing at one repo** — out of scope. The design assumes one daemon owns a base repo; the sentinel's `daemon_epoch` lets `doctor` *detect* foreign-epoch activity, but no cross-daemon coordination is attempted. Do not do this.
+- **Repos we don't own** — fully supported: `.git/info/exclude` requires no commit and no upstream cooperation.
+- **Windows** — the daemon targets Linux/WSL2 (Workstream A constraint); process-table liveness uses `/proc`. No Windows-native support.
+- **Global shared caches across slots** — non-goal in v1; `worktree_setup` plus slot reuse is the mechanism.
+- **`directory-isolated`** — remains deferred, as in workspaces-v2 §11.
+- **Cross-project and multi-kind acquisition** — unchanged; a task spanning `project-repo` + `package-foo` + `vault` acquires one slot per git kind under the same canonical-order transaction semantics as workspaces-v2 §6.
+
+---
+
+## 11. Open Questions
+
+None blocking. Two items logged for later: whether `prune_remote_branches` should default on once PR-based projects dominate; and whether slot count should be allowed to exceed `max_concurrent_agents` for pre-warming (currently: no — slots = cap, by decision).

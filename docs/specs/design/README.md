@@ -9,10 +9,32 @@ They are **design documents** that serve as the architectural reference for the 
 
 ## Documents
 
+### Framework overhaul (2026-08-19) — approved direction, drafts
+
+Direction: [../analysis/framework-overhaul-todo.md](../../analysis/framework-overhaul-todo.md) (v3).
+Each has a paired implementation spec in [`docs/specs/implementation/`](../implementation/README.md).
+
+| Spec | Workstream | Summary |
+|---|---|---|
+| [[session-runtime]] | A | tmux-first session providers, harness profiles, task/named lifecycles, close→drain-ack completion, adoption, stall ladder, transcript readers |
+| [[worktree-execution]] | W | Per-agent-slot worktrees under `<repo>/.aq/worktrees/`, branch-per-task, merge slot, slot reaper (amends [[workspaces-v2]]) |
+| [[work-graph]] | D | Typed dependency edges, persisted `is_blocked`, gates as records, labels, outcome metadata, `task explain`, state-machine enforcement |
+| [[supervisor-agent]] | B | Supervisor as a configured per-project agent; `messages` table; chat relay; spec→task-graph |
+| [[aq-surface]] | C | `aq` CLI as primary surface, `aq prime`/handoff/inbox, JSON envelope, session tokens, task-scoped MCP allowlist |
+| [[messaging-rework]] | F | Out-of-process Discord adapter (task threads, gate buttons, supervisor chat), Telegram removal, dashboard as primary UI |
+| [[feature-pauses]] | E/P | Memory & playbooks paused (flags off, code frozen, data preserved, clean re-enable) |
+| [[trust-and-ops]] | G | Trust boundaries, env scrubbing, `aq doctor`, `aq costs`, invariant tests |
+
+> While the overhaul lands, [[playbooks]], [[memory-plugin]], [[memory-scoping]],
+> [[self-improvement]] and [[agent-coordination]] describe **paused** subsystems — kept for
+> the comeback (see [[feature-pauses]]); [[workspaces-v2]] is amended by [[worktree-execution]].
+
+### Pre-overhaul specs
+
 | Spec | Status | Summary |
 |---|---|---|
 | [[guiding-design-principles]] | Active | The 10 core principles behind all design decisions |
-| [[playbooks]] | Active | Agent workflow graphs — directed graphs of LLM decision points, replaced rules + hooks |
+| [[playbooks]] | Paused | Agent workflow graphs — directed graphs of LLM decision points, replaced rules + hooks |
 | [[vault]] | Active | Vault directory structure, what lives where, reference stubs, Obsidian integration |
 | [[memory-plugin]] | Active | Memory plugin v2 architecture, memsearch fork, Milvus backend with KV storage |
 | [[memory-scoping]] | Active | Scope hierarchy, overrides, multi-scope query, agent MCP tools, deduplication |
