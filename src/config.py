@@ -614,6 +614,32 @@ class ChatProviderConfig:
 
 
 @dataclass
+class McpTaskScopeConfig:
+    """Task-scoped MCP endpoint (``/mcp-task``) settings.
+
+    Substrate placeholder for the aq-surface spec (§7).  Nothing reads
+    these fields yet — ``enabled`` stays False until the Phase-3 flip.
+    See docs/specs/implementation/aq-surface.md.
+    """
+
+    enabled: bool = False
+    allowlist_extra: list[str] = field(default_factory=list)
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for name in self.allowlist_extra:
+            if not isinstance(name, str) or not name.strip():
+                errors.append(
+                    ConfigError(
+                        "mcp_server",
+                        "task_scope.allowlist_extra",
+                        f"command names must be non-empty strings, got: {name!r}",
+                    )
+                )
+        return errors
+
+
+@dataclass
 class McpServerConfig:
     """Configuration for the MCP server exposed by the agent-queue system.
 
@@ -638,6 +664,7 @@ class McpServerConfig:
     port: int = 8081
     excluded_commands: list[str] = field(default_factory=list)
     inject_into_tasks: bool = True
+    task_scope: McpTaskScopeConfig = field(default_factory=McpTaskScopeConfig)
 
     @property
     def should_inject_into_tasks(self) -> bool:
@@ -670,6 +697,7 @@ class McpServerConfig:
                         f"excluded command names must be non-empty strings, got: {cmd!r}",
                     )
                 )
+        errors.extend(self.task_scope.validate())
         return errors
 
 
@@ -800,6 +828,313 @@ class DatabaseConfig:
         return errors
 
 
+# ---------------------------------------------------------------------------
+# Framework-overhaul substrate sections (Wave 0)
+#
+# Every section below is a *container only* — no subsystem reads these
+# fields yet.  Each owning lane fills in the behavior behind its own flag.
+# All feature flags default to off so the daemon behaves exactly as it did
+# before this block existed.  See docs/analysis/execution-plan.md §2.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PlaybooksConfig:
+    """Playbook subsystem switch.
+
+    Paused by default during the framework overhaul — see
+    docs/specs/design/feature-pauses.md.  Temporary.
+    """
+
+    enabled: bool = False
+
+    def validate(self) -> list[ConfigError]:
+        return []
+
+
+@dataclass
+class SessionsConfig:
+    """Long-lived agent session runtime.
+
+    Substrate placeholder — see docs/specs/implementation/session-runtime.md §5.
+    ``enabled: false`` means the legacy runtimes are the only execution path.
+    """
+
+    enabled: bool = False
+    provider: str = "tmux"  # tmux | subprocess | fake
+    tmux_socket: str = "aq"
+    lease_ttl_seconds: int = 480
+    stall_max_nudges: int = 3
+    stall_backoff_seconds: int = 300
+    max_restarts: int = 3
+    restart_window_seconds: int = 600
+    restart_backoff_seconds: int = 30
+    dialog_budget_seconds: int = 8
+    nudge_debounce_ms: int = 500
+    state_cache_ttl_seconds: int = 2
+    transcript_poll_seconds: int = 2
+    adopt_on_start: bool = True
+
+    _VALID_PROVIDERS = ("tmux", "subprocess", "fake")
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.provider not in self._VALID_PROVIDERS:
+            errors.append(
+                ConfigError(
+                    "sessions",
+                    "provider",
+                    f"must be one of {sorted(self._VALID_PROVIDERS)}, got '{self.provider}'",
+                )
+            )
+        for name in (
+            "lease_ttl_seconds",
+            "stall_max_nudges",
+            "stall_backoff_seconds",
+            "max_restarts",
+            "restart_window_seconds",
+            "restart_backoff_seconds",
+            "dialog_budget_seconds",
+            "nudge_debounce_ms",
+            "state_cache_ttl_seconds",
+            "transcript_poll_seconds",
+        ):
+            if getattr(self, name) < 0:
+                errors.append(ConfigError("sessions", name, "must be >= 0"))
+        return errors
+
+
+@dataclass
+class WorktreesConfig:
+    """Per-slot git worktree execution.
+
+    Substrate placeholder — see docs/specs/implementation/worktree-execution.md §5.
+    While ``enabled`` is False every git workspace kind is treated as
+    ``exclusive-clone`` regardless of its declared ``mode``.
+    """
+
+    enabled: bool = False
+    retain_failed_days: int = 7
+    merge_slot_ttl_seconds: int = 600
+    prune_remote_branches: bool = False
+    setup_timeout_seconds: int = 900
+    salvage_dirty: bool = True
+    spawn_conflict_continuation: bool = False
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.retain_failed_days < 0:
+            errors.append(ConfigError("worktrees", "retain_failed_days", "must be >= 0"))
+        if self.merge_slot_ttl_seconds <= 0:
+            errors.append(ConfigError("worktrees", "merge_slot_ttl_seconds", "must be > 0"))
+        if self.setup_timeout_seconds <= 0:
+            errors.append(ConfigError("worktrees", "setup_timeout_seconds", "must be > 0"))
+        return errors
+
+
+@dataclass
+class ModelPricing:
+    """One pricing row: an fnmatch-style model glob and its USD rates.
+
+    Substrate placeholder — see docs/specs/implementation/trust-and-ops.md §2.
+    """
+
+    model: str = ""  # glob, fnmatch-style; entries match in order
+    input_per_mtok: float = 0.0  # USD per million input tokens
+    output_per_mtok: float = 0.0
+
+
+@dataclass
+class PricingConfig:
+    """Model price table used for token-ledger cost rollups.
+
+    Substrate placeholder — see docs/specs/implementation/trust-and-ops.md §2.
+    Empty by default, which means "no prices known" (cost columns stay unpriced).
+    """
+
+    models: list[ModelPricing] = field(default_factory=list)
+
+    def match(self, model: str) -> ModelPricing | None:
+        """Return the first entry whose glob matches ``model``, or None."""
+        import fnmatch
+
+        for entry in self.models:
+            if entry.model and fnmatch.fnmatch(model, entry.model):
+                return entry
+        return None
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for idx, entry in enumerate(self.models):
+            if not entry.model or not entry.model.strip():
+                errors.append(
+                    ConfigError("pricing", f"models[{idx}].model", "must be a non-empty glob")
+                )
+            if entry.input_per_mtok < 0:
+                errors.append(
+                    ConfigError("pricing", f"models[{idx}].input_per_mtok", "must be >= 0")
+                )
+            if entry.output_per_mtok < 0:
+                errors.append(
+                    ConfigError("pricing", f"models[{idx}].output_per_mtok", "must be >= 0")
+                )
+        return errors
+
+
+@dataclass
+class SecurityConfig:
+    """Env scrubbing and operational-health thresholds.
+
+    Substrate placeholder — see docs/specs/implementation/trust-and-ops.md §2.
+    ``env_scrub_enabled`` is a kill switch for a subsystem that does not
+    exist yet, so it is inert until lane 1C lands ``src/env_scrub.py``.
+    """
+
+    env_scrub_enabled: bool = True  # kill switch, default on
+    env_allowlist: list[str] = field(default_factory=list)  # names or globs
+    wal_warn_mb: int = 64  # doctor db.wal_size threshold
+    llm_log_warn_mb: int = 512  # doctor logs.llm_size threshold
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for name in self.env_allowlist:
+            if not isinstance(name, str) or not name.strip():
+                errors.append(
+                    ConfigError(
+                        "security",
+                        "env_allowlist",
+                        f"entries must be non-empty strings, got: {name!r}",
+                    )
+                )
+        if self.wal_warn_mb <= 0:
+            errors.append(ConfigError("security", "wal_warn_mb", "must be > 0"))
+        if self.llm_log_warn_mb <= 0:
+            errors.append(ConfigError("security", "llm_log_warn_mb", "must be > 0"))
+        return errors
+
+
+@dataclass
+class MessagesConfig:
+    """Inter-agent message queue.
+
+    Substrate placeholder — see docs/specs/implementation/supervisor-agent.md §10.
+    """
+
+    enabled: bool = False  # table + commands usable; delivery engine runs
+    delivery_interval: float = 5.0  # piggybacks the cascade cycle
+    reply_timeout: float = 120.0  # transcript-tail fallback trigger
+    transcript_tail_fallback: bool = True
+    max_inject_per_prompt: int = 10
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.delivery_interval <= 0:
+            errors.append(ConfigError("messages", "delivery_interval", "must be > 0"))
+        if self.reply_timeout < 0:
+            errors.append(ConfigError("messages", "reply_timeout", "must be >= 0"))
+        if self.max_inject_per_prompt < 0:
+            errors.append(ConfigError("messages", "max_inject_per_prompt", "must be >= 0"))
+        return errors
+
+
+@dataclass
+class SupervisorAgentConfig:
+    """Supervisor-as-a-session rollout switch.
+
+    Substrate placeholder — see docs/specs/implementation/supervisor-agent.md §10.
+    """
+
+    enabled: bool = False  # route project chat to supervisor sessions
+    legacy_chat: bool = True  # keep Supervisor.chat() wiring until cutover
+    idle_timeout: int = 900  # default for the shipped profile
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.idle_timeout < 0:
+            errors.append(ConfigError("supervisor_agent", "idle_timeout", "must be >= 0"))
+        return errors
+
+
+@dataclass
+class PlannerConfig:
+    """Plan-discovery rollout switch.
+
+    Substrate placeholder — see docs/specs/implementation/supervisor-agent.md §10.
+    ``legacy_plan_discovery`` True preserves today's plan.md pipeline.
+    """
+
+    legacy_plan_discovery: bool = True
+
+    def validate(self) -> list[ConfigError]:
+        return []
+
+
+@dataclass
+class ApiAuthConfig:
+    """Session-token auth for the local HTTP API.
+
+    Substrate placeholder — see docs/specs/implementation/aq-surface.md §7.
+    """
+
+    token_ttl_hours: int = 72  # backstop expiry for session tokens
+    require_session_token: bool = False  # reserved enforcement hook
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.token_ttl_hours <= 0:
+            errors.append(ConfigError("api_auth", "token_ttl_hours", "must be > 0"))
+        return errors
+
+
+@dataclass
+class SurfaceConfig:
+    """Agent-surface ergonomics knobs.
+
+    Substrate placeholder — see docs/specs/implementation/aq-surface.md §7.
+    """
+
+    context_cost_ceiling_tokens: int = 8000  # `aq doctor` warning threshold
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.context_cost_ceiling_tokens < 0:
+            errors.append(ConfigError("surface", "context_cost_ceiling_tokens", "must be >= 0"))
+        return errors
+
+
+@dataclass
+class StateMachineConfig:
+    """Task state-machine enforcement.
+
+    Substrate placeholder — see docs/specs/implementation/work-graph.md §9.
+    ``enforce: false`` keeps today's warn-only behavior.
+    """
+
+    enforce: bool = False
+
+    def validate(self) -> list[ConfigError]:
+        return []
+
+
+@dataclass
+class WorkGraphConfig:
+    """Persisted blocked-state projection, gates, and conditional edges.
+
+    Substrate placeholder — see docs/specs/implementation/work-graph.md §9.
+    ``blocked_state_authoritative: false`` = shadow mode (legacy scan wins).
+    """
+
+    blocked_state_authoritative: bool = False
+    gate_sweep_interval_seconds: int = 30
+    conditional_autoclose: bool = True
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.gate_sweep_interval_seconds <= 0:
+            errors.append(ConfigError("work_graph", "gate_sweep_interval_seconds", "must be > 0"))
+        return errors
+
+
 @dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
@@ -841,8 +1176,21 @@ class AppConfig:
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     auto_task: AutoTaskConfig = field(default_factory=AutoTaskConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    playbooks: PlaybooksConfig = field(default_factory=PlaybooksConfig)
     mcp_server: McpServerConfig = field(default_factory=McpServerConfig)
     llm_logging: LLMLoggingConfig = field(default_factory=LLMLoggingConfig)
+    # -- Framework-overhaul substrate sections (all flags default off) ------
+    sessions: SessionsConfig = field(default_factory=SessionsConfig)
+    worktrees: WorktreesConfig = field(default_factory=WorktreesConfig)
+    security: SecurityConfig = field(default_factory=SecurityConfig)
+    pricing: PricingConfig = field(default_factory=PricingConfig)
+    messages: MessagesConfig = field(default_factory=MessagesConfig)
+    supervisor_agent: SupervisorAgentConfig = field(default_factory=SupervisorAgentConfig)
+    planner: PlannerConfig = field(default_factory=PlannerConfig)
+    api_auth: ApiAuthConfig = field(default_factory=ApiAuthConfig)
+    surface: SurfaceConfig = field(default_factory=SurfaceConfig)
+    state_machine: StateMachineConfig = field(default_factory=StateMachineConfig)
+    work_graph: WorkGraphConfig = field(default_factory=WorkGraphConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     max_daily_playbook_tokens: int | None = None
@@ -991,6 +1339,29 @@ class AppConfig:
         errors.extend(self.llm_logging.validate())
         errors.extend(self.memory.validate())
         errors.extend(self.mcp_server.validate())
+        # -- Framework-overhaul substrate sections --------------------------
+        errors.extend(self.playbooks.validate())
+        errors.extend(self.sessions.validate())
+        errors.extend(self.worktrees.validate())
+        errors.extend(self.security.validate())
+        errors.extend(self.pricing.validate())
+        errors.extend(self.messages.validate())
+        errors.extend(self.supervisor_agent.validate())
+        errors.extend(self.planner.validate())
+        errors.extend(self.api_auth.validate())
+        errors.extend(self.surface.validate())
+        errors.extend(self.state_machine.validate())
+        errors.extend(self.work_graph.validate())
+        # ``supervisor_agent.enabled`` needs the message queue and named
+        # sessions to exist (supervisor-agent spec §10).
+        if self.supervisor_agent.enabled and not (self.messages.enabled and self.sessions.enabled):
+            errors.append(
+                ConfigError(
+                    "supervisor_agent",
+                    "enabled",
+                    "requires messages.enabled and sessions.enabled",
+                )
+            )
         # Agent profiles
         for profile in self.agent_profiles:
             errors.extend(profile.validate())
@@ -1077,6 +1448,12 @@ class AppConfig:
         updated.chat_analyzer = fresh.chat_analyzer
         updated.max_daily_playbook_tokens = fresh.max_daily_playbook_tokens
         updated.max_concurrent_playbook_runs = fresh.max_concurrent_playbook_runs
+        # Substrate sections classified hot-reloadable (work-graph spec §9,
+        # trust-and-ops §2).  Inert until their owning lane lands.
+        updated.state_machine = fresh.state_machine
+        updated.work_graph = fresh.work_graph
+        updated.pricing = fresh.pricing
+        updated.surface = fresh.surface
 
         return updated
 
@@ -1099,6 +1476,11 @@ HOT_RELOADABLE_SECTIONS = {
     "max_concurrent_playbook_runs",
     "rate_limits",
     "chat_analyzer",
+    # -- Framework-overhaul substrate sections (inert until their lane) ----
+    "state_machine",
+    "work_graph",
+    "pricing",
+    "surface",
 }
 """Config sections that can be safely updated at runtime without restart."""
 
@@ -1112,6 +1494,19 @@ RESTART_REQUIRED_SECTIONS = {
     "chat_provider",
     "memory",
     "health_check",
+    # -- Framework-overhaul substrate sections --------------------------
+    # Each of these gates subsystem construction at startup, so a change
+    # only takes effect on restart.  (``state_machine`` and ``work_graph``
+    # are deliberately absent — work-graph spec §9 calls them
+    # hot-reloadable like ``monitoring``.)
+    "playbooks",
+    "sessions",
+    "worktrees",
+    "security",
+    "messages",
+    "supervisor_agent",
+    "planner",
+    "api_auth",
 }
 """Config sections that require a full restart to take effect."""
 
@@ -1138,6 +1533,19 @@ _SECTION_FIELDS = {
     "auto_task",
     "memory",
     "llm_logging",
+    # -- Framework-overhaul substrate sections ----------------------------
+    "playbooks",
+    "sessions",
+    "worktrees",
+    "security",
+    "pricing",
+    "messages",
+    "supervisor_agent",
+    "planner",
+    "api_auth",
+    "surface",
+    "state_machine",
+    "work_graph",
     "agent_profiles",
     "global_token_budget_daily",
     "max_daily_playbook_tokens",
@@ -1479,6 +1887,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.max_daily_playbook_tokens = raw["max_daily_playbook_tokens"]
     if "max_concurrent_playbook_runs" in raw:
         config.max_concurrent_playbook_runs = int(raw["max_concurrent_playbook_runs"])
+    if "playbooks" in raw and isinstance(raw["playbooks"], dict):
+        pb = raw["playbooks"]
+        config.playbooks = PlaybooksConfig(enabled=bool(pb.get("enabled", False)))
     if "messaging_platform" in raw:
         config.messaging_platform = raw["messaging_platform"]
 
@@ -1678,12 +2089,131 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             excluded_commands=ms.get("excluded_commands", []),
             inject_into_tasks=ms.get("inject_into_tasks", True),
         )
+        ts = ms.get("task_scope")
+        if isinstance(ts, dict):
+            config.mcp_server.task_scope = McpTaskScopeConfig(
+                enabled=bool(ts.get("enabled", False)),
+                allowlist_extra=ts.get("allowlist_extra", []),
+            )
 
     if "llm_logging" in raw:
         ll = raw["llm_logging"]
         config.llm_logging = LLMLoggingConfig(
             enabled=ll.get("enabled", False),
             retention_days=ll.get("retention_days", 30),
+        )
+
+    # -- Framework-overhaul substrate sections (Wave 0) ---------------------
+    # Parsing only.  Defaults mirror the dataclass defaults exactly so a
+    # partial section never silently flips a flag on.
+
+    if "sessions" in raw and isinstance(raw["sessions"], dict):
+        se = raw["sessions"]
+        config.sessions = SessionsConfig(
+            enabled=bool(se.get("enabled", False)),
+            provider=se.get("provider", "tmux"),
+            tmux_socket=se.get("tmux_socket", "aq"),
+            lease_ttl_seconds=int(se.get("lease_ttl_seconds", 480)),
+            stall_max_nudges=int(se.get("stall_max_nudges", 3)),
+            stall_backoff_seconds=int(se.get("stall_backoff_seconds", 300)),
+            max_restarts=int(se.get("max_restarts", 3)),
+            restart_window_seconds=int(se.get("restart_window_seconds", 600)),
+            restart_backoff_seconds=int(se.get("restart_backoff_seconds", 30)),
+            dialog_budget_seconds=int(se.get("dialog_budget_seconds", 8)),
+            nudge_debounce_ms=int(se.get("nudge_debounce_ms", 500)),
+            state_cache_ttl_seconds=int(se.get("state_cache_ttl_seconds", 2)),
+            transcript_poll_seconds=int(se.get("transcript_poll_seconds", 2)),
+            adopt_on_start=bool(se.get("adopt_on_start", True)),
+        )
+
+    if "worktrees" in raw and isinstance(raw["worktrees"], dict):
+        wt = raw["worktrees"]
+        config.worktrees = WorktreesConfig(
+            enabled=bool(wt.get("enabled", False)),
+            retain_failed_days=int(wt.get("retain_failed_days", 7)),
+            merge_slot_ttl_seconds=int(wt.get("merge_slot_ttl_seconds", 600)),
+            prune_remote_branches=bool(wt.get("prune_remote_branches", False)),
+            setup_timeout_seconds=int(wt.get("setup_timeout_seconds", 900)),
+            salvage_dirty=bool(wt.get("salvage_dirty", True)),
+            spawn_conflict_continuation=bool(wt.get("spawn_conflict_continuation", False)),
+        )
+
+    if "security" in raw and isinstance(raw["security"], dict):
+        sec = raw["security"]
+        config.security = SecurityConfig(
+            env_scrub_enabled=bool(sec.get("env_scrub_enabled", True)),
+            env_allowlist=sec.get("env_allowlist", []),
+            wal_warn_mb=int(sec.get("wal_warn_mb", 64)),
+            llm_log_warn_mb=int(sec.get("llm_log_warn_mb", 512)),
+        )
+
+    if "pricing" in raw:
+        # YAML shape is a *list* of {model, input_per_mtok, output_per_mtok}
+        # maps (trust-and-ops §2); a mapping with a "models" key is also
+        # accepted so the round-trip writer can emit either form.
+        pricing_raw = raw["pricing"]
+        if isinstance(pricing_raw, dict):
+            pricing_raw = pricing_raw.get("models", [])
+        entries: list[ModelPricing] = []
+        for row in pricing_raw or []:
+            if not isinstance(row, dict):
+                continue
+            entries.append(
+                ModelPricing(
+                    model=str(row.get("model", "")),
+                    input_per_mtok=float(row.get("input_per_mtok", 0.0)),
+                    output_per_mtok=float(row.get("output_per_mtok", 0.0)),
+                )
+            )
+        config.pricing = PricingConfig(models=entries)
+
+    if "messages" in raw and isinstance(raw["messages"], dict):
+        ms_cfg = raw["messages"]
+        config.messages = MessagesConfig(
+            enabled=bool(ms_cfg.get("enabled", False)),
+            delivery_interval=float(ms_cfg.get("delivery_interval", 5.0)),
+            reply_timeout=float(ms_cfg.get("reply_timeout", 120.0)),
+            transcript_tail_fallback=bool(ms_cfg.get("transcript_tail_fallback", True)),
+            max_inject_per_prompt=int(ms_cfg.get("max_inject_per_prompt", 10)),
+        )
+
+    if "supervisor_agent" in raw and isinstance(raw["supervisor_agent"], dict):
+        sa = raw["supervisor_agent"]
+        config.supervisor_agent = SupervisorAgentConfig(
+            enabled=bool(sa.get("enabled", False)),
+            legacy_chat=bool(sa.get("legacy_chat", True)),
+            idle_timeout=int(sa.get("idle_timeout", 900)),
+        )
+
+    if "planner" in raw and isinstance(raw["planner"], dict):
+        pl = raw["planner"]
+        config.planner = PlannerConfig(
+            legacy_plan_discovery=bool(pl.get("legacy_plan_discovery", True)),
+        )
+
+    if "api_auth" in raw and isinstance(raw["api_auth"], dict):
+        aa = raw["api_auth"]
+        config.api_auth = ApiAuthConfig(
+            token_ttl_hours=int(aa.get("token_ttl_hours", 72)),
+            require_session_token=bool(aa.get("require_session_token", False)),
+        )
+
+    if "surface" in raw and isinstance(raw["surface"], dict):
+        sf = raw["surface"]
+        config.surface = SurfaceConfig(
+            context_cost_ceiling_tokens=int(sf.get("context_cost_ceiling_tokens", 8000)),
+        )
+
+    if "state_machine" in raw and isinstance(raw["state_machine"], dict):
+        sm = raw["state_machine"]
+        config.state_machine = StateMachineConfig(enforce=bool(sm.get("enforce", False)))
+
+    if "work_graph" in raw and isinstance(raw["work_graph"], dict):
+        wg = raw["work_graph"]
+        config.work_graph = WorkGraphConfig(
+            blocked_state_authoritative=bool(wg.get("blocked_state_authoritative", False)),
+            gate_sweep_interval_seconds=int(wg.get("gate_sweep_interval_seconds", 30)),
+            conditional_autoclose=bool(wg.get("conditional_autoclose", True)),
         )
 
     if "agent_profiles" in raw:

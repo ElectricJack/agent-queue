@@ -29,6 +29,25 @@ from src.config import (
 
 _ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
 
+# Free-text notes surfaced on top-level schema sections as ``x-note``.
+# Used by the dashboard/CLI to explain why a section exists or is paused.
+# Keep entries short — one sentence, present tense.
+SECTION_NOTES: dict[str, str] = {
+    "memory": "Temporary — overhaul pause; see docs/specs/design/feature-pauses.md.",
+    "playbooks": "Temporary — overhaul pause; see docs/specs/design/feature-pauses.md.",
+    "sessions": "Framework overhaul: session runtime. Disabled until the lane lands.",
+    "worktrees": "Framework overhaul: per-slot git worktrees. Disabled until the lane lands.",
+    "security": "Framework overhaul: env scrubbing + doctor thresholds.",
+    "pricing": "Framework overhaul: model price table for token-ledger cost rollups.",
+    "messages": "Framework overhaul: inter-agent message queue. Disabled until the lane lands.",
+    "supervisor_agent": "Framework overhaul: supervisor-as-a-session. Disabled until the lane lands.",
+    "planner": "Framework overhaul: plan-discovery rollout switch.",
+    "api_auth": "Framework overhaul: session-token auth for the local HTTP API.",
+    "surface": "Framework overhaul: agent-surface ergonomics knobs.",
+    "state_machine": "Framework overhaul: task state-machine enforcement (warn-only while off).",
+    "work_graph": "Framework overhaul: blocked-state projection, gates, typed edges.",
+}
+
 
 def _round_trip_yaml():
     """Lazy import of ruamel.yaml configured for round-trip editing.
@@ -230,6 +249,9 @@ def build_config_schema() -> dict[str, Any]:
         reload_by_section[s] = "unclassified"
     for name, prop in schema["properties"].items():
         prop["x-reload"] = reload_by_section.get(name, "unclassified")
+        note = SECTION_NOTES.get(name)
+        if note:
+            prop["x-note"] = note
     schema["x-classification"] = classification
     return schema
 

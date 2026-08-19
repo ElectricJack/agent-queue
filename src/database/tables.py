@@ -23,6 +23,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    text,
     true,
 )
 
@@ -92,8 +93,16 @@ tasks = Table(
     Column("affinity_agent_id", Text, nullable=True),
     Column("affinity_reason", Text, nullable=True),
     Column("workspace_mode", Text, nullable=True),
+    # Persisted blocked-state projection (work-graph spec §2.2).  Integer
+    # 0/1 matches the table's existing flag style (e.g. requires_approval).
+    # Recomputed by the query layer; never written directly.
+    Column("is_blocked", Integer, nullable=False, server_default="0"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
+    # Serves _check_defined_tasks, the scheduler filter, and `aq project ready`.
+    Index("idx_tasks_project_status_blocked", "project_id", "status", "is_blocked"),
+    # Group progress and tree queries walk parent_task_id.
+    Index("idx_tasks_parent", "parent_task_id"),
 )
 
 task_criteria = Table(
@@ -106,14 +115,41 @@ task_criteria = Table(
     Column("sort_order", Integer, nullable=False, server_default="0"),
 )
 
+TASK_DEP_TYPES = (
+    "blocks",
+    "parent-child",
+    "waits-for",
+    "conditional-blocks",
+    "discovered-from",
+    "related",
+    "duplicates",
+    "supersedes",
+)
+"""Typed dependency edge kinds — see docs/specs/design/work-graph.md.
+
+Only ``blocks``/``parent-child``/``waits-for``/``conditional-blocks`` gate
+readiness; the rest are informational.  The tuple order is the check
+constraint's order and must stay stable (it is embedded in the migration).
+"""
+
+_TASK_DEP_TYPE_CHECK = "dep_type IN (" + ", ".join(f"'{t}'" for t in TASK_DEP_TYPES) + ")"
+
 task_dependencies = Table(
     "task_dependencies",
     metadata,
     Column("task_id", Text, ForeignKey("tasks.id"), nullable=False, primary_key=True),
     Column("depends_on_task_id", Text, ForeignKey("tasks.id"), nullable=False, primary_key=True),
+    # Typed edges (work-graph spec §2.1).  Part of the PK so one task pair
+    # can carry several edge kinds (e.g. ``blocks`` + ``discovered-from``).
+    # Existing rows read back as ``'blocks'`` — zero behavior change.
+    Column("dep_type", Text, nullable=False, server_default="'blocks'", primary_key=True),
     CheckConstraint("task_id != depends_on_task_id"),
-    Index("idx_task_deps_depends_on", "depends_on_task_id"),
-    Index("idx_task_deps_task_id", "task_id"),
+    CheckConstraint(_TASK_DEP_TYPE_CHECK, name="ck_task_deps_dep_type"),
+    # Composite indexes replace the former single-column pair: the leading
+    # column keeps every existing lookup covered, the second serves the
+    # blocked-state recompute predicate's dep_type filters.
+    Index("idx_task_deps_task_type", "task_id", "dep_type"),
+    Index("idx_task_deps_depson_type", "depends_on_task_id", "dep_type"),
 )
 
 task_context = Table(
@@ -132,6 +168,59 @@ task_metadata = Table(
     Column("task_id", Text, ForeignKey("tasks.id"), primary_key=True),
     Column("key", Text, primary_key=True),
     Column("value", Text, nullable=False),
+)
+
+# ---------------------------------------------------------------------------
+# Gates and labels (work-graph spec §2.3 / §2.4).
+#
+# Substrate only — no query layer or command surface reads these yet.
+# ---------------------------------------------------------------------------
+
+GATE_TYPES = ("human", "timer", "pr-merged", "ci-run", "event", "task")
+GATE_STATUSES = ("open", "resolved", "expired")
+
+gates = Table(
+    "gates",
+    metadata,
+    Column("id", Text, primary_key=True),  # "gate-" + uuid4[:12]
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("gate_type", Text, nullable=False),  # human|timer|pr-merged|ci-run|event|task
+    Column("title", Text, nullable=False),
+    Column("question", Text, nullable=False, server_default="''"),
+    Column("await_id", Text, nullable=True),
+    Column("timeout_at", Float, nullable=True),
+    Column("status", Text, nullable=False, server_default="'open'"),  # open|resolved|expired
+    Column("resolved_by", Text, nullable=True),
+    Column("resolution", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint(
+        "gate_type IN (" + ", ".join(f"'{t}'" for t in GATE_TYPES) + ")",
+        name="ck_gates_type",
+    ),
+    CheckConstraint(
+        "status IN (" + ", ".join(f"'{s}'" for s in GATE_STATUSES) + ")",
+        name="ck_gates_status",
+    ),
+    Index("idx_gates_project_status", "project_id", "status"),
+    # The sweep scans open gates by type.
+    Index("idx_gates_status_type", "status", "gate_type"),
+)
+
+task_gates = Table(
+    "task_gates",
+    metadata,
+    Column("task_id", Text, ForeignKey("tasks.id"), primary_key=True),
+    Column("gate_id", Text, ForeignKey("gates.id"), primary_key=True),
+    # resolve → find waiters.
+    Index("idx_task_gates_gate", "gate_id"),
+)
+
+task_labels = Table(
+    "task_labels",
+    metadata,
+    Column("task_id", Text, ForeignKey("tasks.id"), primary_key=True),
+    Column("label", Text, primary_key=True),
+    Index("idx_task_labels_label", "label"),
 )
 
 task_tools = Table(
@@ -168,6 +257,12 @@ token_ledger = Table(
     Column("agent_id", Text, ForeignKey("agents.id"), nullable=False),
     Column("task_id", Text, ForeignKey("tasks.id"), nullable=False),
     Column("tokens_used", Integer, nullable=False),
+    # Pricing split (trust-and-ops spec §6.1).  Nullable — rows written
+    # before the split existed (and runtimes that don't report it)
+    # aggregate into "unpriced_tokens" in the cost rollup.
+    Column("model", Text, nullable=True),
+    Column("input_tokens", Integer, nullable=True),
+    Column("output_tokens", Integer, nullable=True),
     Column("timestamp", Float, nullable=False),
 )
 
@@ -233,8 +328,25 @@ workspaces = Table(
     Column("locked_at", Float, nullable=True),
     Column("lock_mode", Text, nullable=True),
     Column("enabled", Boolean, nullable=False, server_default=true()),
+    # Worktree slots (worktree-execution spec §3.2).  NULL for clones,
+    # links and base rows; 0..N-1 for slot worktrees.
+    Column("slot_index", Integer, nullable=True),
+    # Soft self-reference to the base clone's workspaces.id (no FK — matches
+    # the kind_id soft-ref precedent).  Set only on slot rows.
+    Column("base_workspace_id", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     UniqueConstraint("project_id", "workspace_path"),
+    # Partial unique index: one row per (base, slot) but many NULL/NULL rows
+    # (every clone).  Written by hand in the migration — autogenerate
+    # handles partial indexes poorly.
+    Index(
+        "uq_workspaces_base_slot",
+        "base_workspace_id",
+        "slot_index",
+        unique=True,
+        sqlite_where=text("base_workspace_id IS NOT NULL AND slot_index IS NOT NULL"),
+        postgresql_where=text("base_workspace_id IS NOT NULL AND slot_index IS NOT NULL"),
+    ),
 )
 
 workspace_kinds = Table(
@@ -254,7 +366,30 @@ workspace_kinds = Table(
     # — matches WorkspaceMode.value.
     Column("default_lock_mode", Text, nullable=True),
     Column("auto_attach", Boolean, nullable=False, server_default="false"),
+    # Git provisioning strategy (worktree-execution spec §3.1):
+    # 'worktree' | 'exclusive-clone' | 'directory-isolated'.  Meaningful
+    # only when is_git_repo is true.  The shipped default is 'worktree',
+    # but the substrate migration backfills every pre-existing row to
+    # 'exclusive-clone' so upgrades keep their current behavior.
+    Column("mode", Text, nullable=False, server_default="'worktree'"),
+    # JSON-encoded list[str] of shell commands run after a slot is created.
+    # Text for SQLite/PG parity, matching the existing JSON-in-Text usage.
+    Column("worktree_setup", Text, nullable=False, server_default="'[]'"),
     Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+
+merge_slots = Table(
+    "merge_slots",
+    metadata,
+    # One row per project, created lazily on first acquire
+    # (worktree-execution spec §3.3).
+    Column("project_id", Text, ForeignKey("projects.id"), primary_key=True),
+    # NULL = free.  Soft ref to tasks.id (survives task archival).
+    Column("holder_task_id", Text, nullable=True),
+    Column("acquired_at", Float, nullable=True),
+    # Lease expiry; renewed by the integration pipeline.
+    Column("expires_at", Float, nullable=True),
     Column("updated_at", Float, nullable=False),
 )
 
@@ -300,8 +435,102 @@ agent_profiles = Table(
     # ACP agent identifier — only meaningful when ``runtime == "acpx"``.
     # Empty string for every other runtime.  Validated at parse time.
     Column("agent_name", Text, nullable=False, server_default="''"),
+    # -- Named-session pass-through storage (supervisor-agent spec §3.2) --
+    # Values are validated at profile parse time; the harness *schema*
+    # (what "claude" means) is owned by the session-runtime spec.
+    Column("harness", Text, nullable=True),
+    Column("lifecycle", Text, nullable=False, server_default="'task'"),
+    Column("mode", Text, nullable=True),
+    Column("wake_mode", Text, nullable=True),
+    Column("idle_timeout", Integer, nullable=True),
+    Column("max_session_age", Integer, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
+)
+
+# ---------------------------------------------------------------------------
+# Session runtime, messaging, and API auth (substrate only).
+#
+# See docs/specs/implementation/session-runtime.md §2,
+# supervisor-agent.md §3, aq-surface.md §4.
+# ---------------------------------------------------------------------------
+
+sessions = Table(
+    "sessions",
+    metadata,
+    Column("id", Text, primary_key=True),  # uuid4 hex
+    Column("task_id", Text, ForeignKey("tasks.id"), nullable=True),  # NULL for named
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("profile_id", Text, nullable=False),  # soft ref, like agents.profile_id
+    Column("harness", Text, nullable=False),  # e.g. "claude"
+    Column("provider", Text, nullable=False),  # "tmux" | "subprocess" | "fake"
+    Column("name", Text, nullable=False),  # "s-<task_id>" | "n-<profile>[--<pid>]"
+    Column("lifecycle", Text, nullable=False),  # "task" | "named"
+    # starting | running | draining | stopped | sleeping | quarantined.
+    # "stalled" is derived (lease TTL vs last_activity), never stored.
+    Column("state", Text, nullable=False, server_default="'starting'"),
+    Column("session_key", Text, nullable=True),  # harness resume key
+    Column("work_dir", Text, nullable=False),
+    Column("epoch", Text, nullable=False),  # AQ_DAEMON_EPOCH at launch
+    Column("instance_token", Text, nullable=False),  # AQ_INSTANCE_TOKEN (kill fence)
+    Column("started_at", Float, nullable=False),
+    Column("last_activity", Float, nullable=True),
+    Column("restarts", Integer, nullable=False, server_default="0"),
+    Column("quarantined_at", Float, nullable=True),
+    Column("sleep_reason", Text, nullable=True),
+    Index("idx_sessions_task_id", "task_id"),
+    Index("idx_sessions_state", "state"),
+    Index("idx_sessions_name", "name"),
+)
+
+messages = Table(
+    "messages",
+    metadata,
+    Column("id", Text, primary_key=True),  # "msg-<uuid7>"
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("from_kind", Text, nullable=False),  # session|user|system
+    Column("from_id", Text, nullable=False),
+    Column("to_kind", Text, nullable=False),  # session|task|profile|user
+    Column("to_id", Text, nullable=False),
+    Column("thread_id", Text, nullable=True),
+    Column("subject", Text, nullable=True),
+    Column("body", Text, nullable=False),
+    Column("priority", Integer, nullable=False, server_default="100"),
+    Column("created_at", Float, nullable=False),
+    Column("delivered_at", Float, nullable=True),
+    Column("read_at", Float, nullable=True),
+    Column("archive_after_inject", Integer, nullable=False, server_default="0"),
+    Column("archived_at", Float, nullable=True),
+    Column("reply_to_id", Text, ForeignKey("messages.id"), nullable=True),
+    Column("via", Text, nullable=True),  # null | "transcript_tail"
+    CheckConstraint(
+        "from_kind IN ('session','user','system')",
+        name="ck_messages_from_kind",
+    ),
+    CheckConstraint(
+        "to_kind IN ('session','task','profile','user')",
+        name="ck_messages_to_kind",
+    ),
+    Index("idx_messages_pending", "to_kind", "to_id", "delivered_at"),
+    Index("idx_messages_project_created", "project_id", "created_at"),
+    Index("idx_messages_thread", "thread_id"),
+)
+
+api_session_tokens = Table(
+    "api_session_tokens",
+    metadata,
+    Column("token_hash", Text, primary_key=True),  # sha256 hex
+    Column("session_id", Text, nullable=False),
+    Column("task_id", Text, nullable=True),
+    # Soft ref (matches the agents.profile_id pattern).
+    Column("project_id", Text, nullable=True),
+    # Float epoch, matching every other timestamp in this schema.  The spec
+    # table says DateTime; Float keeps dialect parity and house style.
+    Column("created_at", Float, nullable=False),
+    Column("expires_at", Float, nullable=False),
+    Column("revoked_at", Float, nullable=True),
+    Index("idx_api_session_tokens_session", "session_id"),
+    Index("idx_api_session_tokens_expires", "expires_at"),
 )
 
 chat_analyzer_suggestions = Table(
@@ -366,6 +595,8 @@ archived_tasks = Table(
     Column("affinity_agent_id", Text, nullable=True),
     Column("affinity_reason", Text, nullable=True),
     Column("workspace_mode", Text, nullable=True),
+    # Mirrors tasks.is_blocked so archiving stays lossless (work-graph §2.2).
+    Column("is_blocked", Integer, nullable=False, server_default="0"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("archived_at", Float, nullable=False),

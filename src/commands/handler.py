@@ -68,6 +68,16 @@ from src.commands.tool_commands import ToolCommandsMixin
 from src.commands.event_commands import EventCommandsMixin
 from src.commands.discord_commands import DiscordCommandsMixin
 
+# Framework-overhaul substrate mixins (Wave 0).  Empty today — registered
+# here so the Wave 1/2 lanes add methods to their own module without
+# touching this file.  See docs/analysis/execution-plan.md §1.1.
+from src.commands.gate_commands import GateCommandsMixin
+from src.commands.message_commands import MessageCommandsMixin
+from src.commands.session_commands import SessionCommandsMixin
+from src.commands.surface_commands import SurfaceCommandsMixin
+from src.commands.ops_commands import OpsCommandsMixin
+from src.commands.worktree_commands import WorktreeCommandsMixin
+
 logger = logging.getLogger(__name__)
 
 
@@ -119,6 +129,13 @@ class CommandHandler(
     ToolCommandsMixin,
     EventCommandsMixin,
     DiscordCommandsMixin,
+    # -- Framework-overhaul substrate mixins (empty until their lane) ----
+    GateCommandsMixin,
+    MessageCommandsMixin,
+    SessionCommandsMixin,
+    SurfaceCommandsMixin,
+    OpsCommandsMixin,
+    WorktreeCommandsMixin,
 ):
     """Unified command execution layer for AgentQueue (Command Pattern).
 

@@ -1723,6 +1723,12 @@ class Orchestrator(
             # 2. Promote PAUSED tasks whose backoff timer has expired → READY.
             await self._resume_paused_tasks()
 
+            # 2b. Sweep gates: resolve satisfied timer/pr-merged/ci-run/event/
+            #     task gates and expire overdue ones.  Runs before promotion
+            #     so a freshly resolved gate unblocks its waiters in the same
+            #     cycle (work-graph spec §6.1).  No-op until Wave 2 lane 2C.
+            await self._sweep_gates()
+
             # 3. Promote DEFINED/BLOCKED tasks whose dependencies are met → READY.
             #    Runs after step 1 so freshly-completed approvals can unblock
             #    dependents within the same cycle.
@@ -1835,8 +1841,90 @@ class Orchestrator(
             #     Sweeps paused runs and handles expired timeouts — either
             #     transitioning to a timeout node or marking as timed_out.
             await self._check_paused_playbook_timeouts()
+
+            # ── Phase 4: Framework-overhaul substrate steps ─────────────────
+            # Wave 0 landed these as flag-gated no-ops so the Wave 2 lanes
+            # each fill in one body without touching this file again.
+            # (``_sweep_gates`` is the exception — work-graph spec §6.1
+            # requires it at step 2b, before promotion, so a freshly
+            # resolved gate unblocks its waiters in the same cycle.  It is
+            # called up there, not here.)
+            # See docs/analysis/execution-plan.md §1.1.
+            await self._reap_worktree_slots()
+            await self._reconcile_sessions()
+            await self._deliver_messages()
+            await self._revoke_expired_tokens()
         except Exception:
             logger.error("Scheduler cycle error", exc_info=True)
+
+    # -----------------------------------------------------------------------
+    # Framework-overhaul cascade stubs (Wave 0 substrate).
+    #
+    # Each of these is called from ``run_one_cycle`` and does nothing until
+    # its owning lane fills the body in.  They exist now so five parallel
+    # agents never have to edit this file's cascade — see
+    # docs/analysis/execution-plan.md §1.1.
+    #
+    # Every stub is a flag check followed by an immediate return.  All the
+    # flags default off, so today every one of them is inert.
+    # -----------------------------------------------------------------------
+
+    async def _sweep_gates(self) -> None:
+        """Resolve satisfied gates and expire overdue ones.
+
+        Wave 2 lane 2C fills this in — see
+        docs/specs/implementation/work-graph.md §6.2 (``_sweep_gates``).
+        Expected body: ``expire_open_gates(now)``; resolve ``timer`` and
+        ``task`` gates; poll ``pr-merged``/``ci-run`` on the 60 s approval
+        throttle; re-check ``event`` gates against persisted events; emit
+        ``gate.resolved`` / ``gate.expired`` / ``task.unblocked``.
+        """
+        if not self.config.work_graph.blocked_state_authoritative:
+            return
+
+    async def _reap_worktree_slots(self) -> None:
+        """Break expired merge-slot leases and reap retired worktree slots.
+
+        Wave 2 lane 2B fills this in — see
+        docs/specs/implementation/worktree-execution.md §6.2 (cascade steps
+        7d/7e).  Expected body: ``break_expired_merge_slots`` plus a
+        rate-limited retired-slot sweep and ``prune_branches``.
+        """
+        if not self.config.worktrees.enabled:
+            return
+
+    async def _reconcile_sessions(self) -> None:
+        """Reconcile desired vs. actual agent sessions.
+
+        Wave 2 lane 2A fills this in — see
+        docs/specs/implementation/session-runtime.md (``SessionReconciler``).
+        Expected body: drive the reconciler one tick (start/stop/nudge/
+        restart/quarantine) against the ``sessions`` table.
+        """
+        if not self.config.sessions.enabled:
+            return
+
+    async def _deliver_messages(self) -> None:
+        """Deliver queued inter-agent messages to their recipients.
+
+        Wave 2 lane 2D owns the queue; the delivery engine itself is
+        explicitly out of Wave 2 scope (it needs named sessions).  See
+        docs/specs/implementation/supervisor-agent.md §10 (``MessagesConfig``).
+        """
+        if not self.config.messages.enabled:
+            return
+
+    async def _revoke_expired_tokens(self) -> None:
+        """Sweep expired API session tokens out of ``api_session_tokens``.
+
+        Wave 3 (aq-surface S2) fills this in — see
+        docs/specs/implementation/aq-surface.md §4.1
+        (``SessionTokenStore.revoke_expired``).  Gated on either flag:
+        tokens are minted by sessions, and enforcement can be on
+        independently.
+        """
+        if not (self.config.sessions.enabled or self.config.api_auth.require_session_token):
+            return
 
     async def _on_config_reloaded(self, data: dict) -> None:
         """Handle config.reloaded events from the ConfigWatcher.
