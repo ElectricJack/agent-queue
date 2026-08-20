@@ -194,6 +194,29 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "title": "Add new feature",
         "project_id": "proj-1",
     },
+    # Worktree slots (worktree-execution 8)
+    "worktree.created": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-0",
+        "slot": "slot-0",
+        "path": "/repos/myrepo/.aq/worktrees/slot-0",
+        "base_workspace_id": "ws-base",
+    },
+    "worktree.reset": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-0",
+        "slot": "slot-0",
+        "task_id": "tsk-9f3e",
+        "branch": "aq/tsk-9f3e",
+        "salvaged": False,
+    },
+    "worktree.reaped": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-3",
+        "slot": "slot-3",
+        "path": "/repos/myrepo/.aq/worktrees/slot-3",
+        "reason": "cap_shrunk",
+    },
     # Playbook
     "playbook.run.completed": {
         "playbook_id": "code-quality-gate",
