@@ -122,6 +122,7 @@ def test_registry_has_categories(registry):
         "task",
         "plugin",
         "playbook",
+        "mcp",
     }
 
     for cat in categories:
@@ -677,6 +678,7 @@ _PLAYBOOK_COMMANDS = [
     "update_playbook_source",
     "create_playbook",
     "delete_playbook",
+    "set_playbook_enabled",
 ]
 
 

@@ -142,7 +142,7 @@ task_dependencies = Table(
     # Typed edges (work-graph spec §2.1).  Part of the PK so one task pair
     # can carry several edge kinds (e.g. ``blocks`` + ``discovered-from``).
     # Existing rows read back as ``'blocks'`` — zero behavior change.
-    Column("dep_type", Text, nullable=False, server_default="'blocks'", primary_key=True),
+    Column("dep_type", Text, nullable=False, server_default="blocks", primary_key=True),
     CheckConstraint("task_id != depends_on_task_id"),
     CheckConstraint(_TASK_DEP_TYPE_CHECK, name="ck_task_deps_dep_type"),
     # Composite indexes replace the former single-column pair: the leading
@@ -186,10 +186,10 @@ gates = Table(
     Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
     Column("gate_type", Text, nullable=False),  # human|timer|pr-merged|ci-run|event|task
     Column("title", Text, nullable=False),
-    Column("question", Text, nullable=False, server_default="''"),
+    Column("question", Text, nullable=False, server_default=""),
     Column("await_id", Text, nullable=True),
     Column("timeout_at", Float, nullable=True),
-    Column("status", Text, nullable=False, server_default="'open'"),  # open|resolved|expired
+    Column("status", Text, nullable=False, server_default="open"),  # open|resolved|expired
     Column("resolved_by", Text, nullable=True),
     Column("resolution", Text, nullable=True),
     Column("created_at", Float, nullable=False),
@@ -371,10 +371,10 @@ workspace_kinds = Table(
     # only when is_git_repo is true.  The shipped default is 'worktree',
     # but the substrate migration backfills every pre-existing row to
     # 'exclusive-clone' so upgrades keep their current behavior.
-    Column("mode", Text, nullable=False, server_default="'worktree'"),
+    Column("mode", Text, nullable=False, server_default="worktree"),
     # JSON-encoded list[str] of shell commands run after a slot is created.
     # Text for SQLite/PG parity, matching the existing JSON-in-Text usage.
-    Column("worktree_setup", Text, nullable=False, server_default="'[]'"),
+    Column("worktree_setup", Text, nullable=False, server_default="[]"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
@@ -439,7 +439,7 @@ agent_profiles = Table(
     # Values are validated at profile parse time; the harness *schema*
     # (what "claude" means) is owned by the session-runtime spec.
     Column("harness", Text, nullable=True),
-    Column("lifecycle", Text, nullable=False, server_default="'task'"),
+    Column("lifecycle", Text, nullable=False, server_default="task"),
     Column("mode", Text, nullable=True),
     Column("wake_mode", Text, nullable=True),
     Column("idle_timeout", Integer, nullable=True),
@@ -468,7 +468,7 @@ sessions = Table(
     Column("lifecycle", Text, nullable=False),  # "task" | "named"
     # starting | running | draining | stopped | sleeping | quarantined.
     # "stalled" is derived (lease TTL vs last_activity), never stored.
-    Column("state", Text, nullable=False, server_default="'starting'"),
+    Column("state", Text, nullable=False, server_default="starting"),
     Column("session_key", Text, nullable=True),  # harness resume key
     Column("work_dir", Text, nullable=False),
     Column("epoch", Text, nullable=False),  # AQ_DAEMON_EPOCH at launch

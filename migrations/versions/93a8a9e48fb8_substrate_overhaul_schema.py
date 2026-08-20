@@ -91,7 +91,12 @@ def _task_dependencies_old() -> sa.Table:
         sa.CheckConstraint("task_id != depends_on_task_id"),
         sa.ForeignKeyConstraint(["task_id"], ["tasks.id"]),
         sa.ForeignKeyConstraint(["depends_on_task_id"], ["tasks.id"]),
-        sa.PrimaryKeyConstraint("task_id", "depends_on_task_id"),
+        # No PrimaryKeyConstraint here: the batch op's create_primary_key call
+        # is the sole PK definition. Duplicating it (even with the same old
+        # 2-column PK) makes SQLAlchemy compare this table's reflected PK
+        # against the *new* 3-column PK created via create_primary_key and
+        # emit a SAWarning (promotable to an exception in future releases)
+        # on every SQLite upgrade.
     )
 
 

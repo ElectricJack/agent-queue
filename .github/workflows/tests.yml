@@ -17,11 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    env:
-      # Keep the migration check off the developer default
-      # (~/.agent-queue/agent-queue.db) and out of pytest's collection path.
-      AGENT_QUEUE_DB_URL: sqlite+aiosqlite:///${{ runner.temp }}/ci-migration-check.db
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -37,6 +32,10 @@ jobs:
         run: pip install -e ".[dev,cli]"
 
       - name: Apply migrations to a scratch database
+        env:
+          # Keep the migration check off the developer default
+          # (~/.agent-queue/agent-queue.db) and out of pytest's collection path.
+          AGENT_QUEUE_DB_URL: sqlite+aiosqlite:///${{ runner.temp }}/ci-migration-check.db
         run: alembic upgrade head
 
       - name: Run tests
