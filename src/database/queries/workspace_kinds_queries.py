@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 
 from sqlalchemy import delete, insert, select, update
@@ -9,9 +11,19 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import workspace_kinds
-from src.models import SYSTEM_KIND_SCOPE, WorkspaceKind
+from src.models import KIND_MODE_WORKTREE, SYSTEM_KIND_SCOPE, WorkspaceKind
+
+logger = logging.getLogger(__name__)
 
 # Columns updated on conflict — every column except the PK pair and created_at.
+#
+# ``mode`` and ``worktree_setup`` are here deliberately (worktree-execution
+# §3.6 + principle #1: the markdown is the source of truth).  The substrate
+# migration backfilled every pre-existing kind row to ``exclusive-clone``,
+# and ``WorkspaceKindStore.bootstrap`` renders the markdown *from* those rows
+# — so an upgrading install writes ``mode: exclusive-clone`` into its vault
+# and the next ``scan()`` upsert re-writes the same value.  Behavior only
+# changes when an operator edits the file, which is the intended knob.
 _UPSERT_UPDATE_COLS = (
     "description",
     "writable",
@@ -20,6 +32,8 @@ _UPSERT_UPDATE_COLS = (
     "repo_url",
     "default_lock_mode",
     "auto_attach",
+    "mode",
+    "worktree_setup",
     "updated_at",
 )
 
@@ -40,6 +54,8 @@ class WorkspaceKindQueryMixin:
             "repo_url": kind.repo_url,
             "default_lock_mode": kind.default_lock_mode,
             "auto_attach": kind.auto_attach,
+            "mode": kind.mode or KIND_MODE_WORKTREE,
+            "worktree_setup": json.dumps(list(kind.worktree_setup or [])),
             "created_at": kind.created_at or now,
             "updated_at": now,
         }
@@ -158,7 +174,28 @@ class WorkspaceKindQueryMixin:
             )
 
     @staticmethod
-    def _row_to_workspace_kind(row) -> WorkspaceKind:
+    def _decode_worktree_setup(raw) -> list[str]:
+        """Decode the JSON-in-Text ``worktree_setup`` column defensively.
+
+        A hand-edited row (or a pre-migration NULL) must not take the daemon
+        down — an undecodable value degrades to "no setup commands".
+        """
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            return [str(c) for c in raw]
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("workspace_kinds.worktree_setup is not valid JSON: %r", raw)
+            return []
+        if not isinstance(parsed, list):
+            logger.warning("workspace_kinds.worktree_setup is not a list: %r", raw)
+            return []
+        return [str(c) for c in parsed]
+
+    @classmethod
+    def _row_to_workspace_kind(cls, row) -> WorkspaceKind:
         return WorkspaceKind(
             project_id=row["project_id"],
             id=row["id"],
@@ -169,6 +206,8 @@ class WorkspaceKindQueryMixin:
             repo_url=row["repo_url"],
             default_lock_mode=row["default_lock_mode"],
             auto_attach=bool(row["auto_attach"]),
+            mode=row["mode"] or KIND_MODE_WORKTREE,
+            worktree_setup=cls._decode_worktree_setup(row["worktree_setup"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

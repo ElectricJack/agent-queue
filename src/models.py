@@ -11,6 +11,8 @@ See specs/models-and-state-machine.md for the full behavioral specification.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -379,10 +381,32 @@ class Workspace:
     locked_at: float | None = None
     lock_mode: WorkspaceMode | None = None  # lock mode used for current lock (None = unlocked)
     enabled: bool = True  # disabled workspaces are skipped by acquire_workspace
+    # Worktree slots (worktree-execution spec §3.2).  ``slot_index`` is NULL
+    # for clones, links and base rows; 0..N-1 for slot worktrees.
+    # ``base_workspace_id`` is a soft self-reference to the base clone's row.
+    slot_index: int | None = None
+    base_workspace_id: str | None = None
+
+    @property
+    def is_slot(self) -> bool:
+        """True when this row is a worktree slot (worktree-execution §2.2)."""
+        return self.slot_index is not None and self.base_workspace_id is not None
 
 
 # Sentinel project_id for system-wide workspace_kinds rows. See spec §3.1.
 SYSTEM_KIND_SCOPE = "__system__"
+
+# ── Workspace kind git-provisioning modes (worktree-execution §2.1) ───────
+#: One base clone + N slot worktrees; agents run in the slots.
+KIND_MODE_WORKTREE = "worktree"
+#: Legacy: every workspace row is a full clone, exclusively locked.
+KIND_MODE_EXCLUSIVE_CLONE = "exclusive-clone"
+#: Deferred stub: same branch, different directories (monorepos).
+KIND_MODE_DIRECTORY_ISOLATED = "directory-isolated"
+
+WORKSPACE_KIND_MODES = frozenset(
+    {KIND_MODE_WORKTREE, KIND_MODE_EXCLUSIVE_CLONE, KIND_MODE_DIRECTORY_ISOLATED}
+)
 
 
 @dataclass
@@ -404,8 +428,115 @@ class WorkspaceKind:
     # Lowercase enum value: "exclusive" | "branch_isolated" | "directory_isolated"
     default_lock_mode: str | None = None
     auto_attach: bool = False
+    # Git provisioning strategy (worktree-execution §2.1).  Meaningful only
+    # when ``is_git_repo``.  One of :data:`WORKSPACE_KIND_MODES`.
+    mode: str = KIND_MODE_WORKTREE
+    # Shell commands run once inside a freshly created slot, and again when
+    # the list changes (worktree-execution §3.6).  Operator-authored config.
+    worktree_setup: list[str] = field(default_factory=list)
     created_at: float = 0.0
     updated_at: float = 0.0
+
+    def setup_hash(self) -> str:
+        """Stable digest of ``worktree_setup`` — drives re-run semantics."""
+        return worktree_setup_hash(self.worktree_setup)
+
+
+def worktree_setup_hash(commands: list[str] | None) -> str:
+    """SHA-256 over the ordered ``worktree_setup`` command list.
+
+    Kept module-level so the slot manager can hash a raw list without
+    materializing a :class:`WorkspaceKind`.
+    """
+    payload = json.dumps(list(commands or []), separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@dataclass
+class MergeSlot:
+    """Per-project integration lease. See worktree-execution §3.3 / §4.1.
+
+    One row per project in ``merge_slots``; ``holder_task_id is None`` means
+    the slot is free.  ``expires_at`` is a lease so a crashed holder cannot
+    starve integration forever.
+    """
+
+    project_id: str
+    holder_task_id: str | None = None
+    acquired_at: float | None = None
+    expires_at: float | None = None
+    updated_at: float = 0.0
+
+    def is_held(self, now: float) -> bool:
+        """True when a live (non-expired) holder owns the slot."""
+        if self.holder_task_id is None:
+            return False
+        return self.expires_at is None or self.expires_at > now
+
+
+#: Filename of the per-slot sentinel, relative to the slot directory.
+WORKTREE_SENTINEL_NAME = ".aq-worktree.json"
+
+
+@dataclass
+class WorktreeSentinel:
+    """Contents of ``<slot>/.aq-worktree.json``. See worktree-execution §2.5.
+
+    The filesystem half of adoption and doctoring.  The DB row stays
+    authoritative for locks; this file is what lets a directory be
+    recognised after a crash, and what records which ``worktree_setup``
+    revision the slot was provisioned with.
+    """
+
+    slot: str
+    slot_index: int
+    base_workspace_id: str
+    project_id: str
+    workspace_id: str = ""
+    task_id: str | None = None
+    branch: str | None = None
+    created_at: float = 0.0
+    assigned_at: float | None = None
+    daemon_epoch: str = ""
+    setup_hash: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "slot": self.slot,
+            "slot_index": self.slot_index,
+            "base_workspace_id": self.base_workspace_id,
+            "project_id": self.project_id,
+            "workspace_id": self.workspace_id,
+            "task_id": self.task_id,
+            "branch": self.branch,
+            "created_at": self.created_at,
+            "assigned_at": self.assigned_at,
+            "daemon_epoch": self.daemon_epoch,
+            "setup_hash": self.setup_hash,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WorktreeSentinel":
+        """Tolerant parse — unknown keys ignored, missing keys defaulted.
+
+        Sentinels are read from disk after crashes and across versions, so a
+        strict parse would turn a recoverable slot into an unrecoverable one.
+        """
+        return cls(
+            slot=str(data.get("slot", "")),
+            slot_index=int(data.get("slot_index", -1)),
+            base_workspace_id=str(data.get("base_workspace_id", "")),
+            project_id=str(data.get("project_id", "")),
+            workspace_id=str(data.get("workspace_id", "") or ""),
+            task_id=data.get("task_id"),
+            branch=data.get("branch"),
+            created_at=float(data.get("created_at") or 0.0),
+            assigned_at=(
+                float(data["assigned_at"]) if data.get("assigned_at") is not None else None
+            ),
+            daemon_epoch=str(data.get("daemon_epoch", "") or ""),
+            setup_hash=str(data.get("setup_hash", "") or ""),
+        )
 
 
 @dataclass

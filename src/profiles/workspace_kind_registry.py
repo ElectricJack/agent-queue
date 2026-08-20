@@ -151,6 +151,14 @@ class WorkspaceKindStore:
             fm["repo_url"] = k.repo_url
         if k.default_lock_mode:
             fm["default_lock_mode"] = k.default_lock_mode
+        # Git provisioning mode + slot setup (worktree-execution §2.1/§3.6).
+        # Rendered unconditionally for git kinds so the operator can see and
+        # flip the knob; an upgrading install renders whatever the substrate
+        # migration backfilled ('exclusive-clone'), so bootstrap never
+        # changes an existing install's behavior.
+        if k.is_git_repo:
+            fm["mode"] = k.mode
+            fm["worktree_setup"] = list(k.worktree_setup or [])
         body = (
             f"\n\n# {k.id}\n\n{k.description}\n"
             if k.description
