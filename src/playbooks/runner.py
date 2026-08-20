@@ -487,7 +487,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         if self.on_progress:
             await self.on_progress("playbook_started", self._playbook_id)
 
-        # Emit lifecycle start event — drives Discord/Telegram notifications
+        # Emit lifecycle start event — drives Discord notifications
         # routed by project_id (system playbooks land in the global channel)
         # and the dashboard live-runs panel via notify.playbook_run_started.
         await self._emit_started_event(

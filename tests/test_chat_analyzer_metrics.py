@@ -14,26 +14,22 @@ Covers three layers:
    the query and exposes a ``since_hours`` parameter (default 24). It
    accepts an optional ``project_id`` (None means cross-project).
 
-3. **Bot layer.** The Phase-4 confidence gate in
-   ``_post_observation_suggestion`` previously short-circuited silently;
-   it must now insert a ``status="suppressed"`` row tagged
-   ``suppressed_by="confidence"`` so the metrics command can count it.
-   The Discord post is still skipped — the only behaviour change is
-   "leave a footprint" for observability.
-
 The DB tests use the real SQLite adapter (matches how Phase 1's
 ``test_database_modular.TestChatQueries`` exercises the same module);
 the command-layer tests use a real ``CommandHandler`` over the same
-adapter; the bot-layer test uses the existing stub-object pattern from
-``test_discord_bot_observation.py``.
+adapter.
+
+Note: the Discord-bot-layer tests that exercised
+``AgentQueueBot._post_observation_suggestion`` were removed in the M0
+messaging strip (messaging-rework §4.6) — the chat-observer/suggestion
+wiring was paused along with its Discord views. The DB and command
+layers above are unaffected and still exercised directly.
 """
 
 from __future__ import annotations
 
-import logging
 import time
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -394,101 +390,3 @@ class TestGetChatAnalyzerMetricsCommand:
         )
         assert result_all["total"] == 1
 
-
-# ---------------------------------------------------------------------------
-# Bot layer — confidence-gate suppression now writes a DB row.
-# ---------------------------------------------------------------------------
-
-
-def _make_bot_stub_with_db(db, *, min_confidence: float):
-    """Like _make_bot_stub in test_discord_bot_observation but uses a real DB
-    so the suppression insert actually lands."""
-    channel = MagicMock()
-    channel.send = AsyncMock(return_value=None)
-
-    handler = MagicMock()
-    agent = SimpleNamespace(handler=handler)
-
-    orchestrator = SimpleNamespace(db=db)
-
-    chat_analyzer_cfg = SimpleNamespace(min_confidence=min_confidence)
-    config = SimpleNamespace(chat_analyzer=chat_analyzer_cfg)
-
-    stub = SimpleNamespace(
-        agent=agent,
-        orchestrator=orchestrator,
-        config=config,
-        get_channel=lambda _cid: channel,
-    )
-    return stub, channel
-
-
-class TestConfidenceGateRecordsSuppression:
-    """Phase 8: when the confidence gate fires it must insert a row with
-    ``status="suppressed"`` and ``suppressed_by="confidence"`` so the
-    metrics command can count it."""
-
-    async def test_low_confidence_writes_suppressed_row(self, db, caplog):
-        from src.discord.bot import AgentQueueBot
-
-        stub, channel = _make_bot_stub_with_db(db, min_confidence=0.6)
-
-        suggestion = {
-            "suggestion_type": "task",
-            "content": "Add a benchmark for the renderer",
-            "task_title": "Benchmark renderer",
-            "confidence": 0.3,
-            "intent_confidence": 0.6,
-            "novelty": 1.0,
-            "actionability": 0.5,
-        }
-
-        with caplog.at_level(logging.INFO, logger="src.discord.bot"):
-            await AgentQueueBot._post_observation_suggestion(
-                stub,
-                channel_id=12345,
-                project_id="proj-bot",
-                suggestion=suggestion,
-            )
-
-        # Discord post still skipped.
-        assert channel.send.await_count == 0
-        # DB row recorded.
-        stats = await db.get_analyzer_suggestion_stats(project_id="proj-bot")
-        assert stats["suppressed"] == 1
-        assert stats["suppression_count_by_gate"] == {"confidence": 1}
-        # Structured log preserved.
-        matched = [
-            rec for rec in caplog.records if getattr(rec, "gate", None) == "confidence"
-        ]
-        assert matched, "expected gate=confidence log to remain"
-
-    async def test_high_confidence_does_not_record_suppression(self, db):
-        from src.discord.bot import AgentQueueBot
-
-        stub, channel = _make_bot_stub_with_db(db, min_confidence=0.6)
-
-        suggestion = {
-            "suggestion_type": "task",
-            "content": "Refactor the particle pool allocator",
-            "task_title": "Refactor allocator",
-            "confidence": 0.85,
-            "intent_confidence": 0.95,
-            "novelty": 1.0,
-            "actionability": 0.9,
-        }
-
-        await AgentQueueBot._post_observation_suggestion(
-            stub,
-            channel_id=12345,
-            project_id="proj-bot",
-            suggestion=suggestion,
-        )
-
-        # Discord post happened.
-        assert channel.send.await_count == 1
-        # No suppression rows — only the regular pending row.
-        stats = await db.get_analyzer_suggestion_stats(project_id="proj-bot")
-        assert stats["suppressed"] == 0
-        assert stats["pending"] == 1
-        assert stats["suppression_count_by_gate"] == {}

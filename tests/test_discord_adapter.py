@@ -160,17 +160,32 @@ class TestFactoryCreatesDiscordAdapter:
         with pytest.raises(ValueError, match="Unknown messaging platform"):
             create_messaging_adapter(config, orch)
 
-    @patch("src.telegram.bot.TelegramBot")
-    def test_factory_telegram(self, mock_tg_bot_cls):
-        """Factory creates Telegram adapter when messaging_platform is 'telegram'."""
-        from src.telegram.adapter import TelegramMessagingAdapter
+    def test_factory_telegram_raises_clear_error(self):
+        """Factory rejects 'telegram' with a dedicated, actionable error.
 
+        Telegram support was removed in the M0 messaging strip
+        (docs/specs/design/messaging-rework.md §4.6) — a user with a
+        stale config must get a hard error with a clear pointer, not a
+        silent fallback to another platform.
+        """
         config = MagicMock()
         config.messaging_platform = "telegram"
         orch = MagicMock()
 
+        with pytest.raises(ValueError, match="[Tt]elegram"):
+            create_messaging_adapter(config, orch)
+
+    def test_factory_none_platform(self):
+        """Factory creates NullMessagingAdapter for 'none'."""
+        from src.messaging.null_adapter import NullMessagingAdapter
+
+        config = MagicMock()
+        config.messaging_platform = "none"
+        orch = MagicMock()
+
         result = create_messaging_adapter(config, orch)
-        assert isinstance(result, TelegramMessagingAdapter)
+        assert isinstance(result, NullMessagingAdapter)
+        assert result.platform_name == "none"
 
 
 # ---------------------------------------------------------------------------

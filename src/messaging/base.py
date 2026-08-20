@@ -1,7 +1,8 @@
 """Abstract messaging platform adapter.
 
-``MessagingAdapter`` defines the contract that both Discord and Telegram
-transports must implement.  The orchestrator and ``main.py`` interact only
+``MessagingAdapter`` defines the contract that messaging transports must
+implement (Discord today; ``NullMessagingAdapter`` for
+``messaging_platform: "none"``).  The orchestrator and ``main.py`` interact only
 through this ABC — never importing platform-specific types directly.
 
 The adapter handles lifecycle management (start/stop/readiness) and provides
@@ -30,8 +31,8 @@ if TYPE_CHECKING:
 class MessagingAdapter(ABC):
     """Abstract messaging platform adapter.
 
-    Both ``DiscordMessagingAdapter`` and ``TelegramMessagingAdapter`` implement
-    this interface.  The orchestrator and ``main.py`` create an adapter via the
+    ``DiscordMessagingAdapter`` and ``NullMessagingAdapter`` implement this
+    interface.  The orchestrator and ``main.py`` create an adapter via the
     ``create_messaging_adapter()`` factory and interact only through this ABC.
     """
 
@@ -128,4 +129,4 @@ class MessagingAdapter(ABC):
     @property
     @abstractmethod
     def platform_name(self) -> str:
-        """Short lowercase platform identifier (e.g. ``"discord"``, ``"telegram"``)."""
+        """Short lowercase platform identifier (e.g. ``"discord"``, ``"none"``)."""

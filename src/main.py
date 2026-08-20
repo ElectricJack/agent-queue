@@ -7,7 +7,7 @@ Startup sequence:
      - Applies environment-specific overlay (config.{env}.yaml) if present
   3. Initialize the Orchestrator (database, event bus, scheduler)
   4. Start the health check HTTP server (if enabled)
-  5. Start the messaging adapter (Discord, Telegram, etc.) via factory
+  5. Start the messaging adapter (Discord, or none) via factory
   6. Register orchestrator callbacks through the adapter (platform-agnostic)
   7. Run the scheduler loop (~5s cycle: promote tasks, assign agents, execute)
   8. Wait for SIGTERM/SIGINT to trigger graceful shutdown
@@ -189,8 +189,14 @@ async def run(config_path: str, profile: str | None = None) -> bool:
                 adapter.platform_name,
             )
 
-        orch.set_command_handler(adapter.get_command_handler())
-        orch.set_supervisor(adapter.get_supervisor())
+        # Decoupled from the messaging adapter (messaging-rework M0): not
+        # every adapter owns a CommandHandler/Supervisor of its own — e.g.
+        # NullMessagingAdapter (messaging_platform: "none") returns None
+        # from both getters so the daemon boots with no adapter at all.
+        # Fall back to the daemon-wide shared_supervisor constructed above
+        # so CLI/MCP/HTTP-API callers still get a working command handler.
+        orch.set_command_handler(adapter.get_command_handler() or shared_supervisor.handler)
+        orch.set_supervisor(adapter.get_supervisor() or shared_supervisor)
 
         while not shutdown_event.is_set():
             await orch.run_one_cycle()

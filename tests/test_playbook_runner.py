@@ -8082,7 +8082,7 @@ class TestPauseTimeoutSpec:
         )
         payload = notify_calls[0][0][1]
         # project_id must match the trigger event so the notification handler
-        # routes the timeout to the same Discord/Telegram channel.
+        # routes the timeout to the same Discord channel.
         assert payload["project_id"] == "my-project"
         assert payload["run_id"] == "r1"
         assert payload["node_id"] == "review"

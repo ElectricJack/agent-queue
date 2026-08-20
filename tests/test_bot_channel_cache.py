@@ -115,16 +115,7 @@ class TestClearProjectChannels:
             def __init__(self):
                 self._project_channels = {}
                 self._channel_to_project = {}
-                self._notes_threads = {}
-                self._channel_summaries = {}
                 self._channel_locks = {}
-                self._channel_buffers = {}
-                self._buffer_last_access = {}
-                self._summarization_tasks = {}
-                self._notes_threads_path = "/dev/null"
-
-            def _save_notes_threads_sync(self):
-                pass  # No-op for tests
 
         return BotCaches()
 
@@ -141,36 +132,17 @@ class TestClearProjectChannels:
         assert "proj-1" not in caches._project_channels
         assert 100 not in caches._channel_to_project
 
-    def test_clears_notes_threads(self):
+    def test_clears_channel_locks(self):
         from src.discord.bot import AgentQueueBot
 
         caches = self._make_bot_caches()
         ch = FakeChannel(id=100)
         caches._project_channels["proj-1"] = ch
         caches._channel_to_project[100] = "proj-1"
-        caches._notes_threads[500] = "proj-1"
-        caches._notes_threads[600] = "proj-1"
-        caches._notes_threads[700] = "other-project"
-
-        AgentQueueBot.clear_project_channels(caches, "proj-1")
-
-        assert 500 not in caches._notes_threads
-        assert 600 not in caches._notes_threads
-        assert caches._notes_threads[700] == "other-project"
-
-    def test_clears_channel_locks_and_summaries(self):
-        from src.discord.bot import AgentQueueBot
-
-        caches = self._make_bot_caches()
-        ch = FakeChannel(id=100)
-        caches._project_channels["proj-1"] = ch
-        caches._channel_to_project[100] = "proj-1"
-        caches._channel_summaries[100] = (999, "summary text")
         caches._channel_locks[100] = "mock-lock"
 
         AgentQueueBot.clear_project_channels(caches, "proj-1")
 
-        assert 100 not in caches._channel_summaries
         assert 100 not in caches._channel_locks
 
     def test_safe_to_clear_nonexistent_project(self):

@@ -616,7 +616,7 @@ class Orchestrator(
     # Legacy callback setters (deprecated)
     # ------------------------------------------------------------------
     # These are no-ops kept for backward compatibility with transports
-    # (e.g. Telegram) that still call them during startup.  All
+    # that still call them during startup.  All
     # notification delivery now goes through the EventBus via
     # _emit_notify().  Remove once all transports migrate to event
     # bus handlers.

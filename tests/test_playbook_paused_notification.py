@@ -5,7 +5,6 @@ Covers:
 - Event emission: _emit_paused_event fires both raw + notify events
 - Discord notification handler: receives and routes the notify event
 - Discord formatters: plain-text and embed output
-- Telegram formatter: MarkdownV2 output
 - End-to-end: playbook runner pause → EventBus → Discord handler
 """
 
@@ -502,83 +501,6 @@ class TestPlaybookResumeView:
 
         modal = PlaybookResumeModal("run-123", handler=MagicMock())
         assert modal.run_id == "run-123"
-
-
-# ---------------------------------------------------------------------------
-# Telegram formatter tests
-# ---------------------------------------------------------------------------
-
-
-class TestTelegramPlaybookPausedFormatter:
-    """Tests for Telegram MarkdownV2 playbook-paused notification."""
-
-    def test_format_playbook_paused_basic(self):
-        from src.telegram.notifications import format_playbook_paused
-
-        result = format_playbook_paused(
-            playbook_id="my-pb",
-            run_id="run-1",
-            node_id="review",
-        )
-        assert "my-pb" in result
-        assert "run-1" in result
-        assert "review" in result
-        # Should mention "Human Review" or "Awaiting"
-        assert "Human Review" in result or "Awaiting" in result
-
-    def test_format_with_context(self):
-        from src.telegram.notifications import format_playbook_paused
-
-        result = format_playbook_paused(
-            playbook_id="pb",
-            run_id="r1",
-            node_id="wait",
-            last_response="Found 3 critical issues in the codebase.",
-            running_seconds=60.0,
-            tokens_used=1000,
-        )
-        assert "3 critical issues" in result
-        assert "1,000" in result or "1000" in result
-        assert "1m" in result
-
-    def test_format_without_context(self):
-        from src.telegram.notifications import format_playbook_paused
-
-        result = format_playbook_paused(
-            playbook_id="pb",
-            run_id="r1",
-            node_id="wait",
-            last_response="",
-        )
-        # Should indicate no context available
-        assert "No context" in result or "no context" in result
-
-    def test_format_long_context_truncation(self):
-        from src.telegram.notifications import (
-            TELEGRAM_MESSAGE_LIMIT,
-            format_playbook_paused,
-        )
-
-        long_context = "B" * 5000
-        result = format_playbook_paused(
-            playbook_id="pb",
-            run_id="r1",
-            node_id="wait",
-            last_response=long_context,
-        )
-        # Should be within Telegram message limit
-        assert len(result) <= TELEGRAM_MESSAGE_LIMIT
-
-    def test_format_resume_command_hint(self):
-        from src.telegram.notifications import format_playbook_paused
-
-        result = format_playbook_paused(
-            playbook_id="pb",
-            run_id="run-abc",
-            node_id="wait",
-        )
-        assert "resume" in result.lower()
-        assert "run-abc" in result
 
 
 # ---------------------------------------------------------------------------

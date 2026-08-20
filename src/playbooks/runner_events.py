@@ -73,7 +73,7 @@ class EventsMixin:
         Fires once when the runner begins executing the entry node. The raw
         ``playbook.run.started`` event is for EventBus composition hooks; the
         typed ``notify.*`` variant drives dashboard WS updates and the
-        Discord/Telegram notification transports.
+        Discord notification transports.
         """
         trigger_event_type = self.event.get("_event_type", self.event.get("type", ""))
         payload: dict[str, Any] = {
@@ -85,7 +85,7 @@ class EventsMixin:
         }
         await self._emit_bus_event("playbook.run.started", payload)
 
-        # Typed notification for Discord/Telegram transports + dashboard WS.
+        # Typed notification for Discord transports + dashboard WS.
         from src.notifications.events import PlaybookRunStartedEvent
 
         scope = self.graph.get("scope", "system") if hasattr(self, "graph") else "system"
@@ -129,7 +129,7 @@ class EventsMixin:
 
     async def _emit_completed_notification(self, raw_payload: dict[str, Any]) -> None:
         """Emit ``notify.playbook_run_completed`` for dashboard WS subscribers and
-        Discord/Telegram notification transports."""
+        Discord notification transports."""
         from src.notifications.events import PlaybookRunCompletedEvent
 
         event = PlaybookRunCompletedEvent(
@@ -176,7 +176,7 @@ class EventsMixin:
 
     async def _emit_failed_notification(self, raw_payload: dict[str, Any]) -> None:
         """Emit ``notify.playbook_run_failed`` for dashboard WS subscribers and
-        Discord/Telegram notification transports."""
+        Discord notification transports."""
         from src.notifications.events import PlaybookRunFailedEvent
 
         event = PlaybookRunFailedEvent(
@@ -206,7 +206,7 @@ class EventsMixin:
         informative without requiring a DB lookup.
 
         Also emits a ``notify.playbook_run_paused`` event (roadmap 5.4.2)
-        so that notification transports (Discord, Telegram) can deliver a
+        so that notification transports (e.g. Discord) can deliver a
         human-readable context summary to the reviewer.
         """
         payload: dict[str, Any] = {
@@ -231,7 +231,7 @@ class EventsMixin:
             payload["last_response"] = last_response
         await self._emit_bus_event("playbook.run.paused", payload)
 
-        # Emit typed notification event for Discord/Telegram (roadmap 5.4.2)
+        # Emit typed notification event for Discord (roadmap 5.4.2)
         await self._emit_paused_notification(payload, last_response)
 
     async def _emit_paused_notification(
@@ -243,7 +243,7 @@ class EventsMixin:
 
         Converts the raw ``playbook.run.paused`` payload into a typed
         ``PlaybookRunPausedEvent`` and emits it on the EventBus so that
-        Discord, Telegram, and other transports can render a rich
+        Discord and other transports can render a rich
         human-review notification with context summary (roadmap 5.4.2).
         """
         from src.notifications.events import PlaybookRunPausedEvent
@@ -287,7 +287,7 @@ class EventsMixin:
         }
         await self._emit_bus_event("playbook.run.resumed", payload)
 
-        # Also emit a typed notification event for Discord/Telegram transports
+        # Also emit a typed notification event for Discord transports
         await self._emit_resumed_notification(payload, human_input)
 
     async def _emit_resumed_notification(
@@ -299,7 +299,7 @@ class EventsMixin:
 
         Converts the raw ``playbook.run.resumed`` payload into a typed
         ``PlaybookRunResumedEvent`` and emits it on the EventBus so that
-        Discord, Telegram, and other transports can render a rich
+        Discord and other transports can render a rich
         notification confirming the run was resumed (roadmap 5.4.3).
         """
         from src.notifications.events import PlaybookRunResumedEvent
@@ -341,7 +341,7 @@ class EventsMixin:
         payload["tokens_used"] = self.tokens_used
         await self._emit_bus_event("playbook.run.timed_out", payload)
 
-        # Emit typed notification event so Discord/Telegram route the timeout
+        # Emit typed notification event so Discord routes the timeout
         # to the same channel that received the original pause notification
         # (roadmap 5.4.7 test case (f)).
         await self._emit_timed_out_notification(payload)

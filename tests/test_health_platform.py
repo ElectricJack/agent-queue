@@ -6,12 +6,11 @@ Covers:
 - Health check ``messaging.ok`` reflects adapter ``is_connected()``
 - Ready endpoint checks ``messaging`` (not ``discord``)
 - ``_health_checks`` uses adapter, not orchestrator._notify
-- Discord and Telegram adapters expose ``is_connected`` and ``platform_name``
+- Discord and Null adapters expose ``is_connected`` and ``platform_name``
 """
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -123,16 +122,16 @@ class TestHealthChecksMessaging:
         assert checks["messaging"]["ok"] is True
 
     @pytest.mark.asyncio
-    async def test_messaging_reports_telegram_platform(self):
-        """When using Telegram adapter, platform is 'telegram'."""
+    async def test_messaging_reports_none_platform(self):
+        """When using the null adapter, platform is 'none'."""
         from src.main import _health_checks
 
         orch = _make_orchestrator()
-        adapter = FakeAdapter(platform="telegram", connected=True)
+        adapter = FakeAdapter(platform="none", connected=True)
 
         checks = await _health_checks(orch, adapter)
 
-        assert checks["messaging"]["platform"] == "telegram"
+        assert checks["messaging"]["platform"] == "none"
         assert checks["messaging"]["connected"] is True
         assert checks["messaging"]["ok"] is True
 
@@ -142,13 +141,13 @@ class TestHealthChecksMessaging:
         from src.main import _health_checks
 
         orch = _make_orchestrator()
-        adapter = FakeAdapter(platform="telegram", connected=False)
+        adapter = FakeAdapter(platform="none", connected=False)
 
         checks = await _health_checks(orch, adapter)
 
         assert checks["messaging"]["ok"] is False
         assert checks["messaging"]["connected"] is False
-        assert checks["messaging"]["platform"] == "telegram"
+        assert checks["messaging"]["platform"] == "none"
 
     @pytest.mark.asyncio
     async def test_other_checks_still_present(self):
@@ -183,7 +182,7 @@ class TestReadyEndpointMessaging:
 
         health_data = {
             "database": {"ok": True},
-            "messaging": {"ok": True, "platform": "telegram", "connected": True},
+            "messaging": {"ok": True, "platform": "none", "connected": True},
             "orchestrator": {"ok": True},
         }
 
@@ -206,7 +205,7 @@ class TestReadyEndpointMessaging:
         assert body["ready"] is True
         assert "messaging" in body["checks"]
         assert "discord" not in body["checks"]
-        assert body["checks"]["messaging"]["platform"] == "telegram"
+        assert body["checks"]["messaging"]["platform"] == "none"
 
     @pytest.mark.asyncio
     async def test_ready_fails_when_messaging_disconnected(self):
@@ -287,33 +286,24 @@ class TestAdapterHealthMethods:
             adapter._bot.is_closed.return_value = False
             assert adapter.is_connected() is False
 
-    def test_telegram_adapter_platform_name(self):
-        """TelegramMessagingAdapter.platform_name is 'telegram'."""
-        with patch("src.telegram.bot.TelegramBot", autospec=False):
-            from src.telegram.adapter import TelegramMessagingAdapter
+    def test_null_adapter_platform_name(self):
+        """NullMessagingAdapter.platform_name is 'none'."""
+        from src.messaging.null_adapter import NullMessagingAdapter
 
-            adapter = TelegramMessagingAdapter(MagicMock(), MagicMock())
-            assert adapter.platform_name == "telegram"
+        adapter = NullMessagingAdapter(MagicMock(), MagicMock())
+        assert adapter.platform_name == "none"
 
-    def test_telegram_adapter_is_connected_when_ready(self):
-        """TelegramMessagingAdapter.is_connected() returns True when ready event set."""
-        with patch("src.telegram.bot.TelegramBot", autospec=False):
-            from src.telegram.adapter import TelegramMessagingAdapter
+    def test_null_adapter_always_connected(self):
+        """NullMessagingAdapter.is_connected() is always True — nothing to lose."""
+        from src.messaging.null_adapter import NullMessagingAdapter
 
-            adapter = TelegramMessagingAdapter(MagicMock(), MagicMock())
-            ready_event = asyncio.Event()
-            ready_event.set()
-            adapter._bot = MagicMock()
-            adapter._bot._ready_event = ready_event
-            assert adapter.is_connected() is True
+        adapter = NullMessagingAdapter(MagicMock(), MagicMock())
+        assert adapter.is_connected() is True
 
-    def test_telegram_adapter_not_connected_when_not_ready(self):
-        """TelegramMessagingAdapter.is_connected() returns False when event not set."""
-        with patch("src.telegram.bot.TelegramBot", autospec=False):
-            from src.telegram.adapter import TelegramMessagingAdapter
+    def test_null_adapter_owns_no_command_handler_or_supervisor(self):
+        """NullMessagingAdapter returns None so main.py falls back to its own instances."""
+        from src.messaging.null_adapter import NullMessagingAdapter
 
-            adapter = TelegramMessagingAdapter(MagicMock(), MagicMock())
-            ready_event = asyncio.Event()
-            adapter._bot = MagicMock()
-            adapter._bot._ready_event = ready_event
-            assert adapter.is_connected() is False
+        adapter = NullMessagingAdapter(MagicMock(), MagicMock())
+        assert adapter.get_command_handler() is None
+        assert adapter.get_supervisor() is None

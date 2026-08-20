@@ -177,7 +177,7 @@ class Supervisor(Runtime):
     Owns the tool definitions, system prompt, LLM client, and multi-turn
     tool-use loop.  Two roles in one class:
 
-    1. **Chat brain.** Discord/Telegram/CLI/playbook-runner call ``chat()``
+    1. **Chat brain.** Discord/CLI/playbook-runner call ``chat()``
        (and friends like ``summarize()``, ``break_plan_into_tasks()``).
        Multi-turn conversation history flows through the caller.
 
