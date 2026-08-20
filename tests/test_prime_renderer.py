@@ -1,0 +1,401 @@
+"""Golden tests for the prime renderer (``src/prime/``).
+
+Covers docs/specs/implementation/aq-surface.md §10.1: "renderer golden tests
+(fixture vault + task -> expected markdown); override template;
+memory-paused slots empty". See also design §5.2 (canonical section order)
+and §5.3 (``.aq/PRIME.md`` override).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+
+import pytest
+
+from src.config import AppConfig
+from src.models import AgentProfile, Project, Task
+from src.prime import PrimeRenderer
+from src.prime.models import PrimeDocument, PrimeSection
+
+pytestmark = pytest.mark.asyncio
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def db():
+    from src.database.adapters.sqlite import SQLiteDatabaseAdapter
+
+    adapter = SQLiteDatabaseAdapter(":memory:")
+    await adapter.initialize()
+    yield adapter
+    await adapter.close()
+
+
+@pytest.fixture
+def config(tmp_path):
+    return AppConfig(data_dir=str(tmp_path / "data"))
+
+
+@pytest.fixture
+async def task(db):
+    await db.create_project(Project(id="proj-1", name="Test Project"))
+    await db.create_profile(AgentProfile(id="coder", name="Coder"))
+    t = Task(
+        id="task-1",
+        project_id="proj-1",
+        title="Fix the bug",
+        description="Do the thing, carefully.",
+        profile_id="coder",
+    )
+    await db.create_task(t)
+    return t
+
+
+def _write(path, content: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+# ---------------------------------------------------------------------------
+# Golden: full default assembly
+# ---------------------------------------------------------------------------
+
+
+class TestGoldenAssembly:
+    async def test_role_and_project_role_sections_from_vault_files(self, db, config, task):
+        _write(
+            os.path.join(config.vault_agent_types, "coder", "profile.md"),
+            "## Role\nYou are a careful coder.\n\n## Rules\nAlways test.\n",
+        )
+        _write(
+            os.path.join(
+                config.vault_projects, "proj-1", "agent-types", "coder", "profile.md"
+            ),
+            "## Role\nOn this project, prefer small PRs.\n",
+        )
+
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        by_key = {s.key: s for s in doc.sections}
+
+        assert by_key["role"].body == "You are a careful coder."
+        assert by_key["project_role"].body == "On this project, prefer small PRs."
+
+        markdown = doc.to_markdown()
+        assert "## Role" in markdown
+        assert "## Project Role Override" in markdown
+        assert "You are a careful coder." in markdown
+        assert "On this project, prefer small PRs." in markdown
+
+    async def test_missing_profile_files_render_empty_and_are_omitted(self, db, config, task):
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        by_key = {s.key: s for s in doc.sections}
+        assert by_key["role"].body == ""
+        assert by_key["project_role"].body == ""
+        assert "## Role" not in doc.to_markdown()
+        assert "## Project Role Override" not in doc.to_markdown()
+
+    async def test_task_section_carries_id_title_status_description(self, db, config, task):
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task"]
+        assert "task-1" in body
+        assert "Fix the bug" in body
+        assert "DEFINED" in body
+        assert "Do the thing, carefully." in body
+
+    async def test_section_order_is_canonical(self, db, config, task):
+        from src.prime.models import SECTION_KEYS
+
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        assert tuple(s.key for s in doc.sections) == SECTION_KEYS
+
+    async def test_unknown_task_raises_value_error(self, db, config):
+        with pytest.raises(ValueError, match="not found"):
+            await PrimeRenderer(db, config).render_for_task("nope")
+
+    async def test_missing_task_id_raises_value_error(self, db, config):
+        with pytest.raises(ValueError, match="required"):
+            await PrimeRenderer(db, config).render_for_task("")
+
+    async def test_tokens_est_is_chars_over_four(self, db, config, task):
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        assert doc.tokens_est() == len(doc.to_markdown()) // 4
+
+
+# ---------------------------------------------------------------------------
+# Task context: notes, attachments, spec_ref inlining, handoff exclusion
+# ---------------------------------------------------------------------------
+
+
+class TestTaskContextSection:
+    async def test_note_context_row_is_inlined(self, db, config, task):
+        await db.add_task_context("task-1", type="note", label="note", content="hello there")
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task_context"]
+        assert "hello there" in body
+
+    async def test_handoff_rows_excluded_from_task_context_section(self, db, config, task):
+        await db.add_task_context(
+            "task-1", type="handoff", label="handoff", content=json.dumps({"subject": "x"})
+        )
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task_context"]
+        assert body == ""
+
+    async def test_attachments_listed(self, db, config):
+        await db.create_project(Project(id="proj-1", name="P"))
+        t = Task(
+            id="task-2",
+            project_id="proj-1",
+            title="T",
+            description="",
+            attachments=["/tmp/a.png", "/tmp/b.png"],
+        )
+        await db.create_task(t)
+        doc = await PrimeRenderer(db, config).render_for_task("task-2")
+        body = {s.key: s.body for s in doc.sections}["task_context"]
+        assert "/tmp/a.png" in body
+        assert "/tmp/b.png" in body
+
+    async def test_spec_ref_resolves_and_inlines_section(self, db, config, task):
+        spec_rel = os.path.join("projects", "proj-1", "specs", "widget.md")
+        _write(
+            os.path.join(config.vault_root, spec_rel),
+            "## 1. Overview\nIntro text.\n\n## 3. Schema\nThe schema body goes here.\n",
+        )
+        await db.add_task_context(
+            "task-1",
+            type="spec_ref",
+            label="spec",
+            content=json.dumps({"path": spec_rel, "section": "3. Schema"}),
+        )
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task_context"]
+        assert "The schema body goes here." in body
+        assert "Intro text." not in body  # only the referenced heading is inlined
+
+    async def test_spec_ref_missing_file_degrades_gracefully(self, db, config, task):
+        await db.add_task_context(
+            "task-1",
+            type="spec_ref",
+            label="spec",
+            content=json.dumps({"path": "projects/proj-1/specs/nope.md", "section": "1. X"}),
+        )
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task_context"]
+        assert "unresolved" in body
+        assert "file not found" in body
+
+    async def test_spec_ref_missing_heading_degrades_gracefully(self, db, config, task):
+        spec_rel = os.path.join("projects", "proj-1", "specs", "widget.md")
+        _write(os.path.join(config.vault_root, spec_rel), "## 1. Overview\nIntro.\n")
+        await db.add_task_context(
+            "task-1",
+            type="spec_ref",
+            label="spec",
+            content=json.dumps({"path": spec_rel, "section": "9. Nonexistent"}),
+        )
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task_context"]
+        assert "unresolved" in body
+        assert "heading not found" in body
+
+
+# ---------------------------------------------------------------------------
+# Workspaces section
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspacesSection:
+    async def test_work_dir_from_task_set_metadata(self, db, config, task):
+        await db.set_task_meta("task-1", "work_dir", "/work/task-1")
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["workspaces"]
+        assert "/work/task-1" in body
+
+    async def test_explicit_work_dir_overrides_metadata(self, db, config, task):
+        await db.set_task_meta("task-1", "work_dir", "/from/meta")
+        doc = await PrimeRenderer(db, config).render_for_task("task-1", work_dir="/from/arg")
+        body = {s.key: s.body for s in doc.sections}["workspaces"]
+        assert "/from/arg" in body
+        assert "/from/meta" not in body
+
+    async def test_branch_and_pr_url_included(self, db, config):
+        await db.create_project(Project(id="proj-1", name="P"))
+        t = Task(
+            id="task-3",
+            project_id="proj-1",
+            title="T",
+            description="",
+            branch_name="feat/x",
+            pr_url="https://example/pr/1",
+        )
+        await db.create_task(t)
+        doc = await PrimeRenderer(db, config).render_for_task("task-3")
+        body = {s.key: s.body for s in doc.sections}["workspaces"]
+        assert "feat/x" in body
+        assert "https://example/pr/1" in body
+
+
+# ---------------------------------------------------------------------------
+# Messages + handoff section
+# ---------------------------------------------------------------------------
+
+
+class TestMessagesSection:
+    async def test_no_messages_table_no_handoff_renders_empty(self, db, config, task):
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["messages"]
+        assert body == ""
+
+    async def test_latest_handoff_note_is_rendered(self, db, config, task):
+        await db.add_task_context(
+            "task-1",
+            type="handoff",
+            label="handoff",
+            content=json.dumps({"subject": "first", "detail": "old"}),
+        )
+        await db.add_task_context(
+            "task-1",
+            type="handoff",
+            label="handoff",
+            content=json.dumps({"subject": "second", "detail": "latest detail"}),
+        )
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["messages"]
+        assert "second" in body
+        assert "latest detail" in body
+
+
+# ---------------------------------------------------------------------------
+# Memory-paused slots (design §5.2 #7-8, feature-pauses.md)
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryPausedSlots:
+    async def test_l1_and_l2_render_empty_while_memory_paused(self, db, config, task):
+        assert config.memory.enabled is False  # sanity: pause is the default
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        by_key = {s.key: s.body for s in doc.sections}
+        assert by_key["l1_facts"] == ""
+        assert by_key["l2_context"] == ""
+        assert "## Facts" not in doc.to_markdown()
+        assert "## Topic Context" not in doc.to_markdown()
+
+    async def test_l1_and_l2_slots_still_present_as_section_vars(self, db, config, task):
+        # The slots exist as template variables even when empty (design §5.2)
+        # so a future memory comeback is a renderer change, not a protocol one.
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        variables = doc.section_vars()
+        assert "l1_facts" in variables
+        assert "l2_context" in variables
+
+
+# ---------------------------------------------------------------------------
+# Static templates: tool guidance + completion protocol
+# ---------------------------------------------------------------------------
+
+
+class TestStaticSections:
+    async def test_tool_guidance_mentions_cli_and_nine_tools(self, db, config, task):
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["tool_guidance"]
+        assert "aq " in body
+        for name in ("task_show", "task_set", "memory_search"):
+            assert name in body
+
+    async def test_completion_protocol_embeds_task_id(self, db, config, task):
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["completion_protocol"]
+        assert "aq task close task-1" in body
+        assert "aq session drain-ack" in body
+
+
+# ---------------------------------------------------------------------------
+# .aq/PRIME.md override (design §5.3)
+# ---------------------------------------------------------------------------
+
+
+class TestOverride:
+    async def test_override_replaces_default_body_entirely(self, db, config, task, tmp_path):
+        work_dir = tmp_path / "work"
+        _write(
+            str(work_dir / ".aq" / "PRIME.md"),
+            "CUSTOM START\n\n{{task}}\n\n{{tool_guidance}}\n\nCUSTOM END",
+        )
+        doc = await PrimeRenderer(db, config).render_for_task("task-1", work_dir=str(work_dir))
+        assert doc.source == "override:.aq/PRIME.md"
+        markdown = doc.to_markdown()
+        assert markdown.startswith("CUSTOM START")
+        assert markdown.rstrip().endswith("CUSTOM END")
+        assert "task-1" in markdown  # {{task}} substituted
+        assert "## Role" not in markdown  # default assembly is fully replaced
+
+    async def test_no_override_file_uses_default_source(self, db, config, task, tmp_path):
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        doc = await PrimeRenderer(db, config).render_for_task("task-1", work_dir=str(work_dir))
+        assert doc.source == "default"
+
+    async def test_override_unknown_variable_is_blank_not_an_error(self, db, config, task, tmp_path):
+        work_dir = tmp_path / "work"
+        _write(str(work_dir / ".aq" / "PRIME.md"), "before[{{nonexistent_var}}]after")
+        doc = await PrimeRenderer(db, config).render_for_task("task-1", work_dir=str(work_dir))
+        assert doc.to_markdown() == "before[]after"
+
+    async def test_override_extra_vars_task_id_work_dir_branch(self, db, config, tmp_path):
+        await db.create_project(Project(id="proj-1", name="P"))
+        t = Task(
+            id="task-4", project_id="proj-1", title="T", description="", branch_name="feat/y"
+        )
+        await db.create_task(t)
+        work_dir = tmp_path / "work"
+        _write(
+            str(work_dir / ".aq" / "PRIME.md"),
+            "{{task.id}} | {{work_dir}} | {{branch}}",
+        )
+        doc = await PrimeRenderer(db, config).render_for_task("task-4", work_dir=str(work_dir))
+        assert doc.to_markdown() == f"task-4 | {work_dir} | feat/y"
+
+
+# ---------------------------------------------------------------------------
+# PrimeDocument.to_markdown / section_vars — pure model tests
+# ---------------------------------------------------------------------------
+
+
+class TestPrimeDocumentModel:
+    async def test_empty_sections_produce_empty_markdown(self):
+        doc = PrimeDocument(
+            task_id="t1",
+            session_id=None,
+            sections=(PrimeSection(key="role", title="Role", body=""),),
+            source="default",
+            rendered_at=__import__("datetime").datetime.now(),
+        )
+        assert doc.to_markdown() == ""
+        assert doc.tokens_est() == 0
+
+    async def test_section_vars_includes_all_keys_plus_extras(self):
+        doc = PrimeDocument(
+            task_id="t1",
+            session_id=None,
+            sections=(
+                PrimeSection(key="role", title="Role", body="R"),
+                PrimeSection(key="task", title="Task", body="T"),
+            ),
+            source="default",
+            rendered_at=__import__("datetime").datetime.now(),
+            work_dir="/wd",
+            branch="main",
+        )
+        variables = doc.section_vars()
+        assert variables["role"] == "R"
+        assert variables["task"] == "T"
+        assert variables["task.id"] == "t1"
+        assert variables["work_dir"] == "/wd"
+        assert variables["branch"] == "main"

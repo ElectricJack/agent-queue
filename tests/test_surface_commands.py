@@ -7,10 +7,13 @@ See docs/specs/implementation/aq-surface.md §3, §9 (Phase S0), §10 (Test Plan
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
 
+from src.config import AppConfig
+from src.event_bus import EventBus
 from src.models import Project, Task
 
 pytestmark = pytest.mark.asyncio
@@ -38,6 +41,20 @@ async def handler(db):
     config = MagicMock()
     orchestrator = MagicMock()
     orchestrator.db = db
+    return CommandHandler(orchestrator=orchestrator, config=config)
+
+
+@pytest.fixture
+async def prime_handler(db, tmp_path):
+    """A CommandHandler wired with a real AppConfig (prime needs real vault
+    paths) and a real EventBus (task_handoff emits session.restart_requested).
+    """
+    from src.commands.handler import CommandHandler
+
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    orchestrator = MagicMock()
+    orchestrator.db = db
+    orchestrator.bus = EventBus()
     return CommandHandler(orchestrator=orchestrator, config=config)
 
 
@@ -210,3 +227,104 @@ class TestTaskLabelsDbLayer:
         await db.add_task_label(task.id, "zeta")
         await db.add_task_label(task.id, "alpha")
         assert await db.get_task_labels(task.id) == ["alpha", "zeta"]
+
+
+# ---------------------------------------------------------------------------
+# prime — Phase S1 (docs/specs/implementation/aq-surface.md §3)
+# ---------------------------------------------------------------------------
+
+
+class TestPrime:
+    async def test_missing_task_id_is_an_error(self, prime_handler):
+        result = await prime_handler.execute("prime", {})
+        assert "error" in result
+        assert "task_id" in result["error"]
+
+    async def test_unknown_task_is_an_error(self, prime_handler):
+        result = await prime_handler.execute("prime", {"task_id": "nope"})
+        assert "error" in result
+
+    async def test_success_shape(self, prime_handler, db, task):
+        result = await prime_handler.execute("prime", {"task_id": task.id})
+        assert result["success"] is True
+        assert isinstance(result["body"], str)
+        assert isinstance(result["sections"], list)
+        assert {s["key"] for s in result["sections"]} >= {"task", "tool_guidance"}
+        assert result["source"] == "default"
+        assert isinstance(result["tokens_est"], int)
+        assert task.id in result["body"]
+
+    async def test_session_id_and_work_dir_are_forwarded(self, prime_handler, db, task):
+        result = await prime_handler.execute(
+            "prime", {"task_id": task.id, "session_id": "sess-1", "work_dir": "/work/x"}
+        )
+        assert result["success"] is True
+        workspaces = next(s for s in result["sections"] if s["key"] == "workspaces")
+        assert "/work/x" in workspaces["body"]
+
+    async def test_not_gated_by_memory_pause(self, prime_handler, db, task):
+        # `prime` itself is not a memory command — the paused gate must not
+        # touch it even though its L1/L2 slots render empty.
+        result = await prime_handler.execute("prime", {"task_id": task.id})
+        assert "error" not in result or result.get("success") is True
+
+
+# ---------------------------------------------------------------------------
+# task_handoff — Phase S1 (design §6.1)
+# ---------------------------------------------------------------------------
+
+
+class TestTaskHandoff:
+    async def test_missing_task_id_is_an_error(self, prime_handler):
+        result = await prime_handler.execute("task_handoff", {})
+        assert "error" in result
+
+    async def test_unknown_task_is_an_error(self, prime_handler):
+        result = await prime_handler.execute("task_handoff", {"task_id": "nope"})
+        assert "error" in result
+
+    async def test_writes_handoff_task_context_row(self, prime_handler, db, task):
+        result = await prime_handler.execute(
+            "task_handoff",
+            {"task_id": task.id, "subject": "partial fix", "detail": "stopped early"},
+        )
+        assert result["success"] is True
+        assert result["handoff_id"]
+
+        contexts = await db.get_task_contexts(task.id)
+        handoff_rows = [c for c in contexts if c["type"] == "handoff"]
+        assert len(handoff_rows) == 1
+        payload = json.loads(handoff_rows[0]["content"])
+        assert payload["subject"] == "partial fix"
+        assert payload["detail"] == "stopped early"
+
+    async def test_non_auto_requests_restart_and_emits_event(self, prime_handler, db, task):
+        received = []
+        prime_handler.orchestrator.bus.subscribe(
+            "session.restart_requested", lambda data: received.append(data)
+        )
+
+        result = await prime_handler.execute("task_handoff", {"task_id": task.id})
+        assert result["restart_requested"] is True
+        assert len(received) == 1
+        assert received[0]["task_id"] == task.id
+        assert received[0]["reason"] == "handoff"
+
+    async def test_auto_never_requests_restart_or_emits_event(self, prime_handler, db, task):
+        received = []
+        prime_handler.orchestrator.bus.subscribe(
+            "session.restart_requested", lambda data: received.append(data)
+        )
+
+        result = await prime_handler.execute("task_handoff", {"task_id": task.id, "auto": True})
+        assert result["restart_requested"] is False
+        assert received == []
+
+    async def test_handoff_note_appears_in_next_prime_render(self, prime_handler, db, task):
+        await prime_handler.execute(
+            "task_handoff", {"task_id": task.id, "auto": True, "subject": "s", "detail": "d"}
+        )
+        result = await prime_handler.execute("prime", {"task_id": task.id})
+        messages = next(s for s in result["sections"] if s["key"] == "messages")
+        assert "s" in messages["body"]
+        assert "d" in messages["body"]

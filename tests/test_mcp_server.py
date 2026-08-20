@@ -522,6 +522,13 @@ class TestDriftDetection:
             "get_schema",
             "task_show",
             "task_set",
+            # aq-surface Phase S1: CLI/hook-only commands, not part of the
+            # nine-command task-scope MCP allowlist (design §8.2), so they
+            # are intentionally left to auto-discovery rather than given a
+            # rich schema here — see docs/specs/implementation/aq-surface.md
+            # §3, §9.
+            "prime",
+            "task_handoff",
         }
         tools = await mcp_server.list_tools()
         extra = {t.name for t in tools} - {d["name"] for d in _ALL_TOOL_DEFINITIONS}
@@ -585,6 +592,13 @@ class TestDriftDetection:
             "get_schema",
             "task_show",
             "task_set",
+            # aq-surface Phase S1: CLI/hook-only commands, not part of the
+            # nine-command task-scope MCP allowlist (design §8.2), so they
+            # are intentionally left to auto-discovery rather than given a
+            # rich schema here — see docs/specs/implementation/aq-surface.md
+            # §3, §9.
+            "prime",
+            "task_handoff",
         }
         all_commands = _discover_all_commands()
         explicit = {d["name"] for d in _ALL_TOOL_DEFINITIONS}

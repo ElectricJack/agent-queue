@@ -1,0 +1,103 @@
+"""``PrimeRenderer`` — pure assembly of the ten-section prime document.
+
+Reads profile markdown, task rows, ``task_context`` rows, attachments, and
+workspace state; produces an ordered :class:`~src.prime.models.PrimeDocument`.
+No LLM calls, no writes (design §5.1).
+
+Two consumers share this renderer (design §5.1):
+
+1. ``_cmd_prime`` (``src/commands/surface_commands.py``) — the CommandHandler
+   command backing ``aq prime`` and the task-scope MCP tool.
+2. Session-runtime's prompt-file writer — imports :class:`PrimeRenderer`
+   directly (same process, no HTTP hop) and writes ``doc.to_markdown()`` to
+   ``<work_dir>/.aq/prompt.md`` before the harness launches, then sets
+   ``AQ_STARTUP_PROMPT_DELIVERED=1`` in the session env so the SessionStart
+   hook (``aq prime --hook-json``) doesn't re-deliver the same body — see
+   ``hook_envelopes.suppressed()``. Session-runtime has not landed yet, so
+   that write path is not implemented here; this module only documents the
+   handshake it will use.
+
+``db`` is untyped (``Any``) rather than importing a concrete backend class:
+the concrete type is whatever ``src.database.create_database()`` returns
+(a ``DatabaseBackend`` Protocol instance), and this module only calls a
+handful of its methods (``get_task``, ``get_task_contexts``,
+``get_all_task_meta``, ``fetch_task_workspace_requirements`` if present).
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from . import sections as _sections
+from .models import PrimeDocument
+from .overrides import apply_override, load_override
+
+
+class PrimeRenderer:
+    """Assembles a :class:`PrimeDocument` for one task (design §2)."""
+
+    def __init__(self, db: Any, config: Any) -> None:
+        self.db = db
+        self.config = config
+
+    async def render_for_task(
+        self,
+        task_id: str,
+        *,
+        session_id: str | None = None,
+        work_dir: str | None = None,
+    ) -> PrimeDocument:
+        """Render the full prime document for *task_id*.
+
+        Raises ``ValueError`` for a missing/unknown task_id — callers
+        (``_cmd_prime``) translate that into ``{"error": "..."}``.
+        """
+        if not task_id:
+            raise ValueError("task_id is required")
+
+        task = await self.db.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task '{task_id}' not found")
+
+        effective_work_dir = work_dir or await _sections.resolve_work_dir(self.db, task)
+
+        section_tuple = (
+            await _sections.build_role_section(self.config, task.profile_id),
+            await _sections.build_project_role_section(
+                self.config, task.profile_id, task.project_id
+            ),
+            _sections.build_task_section(task),
+            await _sections.build_task_context_section(self.db, self.config, task),
+            await _sections.build_workspaces_section(self.db, task, effective_work_dir),
+            await _sections.build_messages_section(self.db, task_id),
+            _sections.build_l1_facts_section(self.config),
+            _sections.build_l2_context_section(self.config),
+            _sections.build_tool_guidance_section(),
+            _sections.build_completion_protocol_section(task_id),
+        )
+
+        doc = PrimeDocument(
+            task_id=task_id,
+            session_id=session_id,
+            sections=section_tuple,
+            source="default",
+            rendered_at=datetime.now(timezone.utc),
+            work_dir=effective_work_dir,
+            branch=task.branch_name,
+        )
+
+        override_template = load_override(effective_work_dir)
+        if override_template:
+            doc = PrimeDocument(
+                task_id=doc.task_id,
+                session_id=doc.session_id,
+                sections=doc.sections,
+                source="override:.aq/PRIME.md",
+                rendered_at=doc.rendered_at,
+                work_dir=doc.work_dir,
+                branch=doc.branch,
+                override_markdown=apply_override(override_template, doc),
+            )
+
+        return doc
