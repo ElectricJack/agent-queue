@@ -343,7 +343,14 @@ class MonitoringMixin:
         Runs every tick (5s) — the query is lightweight (indexed status
         column) and the actual timeout handling only fires for runs that
         have genuinely expired.
+
+        No-op while the playbook subsystem is paused
+        (``playbooks.enabled=false``) — paused ``playbook_runs`` rows are left
+        exactly as they are: they neither resume nor time out.  See
+        docs/specs/implementation/feature-pauses.md P9.
         """
+        if not self.config.playbooks.enabled:
+            return
         if not hasattr(self, "command_handler") or self.command_handler is None:
             return
         try:

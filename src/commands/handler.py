@@ -115,6 +115,67 @@ from src.commands.helpers import (  # noqa: E402, F401
 )
 
 
+# ---------------------------------------------------------------------------
+# Feature pauses (docs/specs/implementation/feature-pauses.md §5)
+#
+# Every command surface -- Discord slash commands, the embedded MCP server,
+# the HTTP API and the ``aq`` CLI auto-groups -- dispatches through
+# ``CommandHandler.execute()``, so one gate here covers all of them.
+#
+# Read-only commands are gated too, deliberately: "paused" is one crisp
+# contract rather than a per-command judgement call.
+# ---------------------------------------------------------------------------
+
+#: Exact error strings.  Do not reword -- operators and docs match on these.
+MEMORY_PAUSED_ERROR = "memory is paused (memory.enabled=false)"
+PLAYBOOKS_PAUSED_ERROR = "playbooks are paused (playbooks.enabled=false)"
+
+PAUSED_PLAYBOOK_COMMANDS: frozenset[str] = frozenset(
+    {
+        # src/commands/playbook_commands.py (16)
+        "list_playbooks",
+        "list_playbook_runs",
+        "inspect_playbook_run",
+        "resume_playbook",
+        "recover_workflow",
+        "compile_playbook",
+        "show_playbook_graph",
+        "run_playbook",
+        "dry_run_playbook",
+        "playbook_health",
+        "playbook_graph_view",
+        "get_playbook_source",
+        "update_playbook_source",
+        "set_playbook_enabled",
+        "create_playbook",
+        "delete_playbook",
+        # src/commands/workflow_commands.py (5)
+        "create_workflow",
+        "get_workflow",
+        "list_workflows",
+        "advance_workflow_stage",
+        "workflow_pipeline_view",
+    }
+)
+
+#: Memory command names not caught by the prefix rule below.  The names are
+#: owned by the external aq-memory plugin, so the prefix rule is primary and
+#: this set is the escape hatch for outliers.
+PAUSED_MEMORY_COMMAND_EXTRAS: frozenset[str] = frozenset({"memory", "compact_memory"})
+
+
+def _is_memory_command(name: str) -> bool:
+    """True when *name* belongs to the (externally owned) memory surface.
+
+    Plugin commands are registered both bare (``memory_search``) and
+    plugin-qualified (``aq-memory.memory_search``) -- see
+    ``PluginContext.register_command`` -- so both shapes are matched.
+    """
+    return name in PAUSED_MEMORY_COMMAND_EXTRAS or name.startswith(
+        ("memory_", "memory.", "aq-memory.")
+    )
+
+
 class CommandHandler(
     SystemCommandsMixin,
     ProjectCommandsMixin,
@@ -397,6 +458,18 @@ class CommandHandler(
             s = s[:limit] + f"…<truncated {len(s) - limit} chars>"
         return s
 
+    def _paused_command_error(self, name: str) -> str | None:
+        """Return the canonical paused-error string for *name*, or ``None``.
+
+        See docs/specs/implementation/feature-pauses.md §5.  Read-only
+        playbook/workflow commands are gated too -- one crisp contract.
+        """
+        if name in PAUSED_PLAYBOOK_COMMANDS and not self.config.playbooks.enabled:
+            return PLAYBOOKS_PAUSED_ERROR
+        if _is_memory_command(name) and not self.config.memory.enabled:
+            return MEMORY_PAUSED_ERROR
+        return None
+
     async def execute(self, name: str, args: dict) -> dict:
         """Execute a command by name and return a structured result dict.
 
@@ -415,6 +488,15 @@ class CommandHandler(
                 # prefixes).  This resolves to the correct ID centrally.
                 if "project_id" in args:
                     await self._resolve_project_id_in_args(args)
+
+                # Subsystem pause gate (feature-pauses.md §5).  Runs before
+                # dispatch so no paused code path is ever entered, and before
+                # the plugin fallback so memory commands short-circuit even
+                # when the plugin somehow is loaded.
+                paused_error = self._paused_command_error(name)
+                if paused_error:
+                    logger.debug("cmd %s refused: %s", name, paused_error)
+                    return {"success": False, "error": paused_error}
 
                 handler = getattr(self, f"_cmd_{name}", None)
                 if handler:

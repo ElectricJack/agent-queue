@@ -4,7 +4,7 @@ tags: [design, playbooks, automation, workflows]
 
 # Playbooks — Agent Workflow Graphs
 
-**Status:** Active
+**Status:** Active — **Paused** ([[feature-pauses]]; `playbooks.enabled=false`)
 **Supersedes:** `rule-system.md`, `hooks.md` (migration complete, deprecated spec files removed)
 **Source files:** TBD
 **Principles:** [[guiding-design-principles]] (#1 files as source of truth, #3 structure guides intelligence, #7 events not coupling)

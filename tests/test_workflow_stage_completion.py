@@ -71,6 +71,11 @@ async def orch(tmp_path):
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
+    # Workflow stage completion is part of the playbook subsystem, which is
+    # paused by default during the framework overhaul.  These tests guard the
+    # frozen code and the re-enable path, so opt in explicitly.
+    # See docs/specs/design/feature-pauses.md §8.
+    config.playbooks.enabled = True
     o = Orchestrator(config)
     await o.initialize()
     yield o

@@ -289,11 +289,13 @@ class MonitoringConfig:
 class MemoryConfig:
     """Configuration for the semantic memory subsystem (memsearch).
 
-    Enabled by default.  Set ``enabled: false`` in the YAML config to
-    disable.  See notes/memsearch-integration.md for full documentation.
+    Paused by default during the framework overhaul — see
+    docs/specs/design/feature-pauses.md.  Set ``enabled: true`` in the YAML
+    config (restart required) to bring the subsystem back.  See
+    notes/memsearch-integration.md for full documentation.
     """
 
-    enabled: bool = True
+    enabled: bool = False
     embedding_provider: str = "ollama"  # openai, google, voyage, ollama, local
     embedding_model: str = ""  # empty = provider default
     embedding_base_url: str = ""  # for Ollama or custom endpoints
@@ -475,9 +477,14 @@ class ReflectionConfig:
 
 @dataclass
 class ObservationConfig:
-    """Configuration for the Supervisor's passive chat observation."""
+    """Configuration for the Supervisor's passive chat observation.
 
-    enabled: bool = True
+    Paused by default during the framework overhaul — this is the real
+    chat-analyzer switch (``supervisor.observation.enabled``).  See
+    docs/specs/design/feature-pauses.md.
+    """
+
+    enabled: bool = False
     batch_window_seconds: int = 60
     max_buffer_size: int = 20
     stage1_keywords: list[str] = field(default_factory=list)
@@ -1992,7 +1999,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 hourly_token_circuit_breaker=reflection.get("hourly_token_circuit_breaker", 100000),
             ),
             observation=ObservationConfig(
-                enabled=observation.get("enabled", True),
+                enabled=observation.get("enabled", False),
                 batch_window_seconds=observation.get("batch_window_seconds", 60),
                 max_buffer_size=observation.get("max_buffer_size", 20),
                 stage1_keywords=observation.get("stage1_keywords", []),
@@ -2062,7 +2069,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         # "ollama" default; deploying with `embedding_provider: openai`
         # is opt-in and requires an api key.
         config.memory = MemoryConfig(
-            enabled=mem.get("enabled", True),
+            enabled=mem.get("enabled", False),
             embedding_provider=mem.get("embedding_provider", "ollama"),
             embedding_model=mem.get("embedding_model", ""),
             embedding_base_url=mem.get("embedding_base_url", ""),

@@ -342,8 +342,17 @@ class PluginRegistry:
             return self._internal_services
         return {}
 
-    async def load_all(self) -> int:
+    async def load_all(self, skip: frozenset[str] = frozenset()) -> int:
         """Load all plugins: internal first, then external.
+
+        Args:
+            skip: Plugin ids to leave unloaded for this boot.  Used by the
+                orchestrator to honour subsystem pause flags (see
+                docs/specs/implementation/feature-pauses.md M1/M2).  A skipped
+                plugin's DB row is **not** touched — no ``disable_plugin()``
+                call — so re-enabling is a config flip plus a restart with no
+                database change.  The registry stays policy-free: the caller
+                owns the decision about *which* plugins to skip.
 
         Returns:
             Number of plugins successfully loaded.
@@ -356,6 +365,13 @@ class PluginRegistry:
         plugins = await self._db.list_plugins()
 
         for plugin_row in plugins:
+            if plugin_row["id"] in skip:
+                logger.info(
+                    "Plugin '%s' skipped (paused by config)",
+                    plugin_row["id"],
+                )
+                continue
+
             if plugin_row.get("status") == PluginStatus.DISABLED.value:
                 logger.debug("Skipping disabled plugin: %s", plugin_row["id"])
                 continue
