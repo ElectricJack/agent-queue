@@ -111,6 +111,12 @@ _FILE_SCHEMAS: dict[str, EventSchema] = {
         "required": ["path", "project_id", "changes", "count"],
         "optional": ["watch_id"],
     },
+    # Emitted by WorkspaceSpecWatcher when a spec/doc file in a project
+    # workspace changes and a reference stub has been written.
+    "workspace.spec.changed": {
+        "required": ["project_id", "workspace_path", "rel_path", "operation"],
+        "optional": ["abs_path", "content_hash", "stub_name"],
+    },
 }
 
 # ---------------------------------------------------------------------------

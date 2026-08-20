@@ -251,6 +251,12 @@ class Orchestrator(
         self._task_started_messages: dict[str, Any] = {}
         self._paused: bool = False
         self._restart_requested: bool = False
+        # Daemon-wide doctor check registry (``src.doctor.DoctorRegistry``).
+        # Populated by ``src/main.py`` before ``initialize()`` so the plugin
+        # registry can hand it to plugin contexts; stays None for embedded /
+        # test orchestrators, in which case ``_cmd_doctor`` reports
+        # "not configured".  See docs/specs/design/trust-and-ops.md §5.5.
+        self.doctor_registry = None
         # Provider-level cooldowns: maps profile_id (e.g. "claude-opus") to the
         # Unix timestamp when scheduling should resume.  Set when a session
         # limit is detected; the scheduler skips agents whose profile is
@@ -1193,6 +1199,7 @@ class Orchestrator(
             db=self.db,
             bus=self.bus,
             config=self.config,
+            doctor_registry=self.doctor_registry,
         )
 
         # Build and inject services for internal plugins

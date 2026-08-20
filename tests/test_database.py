@@ -1310,3 +1310,41 @@ class TestDirectoryIsolatedWorkspaceModeStub:
         ws = await db.get_workspace("ws-1")
         assert ws.locked_by_agent_id is None
         assert ws.lock_mode is None
+
+
+class TestTokenLedgerPricingColumns:
+    """The pricing columns must exist on every dialect (trust-and-ops §6.1)."""
+
+    def test_declared_in_metadata(self):
+        from src.database.tables import token_ledger
+
+        cols = {c.name: c for c in token_ledger.columns}
+        assert {"model", "input_tokens", "output_tokens"} <= set(cols)
+        # Nullable by design: historical rows have no split and must report as
+        # unpriced rather than being estimated.
+        for name in ("model", "input_tokens", "output_tokens"):
+            assert cols[name].nullable is True, name
+
+    async def test_present_in_a_migrated_database(self, db):
+        from sqlalchemy import inspect
+
+        def _cols(sync_conn):
+            return {c["name"] for c in inspect(sync_conn).get_columns("token_ledger")}
+
+        async with db._engine.begin() as conn:
+            cols = await conn.run_sync(_cols)
+        assert {"model", "input_tokens", "output_tokens"} <= cols
+
+    async def test_alembic_revision_is_at_head(self, db):
+        """The pricing-columns migration is part of the linear history."""
+        from pathlib import Path
+
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        from sqlalchemy import text
+
+        root = Path(__file__).resolve().parent.parent
+        script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
+        async with db._engine.begin() as conn:
+            current = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+        assert current in script.get_heads()

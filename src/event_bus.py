@@ -69,6 +69,12 @@ class EventBus:
         self._handlers: dict[str, list[EventBus._Subscription]] = defaultdict(list)
         self._env = env
         self._validate_events = validate_events
+        # Every event type this bus has actually dispatched.  Bounded by the
+        # number of *distinct* type names (a few hundred at most), so it is a
+        # set of strings, not a log.  Read by the ``events.registry`` doctor
+        # check to compare observed emits against the registered schemas —
+        # without it that check has nothing to observe and always says OK.
+        self._seen_event_types: set[str] = set()
 
     def subscribe(
         self,
@@ -104,8 +110,19 @@ class EventBus:
             return True
         return all(data.get(k) == v for k, v in filter.items())
 
+    @property
+    def seen_event_types(self) -> set[str]:
+        """Event types this bus has dispatched, as a copy (never the live set).
+
+        Observation for ``aq doctor``'s ``events.registry`` check: a type that
+        was emitted but has no registered payload schema is a real gap, and
+        only a running daemon can report which types are actually in play.
+        """
+        return set(self._seen_event_types)
+
     async def emit(self, event_type: str, data: dict[str, Any] | None = None) -> None:
         data = data or {}
+        self._seen_event_types.add(event_type)
 
         # --- Payload validation (Phase 0.2.3) ---
         if self._validate_events:

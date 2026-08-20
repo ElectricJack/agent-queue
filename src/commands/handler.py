@@ -243,9 +243,19 @@ class CommandHandler(
     - :class:`DiscordCommandsMixin` — Discord messaging
     """
 
-    def __init__(self, orchestrator: Orchestrator, config: AppConfig):
+    def __init__(
+        self,
+        orchestrator: Orchestrator,
+        config: AppConfig,
+        doctor_registry=None,
+    ):
         self.orchestrator = orchestrator
         self.config = config
+        # Optional DoctorRegistry override.  Normally None: the daemon-wide
+        # registry is built in ``src/main.py`` and attached to the
+        # orchestrator, which ``OpsCommandsMixin.doctor_registry`` falls back
+        # to.  Passing one explicitly is for tests and embedded uses.
+        self._doctor_registry = doctor_registry
         # Optional callback invoked after a project is deleted.
         # Signature: callback(project_id: str) -> None
         # The Discord bot registers this to clean in-memory channel caches.

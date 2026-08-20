@@ -141,6 +141,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "update_and_restart": "system",
     "run_command": "system",
     "get_stuck_tasks": "system",
+    "doctor": "system",
+    "get_costs": "system",
+    "get_schema": "system",
     # aq-surface task-scope allowlist (design §8.2 DEFAULT_TASK_ALLOWLIST).
     # Categorized (not core) so they don't inflate the supervisor's always-
     # loaded tool set — these are what a *task* session calls, not what the
@@ -153,6 +156,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # lane has implemented the backing `_cmd_*` method yet (an unimplemented
     # command still round-trips through CommandHandler.execute() as a
     # graceful `{"error": "..."}", never a crash).
+    # task_show / task_set are also the agent-facing work-state surface
+    # (aq-surface §3): the CLI hand-crafts ``aq task show`` / ``aq task set``,
+    # and those win over the auto-generated variants by name collision.
     "task_show": "task",
     "task_set": "task",
     "task_close": "task",
@@ -2956,6 +2962,80 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["name"],
         },
     },
+    # -- Ops: doctor / costs (docs/specs/design/trust-and-ops.md §5, §7) ----
+    {
+        "name": "doctor",
+        "description": (
+            "Run the health-check catalog for this install and return one "
+            "result per check: id, severity (ok/info/warn/error), detail, "
+            "whether it is fixable, and structured extras.  Checks run "
+            "concurrently with per-check timeouts; a check that crashes or "
+            "times out reports 'error' rather than hanging the command.  "
+            "Pass fix=true to apply the fix of each failing fixable check and "
+            "re-run it (fixes are idempotent and only touch derived state — "
+            "WAL, expired log dirs — never tasks, vault files or branches).  "
+            "The returned exit_code is 2 when any check errored, 1 when any "
+            "warned, otherwise 0."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "fix": {
+                    "type": "boolean",
+                    "description": "Apply fixes for failing fixable checks, then re-run them.",
+                },
+                "checks": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Restrict the run to these check ids "
+                        "(e.g. 'db.migrations', 'vault.parse')."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "get_costs",
+        "description": (
+            "Roll the token ledger up into USD using the 'pricing:' table from "
+            "config.yaml.  Rows are grouped by project (default), profile or "
+            "day, and split per model.  Honesty rule: a row is priced only "
+            "when it carries both a model matching a pricing entry and an "
+            "input/output token split — everything else is reported under "
+            "'unpriced_tokens' with a null cost rather than priced at a "
+            "guessed rate."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Restrict the rollup to one project.",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "Lower bound: '7d', '12h', or 'YYYY-MM-DD'. Omit for all time.",
+                },
+                "group_by": {
+                    "type": "string",
+                    "enum": ["project", "profile", "day"],
+                    "description": "Grouping key (default: project).",
+                },
+            },
+        },
+    },
+    # -- Agent surface: schema + task work-state (aq-surface §3, §4.3) ------
+    {
+        "name": "get_schema",
+        "description": (
+            "Return the system's enum catalog — task statuses, task types, "
+            "dependency types, gate types and gate statuses — so callers never "
+            "guess magic strings.  Enums owned by subsystems that have not "
+            "landed yet are omitted rather than invented."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
     # -----------------------------------------------------------------
     # aq-surface task-scope allowlist (design §8.2 DEFAULT_TASK_ALLOWLIST).
     # Rich schemas so a task session's `/mcp-task` tool list (Phase S3)
@@ -2966,13 +3046,14 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_show",
         "description": (
-            "Full task detail in one round trip: fields, task_context rows, and labels. "
-            "Backs `aq task show|details`."
+            "Full detail for one task in a single round trip: the task's "
+            "fields, its dependency view and subtasks, its attached context "
+            "rows, and its labels. Backs `aq task show|details`."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "task_id": {"type": "string", "description": "Task ID"},
+                "task_id": {"type": "string", "description": "Task id to show."},
             },
             "required": ["task_id"],
         },
@@ -2980,37 +3061,46 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_set",
         "description": (
-            "Work-state contract writes for a task: branch, PR URL, work_dir, a note, "
-            "label add/remove, and arbitrary metadata. Never performs status transitions "
-            "(the state machine belongs to work-graph's task_close). Backs `aq task set`."
+            "Write work-state fields on a task and return the updated task: "
+            "branch, PR URL, work_dir, a note, label add/remove, and arbitrary "
+            "metadata. Never performs a status transition (the state machine "
+            "belongs to work-graph's task_close — use the lifecycle commands for "
+            "that).  Returns 'fields_changed' listing what was written; a call "
+            "with no recognised field is an error rather than a no-op.  Backs "
+            "`aq task set`."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "task_id": {"type": "string", "description": "Task ID"},
-                "branch": {"type": "string", "description": "Branch name (optional)"},
-                "pr_url": {"type": "string", "description": "Pull request URL (optional)"},
+                "task_id": {"type": "string", "description": "Task id to update."},
+                "branch": {
+                    "type": "string",
+                    "description": "Branch name for this task's work (optional).",
+                },
+                "pr_url": {"type": "string", "description": "Pull-request URL (optional)."},
                 "work_dir": {
                     "type": "string",
-                    "description": "Working directory path (optional; stored as task metadata)",
+                    "description": (
+                        "Directory the work happens in (optional; recorded as task metadata)."
+                    ),
                 },
                 "note": {
                     "type": "string",
-                    "description": "Free-text progress note, stored as a task_context row (optional)",
+                    "description": "Free-text note appended to the task's context (optional).",
                 },
                 "labels_add": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Labels to attach (optional)",
+                    "description": "Labels to add (optional).",
                 },
                 "labels_remove": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Labels to detach (optional)",
+                    "description": "Labels to remove (optional).",
                 },
                 "meta": {
                     "type": "object",
-                    "description": "Arbitrary key-value metadata to set (optional)",
+                    "description": "Arbitrary key/value task metadata to set (optional).",
                 },
             },
             "required": ["task_id"],

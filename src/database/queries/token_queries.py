@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, insert, select
 
-from src.database.tables import projects, tasks, token_ledger
+from src.database.tables import agents, projects, tasks, token_ledger
 
 
 class TokenQueryMixin:
@@ -20,8 +20,19 @@ class TokenQueryMixin:
         agent_id: str,
         task_id: str,
         tokens: int,
+        *,
+        model: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
     ) -> None:
-        """Append a token usage record."""
+        """Append a token usage record.
+
+        ``tokens`` remains the authoritative total.  ``model`` and the
+        input/output split are optional because most writers only know the
+        total: a row without them is reported as ``unpriced_tokens`` by
+        :meth:`get_cost_rollup` rather than priced at a guessed rate
+        (``docs/specs/design/trust-and-ops.md`` §7 — honesty over estimates).
+        """
         async with self._engine.begin() as conn:
             await conn.execute(
                 insert(token_ledger).values(
@@ -30,9 +41,87 @@ class TokenQueryMixin:
                     agent_id=agent_id,
                     task_id=task_id,
                     tokens_used=tokens,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
                     timestamp=time.time(),
                 )
             )
+
+    async def get_cost_rollup(
+        self,
+        *,
+        project_id: str | None = None,
+        since_ts: float | None = None,
+        group_by: str = "project",
+    ) -> list[dict]:
+        """Roll the token ledger up for cost reporting.
+
+        Args:
+            project_id: Restrict to one project.
+            since_ts: Unix timestamp lower bound (inclusive).
+            group_by: ``"project"``, ``"profile"`` (via ``agents.profile_id``)
+                or ``"day"``.
+
+        Returns:
+            One dict per ``(group key, model)`` pair with keys ``group``,
+            ``model``, ``input_tokens``, ``output_tokens``, ``tokens_used``
+            and ``entries``.  ``model`` is ``None`` for rows the writer could
+            not attribute; rows lacking a split leave ``input_tokens`` /
+            ``output_tokens`` at 0 so the caller can count them as unpriced.
+
+        Grouping happens in Python (like :meth:`get_token_audit`) so no
+        dialect-specific date functions are needed.
+        """
+        if group_by not in ("project", "profile", "day"):
+            raise ValueError(f"unknown group_by: {group_by!r}")
+
+        stmt = select(
+            token_ledger.c.project_id,
+            token_ledger.c.agent_id,
+            token_ledger.c.tokens_used,
+            token_ledger.c.model,
+            token_ledger.c.input_tokens,
+            token_ledger.c.output_tokens,
+            token_ledger.c.timestamp,
+            agents.c.profile_id.label("profile_id"),
+        ).select_from(
+            token_ledger.join(agents, token_ledger.c.agent_id == agents.c.id, isouter=True)
+        )
+        if project_id:
+            stmt = stmt.where(token_ledger.c.project_id == project_id)
+        if since_ts is not None:
+            stmt = stmt.where(token_ledger.c.timestamp >= since_ts)
+
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(stmt)).fetchall()
+
+        buckets: dict[tuple[str, str | None], dict] = {}
+        for r in rows:
+            if group_by == "project":
+                key = r.project_id or "(unknown)"
+            elif group_by == "profile":
+                key = r.profile_id or "(unknown)"
+            else:
+                key = datetime.fromtimestamp(r.timestamp, tz=timezone.utc).strftime("%Y-%m-%d")
+            bucket_key = (key, r.model)
+            bucket = buckets.setdefault(
+                bucket_key,
+                {
+                    "group": key,
+                    "model": r.model,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "tokens_used": 0,
+                    "entries": 0,
+                },
+            )
+            bucket["input_tokens"] += r.input_tokens or 0
+            bucket["output_tokens"] += r.output_tokens or 0
+            bucket["tokens_used"] += r.tokens_used or 0
+            bucket["entries"] += 1
+
+        return [buckets[k] for k in sorted(buckets, key=lambda k: (k[0], k[1] or ""))]
 
     async def get_project_token_usage(
         self,

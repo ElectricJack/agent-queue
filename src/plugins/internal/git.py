@@ -151,7 +151,11 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "base_branch": {
                         "type": "string",
-                        "description": "Base branch to compare (default: project default)",
+                        "description": (
+                            "Base revision to compare against (default: project "
+                            "default branch). Accepts a branch name or a revision "
+                            "expression such as 'HEAD~1', 'HEAD^' or 'main@{1}'."
+                        ),
                     },
                     "project_id": {"type": "string", "description": "Project ID"},
                     "workspace": {
@@ -190,7 +194,11 @@ def _build_tool_definitions() -> list[dict]:
                     "project_id": {"type": "string", "description": "Project ID"},
                     "base_branch": {
                         "type": "string",
-                        "description": "Base branch to diff against (optional, defaults to working tree diff)",
+                        "description": (
+                            "Base revision to diff against (optional; defaults to a "
+                            "working-tree diff). Accepts a branch name or a revision "
+                            "expression such as 'HEAD~1', 'HEAD^' or 'main@{1}'."
+                        ),
                     },
                     "workspace": {
                         "type": "string",

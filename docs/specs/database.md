@@ -15,7 +15,11 @@ The class uses a convention of thin `_row_to_<model>` private methods to map raw
 ---
 
 ## Source Files
-- `src/database.py`
+- `src/database/tables.py` — SQLAlchemy Core `Table` definitions (the schema)
+- `src/database/engine.py` — engine factory, PRAGMAs, Alembic startup upgrade
+- `src/database/adapters/sqlite.py`, `adapters/postgresql.py` — backends
+- `src/database/queries/` — domain query mixins
+- `migrations/` — Alembic revision history
 
 ---
 
@@ -57,7 +61,9 @@ Closes the connection if one is open. Safe to call even if `initialize()` was ne
 
 ## 3. Schema
 
-All 18 tables are declared in the module-level `SCHEMA` string (the source code comment says "14 tables" — this is stale). Foreign key relationships are declared inline with `REFERENCES`. A `CHECK` constraint exists on `task_dependencies`. Integer booleans (SQLite has no native boolean) are used for `enabled` (hooks), `requires_approval` and `is_plan_subtask` (tasks). Timestamps are stored as `REAL` (Unix epoch, floating-point seconds).
+Every table is declared as a SQLAlchemy Core `Table` in `src/database/tables.py`, which is the single source of truth; DDL is applied by Alembic (`migrations/`). Foreign keys are declared with `ForeignKey(...)`. A `CHECK` constraint exists on `task_dependencies`. Integer booleans (SQLite has no native boolean) are used for flags such as `requires_approval` and `is_plan_subtask` (tasks). Timestamps are stored as `REAL` (Unix epoch, floating-point seconds).
+
+> **This catalog is enforced.** `tests/test_docs_sync.py` compares the `### Table:` headings below against `src/database/tables.py` and fails when they drift, so a schema change lands with its doc row in the same commit (see `docs/specs/design/trust-and-ops.md` §6). `alembic_version` is the one deliberate exclusion.
 
 ### Table: `projects`
 
@@ -179,7 +185,7 @@ No CRUD methods on `Database` for this table directly.
 |---|---|---|---|
 | `id` | TEXT | PRIMARY KEY | UUID |
 | `name` | TEXT | NOT NULL | Display name |
-| `agent_type` | TEXT | NOT NULL | e.g. "claude", "codex" |
+| `profile_id` | TEXT | NOT NULL | Soft reference to `agent_profiles.id`; selects model, tools and runtime |
 | `state` | TEXT | NOT NULL DEFAULT 'IDLE' | One of: IDLE, BUSY, PAUSED, ERROR |
 | `current_task_id` | TEXT | nullable REFERENCES tasks(id) | |
 | `checkout_path` | TEXT | nullable | Filesystem path to the agent's worktree |
@@ -200,8 +206,13 @@ Immutable append-only log of token usage events.
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | |
 | `agent_id` | TEXT | NOT NULL REFERENCES agents(id) | |
 | `task_id` | TEXT | NOT NULL REFERENCES tasks(id) | |
-| `tokens_used` | INTEGER | NOT NULL | Tokens consumed in this event |
+| `tokens_used` | INTEGER | NOT NULL | Tokens consumed in this event (authoritative total) |
+| `model` | TEXT | nullable | Model that consumed the tokens; NULL for writers that don't report it |
+| `input_tokens` | INTEGER | nullable | Input half of the split; NULL when unknown |
+| `output_tokens` | INTEGER | nullable | Output half of the split; NULL when unknown |
 | `timestamp` | REAL | NOT NULL | Unix timestamp, set on insert |
+
+The three pricing columns are nullable by design: rows written before they existed cannot be priced accurately, so `get_cost_rollup` / `aq costs` report them as `unpriced_tokens` rather than pricing them at a guessed rate (`docs/specs/design/trust-and-ops.md` §7).
 
 No deletes on this table during normal operation. Deleted only as part of cascading `delete_project` or `delete_task`.
 
@@ -263,26 +274,6 @@ Simple key-value store for system-wide configuration.
 
 No CRUD methods are defined on `Database` for this table in the current implementation.
 
-### Table: `hooks`
-
-Hook definitions — automated responses to events or time triggers.
-
-| Column | Type | Constraints | Notes |
-|---|---|---|---|
-| `id` | TEXT | PRIMARY KEY | UUID |
-| `project_id` | TEXT | NOT NULL REFERENCES projects(id) | |
-| `name` | TEXT | NOT NULL | Display name |
-| `enabled` | INTEGER | NOT NULL DEFAULT 1 | Boolean (0/1) |
-| `trigger` | TEXT | NOT NULL | JSON string, e.g. `{"type": "periodic", "interval_seconds": 7200}` |
-| `context_steps` | TEXT | NOT NULL DEFAULT '[]' | JSON array of context-gathering step configs |
-| `prompt_template` | TEXT | NOT NULL | Template string with `{{step_0}}`, `{{event}}` placeholders |
-| `llm_config` | TEXT | nullable | JSON: `{"provider": "anthropic", "model": "..."}` |
-| `cooldown_seconds` | INTEGER | NOT NULL DEFAULT 3600 | Minimum interval between runs |
-| `max_tokens_per_run` | INTEGER | nullable | Per-run token cap (NULL = unlimited) |
-| `last_triggered_at` | REAL | nullable | Unix timestamp of last trigger (added via migration) |
-| `created_at` | REAL | NOT NULL | Set on insert |
-| `updated_at` | REAL | NOT NULL | Set on insert and every update |
-
 ### Table: `workspaces`
 
 | Column | Type | Constraints | Notes |
@@ -340,26 +331,250 @@ Mirrors the `tasks` table schema plus an `archived_at` REAL column. Stores tasks
 
 Methods: `archive_task`, `archive_completed_tasks`, `archive_old_terminal_tasks`, `list_archived_tasks`, `get_archived_task`, `restore_archived_task`, `delete_archived_task`, `count_archived_tasks`.
 
-### Table: `hook_runs`
+### Table: `task_metadata`
 
-Execution log for each hook invocation.
+Free-form per-task key/value store. Used for values that don't warrant a column
+(workflow bookkeeping, adapter hints).
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
-| `id` | TEXT | PRIMARY KEY | UUID |
-| `hook_id` | TEXT | NOT NULL REFERENCES hooks(id) | |
-| `project_id` | TEXT | NOT NULL | Denormalized from hook for easier queries |
-| `trigger_reason` | TEXT | NOT NULL | e.g. "periodic", "manual", "event:task_completed" |
-| `event_data` | TEXT | nullable | JSON blob of the event that triggered the run |
-| `context_results` | TEXT | nullable | JSON blob of gathered context |
-| `prompt_sent` | TEXT | nullable | Resolved prompt string sent to LLM |
-| `llm_response` | TEXT | nullable | Raw response from LLM |
-| `actions_taken` | TEXT | nullable | JSON or text record of actions performed |
-| `skipped_reason` | TEXT | nullable | Reason string if run was skipped (cooldown, etc.) |
-| `tokens_used` | INTEGER | NOT NULL DEFAULT 0 | |
-| `status` | TEXT | NOT NULL DEFAULT 'running' | One of: running, completed, failed, skipped |
-| `started_at` | REAL | NOT NULL | |
+| `task_id` | TEXT | PRIMARY KEY REFERENCES tasks(id) | Composite PK part 1 |
+| `key` | TEXT | PRIMARY KEY | Composite PK part 2 |
+| `value` | TEXT | NOT NULL | Stored as text; JSON when structured |
+
+### Table: `task_labels`
+
+Many-to-many tags on tasks.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `task_id` | TEXT | PRIMARY KEY REFERENCES tasks(id) | Composite PK part 1 |
+| `label` | TEXT | PRIMARY KEY | Composite PK part 2 |
+
+### Table: `gates`
+
+Human-in-the-loop decision points. A gate is opened by a playbook or workflow and
+blocks progress until it is resolved (principle #5 — human judgment stays human).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | UUID string |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
+| `gate_type` | TEXT | NOT NULL | Kind of decision being requested |
+| `title` | TEXT | NOT NULL | Short display name |
+| `question` | TEXT | NOT NULL DEFAULT '' | Prompt shown to the human |
+| `await_id` | TEXT | nullable | Correlates the gate with the waiter that opened it |
+| `timeout_at` | REAL | nullable | Unix timestamp; NULL = waits indefinitely |
+| `status` | TEXT | NOT NULL DEFAULT 'open' | One of: open, resolved, expired, cancelled |
+| `resolved_by` | TEXT | nullable | Identity that resolved the gate |
+| `resolution` | TEXT | nullable | The decision recorded |
+| `created_at` | REAL | NOT NULL | Set on insert |
+
+### Table: `task_gates`
+
+Join table binding tasks to the gates that block them.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `task_id` | TEXT | PRIMARY KEY REFERENCES tasks(id) | Composite PK part 1 |
+| `gate_id` | TEXT | PRIMARY KEY REFERENCES gates(id) | Composite PK part 2 |
+
+### Table: `workspace_kinds`
+
+Typed workspace definitions (Workspaces v2). Rows are projected from markdown in
+`vault/[projects/<pid>/]workspace-kinds/<id>.md`; the vault file is the source of
+truth and this table is the queryable copy. `project_id` holds the system scope
+sentinel for system-wide kinds.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY | Composite PK part 1; system scope sentinel for global kinds |
+| `id` | TEXT | PRIMARY KEY | Composite PK part 2; kind id, e.g. `project-repo`, `vault` |
+| `description` | TEXT | NOT NULL DEFAULT '' | Prose from the markdown body |
+| `writable` | INTEGER | NOT NULL DEFAULT true | Boolean (0/1) |
+| `lockable` | INTEGER | NOT NULL DEFAULT true | Boolean (0/1); unlockable kinds need no lease |
+| `is_git_repo` | INTEGER | NOT NULL DEFAULT true | Boolean (0/1) |
+| `repo_url` | TEXT | nullable | Clone source when the kind is a repo |
+| `default_lock_mode` | TEXT | nullable | Lock granularity when lockable |
+| `auto_attach` | INTEGER | NOT NULL DEFAULT false | Boolean (0/1); attached without being declared |
+| `mode` | TEXT | NOT NULL DEFAULT 'worktree' | Acquisition mode, e.g. worktree, clone, readonly |
+| `worktree_setup` | TEXT | NOT NULL DEFAULT '[]' | JSON array of setup commands — **operator-authored, trusted** |
+| `created_at` | REAL | NOT NULL | Set on insert |
+| `updated_at` | REAL | NOT NULL | Set on insert and every update |
+
+### Table: `task_workspace_requirements`
+
+Per-task declaration of which workspace kinds a task needs. The orchestrator
+acquires one workspace per declared kind, all-or-nothing, in canonical lock order.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `task_id` | TEXT | PRIMARY KEY REFERENCES tasks(id) | Composite PK part 1 |
+| `kind_id` | TEXT | PRIMARY KEY | Composite PK part 2; references `workspace_kinds.id` |
+| `position` | INTEGER | PRIMARY KEY DEFAULT 0 | Composite PK part 3; allows two of the same kind |
+| `alias` | TEXT | nullable | Name the task uses to refer to this attachment |
+
+### Table: `merge_slots`
+
+One row per project — the mutex that serialises merges into the default branch.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY REFERENCES projects(id) | One slot per project |
+| `holder_task_id` | TEXT | nullable | Task currently holding the slot; NULL = free |
+| `acquired_at` | REAL | nullable | Unix timestamp of acquisition |
+| `expires_at` | REAL | nullable | Lease expiry, so a crashed holder can't hold forever |
+| `updated_at` | REAL | NOT NULL | Set on every state change |
+
+### Table: `sessions`
+
+Agent session rows (session-runtime). One row per launched harness session.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Session id |
+| `task_id` | TEXT | nullable REFERENCES tasks(id) | NULL for non-task sessions |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
+| `profile_id` | TEXT | NOT NULL | Profile the session runs under |
+| `harness` | TEXT | NOT NULL | Harness id from the vault |
+| `provider` | TEXT | NOT NULL | Underlying provider/runtime |
+| `name` | TEXT | NOT NULL | Human-readable session name |
+| `lifecycle` | TEXT | NOT NULL | Lifecycle class (e.g. per-task, long-lived) |
+| `state` | TEXT | NOT NULL DEFAULT 'starting' | Session state machine value |
+| `session_key` | TEXT | nullable | Multiplexer key (e.g. tmux session name) |
+| `work_dir` | TEXT | NOT NULL | Working directory (an isolated worktree for task sessions) |
+| `epoch` | TEXT | NOT NULL | Restart generation marker |
+| `instance_token` | TEXT | NOT NULL | Identifies this process instance |
+| `started_at` | REAL | NOT NULL | Set on insert |
+| `last_activity` | REAL | nullable | Updated from transcript/pane activity |
+| `restarts` | INTEGER | NOT NULL DEFAULT 0 | Restart counter |
+| `quarantined_at` | REAL | nullable | Set when the session is quarantined after repeated failure |
+| `sleep_reason` | TEXT | nullable | Why the session is idle/asleep |
+
+### Table: `messages`
+
+Inter-agent message queue (supervisor/agent messaging).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | UUID string |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
+| `from_kind` | TEXT | NOT NULL | Sender class (agent, supervisor, human, system) |
+| `from_id` | TEXT | NOT NULL | Sender identifier |
+| `to_kind` | TEXT | NOT NULL | Recipient class |
+| `to_id` | TEXT | NOT NULL | Recipient identifier |
+| `thread_id` | TEXT | nullable | Groups a conversation |
+| `subject` | TEXT | nullable | Short header |
+| `body` | TEXT | NOT NULL | Message text — **untrusted** (agent/human authored) |
+| `priority` | INTEGER | NOT NULL DEFAULT 100 | Lower number = higher priority |
+| `created_at` | REAL | NOT NULL | Set on insert |
+| `delivered_at` | REAL | nullable | Set when injected into a recipient's context |
+| `read_at` | REAL | nullable | Set when the recipient acknowledges |
+| `archive_after_inject` | INTEGER | NOT NULL DEFAULT 0 | Boolean (0/1) |
+| `archived_at` | REAL | nullable | Set when archived |
+| `reply_to_id` | TEXT | nullable REFERENCES messages(id) | Self-referential reply chain |
+| `via` | TEXT | nullable | Delivery channel used |
+
+### Table: `api_session_tokens`
+
+Task-scoped API tokens minted for agent sessions. Only the hash is stored — the
+plaintext token exists once, at mint time, and is injected into the session
+environment (`AQ_API_TOKEN`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `token_hash` | TEXT | PRIMARY KEY | Hash of the token; the plaintext is never persisted |
+| `session_id` | TEXT | NOT NULL | Session the token was minted for |
+| `task_id` | TEXT | nullable | Task scope, when the token is task-scoped |
+| `project_id` | TEXT | nullable | Project scope |
+| `created_at` | REAL | NOT NULL | Set on insert |
+| `expires_at` | REAL | NOT NULL | Hard expiry |
+| `revoked_at` | REAL | nullable | Set when explicitly revoked before expiry |
+
+### Table: `project_constraints`
+
+Per-project scheduling constraints, one row per project.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY REFERENCES projects(id) | One row per project |
+| `exclusive` | INTEGER | NOT NULL DEFAULT 0 | Boolean (0/1); project runs alone when set |
+| `max_agents_by_type` | TEXT | NOT NULL DEFAULT '{}' | JSON map of agent type → cap |
+| `pause_scheduling` | INTEGER | NOT NULL DEFAULT 0 | Boolean (0/1) |
+| `created_by` | TEXT | nullable | Who set the constraint |
+| `created_at` | REAL | NOT NULL | Set on insert |
+
+### Table: `plugins`
+
+Installed plugin registry.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Plugin name |
+| `version` | TEXT | NOT NULL DEFAULT '0.0.0' | Installed version |
+| `source_url` | TEXT | NOT NULL DEFAULT '' | Git remote it was installed from |
+| `source_rev` | TEXT | NOT NULL DEFAULT '' | Pinned revision |
+| `source_branch` | TEXT | NOT NULL DEFAULT '' | Tracked branch |
+| `install_path` | TEXT | NOT NULL DEFAULT '' | Filesystem location of the clone |
+| `status` | TEXT | NOT NULL DEFAULT 'installed' | One of: installed, enabled, disabled, error |
+| `config` | TEXT | NOT NULL DEFAULT '{}' | JSON plugin config |
+| `permissions` | TEXT | NOT NULL DEFAULT '[]' | JSON array of granted permissions |
+| `error_message` | TEXT | nullable | Last load/install error |
+| `installed_at` | REAL | NOT NULL | Set on insert |
+| `updated_at` | REAL | NOT NULL | Set on insert and every update |
+
+### Table: `plugin_data`
+
+Per-plugin key/value persistence. Scoped by `plugin_id` so plugins cannot read
+each other's data.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `plugin_id` | TEXT | PRIMARY KEY REFERENCES plugins(id) | Composite PK part 1 |
+| `key` | TEXT | PRIMARY KEY | Composite PK part 2 |
+| `value` | TEXT | NOT NULL DEFAULT '{}' | JSON value |
+| `updated_at` | REAL | NOT NULL | Set on every write |
+
+### Table: `playbook_runs`
+
+One row per playbook execution. Playbooks replaced the removed `hooks` /
+`hook_runs` tables.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `run_id` | TEXT | PRIMARY KEY | UUID string |
+| `playbook_id` | TEXT | NOT NULL | Playbook that was run |
+| `playbook_version` | INTEGER | NOT NULL | Compiled version, so a run is reproducible |
+| `trigger_event` | TEXT | NOT NULL DEFAULT '{}' | JSON of the event that started the run |
+| `status` | TEXT | NOT NULL DEFAULT 'running' | One of: running, paused, completed, failed |
+| `current_node` | TEXT | nullable | Node the run is sitting on |
+| `conversation_history` | TEXT | NOT NULL DEFAULT '[]' | JSON transcript |
+| `node_trace` | TEXT | NOT NULL DEFAULT '[]' | JSON list of visited nodes |
+| `tokens_used` | INTEGER | NOT NULL DEFAULT 0 | Run token total |
+| `started_at` | REAL | NOT NULL | Set on insert |
 | `completed_at` | REAL | nullable | NULL while running |
+| `error` | TEXT | nullable | Failure detail |
+| `pinned_graph` | TEXT | nullable | JSON of the compiled graph used by this run |
+| `paused_at` | REAL | nullable | Set when the run pauses on a human/event wait |
+| `waiting_for_event` | TEXT | nullable | Event type the run is waiting for |
+
+### Table: `workflows`
+
+Multi-agent pipelines with stage gates and agent affinity.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `workflow_id` | TEXT | PRIMARY KEY | UUID string |
+| `playbook_id` | TEXT | NOT NULL | Playbook that defines the pipeline |
+| `playbook_run_id` | TEXT | NOT NULL REFERENCES playbook_runs(run_id) | Owning run |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
+| `status` | TEXT | NOT NULL DEFAULT 'running' | One of: running, completed, failed |
+| `current_stage` | TEXT | nullable | Stage the workflow is on |
+| `task_ids` | TEXT | NOT NULL DEFAULT '[]' | JSON array of member task ids |
+| `agent_affinity` | TEXT | NOT NULL DEFAULT '{}' | JSON map pinning stages to agents |
+| `stages` | TEXT | NOT NULL DEFAULT '[]' | JSON stage definitions |
+| `created_at` | REAL | NOT NULL | Set on insert |
+| `completed_at` | REAL | nullable | NULL until the pipeline finishes |
 
 ---
 
@@ -566,9 +781,13 @@ Uses a `key in row.keys()` guard for `repo_id` for backward compatibility.
 
 ## 9. Token Ledger
 
-### `record_token_usage(project_id: str, agent_id: str, task_id: str, tokens: int) -> None`
+### `record_token_usage(project_id, agent_id, task_id, tokens, *, model=None, input_tokens=None, output_tokens=None) -> None`
 
-Appends one row to `token_ledger`. The `id` is a fresh UUID4. The `timestamp` is `time.time()`. Commits.
+Appends one row to `token_ledger`. The `id` is a fresh UUID4 and `timestamp` is `time.time()`. `tokens` is the authoritative total; `model` and the input/output split are optional because most writers only know the total.
+
+### `get_cost_rollup(*, project_id=None, since_ts=None, group_by='project') -> list[dict]`
+
+Rolls the ledger up per `(group key, model)` for `aq costs`. Grouping happens in Python so no dialect-specific date functions are needed. Rows without a model or without a split are returned with zeroed split columns; the caller reports them as `unpriced_tokens` and never prices them.
 
 ### `get_project_token_usage(project_id: str, since: float | None = None) -> int`
 
@@ -617,55 +836,9 @@ Returns the most recent events ordered by `id DESC` (most recent first), limited
 
 ---
 
-## 12. Hooks and Hook Runs
+## 12. Playbook Runs (formerly Hooks)
 
-### Hooks
-
-#### `create_hook(hook: Hook) -> None`
-
-Inserts all hook columns. Both `created_at` and `updated_at` are set to `time.time()` at insert, ignoring the values on the `Hook` dataclass. `enabled` is stored as `int(hook.enabled)`. Commits.
-
-#### `get_hook(hook_id: str) -> Hook | None`
-
-Selects by primary key. Returns `None` if not found.
-
-#### `list_hooks(project_id: str | None = None, enabled: bool | None = None) -> list[Hook]`
-
-Returns hooks filtered by zero, one, or both of `project_id` and `enabled`. `enabled` is converted to `int` for comparison. No ordering.
-
-#### `update_hook(hook_id: str, **kwargs) -> None`
-
-Dynamic UPDATE. The `enabled` key is automatically converted to `int`. Always appends `updated_at = time.time()`. Commits.
-
-#### `delete_hook(hook_id: str) -> None`
-
-Deletes all `hook_runs` for the hook first, then deletes the hook row. Commits. (Manual cascade, since foreign keys are enabled.)
-
-#### `_row_to_hook(row) -> Hook`
-
-Maps row directly to `Hook` dataclass fields. `enabled` is cast to `bool`.
-
-### Hook Runs
-
-#### `create_hook_run(run: HookRun) -> None`
-
-Inserts all columns from the `HookRun` dataclass verbatim (no timestamp overrides — caller sets `started_at` and `completed_at`). Commits.
-
-#### `update_hook_run(run_id: str, **kwargs) -> None`
-
-Dynamic UPDATE. No automatic `updated_at` or `completed_at` — caller must supply `completed_at` explicitly when finishing a run. Commits.
-
-#### `get_last_hook_run(hook_id: str) -> HookRun | None`
-
-Returns the most recent run for a hook ordered by `started_at DESC LIMIT 1`. Used by the hook engine to check cooldown. Returns `None` if no runs exist.
-
-#### `list_hook_runs(hook_id: str, limit: int = 20) -> list[HookRun]`
-
-Returns up to `limit` runs for a hook, ordered by `started_at DESC` (most recent first).
-
-#### `_row_to_hook_run(row) -> HookRun`
-
-Maps row directly to `HookRun` dataclass fields.
+The `hooks` and `hook_runs` tables and their `Database` methods were **removed**. Event- and time-triggered automation is now expressed as playbooks — markdown DAGs compiled to JSON — and each execution is a row in `playbook_runs` (see `docs/specs/design/playbooks.md`). Queries live in `src/database/queries/playbook_queries.py`; workflow pipelines built on top of runs live in `src/database/queries/workflow_queries.py`.
 
 ---
 
@@ -677,7 +850,18 @@ The `system_config` table (key TEXT PRIMARY KEY, value TEXT NOT NULL) is present
 
 ## 14. Migration / Schema Evolution
 
-The `initialize()` method applies a fixed list of additive `ALTER TABLE ... ADD COLUMN` statements after the initial schema creation. Each migration is attempted individually inside a bare `try/except Exception: pass` block — if the column already exists (or any other error occurs), the exception is silently swallowed and the next migration proceeds. This means migrations are always retried on every startup but are idempotent.
+Schema evolution is managed by **Alembic** (`migrations/`), not by ad-hoc `ALTER TABLE` statements. `initialize()` creates the engine and then runs `alembic upgrade head` against it (`src/database/engine.py`); a pre-Alembic database with tables but no `alembic_version` row is stamped at the baseline revision first.
+
+After any change to `src/database/tables.py`:
+
+```bash
+alembic revision --autogenerate -m "description of change"
+# review the generated file in migrations/versions/ — autogenerate sees a
+# rename as drop+add
+alembic upgrade head
+```
+
+Migrations must work on both SQLite and PostgreSQL. `aq doctor`'s `db.migrations` check compares the stamped revision against the script head and reports an error when the database is behind.
 
 The full list of migrations applied in order:
 
@@ -712,7 +896,7 @@ The full list of migrations applied in order:
 
 The `SCHEMA` constant includes migrated columns for `projects` and `tasks`, so those tables have all columns from the start on fresh databases. However, the `repos` table in `SCHEMA` does **not** include `source_type` or `source_path` — those two columns are only added via the migration statements, meaning fresh databases also require the migrations to be run for `repos` to have those columns. Migrations always matter for `repos` regardless of whether the database is new or existing.
 
-There is no version table, no migration registry, and no rollback capability. Destructive schema changes (DROP COLUMN, column renames, type changes) are not handled by this mechanism.
+`alembic_version` records the applied revision. Destructive changes (DROP COLUMN, renames, type changes) are expressible but must be written by hand and reviewed — autogenerate will not infer them correctly.
 
 ---
 
@@ -750,9 +934,6 @@ There is no version table, no migration registry, and no rollback capability. De
 
 ### Chat Analyzer Suggestions (~10 methods)
 - Suggestion CRUD, status updates, deduplication queries
-
-### Hooks (additional)
-- `list_hooks_by_id_prefix()`, `delete_hooks_by_id_prefix()`
 
 ### Repos (additional)
 - `update_repo()` — update repo fields

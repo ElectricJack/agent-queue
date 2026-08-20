@@ -333,8 +333,13 @@ class ClaudeSDKRuntime(Runtime):
     name: ClassVar[str] = "claude_sdk"
     capabilities: ClassVar[frozenset[Capability]] = frozenset(Capability)
 
-    def __init__(self, profile=None, llm_logger=None):
+    def __init__(self, profile=None, llm_logger=None, config=None):
         self._config = self._config_from_profile(profile)
+        # Daemon AppConfig (distinct from ``self._config``, which is the
+        # per-profile adapter config).  Accepted so RuntimeRegistry can hand
+        # it to every runtime uniformly; see ``wait()`` for why R6 scrubbing
+        # cannot currently be applied on this path.
+        self._app_config = config
         self._task: TaskContext | None = None
         self._cancel_event = asyncio.Event()
         self._inject_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -384,7 +389,20 @@ class ClaudeSDKRuntime(Runtime):
 
         _wait_start = _time.monotonic()
         try:
-            # Strip Claude Code session markers to allow launching agent sessions
+            # Strip Claude Code session markers to allow launching agent
+            # sessions.  This mutates the *daemon's* own environment because
+            # there is nowhere else to do it: the Agent SDK builds the child
+            # env as ``{**os.environ, **options.env}`` — ``options.env`` can
+            # override a key but cannot remove one.
+            #
+            # KNOWN GAP (trust-and-ops R6, design §2.5): for the same reason,
+            # the SDK subprocess inherits the daemon's full environment and is
+            # **not** scrubbed.  ``claude_sdk`` is the default runtime, so R6
+            # is enforced today only for ``acpx`` and ``run_command``.  Closing
+            # it requires the session runtime owning the spawn (it builds the
+            # child env itself via ``scrub_env``), not a wider ``options.env``:
+            # setting a credential to the empty string is a different — and
+            # worse — failure mode than not passing it.
             import os
 
             for var in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):

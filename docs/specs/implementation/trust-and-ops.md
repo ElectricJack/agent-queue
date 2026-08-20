@@ -86,10 +86,24 @@ Integration points:
 
 ```python
 SENSITIVE_ENV_PATTERNS: tuple[str, ...] = (
-    "TOKEN", "API_KEY", "SECRET", "PASSWORD", "CREDENTIAL", "PRIVATE_KEY", "AUTH",
+    "TOKEN", "API_KEY", "APIKEY", "SECRET", "PASSWORD", "PASSPHRASE",
+    "CREDENTIAL", "PRIVATE", "AUTH", "DSN", "WEBHOOK", "NETRC", "KUBECONFIG",
+)
+# Anchored where a substring would over-match (KEYBOARD_LAYOUT, LD_LIBRARY_PATH):
+SENSITIVE_ENV_REGEXES: tuple[str, ...] = (
+    r"(?:^|_)KEY$", r"(?:^|_)PAT$", r"(?:^|_)ID_RSA(?:$|_)", r"(?:^|_)ID_ED25519(?:$|_)",
 )
 # False positives of the AUTH pattern — always exempt:
 BUILTIN_EXEMPT: tuple[str, ...] = ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE")
+# Credentials an agent CLI needs to authenticate at all (design §3 decision):
+HARNESS_CREDENTIAL_ALLOWLIST: tuple[str, ...] = (
+    "ANTHROPIC_*", "CLAUDE_CODE_OAUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK",
+    "OPENAI_*", "AZURE_OPENAI_*", "CODEX_API_KEY",
+    "GEMINI_*", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "VERTEX_*",
+    "OPENROUTER_*", "XAI_*", "MISTRAL_*", "GROQ_*", "DEEPSEEK_*", "TOGETHER_*",
+    "PERPLEXITY_*", "CEREBRAS_*", "FIREWORKS_*", "QWEN_*", "ZAI_*",
+    "GH_TOKEN", "GITHUB_TOKEN",
+)
 STRIP_ALWAYS: tuple[str, ...] = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 
 @dataclass
@@ -103,30 +117,47 @@ def scrub_env(
     allowlist: Iterable[str] = (),           # config security.env_allowlist (names/globs)
     explicit: Mapping[str, str] | None = None,  # harness/profile env — always wins
     enabled: bool = True,                    # security.env_scrub_enabled
+    harness_credentials: bool = True,        # apply HARNESS_CREDENTIAL_ALLOWLIST
 ) -> ScrubResult: ...
 ```
 
-Semantics (matches design §3): drop a key when `any(p in key.upper() for p in
-SENSITIVE_ENV_PATTERNS)` unless the key matches `BUILTIN_EXEMPT` or an `allowlist`
-entry (exact or `fnmatch`, case-insensitive); `STRIP_ALWAYS` keys are removed
-regardless; `explicit` entries are merged last and are never scrubbed. When
+Semantics (matches design §3): the key is normalised (`upper()`, `-`→`_`) and
+dropped when it contains a `SENSITIVE_ENV_PATTERNS` substring, matches a
+`SENSITIVE_ENV_REGEXES` pattern, or its **value** is a credential-bearing URI
+(`scheme://user:pass@host`) — unless it matches `BUILTIN_EXEMPT`, the harness
+allowlist, or an `allowlist` entry (exact or `fnmatch`, case-insensitive).
+`STRIP_ALWAYS` keys are removed regardless of pattern *and* of `enabled`; an
+`explicit` entry naming one still wins, because `STRIP_ALWAYS` targets *inherited*
+markers and explicit intent outranks inheritance (the docstring and
+`tests/test_env_scrub.py::TestExplicit` state this — the earlier "removed
+regardless" wording was ambiguous and has been corrected rather than the behaviour
+changed). `explicit` entries are merged last and are never scrubbed. When
 `enabled=False`, only `STRIP_ALWAYS` applies (preserves today's behavior as the
 escape hatch). Pure function, no I/O — trivially testable.
 
 Integration points:
 
-- `src/runtimes/_subprocess.py:25` — `isolated_env(extra)` becomes:
-  `return scrub_env(allowlist=..., explicit=extra, enabled=...).env`. Callers
-  (`ACPXRuntime`) are unchanged. The scrub policy thereby survives this module's
-  planned deletion (overhaul A.8): [[session-runtime]]'s `SessionSpec` builder calls
-  `scrub_env()` directly and injects `AQ_*` markers plus `AQ_API_TOKEN` (minted by
-  [[aq-surface]]) via `explicit`.
-- `src/commands/system_commands.py:690` — `_cmd_run_command` passes
-  `env=scrub_env(...).env` into `_run_subprocess_shell` (add an `env` kwarg to
-  `_run_subprocess_shell` at `src/commands/helpers.py:127`). The command remains in
-  `DEFAULT_EXCLUDED_COMMANDS` (`src/mcp_registration.py:51-57`) — do not remove it.
-- Plumbing the allowlist requires config access; both call sites already hold
-  `self.config`.
+- `src/runtimes/_subprocess.py` — `isolated_env(extra, config=...)` delegates to
+  `scrub_env_from_config`. **The config must actually arrive**: `ACPXRuntime`
+  takes a `config` kwarg, `RuntimeRegistry.__init__` takes the daemon `AppConfig`,
+  `RuntimeRegistry.create` passes it to every runtime whose constructor declares
+  it, and `src/main.py` calls `default_registry(supervisor=…, config=config)`.
+  Without that chain `isolated_env(config=…)` has no production caller and both
+  the kill switch and the allowlist are inert — pin it with a test that goes
+  through `RuntimeRegistry.create`, not one that calls `isolated_env` directly.
+  The policy survives this module's planned deletion (overhaul A.8):
+  [[session-runtime]]'s `SessionSpec` builder calls `scrub_env()` directly and
+  injects `AQ_*` markers plus `AQ_API_TOKEN` via `explicit`.
+- `src/commands/system_commands.py` — `_cmd_run_command` passes
+  `env=scrub_env_from_config(self.config, harness_credentials=False).env` into
+  `_run_subprocess_shell` (which takes an `env` kwarg). `harness_credentials=False`
+  because a diagnostic shell is not an agent harness and has no reason to hold
+  vendor credentials. The command stays excluded from **all three** remote
+  surfaces: `DEFAULT_EXCLUDED_COMMANDS` (MCP), `src/cli/auto_commands.py:EXCLUDED`
+  (CLI) and `src/api/codegen.py:API_EXCLUDED` (HTTP) — the last of which
+  `/api/execute` must also honour, or it is a back door around the typed routes.
+- `claude_sdk` is **not** covered — see design §2.5. The Agent SDK merges
+  `options.env` over a full `os.environ` copy with no way to remove a key.
 
 ---
 
@@ -218,6 +249,17 @@ async def run_doctor(
 Exit-code mapping (design §5.6): errors→2, else warns→1, else 0; the CLI maps a
 runner crash to 3.
 
+Two robustness rules the runner must satisfy:
+
+- An `only` entry matching neither a registered check nor a reserved id yields an
+  `ERROR` `CheckResult` for that id (→ exit 2). `aq doctor --check typo.id` must
+  not exit 0 with an empty table.
+- `--fix` looks the check up by result id **defensively** (`by_id.get(r.id)`): a
+  check — a plugin one especially — may return a `CheckResult` whose `id` differs
+  from `check.id`, and that must not raise `KeyError`. `_cmd_doctor` also wraps
+  `run_doctor` in `try/except`: doctor is what an operator reaches for when things
+  are already broken.
+
 ### 5.3 Built-in checks (`src/doctor/builtin.py`)
 
 One `def builtin_checks(...) -> list[DoctorCheck]` factory. Implementation notes per
@@ -234,8 +276,11 @@ check (ids per design §5.2):
   parser, MCP registry loader in report-only mode; one ERROR result per broken file,
   collapsed into `data["files"]`.
 - `harness.binaries` — `shutil.which` + `--version` subprocess (argv list, 5 s
-  timeout) for `git`, `gh`, plus each harness/runtime binary referenced by an active
-  profile; `tmux` deferred to the contributed check.
+  timeout, `_PROBE_TIMEOUT_S`). **As landed:** `git` required; `gh`, `claude`,
+  `acpx` optional. Deriving the list from active profiles is *not* implemented —
+  the profile→binary mapping for the 14+ ACP agents lives in `acpx`. A probe that
+  times out must `kill()` **and reap** the child; cancelling `communicate()` alone
+  leaks the process. `tmux` deferred to the contributed check.
 - `leases.stale`, `sessions.stale`, `tmux.server`, `worktrees.orphans` — **not
   implemented here**: [[session-runtime]] and [[worktree-execution]] register them
   at startup via `DoctorRegistry.register()`. Doctor ships the ids reserved and
@@ -251,8 +296,13 @@ check (ids per design §5.2):
 - `pauses.active` — read pause flags ([[feature-pauses]]: `memory.enabled`,
   `playbooks.enabled`, orchestrator paused state); always INFO.
 - `events.registry` — `registered_event_types()` (`src/event_schemas.py:518`) vs the
-  union of core emit sites and `PluginContext._event_type_registry`; WARN listing
-  unregistered types.
+  union of `EventBus.seen_event_types` (the types the live bus has dispatched;
+  `EventBus.emit` records them) and `PluginContext._event_type_registry`; WARN
+  listing unregistered types, INFO when the bus has observed nothing yet. The check
+  must read an attribute that **exists on the real `EventBus`** — the first version
+  read `bus.seen_event_types` / `bus._seen_event_types`, neither of which existed
+  outside the test's own fake, so on a real install it always reported OK. Test it
+  against a real `EventBus`, never a hand-rolled stand-in.
 - `mcp.probes` — `probe_many` (`src/profiles/mcp_probe.py:212`), 10 s timeout.
 
 ### 5.4 Command surface (`src/commands/ops_commands.py`)
@@ -298,9 +348,40 @@ def register_doctor_check(self, check: "DoctorCheck") -> None:
 ```
 
 `PluginContext.__init__` gains `doctor_registry: DoctorRegistry | None = None`
-(threaded through `src/plugins/loader.py` / `registry.py` the same way
-`command_registry` is). When `None` (tests, minimal contexts), registration is a
-logged no-op.
+(threaded through `src/plugins/registry.py` the same way `command_registry` is —
+`Orchestrator.doctor_registry` is set in `src/main.py` *before* `initialize()` and
+passed into `PluginRegistry`). When `None` (tests, minimal contexts), registration
+is a logged no-op.
+
+#### Contributed-check registration contract (as landed)
+
+The reserved ids live in `src/doctor/models.py` as `RESERVED_CHECK_IDS`, mapping
+each id to its owning workstream:
+
+| id | owner |
+|---|---|
+| `sessions.stale` | [[session-runtime]] |
+| `tmux.server` | [[session-runtime]] |
+| `worktrees.orphans` | [[worktree-execution]] |
+| `leases.stale` | [[worktree-execution]] |
+
+Doctor does **not** pre-register them. Until an owner claims an id, `run_doctor`
+synthesises `info: "check not registered (subsystem not enabled)"` with
+`data.owner` set and `data.reserved = true`, so the catalog stays complete and CI
+never fails on an absent subsystem. To claim one:
+
+1. Build a `DoctorCheck` whose `id` is exactly the reserved string and whose
+   `owner` names the workstream.
+2. Register it on the daemon-wide registry at startup —
+   `orchestrator.doctor_registry.register(check)` for core subsystems,
+   `PluginContext.register_doctor_check()` for plugins (which prefixes
+   `plugin.<name>.`). Registering a reserved id replaces the placeholder;
+   registering any *other* duplicate id raises `ValueError`.
+3. Obey the `--fix` safety rules for anything declared fixable — in particular
+   `worktrees.orphans` may only run `git worktree prune` and must never delete a
+   directory.
+
+`tests/test_doctor.py::TestReservedChecks` pins all three clauses.
 
 ### 5.6 CLI (`src/cli/doctor.py`)
 
@@ -345,26 +426,36 @@ computes `cost_usd = input_tokens * in_rate / 1e6 + output_tokens * out_rate / 1
 No pricing entry, or no split → the row's tokens count toward `unpriced_tokens` and
 `cost_usd` is null for that row. Never estimate.
 
+A bucket is `(group, model)`, so a *priced* row can still contain entries that had
+no split. Each row therefore reports
+`unpriced_tokens = max(0, tokens_used - (input_tokens + output_tokens))` when priced
+and `tokens_used` when not, and the command's `unpriced_tokens` is the sum of those.
+Invariant asserted in `tests/test_costs.py`: per row,
+*priced tokens + unpriced tokens = tokens_used*.
+
 ---
 
 ## 7. Checklist
 
-- [ ] `src/env_scrub.py` with `scrub_env`, constants, `ScrubResult`
-- [ ] `SecurityConfig` + `PricingConfig`/`ModelPricing` in `src/config.py`; wired into `AppConfig`, `validate()`, `load_config()`; config_editor round-trip verified
-- [ ] `isolated_env` delegates to `scrub_env` (`src/runtimes/_subprocess.py`)
-- [ ] `_cmd_run_command` + `_run_subprocess_shell` accept/pass scrubbed env
-- [ ] `_validate_ref` guard + `--` audit applied across `GitManager` branch APIs
-- [ ] `src/doctor/` package: models, runner, builtin checks
-- [ ] `OpsCommandsMixin` (`_cmd_doctor`, `_cmd_get_costs`) added to `CommandHandler` bases
-- [ ] `DoctorRegistry` constructed in `src/main.py`, handed to handler + plugin loader
-- [ ] `PluginContext.register_doctor_check` + registry threading
-- [ ] Explicit tool definitions for `doctor` / `get_costs` in `src/tools/definitions.py`
-- [ ] `src/cli/doctor.py` (`aq doctor`, `aq costs`) registered in `src/cli/app.py`; exit codes 0/1/2/3
-- [ ] Alembic migration: `token_ledger.model/input_tokens/output_tokens`; `docs/specs/database.md` updated
-- [ ] `record_token_usage` extension + `get_cost_rollup`
-- [ ] Invariant tests: `tests/test_docs_sync.py`, `tests/test_command_surface.py`; extend event-registry and state-machine tests; golden harness test scaffold (skipped until [[design/session-runtime]] lands)
-- [ ] Reserve contributed-check ids (`sessions.stale`, `tmux.server`, `worktrees.orphans`, `leases.stale`) and document the registration contract for session-runtime / worktree-execution
-- [ ] Document `docs/gates/<change>.md` convention in `docs/specs/design/trust-and-ops.md` §8 (done) and reference it from the PR template when one exists
+- [x] `src/env_scrub.py` with `scrub_env`, constants, `ScrubResult`
+- [x] `SecurityConfig` + `PricingConfig`/`ModelPricing` in `src/config.py`; wired into `AppConfig`, `validate()`, `load_config()`; config_editor round-trip verified
+- [x] `isolated_env` delegates to `scrub_env` (`src/runtimes/_subprocess.py`) **and the daemon config reaches it** — `RuntimeRegistry(config=…)` → `ACPXRuntime(config=…)` → `isolated_env(config=self._config)`
+- [x] `_cmd_run_command` + `_run_subprocess_shell` accept/pass scrubbed env; `run_command` excluded from MCP **and** CLI **and** the HTTP API (including `/api/execute`)
+- [ ] R6 for the **default** `claude_sdk` runtime — **open gap, recorded** in design §2.5: the Agent SDK inherits the full daemon env and `options.env` cannot remove a key. Closes with [[session-runtime]] owning the spawn
+- [x] `_validate_ref` guard + `--` audit applied across `GitManager` branch APIs; `_validate_rev` for the read-only diff APIs so advertised revision expressions (`HEAD~1`, `HEAD^`, `HEAD@{1}`) work
+- [x] `src/doctor/` package: models, runner, builtin checks
+- [x] `OpsCommandsMixin` (`_cmd_doctor`, `_cmd_get_costs`) added to `CommandHandler` bases
+- [x] `DoctorRegistry` constructed in `src/main.py`, handed to handler + plugin loader
+- [x] `PluginContext.register_doctor_check` + registry threading
+- [x] Explicit tool definitions for `doctor` / `get_costs` in `src/tools/definitions.py`, plus `get_schema` / `task_show` / `task_set` (lane 1D's commands) so `tests/test_command_surface.py` holds once the lanes meet
+- [x] `src/cli/doctor.py` (`aq doctor`, `aq costs`) registered in `src/cli/app.py`; exit codes 0/1/2/3
+- [x] Alembic migration: `token_ledger.model/input_tokens/output_tokens` (landed in Wave 0, revision `93a8a9e48fb8`); `docs/specs/database.md` updated — the table catalog is now enforced by `tests/test_docs_sync.py`
+- [x] `record_token_usage` extension + `get_cost_rollup`
+- [ ] A **writer** that populates `model` / `input_tokens` / `output_tokens` — **not landed.** `AgentOutput` carries only a total, so `src/orchestrator/execution.py` and `src/orchestrator/sync_workflow.py` still record totals alone. Consequence: on a real install every `aq costs` row is unpriced and `total_cost_usd` is `0.0`. The read path is complete and tested; the command is honest, not useful yet
+- [x] Invariant tests: `tests/test_docs_sync.py`, `tests/test_command_surface.py`; event-registry and state-machine tests extended
+- [ ] Golden harness test scaffold — **deferred**: it asserts against a `SessionSpec` type that [[design/session-runtime]] owns and has not landed
+- [x] Reserve contributed-check ids (`sessions.stale`, `tmux.server`, `worktrees.orphans`, `leases.stale`) and document the registration contract for session-runtime / worktree-execution
+- [x] Document `docs/gates/<change>.md` convention in `docs/specs/design/trust-and-ops.md` §8 and exercise it — see `docs/gates/wave1-1c-trust-ops.md`. No PR template exists yet to reference it from.
 
 ## 8. Test Plan
 
@@ -378,7 +469,7 @@ pytest-asyncio auto mode; suite runs under `pytest tests/ -n auto`.
 | `tests/test_doctor.py` (builtins) | `config.parse` against a broken temp config; `db.migrations` against an in-memory DB behind head; `db.wal_size` fix truncates WAL on a real temp SQLite file; `logs.llm_size` fix removes only beyond-retention dirs (reuses `LLMLogger` fixture); `events.registry` flags a synthetic unregistered emit |
 | `tests/test_costs.py` | rollup by project/profile/day on seeded ledger rows; glob pricing match order; rows without split → `unpriced_tokens`, no estimated cost; migration columns present (extend `tests/test_database.py` for both dialects) |
 | `tests/test_docs_sync.py` | `metadata.tables` ⇄ `docs/specs/database.md` names, exclusion list explicit — expected to **fail on first run** (the doc is stale, design §6) and drive the doc update |
-| `tests/test_command_surface.py` | every `_cmd_*` on `CommandHandler` is in `_ALL_TOOL_DEFINITIONS` ∪ `get_effective_exclusions()` ∪ `KNOWN_AUTO_REGISTERED` (a checked-in list that must shrink, never silently grow) |
+| `tests/test_command_surface.py` | every `_cmd_*` on `CommandHandler` is in `_ALL_TOOL_DEFINITIONS` ∪ `get_effective_exclusions()` ∪ `KNOWN_AUTO_REGISTERED` (a checked-in list that must shrink, never silently grow); `run_command` stays excluded from MCP, CLI **and** the API, and `_run_subprocess_shell` has exactly **one call site** — counted, not allow-listed by file, so a second caller inside `system_commands.py` fails too |
 | existing `tests/test_event_schema_registry_validation.py`, `tests/test_state_machine.py` | extended for registry completeness and the enforcement-flag contract (flag itself lands with Workstream D) |
 | `tests/test_git_manager*.py` | `_validate_ref` rejects `-oops`, `a b`, empty; accepts `aq/task-1`, `feature/x.y`; branch APIs raise `GitError` before spawning git |
 | CLI | `aq doctor` exit codes asserted via `CliRunner` with a stubbed client |
@@ -387,7 +478,8 @@ pytest-asyncio auto mode; suite runs under `pytest tests/ -n auto`.
 
 | Risk | Mitigation |
 |---|---|
-| Scrub breaks a working install (agent needed `OPENAI_API_KEY` etc.) | explicit-env-wins rule + `env_allowlist` + `env_scrub_enabled` kill switch; `dropped` names logged at session start so the cause is visible in `aq doctor`/logs |
+| Scrub breaks a working install (agent needed `OPENAI_API_KEY` etc.) | **`HARNESS_CREDENTIAL_ALLOWLIST` ships default-on** — an agent CLI keeps its provider credentials, so a fresh API-key install still works; plus explicit-env-wins, `env_allowlist`, and the `env_scrub_enabled` kill switch (which now actually reaches the launch site). `dropped` names logged at session start so the cause is visible in logs |
+| The kill switch / allowlist look wired but are inert | the config must reach the *runtime object*, not just the pure function: pinned by tests that construct through `RuntimeRegistry.create`. A test that calls `isolated_env(config=…)` directly proves nothing about production |
 | `AUTH` pattern false positives beyond `GIT_AUTHOR_*` | built-in exemptions cover the known set; allowlist covers the rest; doctor surfaces dropped names |
 | Refname validation rejects a legitimate exotic branch name | regex is a conservative subset of `git check-ref-format`; error message names the offending value and the escape hatch (rename or allow via explicit operator action) |
 | `--fix` deletes something it shouldn't | safety rules are enforced by review + the double-run idempotency tests; fixes limited to the enumerated list; worktree fix restricted to `git worktree prune` (registrations only) |

@@ -107,9 +107,15 @@ class ACPXRuntime(Runtime):
     capabilities: ClassVar[frozenset[Capability]] = frozenset(Capability)
     requires_workspace: ClassVar[bool] = True
 
-    def __init__(self, profile=None, llm_logger=None):
+    def __init__(self, profile=None, llm_logger=None, config=None):
         self._profile = profile
         self._llm_logger = llm_logger
+        # Daemon AppConfig, supplied by RuntimeRegistry.create.  Read only for
+        # the env-scrub policy (``security.env_scrub_enabled`` /
+        # ``security.env_allowlist``) — without it the kill switch and the
+        # operator's allowlist would be unreachable from the one production
+        # call site that builds an agent subprocess env.
+        self._config = config
         self._task: TaskContext | None = None
         self._cancel_event = asyncio.Event()
         self._session_id: str | None = None
@@ -156,7 +162,7 @@ class ACPXRuntime(Runtime):
 
         prompt = self._build_prompt()
         cmd = self._build_command()
-        env = isolated_env()
+        env = isolated_env(config=self._config)
         cwd = self._task.checkout_path or "."
 
         # Dispatch tasks created by _on_line so we can await them after

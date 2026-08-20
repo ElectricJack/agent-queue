@@ -30,7 +30,22 @@ class ExecuteRequest(BaseModel):
 
 @router.post("/api/execute")
 async def api_execute(body: ExecuteRequest, ch=Depends(get_command_handler)) -> JSONResponse:
-    """Run a CommandHandler command (backward-compat envelope)."""
+    """Run a CommandHandler command (backward-compat envelope).
+
+    Honours :data:`src.api.codegen.API_EXCLUDED`.  Without this the endpoint
+    is a back door around the typed routes' exclusion set — notably for
+    ``run_command``, whose containment (trust-and-ops §2.5) depends on it
+    being unreachable from every remote surface.
+    """
+    from src.api.codegen import API_EXCLUDED
+
+    if body.command in API_EXCLUDED:
+        logger.warning("Refused /api/execute for excluded command %s", body.command)
+        return JSONResponse(
+            {"ok": False, "error": f"Command '{body.command}' is not available over the API"},
+            status_code=403,
+        )
+
     try:
         result = await ch.execute(body.command, body.args)
     except Exception:

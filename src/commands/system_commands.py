@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from src.commands.helpers import _run_subprocess, _run_subprocess_shell
+from src.env_scrub import scrub_env_from_config
 
 logger = logging.getLogger(__name__)
 
@@ -665,6 +666,48 @@ class SystemCommandsMixin:
     # _cmd_read_file → moved to src/plugins/internal/files.py (aq-files plugin)
 
     async def _cmd_run_command(self, args: dict) -> dict:
+        """Run a shell command inside a sandboxed working directory.
+
+        .. warning::
+
+           **Known, contained trust-boundary violation** — see
+           ``docs/specs/design/trust-and-ops.md`` §2.5.  ``command`` is
+           authored by the chat/supervisor LLM and reaches ``/bin/sh -c``
+           verbatim, which rule R1 otherwise forbids.  It is *contained*
+           rather than fixed:
+
+           * every *remote* surface excludes it — MCP
+             (``DEFAULT_EXCLUDED_COMMANDS``), the CLI
+             (``src/cli/auto_commands.py`` ``EXCLUDED``) and the HTTP API
+             (``src/api/codegen.py`` ``API_EXCLUDED``, enforced both by the
+             generated routes and by ``/api/execute``).  Do not remove it from
+             any of the three.  In-process callers that hold a
+             ``CommandHandler`` directly — the supervisor's tool loop,
+             playbooks — are deliberately *not* gated: they are the callers
+             the command exists for;
+           * ``working_dir`` is resolved and sandboxed through
+             ``_validate_path``, so the shell cannot start outside an allowed
+             directory;
+           * the child gets a **scrubbed** environment (rule R6) instead of the
+             daemon's, so the daemon's bot token, database DSN and API keys are
+             not reachable from the command.  Provider credentials are withheld
+             too (``harness_credentials=False``): unlike an agent harness, a
+             diagnostic shell has no need to authenticate to a model vendor;
+           * every invocation is logged at WARNING with the resolved directory,
+             so an audit trail exists even when the result is discarded.
+
+           No escaping or deny-listing is attempted: R1 explicitly rules out
+           escaping-based carve-outs, and a substring blocklist over shell text
+           would provide the appearance of safety without the property.  The
+           real remediation is deletion — it happens when the in-process
+           supervisor chat loop gives agents shells inside their own worktrees
+           (overhaul D2).
+
+        Args:
+            command: Shell command string (LLM-authored — untrusted).
+            working_dir: Project id, workspace name, or absolute path.
+            timeout: Seconds, capped at 120.
+        """
         command = args.get("command")
         working_dir = args.get("working_dir")
         if not command:
@@ -686,11 +729,22 @@ class SystemCommandsMixin:
         if not os.path.isdir(validated):
             return {"error": f"Directory not found: {working_dir}"}
 
+        # Rule R6: never hand the daemon's own environment to an LLM-authored
+        # command.  Names of withheld variables are logged; values never are.
+        scrubbed = scrub_env_from_config(self.config, harness_credentials=False)
+        logger.warning(
+            "run_command executing LLM-authored shell string in %s "
+            "(scrubbed %d env var(s)) — trust-and-ops §2.5",
+            validated,
+            len(scrubbed.dropped),
+        )
+
         try:
             rc, stdout, stderr = await _run_subprocess_shell(
                 command,
                 cwd=validated,
                 timeout=timeout,
+                env=scrubbed.env,
             )
             stdout = stdout[:4000] if stdout else ""
             stderr = stderr[:2000] if stderr else ""
@@ -698,6 +752,7 @@ class SystemCommandsMixin:
                 "returncode": rc,
                 "stdout": stdout,
                 "stderr": stderr,
+                "env_scrubbed": len(scrubbed.dropped),
             }
         except asyncio.TimeoutError:
             return {"error": f"Command timed out after {timeout}s"}

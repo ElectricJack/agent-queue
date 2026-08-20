@@ -11,27 +11,52 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import signal
 from typing import Callable
+
+from src.env_scrub import STRIP_ALWAYS, scrub_env, scrub_env_from_config
 
 logger = logging.getLogger(__name__)
 
 # Env vars that must be stripped before launching agent subprocesses to
 # prevent the SDK / CLI from detecting it's inside an existing Claude session.
-_STRIP_ENV_VARS = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+# Kept as an alias so existing importers still resolve; the policy itself now
+# lives in :mod:`src.env_scrub`.
+_STRIP_ENV_VARS = STRIP_ALWAYS
 
 
-def isolated_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Build an env dict for agent subprocesses.
+def isolated_env(
+    extra: dict[str, str] | None = None,
+    *,
+    config=None,
+) -> dict[str, str]:
+    """Build a **scrubbed** env dict for agent subprocesses.
 
-    Inherits :data:`os.environ` minus :data:`_STRIP_ENV_VARS`, then merges
-    *extra* on top.  Use this for every subprocess launched by a platform.
+    Thin wrapper over :func:`src.env_scrub.scrub_env` (trust rule R6): the
+    daemon's own secrets are withheld, ``CLAUDECODE`` /
+    ``CLAUDE_CODE_ENTRYPOINT`` are always stripped, and *extra* is merged last
+    so harness/profile values always win.
+
+    Pass *config* (an ``AppConfig``) to honour ``security.env_allowlist`` and
+    the ``security.env_scrub_enabled`` kill switch; without it the shipped
+    defaults apply.  ``ACPXRuntime`` receives its config from
+    ``RuntimeRegistry.create`` and always passes it — a call without *config*
+    means the caller has no config to give (tests, ad-hoc probes), not that
+    the operator's settings may be ignored.  The policy therefore survives
+    this module's planned deletion — the session-runtime ``SessionSpec``
+    builder calls ``scrub_env`` directly with the same arguments.
     """
-    env = {k: v for k, v in os.environ.items() if k not in _STRIP_ENV_VARS}
-    if extra:
-        env.update(extra)
-    return env
+    if config is not None:
+        result = scrub_env_from_config(config, explicit=extra)
+    else:
+        result = scrub_env(explicit=extra)
+    if result.dropped:
+        logger.debug(
+            "isolated_env withheld %d env var(s): %s",
+            len(result.dropped),
+            ", ".join(result.dropped),
+        )
+    return result.env
 
 
 def parse_ndjson_line(line: bytes) -> dict | None:

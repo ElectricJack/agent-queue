@@ -76,6 +76,18 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
     orch = Orchestrator(config, runtimes=None)
+
+    # Daemon-wide doctor registry: built-in checks now; subsystem-contributed
+    # checks are registered by their owners at startup and plugin checks via
+    # ``PluginContext.register_doctor_check()``.  Attached to the orchestrator
+    # so every CommandHandler built from it (API, MCP, supervisor) sees the
+    # same catalog.  Must exist *before* ``orch.initialize()`` — that is where
+    # the plugin registry is constructed.  See design/trust-and-ops §5.
+    from src.doctor import default_registry as default_doctor_registry
+
+    orch.doctor_registry = default_doctor_registry()
+    logger.info("Doctor registry: %d built-in checks", len(orch.doctor_registry))
+
     # Daemon-wide Supervisor — used by the messaging adapter for chat AND
     # registered as the singleton ``"supervisor"`` platform so tasks with
     # ``profile.platform="supervisor"`` execute in-process via the same
@@ -84,7 +96,7 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     from src.runtimes.supervisor import Supervisor
 
     shared_supervisor = Supervisor(orch, config, llm_logger=orch.llm_logger)
-    registry = default_registry(supervisor=shared_supervisor)
+    registry = default_registry(supervisor=shared_supervisor, config=config)
     orch._runtimes = registry
     await orch.initialize()
     # Initialise the shared Supervisor's chat provider.  Failures here are

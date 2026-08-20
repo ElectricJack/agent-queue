@@ -149,10 +149,14 @@ class PluginRegistry:
         config: AppConfig,
         notify_callback: Callable | None = None,
         execute_command_callback: Callable | None = None,
+        doctor_registry=None,
     ):
         self._db = db
         self._bus = bus
         self._config = config
+        # Daemon-wide DoctorRegistry (or None).  Handed to every PluginContext
+        # so plugins can contribute checks — see trust-and-ops design §5.5.
+        self._doctor_registry = doctor_registry
         self._notify_callback = notify_callback
         self._execute_command_callback = execute_command_callback
         self._invoke_llm_callback: Callable | None = None
@@ -305,6 +309,7 @@ class PluginRegistry:
                     services=services,
                     plugin_services_callback=self.register_plugin_service,
                     active_project_id_getter=self._active_project_id_getter,
+                    doctor_registry=self._doctor_registry,
                 )
 
                 await instance.initialize(ctx)
@@ -510,6 +515,7 @@ class PluginRegistry:
             services=external_services,
             plugin_services_callback=self.register_plugin_service,
             active_project_id_getter=self._active_project_id_getter,
+            doctor_registry=self._doctor_registry,
         )
 
         # Load config from DB before plugin init so get_config() works
@@ -1166,6 +1172,7 @@ class PluginRegistry:
             invoke_llm_callback=self._invoke_llm_callback,
             services=external_services,
             plugin_services_callback=self.register_plugin_service,
+            doctor_registry=self._doctor_registry,
         )
 
         await instance.initialize(ctx)
