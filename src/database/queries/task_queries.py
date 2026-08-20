@@ -13,6 +13,7 @@ from src.database.tables import (
     task_context,
     task_criteria,
     task_dependencies,
+    task_labels,
     task_metadata,
     task_results,
     task_tools,
@@ -320,6 +321,36 @@ class TaskQueryMixin:
                     )
                 )
             )
+
+    # ---- task_labels (free-text tags — aq-surface spec `task_set`) ----
+
+    async def add_task_label(self, task_id: str, label: str) -> None:
+        """Attach a label to a task. No-op if already present."""
+        async with self._engine.begin() as conn:
+            existing = await conn.execute(
+                select(task_labels.c.label).where(
+                    and_(task_labels.c.task_id == task_id, task_labels.c.label == label)
+                )
+            )
+            if existing.fetchone() is None:
+                await conn.execute(insert(task_labels).values(task_id=task_id, label=label))
+
+    async def remove_task_label(self, task_id: str, label: str) -> None:
+        """Detach a label from a task. No-op if not present."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                delete(task_labels).where(
+                    and_(task_labels.c.task_id == task_id, task_labels.c.label == label)
+                )
+            )
+
+    async def get_task_labels(self, task_id: str) -> list[str]:
+        """Return all labels attached to a task, sorted."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(task_labels.c.label).where(task_labels.c.task_id == task_id)
+            )
+            return sorted(r[0] for r in result.fetchall())
 
     async def get_subtasks(self, parent_task_id: str) -> list[Task]:
         """Return all direct children of a task."""

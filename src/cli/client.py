@@ -33,11 +33,14 @@ def _resolve_api_url() -> str:
     """Resolve the daemon API base URL.
 
     Priority:
-    1. ``AGENT_QUEUE_API_URL`` environment variable
-    2. MCP server config from ``~/.agent-queue/config.yaml``
-    3. Default ``http://127.0.0.1:8081``
+    1. ``AQ_API_URL`` environment variable (canonical — design §5.1 / §7.1;
+       set automatically inside agent sessions by session-runtime)
+    2. ``AGENT_QUEUE_API_URL`` environment variable (legacy alias, kept
+       indefinitely per design §9.3 — baked into existing shells/docs)
+    3. MCP server config from ``~/.agent-queue/config.yaml``
+    4. Default ``http://127.0.0.1:8081``
     """
-    env_url = os.environ.get("AGENT_QUEUE_API_URL")
+    env_url = os.environ.get("AQ_API_URL") or os.environ.get("AGENT_QUEUE_API_URL")
     if env_url:
         return env_url.rstrip("/")
 
@@ -143,13 +146,20 @@ class CLIClient:
             result = await client.execute("list_tasks", {"project_id": "myproj"})
     """
 
-    def __init__(self, base_url: str | None = None):
+    def __init__(self, base_url: str | None = None, token: str | None = None):
         self._base_url = base_url or _resolve_api_url()
+        # AQ_API_TOKEN: per-session bearer token, injected by session-runtime
+        # (design §7.1). Unused server-side until Phase S2 (auth) lands —
+        # plumbed through now so callers don't need to change again later.
+        self._token = token or os.environ.get("AQ_API_TOKEN")
         self._http: httpx.AsyncClient | None = None
         self._generated_client: Any | None = None
 
     async def connect(self) -> None:
-        self._http = httpx.AsyncClient(base_url=self._base_url, timeout=_DEFAULT_TIMEOUT)
+        headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
+        self._http = httpx.AsyncClient(
+            base_url=self._base_url, timeout=_DEFAULT_TIMEOUT, headers=headers
+        )
         try:
             resp = await self._http.get("/api/health")
             resp.raise_for_status()

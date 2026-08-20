@@ -674,7 +674,10 @@ class TestCLICommands:
         return mock_client
 
     def test_task_list_with_formatter(self, runner):
-        """Auto-generated list_tasks should use Rich formatter, not raw JSON."""
+        """`task list` (hand-crafted since aq-surface Phase S0, previously
+        auto-generated from list_tasks — see src/cli/tasks.py) should use
+        the Rich formatter, not raw JSON.
+        """
         from src.cli.app import cli
 
         mock = self._mock_client(
@@ -696,7 +699,10 @@ class TestCLICommands:
             }
         )
 
-        with patch("src.cli.app._get_client", return_value=mock):
+        # Hand-crafted commands import `_get_client` at module scope (see
+        # src/cli/tasks.py), unlike auto-generated commands which late-bind
+        # `from . import app as _app` — patch the module it actually lives in.
+        with patch("src.cli.tasks._get_client", return_value=mock):
             result = runner.invoke(cli, ["task", "list"])
             assert result.exit_code == 0
             assert "Test task" in result.output
@@ -950,7 +956,9 @@ class TestDaemonNotRunningPrompt:
         )
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.cli.app._get_client", return_value=mock_client):
+        # `task list` is hand-crafted (src/cli/tasks.py) since aq-surface
+        # Phase S0 — patch the module it actually imports `_get_client` from.
+        with patch("src.cli.tasks._get_client", return_value=mock_client):
             result = runner.invoke(cli, ["task", "list"], input="n\n")
             assert result.exit_code == 1
             assert "not running" in result.output.lower()
@@ -984,7 +992,7 @@ class TestDaemonNotRunningPrompt:
         )
 
         with (
-            patch("src.cli.app._get_client", return_value=mock_client),
+            patch("src.cli.tasks._get_client", return_value=mock_client),
             patch("src.cli.daemon.start_daemon", return_value=True),
         ):
             result = runner.invoke(cli, ["task", "list"], input="y\n")
