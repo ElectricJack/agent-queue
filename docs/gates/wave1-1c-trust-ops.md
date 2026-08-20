@@ -43,17 +43,37 @@ python -m pytest tests/ -n auto -q -p no:randomly --tb=no
 117 failed, 6730 passed, 469 skipped, 23 xfailed
 ```
 
-After lane 1C:
+After lane 1C, run twice (the suite is not deterministic under `-n auto`):
 
 ```
-python -m pytest tests/ -n auto -q -p no:randomly --tb=no
-117 failed, 7003 passed, 469 skipped, 23 xfailed
+run 1: 113 failed, 6968 passed, 469 skipped, 23 xfailed
+run 2: 111 failed, 6970 passed, 469 skipped, 23 xfailed
 ```
 
-**New failures: 0.** The 117 failures are byte-identical to the baseline set
-(`test_profile_integration.py` ×19, `test_telegram.py` ×12,
-`test_config_editor.py` ×8, `test_aq_uri.py` ×7, and so on) — all pre-existing on
-this machine and untouched by this lane.
+**Attributable new failures: 0.** Set difference against the baseline:
+
+| Test | run 1 | run 2 | Verdict |
+|---|---|---|---|
+| `test_playbook_runner.py::TestPauseTimeoutSpec::test_re_pause_resets_paused_at` | fail | fail | flaky |
+| `test_playbook_runner.py::TestPauseTimeoutSpec::test_resume_and_re_pause_at_same_node` | fail | fail | flaky |
+| `test_l0_l1_tier_injection.py::TestL0RoleFromProfile` ×2 | fail | pass | flaky |
+| `test_config_editor.py` ×8 | pass | pass | flaky (fails at baseline) |
+
+Both clusters were reproduced as pre-existing flakes on untouched code:
+
+- The two `TestPauseTimeoutSpec` failures assert `paused_at_second >
+  paused_at_first` across two rapid `time.time()` calls. On Windows the clock
+  granularity is ~15.6 ms, so both reads return the same float — the observed
+  assertion is literally `1787186124.0606163 > 1787186124.0606163`. Run in
+  isolation they fail 2 times in 3. `src/playbooks/runner.py` is not in this
+  lane's diff.
+- `test_l0_l1_tier_injection.py` passes 3/3 sequentially and fails **11 of 23**
+  under `pytest -n 4` on the file alone, with a different subset each time —
+  shared global state, not a behaviour change. The same mechanism explains the
+  8 `test_config_editor.py` failures that appear at baseline and disappear
+  afterwards; neither file's dependencies are in this lane's diff.
+
+Targeted runs:
 
 Targeted runs:
 
@@ -128,7 +148,9 @@ Recorded rather than silently absorbed:
 
 ## Verdict
 
-**PASS** — 2026-08-19, lane 1C (Wave 1). Zero new test failures; the two items
+**PASS** — 2026-08-19, lane 1C (Wave 1). Zero attributable new test failures
+(the two candidates are reproducible pre-existing flakes in untouched code,
+shown above); the two items
 knowingly left open are the golden harness scaffold and the four
 subsystem-contributed doctor checks, both blocked on session-runtime /
 worktree-execution and both reserved rather than forgotten.
