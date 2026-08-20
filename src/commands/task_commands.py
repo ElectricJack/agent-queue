@@ -473,12 +473,24 @@ class TaskCommandsMixin:
         full subtask tree for each root task using
         ``Database.get_task_tree()``.  The caller receives both
         pre-formatted text (ready for Discord) and structured data.
+
+        Label filters apply to the **roots**: a tree is included when its root
+        carries the label, and it is then rendered whole.  Filtering the
+        subtree instead would return shredded trees whose parents are missing,
+        which is not what a hierarchical view is for.  Callers that want every
+        matching task regardless of position use flat mode.  Silently dropping
+        the filter (the previous behaviour) is the one option that is simply
+        wrong — ``--labels x --display-mode tree`` returned everything.
         """
         project_id: str = db_kwargs["project_id"]
         mode_name = "compact" if compact else "tree"
 
         # 1. Get all root-level tasks for the project.
-        root_tasks = await self.db.get_parent_tasks(project_id)
+        root_tasks = await self.db.get_parent_tasks(
+            project_id,
+            labels=db_kwargs.get("labels"),
+            any_label=db_kwargs.get("any_label"),
+        )
 
         # 2. Apply status filtering to root tasks.
         if explicit_status:
@@ -568,12 +580,16 @@ class TaskCommandsMixin:
                             dep_map=dep_map,
                         )
 
-        return {
+        result: dict = {
             "display_mode": mode_name,
             "trees": trees,
             "total_root_tasks": len(trees),
             "total_tasks": total_tasks,
         }
+        if db_kwargs.get("labels") or db_kwargs.get("any_label"):
+            # Tell the caller the filter matched roots, not every node.
+            result["label_filter_scope"] = "root"
+        return result
 
     # -- shared helpers ------------------------------------------------------
 

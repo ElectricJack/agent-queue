@@ -262,6 +262,27 @@ class TestListTaskLabelFilters:
         res = await handler._cmd_list_tasks({"project_id": PROJECT_ID, "any_label": ["x"]})
         assert sorted(t["id"] for t in res["tasks"]) == ["a", "b"]
 
+    @pytest.mark.parametrize("display_mode", ["tree", "compact"])
+    async def test_hierarchical_modes_honour_the_filter(self, handler, db, display_mode):
+        """``--labels x --display-mode tree`` used to return everything: the
+        kwargs were built and then dropped on the floor."""
+        await mktask(db, "a", status=TaskStatus.READY)
+        await mktask(db, "b", status=TaskStatus.READY)
+        await db.add_task_label("a", "x")
+
+        res = await handler._cmd_list_tasks(
+            {"project_id": PROJECT_ID, "labels": ["x"], "display_mode": display_mode}
+        )
+        assert [t["root"]["id"] for t in res["trees"]] == ["a"]
+        assert res["label_filter_scope"] == "root"
+
+    async def test_hierarchical_modes_are_unchanged_without_a_filter(self, handler, db):
+        await mktask(db, "a", status=TaskStatus.READY)
+        await mktask(db, "b", status=TaskStatus.READY)
+        res = await handler._cmd_list_tasks({"project_id": PROJECT_ID, "display_mode": "tree"})
+        assert sorted(t["root"]["id"] for t in res["trees"]) == ["a", "b"]
+        assert "label_filter_scope" not in res
+
 
 # ── task_set label events ────────────────────────────────────────────────
 

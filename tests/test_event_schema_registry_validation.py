@@ -1115,15 +1115,39 @@ class TestSchemaStructureConsistency:
                 fields = schema[key]
                 assert len(fields) == len(set(fields)), f"{event_type}.{key} has duplicate fields"
 
+    # The three work-graph events written by the *projection* rather than by
+    # ``_emit_task_event``: the blocked-state recompute and the conditional
+    # auto-close cascade write audit rows in bulk, identified by
+    # (task_id, project_id) plus a reason tag.  ``get_recent_events`` serves
+    # those rows to consumers, so ``title`` is genuinely not always present
+    # and belongs in ``optional`` — "required" means a consumer may rely on
+    # it.  The exemption is guarded by the test below so it cannot quietly
+    # grow.
+    _PROJECTION_WRITTEN_TASK_EVENTS = {
+        "task.blocked",
+        "task.unblocked",
+        "task.skipped_conditional",
+    }
+
     def test_task_events_share_base_triple(self):
-        """All task.* events require task_id, project_id, title."""
+        """All task.* events emitted via ``_emit_task_event`` require
+        task_id, project_id, title."""
         base = {"task_id", "project_id", "title"}
         for event_type in EVENT_SCHEMAS:
-            if event_type.startswith("task."):
-                required = set(EVENT_SCHEMAS[event_type]["required"])
-                assert base.issubset(required), (
-                    f"{event_type} missing base fields: {base - required}"
-                )
+            if not event_type.startswith("task."):
+                continue
+            if event_type in self._PROJECTION_WRITTEN_TASK_EVENTS:
+                continue
+            required = set(EVENT_SCHEMAS[event_type]["required"])
+            assert base.issubset(required), f"{event_type} missing base fields: {base - required}"
+
+    def test_projection_written_task_events_still_carry_the_pair(self):
+        """The exemption is narrow: (task_id, project_id) stays required and
+        ``title`` must be declared optional, not dropped."""
+        for event_type in self._PROJECTION_WRITTEN_TASK_EVENTS:
+            schema = EVENT_SCHEMAS[event_type]
+            assert {"task_id", "project_id"}.issubset(set(schema["required"])), event_type
+            assert "title" in schema["optional"], event_type
 
     def test_notify_events_share_base_fields(self):
         """All notify.* events require event_type, severity, category."""

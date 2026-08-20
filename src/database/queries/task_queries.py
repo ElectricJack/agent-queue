@@ -458,14 +458,27 @@ class TaskQueryMixin:
 
         return await _build_subtree(root)
 
-    async def get_parent_tasks(self, project_id: str) -> list[Task]:
-        """Return top-level tasks for a project (those with no parent)."""
+    async def get_parent_tasks(
+        self,
+        project_id: str,
+        *,
+        labels: list[str] | None = None,
+        any_label: list[str] | None = None,
+    ) -> list[Task]:
+        """Return top-level tasks for a project (those with no parent).
+
+        ``labels`` (all-of) and ``any_label`` (any-of) apply the same filters
+        as :meth:`list_tasks`, so tree/compact listings can honour a label
+        filter instead of silently ignoring it.
+        """
+        stmt = select(tasks).where(
+            (tasks.c.project_id == project_id) & (tasks.c.parent_task_id.is_(None))
+        )
+        if labels or any_label:
+            stmt = apply_label_filters(stmt, labels=labels, any_label=any_label)
+        stmt = stmt.order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
         async with self._engine.begin() as conn:
-            result = await conn.execute(
-                select(tasks)
-                .where((tasks.c.project_id == project_id) & (tasks.c.parent_task_id.is_(None)))
-                .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
-            )
+            result = await conn.execute(stmt)
             return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
     @staticmethod
