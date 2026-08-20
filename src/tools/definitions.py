@@ -3109,9 +3109,10 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_close",
         "description": (
-            "Close a task with an outcome. Validates enums against `get_schema` and delegates "
-            "the state transition to work-graph. Backs `aq task close`. "
-            "(Implementation pending — src/commands/session_commands.py.)"
+            "Close a task with an outcome. This is the ONLY way a session-run task reaches "
+            "COMPLETED — process exit is a failure signal, never success. Records outcome "
+            "metadata, runs the completion pipeline (commit/push/PR/verify), and transitions "
+            "the task. Follow it with `aq session drain-ack`. Backs `aq task close`."
         ),
         "input_schema": {
             "type": "object",
@@ -3141,8 +3142,9 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_heartbeat",
         "description": (
-            "Refresh this task's agent lease. Returns the new lease_expires_at. Backs "
-            "`aq task heartbeat`. (Implementation pending — src/commands/session_commands.py.)"
+            "Refresh this task's agent lease so the stall ladder does not start climbing "
+            "during a long command. Returns the new lease_expires_at. Backs "
+            "`aq task heartbeat`."
         ),
         "input_schema": {
             "type": "object",

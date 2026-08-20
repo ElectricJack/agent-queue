@@ -529,6 +529,21 @@ class TestDriftDetection:
             # §3, §9.
             "prime",
             "task_handoff",
+            # session-runtime Phase S2 (src/commands/session_commands.py) --
+            # operator/CLI surface (list, show, peek, attach, nudge, logs,
+            # kill) plus the agent-facing drain-ack.  Not part of the nine-
+            # command task-scope MCP allowlist, so they are left to auto-
+            # discovery rather than given rich schemas.  ``task_close`` and
+            # ``task_heartbeat`` *are* task-scope and keep their typed
+            # definitions in src/tools/definitions.py.
+            "session_attach",
+            "session_drain_ack",
+            "session_kill",
+            "session_list",
+            "session_logs",
+            "session_nudge",
+            "session_peek",
+            "session_show",
         }
         tools = await mcp_server.list_tools()
         extra = {t.name for t in tools} - {d["name"] for d in _ALL_TOOL_DEFINITIONS}
@@ -599,6 +614,21 @@ class TestDriftDetection:
             # §3, §9.
             "prime",
             "task_handoff",
+            # session-runtime Phase S2 (src/commands/session_commands.py) --
+            # operator/CLI surface (list, show, peek, attach, nudge, logs,
+            # kill) plus the agent-facing drain-ack.  Not part of the nine-
+            # command task-scope MCP allowlist, so they are left to auto-
+            # discovery rather than given rich schemas.  ``task_close`` and
+            # ``task_heartbeat`` *are* task-scope and keep their typed
+            # definitions in src/tools/definitions.py.
+            "session_attach",
+            "session_drain_ack",
+            "session_kill",
+            "session_list",
+            "session_logs",
+            "session_nudge",
+            "session_peek",
+            "session_show",
         }
         all_commands = _discover_all_commands()
         explicit = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
