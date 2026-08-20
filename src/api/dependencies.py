@@ -23,7 +23,19 @@ _base_url: str = ""
 
 
 def get_command_handler() -> CommandHandler:
-    """FastAPI dependency that returns the shared CommandHandler."""
+    """FastAPI dependency that returns the shared CommandHandler.
+
+    Prefers the orchestrator's *current* handler over the snapshot taken at
+    ``create_app()`` time: ``src/main.py`` lets the messaging adapter replace
+    the daemon-wide handler after startup (Discord owns its own, complete
+    with the ``_on_project_created`` / ``_on_project_deleted`` callbacks), and
+    the HTTP API must follow that swap rather than keep serving a stale
+    instance.  Falls back to the snapshot when no orchestrator is wired (e.g.
+    router-level unit tests).
+    """
+    live = getattr(_orchestrator, "_command_handler", None) if _orchestrator is not None else None
+    if live is not None:
+        return live
     assert _command_handler is not None, "CommandHandler not initialized"
     return _command_handler
 

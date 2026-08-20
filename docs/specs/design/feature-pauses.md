@@ -238,6 +238,14 @@ the existing timeout sweep and resume handlers pick them up unchanged.
   must not be deleted.
 - **No schema migrations** are part of the pause, so `alembic downgrade` questions do not
   arise.
+- **Exception — the chat analyzer.** The messaging-rework M0 strip removed the chat-observer
+  *production* path outright (the Discord bot no longer constructs `ChatObserver`), rather
+  than pausing it. `src/chat_observer.py`, `Supervisor.observe()`, `ObservationConfig`,
+  `ChatAnalyzerConfig`, the `chat_analyzer_suggestions` table and its query methods all
+  survive intact — no data or code was deleted — but they now have no producer. Consequently
+  `supervisor.observation.enabled` (§6) is currently **inert**: flipping it has zero runtime
+  effect either way. Re-enabling the analyzer requires re-wiring a producer, not just the
+  flag.
 
 ---
 

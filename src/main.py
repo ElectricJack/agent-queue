@@ -96,6 +96,19 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             "supervisor-platform tasks will fail until credentials are configured"
         )
 
+    # Wire the daemon-wide command handler / supervisor BEFORE any task is
+    # created (messaging-rework M0; 1B review fix 1).  The embedded MCP task
+    # and the HTTP API are started below and ``src/api/app.py::create_app``
+    # constructs a throwaway CommandHandler if ``orch._command_handler`` is
+    # still None when it runs — permanently binding the API and MCP surfaces
+    # to a handler nobody else shares.  ``run_mcp``'s synchronous MCP SDK
+    # import (~3s) never yields, so a handler set later inside the scheduler
+    # loop always loses that race.  Setting it here makes the wiring
+    # deterministic; the messaging adapter still overrides both below when it
+    # owns a handler/supervisor of its own (Discord does, Null does not).
+    orch.set_command_handler(shared_supervisor.handler)
+    orch.set_supervisor(shared_supervisor)
+
     # Start health check server (if enabled)
     async def _plan_content(task_id: str) -> str | None:
         """Fetch raw plan content from task_context for the plan viewer."""
@@ -193,10 +206,16 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         # every adapter owns a CommandHandler/Supervisor of its own — e.g.
         # NullMessagingAdapter (messaging_platform: "none") returns None
         # from both getters so the daemon boots with no adapter at all.
-        # Fall back to the daemon-wide shared_supervisor constructed above
-        # so CLI/MCP/HTTP-API callers still get a working command handler.
-        orch.set_command_handler(adapter.get_command_handler() or shared_supervisor.handler)
-        orch.set_supervisor(adapter.get_supervisor() or shared_supervisor)
+        # The daemon-wide shared_supervisor is already wired in before any
+        # task starts (see above), so this is purely the adapter *override*
+        # for adapters that do own one — never the fallback that CLI, MCP and
+        # the HTTP API depend on.
+        adapter_handler = adapter.get_command_handler()
+        if adapter_handler is not None:
+            orch.set_command_handler(adapter_handler)
+        adapter_supervisor = adapter.get_supervisor()
+        if adapter_supervisor is not None:
+            orch.set_supervisor(adapter_supervisor)
 
         while not shutdown_event.is_set():
             await orch.run_one_cycle()

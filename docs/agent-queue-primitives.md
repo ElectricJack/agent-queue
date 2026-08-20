@@ -205,7 +205,7 @@ Vault is Obsidian-compatible markdown. Scoped by directory: `system/` · `orches
 | **FileWatcher** | `src/file_watcher.py`, `src/workspace_spec_watcher.py` | Vault + workspace spec changes → compile / sync / reindex. |
 | **CommandHandler** | `src/commands/handler.py` (+ mixins in `src/commands/`) | Single mutation entry point. Auto-exposed as MCP tools. |
 | **Tool Registry** | `src/tools/registry.py` | Plugins register here; profiles select from here. |
-| **Messaging Adapters** | `src/discord/`, `src/telegram/`, `src/messaging/base.py` | Platform-agnostic send/receive + notification routing. |
+| **Messaging Adapters** | `src/discord/`, `src/messaging/base.py`, `src/messaging/null_adapter.py` | Platform-agnostic send/receive + notification routing. Discord or `none`. |
 | **Chat Providers** | `src/chat_providers/` | Normalized LLM client (Anthropic / OpenAI / Ollama / Gemini) returning `ChatResponse`. |
 | **Memory V2 Plugin** | `src/plugins/internal/memory_v2/` + `packages/memsearch/` | Milvus-backed. Semantic + KV + temporal facts. Multi-scope weighted queries. |
 

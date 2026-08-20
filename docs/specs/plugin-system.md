@@ -535,7 +535,7 @@ Several existing AgentQueue subsystems are good candidates for extraction into p
 
 | Component | Current Location | Notes |
 |---|---|---|
-| **Telegram Adapter** | `src/telegram/` (1,379 LOC) | Self-contained platform adapter. Needs formalized callback API. |
+| _(none currently)_ | — | The Telegram adapter previously listed here was deleted at messaging-rework M0, not extracted. |
 
 ### Hard Extractions (Long-term)
 
@@ -549,7 +549,6 @@ Several existing AgentQueue subsystems are good candidates for extraction into p
 1. ✅ **Memory Manager** — extracted as `aq-memory`; validated complex plugin with external dependencies
 2. Next, **File Watcher** — validates the plugin loading pipeline end-to-end for a simpler subsystem
 3. Then **Ollama Chat Provider** — validates plugin tool/command registration
-4. Then **Telegram Adapter** — validates messaging plugin pattern for future platforms (Slack, Teams)
 
 Each extraction serves as a proving ground for the plugin API surface. If the API can't cleanly support the extraction, the API needs to change before publishing it for external plugin authors.
 

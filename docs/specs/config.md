@@ -504,7 +504,6 @@ Context fields are bound at system boundaries and automatically appear on all lo
 | Plugin command | `plugin` (nested inside command handler context) |
 | Plugin cron | `plugin`, `component="plugin_cron"`, `cron_method` |
 | Discord bot | `platform="discord"`, `discord_user`, `channel_id` |
-| Telegram bot | `platform="telegram"`, `telegram_user`, `chat_id` |
 | Supervisor | `component="supervisor"` |
 | Hook engine | `hook_id`, `project_id`, `component="hooks"` |
 

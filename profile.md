@@ -173,8 +173,7 @@ Memory is provided by the **external `aq-memory` plugin** (install via `aq plugi
 | `src/tokens/` | Token budget calculation, usage ledger, rate limit tracking |
 | `src/chat_providers/` | LLM provider abstraction (Anthropic, Gemini, Ollama) |
 | `src/prompts/` | System prompts and templates (Mustache-style `{{placeholder}}`) |
-| `src/messaging/` | Cross-platform messaging abstraction |
-| `src/telegram/` | Telegram bot integration |
+| `src/messaging/` | Messaging transport port + adapter factory (`discord`, `none`) |
 | `src/plugins/` | Plugin system for extensibility |
 | `packages/mcp_server/` | MCP server — auto-exposes all CommandHandler commands as MCP tools |
 | `packages/aq-client/` | Typed API client (generated) for CLI and external tools |

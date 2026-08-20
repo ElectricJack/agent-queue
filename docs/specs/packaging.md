@@ -140,7 +140,6 @@ Extras group features that aren't needed for the minimal install:
 | `inbox`      | Gmail/OAuth helpers (`google-api-python-client`, `google-auth-oauthlib`) |
 | `postgresql` | Postgres backend driver (`asyncpg>=0.29.0`)                             |
 | `ollama`     | Local models via the `openai>=1.0.0` client                             |
-| `telegram`   | Telegram bot support (`python-telegram-bot[ext]>=20.0`)                 |
 | `mcp`        | MCP server dependencies (`mcp>=1.0.0`)                                  |
 | `cli`        | `aq` CLI (`click`, `prompt-toolkit`, `agent-queue-api-client`)          |
 | `memory`     | Semantic memory via the vendored memsearch fork                         |
