@@ -13,12 +13,16 @@ or the dashboard — never a slash command.
 | ``/explain`` | ``task_explain`` | "Why isn't X running" support question. |
 | ``/peek`` | ``session_peek`` | See the live pane without leaving Discord. |
 | ``/gates`` | ``gate_list`` | What is waiting on a human right now. |
-| ``/attach`` | ``session_attach_command`` | Bridge to the real terminal. |
+| ``/attach`` | ``session_attach`` | Bridge to the real terminal. |
 
-**Registration is conditional.**  ``task_explain``, ``session_peek``,
-``gate_list`` and ``session_attach_command`` are M1 prerequisites owned by
-other workstreams (implementation plan §6, M1) and do not exist in
-``CommandHandler`` yet.  Registering their slash commands anyway would
+**Registration is conditional.**  ``task_explain`` and ``gate_list`` are M1
+prerequisites owned by other workstreams (implementation plan §6, M1) and do
+not exist in ``CommandHandler`` yet.  (``session_peek`` and ``session_attach``
+landed with the session-runtime lane and now register normally.  Note the
+naming: [[design/messaging-rework]] calls the attach backend
+``session_attach_command``, while [[implementation/session-runtime]] §3.8
+specifies ``_cmd_session_attach`` returning ``{"attach_command": str}`` --
+the latter is what exists.)  Registering their slash commands anyway would
 publish autocompleting commands to the guild that can only ever answer
 ``Unknown command: ...`` — so :func:`setup_commands` resolves each backing
 command name first (built-in ``_cmd_{name}`` method, then the plugin
@@ -63,7 +67,7 @@ SLASH_COMMAND_BACKENDS: dict[str, tuple[str, ...]] = {
     "explain": ("task_explain",),
     "peek": ("session_peek",),
     "gates": ("gate_list",),
-    "attach": ("session_attach_command",),
+    "attach": ("session_attach",),
 }
 
 #: Backing commands known to be unimplemented today, each owned by a later
@@ -76,9 +80,7 @@ SLASH_COMMAND_BACKENDS: dict[str, tuple[str, ...]] = {
 PENDING_BACKENDS: frozenset[str] = frozenset(
     {
         "task_explain",  # work-graph lane
-        "session_peek",  # sessions lane
         "gate_list",  # gates lane
-        "session_attach_command",  # sessions lane
     }
 )
 
@@ -366,9 +368,7 @@ def setup_commands(bot: commands.Bot) -> list[str]:
         )
         @app_commands.describe(task="Task ID")
         async def attach_command(interaction: discord.Interaction, task: str) -> None:
-            result = await _execute(
-                interaction, handler, "session_attach_command", {"task_id": task}
-            )
+            result = await _execute(interaction, handler, "session_attach", {"task_id": task})
             if result is None:
                 return
             await _reply_json(interaction, result, filename="attach.json")

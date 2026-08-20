@@ -10,8 +10,6 @@ See docs/specs/implementation/session-runtime.md §3.6, §8, §9.
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from src.config import AppConfig
@@ -447,7 +445,7 @@ class TestStallLadder:
     async def test_after_max_nudges_it_restarts_with_resume(
         self, db, provider, reconciler, bus, config
     ):
-        row = await self._stalled(db, provider)
+        await self._stalled(db, provider)
         await db.set_task_meta("t1", META_STALL_NUDGES, str(config.sessions.stall_max_nudges))
         await db.set_task_meta("t1", META_STALL_LAST_ACTION, "0")
         await reconciler.tick(now=NOW)
@@ -633,3 +631,46 @@ class TestTickRobustness:
         reconciler.providers.create = _raise
         await reconciler.tick(now=NOW)
         assert (await db.get_session("s1")).state == "running"
+
+
+class TestNudgelessProvider:
+    """A provider with no input channel skips the ladder's nudge rungs.
+
+    Talking to a session that has no stdin is not a degraded nudge, it is
+    no nudge — so burning three backoff cycles on it just delays the
+    restart that was always going to be the real remedy (design §5.2).
+    """
+
+    @pytest.fixture
+    def mute_provider(self):
+        from src.sessions.provider import Cap
+
+        class _Mute(FakeProvider):
+            capabilities = frozenset({Cap.PEEK, Cap.ACTIVITY})
+
+        return _Mute()
+
+    @pytest.fixture
+    def mute_reconciler(self, db, config, mute_provider, bus):
+        class _Reg(SessionProviderRegistry):
+            def create(self, name, config=None):
+                return mute_provider
+
+        return SessionReconciler(
+            db, config, _Reg({"fake": FakeProvider}), bus=bus, epoch="epoch-new"
+        )
+
+    async def test_stall_goes_straight_to_restart(
+        self, db, mute_provider, mute_reconciler, bus
+    ):
+        await _task(db)
+        row = await _session(
+            db, mute_provider, started_at=NOW - 5000, last_activity=NOW - 1000
+        )
+        mute_provider.sessions[row.name].activity = NOW - 1000
+        await mute_reconciler.tick(now=NOW)
+        assert mute_provider.sent_nudges == []
+        session = await db.get_session("s1")
+        assert session.state == "stopped" and session.restarts == 1
+        assert "task.restarted" in bus.types()
+        assert "task.nudged" not in bus.types()

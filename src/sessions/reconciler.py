@@ -514,7 +514,12 @@ class SessionReconciler:
                     idle_seconds=now - last,
                 )
 
-            if rungs < self.sessions_config.stall_max_nudges:
+            # A provider with no input channel (subprocess) has nothing to
+            # nudge *with*, so the ladder skips its nudge rungs entirely
+            # rather than burning three cycles talking to no one.
+            can_nudge = provider.supports(Cap.NUDGE)
+
+            if can_nudge and rungs < self.sessions_config.stall_max_nudges:
                 minutes = int((now - last) // 60)
                 delivered = await self._try_nudge(
                     provider,
