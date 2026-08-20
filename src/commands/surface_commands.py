@@ -1,23 +1,30 @@
 """Surface commands mixin — the agent-facing context and schema surface.
 
-Phase S0 (docs/specs/implementation/aq-surface.md §9) fills in the output
+Phase S0 (docs/specs/implementation/aq-surface.md §9) filled in the output
 contract slice: ``get_schema`` (backs ``aq schema``) and the ``task_show`` /
-``task_set`` pair (back ``aq task show|set|details``).  ``prime`` and
-``task_handoff`` (Phase S1), ``task_close`` / ``task_heartbeat`` /
-``ask_human`` (unscheduled in this spec's phase checklist beyond the §3
-inventory table) are not implemented here yet.
+``task_set`` pair (back ``aq task show|set|details``).  Phase S1 adds
+``prime`` (backs ``aq prime``) and ``task_handoff`` (backs ``aq handoff``).
+``task_close`` / ``task_heartbeat`` (session-runtime, ``src/commands/
+session_commands.py``), ``message_send`` / ``message_inbox`` (supervisor-
+agent, ``src/commands/message_commands.py``), and ``ask_human``
+(unscheduled in this spec's phase checklist beyond the §3 inventory table)
+are not implemented here yet.
 
 Convention (see ``src/commands/handler.py``): every ``_cmd_*`` method takes a
 flat ``dict`` of arguments and returns a ``dict`` — domain data on success,
 ``{"error": "..."}`` on failure.  ``CommandHandler.execute`` returns this
 dict verbatim (no implicit ``"success"`` key is injected at that layer); the
 wire-level ``{"ok": bool, "result"|"error"}`` shape is added by
-``/api/execute`` (``src/api/execute.py``).
+``/api/execute`` (``src/api/execute.py``).  ``prime`` and ``task_handoff``
+are exceptions: their §3 spec table explicitly documents a ``"success"`` key
+in the returned shape, so they include it to match.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -145,3 +152,110 @@ class SurfaceCommandsMixin:
         result = await self._cmd_task_show({"task_id": task_id})
         result["fields_changed"] = fields_changed
         return result
+
+    # ------------------------------------------------------------------
+    # prime — backs `aq prime` (design §5, implementation §2-§3)
+    # ------------------------------------------------------------------
+
+    async def _cmd_prime(self, args: dict) -> dict:
+        """Render the startup prime document for a task via ``src/prime/``.
+
+        ``task_id`` resolution from the request's bearer-token scope
+        (design §7) is Phase S2 territory and not implemented yet — this
+        phase requires ``task_id`` explicitly.  The CLI (``aq prime``)
+        forwards an ``AQ_TASK_ID`` env var as a stand-in for the future
+        scope so callers don't need a flag once session-runtime starts
+        setting that variable; the daemon side of that contract is S2's to
+        build, this command only accepts whatever ``task_id`` it's given.
+        """
+        task_id = args.get("task_id")
+        if not task_id:
+            return {
+                "error": (
+                    "task_id is required (session-scope resolution is Phase S2; "
+                    "pass task_id explicitly for now)"
+                )
+            }
+
+        from src.prime import PrimeRenderer
+
+        renderer = PrimeRenderer(self.db, self.config)
+        try:
+            doc = await renderer.render_for_task(
+                task_id,
+                session_id=args.get("session_id"),
+                work_dir=args.get("work_dir"),
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+        return {
+            "success": True,
+            "body": doc.to_markdown(),
+            "sections": [
+                {"key": s.key, "title": s.title, "body": s.body} for s in doc.sections
+            ],
+            "source": doc.source,
+            "tokens_est": doc.tokens_est(),
+        }
+
+    # ------------------------------------------------------------------
+    # task_handoff — backs `aq handoff` (design §6.1, implementation §3)
+    # ------------------------------------------------------------------
+
+    async def _cmd_task_handoff(self, args: dict) -> dict:
+        """Write a ``task_context(type=handoff)`` row; optionally request a restart.
+
+        ``--auto`` (wired to ``PreCompact``) writes a note only, never a
+        restart — restarting on every compaction loops forever (design
+        §6.1). Non-auto writes the note **and** emits
+        ``session.restart_requested`` on the event bus; session-runtime
+        owns restart mechanics (recycle now vs. later, wake_mode) — this
+        command only records intent.
+        """
+        task_id = args.get("task_id")
+        if not task_id:
+            return {
+                "error": (
+                    "task_id is required (session-scope resolution is Phase S2; "
+                    "pass task_id explicitly for now)"
+                )
+            }
+
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+
+        auto = bool(args.get("auto", False))
+        session_id = args.get("session_id")
+        payload = {
+            "subject": args.get("subject") or "",
+            "detail": args.get("detail") or "",
+            "session_id": session_id,
+            "auto": auto,
+            "ts": time.time(),
+        }
+        handoff_id = await self.db.add_task_context(
+            task_id, type="handoff", label="handoff", content=json.dumps(payload)
+        )
+
+        restart_requested = False
+        if not auto:
+            bus = getattr(self.orchestrator, "bus", None)
+            if bus is not None:
+                await bus.emit(
+                    "session.restart_requested",
+                    {
+                        "task_id": task_id,
+                        "session_id": session_id,
+                        "reason": "handoff",
+                        "handoff_id": handoff_id,
+                    },
+                )
+            restart_requested = True
+
+        return {
+            "success": True,
+            "handoff_id": handoff_id,
+            "restart_requested": restart_requested,
+        }

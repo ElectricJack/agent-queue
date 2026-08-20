@@ -141,6 +141,27 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "update_and_restart": "system",
     "run_command": "system",
     "get_stuck_tasks": "system",
+    # aq-surface task-scope allowlist (design §8.2 DEFAULT_TASK_ALLOWLIST).
+    # Categorized (not core) so they don't inflate the supervisor's always-
+    # loaded tool set — these are what a *task* session calls, not what the
+    # supervisor LLM needs by default.  task_close/task_heartbeat land in
+    # src/commands/session_commands.py; ask_human is unscheduled beyond this
+    # inventory; message_send/message_inbox land in
+    # src/commands/message_commands.py; memory_save/memory_search are
+    # normally provided by the external aq-memory plugin — these entries
+    # give MCP a tight, intentional schema for all nine regardless of which
+    # lane has implemented the backing `_cmd_*` method yet (an unimplemented
+    # command still round-trips through CommandHandler.execute() as a
+    # graceful `{"error": "..."}", never a crash).
+    "task_show": "task",
+    "task_set": "task",
+    "task_close": "task",
+    "task_heartbeat": "task",
+    "ask_human": "task",
+    "message_send": "task",
+    "message_inbox": "task",
+    "memory_save": "memory",
+    "memory_search": "memory",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
     # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
@@ -2933,6 +2954,203 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {"type": "string"},
             },
             "required": ["name"],
+        },
+    },
+    # -----------------------------------------------------------------
+    # aq-surface task-scope allowlist (design §8.2 DEFAULT_TASK_ALLOWLIST).
+    # Rich schemas so a task session's `/mcp-task` tool list (Phase S3)
+    # stays tight and intentional instead of falling back to the generic
+    # docstring-derived schema pass 3 would otherwise synthesize. Argument
+    # names match docs/specs/implementation/aq-surface.md §3.
+    # -----------------------------------------------------------------
+    {
+        "name": "task_show",
+        "description": (
+            "Full task detail in one round trip: fields, task_context rows, and labels. "
+            "Backs `aq task show|details`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "task_set",
+        "description": (
+            "Work-state contract writes for a task: branch, PR URL, work_dir, a note, "
+            "label add/remove, and arbitrary metadata. Never performs status transitions "
+            "(the state machine belongs to work-graph's task_close). Backs `aq task set`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID"},
+                "branch": {"type": "string", "description": "Branch name (optional)"},
+                "pr_url": {"type": "string", "description": "Pull request URL (optional)"},
+                "work_dir": {
+                    "type": "string",
+                    "description": "Working directory path (optional; stored as task metadata)",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Free-text progress note, stored as a task_context row (optional)",
+                },
+                "labels_add": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Labels to attach (optional)",
+                },
+                "labels_remove": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Labels to detach (optional)",
+                },
+                "meta": {
+                    "type": "object",
+                    "description": "Arbitrary key-value metadata to set (optional)",
+                },
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "task_close",
+        "description": (
+            "Close a task with an outcome. Validates enums against `get_schema` and delegates "
+            "the state transition to work-graph. Backs `aq task close`. "
+            "(Implementation pending — src/commands/session_commands.py.)"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID"},
+                "outcome": {
+                    "type": "string",
+                    "enum": ["pass", "fail"],
+                    "description": "Overall task outcome",
+                },
+                "failure_class": {
+                    "type": "string",
+                    "enum": ["transient", "hard"],
+                    "description": "Failure classification, when outcome is 'fail' (optional)",
+                },
+                "work_outcome": {
+                    "type": "string",
+                    "enum": ["shipped", "no-op", "blocked", "abandoned"],
+                    "description": "What actually happened to the work (optional)",
+                },
+                "commit": {"type": "string", "description": "Commit SHA (optional)"},
+                "notes": {"type": "string", "description": "Closing notes (optional)"},
+            },
+            "required": ["task_id", "outcome"],
+        },
+    },
+    {
+        "name": "task_heartbeat",
+        "description": (
+            "Refresh this task's agent lease. Returns the new lease_expires_at. Backs "
+            "`aq task heartbeat`. (Implementation pending — src/commands/session_commands.py.)"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID (optional — defaults to the caller's session scope)",
+                },
+            },
+        },
+    },
+    {
+        "name": "ask_human",
+        "description": (
+            "Ask a human a question via a human gate, blocking on their response. "
+            "Backs `aq task ask`. (Implementation pending.)"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "The question to ask"},
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID this question is about (optional)",
+                },
+            },
+            "required": ["question"],
+        },
+    },
+    {
+        "name": "message_send",
+        "description": (
+            "Send a message to another agent/session or a human. Backs `aq message send`. "
+            "(Implementation pending — src/commands/message_commands.py.)"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recipient": {"type": "string", "description": "Message recipient"},
+                "body": {"type": "string", "description": "Message body"},
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID this message relates to (optional)",
+                },
+            },
+            "required": ["recipient", "body"],
+        },
+    },
+    {
+        "name": "message_inbox",
+        "description": (
+            "List messages addressed to the caller. Backs `aq message inbox`. "
+            "(Implementation pending — src/commands/message_commands.py.)"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "unread": {
+                    "type": "boolean",
+                    "description": "Only return unread messages (optional, default false)",
+                },
+            },
+        },
+    },
+    {
+        "name": "memory_save",
+        "description": (
+            "Save a fact to memory. Returns {paused: true} while memory.enabled is false "
+            "(docs/specs/design/feature-pauses.md). Backs `aq memory save`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "The fact/content to remember"},
+                "scope": {
+                    "type": "string",
+                    "description": "Memory scope to save into (optional)",
+                },
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "memory_search",
+        "description": (
+            "Search memory. Returns {paused: true, results: []} while memory.enabled is false "
+            "(docs/specs/design/feature-pauses.md). Backs `aq memory search`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "scope": {
+                    "type": "string",
+                    "description": "Memory scope to search within (optional)",
+                },
+            },
+            "required": ["query"],
         },
     },
 ]
