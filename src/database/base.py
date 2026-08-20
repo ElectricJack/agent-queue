@@ -135,7 +135,7 @@ class DatabaseBackend(Protocol):
     # --- Blocked-state projection (work-graph design §4) ---
 
     async def recompute_blocked(self, seed_task_ids: set[str], *, conn) -> set[str]: ...
-    async def recompute_blocked_fixpoint(
+    async def recompute_blocked_waves(
         self,
         seed_task_ids: set[str],
         *,

@@ -20,7 +20,10 @@ from src.database.tables import (
     tasks,
     token_ledger,
 )
-from src.database.queries.blocked_state import apply_label_filters
+from src.database.queries.blocked_state import (
+    PROJECTION_INPUT_COLUMNS,
+    apply_label_filters,
+)
 from src.models import Task, TaskStatus, TaskType, VerificationType, WorkspaceMode
 from src.state_machine import is_valid_status_transition
 
@@ -179,13 +182,18 @@ class TaskQueryMixin:
         raw ``status=`` here still recomputes (so the projection can never
         go stale) but skips validation; an invariant test guards production
         call sites.
+
+        The recompute fires for **any** ``PROJECTION_INPUT_COLUMNS`` write,
+        not just ``status``: ``update_task(primary, max_retries=10)`` turns a
+        terminal failure back into a transient one and must re-block the
+        contingency waiting on it.
         """
         values = self._coerce_task_values(kwargs)
         values["updated_at"] = time.time()
         async with self._engine.begin() as conn:
             await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
             flipped: set[str] = set()
-            if "status" in kwargs:
+            if PROJECTION_INPUT_COLUMNS & kwargs.keys():
                 flipped = await self.recompute_blocked({task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
 
@@ -209,6 +217,12 @@ class TaskQueryMixin:
         Returns the set of task ids whose ``is_blocked`` flipped; the
         matching ``task.blocked`` / ``task.unblocked`` audit rows are written
         after the transaction commits.
+
+        A same-status call is **not** a no-op for the projection: it can still
+        carry a ``PROJECTION_INPUT_COLUMNS`` write (a FAILED task bumped to
+        ``retry_count == max_retries`` turns a transient failure terminal,
+        satisfying every ``conditional-blocks`` edge pointing at it), so it
+        recomputes too.
         """
         values = self._coerce_task_values(kwargs)
         flipped: set[str] = set()
@@ -231,23 +245,23 @@ class TaskQueryMixin:
                 if values:
                     values["updated_at"] = time.time()
                     await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
-                # Status is unchanged, so no projection can flip.
-                return set()
+                    if PROJECTION_INPUT_COLUMNS & values.keys():
+                        flipped = await self.recompute_blocked({task_id}, conn=conn)
+            else:
+                if not is_valid_status_transition(current_status, new_status):
+                    ctx = f" ({context})" if context else ""
+                    logger.warning(
+                        "Invalid task status transition: %s -> %s for task '%s'%s",
+                        current_status.value,
+                        new_status.value,
+                        task_id,
+                        ctx,
+                    )
 
-            if not is_valid_status_transition(current_status, new_status):
-                ctx = f" ({context})" if context else ""
-                logger.warning(
-                    "Invalid task status transition: %s -> %s for task '%s'%s",
-                    current_status.value,
-                    new_status.value,
-                    task_id,
-                    ctx,
-                )
-
-            values["status"] = new_status.value
-            values["updated_at"] = time.time()
-            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
-            flipped = await self.recompute_blocked({task_id}, conn=conn)
+                values["status"] = new_status.value
+                values["updated_at"] = time.time()
+                await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
+                flipped = await self.recompute_blocked({task_id}, conn=conn)
 
         await self.log_blocked_flips(flipped)
         return flipped

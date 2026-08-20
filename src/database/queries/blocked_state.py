@@ -21,10 +21,12 @@ without its projection.
 from __future__ import annotations
 
 import logging
+import time
 
-from sqlalchemy import and_, case, literal, not_, or_, select, update
+from sqlalchemy import and_, case, insert, literal, not_, or_, select, update
 
 from src.database.tables import (
+    events,
     gates,
     task_dependencies,
     task_gates,
@@ -37,10 +39,20 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "BLOCKING_DEP_TYPES",
+    "PROJECTION_INPUT_COLUMNS",
     "BlockedStateMixin",
     "apply_label_filters",
     "blocked_predicate",
 ]
+
+
+# ``tasks`` columns the predicate reads.  A write to any of them can change
+# some row's projection, so every mutating query method must recompute when
+# its value set touches one — not just on ``status``: the
+# ``conditional-blocks`` clause reads ``retry_count >= max_retries`` to tell a
+# transient failure from a terminal one, so bumping a retry counter alone can
+# flip a contingency task.
+PROJECTION_INPUT_COLUMNS = frozenset({"status", "retry_count", "max_retries"})
 
 
 # Statuses of a ``parent-child`` container that keep its children withheld.
@@ -50,42 +62,41 @@ _WITHHOLDING_PARENT_STATUSES = (
     TaskStatus.AWAITING_PLAN_APPROVAL.value,
 )
 
-# Safety valve for the fixpoint driver (implementation spec §3.2).
-_MAX_WAVES = 10_000
+
+# -- clause factories -------------------------------------------------------
+#
+# One factory per blocking rule of design §3.1.  Each builds a *fresh*
+# correlated ``EXISTS`` over **anonymous** aliases, so the same factory can be
+# called from several predicates — even twice inside one statement — without
+# alias collisions: SQLAlchemy names them ``anon_1``, ``anon_2``, … per
+# compiled statement.  That is what lets :func:`blocked_predicate` and
+# :func:`_blocked_ignoring_conditional` share the clauses instead of
+# restating them.
 
 
-def blocked_predicate():
-    """Return the SQL boolean expression for "this ``tasks`` row is blocked".
-
-    Correlates against the ``tasks`` table itself, so it can be dropped into
-    a ``CASE`` inside an ``UPDATE tasks`` or into a ``SELECT ... WHERE``.
-    Built from ``EXISTS`` subqueries only — identical SQL on SQLite and
-    PostgreSQL.
-
-    One clause per blocking rule, in the order of design §3.1.
-    """
-    completed = TaskStatus.COMPLETED.value
-
-    # 1. `blocks` — satisfied when the dependency is COMPLETED.
-    bd = task_dependencies.alias("wg_bd")
-    bt = tasks.alias("wg_bt")
-    blocks_unsat = (
+def _blocks_unsat():
+    """``blocks`` — satisfied when the dependency is COMPLETED."""
+    bd = task_dependencies.alias()
+    bt = tasks.alias()
+    return (
         select(literal(1))
         .select_from(bd.join(bt, bt.c.id == bd.c.depends_on_task_id))
         .where(
             and_(
                 bd.c.task_id == tasks.c.id,
                 bd.c.dep_type == DepType.BLOCKS.value,
-                bt.c.status != completed,
+                bt.c.status != TaskStatus.COMPLETED.value,
             )
         )
         .exists()
     )
 
-    # 2. `parent-child` — satisfied once the container has been released.
-    pd = task_dependencies.alias("wg_pd")
-    pt = tasks.alias("wg_pt")
-    parent_unsat = (
+
+def _parent_child_unsat():
+    """``parent-child`` — satisfied once the container has been released."""
+    pd = task_dependencies.alias()
+    pt = tasks.alias()
+    return (
         select(literal(1))
         .select_from(pd.join(pt, pt.c.id == pd.c.depends_on_task_id))
         .where(
@@ -98,12 +109,16 @@ def blocked_predicate():
         .exists()
     )
 
-    # 3. `waits-for` — dynamic fan-in over the container's children.
-    #    Unsatisfied while any `parent-child` child of the container is not
-    #    COMPLETED.  Vacuously satisfied when the container has no children.
-    wd = task_dependencies.alias("wg_wd")
-    pc = task_dependencies.alias("wg_pc")
-    ch = tasks.alias("wg_ch")
+
+def _waits_for_unsat():
+    """``waits-for`` — dynamic fan-in over the container's children.
+
+    Unsatisfied while any ``parent-child`` child of the container is not
+    COMPLETED.  Vacuously satisfied when the container has no children.
+    """
+    wd = task_dependencies.alias()
+    pc = task_dependencies.alias()
+    ch = tasks.alias()
     open_child = (
         select(literal(1))
         .select_from(pc.join(ch, ch.c.id == pc.c.task_id))
@@ -111,12 +126,12 @@ def blocked_predicate():
             and_(
                 pc.c.dep_type == DepType.PARENT_CHILD.value,
                 pc.c.depends_on_task_id == wd.c.depends_on_task_id,
-                ch.c.status != completed,
+                ch.c.status != TaskStatus.COMPLETED.value,
             )
         )
         .exists()
     )
-    waits_unsat = (
+    return (
         select(literal(1))
         .select_from(wd)
         .where(
@@ -129,11 +144,14 @@ def blocked_predicate():
         .exists()
     )
 
-    # 4. `conditional-blocks` — satisfied only on *terminal* failure of the
-    #    dependency.  A transiently FAILED task about to be retried does not
-    #    satisfy it.
-    cd = task_dependencies.alias("wg_cd")
-    ct = tasks.alias("wg_ct")
+
+def _conditional_unsat():
+    """``conditional-blocks`` — satisfied only on *terminal* failure.
+
+    A transiently FAILED dependency about to be retried does not satisfy it.
+    """
+    cd = task_dependencies.alias()
+    ct = tasks.alias()
     terminal_failure = or_(
         ct.c.status == TaskStatus.BLOCKED.value,
         and_(
@@ -141,7 +159,7 @@ def blocked_predicate():
             ct.c.retry_count >= ct.c.max_retries,
         ),
     )
-    conditional_unsat = (
+    return (
         select(literal(1))
         .select_from(cd.join(ct, ct.c.id == cd.c.depends_on_task_id))
         .where(
@@ -154,19 +172,40 @@ def blocked_predicate():
         .exists()
     )
 
-    # 5. Gates — an attached gate blocks until it is `resolved`.  `expired`
-    #    keeps blocking on purpose: a timed-out approval must never
-    #    silently self-approve (design §5.4).
-    tg = task_gates.alias("wg_tg")
-    gt = gates.alias("wg_gt")
-    gate_open = (
+
+def _gate_open():
+    """Gates — an attached gate blocks until it is ``resolved``.
+
+    ``expired`` keeps blocking on purpose: a timed-out approval must never
+    silently self-approve (design §5.4).
+    """
+    tg = task_gates.alias()
+    gt = gates.alias()
+    return (
         select(literal(1))
         .select_from(tg.join(gt, gt.c.id == tg.c.gate_id))
         .where(and_(tg.c.task_id == tasks.c.id, gt.c.status != "resolved"))
         .exists()
     )
 
-    return or_(blocks_unsat, parent_unsat, waits_unsat, conditional_unsat, gate_open)
+
+def blocked_predicate():
+    """Return the SQL boolean expression for "this ``tasks`` row is blocked".
+
+    Correlates against the ``tasks`` table itself, so it can be dropped into
+    a ``CASE`` inside an ``UPDATE tasks`` or into a ``SELECT ... WHERE``.
+    Built from ``EXISTS`` subqueries only — identical SQL on SQLite and
+    PostgreSQL.
+
+    One clause per blocking rule, in the order of design §3.1.
+    """
+    return or_(
+        _blocks_unsat(),
+        _parent_child_unsat(),
+        _waits_for_unsat(),
+        _conditional_unsat(),
+        _gate_open(),
+    )
 
 
 class BlockedStateMixin:
@@ -193,8 +232,8 @@ class BlockedStateMixin:
         changing, and blockedness is deliberately not transitive through
         blockedness (design §4.3).  Callers that change several statuses in
         one transaction — bulk graph creation, the conditional auto-close
-        cascade — drive the fixpoint by re-seeding with the tasks whose
-        status changed; :meth:`recompute_blocked_fixpoint` does that.
+        cascade — re-seed with the tasks whose status changed;
+        :meth:`recompute_blocked_waves` does that.
         """
         if not seed_task_ids:
             return set()
@@ -239,27 +278,29 @@ class BlockedStateMixin:
 
         return {tid for tid, old in before.items() if after.get(tid) != old}
 
-    async def recompute_blocked_fixpoint(
+    async def recompute_blocked_waves(
         self, seed_task_ids: set[str], *, conn, extra_waves: list[set[str]] | None = None
     ) -> set[str]:
-        """Loop :meth:`recompute_blocked` until no value changes.
+        """Run :meth:`recompute_blocked` once per supplied seed set.
 
-        Used by callers that mutate several statuses inside one transaction.
-        ``extra_waves`` seeds additional rounds (e.g. tasks auto-closed by
-        the conditional cascade).  Bounded by ``_MAX_WAVES`` as a safety
-        valve — the loop can only shrink the frontier in practice.
+        Exactly ``1 + len(extra_waves)`` waves, in order — this is a driver
+        for callers that mutate several statuses inside one transaction, not
+        an iteration to a fixpoint.  ``extra_waves`` names the seeds each
+        later wave needs (e.g. the tasks the conditional cascade auto-closed
+        after the first wave's seed set was already chosen).
+
+        No termination question arises, and none needs to: ``is_blocked`` is
+        a pure function of statuses, edges and gates, and blockedness is not
+        transitive through blockedness (design §4.3).  One wave per fixed set
+        of statuses is therefore *exact*, and a wave can only be needed
+        because the transaction changed a status the previous wave could not
+        have seen.  Nothing a wave writes can make an earlier wave's answer
+        wrong, so re-seeding from the flipped set would be dead work.
         """
         pending = set(seed_task_ids)
         queued = list(extra_waves or [])
         flipped_all: set[str] = set()
-        waves = 0
         while pending:
-            waves += 1
-            if waves > _MAX_WAVES:  # pragma: no cover — safety valve
-                raise RuntimeError(
-                    f"recompute_blocked_fixpoint exceeded {_MAX_WAVES} waves; "
-                    "the affected set is not converging"
-                )
             flipped = await self.recompute_blocked(pending, conn=conn)
             flipped_all |= flipped
             pending = queued.pop(0) if queued else set()
@@ -319,9 +360,18 @@ class BlockedStateMixin:
         Called by mutating methods *after* their transaction commits, so the
         audit log never claims a flip that was rolled back.  Best-effort:
         a logging failure must not fail the mutation that caused it.
+
+        Read **and** write happen in one transaction with a single
+        ``executemany`` insert.  Calling ``log_event`` per row would open one
+        write transaction each, which dominates the whole recompute: on a
+        10 000-task chain, 1 000 flips cost 13.9 s that way versus 0.06 s
+        batched, against a 0.38 s recompute ``UPDATE`` (spec §11 budgets the
+        full backfill at < 5 s, and ``recompute_all_blocked`` is the
+        ``aq doctor`` repair path).
         """
         if not flipped:
             return
+        now = time.time()
         try:
             async with self._engine.begin() as conn:
                 rows = (
@@ -331,20 +381,24 @@ class BlockedStateMixin:
                         )
                     )
                 ).fetchall()
-        except Exception:  # pragma: no cover — defensive
-            logger.debug("log_blocked_flips: could not read flipped rows", exc_info=True)
-            return
-
-        for task_id, project_id, is_blocked in rows:
-            try:
-                await self.log_event(
-                    "task.blocked" if is_blocked else "task.unblocked",
-                    project_id=project_id,
-                    task_id=task_id,
-                    payload="graph",
+                if not rows:
+                    return
+                await conn.execute(
+                    insert(events),
+                    [
+                        {
+                            "event_type": "task.blocked" if is_blocked else "task.unblocked",
+                            "project_id": project_id,
+                            "task_id": task_id,
+                            "agent_id": None,
+                            "payload": "graph",
+                            "timestamp": now,
+                        }
+                        for task_id, project_id, is_blocked in rows
+                    ],
                 )
-            except Exception:  # pragma: no cover — defensive
-                logger.debug("log_blocked_flips: log_event failed for %s", task_id, exc_info=True)
+        except Exception:  # pragma: no cover — defensive
+            logger.debug("log_blocked_flips: could not write flip events", exc_info=True)
 
     # -- read side -------------------------------------------------------
 
@@ -524,84 +578,14 @@ def _blocked_ignoring_conditional():
     as satisfied — "is anything other than a conditional edge holding this
     task back?".
 
-    Used only by :meth:`BlockedStateMixin.find_dead_conditional_tasks`.  It
-    restates the other four clauses of :func:`blocked_predicate` (correlated
-    ``EXISTS`` subqueries cannot be composed out of a shared ``or_`` without
-    dropping one term).  ``TestConditionalDisposal.
-    test_the_two_predicates_agree_without_conditional_edges`` is the drift
-    guard: on random graphs carrying no ``conditional-blocks`` edges the two
-    expressions must select exactly the same rows.
+    Used only by :meth:`BlockedStateMixin.find_dead_conditional_tasks`.  It is
+    :func:`blocked_predicate` minus one clause, built from the same factories,
+    so the two cannot drift.  ``TestConditionalDisposal`` guards both
+    directions: the two expressions select identical rows on graphs with no
+    ``conditional-blocks`` edges, and this one is a subset of the full
+    predicate on graphs that carry them.
     """
-    completed = TaskStatus.COMPLETED.value
-
-    bd = task_dependencies.alias("wg2_bd")
-    bt = tasks.alias("wg2_bt")
-    blocks_unsat = (
-        select(literal(1))
-        .select_from(bd.join(bt, bt.c.id == bd.c.depends_on_task_id))
-        .where(
-            and_(
-                bd.c.task_id == tasks.c.id,
-                bd.c.dep_type == DepType.BLOCKS.value,
-                bt.c.status != completed,
-            )
-        )
-        .exists()
-    )
-
-    pd = task_dependencies.alias("wg2_pd")
-    pt = tasks.alias("wg2_pt")
-    parent_unsat = (
-        select(literal(1))
-        .select_from(pd.join(pt, pt.c.id == pd.c.depends_on_task_id))
-        .where(
-            and_(
-                pd.c.task_id == tasks.c.id,
-                pd.c.dep_type == DepType.PARENT_CHILD.value,
-                pt.c.status.in_(_WITHHOLDING_PARENT_STATUSES),
-            )
-        )
-        .exists()
-    )
-
-    wd = task_dependencies.alias("wg2_wd")
-    pc = task_dependencies.alias("wg2_pc")
-    ch = tasks.alias("wg2_ch")
-    open_child = (
-        select(literal(1))
-        .select_from(pc.join(ch, ch.c.id == pc.c.task_id))
-        .where(
-            and_(
-                pc.c.dep_type == DepType.PARENT_CHILD.value,
-                pc.c.depends_on_task_id == wd.c.depends_on_task_id,
-                ch.c.status != completed,
-            )
-        )
-        .exists()
-    )
-    waits_unsat = (
-        select(literal(1))
-        .select_from(wd)
-        .where(
-            and_(
-                wd.c.task_id == tasks.c.id,
-                wd.c.dep_type == DepType.WAITS_FOR.value,
-                open_child,
-            )
-        )
-        .exists()
-    )
-
-    tg = task_gates.alias("wg2_tg")
-    gt = gates.alias("wg2_gt")
-    gate_open = (
-        select(literal(1))
-        .select_from(tg.join(gt, gt.c.id == tg.c.gate_id))
-        .where(and_(tg.c.task_id == tasks.c.id, gt.c.status != "resolved"))
-        .exists()
-    )
-
-    return or_(blocks_unsat, parent_unsat, waits_unsat, gate_open)
+    return or_(_blocks_unsat(), _parent_child_unsat(), _waits_for_unsat(), _gate_open())
 
 
 def apply_label_filters(stmt, *, labels=None, any_label=None, exclude_hold=False):

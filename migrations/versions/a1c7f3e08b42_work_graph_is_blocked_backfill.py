@@ -31,6 +31,18 @@ Downgrade resets ``is_blocked`` to 0 and turns the retyped edges back into
 created from one authored afterwards, so it applies the same
 ``is_plan_subtask``-and-``parent_task_id`` test in reverse; edges outside
 that shape are left alone.
+
+**Collision handling.**  ``dep_type`` is part of the primary key
+``(task_id, depends_on_task_id, dep_type)``, so a bare ``UPDATE … SET
+dep_type`` can violate it: once typed edges exist the same pair may legally
+carry both ``blocks`` and ``parent-child``.  A first upgrade on a legacy DB
+cannot hit that (every row is ``'blocks'``), but a **downgrade** after normal
+operation can — the supervisor writes ``parent-child`` for exactly the pair
+this revision retypes, and ``add_dependency(child, parent, 'blocks')`` stays
+legal alongside it.  Both directions therefore run in two steps: ``DELETE``
+the row that would lose the collision, then ``UPDATE`` only the rows whose
+target type is free.  Retyping onto an existing row is a *merge*, not a
+duplicate — the survivor already expresses the same pair.
 """
 
 from typing import Sequence, Union
@@ -57,11 +69,41 @@ _PLAN_PARENT_EDGE_PREDICATE = """
     )
 """
 
+def _target_exists(dep_type: str) -> str:
+    """"The same pair already carries *dep_type*" — the PK-collision test."""
+    return f"""
+    EXISTS (
+        SELECT 1 FROM task_dependencies o
+         WHERE o.task_id = task_dependencies.task_id
+           AND o.depends_on_task_id = task_dependencies.depends_on_task_id
+           AND o.dep_type = '{dep_type}'
+    )
+"""
+
+
+# Upgrade: `blocks` → `parent-child`.  Drop the source row when the target
+# already exists (merge), retype the rest.
+_DROP_COLLIDING_BLOCKS_EDGES = f"""
+DELETE FROM task_dependencies
+ WHERE dep_type = 'blocks'
+   AND {_PLAN_PARENT_EDGE_PREDICATE}
+   AND {_target_exists('parent-child')}
+"""
+
 _RETYPE_PLAN_EDGES = f"""
 UPDATE task_dependencies
    SET dep_type = 'parent-child'
  WHERE dep_type = 'blocks'
    AND {_PLAN_PARENT_EDGE_PREDICATE}
+   AND NOT {_target_exists('parent-child')}
+"""
+
+# Downgrade: `parent-child` → `blocks`, same two-step shape.
+_DROP_COLLIDING_PARENT_EDGES = f"""
+DELETE FROM task_dependencies
+ WHERE dep_type = 'parent-child'
+   AND {_PLAN_PARENT_EDGE_PREDICATE}
+   AND {_target_exists('blocks')}
 """
 
 _UNTYPE_PLAN_EDGES = f"""
@@ -69,6 +111,7 @@ UPDATE task_dependencies
    SET dep_type = 'blocks'
  WHERE dep_type = 'parent-child'
    AND {_PLAN_PARENT_EDGE_PREDICATE}
+   AND NOT {_target_exists('blocks')}
 """
 
 # The blocked-state predicate, verbatim from work-graph spec §3.2.  Kept as
@@ -102,11 +145,13 @@ THEN 1 ELSE 0 END
 
 def upgrade() -> None:
     bind = op.get_bind()
+    bind.execute(sa.text(_DROP_COLLIDING_BLOCKS_EDGES))
     bind.execute(sa.text(_RETYPE_PLAN_EDGES))
     bind.execute(sa.text(_BACKFILL_IS_BLOCKED))
 
 
 def downgrade() -> None:
     bind = op.get_bind()
+    bind.execute(sa.text(_DROP_COLLIDING_PARENT_EDGES))
     bind.execute(sa.text(_UNTYPE_PLAN_EDGES))
     bind.execute(sa.text("UPDATE tasks SET is_blocked = 0"))

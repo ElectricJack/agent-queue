@@ -330,6 +330,62 @@ class TestRecomputeMechanics:
         assert archived["is_blocked"] is True
 
 
+# ── Projection inputs other than `status` ────────────────────────────────
+
+
+class TestProjectionInputWrites:
+    """The ``conditional-blocks`` clause reads ``retry_count >= max_retries``,
+    so a write to either column is a projection input just like ``status``.
+
+    Both reproductions below left ``is_blocked`` stale when only ``status``
+    triggered a recompute.
+    """
+
+    async def _primary_and_contingency(self, db):
+        """A transiently-FAILED primary with a contingency waiting on its
+        *terminal* failure.  The contingency is blocked: retries remain."""
+        await mktask(db, "primary", status=TaskStatus.FAILED, retry_count=0, max_retries=3)
+        await mktask(db, "contingency")
+        await db.add_dependency("contingency", "primary", DepType.CONDITIONAL_BLOCKS.value)
+        assert await blocked(db, "contingency") is True
+
+    async def test_same_status_retry_bump_recomputes(self, db):
+        """``transition_task`` returns early when the status does not move;
+        the ``retry_count`` it carried still has to recompute."""
+        await self._primary_and_contingency(db)
+
+        flipped = await db.transition_task("primary", TaskStatus.FAILED, retry_count=3)
+
+        assert flipped == {"contingency"}
+        assert await blocked(db, "contingency") is False
+        assert (await db.evaluate_blocked(["contingency"]))["contingency"] is False
+
+    async def test_same_status_write_without_a_projection_input_is_cheap(self, db):
+        """A same-status write of an unrelated column flips nothing."""
+        await self._primary_and_contingency(db)
+        flipped = await db.transition_task("primary", TaskStatus.FAILED, branch_name="aq/x")
+        assert flipped == set()
+        assert await blocked(db, "contingency") is True
+
+    async def test_update_task_max_retries_recomputes(self, db):
+        """``update_task(primary, max_retries=10)`` turns a terminal failure
+        back into a transient one — the contingency must re-block."""
+        await mktask(db, "primary", status=TaskStatus.FAILED, retry_count=3, max_retries=3)
+        await mktask(db, "contingency")
+        await db.add_dependency("contingency", "primary", DepType.CONDITIONAL_BLOCKS.value)
+        assert await blocked(db, "contingency") is False
+
+        await db.update_task("primary", max_retries=10)
+
+        assert await blocked(db, "contingency") is True
+        assert (await db.evaluate_blocked(["contingency"]))["contingency"] is True
+
+    async def test_update_task_retry_count_recomputes(self, db):
+        await self._primary_and_contingency(db)
+        await db.update_task("primary", retry_count=3)
+        assert await blocked(db, "contingency") is False
+
+
 # ── Conditional disposal ─────────────────────────────────────────────────
 
 
@@ -356,9 +412,9 @@ class TestConditionalDisposal:
 
     @pytest.mark.parametrize("seed", [11, 12, 13])
     async def test_the_two_predicates_agree_without_conditional_edges(self, db, seed):
-        """``_blocked_ignoring_conditional`` restates the other four clauses of
-        ``blocked_predicate``; on a graph with no ``conditional-blocks`` edges
-        the two must be identical.  This is the drift guard for the copy."""
+        """``_blocked_ignoring_conditional`` is ``blocked_predicate`` minus one
+        clause; on a graph with no ``conditional-blocks`` edges the two must
+        select exactly the same rows."""
         from src.database.queries.blocked_state import _blocked_ignoring_conditional
 
         rng = random.Random(seed)
@@ -388,11 +444,84 @@ class TestConditionalDisposal:
             }
         assert with_cond == without_cond
 
+    @pytest.mark.parametrize("seed", [21, 22, 23, 24])
+    async def test_ignoring_conditional_is_a_subset_on_conditional_graphs(self, db, seed):
+        """The stronger guard: on graphs that *do* carry ``conditional-blocks``
+        edges, dropping that one clause can only ever remove blocked rows.
 
-class TestFixpointDriver:
+        A strict subset is expected (that is the point of the helper); a row
+        blocked without the conditional clause but not with it would mean the
+        two expressions disagree on a shared clause.
+        """
+        from src.database.queries.blocked_state import _blocked_ignoring_conditional
+
+        rng = random.Random(seed)
+        statuses = list(TaskStatus)
+        all_types = [d.value for d in DepType]
+
+        ids = [f"c{i:02d}" for i in range(14)]
+        for tid in ids:
+            await mktask(
+                db,
+                tid,
+                status=rng.choice(statuses),
+                retry_count=rng.choice([0, 3]),
+                max_retries=3,
+            )
+        saw_conditional = False
+        for _ in range(28):
+            i, j = sorted(rng.sample(range(len(ids)), 2))
+            dep_type = rng.choice(all_types)
+            try:
+                await db.add_dependency(ids[j], ids[i], dep_type)
+            except Exception:
+                continue  # duplicate (pair, type) — fine
+            saw_conditional |= dep_type == DepType.CONDITIONAL_BLOCKS.value
+        # Force at least one conditional edge so the test is never vacuous.
+        if not saw_conditional:
+            await db.add_dependency(ids[-1], ids[0], DepType.CONDITIONAL_BLOCKS.value)
+        await mkgate(db, "gate-c", status=rng.choice(["open", "resolved"]), waiters=[ids[1]])
+
+        async with db._engine.begin() as conn:
+            with_cond = {
+                r[0] for r in (await conn.execute(select(tasks_t.c.id).where(blocked_predicate())))
+            }
+            without_cond = {
+                r[0]
+                for r in (
+                    await conn.execute(select(tasks_t.c.id).where(_blocked_ignoring_conditional()))
+                )
+            }
+        assert without_cond <= with_cond
+
+    def test_the_shared_clauses_are_aliased_independently(self):
+        """Two calls of the same clause factory inside one statement compile to
+        distinct anonymous aliases, so no ``EXISTS`` term is dropped."""
+        from sqlalchemy import or_, select as sa_select
+
+        from src.database.queries.blocked_state import _blocks_unsat
+
+        sql = str(
+            sa_select(tasks_t.c.id).where(or_(_blocks_unsat(), _blocks_unsat())).compile()
+        )
+        assert sql.count("EXISTS") == 2
+        # `_blocked_ignoring_conditional` shares four clauses with
+        # `blocked_predicate`; both must still carry every term.
+        from src.database.queries.blocked_state import _blocked_ignoring_conditional
+
+        assert str(sa_select(tasks_t.c.id).where(blocked_predicate()).compile()).count("EXISTS") == 6
+        assert (
+            str(
+                sa_select(tasks_t.c.id).where(_blocked_ignoring_conditional()).compile()
+            ).count("EXISTS")
+            == 5
+        )
+
+
+class TestWaveDriver:
     async def test_extra_waves_are_applied(self, db):
-        """``recompute_blocked_fixpoint`` re-seeds after an in-transaction
-        status change that the first wave could not have seen."""
+        """``recompute_blocked_waves`` runs one wave per supplied seed set,
+        so a status change the first wave could not have seen still lands."""
         await mktask(db, "dep", status=TaskStatus.IN_PROGRESS)
         await mktask(db, "t")
         await db.add_dependency("t", "dep")
@@ -406,7 +535,7 @@ class TestFixpointDriver:
                 .where(tasks_t.c.id == "dep")
                 .values(status=TaskStatus.COMPLETED.value)
             )
-            flipped = await db.recompute_blocked_fixpoint(
+            flipped = await db.recompute_blocked_waves(
                 {"nonexistent"}, conn=conn, extra_waves=[{"dep"}]
             )
         assert flipped == {"t"}
