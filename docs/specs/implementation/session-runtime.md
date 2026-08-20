@@ -430,26 +430,42 @@ from one profile); live sessions drain naturally — `aq session kill` cleans st
 ## 7. Phase Checklist
 
 **Phase S0 — substrate**
-- [ ] `src/sessions/provider.py` (ABC, Cap, SessionSpec, exceptions) + `env.py` + registry
-- [ ] `sessions` table in `tables.py` + Alembic migration (SQLite + PG) + `SessionQueryMixin`
-- [ ] `FakeProvider` + provider conformance suite
-- [ ] `SessionsConfig` + validation + config docs
+- [x] `src/sessions/provider.py` (ABC, Cap, SessionSpec, exceptions) + `env.py` + registry
+- [x] `sessions` table in `tables.py` + Alembic migration (SQLite + PG) + `SessionQueryMixin`
+      — table and migration landed as Wave 0 substrate (`93a8a9e48fb8`); the mixin is
+      lane 2A's. **`sessions.name` stays non-unique** — see `session_queries.py`'s module
+      docstring for the reasoning (restart-with-resume and sleep/wake both reuse a name,
+      and stopped rows are kept as history), so no follow-up revision was needed and the
+      chain remains single-headed.
+- [x] `FakeProvider` + provider conformance suite (parametrized over `PROVIDER_CASES`;
+      tmux joins by adding one entry carrying `pytest.mark.tmux`)
+- [x] `SessionsConfig` + validation + config docs (`docs/specs/config.md` §4.10.2)
 
 **Phase S1 — tmux + harness**
-- [ ] `harness_parser.py` / `harness_registry.py` + vault sync + shipped `vault/harnesses/claude.md`
+- [x] `harness_parser.py` / `harness_registry.py` + vault sync + shipped `vault/harnesses/claude.md`
 - [ ] `TmuxProvider` (probe, create flags, readiness, dialogs, nudge, peek, activity, kill,
-      state cache) + `proctable.py` + `dialogs.py`
-- [ ] `SubprocessProvider`
-- [ ] `SessionSpecBuilder` (names, argv, prompt delivery incl. >1 KB temp file, env markers,
+      state cache) + `proctable.py` + `dialogs.py` — **deferred: needs a POSIX host.**
+      `DialogRule` (the data shape) lives in `provider.py`; `dialogs.py` owns the runner.
+- [x] `SubprocessProvider` — with one honest gap: `list_running` only sees sessions this
+      daemon started, because the env-marker process scan lives in the deferred
+      `proctable.py`. Nothing is mis-reaped; nothing is re-adopted either.
+- [x] `SessionSpecBuilder` (names, argv, prompt delivery incl. >1 KB temp file, env markers,
       hook material)
 
 **Phase S2 — orchestration**
-- [ ] `SessionReconciler` (adopt, drain-ack, exit classifier, stall ladder, named
-      desired-state, backstop) wired into `run_one_cycle` + `initialize`
-- [ ] `_launch_session_for_task` fork in `_execute_task`; routing rule + feature flag
-- [ ] `_cmd_task_close` / `_cmd_task_heartbeat` / `_cmd_session_*` in `src/commands/`
-- [ ] Events registered; Discord thread streaming consuming transcript-sourced
-      `notify.task_message`
+- [x] `SessionReconciler` (adopt, drain-ack, exit classifier, stall ladder, backstop) wired
+      into `run_one_cycle` + `initialize`. **Named desired-state converges one way only**:
+      idle drain to `sleeping` is implemented; start/wake/recycle-via-handoff need the
+      message routing [[supervisor-agent]] owns and are deferred rather than half-built.
+- [x] `_launch_session_for_task` fork in `_execute_task`; routing rule + feature flag
+- [x] `_cmd_task_close` / `_cmd_task_heartbeat` / `_cmd_session_*` in `src/commands/`
+      (plus a hand-crafted `aq session` CLI group, because `aq session drain-ack` is half
+      of the completion protocol and cannot wait for a later phase)
+- [x] Events registered — `session.started/.adopted/.exited/.drain_acked/.sleeping/
+      .quarantined/.killed/.premature_drain`, `task.stalled/.nudged/.restarted/
+      .quarantined/.needs_attention/.closed`, all on the existing bus.
+      Discord thread streaming from transcript-sourced `notify.task_message` is **S3**
+      (it needs the transcript readers).
 
 **Phase S3 — observation**
 - [ ] `transcripts/base.py` + `claude.py` + `TranscriptWatcher` (events, token ledger,
