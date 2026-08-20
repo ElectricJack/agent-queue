@@ -93,7 +93,7 @@ def get_effective_exclusions(
         try:
             import yaml
 
-            with open(config_path) as fh:
+            with open(config_path, encoding="utf-8") as fh:
                 raw = yaml.safe_load(fh) or {}
             mcp_section = raw.get("mcp_server", {})
             config_excluded = mcp_section.get("excluded_commands", [])

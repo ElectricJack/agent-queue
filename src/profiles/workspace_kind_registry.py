@@ -105,7 +105,7 @@ class WorkspaceKindStore:
             if md_path.exists():
                 continue
             md_path.parent.mkdir(parents=True, exist_ok=True)
-            md_path.write_text(self._render_kind_markdown(k))
+            md_path.write_text(self._render_kind_markdown(k), encoding="utf-8")
             logger.info(
                 "Bootstrapped workspace_kind markdown: %s (kind=%s, scope=%s)",
                 md_path,

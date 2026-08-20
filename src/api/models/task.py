@@ -25,6 +25,8 @@ class TaskDetail(BaseModel):
     retry_count: int = 0
     max_retries: int = 3
     requires_approval: bool = False
+    # Persisted graph blockedness (work-graph design §4).
+    is_blocked: bool = False
     is_plan_subtask: bool = False
     task_type: str | None = None
     parent_task_id: str | None = None

@@ -545,7 +545,7 @@ class WorkspaceServiceImpl:
                     return fpath
                 # Check H1 title inside the file
                 try:
-                    with open(fpath, "r") as f:
+                    with open(fpath, "r", encoding="utf-8") as f:
                         first_line = f.readline().strip()
                     if first_line.startswith("# "):
                         h1 = first_line[2:].strip()

@@ -60,6 +60,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "create_mcp_server": "mcp",
     "edit_mcp_server": "mcp",
     "delete_mcp_server": "mcp",
+    # message — inter-agent / user message queue (supervisor-agent §6.1)
+    "message_send": "message",
+    "message_reply": "message",
+    "message_inbox": "message",
+    "message_list": "message",
     # vault — reference stub management
     "scan_stub_staleness": "system",
     # memory — provided by the external aq-memory plugin (install via `aq plugin install`)
@@ -89,6 +94,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "remove_dependency": "task",
     "get_chain_health": "task",
     "list_active_tasks_all_projects": "task",
+    "create_task_graph": "task",
     # playbook — compilation, run management, human-in-the-loop resume
     "compile_playbook": "playbook",
     "run_playbook": "playbook",
@@ -149,13 +155,14 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # loaded tool set — these are what a *task* session calls, not what the
     # supervisor LLM needs by default.  task_close/task_heartbeat land in
     # src/commands/session_commands.py; ask_human is unscheduled beyond this
-    # inventory; message_send/message_inbox land in
-    # src/commands/message_commands.py; memory_save/memory_search are
-    # normally provided by the external aq-memory plugin — these entries
-    # give MCP a tight, intentional schema for all nine regardless of which
-    # lane has implemented the backing `_cmd_*` method yet (an unimplemented
-    # command still round-trips through CommandHandler.execute() as a
-    # graceful `{"error": "..."}", never a crash).
+    # inventory; memory_save/memory_search are normally provided by the
+    # external aq-memory plugin — these entries give MCP a tight, intentional
+    # schema regardless of which lane has implemented the backing `_cmd_*`
+    # method yet (an unimplemented command still round-trips through
+    # CommandHandler.execute() as a graceful `{"error": "..."}", never a
+    # crash).  message_send/message_inbox are categorized under "message"
+    # above (supervisor-agent §6.1) now that src/commands/message_commands.py
+    # backs them for real, alongside message_reply/message_list.
     # task_show / task_set are also the agent-facing work-state surface
     # (aq-surface §3): the CLI hand-crafts ``aq task show`` / ``aq task set``,
     # and those win over the auto-generated variants by name collision.
@@ -164,8 +171,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_close": "task",
     "task_heartbeat": "task",
     "ask_human": "task",
-    "message_send": "task",
-    "message_inbox": "task",
     "memory_save": "memory",
     "memory_search": "memory",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
@@ -1254,6 +1259,28 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "The task that must complete first (upstream task)",
                 },
+                "dep_type": {
+                    "type": "string",
+                    "enum": [
+                        "blocks",
+                        "parent-child",
+                        "waits-for",
+                        "conditional-blocks",
+                        "discovered-from",
+                        "related",
+                        "duplicates",
+                        "supersedes",
+                    ],
+                    "description": (
+                        "Edge kind (default 'blocks'). Blocking kinds gate "
+                        "readiness: 'blocks' waits for completion, "
+                        "'parent-child' marks a container that withholds its "
+                        "children until released, 'waits-for' fans in over a "
+                        "container's children, 'conditional-blocks' runs only "
+                        "if the dependency terminally failed. The rest are "
+                        "provenance only and never block."
+                    ),
+                },
             },
             "required": ["task_id", "depends_on"],
         },
@@ -1275,6 +1302,13 @@ _ALL_TOOL_DEFINITIONS = [
                 "depends_on": {
                     "type": "string",
                     "description": "The upstream task to remove as a dependency",
+                },
+                "dep_type": {
+                    "type": "string",
+                    "description": (
+                        "Only remove the edge of this kind. Omit to remove "
+                        "every edge kind between the pair."
+                    ),
                 },
             },
             "required": ["task_id", "depends_on"],
@@ -1563,8 +1597,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": (
-                        "Filter to a specific project. Omit to aggregate "
-                        "across every project."
+                        "Filter to a specific project. Omit to aggregate across every project."
                     ),
                 },
                 "since_hours": {
@@ -3174,37 +3207,145 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["question"],
         },
     },
+    # -- messages (supervisor-agent spec §6.1) ------------------------------
     {
         "name": "message_send",
         "description": (
-            "Send a message to another agent/session or a human. Backs `aq message send`. "
-            "(Implementation pending — src/commands/message_commands.py.)"
+            "Queue a message to a session, task, profile, or user.  Messages "
+            "are the single transport for user<->agent and agent<->agent "
+            "traffic; delivery is asynchronous."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "recipient": {"type": "string", "description": "Message recipient"},
-                "body": {"type": "string", "description": "Message body"},
-                "task_id": {
+                "project_id": {"type": "string", "description": "Owning project"},
+                "to_kind": {
                     "type": "string",
-                    "description": "Task ID this message relates to (optional)",
+                    "enum": ["session", "task", "profile", "user"],
+                    "description": "Recipient kind",
+                },
+                "to_id": {
+                    "type": "string",
+                    "description": (
+                        "Recipient id: a session name (supervisor-<project_id>), "
+                        "task id, profile id, or user handle"
+                    ),
+                },
+                "body": {"type": "string", "description": "Markdown message body"},
+                "subject": {"type": "string", "description": "Optional subject line"},
+                "from_kind": {
+                    "type": "string",
+                    "enum": ["session", "user", "system"],
+                    "description": "Sender kind (default: user)",
+                },
+                "from_id": {"type": "string", "description": "Sender id"},
+                "thread_id": {
+                    "type": "string",
+                    "description": "Conversation grouping key (Discord channel, chat id)",
+                },
+                "priority": {
+                    "type": "integer",
+                    "description": "Delivery ordering, lower first (default 100)",
+                    "default": 100,
+                },
+                "archive_after_inject": {
+                    "type": "boolean",
+                    "description": "Archive the row once injected into a prompt",
+                    "default": False,
+                },
+                "reply_to_id": {"type": "string", "description": "Message this replies to"},
+            },
+            "required": ["to_kind", "to_id", "body", "from_id"],
+        },
+    },
+    {
+        "name": "message_reply",
+        "description": (
+            "Reply to a message by id.  Marks the original read, writes a "
+            "linked reply row addressed back to its sender, and emits "
+            "message.replied so chat surfaces can render it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "Message being replied to"},
+                "body": {"type": "string", "description": "Markdown reply body"},
+                "subject": {"type": "string", "description": "Optional subject line"},
+                "from_kind": {
+                    "type": "string",
+                    "enum": ["session", "user", "system"],
+                    "description": "Override the inferred replier kind",
+                },
+                "from_id": {"type": "string", "description": "Override the inferred replier id"},
+                "via": {
+                    "type": "string",
+                    "description": "Delivery marker, e.g. transcript_tail",
                 },
             },
-            "required": ["recipient", "body"],
+            "required": ["message_id", "body"],
         },
     },
     {
         "name": "message_inbox",
         "description": (
-            "List messages addressed to the caller. Backs `aq message inbox`. "
-            "(Implementation pending — src/commands/message_commands.py.)"
+            "List the pending (undelivered) messages for one recipient.  With "
+            "inject=true it also marks them delivered and archives any rows "
+            "flagged archive_after_inject."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "unread": {
+                "to_kind": {
+                    "type": "string",
+                    "enum": ["session", "task", "profile", "user"],
+                    "description": "Recipient kind",
+                },
+                "to_id": {"type": "string", "description": "Recipient id"},
+                "inject": {
                     "type": "boolean",
-                    "description": "Only return unread messages (optional, default false)",
+                    "description": "Mark the returned messages delivered",
+                    "default": False,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Max rows (default 50, or max_inject_per_prompt when injecting)"
+                    ),
+                },
+            },
+            "required": ["to_kind", "to_id"],
+        },
+    },
+    {
+        "name": "message_list",
+        "description": (
+            "List messages newest-first with project, thread, and recipient "
+            "filters.  Use since=<epoch> to poll for new traffic."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Filter by project"},
+                "thread_id": {"type": "string", "description": "Filter by conversation thread"},
+                "to_kind": {
+                    "type": "string",
+                    "enum": ["session", "task", "profile", "user"],
+                    "description": "Filter by recipient kind",
+                },
+                "to_id": {"type": "string", "description": "Filter by recipient id"},
+                "include_archived": {
+                    "type": "boolean",
+                    "description": "Include archived rows",
+                    "default": False,
+                },
+                "since": {
+                    "type": "number",
+                    "description": "Only messages created after this epoch timestamp",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows (default 100)",
+                    "default": 100,
                 },
             },
         },
@@ -3243,6 +3384,37 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "create_task_graph",
+        "description": (
+            "Create a whole task graph in one transaction from a graph "
+            "document or a vault spec's fenced aq-graph block.  Validates "
+            "vars, keys, dependency types, profiles, cycles, and spec "
+            "references first; dry_run returns the report without writing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Owning project"},
+                "graph": {
+                    "type": "object",
+                    "description": "Graph document (version/vars/defaults/parent/nodes)",
+                },
+                "spec_path": {
+                    "type": "string",
+                    "description": (
+                        "Vault spec path whose fenced aq-graph block defines the "
+                        "graph (relative to the vault root or absolute)"
+                    ),
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Validate and report assigned ids without writing",
+                    "default": False,
+                },
+            },
         },
     },
 ]

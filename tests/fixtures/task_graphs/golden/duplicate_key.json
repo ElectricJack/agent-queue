@@ -1,0 +1,7 @@
+[
+  {
+    "rule": "duplicate_key",
+    "node": "a",
+    "severity": "error"
+  }
+]

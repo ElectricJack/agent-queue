@@ -119,7 +119,9 @@ class Allowlist:
         if self._path.exists():
             return False
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(DEFAULT_ALLOWLIST_TEMPLATE.format(project_id=project_id))
+        self._path.write_text(
+            DEFAULT_ALLOWLIST_TEMPLATE.format(project_id=project_id), encoding="utf-8"
+        )
         logger.info("Created allowlist template: %s", self._path)
         return True
 
@@ -138,7 +140,7 @@ class Allowlist:
 
     def _load(self) -> None:
         try:
-            raw = yaml.safe_load(self._path.read_text()) or {}
+            raw = yaml.safe_load(self._path.read_text(encoding="utf-8")) or {}
         except yaml.YAMLError as e:
             logger.error("Allowlist YAML parse failed %s: %s", self._path, e)
             return

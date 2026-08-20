@@ -472,7 +472,7 @@ def parse_plugin_yaml(install_path: str | Path) -> PluginInfo:
     if not manifest_path.exists():
         raise FileNotFoundError(f"No plugin.yaml found in {src_dir}")
 
-    with open(manifest_path) as f:
+    with open(manifest_path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     if not data or not isinstance(data, dict):
@@ -696,7 +696,7 @@ async def install_plugin_from_url(
     if not config_path.exists() and info.default_config:
         import yaml as _yaml
 
-        with open(config_path, "w") as f:
+        with open(config_path, "w", encoding="utf-8") as f:
             _yaml.safe_dump(info.default_config, f, default_flow_style=False)
 
     setup_prompts(install_path)

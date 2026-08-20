@@ -84,6 +84,65 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Work-graph events  (docs/specs/design/work-graph.md §10.2)
+#
+# These entries describe the **bus** payload each event will carry.  Today
+# nothing emits them on the bus: `task.blocked` / `task.unblocked` are
+# written to the `events` audit table by the blocked-state recompute for
+# every row whose projection flipped, and `task.skipped_conditional` by the
+# conditional auto-close cascade.  Audit rows are columnar
+# (event_type, project_id, task_id, agent_id, payload) and are not validated
+# against this registry, so they carry no `title` — that is a difference in
+# transport, not a schema the registry should relax.  The `dependency.*` /
+# `label.*` pairs are graph-edit provenance, written the same way.
+#
+# ``gate.created`` / ``gate.resolved`` / ``gate.expired`` are registered by
+# WG-3, together with the gate sweep that emits them.
+# ---------------------------------------------------------------------------
+
+_WORK_GRAPH_SCHEMAS: dict[str, EventSchema] = {
+    # task.* events carry the base triple (task_id, project_id, title) like
+    # every other member of the namespace: this registry is the **EventBus**
+    # payload contract, and every bus emitter of a task.* event goes through
+    # `_emit_task_event`, which supplies the triple.  Two invariant tests
+    # enforce that (`test_task_events_share_base_triple`,
+    # `test_emit_task_event_helper_provides_base_fields`).
+    #
+    # NOTE: these three have **no bus producer yet** — see the block comment
+    # above.  Until WG-3/WG-4 adds one they are forward declarations, and a
+    # playbook triggering on them never fires.  Recorded in
+    # docs/specs/implementation/work-graph.md, phase WG-4.
+    "task.blocked": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["reason"],
+    },
+    "task.unblocked": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["reason"],
+    },
+    "task.skipped_conditional": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["reason"],
+    },
+    "dependency.added": {
+        "required": ["task_id", "depends_on", "dep_type"],
+        "optional": ["project_id"],
+    },
+    "dependency.removed": {
+        "required": ["task_id", "depends_on"],
+        "optional": ["dep_type", "project_id"],
+    },
+    "label.added": {
+        "required": ["task_id", "label"],
+        "optional": ["project_id"],
+    },
+    "label.removed": {
+        "required": ["task_id", "label"],
+        "optional": ["project_id"],
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Note / knowledge events
 # ---------------------------------------------------------------------------
 
@@ -352,6 +411,29 @@ _CHAT_SCHEMAS: dict[str, EventSchema] = {
         "required": ["project_id", "user_text", "response", "tools_used"],
         "optional": [],
     },
+    # -- messages lifecycle (supervisor-agent impl §5 / design §6.3) --
+    # Subsystems integrate through these events only: the Discord adapter,
+    # the dashboard WS stream and the delivery engine never call each other.
+    "message.sent": {
+        "required": [
+            "message_id",
+            "project_id",
+            "from_kind",
+            "from_id",
+            "to_kind",
+            "to_id",
+        ],
+        "optional": ["thread_id", "subject"],
+    },
+    "message.delivered": {
+        # ``method``: nudge | inject | prime
+        "required": ["message_id", "project_id", "method"],
+        "optional": [],
+    },
+    "message.replied": {
+        "required": ["message_id", "reply_id", "project_id", "body"],
+        "optional": ["via", "thread_id"],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -440,6 +522,21 @@ _WORKFLOW_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Session events  (emitted by CommandHandler / session-runtime)
+#
+# session-runtime (lane 2A) owns restart mechanics (recycle now vs. later,
+# wake_mode) and will register further ``session.*`` events here as it lands
+# — this dict is their canonical home.
+# ---------------------------------------------------------------------------
+
+_SESSION_SCHEMAS: dict[str, EventSchema] = {
+    "session.restart_requested": {
+        "required": ["task_id", "reason", "handoff_id"],
+        "optional": ["session_id"],
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Timer events  (synthetic events emitted by the timer service)
 #
 # Timer events follow the pattern ``timer.{interval}`` (e.g. ``timer.30m``,
@@ -485,6 +582,7 @@ _CRON_SCHEMAS: dict[str, EventSchema] = {
 
 EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_TASK_SCHEMAS,
+    **_WORK_GRAPH_SCHEMAS,
     **_NOTE_SCHEMAS,
     **_FILE_SCHEMAS,
     **_PLUGIN_SCHEMAS,
@@ -495,6 +593,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_PLAYBOOK_SCHEMAS,
     **_HUMAN_SCHEMAS,
     **_WORKFLOW_SCHEMAS,
+    **_SESSION_SCHEMAS,
     **_TIMER_SCHEMAS,
     **_CRON_SCHEMAS,
 }

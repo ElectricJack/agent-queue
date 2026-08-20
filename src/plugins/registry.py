@@ -762,7 +762,7 @@ class PluginRegistry:
                 raise ValueError(f"No pyproject.toml or plugin.yaml in {source_path}")
             import yaml
 
-            with open(temp_info_path) as f:
+            with open(temp_info_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
             plugin_name = name or data.get("name")
 

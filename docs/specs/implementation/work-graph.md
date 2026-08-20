@@ -117,7 +117,9 @@ WHERE tasks.id IN (:affected_ids)
 
 `_collect_affected(seeds)` = seeds ∪ `SELECT task_id FROM task_dependencies WHERE depends_on_task_id IN :seeds AND dep_type IN BLOCKING_DEP_TYPES` ∪ waiters of containers the seeds are children of (`waits-for` rows whose `depends_on_task_id` matches any `parent-child` target of a seed) ∪ waiters of changed gates. Changed rows are detected by selecting `(id, is_blocked)` for the affected set before the UPDATE and diffing after (RETURNING is avoided for dialect parity with older SQLite).
 
-**Fixpoint:** the driver loops while the *transaction* keeps changing task statuses (bulk create, conditional auto-close); with statuses fixed, one wave suffices. Loop bound: each wave only re-seeds tasks whose status changed that wave; asserted `< 10_000` iterations as a safety valve.
+**Waves (`recompute_blocked_waves`):** *not* an iteration to a fixpoint — the driver runs exactly one wave per supplied seed set (`1 + len(extra_waves)`), in order. Callers that change several statuses inside one transaction (bulk create, conditional auto-close) name the seeds each later wave needs; nothing re-seeds from the flipped set.
+
+That is exact, not an approximation. `is_blocked` is a pure function of statuses, edges and gates, and blockedness is deliberately not transitive through blockedness (design §4.3), so with a fixed set of statuses **one wave is the whole answer**. A further wave is needed only because the transaction changed a status the previous wave could not have seen, and nothing a wave *writes* can invalidate an earlier wave's result. There is consequently no termination question and no iteration bound to assert.
 
 **Locking:** SQLite — single writer, WAL; the whole mutation+recompute is one write transaction, inherently atomic. PostgreSQL — the single UPDATE takes row locks in one statement (no interleaving); multi-wave loops sort `affected_ids` before each UPDATE so concurrent transactions acquire locks in a canonical order, preventing deadlocks (same discipline as workspace acquisition in [[design/workspaces-v2]]).
 
@@ -217,6 +219,26 @@ work_graph:
 
 Rollout order: (1) migrations + recompute in shadow mode → (2) flip `blocked_state_authoritative` after ≥1 week of zero-divergence logs → (3) gates live (additive; nothing uses them until created) → (4) flip `state_machine.enforce` after the warning audit. Rollback for (2) is a config flip — the legacy scan path is kept until the collapse phase.
 
+### 9.1 Before the flip — `blocked_state_authoritative`
+
+Three gaps are known, reproduced, and **deliberately not fixed in WG-1/WG-2**. None blocks merging the projection in shadow mode: while the flag is `false` the legacy scan decides and the projection is only observed. All three become live the moment the flag flips, so each needs a decision — and the first two need a migration — as part of step (2) of the rollout order above.
+
+**P2-4 — in-flight legacy plan subtasks 2..n have no `parent-child` edge.** The old plan wiring created exactly one `blocks` edge (subtask 1 → plan task); subtasks 2..n were withheld by the `is_plan_subtask` special case in `_check_defined_tasks`, not by an edge. The data migration (`a1c7f3e08b42`) retypes edges that *exist*, so it converts that one edge and leaves subtasks 2..n edgeless. Under the legacy scan they stay withheld (the special case still runs). Under the projection they are unblocked — **unapproved plan subtasks would start running** at flip time.
+
+Fix, as part of the flip: an `INSERT … SELECT` creating a `parent-child` edge for every `tasks` row with `is_plan_subtask = 1` and a non-null `parent_task_id` that has no `parent-child` edge to that parent, followed by `recompute_all_blocked()`. Must be written with the same PK-collision guard as §2's retype (`NOT EXISTS` on the target `(task_id, depends_on_task_id, 'parent-child')`).
+
+**P2-5 — a non-released plan parent frees its children.** `_WITHHOLDING_PARENT_STATUSES` is `{DEFINED, AWAITING_PLAN_APPROVAL}`; every other parent status counts as released, so a plan parent that is BLOCKED, FAILED, READY or PAUSED no longer withholds its children. Design §3.1 sanctions this — "released" is defined as *not* withholding, and the withholding set is the closed list — but "the children of a failed plan start running" is a behaviour change that deserves an explicit yes/no rather than arriving as a side effect of a config flip. Decide at flip time whether FAILED/BLOCKED parents join the withholding set. (The legacy scan's answer was narrower: it treated only `AWAITING_PLAN_APPROVAL` as withholding and IN_PROGRESS as satisfied, and had no opinion at all about a FAILED parent.)
+
+**P2-6 — PostgreSQL: concurrent sibling completions can leave a fan-in waiter stale.** Two transactions each completing a different `parent-child` child of the same container, both recomputing the `waits-for` waiter, can both read the *other* child as not-yet-COMPLETED: the correlated `EXISTS` lives in the `SET` expression and evaluates under a statement snapshot taken before the other transaction committed. The waiter is then left `is_blocked = 1` with every child COMPLETED. §3.2's "the single UPDATE takes row locks in one statement" covers write ordering between the two, not subquery visibility. Impossible on SQLite (single writer, WAL).
+
+Fix at flip time: take the row locks explicitly before the projection UPDATE —
+
+```sql
+SELECT id FROM tasks WHERE id IN (:ordered) FOR UPDATE   -- PG only; canonical sorted order
+```
+
+— which forces the second transaction to re-read after the first commits, plus a `postgres`-marked test driving two concurrent sibling completions against one fan-in waiter (§11 already budgets that test). Until then, `recompute_all_blocked()` (`aq doctor`) is the repair path; it is now fast enough to run routinely (§11 perf note).
+
 ## 10. Phase checklist
 
 **Phase WG-1 — schema + projection (shadow)**
@@ -238,10 +260,13 @@ Rollout order: (1) migrations + recompute in shadow mode → (2) flip `blocked_s
 **Phase WG-4 — explain + ready + replay**
 - [ ] `src/explain.py`; `_describe_task_blocker` refactor; `_cmd_explain_task`, `_cmd_project_ready` (cross-project deps named)
 - [ ] `after`/`after_seq` replay on REST + websocket; payload-registry invariant test
+- [ ] **`task.blocked` / `task.unblocked` / `task.skipped_conditional` have no bus producer.** WG-1/WG-2 write them to the `events` audit table via `log_event`; nothing emits them on the EventBus. `_cmd_list_event_triggers` publishes every `EVENT_SCHEMAS` key as an available playbook trigger, so these three are advertised as triggers that can never fire. Their registry entries stay declared with the full task base triple — `EVENT_SCHEMAS` is the *bus* payload contract (see `tests/test_emit_schema_compliance.py`), every bus emitter of a `task.*` event goes through `_emit_task_event`, and two invariant tests enforce the triple; relaxing them to match the columnar audit row would weaken the contract for the emitter that is still to come. Add the bus emission here (the flip set already returns from `transition_task`, and the emitter has the `Task` in hand, so `title` is available), or drop the three from the trigger listing until it exists.
+- [ ] **Provenance edges are writable but unreadable.** WG-2 accepts `add_dependency(dst, up, dep_type="discovered-from"|"related"|"duplicates"|"supersedes")` and stores it, but every read surface filters to `BLOCKING_DEP_TYPES`: `get_task_info`, `get_task_dependencies`, the tree renderer, the dashboard builder, and — permanently — the vault archive note, where the edge is simply lost. `get_typed_dependencies` is the only reader that sees them and it has no command surface. Give the non-blocking types a read path (a `dep_types` argument through `_cmd_get_task_dependencies` + a provenance section in the task view) before anything is encouraged to write them. Related: `_build_dep_map_for_tree` (`src/commands/task_commands.py:140`) is the only `dep_type`-aware map builder and currently has **no callers** — wire it into the tree renderer here or delete it.
 
 **Phase WG-5 — outcomes + enforcement + ids/groups**
 - [ ] `_cmd_close_task` + outcome/work-state metadata helpers (column↔key sync for `pr_url`/`branch_name`)
 - [ ] `failure_class` retry policy in execution.py; `state_machine.enforce` flag + `force` plumbing + call-site audit
+- [ ] **`is_valid_status_transition` has no event-level precision.** WG-2 added `(DEFINED, CONDITIONAL_DEAD) → COMPLETED` and `(READY, CONDITIONAL_DEAD) → COMPLETED`. `VALID_STATUS_TRANSITIONS` is the `(from, to)` projection of the event table and `transition_task` validates on that pair alone, so `is_valid_status_transition(DEFINED, COMPLETED)` is now `True` **everywhere** — not just for the conditional cascade. Harmless while validation is warn-only; the moment `state_machine.enforce` lands, any caller can walk a DEFINED task straight to COMPLETED unchallenged. Fix here by threading `event: TaskEvent` through `transition_task` (§4.1 already plans the parameter) and validating on `(from, event)`, keeping the `(from, to)` set only as a fallback for callers that pass no event.
 - [ ] Hierarchical child ids; `get_group_progress` + command
 - [ ] Docs: update `docs/specs/models-and-state-machine.md`, `database.md`, `command-handler.md`
 
@@ -256,7 +281,7 @@ Rollout order: (1) migrations + recompute in shadow mode → (2) flip `blocked_s
 - **Explain goldens:** one fixture per reason code; cross-project dep names the other project.
 - **Replay:** REST `after` pagination is gapless and ordered; websocket replay-then-live delivers no duplicates/losses across a simulated disconnect.
 - **Registry invariant:** emit-site scan → every event type registered in `EVENT_SCHEMAS`.
-- **Perf:** 10k-task synthetic graph — single-edge recompute < 50 ms (SQLite), full backfill < 5 s; frontier query uses `idx_tasks_project_status_blocked` (EXPLAIN assertion).
+- **Perf:** 10k-task synthetic graph — single-edge recompute < 50 ms (SQLite), full backfill < 5 s; frontier query uses `idx_tasks_project_status_blocked` (EXPLAIN assertion). Note the budget covers the flip **events**, not just the `UPDATE`: `log_blocked_flips` must write one batched insert, not one transaction per flipped row (per-row `log_event` cost ~50× the recompute `UPDATE` and blew the 5 s backfill budget on its own).
 
 ## 12. Risks
 

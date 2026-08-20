@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "spec": "projects/p1/specs/messages-table.md",
+  "vars": {
+    "base": "main"
+  },
+  "defaults": {
+    "profile": "coding",
+    "labels": [
+      "overhaul-b"
+    ]
+  },
+  "parent": {
+    "title": "Messages table + delivery engine",
+    "profile": "planner"
+  },
+  "nodes": [
+    {
+      "key": "schema",
+      "title": "Add messages table and Alembic migration",
+      "description": "New messages table per spec; branch from {base}.",
+      "acceptance": [
+        "alembic upgrade head clean on both backends",
+        "pytest tests/test_database.py green"
+      ],
+      "context": [
+        {
+          "type": "spec_ref",
+          "path": "{spec}",
+          "section": "3. Schema"
+        },
+        {
+          "type": "file",
+          "path": "src/database/tables.py"
+        }
+      ],
+      "labels": [
+        "db"
+      ],
+      "priority": 90
+    },
+    {
+      "key": "queries",
+      "title": "Message queries module",
+      "description": "CRUD + pending-delivery queries.",
+      "acceptance": [
+        "unit tests cover create/pending/mark_delivered/mark_read"
+      ],
+      "context": [
+        {
+          "type": "spec_ref",
+          "path": "{spec}",
+          "section": "4. Queries"
+        }
+      ],
+      "needs": [
+        {
+          "on": "schema",
+          "dep_type": "blocks"
+        }
+      ]
+    },
+    {
+      "key": "engine",
+      "title": "Delivery engine cascade step",
+      "acceptance": [
+        "cascade step delivers pending rows"
+      ],
+      "needs": [
+        "queries"
+      ],
+      "profile": "coding"
+    }
+  ]
+}

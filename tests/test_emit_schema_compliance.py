@@ -211,7 +211,7 @@ class TestConfigEventEmits:
     def test_config_reloaded_emit_has_required_fields(self):
         """config.py emits config.reloaded with changed_sections and config."""
         config_path = SRC_DIR / "config.py"
-        source = config_path.read_text()
+        source = config_path.read_text(encoding="utf-8")
         schema = EVENT_SCHEMAS["config.reloaded"]
 
         # Find the config.reloaded emit
@@ -228,7 +228,7 @@ class TestConfigEventEmits:
     def test_config_restart_needed_emit_has_required_fields(self):
         """config.py emits config.restart_needed with changed_sections."""
         config_path = SRC_DIR / "config.py"
-        source = config_path.read_text()
+        source = config_path.read_text(encoding="utf-8")
         schema = EVENT_SCHEMAS["config.restart_needed"]
 
         match = re.search(
@@ -280,7 +280,7 @@ class TestFileWatcherEmits:
 
     def test_file_changed_emit_has_required_fields(self):
         fw_path = SRC_DIR / "file_watcher.py"
-        source = fw_path.read_text()
+        source = fw_path.read_text(encoding="utf-8")
         schema = EVENT_SCHEMAS["file.changed"]
 
         match = re.search(
@@ -295,7 +295,7 @@ class TestFileWatcherEmits:
 
     def test_folder_changed_emit_has_required_fields(self):
         fw_path = SRC_DIR / "file_watcher.py"
-        source = fw_path.read_text()
+        source = fw_path.read_text(encoding="utf-8")
         schema = EVENT_SCHEMAS["folder.changed"]
 
         # The folder.changed payload contains nested dicts (changes list),
@@ -326,7 +326,7 @@ class TestChatMessageEmit:
 
     def test_chat_message_emit_has_required_fields(self):
         bot_path = SRC_DIR / "discord" / "bot.py"
-        source = bot_path.read_text()
+        source = bot_path.read_text(encoding="utf-8")
         schema = EVENT_SCHEMAS["chat.message"]
 
         match = re.search(

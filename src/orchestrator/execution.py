@@ -59,9 +59,7 @@ def _render_workspaces_block(attachments: list) -> str:
             flags.append("locked")
         flag_str = ", ".join(flags)
         alias_str = f" ({a.alias})" if a.alias else ""
-        lines.append(
-            f"- **{a.kind_id}**{alias_str} ({flag_str}) → {a.workspace_path}"
-        )
+        lines.append(f"- **{a.kind_id}**{alias_str} ({flag_str}) → {a.workspace_path}")
     return "\n".join(lines)
 
 
@@ -429,9 +427,7 @@ class ExecutionMixin:
                 TaskStartedEvent(
                     task=build_task_detail(task),
                     agent=build_agent_summary(agent),
-                    workspace_path=(
-                        ws_obj.workspace_path if ws_obj else (workspace or "")
-                    ),
+                    workspace_path=(ws_obj.workspace_path if ws_obj else (workspace or "")),
                     workspace_name=(ws_obj.name or "") if ws_obj else "",
                     is_reopened=False,
                     task_description=task.description or "",
@@ -691,9 +687,7 @@ class ExecutionMixin:
         # what each attached path represents.  Spec §8.3.
         if workspace_attachments:
             full_description = (
-                full_description.rstrip()
-                + "\n\n"
-                + _render_workspaces_block(workspace_attachments)
+                full_description.rstrip() + "\n\n" + _render_workspaces_block(workspace_attachments)
             )
 
         # Build the runtime's allowed-paths set: extra_dirs (vault back-compat)
@@ -1076,27 +1070,13 @@ class ExecutionMixin:
                             )
 
                             if created_info:
-                                # Block first subtask on parent so chain stays
-                                # blocked until plan is approved.
-                                first_subtask_id = created_info[0]["id"]
-                                try:
-                                    await self.db.add_dependency(
-                                        first_subtask_id, depends_on=task.id
-                                    )
-                                    logger.info(
-                                        "Task %s: added blocking dep %s → %s (parent)",
-                                        task.id,
-                                        first_subtask_id,
-                                        task.id,
-                                    )
-                                except Exception as e:
-                                    logger.warning(
-                                        "Task %s: failed to add blocking dep %s → %s: %s",
-                                        task.id,
-                                        first_subtask_id,
-                                        task.id,
-                                        e,
-                                    )
+                                # break_plan_into_tasks() already gave every
+                                # subtask a `parent-child` edge to this task
+                                # (+ `discovered-from` provenance).  An
+                                # AWAITING_PLAN_APPROVAL container withholds
+                                # its children, so the chain stays blocked
+                                # until approval without a separate `blocks`
+                                # edge (work-graph design §3.1).
 
                                 # Store draft subtask IDs for approve/delete/reject
                                 import json as _json

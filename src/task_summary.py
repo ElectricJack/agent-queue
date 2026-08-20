@@ -145,6 +145,6 @@ def write_task_summary(
     path = task_summary_path(vault_root, task)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     note = build_task_summary(task, result, dependencies, commits)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(note)
     return path

@@ -124,12 +124,21 @@ class SurfaceCommandsMixin:
             await self.db.add_task_context(task_id, type="note", label="note", content=args["note"])
             fields_changed.append("note")
 
+        # Labels are the work-graph's sanctioned free-text tag surface
+        # (design §6); ``hold:<who>`` is the reserved convention that
+        # withholds a task from the ready frontier.
         for label in args.get("labels_add") or []:
             await self.db.add_task_label(task_id, label)
+            await self.db.log_event(
+                "label.added", project_id=task.project_id, task_id=task_id, payload=label
+            )
             fields_changed.append(f"+label:{label}")
 
         for label in args.get("labels_remove") or []:
             await self.db.remove_task_label(task_id, label)
+            await self.db.log_event(
+                "label.removed", project_id=task.project_id, task_id=task_id, payload=label
+            )
             fields_changed.append(f"-label:{label}")
 
         if "work_dir" in args:

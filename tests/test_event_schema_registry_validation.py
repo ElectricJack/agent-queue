@@ -103,6 +103,47 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "title": "Implement feature X",
         "question": "Which database should I use?",
     },
+    # Work graph (docs/specs/design/work-graph.md §10.2)
+    "task.blocked": {
+        "task_id": "t-1",
+        "project_id": "proj-1",
+        "title": "Implement feature X",
+        "reason": "graph",
+    },
+    "task.unblocked": {
+        "task_id": "t-1",
+        "project_id": "proj-1",
+        "title": "Implement feature X",
+        "reason": "graph",
+    },
+    "task.skipped_conditional": {
+        "task_id": "t-1",
+        "project_id": "proj-1",
+        "title": "Roll back the migration",
+        "reason": "conditional-blocks dependency completed",
+    },
+    "dependency.added": {
+        "task_id": "t-2",
+        "depends_on": "t-1",
+        "dep_type": "blocks",
+        "project_id": "proj-1",
+    },
+    "dependency.removed": {
+        "task_id": "t-2",
+        "depends_on": "t-1",
+        "dep_type": "blocks",
+        "project_id": "proj-1",
+    },
+    "label.added": {
+        "task_id": "t-1",
+        "label": "hold:alice",
+        "project_id": "proj-1",
+    },
+    "label.removed": {
+        "task_id": "t-1",
+        "label": "hold:alice",
+        "project_id": "proj-1",
+    },
     # Note / knowledge
     "note.created": {
         "project_id": "proj-1",
@@ -175,6 +216,29 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "user_text": "What is the repo URL?",
         "response": "The repo URL is https://github.com/example/repo",
         "tools_used": ["get_project", "reply_to_user"],
+    },
+    # Messages (supervisor-agent §5 / design §6.3)
+    "message.sent": {
+        "message_id": "msg-abc123",
+        "project_id": "proj-1",
+        "from_kind": "user",
+        "from_id": "discord:1234",
+        "to_kind": "session",
+        "to_id": "supervisor-proj-1",
+        "thread_id": "discord:5678",
+        "subject": "status?",
+    },
+    "message.delivered": {
+        "message_id": "msg-abc123",
+        "project_id": "proj-1",
+        "method": "inject",
+    },
+    "message.replied": {
+        "message_id": "msg-abc123",
+        "reply_id": "msg-def456",
+        "project_id": "proj-1",
+        "body": "3 tasks are running.",
+        "thread_id": "discord:5678",
     },
     # Git
     "git.commit": {
@@ -418,6 +482,11 @@ _CANONICAL_PAYLOADS["workflow.orphaned"] = {
     "playbook_id": "pb-ship-feature",
     "project_id": "my-app",
     "reason": "stage handler missing",
+}
+_CANONICAL_PAYLOADS["session.restart_requested"] = {
+    "task_id": "task-123",
+    "reason": "handoff",
+    "handoff_id": "ctx-456",
 }
 
 

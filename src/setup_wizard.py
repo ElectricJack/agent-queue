@@ -144,7 +144,7 @@ def _save_env_value(key: str, value: str):
     lines: list[str] = []
     found = False
     if env_path.exists():
-        for line in env_path.read_text().splitlines():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
                 lines.append(f"{key}={value}")
                 found = True
@@ -154,7 +154,7 @@ def _save_env_value(key: str, value: str):
     if not found:
         lines.append(f"{key}={value}")
 
-    env_path.write_text("\n".join(lines) + "\n")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.chmod(env_path, 0o600)
 
 
@@ -169,7 +169,7 @@ def _load_existing_config() -> dict:
     # Load .env
     env_path = config_dir / ".env"
     if env_path.exists():
-        for line in env_path.read_text().splitlines():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if "=" in line and not line.startswith("#"):
                 key, _, value = line.partition("=")
@@ -181,7 +181,7 @@ def _load_existing_config() -> dict:
         try:
             import yaml
 
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
             existing["_yaml"] = data
         except ImportError:
@@ -189,7 +189,7 @@ def _load_existing_config() -> dict:
             data: dict = {}
             current_section: str | None = None
             current_subsection: str | None = None
-            for line in config_path.read_text().splitlines():
+            for line in config_path.read_text(encoding="utf-8").splitlines():
                 stripped = line.strip()
                 if not stripped or stripped.startswith("#"):
                     continue
@@ -1452,7 +1452,7 @@ def step_write_config(
     if claude_cfg and not claude_cfg["from_env"]:
         env_lines.append(f"ANTHROPIC_API_KEY={claude_cfg['api_key']}")
 
-    env_path.write_text("\n".join(env_lines) + "\n")
+    env_path.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
     os.chmod(env_path, 0o600)
     success(f"Secrets written to {env_path} (mode 600)")
 
@@ -1539,7 +1539,7 @@ def step_write_config(
         f"  token_exhaustion_retry_seconds: {pr['token_exhaustion_retry_seconds']}",
     ]
 
-    config_path.write_text("\n".join(yaml_lines) + "\n")
+    config_path.write_text("\n".join(yaml_lines) + "\n", encoding="utf-8")
     success(f"Config written to {config_path}")
 
     # Offer to add .env sourcing to shell profile
@@ -1560,13 +1560,13 @@ def _offer_shell_env(env_path: Path):
         profile = Path.home() / ".bashrc"
 
     # Check if already present
-    if profile.exists() and source_line in profile.read_text():
+    if profile.exists() and source_line in profile.read_text(encoding="utf-8"):
         info(f"Shell profile already sources {env_path}")
         return
 
     print()
     if prompt_yes_no(f"Add env sourcing to {profile.name}?", default=True):
-        with open(profile, "a") as f:
+        with open(profile, "a", encoding="utf-8") as f:
             f.write(f"\n# agent-queue secrets\n{source_line}\n")
         success(f"Added to {profile}")
         warn(f"Run: source {profile}  (or open a new terminal)")
@@ -1626,7 +1626,7 @@ def step_launch(config_path: Path):
         print()
         info(f"Starting: {cmd}")
         info(f"Log file: {log_path}")
-        log_file = open(log_path, "a")
+        log_file = open(log_path, "a", encoding="utf-8")
         proc = subprocess.Popen(
             ["agent-queue", str(config_path)],
             stdout=log_file,

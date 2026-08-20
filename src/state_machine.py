@@ -16,7 +16,20 @@ See specs/models-and-state-machine.md for the full behavioral specification.
 
 from __future__ import annotations
 
-from src.models import TaskStatus, TaskEvent
+from src.models import BLOCKING_DEP_TYPES, DepType, TaskStatus, TaskEvent
+
+__all__ = [
+    "BLOCKING_DEP_TYPES",
+    "CyclicDependencyError",
+    "InvalidTransition",
+    "VALID_STATUS_TRANSITIONS",
+    "VALID_TASK_TRANSITIONS",
+    "is_valid_status_transition",
+    "task_transition",
+    "validate_dag",
+    "validate_dag_with_new_edge",
+    "validate_waits_for",
+]
 
 
 class InvalidTransition(Exception):
@@ -80,6 +93,16 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     (TaskStatus.AWAITING_APPROVAL, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
     (TaskStatus.AWAITING_PLAN_APPROVAL, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
     (TaskStatus.WAITING_INPUT, TaskEvent.ADMIN_RESTART): TaskStatus.READY,
+    # --- Conditional-edge disposal (work-graph design §3.1) ---
+    # A contingency task whose `conditional-blocks` dependency COMPLETED can
+    # never run; the cascade closes it as a no-op rather than let it rot.
+    (TaskStatus.DEFINED, TaskEvent.CONDITIONAL_DEAD): TaskStatus.COMPLETED,
+    (TaskStatus.READY, TaskEvent.CONDITIONAL_DEAD): TaskStatus.COMPLETED,
+    # Deliberately no BLOCKED -> COMPLETED entry: BLOCKED is terminal and
+    # only admin events may leave it.  A contingency task never reaches
+    # BLOCKED through its conditional edge anyway (an unsatisfiable edge
+    # keeps it DEFINED), and auto-completing a task that was blocked by a
+    # failure would erase that failure record.
     # --- PR lifecycle ---
     (TaskStatus.AWAITING_APPROVAL, TaskEvent.PR_CLOSED): TaskStatus.BLOCKED,
     # --- Error / timeout ---
@@ -154,13 +177,65 @@ def validate_dag(deps: dict[str, set[str]]) -> None:
             dfs(node)
 
 
-def validate_dag_with_new_edge(deps: dict[str, set[str]], task_id: str, depends_on: str) -> None:
+def validate_dag_with_new_edge(
+    deps: dict[str, set[str]],
+    task_id: str,
+    depends_on: str,
+    dep_type: str = DepType.BLOCKS.value,
+) -> None:
     """Check that adding a dependency edge (task_id -> depends_on) won't create a cycle.
 
     Makes a copy of the dependency graph, adds the proposed edge, and runs
     full DAG validation. Used by the command handler before persisting a new
     dependency to the database.
+
+    Acyclicity is enforced over **blocking edges only** (work-graph design
+    §11): ``blocks``, ``parent-child``, ``waits-for`` and
+    ``conditional-blocks`` all deadlock in a cycle, while
+    ``discovered-from`` legitimately points backwards and ``related`` is
+    symmetric.  Self-edges are rejected for every type.
+
+    ``deps`` must therefore already be restricted to blocking edges — which
+    is what ``get_all_dependencies()`` returns by default.
     """
+    if task_id == depends_on:
+        raise CyclicDependencyError([task_id, depends_on])
+    if dep_type not in BLOCKING_DEP_TYPES:
+        return
     new_deps = {k: set(v) for k, v in deps.items()}
     new_deps.setdefault(task_id, set()).add(depends_on)
     validate_dag(new_deps)
+
+
+def validate_waits_for(
+    parent_child_edges: dict[str, set[str]],
+    waiter_id: str,
+    container_id: str,
+) -> None:
+    """Reject a ``waits-for`` edge that can never be satisfied.
+
+    A waiter that is itself a (transitive) child of the container fans in
+    over a set containing itself — a permanent deadlock the plain DAG check
+    cannot see, because the two edges point in opposite directions
+    (work-graph design §11).
+
+    ``parent_child_edges`` maps ``child_id -> {container_ids}`` — exactly
+    what ``get_parent_child_edges()`` returns.
+
+    Raises :class:`CyclicDependencyError` describing the ancestry path.
+    """
+    if waiter_id == container_id:
+        raise CyclicDependencyError([waiter_id, container_id])
+
+    # Walk the waiter's ancestry; if the container appears, the fan-in set
+    # contains the waiter itself.
+    seen: set[str] = {waiter_id}
+    stack = [(waiter_id, [waiter_id])]
+    while stack:
+        node, path = stack.pop()
+        for parent in sorted(parent_child_edges.get(node, set())):
+            if parent == container_id:
+                raise CyclicDependencyError([*path, container_id])
+            if parent not in seen:
+                seen.add(parent)
+                stack.append((parent, [*path, parent]))

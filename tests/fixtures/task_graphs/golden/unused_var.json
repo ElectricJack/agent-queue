@@ -1,0 +1,7 @@
+[
+  {
+    "rule": "unused_var",
+    "node": null,
+    "severity": "warning"
+  }
+]

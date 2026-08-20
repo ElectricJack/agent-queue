@@ -31,6 +31,103 @@ def task() -> None:
     pass
 
 
+def _load_graph_document(graph_file: str) -> dict:
+    """Read a ``--graph`` argument into a decoded document.
+
+    ``-`` reads stdin, which is how an agent pipes a graph it just composed.
+    JSON is tried first, then YAML, matching ``parse_graph(fmt="auto")``.
+    """
+    import json
+
+    import yaml
+
+    if graph_file == "-":
+        text = click.get_text_stream("stdin").read()
+    else:
+        try:
+            with open(graph_file, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError as exc:
+            raise click.UsageError(f"could not read graph file {graph_file!r}: {exc}") from exc
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise click.UsageError(f"graph document is neither valid JSON nor YAML: {exc}") from exc
+    if not isinstance(data, dict):
+        raise click.UsageError(
+            f"graph document must be an object, got {type(data).__name__}"
+        )
+    return data
+
+
+def _create_task_graph(
+    ctx: click.Context,
+    *,
+    project: str | None,
+    graph_file: str | None,
+    from_spec: str | None,
+    dry_run: bool,
+) -> None:
+    """Back ``aq task create --graph|--from-spec|--dry-run``."""
+    if graph_file and from_spec:
+        raise click.UsageError("--graph and --from-spec are mutually exclusive")
+
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    params: dict[str, Any] = {"dry_run": dry_run}
+    if project:
+        params["project_id"] = project
+    if graph_file:
+        params["graph"] = _load_graph_document(graph_file)
+    else:
+        params["spec_path"] = from_spec
+
+    async def _create():
+        async with _get_client(api_url) as client:
+            return await client.execute("create_task_graph", params)
+
+    result = _run(_create())
+
+    def _render(data: dict) -> None:
+        from rich.table import Table
+
+        verb = "Would create" if data.get("dry_run") else "Created"
+        console.print(
+            f"[bold green]{verb} graph[/] under "
+            f"[bold bright_cyan]{data.get('parent_id')}[/] — {data.get('parent_title', '')}"
+        )
+        nodes = data.get("nodes", [])
+        if nodes:
+            table = Table(border_style="bright_black")
+            table.add_column("Key", style="bold bright_cyan")
+            table.add_column("Task ID")
+            table.add_column("Title")
+            table.add_column("Needs")
+            for node in nodes:
+                needs = ", ".join(
+                    f"{n['on']}({n['dep_type']})" for n in node.get("needs", [])
+                )
+                table.add_row(
+                    node.get("key", ""),
+                    node.get("task_id", ""),
+                    node.get("title", ""),
+                    needs or "-",
+                )
+            console.print(table)
+        for warning in data.get("warnings", []):
+            # No square brackets around the rule name: Rich would read them
+            # as markup and swallow the text.
+            where = f" ({warning['node']})" if warning.get("node") else ""
+            console.print(
+                f"[yellow]warning[/] {warning.get('rule')}{where}: {warning.get('detail')}"
+            )
+
+    emit(ctx, result, render=_render)
+
+
 @task.command("create")
 @click.option("-p", "--project", default=None, help="Project ID (skips wizard step)")
 @click.option("-t", "--title", default=None, help="Task title (skips wizard step)")
@@ -50,6 +147,24 @@ def task() -> None:
     default=None,
     help="Agent type override (cascade falls back to the global profile of this name)",
 )
+@click.option(
+    "--graph",
+    "graph_file",
+    default=None,
+    help="Create a whole task graph from a JSON/YAML document ('-' reads stdin)",
+)
+@click.option(
+    "--from-spec",
+    "from_spec",
+    default=None,
+    help="Create a task graph from a vault spec's fenced aq-graph block",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="With --graph/--from-spec: validate and report, create nothing",
+)
 @click.pass_context
 @_handle_errors
 def task_create(
@@ -62,14 +177,33 @@ def task_create(
     approval: bool,
     profile_id: str | None,
     agent_type: str | None,
+    graph_file: str | None,
+    from_spec: str | None,
+    dry_run: bool,
 ) -> None:
     """Create a new task (interactive wizard or via flags).
 
     Use ``--profile`` / ``-P`` to pin a specific agent profile (model +
     tools + system prompt). Use ``--agent-type`` to pick the scope the
     task runs under when no explicit profile is given.
+
+    ``--graph FILE`` / ``--from-spec PATH`` create a whole dependency graph
+    in one transaction instead of a single task; add ``--dry-run`` to see the
+    validation report and the ids that would be assigned.
     """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    if graph_file or from_spec:
+        _create_task_graph(
+            ctx,
+            project=project,
+            graph_file=graph_file,
+            from_spec=from_spec,
+            dry_run=dry_run,
+        )
+        return
+    if dry_run:
+        raise click.UsageError("--dry-run only applies with --graph or --from-spec")
 
     if project and title and description:
         params = {

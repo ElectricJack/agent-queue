@@ -1,0 +1,7 @@
+[
+  {
+    "rule": "unresolved_need",
+    "node": "a",
+    "severity": "error"
+  }
+]

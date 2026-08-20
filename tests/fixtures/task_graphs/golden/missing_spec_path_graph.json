@@ -1,0 +1,7 @@
+[
+  {
+    "rule": "missing_spec_ref",
+    "node": "a",
+    "severity": "warning"
+  }
+]

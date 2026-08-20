@@ -1,0 +1,7 @@
+[
+  {
+    "rule": "missing_spec_section",
+    "node": "a",
+    "severity": "error"
+  }
+]

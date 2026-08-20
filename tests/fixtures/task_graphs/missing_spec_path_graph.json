@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "key": "a",
+      "title": "A",
+      "acceptance": [
+        "done"
+      ],
+      "context": [
+        {
+          "type": "spec_ref",
+          "path": "projects/p1/specs/nope.md",
+          "section": "1"
+        }
+      ]
+    }
+  ]
+}

@@ -182,7 +182,7 @@ class SystemCommandsMixin:
         try:
             import yaml as _yaml
 
-            with open(tmp_path, "w") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 _yaml.safe_dump(raw, f)
             try:
                 load_config(tmp_path)
@@ -291,7 +291,7 @@ class SystemCommandsMixin:
         creds_path = claude_dir / ".credentials.json"
         if creds_path.exists():
             try:
-                creds = _json.loads(creds_path.read_text())
+                creds = _json.loads(creds_path.read_text(encoding="utf-8"))
                 oauth = creds.get("claudeAiOauth", {})
                 result["subscription"] = oauth.get("subscriptionType", "unknown")
                 result["rate_limit_tier"] = oauth.get("rateLimitTier", "unknown")
@@ -303,7 +303,7 @@ class SystemCommandsMixin:
         if sessions_dir.exists():
             for sf in sessions_dir.iterdir():
                 try:
-                    sess = _json.loads(sf.read_text())
+                    sess = _json.loads(sf.read_text(encoding="utf-8"))
                 except Exception:
                     continue
                 pid = sess.get("pid")
@@ -326,7 +326,7 @@ class SystemCommandsMixin:
                         break
                 if jsonl_path:
                     try:
-                        with open(jsonl_path) as fh:
+                        with open(jsonl_path, encoding="utf-8") as fh:
                             for line in fh:
                                 data = _json.loads(line)
                                 msg = data.get("message", {})
@@ -363,7 +363,7 @@ class SystemCommandsMixin:
         stats_path = claude_dir / "stats-cache.json"
         if stats_path.exists():
             try:
-                stats = _json.loads(stats_path.read_text())
+                stats = _json.loads(stats_path.read_text(encoding="utf-8"))
                 result["total_sessions"] = stats.get("totalSessions", 0)
                 result["total_messages"] = stats.get("totalMessages", 0)
                 model_usage = {}
@@ -410,7 +410,7 @@ class SystemCommandsMixin:
         creds_path = _Path.home() / ".claude" / ".credentials.json"
         if not api_key and creds_path.exists():
             try:
-                creds = _json.loads(creds_path.read_text())
+                creds = _json.loads(creds_path.read_text(encoding="utf-8"))
                 oauth = creds.get("claudeAiOauth", {})
                 token = oauth.get("accessToken")
                 if token:

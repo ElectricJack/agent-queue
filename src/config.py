@@ -1097,8 +1097,25 @@ class StateMachineConfig:
 class WorkGraphConfig:
     """Persisted blocked-state projection, gates, and conditional edges.
 
-    Substrate placeholder — see docs/specs/implementation/work-graph.md §9.
-    ``blocked_state_authoritative: false`` = shadow mode (legacy scan wins).
+    See docs/specs/implementation/work-graph.md §9.  The three keys gate
+    three *independent* rollout stages — deliberately not chained, so that
+    flipping one does not silently arm another:
+
+    ``blocked_state_authoritative``
+        ``false`` = shadow mode.  Both the legacy dependency scan and the
+        ``is_blocked`` projection are computed every cycle and compared; the
+        legacy scan still decides.  Flip after an observation window with
+        zero divergence warnings.  Rollback is a config flip.
+    ``gate_sweep_interval_seconds``
+        Cadence of the cascade's gate sweep; ``0`` disables it entirely.
+        This — not ``blocked_state_authoritative`` — is what gates step 2b.
+    ``conditional_autoclose``
+        Whether the cascade disposes of contingency tasks whose
+        ``conditional-blocks`` dependency completed.  On by default per
+        design §3.1: such tasks can never run again, and without disposal
+        they rot in the queue forever.  ``conditional-blocks`` edges only
+        exist where someone explicitly created one, so this is inert on a
+        graph that uses none.
     """
 
     blocked_state_authoritative: bool = False
@@ -1107,8 +1124,8 @@ class WorkGraphConfig:
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
-        if self.gate_sweep_interval_seconds <= 0:
-            errors.append(ConfigError("work_graph", "gate_sweep_interval_seconds", "must be > 0"))
+        if self.gate_sweep_interval_seconds < 0:
+            errors.append(ConfigError("work_graph", "gate_sweep_interval_seconds", "must be >= 0"))
         return errors
 
 
@@ -1749,7 +1766,7 @@ def _load_env_file(config_path: str) -> None:
     env_path = os.path.join(os.path.dirname(config_path), ".env")
     if not os.path.exists(env_path):
         return
-    with open(env_path) as f:
+    with open(env_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -1798,7 +1815,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     _load_env_file(path)
 
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
     # Determine environment profile for overlay loading
@@ -1810,7 +1827,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     name_part, ext = os.path.splitext(base_name)
     overlay_path = os.path.join(config_dir, f"{name_part}.{env}{ext}")
     if os.path.exists(overlay_path):
-        with open(overlay_path) as f:
+        with open(overlay_path, encoding="utf-8") as f:
             overlay = yaml.safe_load(f) or {}
         raw = _deep_merge(raw, overlay)
 
@@ -1835,7 +1852,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             else:
                 msg += f"\nNo profiles found in {profiles_dir}"
             raise FileNotFoundError(msg)
-        with open(profile_path) as f:
+        with open(profile_path, encoding="utf-8") as f:
             profile_raw = yaml.safe_load(f) or {}
         raw = _deep_merge(raw, profile_raw)
 

@@ -38,6 +38,14 @@ HANDCRAFTED_COVERAGE = {
     "approve_task",
     "stop_task",
     "restart_task",
+    # tasks.py — `aq task create --graph|--from-spec|--dry-run`
+    "create_task_graph",
+    # messages.py — hand-crafted so every message command routes through
+    # emit() and shares the versioned JSON envelope (aq-surface §4).
+    "message_send",
+    "message_reply",
+    "message_inbox",
+    "message_list",
     # projects.py — composite/UX-heavy commands only
     "edit_project",
     "set_default_branch",
@@ -81,6 +89,7 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "files": "file",
     "system": "system",
     "mcp": "mcp",
+    "message": "message",
 }
 
 # Human-readable group descriptions for newly created groups.
@@ -91,6 +100,7 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "file": "File operations — read, write, edit, glob, grep.",
     "system": "System diagnostics, config, and prompt management.",
     "mcp": "MCP server registry and tool catalog.",
+    "message": "Inter-agent and user message queue.",
 }
 
 

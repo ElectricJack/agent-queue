@@ -1,0 +1,7 @@
+[
+  {
+    "rule": "bad_dep_type",
+    "node": "b",
+    "severity": "error"
+  }
+]

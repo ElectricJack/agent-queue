@@ -157,7 +157,7 @@ def config_edit(ctx: click.Context) -> None:
     raw = state.get("config", {})
 
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".yaml", delete=False, prefix="aq-config-"
+        mode="w", suffix=".yaml", delete=False, prefix="aq-config-", encoding="utf-8"
     ) as tmp:
         yaml.safe_dump(raw, tmp, sort_keys=False)
         tmp_path = tmp.name
@@ -167,7 +167,7 @@ def config_edit(ctx: click.Context) -> None:
         if rc != 0:
             console.print(f"[red]Editor exited with {rc}; aborting.[/]")
             ctx.exit(rc)
-        with open(tmp_path) as f:
+        with open(tmp_path, encoding="utf-8") as f:
             new_doc = yaml.safe_load(f) or {}
     finally:
         try:

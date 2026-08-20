@@ -1,0 +1,7 @@
+[
+  {
+    "rule": "cross_project_need",
+    "node": "a",
+    "severity": "error"
+  }
+]

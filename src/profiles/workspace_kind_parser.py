@@ -29,7 +29,7 @@ def parse_workspace_kind_file(path: Path, project_id: str) -> WorkspaceKind:
         ValueError: If the file is missing required frontmatter (``id``)
             or has an invalid value (e.g. unknown ``default_lock_mode``).
     """
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     fm, body = _split_frontmatter(text)
 
     if not isinstance(fm, dict) or "id" not in fm:

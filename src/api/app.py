@@ -19,6 +19,7 @@ from fastapi import FastAPI, WebSocket
 from src.api import dependencies as deps
 from src.api.execute import router as execute_router
 from src.api.health import router as health_router
+from src.api.messages import router as messages_router
 from src.api.middleware import RequestContextMiddleware
 from src.api.websocket import WebSocketManager
 
@@ -78,6 +79,11 @@ def create_app(
     # Register routers — backward-compat and health first
     app.include_router(execute_router)
     app.include_router(health_router)
+
+    # Chat relay — /api/sessions/{name}/message[s] (supervisor-agent §6.2).
+    # Explicit because the path carries a session name; must be mounted
+    # before the codegen routers so its concrete paths win.
+    app.include_router(messages_router)
 
     # Auto-generated typed command routes (POST /api/{category}/{command})
     from src.api.routers import register_all_routers

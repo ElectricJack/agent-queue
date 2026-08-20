@@ -26,9 +26,11 @@ from src.database.engine import (
 )
 from src.database.queries.agent_queries import AgentQueryMixin
 from src.database.queries.archive_queries import ArchiveQueryMixin
+from src.database.queries.blocked_state import BlockedStateMixin
 from src.database.queries.chat_queries import ChatQueryMixin
 from src.database.queries.dependency_queries import DependencyQueryMixin
 from src.database.queries.event_queries import EventQueryMixin
+from src.database.queries.message_queries import MessageQueriesMixin
 from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
@@ -55,6 +57,7 @@ class PostgreSQLDatabaseAdapter(
     RepoQueryMixin,
     TaskQueryMixin,
     DependencyQueryMixin,
+    BlockedStateMixin,
     AgentQueryMixin,
     WorkspaceQueryMixin,
     WorkspaceKindQueryMixin,
@@ -65,6 +68,7 @@ class PostgreSQLDatabaseAdapter(
     EventQueryMixin,
     ArchiveQueryMixin,
     ChatQueryMixin,
+    MessageQueriesMixin,
     PluginQueryMixin,
     PlaybookQueryMixin,
     WorkflowQueryMixin,
@@ -150,3 +154,7 @@ class PostgreSQLDatabaseAdapter(
                     timestamp=now,
                 )
             )
+            # READY -> ASSIGNED cannot flip anyone's blockedness today, but
+            # the projection stays maintained from *every* status write so
+            # the invariant survives future rule changes (work-graph §4.2).
+            await self.recompute_blocked({task_id}, conn=conn)

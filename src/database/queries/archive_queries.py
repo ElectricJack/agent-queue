@@ -15,6 +15,7 @@ from src.database.tables import (
     task_context,
     task_criteria,
     task_dependencies,
+    task_labels,
     task_metadata,
     task_results,
     task_tools,
@@ -74,6 +75,9 @@ class ArchiveQueryMixin:
                     affinity_agent_id=task.affinity_agent_id,
                     affinity_reason=task.affinity_reason,
                     workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
+                    # Carry the blocked-state projection across so archiving
+                    # really is lossless (work-graph §2.2).
+                    is_blocked=int(task.is_blocked),
                     created_at=0.0,
                     updated_at=0.0,
                     archived_at=now,
@@ -91,6 +95,11 @@ class ArchiveQueryMixin:
                     .where(archived_tasks.c.id == task_id)
                     .values(created_at=row[0], updated_at=row[1])
                 )
+
+            # Snapshot everything whose blocked-state this archive can
+            # change, while the edges that identify it still exist.
+            affected = await self._collect_affected({task_id}, conn)
+            affected.discard(task_id)
 
             # Clean up child rows, then remove from active table
             await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
@@ -118,8 +127,12 @@ class ArchiveQueryMixin:
                 .where(workspaces.c.locked_by_task_id == task_id)
                 .values(locked_by_task_id=None, locked_at=None)
             )
+            await conn.execute(delete(task_labels).where(task_labels.c.task_id == task_id))
             await conn.execute(delete(tasks).where(tasks.c.id == task_id))
 
+            flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
+
+        await self.log_blocked_flips(flipped)
         return True
 
     async def archive_completed_tasks(
@@ -241,6 +254,7 @@ class ArchiveQueryMixin:
             "affinity_agent_id": row.get("affinity_agent_id"),
             "affinity_reason": row.get("affinity_reason"),
             "workspace_mode": row.get("workspace_mode"),
+            "is_blocked": bool(row.get("is_blocked", 0)),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "archived_at": row["archived_at"],

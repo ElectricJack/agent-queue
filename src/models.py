@@ -78,6 +78,10 @@ class TaskEvent(Enum):
     PLAN_REJECTED = "PLAN_REJECTED"
     PLAN_DELETED = "PLAN_DELETED"
     SUBTASKS_COMPLETED = "SUBTASKS_COMPLETED"
+    # A ``conditional-blocks`` contingency whose dependency succeeded: the
+    # edge can never fire again, so the task is disposed of as a no-op
+    # (work-graph design §3.1).
+    CONDITIONAL_DEAD = "CONDITIONAL_DEAD"
     TIMEOUT = "TIMEOUT"
     EXECUTION_ERROR = "EXECUTION_ERROR"
     RECOVERY = "RECOVERY"
@@ -127,6 +131,59 @@ class WorkspaceMode(Enum):
 
 # Convenience set for validation without constructing enum members.
 WORKSPACE_MODE_VALUES = frozenset(m.value for m in WorkspaceMode)
+
+
+class DepType(Enum):
+    """Typed dependency edge kinds on ``task_dependencies.dep_type``.
+
+    See docs/specs/design/work-graph.md §3.  The first four are *blocking*
+    edges — they feed the ``tasks.is_blocked`` projection, each with its own
+    satisfaction rule.  The rest are provenance/association only and never
+    affect readiness.
+
+    Satisfaction rules (design §3.1):
+
+    ``BLOCKS``
+        satisfied when the dependency is COMPLETED.
+    ``PARENT_CHILD``
+        satisfied when the container has been *released* — its status is
+        neither DEFINED nor AWAITING_PLAN_APPROVAL.
+    ``WAITS_FOR``
+        dynamic fan-in: satisfied when every task with a ``parent-child``
+        edge to the target is COMPLETED (vacuously true with zero children;
+        children added later re-block the waiter).
+    ``CONDITIONAL_BLOCKS``
+        satisfied only on *terminal* failure of the dependency: status
+        BLOCKED, or FAILED with ``retry_count >= max_retries``.
+    """
+
+    BLOCKS = "blocks"
+    PARENT_CHILD = "parent-child"
+    WAITS_FOR = "waits-for"
+    CONDITIONAL_BLOCKS = "conditional-blocks"
+    DISCOVERED_FROM = "discovered-from"
+    RELATED = "related"
+    DUPLICATES = "duplicates"
+    SUPERSEDES = "supersedes"
+
+
+# Convenience set for validation without constructing enum members.
+DEP_TYPE_VALUES = frozenset(d.value for d in DepType)
+
+BLOCKING_DEP_TYPES = frozenset(
+    {
+        DepType.BLOCKS.value,
+        DepType.PARENT_CHILD.value,
+        DepType.WAITS_FOR.value,
+        DepType.CONDITIONAL_BLOCKS.value,
+    }
+)
+"""Edge kinds that gate readiness — everything else is informational."""
+
+HOLD_LABEL_PREFIX = "hold:"
+"""Convention (design §6): a ``hold:<who>`` label withholds a task from the
+ready frontier.  Held tasks stay visible and unblocked — they are filtered
+when deciding what to *do*, never what must *exist*."""
 
 
 class AgentState(Enum):
@@ -315,6 +372,11 @@ class Task:
     affinity_agent_id: str | None = None  # preferred agent ID for context continuity
     affinity_reason: str | None = None  # why: "context", "workspace", "type"
     workspace_mode: WorkspaceMode | None = None  # lock mode for workspace access
+    # Persisted blocked-state projection (work-graph design §4).  Pure
+    # derived data: 1 iff some blocking edge is unsatisfied or an attached
+    # gate is unresolved.  Recomputed in-transaction by the query layer —
+    # never set by hand.
+    is_blocked: bool = False
     created_at: float = 0.0  # unix timestamp when the task was created
     updated_at: float = 0.0  # unix timestamp when the task was last updated
 
