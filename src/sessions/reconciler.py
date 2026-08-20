@@ -22,6 +22,7 @@ evidence of death and on nothing else.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 import uuid
@@ -255,25 +256,37 @@ class SessionReconciler:
     # -- step 1: observation -----------------------------------------------
 
     async def _step_observe(self, now: float) -> list[SessionRecord]:
-        """Return the live rows, refreshing ``last_activity`` from providers."""
+        """Return the live rows, refreshing ``last_activity`` from providers.
+
+        The refreshed value is folded back into the returned records, not
+        only written to the database.  Steps 4 and 6 measure idleness off
+        these objects, and handing them the pre-refresh value would let a
+        session that *just* showed activity be nudged in the very tick that
+        observed it.
+        """
         try:
             rows = await self.db.list_sessions(live_only=True)
         except Exception:
             logger.error("Session reconciler: cannot list sessions", exc_info=True)
             return []
 
+        refreshed: list[SessionRecord] = []
         for row in rows:
             provider = self._provider_for(row)
             if provider is None or not provider.supports(Cap.ACTIVITY):
+                refreshed.append(row)
                 continue
             try:
                 seen = await provider.last_activity(self._handle(row))
             except Exception:
                 logger.debug("last_activity failed for %s", row.id, exc_info=True)
+                refreshed.append(row)
                 continue
             if seen and (row.last_activity is None or seen > row.last_activity):
                 await self.db.touch_session_activity(row.id, seen)
-        return rows
+                row = dataclasses.replace(row, last_activity=seen)
+            refreshed.append(row)
+        return refreshed
 
     # -- step 2: drain-ack -------------------------------------------------
 
