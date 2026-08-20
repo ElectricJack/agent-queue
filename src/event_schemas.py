@@ -352,6 +352,29 @@ _CHAT_SCHEMAS: dict[str, EventSchema] = {
         "required": ["project_id", "user_text", "response", "tools_used"],
         "optional": [],
     },
+    # -- messages lifecycle (supervisor-agent impl §5 / design §6.3) --
+    # Subsystems integrate through these events only: the Discord adapter,
+    # the dashboard WS stream and the delivery engine never call each other.
+    "message.sent": {
+        "required": [
+            "message_id",
+            "project_id",
+            "from_kind",
+            "from_id",
+            "to_kind",
+            "to_id",
+        ],
+        "optional": ["thread_id", "subject"],
+    },
+    "message.delivered": {
+        # ``method``: nudge | inject | prime
+        "required": ["message_id", "project_id", "method"],
+        "optional": [],
+    },
+    "message.replied": {
+        "required": ["message_id", "reply_id", "project_id", "body"],
+        "optional": ["via", "thread_id"],
+    },
 }
 
 # ---------------------------------------------------------------------------

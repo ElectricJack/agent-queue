@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "key": "a",
+      "title": "A",
+      "acceptance": [
+        "done"
+      ]
+    },
+    {
+      "key": "b",
+      "title": "B",
+      "acceptance": [
+        "done"
+      ],
+      "needs": [
+        {
+          "on": "a",
+          "dep_type": "sorta-blocks"
+        }
+      ]
+    }
+  ]
+}

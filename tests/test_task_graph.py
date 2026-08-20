@@ -1,0 +1,548 @@
+"""Task-graph parser/validator/creator — supervisor-agent §8 and §12.
+
+The validator is exercised against golden files in
+``tests/fixtures/task_graphs``: one input document per §8.3 rule, one golden
+list of expected findings.  Rule names are part of the contract, so a golden
+mismatch is a real API change, not test churn.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+
+import pytest
+
+from src.task_graph import (
+    GraphParseError,
+    create_graph,
+    extract_graph_block,
+    extract_graph_from_spec,
+    parse_graph,
+    split_findings,
+    substitute_vars,
+    validate_graph,
+)
+from src.task_graph.creator import build_plan, write_plan
+from src.task_graph.models import TaskGraph
+
+FIXTURES = Path(__file__).parent / "fixtures" / "task_graphs"
+GOLDEN = FIXTURES / "golden"
+
+
+# ---------------------------------------------------------------------------
+# Fakes
+# ---------------------------------------------------------------------------
+
+
+class _FakeTask:
+    def __init__(self, task_id: str, project_id: str):
+        self.id = task_id
+        self.project_id = project_id
+
+
+class _FakeProfile:
+    def __init__(self, profile_id: str):
+        self.id = profile_id
+
+
+class _FakeDB:
+    """Minimal db surface the validator uses: get_task + get_profile."""
+
+    def __init__(self, tasks: dict[str, str] | None = None, profiles: set[str] | None = None):
+        self._tasks = tasks or {"foreign-task": "other-project", "local-task": "p1"}
+        self._profiles = profiles if profiles is not None else {"coding", "planner", "reviewer"}
+
+    async def get_task(self, task_id: str):
+        project = self._tasks.get(task_id)
+        return _FakeTask(task_id, project) if project else None
+
+    async def get_profile(self, profile_id: str):
+        return _FakeProfile(profile_id) if profile_id in self._profiles else None
+
+
+@pytest.fixture
+def vault(tmp_path):
+    """A tmp vault with the fixture specs installed under projects/p1/specs."""
+    specs = tmp_path / "vault" / "projects" / "p1" / "specs"
+    specs.mkdir(parents=True)
+    shutil.copy(FIXTURES / "valid_spec.md", specs / "messages-table.md")
+    shutil.copy(FIXTURES / "missing_spec_section.md", specs / "partial.md")
+    return str(tmp_path / "vault")
+
+
+def _load_graph(name: str) -> TaskGraph:
+    path = FIXTURES / name
+    if path.suffix == ".md":
+        return extract_graph_from_spec(path.read_text(encoding="utf-8"), str(path))
+    return parse_graph(path.read_text(encoding="utf-8"))
+
+
+def _findings_signature(findings) -> list[dict]:
+    return sorted(
+        ({"rule": f.rule, "node": f.node, "severity": f.severity} for f in findings),
+        key=lambda f: (f["rule"], f["node"] or "", f["severity"]),
+    )
+
+
+def _golden(name: str) -> list[dict]:
+    return sorted(
+        json.loads((GOLDEN / f"{name}.json").read_text(encoding="utf-8")),
+        key=lambda f: (f["rule"], f["node"] or "", f["severity"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parsing
+# ---------------------------------------------------------------------------
+
+
+class TestParseGraph:
+    def test_json_document(self):
+        graph = _load_graph("valid.json")
+        assert graph.version == 1
+        assert graph.node_keys() == ["schema", "queries", "engine"]
+        assert graph.parent.title == "Messages table + delivery engine"
+        assert graph.vars == {"base": "main"}
+
+    def test_defaults_fill_unset_node_fields(self):
+        graph = _load_graph("valid.json")
+        schema = graph.nodes[0]
+        assert schema.profile == "coding"  # from defaults
+        assert graph.nodes[1].labels == ["overhaul-b"]  # from defaults
+        assert schema.labels == ["db"]  # node wins over defaults
+
+    def test_needs_shorthand_defaults_to_blocks(self):
+        graph = _load_graph("valid.json")
+        engine = graph.nodes[2]
+        assert engine.needs[0].on == "queries"
+        assert engine.needs[0].dep_type == "blocks"
+        assert engine.needs[0].cross_project is False
+
+    def test_dict_source_accepted(self):
+        graph = parse_graph({"version": 1, "nodes": [{"key": "a", "title": "A"}]})
+        assert graph.node_keys() == ["a"]
+
+    def test_yaml_source_accepted(self):
+        graph = parse_graph("version: 1\nnodes:\n  - key: a\n    title: A\n")
+        assert graph.node_keys() == ["a"]
+
+    def test_empty_document_raises(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph("   ")
+        assert exc.value.errors[0].rule == "empty_document"
+
+    def test_no_nodes_raises(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph({"version": 1, "nodes": []})
+        assert exc.value.errors[0].rule == "no_nodes"
+
+    def test_missing_key_raises(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph({"version": 1, "nodes": [{"title": "no key"}]})
+        assert exc.value.errors[0].rule == "missing_key"
+
+    def test_unsupported_version_raises(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph({"version": 7, "nodes": [{"key": "a", "title": "A"}]})
+        assert exc.value.errors[0].rule == "bad_version"
+
+    def test_all_structural_errors_reported_at_once(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(
+                {
+                    "version": 1,
+                    "nodes": [
+                        {"key": "a", "title": "A", "priority": "high"},
+                        {"key": "b", "title": "B", "needs": [{"dep_type": "blocks"}]},
+                    ],
+                }
+            )
+        rules = {e.rule for e in exc.value.errors}
+        assert rules == {"bad_field_type", "bad_need"}
+
+
+class TestExtractFromSpec:
+    def test_extracts_the_fenced_block(self):
+        markdown = (FIXTURES / "valid_spec.md").read_text(encoding="utf-8")
+        body = extract_graph_block(markdown)
+        assert body.startswith("version: 1")
+        assert "```" not in body
+
+    def test_spec_is_implied_from_the_path(self):
+        graph = _load_graph("valid_spec.md")
+        assert graph.from_spec is True
+        assert graph.spec.endswith("valid_spec.md")
+        assert graph.source_path.endswith("valid_spec.md")
+
+    def test_no_block_raises(self):
+        with pytest.raises(GraphParseError) as exc:
+            extract_graph_from_spec("# Just prose\n", "spec.md")
+        assert exc.value.errors[0].rule == "no_graph_block"
+
+    def test_tilde_fences_supported(self):
+        graph = extract_graph_from_spec(
+            "~~~aq-graph\nversion: 1\nnodes:\n  - key: a\n    title: A\n~~~\n", "s.md"
+        )
+        assert graph.node_keys() == ["a"]
+
+
+# ---------------------------------------------------------------------------
+# Variable substitution
+# ---------------------------------------------------------------------------
+
+
+class TestSubstituteVars:
+    def test_expands_declared_vars_and_implicit_spec(self):
+        graph = _load_graph("valid.json")
+        used, unknown = substitute_vars(graph)
+        assert unknown == set()
+        assert used == {"base", "spec"}
+        assert "{base}" not in graph.nodes[0].description
+        assert graph.nodes[0].context[0].path == "projects/p1/specs/messages-table.md"
+
+    def test_unknown_references_are_reported_and_left_alone(self):
+        graph = parse_graph({"version": 1, "nodes": [{"key": "a", "title": "{nope}"}]})
+        _used, unknown = substitute_vars(graph)
+        assert unknown == {"nope"}
+        assert graph.nodes[0].title == "{nope}"
+
+    def test_json_braces_are_not_var_references(self):
+        graph = parse_graph(
+            {"version": 1, "nodes": [{"key": "a", "title": "A", "description": "use {} or {1}"}]}
+        )
+        _used, unknown = substitute_vars(graph)
+        assert unknown == set()
+
+    def test_running_twice_is_harmless(self):
+        graph = _load_graph("valid.json")
+        substitute_vars(graph)
+        before = graph.nodes[0].description
+        substitute_vars(graph)
+        assert graph.nodes[0].description == before
+
+
+# ---------------------------------------------------------------------------
+# Golden validation cases (§8.3 rule table)
+# ---------------------------------------------------------------------------
+
+
+GOLDEN_CASES = [
+    "valid.json",
+    "valid_spec.md",
+    "unknown_var.json",
+    "unused_var.json",
+    "duplicate_key.json",
+    "cycle.json",
+    "non_blocking_loop.json",
+    "unknown_profile.json",
+    "bad_dep_type.json",
+    "unresolved_need.json",
+    "cross_project.json",
+    "cross_project_allowed.json",
+    "foreign_project_node.json",
+    "missing_title.json",
+    "no_acceptance.json",
+    "missing_spec_section.md",
+    "missing_spec_path_graph.json",
+]
+
+
+@pytest.mark.parametrize("case", GOLDEN_CASES)
+async def test_validation_matches_golden(case, vault):
+    """Every §8.3 rule has a fixture and a frozen expected finding list."""
+    path = FIXTURES / case
+    if path.suffix == ".md":
+        # Validate the copy that lives inside the vault so spec_ref paths
+        # resolve the way they do in production.
+        installed = {
+            "valid_spec.md": "messages-table.md",
+            "missing_spec_section.md": "partial.md",
+        }[case]
+        spec_file = Path(vault) / "projects" / "p1" / "specs" / installed
+        graph = extract_graph_from_spec(spec_file.read_text(encoding="utf-8"), str(spec_file))
+    else:
+        graph = parse_graph(path.read_text(encoding="utf-8"))
+
+    findings = await validate_graph(
+        graph, project_id="p1", db=_FakeDB(), vault_root=vault
+    )
+    assert _findings_signature(findings) == _golden(path.stem)
+
+
+class TestValidatorDetails:
+    async def test_project_scoped_profile_override_resolves(self, vault):
+        graph = parse_graph(
+            {"version": 1, "nodes": [{"key": "a", "title": "A", "profile": "special"}]}
+        )
+        db = _FakeDB(profiles={"project:p1:special"})
+        findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
+        assert [f.rule for f in findings if f.is_error] == []
+        # The reference is rewritten to the id that exists, so the created
+        # task's profile_id FK names a real row.
+        assert graph.nodes[0].profile == "project:p1:special"
+
+    async def test_system_profile_reference_is_left_alone(self, vault):
+        graph = parse_graph(
+            {"version": 1, "nodes": [{"key": "a", "title": "A", "profile": "coding"}]}
+        )
+        await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+        assert graph.nodes[0].profile == "coding"
+
+    async def test_existing_task_in_same_project_resolves(self, vault):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "needs": ["local-task"]}],
+            }
+        )
+        findings = await validate_graph(
+            graph, project_id="p1", db=_FakeDB(), vault_root=vault
+        )
+        assert [f.rule for f in findings if f.is_error] == []
+
+    async def test_spec_section_match_is_whitespace_and_case_insensitive(self, vault):
+        spec = Path(vault) / "projects" / "p1" / "specs" / "messages-table.md"
+        graph = parse_graph(
+            {
+                "version": 1,
+                "spec": str(spec),
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "context": [{"type": "spec_ref", "section": "3.   schema"}],
+                    }
+                ],
+            }
+        )
+        findings = await validate_graph(
+            graph, project_id="p1", db=_FakeDB(), vault_root=vault
+        )
+        assert [f.rule for f in findings if f.is_error] == []
+
+    async def test_split_findings(self, vault):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "vars": {"unused": "x"},
+                "nodes": [{"key": "a", "title": "{ghost}"}],
+            }
+        )
+        findings = await validate_graph(
+            graph, project_id="p1", db=_FakeDB(), vault_root=vault
+        )
+        errors, warnings = split_findings(findings)
+        assert {f.rule for f in errors} == {"unknown_var"}
+        assert {f.rule for f in warnings} == {"unused_var", "no_acceptance"}
+
+
+# ---------------------------------------------------------------------------
+# Creator
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def db(tmp_path):
+    from src.database import Database
+    from src.models import AgentProfile, Project
+
+    database = Database(str(tmp_path / "graph.db"))
+    await database.initialize()
+    await database.create_project(Project(id="p1", name="p1"))
+    # tasks.profile_id is a real FK — a graph referencing a profile that
+    # isn't in agent_profiles would fail at insert, which is exactly what
+    # the validator's unknown_profile rule exists to catch first.
+    for profile_id in ("coding", "planner", "reviewer"):
+        await database.create_profile(AgentProfile(id=profile_id, name=profile_id))
+    yield database
+    await database.close()
+
+
+class _Handler:
+    def __init__(self, db):
+        self.db = db
+
+
+async def _valid_graph(vault) -> TaskGraph:
+    spec = Path(vault) / "projects" / "p1" / "specs" / "messages-table.md"
+    graph = parse_graph((FIXTURES / "valid.json").read_text(encoding="utf-8"))
+    graph.spec = str(spec)
+    findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+    assert not [f for f in findings if f.is_error], findings
+    return graph
+
+
+class TestCreateGraph:
+    async def test_creates_parent_nodes_deps_and_context(self, db, vault):
+        graph = await _valid_graph(vault)
+        report = await create_graph(_Handler(db), graph, project_id="p1")
+
+        parent = await db.get_task(report["parent_id"])
+        assert parent is not None
+        assert parent.title == "Messages table + delivery engine"
+
+        assert len(report["task_ids"]) == 3
+        for task_id in report["task_ids"]:
+            task = await db.get_task(task_id)
+            assert task is not None
+            assert task.parent_task_id == report["parent_id"]
+            assert task.project_id == "p1"
+
+        ids = {node["key"]: node["task_id"] for node in report["nodes"]}
+        deps = await db.get_dependencies(ids["queries"])
+        assert deps == {ids["schema"]}
+
+    async def test_dependency_rows_carry_dep_type(self, db, vault):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"]},
+                    {
+                        "key": "b",
+                        "title": "B",
+                        "acceptance": ["x"],
+                        "needs": [{"on": "a", "dep_type": "waits-for"}],
+                    },
+                ],
+            }
+        )
+        report = await create_graph(_Handler(db), graph, project_id="p1")
+        ids = {n["key"]: n["task_id"] for n in report["nodes"]}
+
+        from sqlalchemy import select
+
+        from src.database.tables import task_dependencies
+
+        async with db._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_dependencies).where(task_dependencies.c.task_id == ids["b"])
+                )
+            ).mappings().fetchall()
+        assert [r["dep_type"] for r in rows] == ["waits-for"]
+
+    async def test_spec_ref_context_content_shape(self, db, vault):
+        graph = await _valid_graph(vault)
+        report = await create_graph(_Handler(db), graph, project_id="p1")
+        schema_id = next(n["task_id"] for n in report["nodes"] if n["key"] == "schema")
+
+        contexts = await db.get_task_contexts(schema_id)
+        spec_refs = [c for c in contexts if c["type"] == "spec_ref"]
+        assert len(spec_refs) == 1
+        payload = json.loads(spec_refs[0]["content"])
+        assert payload["section"] == "3. Schema"
+        assert payload["path"].endswith("messages-table.md")
+
+        files = [c for c in contexts if c["type"] == "file"]
+        assert files[0]["content"] == "src/database/tables.py"
+
+    async def test_acceptance_stored_as_criteria_and_in_description(self, db, vault):
+        graph = await _valid_graph(vault)
+        report = await create_graph(_Handler(db), graph, project_id="p1")
+        schema_id = next(n["task_id"] for n in report["nodes"] if n["key"] == "schema")
+
+        from sqlalchemy import select
+
+        from src.database.tables import task_criteria
+
+        async with db._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_criteria)
+                    .where(task_criteria.c.task_id == schema_id)
+                    .order_by(task_criteria.c.sort_order)
+                )
+            ).mappings().fetchall()
+        assert [r["content"] for r in rows] == [
+            "alembic upgrade head clean on both backends",
+            "pytest tests/test_database.py green",
+        ]
+        task = await db.get_task(schema_id)
+        assert "## Acceptance Criteria" in task.description
+
+    async def test_labels_are_written(self, db, vault):
+        graph = await _valid_graph(vault)
+        report = await create_graph(_Handler(db), graph, project_id="p1")
+        schema_id = next(n["task_id"] for n in report["nodes"] if n["key"] == "schema")
+        assert await db.get_task_labels(schema_id) == ["db"]
+
+    async def test_parent_and_node_statuses(self, db, vault):
+        from src.models import TaskStatus
+
+        graph = await _valid_graph(vault)
+        report = await create_graph(_Handler(db), graph, project_id="p1")
+        parent = await db.get_task(report["parent_id"])
+        assert parent.status == TaskStatus.IN_PROGRESS
+        for task_id in report["task_ids"]:
+            assert (await db.get_task(task_id)).status == TaskStatus.DEFINED
+
+    async def test_dry_run_writes_nothing_but_reports_ids(self, db, vault):
+        graph = await _valid_graph(vault)
+        report = await create_graph(_Handler(db), graph, project_id="p1", dry_run=True)
+        assert report["dry_run"] is True
+        assert report["created"] is False
+        assert len(report["task_ids"]) == 3
+        assert await db.get_task(report["parent_id"]) is None
+        assert await db.list_tasks(project_id="p1") == []
+
+    async def test_dry_run_resolves_needs_to_assigned_ids(self, db, vault):
+        graph = await _valid_graph(vault)
+        report = await create_graph(_Handler(db), graph, project_id="p1", dry_run=True)
+        ids = {n["key"]: n["task_id"] for n in report["nodes"]}
+        queries = next(n for n in report["nodes"] if n["key"] == "queries")
+        assert queries["needs"][0]["task_id"] == ids["schema"]
+
+    async def test_failure_on_node_three_leaves_zero_rows(self, db, vault, monkeypatch):
+        """The single-transaction guarantee (§12): all or nothing."""
+        import src.task_graph.creator as creator
+
+        graph = await _valid_graph(vault)
+        plan = await build_plan(db, graph, project_id="p1")
+
+        calls = {"n": 0}
+        real_insert = creator._insert_task
+
+        async def flaky_insert(conn, row):
+            calls["n"] += 1
+            if calls["n"] == 3:  # parent, node 1, then blow up on node 2
+                raise RuntimeError("injected failure")
+            await real_insert(conn, row)
+
+        monkeypatch.setattr(creator, "_insert_task", flaky_insert)
+
+        with pytest.raises(RuntimeError, match="injected failure"):
+            await write_plan(db, plan)
+
+        assert await db.list_tasks(project_id="p1") == []
+        assert await db.get_task(plan.parent_id) is None
+
+    async def test_duplicate_labels_do_not_break_the_insert(self, db, vault):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "labels": ["dup", "dup"]}
+                ],
+            }
+        )
+        report = await create_graph(_Handler(db), graph, project_id="p1")
+        assert await db.get_task_labels(report["task_ids"][0]) == ["dup"]
+
+    async def test_external_task_dependency_is_kept_verbatim(self, db, vault):
+        from src.models import Task
+
+        await db.create_task(Task(id="upstream", project_id="p1", title="U", description="U"))
+        graph = parse_graph(
+            {
+                "version": 1,
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "needs": ["upstream"]}
+                ],
+            }
+        )
+        report = await create_graph(_Handler(db), graph, project_id="p1")
+        assert await db.get_dependencies(report["task_ids"][0]) == {"upstream"}

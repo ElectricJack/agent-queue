@@ -32,6 +32,12 @@ class ProfileQueryMixin:
                     memory_scope_id=profile.memory_scope_id,
                     runtime=profile.runtime,
                     agent_name=profile.agent_name,
+                    harness=profile.harness,
+                    lifecycle=profile.lifecycle or "task",
+                    mode=profile.mode,
+                    wake_mode=profile.wake_mode,
+                    idle_timeout=profile.idle_timeout,
+                    max_session_age=profile.max_session_age,
                     created_at=now,
                     updated_at=now,
                 )
@@ -96,6 +102,12 @@ class ProfileQueryMixin:
                 memory_scope_id=profile.memory_scope_id,
                 runtime=profile.runtime,
                 agent_name=profile.agent_name,
+                harness=profile.harness,
+                lifecycle=profile.lifecycle or "task",
+                mode=profile.mode,
+                wake_mode=profile.wake_mode,
+                idle_timeout=profile.idle_timeout,
+                max_session_age=profile.max_session_age,
             )
             return "updated"
         else:
@@ -144,4 +156,10 @@ class ProfileQueryMixin:
             memory_scope_id=row.get("memory_scope_id"),
             runtime=row.get("runtime") or "claude_sdk",
             agent_name=row.get("agent_name") or "",
+            harness=row.get("harness"),
+            lifecycle=row.get("lifecycle") or "task",
+            mode=row.get("mode"),
+            wake_mode=row.get("wake_mode"),
+            idle_timeout=row.get("idle_timeout"),
+            max_session_age=row.get("max_session_age"),
         )

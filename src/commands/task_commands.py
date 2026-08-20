@@ -1047,6 +1047,79 @@ class TaskCommandsMixin:
 
         return result
 
+    async def _cmd_create_task_graph(self, args: dict) -> dict:
+        """Create a whole task graph in one transaction (supervisor-agent §8).
+
+        Accepts either an inline ``graph`` document or a ``spec_path`` whose
+        fenced ``aq-graph`` block defines the graph.  Validation is
+        deterministic and complete — every finding is reported at once rather
+        than failing on the first — and nothing is written unless there are
+        zero errors.  ``dry_run`` returns the same report plus the ids that
+        would be assigned.
+        """
+        from src.task_graph import (
+            GraphParseError,
+            create_graph,
+            extract_graph_from_spec,
+            parse_graph,
+            split_findings,
+            validate_graph,
+        )
+        from src.task_graph.validator import resolve_spec_path
+
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"error": "project_id is required (no active project set)"}
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"error": f"Project '{project_id}' not found"}
+
+        raw_graph = args.get("graph")
+        spec_path = args.get("spec_path")
+        if bool(raw_graph) == bool(spec_path):
+            return {"error": "exactly one of 'graph' or 'spec_path' is required"}
+
+        vault_root = getattr(self.config, "vault_root", None)
+
+        try:
+            if spec_path:
+                resolved = resolve_spec_path(spec_path, vault_root=vault_root, source_path=None)
+                if resolved is None:
+                    return {"error": f"Spec '{spec_path}' not found in the vault"}
+                with open(resolved, encoding="utf-8") as handle:
+                    markdown = handle.read()
+                graph = extract_graph_from_spec(markdown, resolved)
+            else:
+                graph = parse_graph(raw_graph)
+        except GraphParseError as exc:
+            return {
+                "error": "graph document is invalid",
+                "errors": [e.to_dict() for e in exc.errors],
+            }
+        except OSError as exc:
+            return {"error": f"Could not read spec '{spec_path}': {exc}"}
+
+        findings = await validate_graph(
+            graph, project_id=project_id, db=self.db, vault_root=vault_root
+        )
+        errors, warnings = split_findings(findings)
+        if errors:
+            return {
+                "error": (
+                    f"graph validation failed with {len(errors)} error(s) — nothing was created"
+                ),
+                "errors": [e.to_dict() for e in errors],
+                "warnings": [w.to_dict() for w in warnings],
+            }
+
+        dry_run = bool(args.get("dry_run", False))
+        report = await create_graph(self, graph, project_id=project_id, dry_run=dry_run)
+        report["project_id"] = project_id
+        report["warnings"] = [w.to_dict() for w in warnings]
+        if graph.spec:
+            report["spec"] = graph.spec
+        return report
+
     async def _cmd_get_task(self, args: dict) -> dict:
         task = await self.db.get_task(args["task_id"])
         if not task:

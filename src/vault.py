@@ -1926,6 +1926,9 @@ def ensure_vault_project_dirs(data_dir: str, project_id: str) -> None:
         "memory/guidance",
         "playbooks",
         "notes",
+        # Agent-authored specs and the ``aq-graph`` blocks they carry
+        # (vault spec §3.1, supervisor-agent §8).
+        "specs",
         "references",
         "overrides",
     ):

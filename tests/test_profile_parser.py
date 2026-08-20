@@ -1449,14 +1449,22 @@ class TestValidateConfig:
     def test_config_known_keys(self):
         """CONFIG_KNOWN_KEYS contains the spec-defined fields, including
         ``runtime`` (selects the Runtime implementation at dispatch
-        time) and ``agent_name`` (ACP agent identifier when runtime is
-        ``"acpx"``)."""
+        time), ``agent_name`` (ACP agent identifier when runtime is
+        ``"acpx"``), and the named-session fields from
+        docs/specs/implementation/supervisor-agent.md §7."""
         assert CONFIG_KNOWN_KEYS == {
             "model",
             "permission_mode",
             "max_tokens_per_task",
             "runtime",
             "agent_name",
+            "harness",
+            "lifecycle",
+            "mode",
+            "wake_mode",
+            "idle_timeout",
+            "max_session_age",
+            "workspaces",
         }
 
     def test_valid_permission_modes_set(self):

@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 # Max queued events per client before dropping oldest
 _MAX_QUEUE_SIZE = 1000
 
+# Event-type prefixes forwarded to WebSocket clients.  ``message.*`` joins
+# ``notify.*`` so chat surfaces (dashboard chat page, ``aq chat``) can render
+# queued → delivered → replied transitions live — supervisor-agent §6.2/§7.
+_FORWARDED_PREFIXES: tuple[str, ...] = ("notify.", "message.")
+
 
 class WebSocketManager:
     """Manages WebSocket client connections and event fan-out."""
@@ -47,9 +52,9 @@ class WebSocketManager:
         """Fan out notify.* events to all connected clients."""
         event_type = data.get("_event_type", "")
         logger.debug("WS _on_event received: %s (clients=%d)", event_type, len(self._clients))
-        if not event_type.startswith("notify."):
+        if not event_type.startswith(_FORWARDED_PREFIXES):
             return
-        logger.info("WS forwarding notify event: %s to %d clients", event_type, len(self._clients))
+        logger.info("WS forwarding event: %s to %d clients", event_type, len(self._clients))
 
         for ws, queue in list(self._clients.items()):
             try:

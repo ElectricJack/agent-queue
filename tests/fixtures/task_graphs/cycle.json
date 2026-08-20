@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "key": "a",
+      "title": "A",
+      "acceptance": [
+        "done"
+      ],
+      "needs": [
+        "c"
+      ]
+    },
+    {
+      "key": "b",
+      "title": "B",
+      "acceptance": [
+        "done"
+      ],
+      "needs": [
+        "a"
+      ]
+    },
+    {
+      "key": "c",
+      "title": "C",
+      "acceptance": [
+        "done"
+      ],
+      "needs": [
+        "b"
+      ]
+    }
+  ]
+}

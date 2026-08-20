@@ -68,6 +68,8 @@ can browse, edit, and visualize alongside the system's own read/write operations
 │   │   │   │   └── insights/           # Distilled insights from tasks/logs
 │   │   │   ├── playbooks/              # Project-scoped playbooks
 │   │   │   ├── notes/                  # Human-authored project notes
+│   │   │   ├── specs/                  # Agent-authored specs + aq-graph blocks
+│   │   │   │   └── messages-table.md
 │   │   │   ├── references/             # Auto-generated spec/doc stubs
 │   │   │   │   ├── spec-orchestrator.md
 │   │   │   │   └── spec-database.md
@@ -114,11 +116,37 @@ can browse, edit, and visualize alongside the system's own read/write operations
 | Curated memory & insights | Raw task records |
 | Fact files (KV source of truth) | Milvus storage (vectors + KV index) |
 | Project notes & overrides | Logs |
+| Project specs (`specs/`, source of the task graphs they define) | Tasks/dependency rows the graph creates |
 | Reference stubs for external docs | Config, secrets, plugins |
 | System-wide knowledge | |
 
 The principle: **the vault contains what humans and agents author and curate.** Everything
 else — runtime artifacts, raw data, infrastructure — lives outside.
+
+### 3.1 The `specs/` directory
+
+`vault/projects/<pid>/specs/<slug>.md` is where the supervisor and planner agents write
+the specs they author ([[supervisor-agent]] §8, decision S8).  The convention:
+
+- **One spec per slug**, ordinary Obsidian-editable markdown.  Frontmatter carries at
+  least `tags: [spec, project]`, the `project` id, and a `status`
+  (`draft` | `approved` | `superseded`).
+- **Numbered `##` headings are addressable.**  A task created from the spec carries a
+  `task_context` row of `type='spec_ref'` whose content is JSON `{path, section}`, and
+  `section` must match a heading in the file exactly (whitespace-normalised,
+  case-insensitive).  Renaming a heading breaks the reference — the graph validator
+  rejects it rather than silently pointing at nothing.
+- **An executable spec carries a fenced `aq-graph` block** (YAML or JSON) defining the
+  task graph it decomposes into.  `aq task create --from-spec <path>` reads that block,
+  validates it, and creates the whole graph in one transaction; `{spec}` inside the block
+  resolves to the spec's own path, so references never repeat it.
+- **The spec is the justification; the graph is the deliverable.**  Specs are not
+  archived when their graph completes — they stay as the written record of why the work
+  exists, which is what the `spec_ref` rows on completed tasks continue to point at.
+
+Spec paths in an `aq-graph` block may be written vault-root-relative
+(`projects/<pid>/specs/x.md`, with or without a leading `vault/`), absolute, or relative
+to the referencing spec; all three resolve.
 
 ---
 

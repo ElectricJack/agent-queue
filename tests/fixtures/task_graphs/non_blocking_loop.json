@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "key": "a",
+      "title": "A",
+      "acceptance": [
+        "done"
+      ],
+      "needs": [
+        {
+          "on": "b",
+          "dep_type": "related"
+        }
+      ]
+    },
+    {
+      "key": "b",
+      "title": "B",
+      "acceptance": [
+        "done"
+      ],
+      "needs": [
+        {
+          "on": "a",
+          "dep_type": "related"
+        }
+      ]
+    }
+  ]
+}

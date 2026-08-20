@@ -66,11 +66,11 @@ PENDING_UNLANDED_COMMANDS: frozenset[str] = frozenset(
         # Lane 2A (session-runtime) — src/commands/session_commands.py.
         "task_close",
         "task_heartbeat",
-        # Lane 2D (supervisor-agent) — src/commands/message_commands.py /
-        # gate_commands.py.
+        # Lane 2D (supervisor-agent) landed message_send/message_reply/
+        # message_inbox/message_list (src/commands/message_commands.py) and
+        # create_task_graph (src/commands/task_commands.py); ask_human is
+        # still pending (gate_commands.py).
         "ask_human",
-        "message_send",
-        "message_inbox",
         # Provided at runtime by the external aq-memory plugin, not a
         # CommandHandler._cmd_* method (see CLAUDE.md "Memory" entry).
         "memory_save",

@@ -62,6 +62,16 @@ def _resolve_api_url() -> str:
     return "http://127.0.0.1:8081"
 
 
+def _relay_error(resp: Any) -> str:
+    """Extract a human message from a chat-relay error response."""
+    try:
+        payload = resp.json()
+    except Exception:
+        return f"HTTP {resp.status_code}"
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    return str(detail or payload or f"HTTP {resp.status_code}")
+
+
 _DEFAULT_TIMEOUT = 30.0
 
 # Per-command read timeouts (seconds) for commands that run an LLM or other
@@ -254,6 +264,65 @@ class CLIClient:
         if not data.get("ok"):
             raise CommandError(command, data.get("error", "Unknown error"))
         return data.get("result", {})
+
+    # -- Chat relay (supervisor-agent §6.2) ---------------------------------
+    # These two hit the explicit ``/api/sessions/{name}/message[s]`` router
+    # rather than ``/api/execute``: the session name lives in the path, and
+    # ``aq chat`` is the client the endpoints exist for.
+
+    async def send_session_message(
+        self,
+        name: str,
+        body: str,
+        *,
+        from_id: str = "cli",
+        from_kind: str = "user",
+        thread_id: str | None = None,
+        subject: str | None = None,
+        priority: int = 100,
+    ) -> dict:
+        """POST ``/api/sessions/{name}/message``.  Returns the response dict."""
+        assert self._http is not None, "CLIClient not connected"
+        payload: dict[str, Any] = {
+            "body": body,
+            "from": from_id,
+            "from_kind": from_kind,
+            "priority": priority,
+        }
+        if thread_id:
+            payload["thread_id"] = thread_id
+        if subject:
+            payload["subject"] = subject
+        try:
+            resp = await self._http.post(f"/api/sessions/{name}/message", json=payload)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code >= 400:
+            raise CommandError("message_send", _relay_error(resp))
+        return resp.json()
+
+    async def get_session_messages(
+        self,
+        name: str,
+        *,
+        thread_id: str | None = None,
+        since: float | None = None,
+        limit: int = 100,
+    ) -> dict:
+        """GET ``/api/sessions/{name}/messages``.  Returns the response dict."""
+        assert self._http is not None, "CLIClient not connected"
+        params: dict[str, Any] = {"limit": limit}
+        if thread_id:
+            params["thread_id"] = thread_id
+        if since is not None:
+            params["since"] = since
+        try:
+            resp = await self._http.get(f"/api/sessions/{name}/messages", params=params)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code >= 400:
+            raise CommandError("message_list", _relay_error(resp))
+        return resp.json()
 
     async def list_tool_definitions(self) -> list[dict]:
         """Fetch tool definitions from the daemon for CLI auto-generation."""
