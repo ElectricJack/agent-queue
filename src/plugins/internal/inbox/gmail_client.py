@@ -64,7 +64,7 @@ class GmailClient:
                 "Run the google-docs MCP once to authenticate."
             )
 
-        data = json.loads(self._config.token_path.read_text())
+        data = json.loads(self._config.token_path.read_text(encoding="utf-8"))
         client_id = data.get("client_id")
         refresh_token = data.get("refresh_token")
         if not client_id or not refresh_token:

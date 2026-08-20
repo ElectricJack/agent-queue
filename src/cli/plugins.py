@@ -465,8 +465,8 @@ def plugin_diff_prompts(name: str) -> None:
             any_diff = True
             continue
 
-        src_lines = src_file.read_text().splitlines(keepends=True)
-        inst_lines = inst_file.read_text().splitlines(keepends=True)
+        src_lines = src_file.read_text(encoding="utf-8").splitlines(keepends=True)
+        inst_lines = inst_file.read_text(encoding="utf-8").splitlines(keepends=True)
         diff = list(
             difflib.unified_diff(
                 src_lines,

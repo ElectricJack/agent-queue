@@ -522,6 +522,21 @@ _WORKFLOW_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Session events  (emitted by CommandHandler / session-runtime)
+#
+# session-runtime (lane 2A) owns restart mechanics (recycle now vs. later,
+# wake_mode) and will register further ``session.*`` events here as it lands
+# — this dict is their canonical home.
+# ---------------------------------------------------------------------------
+
+_SESSION_SCHEMAS: dict[str, EventSchema] = {
+    "session.restart_requested": {
+        "required": ["task_id", "reason", "handoff_id"],
+        "optional": ["session_id"],
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Timer events  (synthetic events emitted by the timer service)
 #
 # Timer events follow the pattern ``timer.{interval}`` (e.g. ``timer.30m``,
@@ -578,6 +593,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_PLAYBOOK_SCHEMAS,
     **_HUMAN_SCHEMAS,
     **_WORKFLOW_SCHEMAS,
+    **_SESSION_SCHEMAS,
     **_TIMER_SCHEMAS,
     **_CRON_SCHEMAS,
 }

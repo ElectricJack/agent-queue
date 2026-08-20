@@ -36,7 +36,7 @@ def _load_claude_oauth_token() -> str | None:
         if not cred_path.exists():
             continue
         try:
-            creds = json.loads(cred_path.read_text())
+            creds = json.loads(cred_path.read_text(encoding="utf-8"))
             oauth = creds.get("claudeAiOauth", {})
             token = oauth.get("accessToken")
             if token:

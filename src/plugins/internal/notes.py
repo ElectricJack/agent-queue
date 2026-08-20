@@ -346,7 +346,7 @@ class NotesPlugin(InternalPlugin):
             stat = os.stat(fpath)
             title = fname[:-3].replace("-", " ").title()
             try:
-                with open(fpath, "r") as f:
+                with open(fpath, "r", encoding="utf-8") as f:
                     first_line = f.readline().strip()
                 if first_line.startswith("# "):
                     title = first_line[2:].strip()
@@ -377,7 +377,7 @@ class NotesPlugin(InternalPlugin):
             return {"error": "Title produces an empty filename"}
         fpath = os.path.join(notes_dir, f"{slug}.md")
         existed = os.path.isfile(fpath)
-        with open(fpath, "w") as f:
+        with open(fpath, "w", encoding="utf-8") as f:
             f.write(args["content"])
         result = {
             "path": fpath,
@@ -407,7 +407,7 @@ class NotesPlugin(InternalPlugin):
         fpath = self._resolve_note_path(notes_dir, args["title"])
         if not fpath:
             return {"error": f"Note '{args['title']}' not found"}
-        with open(fpath, "r") as f:
+        with open(fpath, "r", encoding="utf-8") as f:
             content = f.read()
         stat = os.stat(fpath)
         return {
@@ -434,11 +434,11 @@ class NotesPlugin(InternalPlugin):
                 return {"error": "Title produces an empty filename"}
             fpath = os.path.join(notes_dir, f"{slug}.md")
         if existed:
-            with open(fpath, "a") as f:
+            with open(fpath, "a", encoding="utf-8") as f:
                 f.write(f"\n\n{args['content']}")
             status = "appended"
         else:
-            with open(fpath, "w") as f:
+            with open(fpath, "w", encoding="utf-8") as f:
                 f.write(f"# {args['title']}\n\n{args['content']}")
             status = "created"
         stat = os.stat(fpath)
@@ -460,7 +460,7 @@ class NotesPlugin(InternalPlugin):
             },
         )
         try:
-            with open(fpath, "r") as f:
+            with open(fpath, "r", encoding="utf-8") as f:
                 full_content = f.read()
         except Exception:
             full_content = args["content"]
@@ -511,7 +511,7 @@ class NotesPlugin(InternalPlugin):
             return {"error": f"Note '{title}' not found"}
 
         try:
-            with open(fpath, "r") as f:
+            with open(fpath, "r", encoding="utf-8") as f:
                 note_content = f.read()
         except Exception as e:
             return {"error": f"Failed to read note: {e}"}
@@ -584,7 +584,7 @@ class NotesPlugin(InternalPlugin):
                 stat = os.stat(fpath)
                 title = fname[:-3].replace("-", " ").title()
                 try:
-                    with open(fpath, "r") as f:
+                    with open(fpath, "r", encoding="utf-8") as f:
                         first_line = f.readline().strip()
                     if first_line.startswith("# "):
                         title = first_line[2:].strip()

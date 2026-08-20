@@ -659,7 +659,7 @@ class PluginContext:
         if not prompt_path.exists():
             raise FileNotFoundError(f"Prompt '{name}' not found in {self._prompts_dir}")
 
-        text = prompt_path.read_text()
+        text = prompt_path.read_text(encoding="utf-8")
         if variables:
             text = Template(text).safe_substitute(variables)
         return text
@@ -672,7 +672,7 @@ class PluginContext:
             content: Prompt template content.
         """
         prompt_path = self._prompts_dir / f"{name}.md"
-        prompt_path.write_text(content)
+        prompt_path.write_text(content, encoding="utf-8")
 
     def list_prompts(self) -> list[str]:
         """List available prompt template names.

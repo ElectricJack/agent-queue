@@ -50,7 +50,7 @@ _PLUGINS_DIR = os.path.join(_SRC_DIR, "plugins", "internal")
 
 def _read(directory: str, filename: str) -> str:
     """Read a file from the given directory."""
-    with open(os.path.join(directory, filename)) as f:
+    with open(os.path.join(directory, filename), encoding="utf-8") as f:
         return f.read()
 
 

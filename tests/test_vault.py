@@ -892,7 +892,7 @@ def test_starter_knowledge_files_have_frontmatter(tmp_path):
     for agent_type, files in _STARTER_KNOWLEDGE.items():
         for filename in files:
             path = tmp_path / "vault" / "templates" / "knowledge" / agent_type / filename
-            content = path.read_text()
+            content = path.read_text(encoding="utf-8")
 
             # Must start with YAML frontmatter
             assert content.startswith("---"), f"{agent_type}/{filename} missing frontmatter"
@@ -1011,7 +1011,7 @@ def test_memory_consolidation_playbook_has_valid_frontmatter():
         "default_playbooks",
         "memory-consolidation.md",
     )
-    content = open(playbook_path).read()
+    content = open(playbook_path, encoding="utf-8").read()
 
     assert content.startswith("---")
     lines = content.strip().splitlines()
@@ -1071,7 +1071,7 @@ def test_ensure_supervisor_profile_creates_file(tmp_path):
     assert result is True
     profile_path = tmp_path / "vault" / "agent-types" / "supervisor" / "profile.md"
     assert profile_path.is_file()
-    assert profile_path.read_text() == SUPERVISOR_PROFILE
+    assert profile_path.read_text(encoding="utf-8") == SUPERVISOR_PROFILE
 
 
 def test_ensure_supervisor_profile_idempotent(tmp_path):
@@ -1106,7 +1106,7 @@ def test_ensure_vault_layout_creates_supervisor_profile(tmp_path):
 
     profile_path = tmp_path / "vault" / "agent-types" / "supervisor" / "profile.md"
     assert profile_path.is_file()
-    assert profile_path.read_text() == SUPERVISOR_PROFILE
+    assert profile_path.read_text(encoding="utf-8") == SUPERVISOR_PROFILE
 
 
 def test_ensure_vault_layout_preserves_custom_supervisor_profile(tmp_path):
@@ -1265,8 +1265,8 @@ def test_copy_starter_knowledge_file_contents_match(tmp_path):
     memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
 
     for filename in ("common-pitfalls.md", "git-conventions.md"):
-        src_content = (templates_dir / filename).read_text()
-        dst_content = (memory_dir / filename).read_text()
+        src_content = (templates_dir / filename).read_text(encoding="utf-8")
+        dst_content = (memory_dir / filename).read_text(encoding="utf-8")
         assert src_content == dst_content
 
 
@@ -1349,7 +1349,7 @@ def test_copy_starter_knowledge_preserves_starter_tag(tmp_path):
 
     memory_dir = tmp_path / "vault" / "agent-types" / "coding" / "memory"
     for filename in ("common-pitfalls.md", "git-conventions.md"):
-        content = (memory_dir / filename).read_text()
+        content = (memory_dir / filename).read_text(encoding="utf-8")
         assert content.startswith("---")
         lines = content.strip().splitlines()
         end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
@@ -1442,13 +1442,13 @@ def test_starter_files_are_copies_not_symlinks(tmp_path):
         assert not copied.is_symlink(), f"{filename} in memory/ should not be a symlink"
 
         # Read original template
-        original = template.read_text()
+        original = template.read_text(encoding="utf-8")
 
         # Modify the copy
         copied.write_text("completely replaced content")
 
         # Template must be untouched
-        assert template.read_text() == original, (
+        assert template.read_text(encoding="utf-8") == original, (
             f"Modifying memory/{filename} must not change templates/knowledge/coding/{filename}"
         )
 
@@ -1475,7 +1475,7 @@ def test_starter_tag_discoverable_across_all_types(tmp_path):
             filepath = memory_dir / filename
             assert filepath.is_file(), f"Expected {agent_type}/{filename} to exist"
 
-            content = filepath.read_text()
+            content = filepath.read_text(encoding="utf-8")
             assert content.startswith("---"), f"{agent_type}/{filename} has no YAML frontmatter"
 
             lines = content.strip().splitlines()
@@ -1514,7 +1514,7 @@ def test_starter_tag_removable_by_user(tmp_path):
     # Step 1: User identifies starter files by #starter tag
     starter_files = []
     for md_file in memory_dir.glob("*.md"):
-        content = md_file.read_text()
+        content = md_file.read_text(encoding="utf-8")
         if content.startswith("---"):
             lines = content.strip().splitlines()
             end_idx = next(
@@ -1556,7 +1556,7 @@ def test_ensure_claude_opus_profile_creates_file(tmp_path):
     )
     assert profile_path.is_file()
 
-    content = profile_path.read_text()
+    content = profile_path.read_text(encoding="utf-8")
     parts = content.split("---", 2)
     fm = yaml.safe_load(parts[1])
     assert fm["id"] == "claude-opus"
@@ -1583,7 +1583,7 @@ def test_ensure_claude_sonnet_profile_creates_file(tmp_path):
     )
     assert profile_path.is_file()
 
-    content = profile_path.read_text()
+    content = profile_path.read_text(encoding="utf-8")
     parts = content.split("---", 2)
     fm = yaml.safe_load(parts[1])
     assert fm["id"] == "claude-sonnet"

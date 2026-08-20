@@ -1766,7 +1766,7 @@ def _load_env_file(config_path: str) -> None:
     env_path = os.path.join(os.path.dirname(config_path), ".env")
     if not os.path.exists(env_path):
         return
-    with open(env_path) as f:
+    with open(env_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -1815,7 +1815,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     _load_env_file(path)
 
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
     # Determine environment profile for overlay loading
@@ -1827,7 +1827,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     name_part, ext = os.path.splitext(base_name)
     overlay_path = os.path.join(config_dir, f"{name_part}.{env}{ext}")
     if os.path.exists(overlay_path):
-        with open(overlay_path) as f:
+        with open(overlay_path, encoding="utf-8") as f:
             overlay = yaml.safe_load(f) or {}
         raw = _deep_merge(raw, overlay)
 
@@ -1852,7 +1852,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             else:
                 msg += f"\nNo profiles found in {profiles_dir}"
             raise FileNotFoundError(msg)
-        with open(profile_path) as f:
+        with open(profile_path, encoding="utf-8") as f:
             profile_raw = yaml.safe_load(f) or {}
         raw = _deep_merge(raw, profile_raw)
 

@@ -99,7 +99,7 @@ def read_raw_config(path: str) -> dict[str, Any]:
     ``${ENV_VAR}`` references survive round-trip into the editor UI.
     Returns an empty dict if the file is empty.
     """
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return data or {}
 
@@ -314,7 +314,7 @@ def write_section(path: str, section: str, new_data: Any) -> None:
     persistence layer.
     """
     yaml_rt = _round_trip_yaml()
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         doc = yaml_rt.load(f) or {}
 
     if new_data is None:
@@ -323,7 +323,7 @@ def write_section(path: str, section: str, new_data: Any) -> None:
     else:
         doc[section] = new_data
 
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         yaml_rt.dump(doc, f)
 
 
@@ -335,5 +335,5 @@ def write_full_config(path: str, new_data: dict[str, Any]) -> None:
     presumably saw them while editing).
     """
     yaml_rt = _round_trip_yaml()
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         yaml_rt.dump(new_data, f)

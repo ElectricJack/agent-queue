@@ -365,7 +365,7 @@ def _follow(
 ) -> None:
     """Follow a log file, feeding new lines through the context emitter."""
     try:
-        with open(filepath) as f:
+        with open(filepath, encoding="utf-8", errors="replace") as f:
             f.seek(0, 2)
             while True:
                 line = f.readline()

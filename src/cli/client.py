@@ -50,7 +50,7 @@ def _resolve_api_url() -> str:
         try:
             import yaml
 
-            with open(config_file) as f:
+            with open(config_file, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
             mcp = cfg.get("mcp_server", {})
             host = mcp.get("host", "127.0.0.1")
@@ -412,7 +412,7 @@ def _resolve_db_config() -> dict | None:
         try:
             import yaml
 
-            with open(config_file) as f:
+            with open(config_file, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
             db_section = cfg.get("database")
             if isinstance(db_section, dict) and db_section.get("url"):
@@ -441,7 +441,7 @@ def _resolve_db_url() -> str:
         try:
             import yaml
 
-            with open(config_file) as f:
+            with open(config_file, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
             db_path = cfg.get("database_path")
             if db_path:

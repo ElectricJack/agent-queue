@@ -597,7 +597,7 @@ class FilesPlugin(InternalPlugin):
         if not os.path.isfile(validated):
             return {"error": f"File not found: {path}"}
         try:
-            with open(validated, "r") as f:
+            with open(validated, "r", encoding="utf-8") as f:
                 lines = []
                 total_lines = 0
                 for i, line in enumerate(f, start=1):
@@ -630,7 +630,7 @@ class FilesPlugin(InternalPlugin):
             return {"error": "Access denied: path is outside allowed directories"}
         try:
             os.makedirs(os.path.dirname(validated), exist_ok=True)
-            with open(validated, "w") as f:
+            with open(validated, "w", encoding="utf-8") as f:
                 f.write(content)
             return {"path": validated, "written": len(content)}
         except PermissionError:
@@ -655,7 +655,7 @@ class FilesPlugin(InternalPlugin):
         if not os.path.isfile(validated):
             return {"error": f"File not found: {path}"}
         try:
-            with open(validated, "r") as f:
+            with open(validated, "r", encoding="utf-8") as f:
                 content = f.read()
         except UnicodeDecodeError:
             return {"error": "Binary file -- cannot edit"}
@@ -677,7 +677,7 @@ class FilesPlugin(InternalPlugin):
             else content.replace(old_string, new_string, 1)
         )
         try:
-            with open(validated, "w") as f:
+            with open(validated, "w", encoding="utf-8") as f:
                 f.write(new_content)
             return {
                 "path": validated,

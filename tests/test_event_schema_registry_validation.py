@@ -483,6 +483,11 @@ _CANONICAL_PAYLOADS["workflow.orphaned"] = {
     "project_id": "my-app",
     "reason": "stage handler missing",
 }
+_CANONICAL_PAYLOADS["session.restart_requested"] = {
+    "task_id": "task-123",
+    "reason": "handoff",
+    "handoff_id": "ctx-456",
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

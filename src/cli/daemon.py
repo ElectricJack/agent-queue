@@ -233,7 +233,7 @@ def _ensure_docker_postgres() -> bool:
 def _config_uses_postgres() -> bool:
     """Quick check whether the config file references PostgreSQL."""
     try:
-        with open(CONFIG_PATH) as f:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
                 if stripped.startswith("url:") and "postgresql" in stripped:
@@ -417,7 +417,7 @@ def _tail_log(lines: int = 20) -> None:
         console.print(f"[dim]No log file at {LOG_PATH}[/]")
         return
     try:
-        with open(LOG_PATH) as f:
+        with open(LOG_PATH, encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()
             for line in all_lines[-lines:]:
                 console.print(line.rstrip())
@@ -495,7 +495,7 @@ def _start_dashboard() -> bool:
         except OSError:
             console.print("[bold red]Dashboard exited during startup. Last log lines:[/]")
             try:
-                with open(DASHBOARD_LOG_PATH) as f:
+                with open(DASHBOARD_LOG_PATH, encoding="utf-8", errors="replace") as f:
                     for line in f.readlines()[-20:]:
                         console.print(line.rstrip())
             except OSError:
