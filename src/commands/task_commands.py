@@ -7,17 +7,24 @@ import logging
 import os
 
 from src.models import (
+    BLOCKING_DEP_TYPES,
+    DepType,
     Task,
     TaskStatus,
     TaskType,
     VerificationType,
     WorkspaceMode,
+    DEP_TYPE_VALUES,
     TASK_TYPE_VALUES,
     WORKSPACE_MODE_VALUES,
 )
 from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
-from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge
+from src.state_machine import (
+    CyclicDependencyError,
+    validate_dag_with_new_edge,
+    validate_waits_for,
+)
 from src.task_names import generate_task_id
 
 from src.commands.helpers import (
@@ -31,6 +38,26 @@ from src.commands.helpers import (
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_label_list(raw) -> list[str]:
+    """Coerce a label argument into a clean list of strings.
+
+    Accepts a list, or a comma-separated string (what Discord/CLI callers
+    hand over).  Blank entries are dropped and order is preserved.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        label = str(item).strip()
+        if label and label not in seen:
+            seen.add(label)
+            out.append(label)
+    return out
 
 
 def _check_capability_escalation(parent, child) -> str:
@@ -277,6 +304,16 @@ class TaskCommandsMixin:
         if explicit_status:
             kwargs["status"] = TaskStatus(args["status"])
 
+        # Label filters (work-graph design §6): ``labels`` is all-of,
+        # ``any_label`` is any-of.  Listing never hides ``hold:*`` tasks —
+        # only the ready frontier does that.
+        labels = _normalize_label_list(args.get("labels"))
+        any_label = _normalize_label_list(args.get("any_label"))
+        if labels:
+            kwargs["labels"] = labels
+        if any_label:
+            kwargs["any_label"] = any_label
+
         # ── Flat mode (default / backward-compatible) ──────────────────
         # Also used as the fallback when tree/compact lack a project_id.
         if display_mode == "flat" or "project_id" not in args:
@@ -436,12 +473,24 @@ class TaskCommandsMixin:
         full subtask tree for each root task using
         ``Database.get_task_tree()``.  The caller receives both
         pre-formatted text (ready for Discord) and structured data.
+
+        Label filters apply to the **roots**: a tree is included when its root
+        carries the label, and it is then rendered whole.  Filtering the
+        subtree instead would return shredded trees whose parents are missing,
+        which is not what a hierarchical view is for.  Callers that want every
+        matching task regardless of position use flat mode.  Silently dropping
+        the filter (the previous behaviour) is the one option that is simply
+        wrong — ``--labels x --display-mode tree`` returned everything.
         """
         project_id: str = db_kwargs["project_id"]
         mode_name = "compact" if compact else "tree"
 
         # 1. Get all root-level tasks for the project.
-        root_tasks = await self.db.get_parent_tasks(project_id)
+        root_tasks = await self.db.get_parent_tasks(
+            project_id,
+            labels=db_kwargs.get("labels"),
+            any_label=db_kwargs.get("any_label"),
+        )
 
         # 2. Apply status filtering to root tasks.
         if explicit_status:
@@ -531,12 +580,16 @@ class TaskCommandsMixin:
                             dep_map=dep_map,
                         )
 
-        return {
+        result: dict = {
             "display_mode": mode_name,
             "trees": trees,
             "total_root_tasks": len(trees),
             "total_tasks": total_tasks,
         }
+        if db_kwargs.get("labels") or db_kwargs.get("any_label"):
+            # Tell the caller the filter matched roots, not every node.
+            result["label_filter_scope"] = "root"
+        return result
 
     # -- shared helpers ------------------------------------------------------
 
@@ -900,11 +953,7 @@ class TaskCommandsMixin:
                 kind_id = entry.get("kind") or entry.get("kind_id")
                 alias = entry.get("alias")
                 if not kind_id:
-                    return {
-                        "error": (
-                            f"requires_kinds entry {entry!r} is missing 'kind'"
-                        )
-                    }
+                    return {"error": (f"requires_kinds entry {entry!r} is missing 'kind'")}
             else:
                 return {
                     "error": (
@@ -924,8 +973,57 @@ class TaskCommandsMixin:
                 }
             normalized_requirements.append((kind_id, alias))
 
+        # Validate optional labels (work-graph design §6).
+        labels = _normalize_label_list(args.get("labels"))
+
+        # Validate optional graph edges.  ``depends_on`` accepts a bare id, a
+        # list of ids, or a list of ``{"task_id": ..., "dep_type": ...}``
+        # dicts; ``parent_id`` is sugar for a ``parent-child`` edge plus the
+        # denormalised ``parent_task_id`` pointer.
+        raw_depends_on = args.get("depends_on")
+        if isinstance(raw_depends_on, str):
+            raw_depends_on = [raw_depends_on]
+        edges: list[tuple[str, str]] = []
+        for entry in raw_depends_on or []:
+            if isinstance(entry, str):
+                dep_id, dep_type = entry, DepType.BLOCKS.value
+            elif isinstance(entry, dict):
+                dep_id = entry.get("task_id") or entry.get("id") or ""
+                dep_type = entry.get("dep_type") or DepType.BLOCKS.value
+            else:
+                return {
+                    "error": (
+                        "depends_on entries must be str or dict; got "
+                        f"{type(entry).__name__}: {entry!r}"
+                    )
+                }
+            if not dep_id:
+                return {"error": f"depends_on entry {entry!r} is missing 'task_id'"}
+            if dep_type not in DEP_TYPE_VALUES:
+                return {
+                    "error": f"Invalid dep_type '{dep_type}'. "
+                    f"Allowed: {', '.join(sorted(DEP_TYPE_VALUES))}"
+                }
+            if await self.db.get_task(dep_id) is None:
+                return {"error": f"Dependency task '{dep_id}' not found"}
+            edges.append((dep_id, dep_type))
+
+        parent_id = args.get("parent_id")
+        if parent_id:
+            parent = await self.db.get_task(parent_id)
+            if parent is None:
+                return {"error": f"Parent task '{parent_id}' not found"}
+            if (parent_id, DepType.PARENT_CHILD.value) not in edges:
+                edges.append((parent_id, DepType.PARENT_CHILD.value))
+
+        # A task created *with* blocking edges starts DEFINED so the
+        # promotion cascade decides when it becomes runnable — creating it
+        # READY-but-blocked would hand the scheduler a task it must not run.
+        has_blocking_edge = any(dep_type in BLOCKING_DEP_TYPES for _, dep_type in edges)
         initial_status = (
-            TaskStatus.DEFINED if self._plan_subtask_creation_mode else TaskStatus.READY
+            TaskStatus.DEFINED
+            if (self._plan_subtask_creation_mode or has_blocking_edge)
+            else TaskStatus.READY
         )
         auto_approve_plan = args.get("auto_approve_plan", False)
         skip_verification = args.get("skip_verification", False)
@@ -948,13 +1046,32 @@ class TaskCommandsMixin:
             affinity_agent_id=affinity_agent_id,
             affinity_reason=affinity_reason,
             workspace_mode=workspace_mode,
+            parent_task_id=parent_id or None,
         )
         await self.db.create_task(task)
 
         # Persist requires_kinds rows now that the FK target exists.
         if normalized_requirements:
-            await self.db.add_task_workspace_requirements(
-                task_id, normalized_requirements
+            await self.db.add_task_workspace_requirements(task_id, normalized_requirements)
+
+        # Graph edges and labels, now that the FK target exists.  Each
+        # ``add_dependency`` recomputes the blocked-state projection, so the
+        # task's ``is_blocked`` is correct before anything can schedule it.
+        for dep_id, dep_type in edges:
+            await self.db.add_dependency(task_id, dep_id, dep_type)
+            await self.db.log_event(
+                "dependency.added",
+                project_id=project_id,
+                task_id=task_id,
+                payload=f"{dep_type} -> {dep_id}",
+            )
+        for label in labels:
+            await self.db.add_task_label(task_id, label)
+            await self.db.log_event(
+                "label.added",
+                project_id=project_id,
+                task_id=task_id,
+                payload=label,
             )
 
         # If the supervisor set conversation context (the thread chain it was
@@ -1016,9 +1133,15 @@ class TaskCommandsMixin:
         if workspace_mode:
             result["workspace_mode"] = workspace_mode.value
         if normalized_requirements:
-            result["requires_kinds"] = [
-                {"kind": k, "alias": a} for k, a in normalized_requirements
+            result["requires_kinds"] = [{"kind": k, "alias": a} for k, a in normalized_requirements]
+        if edges:
+            result["depends_on"] = [
+                {"task_id": dep_id, "dep_type": dep_type} for dep_id, dep_type in edges
             ]
+        if parent_id:
+            result["parent_id"] = parent_id
+        if labels:
+            result["labels"] = labels
         if warn_deferred_mode:
             result["warning"] = (
                 "workspace_mode='directory-isolated' is accepted but not yet implemented. "
@@ -1135,6 +1258,10 @@ class TaskCommandsMixin:
             "retry_count": task.retry_count,
             "max_retries": task.max_retries,
             "requires_approval": task.requires_approval,
+            # Persisted graph blockedness (work-graph design §4).  Capacity
+            # reasons (no agent, workspace busy, budget) are NOT in here —
+            # those belong to `task explain`.
+            "is_blocked": task.is_blocked,
             "is_plan_subtask": task.is_plan_subtask,
             "task_type": task.task_type.value if task.task_type else None,
             "parent_task_id": task.parent_task_id,
@@ -1263,11 +1390,13 @@ class TaskCommandsMixin:
         return await self._cmd_task_deps(args)
 
     async def _cmd_add_dependency(self, args: dict) -> dict:
-        """Add a dependency edge: *task_id* depends on *depends_on*.
+        """Add a typed dependency edge: *task_id* depends on *depends_on*.
 
-        Validates both tasks exist and performs cycle detection before
-        persisting the edge.  Returns the updated dependency view for the
-        task so callers can confirm the new state.
+        ``dep_type`` defaults to ``blocks``.  Blocking kinds go through cycle
+        detection (and, for ``waits-for``, the descendant-deadlock rule);
+        provenance kinds skip the DAG check but still reject self-edges
+        (work-graph design §11).  The duplicate check is per (pair, type), so
+        one pair can carry e.g. ``blocks`` + ``discovered-from``.
         """
         task_id = args.get("task_id", "")
         depends_on = args.get("depends_on", "")
@@ -1278,6 +1407,13 @@ class TaskCommandsMixin:
         if task_id == depends_on:
             return {"error": "A task cannot depend on itself"}
 
+        dep_type = args.get("dep_type") or DepType.BLOCKS.value
+        if dep_type not in DEP_TYPE_VALUES:
+            return {
+                "error": f"Invalid dep_type '{dep_type}'. "
+                f"Allowed: {', '.join(sorted(DEP_TYPE_VALUES))}"
+            }
+
         # Verify both tasks exist.
         task = await self.db.get_task(task_id)
         if not task:
@@ -1286,26 +1422,51 @@ class TaskCommandsMixin:
         if not dep_task:
             return {"error": f"Dependency task '{depends_on}' not found"}
 
-        # Check for duplicate edge.
-        existing = await self.db.get_dependencies(task_id)
-        if depends_on in existing:
+        # Check for a duplicate edge *of this type*.
+        existing = await self.db.get_typed_dependencies(task_id)
+        if (depends_on, dep_type) in existing:
             return {
-                "error": f"Dependency already exists: '{task_id}' already depends on '{depends_on}'"
+                "error": (
+                    f"Dependency already exists: '{task_id}' already has a "
+                    f"'{dep_type}' edge to '{depends_on}'"
+                )
             }
 
-        # Cycle detection — build the full graph and validate.
-        all_deps = await self.db.get_all_dependencies()
-        try:
-            validate_dag_with_new_edge(all_deps, task_id, depends_on)
-        except CyclicDependencyError as exc:
-            return {"error": f"Cannot add dependency: {exc}"}
+        if dep_type in BLOCKING_DEP_TYPES:
+            # Cycle detection over the blocking subgraph only.
+            all_deps = await self.db.get_all_dependencies()
+            try:
+                validate_dag_with_new_edge(all_deps, task_id, depends_on, dep_type)
+            except CyclicDependencyError as exc:
+                return {"error": f"Cannot add dependency: {exc}"}
 
-        await self.db.add_dependency(task_id, depends_on)
+        if dep_type == DepType.WAITS_FOR.value:
+            # A waiter that is itself a descendant of the container fans in
+            # over a set containing itself — never satisfiable.
+            pc_edges = await self.db.get_parent_child_edges()
+            try:
+                validate_waits_for(pc_edges, task_id, depends_on)
+            except CyclicDependencyError as exc:
+                return {
+                    "error": (
+                        f"Cannot add waits-for dependency: '{task_id}' is a child of "
+                        f"'{depends_on}' and would fan in over itself ({exc})"
+                    )
+                }
+
+        await self.db.add_dependency(task_id, depends_on, dep_type)
+        await self.db.log_event(
+            "dependency.added",
+            project_id=task.project_id,
+            task_id=task_id,
+            payload=f"{dep_type} -> {depends_on}",
+        )
 
         return {
             "ok": True,
             "task_id": task_id,
             "depends_on": depends_on,
+            "dep_type": dep_type,
             "task_title": task.title,
             "depends_on_title": dep_task.title,
         }
@@ -1313,8 +1474,8 @@ class TaskCommandsMixin:
     async def _cmd_remove_dependency(self, args: dict) -> dict:
         """Remove a dependency edge: *task_id* no longer depends on *depends_on*.
 
-        Returns a confirmation dict.  Silently succeeds if the edge does
-        not exist (idempotent).
+        ``dep_type`` is optional — omitted, every edge kind between the pair
+        is removed.  Returns a confirmation dict.
         """
         task_id = args.get("task_id", "")
         depends_on = args.get("depends_on", "")
@@ -1323,22 +1484,46 @@ class TaskCommandsMixin:
         if not depends_on:
             return {"error": "depends_on is required"}
 
+        dep_type = args.get("dep_type") or None
+        if dep_type is not None and dep_type not in DEP_TYPE_VALUES:
+            return {
+                "error": f"Invalid dep_type '{dep_type}'. "
+                f"Allowed: {', '.join(sorted(DEP_TYPE_VALUES))}"
+            }
+
         # Verify the task exists (the dependency target need not still exist).
         task = await self.db.get_task(task_id)
         if not task:
             return {"error": f"Task '{task_id}' not found"}
 
-        # Check if the dependency edge actually exists.
-        existing = await self.db.get_dependencies(task_id)
-        if depends_on not in existing:
-            return {"error": f"No dependency found: '{task_id}' does not depend on '{depends_on}'"}
+        # Check that a matching edge actually exists.
+        existing = await self.db.get_typed_dependencies(task_id)
+        matching = [
+            edge_type
+            for target, edge_type in existing
+            if target == depends_on and (dep_type is None or edge_type == dep_type)
+        ]
+        if not matching:
+            suffix = f" with dep_type '{dep_type}'" if dep_type else ""
+            return {
+                "error": (
+                    f"No dependency found: '{task_id}' does not depend on '{depends_on}'{suffix}"
+                )
+            }
 
-        await self.db.remove_dependency(task_id, depends_on)
+        await self.db.remove_dependency(task_id, depends_on, dep_type)
+        await self.db.log_event(
+            "dependency.removed",
+            project_id=task.project_id,
+            task_id=task_id,
+            payload=f"{','.join(sorted(matching))} -> {depends_on}",
+        )
 
         return {
             "ok": True,
             "task_id": task_id,
             "removed_dependency": depends_on,
+            "removed_dep_types": sorted(matching),
             "task_title": task.title,
         }
 
@@ -2666,24 +2851,12 @@ class TaskCommandsMixin:
             )
 
             if created_info:
-                # Add a dependency from the first subtask to the parent task.
-                # Since the parent is in AWAITING_PLAN_APPROVAL (not COMPLETED),
-                # this blocks the entire chain from executing until approval.
-                first_subtask_id = created_info[0]["id"]
-                try:
-                    await self.db.add_dependency(first_subtask_id, depends_on=task_id)
-                    logger.info(
-                        "process_plan: added blocking dep %s → %s (parent)",
-                        first_subtask_id,
-                        task_id,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "process_plan: failed to add blocking dep %s → %s: %s",
-                        first_subtask_id,
-                        task_id,
-                        e,
-                    )
+                # break_plan_into_tasks() already wired every subtask to the
+                # parent with a `parent-child` edge (+ `discovered-from`
+                # provenance).  The parent is AWAITING_PLAN_APPROVAL, which
+                # is a *withholding* container status, so the whole set stays
+                # blocked until the plan is approved — no extra `blocks` edge
+                # on the first subtask needed (work-graph design §3.1).
 
                 # Store draft subtask IDs so approve/delete/reject can find them
                 import json as _json

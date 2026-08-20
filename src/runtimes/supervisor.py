@@ -203,9 +203,7 @@ class Supervisor(Runtime):
     # MCP servers, no PLAN_MODE/RESUME because supervisor doesn't run
     # subprocess sessions.
     name: ClassVar[str] = "supervisor"
-    capabilities: ClassVar[frozenset[Capability]] = frozenset(
-        {Capability.MCP, Capability.THINKING}
-    )
+    capabilities: ClassVar[frozenset[Capability]] = frozenset({Capability.MCP, Capability.THINKING})
     requires_workspace: ClassVar[bool] = False
 
     def __init__(
@@ -1133,11 +1131,7 @@ class Supervisor(Runtime):
                         active_tools=active_tools,
                         tool_names=tool_names_used,
                     )
-                    if (
-                        verdict
-                        and not verdict.passed
-                        and not _reflection_retry_active_var.get()
-                    ):
+                    if verdict and not verdict.passed and not _reflection_retry_active_var.get():
                         retry_token = _reflection_retry_active_var.set(True)
                         try:
                             retry_prompt = (
@@ -1313,11 +1307,7 @@ class Supervisor(Runtime):
                         tool_names=tool_names_used,
                     )
 
-                    if (
-                        verdict
-                        and not verdict.passed
-                        and not _reflection_retry_active_var.get()
-                    ):
+                    if verdict and not verdict.passed and not _reflection_retry_active_var.get():
                         retry_token = _reflection_retry_active_var.set(True)
                         try:
                             retry_prompt = (
@@ -1651,9 +1641,23 @@ class Supervisor(Runtime):
         except Exception:
             pass  # Non-fatal
 
-        # Post-process: set parent_task_id and is_plan_subtask on new tasks.
+        # Post-process: set parent_task_id and is_plan_subtask on new tasks,
+        # and wire the typed graph edges (work-graph design §3):
+        #
+        #   parent-child   — the plan task is the children's container.  It
+        #                    withholds them while it is DEFINED or
+        #                    AWAITING_PLAN_APPROVAL and releases them the
+        #                    moment it is approved (IN_PROGRESS).  This is
+        #                    exactly what the old `is_plan_subtask` special
+        #                    case in _check_defined_tasks hard-coded, now
+        #                    expressed as data.
+        #   discovered-from — provenance: these tasks came out of that plan.
+        #                    Non-blocking, so it never affects readiness.
+        #
         # Tasks are already created as DEFINED (via _plan_subtask_creation_mode)
         # so no demotion is needed.
+        from src.models import DepType
+
         created_info = []
         for task in new_tasks:
             try:
@@ -1662,6 +1666,20 @@ class Supervisor(Runtime):
                     parent_task_id=parent_task_id,
                     is_plan_subtask=1,
                 )
+                for dep_type in (
+                    DepType.PARENT_CHILD.value,
+                    DepType.DISCOVERED_FROM.value,
+                ):
+                    try:
+                        await self.handler.db.add_dependency(task.id, parent_task_id, dep_type)
+                    except Exception as e:
+                        logger.warning(
+                            "break_plan_into_tasks: failed to add %s edge %s -> %s: %s",
+                            dep_type,
+                            task.id,
+                            parent_task_id,
+                            e,
+                        )
                 # Propagate parent conversation context to subtask
                 if parent_conv_ctx:
                     await self.handler.db.add_task_context(
@@ -2000,6 +2018,7 @@ class Supervisor(Runtime):
         Then writes ``payload["confidence"]`` as the product of the
         three normalised components, also in ``[0, 1]``.
         """
+
         def _norm(key: str) -> float:
             raw = payload.get(key, 0.5)
             try:

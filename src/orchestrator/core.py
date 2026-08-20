@@ -221,6 +221,7 @@ class Orchestrator(
         # each scheduling tick before Scheduler.schedule().  See
         # docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md.
         from src.orchestrator.agent_reconciler import AgentReconciler
+
         self._agent_reconciler = AgentReconciler(self.db)
         # Live adapter instances keyed by agent_id.  Stored so we can call
         # adapter.stop() from admin commands (stop_task, timeout recovery).
@@ -902,9 +903,7 @@ class Orchestrator(
         # and safe to run on every daemon start.
         from src.profiles.workspace_kind_registry import WorkspaceKindStore
 
-        self.workspace_kind_store = WorkspaceKindStore(
-            self.db, vault_root=self.config.vault_root
-        )
+        self.workspace_kind_store = WorkspaceKindStore(self.db, vault_root=self.config.vault_root)
         await self.workspace_kind_store.bootstrap()
         await self.workspace_kind_store.scan()
 
@@ -1429,7 +1428,8 @@ class Orchestrator(
             if a.state == AgentState.IDLE and a.profile_id not in profile_ids:
                 logger.info(
                     "Recovery: deleting idle agent '%s' (profile '%s' no longer exists)",
-                    a.name, a.profile_id,
+                    a.name,
+                    a.profile_id,
                 )
                 await self.db.delete_agent(a.id)
 
@@ -1439,8 +1439,7 @@ class Orchestrator(
         # max_concurrent_agents being lowered while the daemon was down.
         all_workspaces = await self.db.list_workspaces()
         ws_owner = {
-            w.locked_by_agent_id: w.project_id
-            for w in all_workspaces if w.locked_by_agent_id
+            w.locked_by_agent_id: w.project_id for w in all_workspaces if w.locked_by_agent_id
         }
         projects = await self.db.list_projects()
         max_by_project = {p.id: p.max_concurrent_agents for p in projects}
@@ -1462,7 +1461,9 @@ class Orchestrator(
             for a in excess:
                 logger.info(
                     "Recovery: deleting excess idle agent '%s' (project=%s over cap=%d)",
-                    a.name, pid, cap,
+                    a.name,
+                    pid,
+                    cap,
                 )
                 await self.db.delete_agent(a.id)
 
@@ -1789,8 +1790,13 @@ class Orchestrator(
             # 2b. Sweep gates: resolve satisfied timer/pr-merged/ci-run/event/
             #     task gates and expire overdue ones.  Runs before promotion
             #     so a freshly resolved gate unblocks its waiters in the same
-            #     cycle (work-graph spec §6.1).  No-op until Wave 2 lane 2C.
-            await self._sweep_gates()
+            #     cycle (work-graph spec §6.1).  No-op until Wave 2 lane WG-3.
+            #     Own try/except: the sweep polls `gh`, and a failure there
+            #     must not skip promotion (step 3) for the whole cycle.
+            try:
+                await self._sweep_gates()
+            except Exception:
+                logger.error("Gate sweep error", exc_info=True)
 
             # 3. Promote DEFINED/BLOCKED tasks whose dependencies are met → READY.
             #    Runs after step 1 so freshly-completed approvals can unblock
@@ -1941,8 +1947,17 @@ class Orchestrator(
         ``task`` gates; poll ``pr-merged``/``ci-run`` on the 60 s approval
         throttle; re-check ``event`` gates against persisted events; emit
         ``gate.resolved`` / ``gate.expired`` / ``task.unblocked``.
+
+        Gating note (WG-1): this used to check
+        ``work_graph.blocked_state_authoritative``, but §9's rollout puts
+        gates at stage (3) — *after* the stage-(2) flip of that flag.  Wired
+        that way, flipping the flag for the blocked-state projection would
+        silently arm the gate sweep too.  It is now gated on its own key,
+        ``gate_sweep_interval_seconds`` (``<= 0`` disables sweeping), so the
+        two rollout stages are independent.  The body is still empty, so the
+        step remains a no-op regardless.
         """
-        if not self.config.work_graph.blocked_state_authoritative:
+        if self.config.work_graph.gate_sweep_interval_seconds <= 0:
             return
 
     async def _reap_worktree_slots(self) -> None:
@@ -2037,7 +2052,9 @@ class Orchestrator(
         if rep.created or rep.reassigned:
             logger.info(
                 "reconciler: created=%d reassigned=%d skipped=%d",
-                len(rep.created), len(rep.reassigned), len(rep.skipped),
+                len(rep.created),
+                len(rep.reassigned),
+                len(rep.skipped),
             )
 
         # Build a consistent point-in-time snapshot of all system state the
