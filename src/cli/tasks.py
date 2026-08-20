@@ -12,6 +12,7 @@ from typing import Any
 import click
 
 from .app import cli, console, _run, _get_client, _handle_errors
+from .envelope import emit
 
 
 def _getval(obj: Any, key: str, default: Any = None) -> Any:
@@ -270,3 +271,194 @@ def task_select(ctx: click.Context, project: str | None) -> None:
             console.print(panel)
 
     _run(_select())
+
+
+# ---------------------------------------------------------------------------
+# show / set / list / details — aq-surface Phase S0 (output contract)
+#
+# Hand-crafted (not auto-generated) so they can route through `emit()` for
+# the versioned JSON envelope + --brief projection. `list` shadows the
+# auto-generated `list_tasks`-backed command (same backend command, nicer
+# front end); `show`/`details` are new, backed by the new `task_show`
+# CommandHandler command; `set` is new, backed by `task_set`. See
+# docs/specs/implementation/aq-surface.md §5.3 / §9.
+# ---------------------------------------------------------------------------
+
+
+@task.command("list")
+@click.option("-p", "--project", "project_id", default=None, help="Filter by project")
+@click.option("--status", default=None, help="Filter by status (see `aq schema`)")
+@click.option(
+    "--include-completed",
+    is_flag=True,
+    default=False,
+    help="Include COMPLETED/FAILED/BLOCKED tasks (hidden by default)",
+)
+@click.pass_context
+@_handle_errors
+def task_list(
+    ctx: click.Context,
+    project_id: str | None,
+    status: str | None,
+    include_completed: bool,
+) -> None:
+    """List tasks."""
+    from .adapters import task_proxy
+    from .formatters import format_task_table
+
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _list():
+        async with _get_client(api_url) as client:
+            args: dict[str, Any] = {}
+            if project_id:
+                args["project_id"] = project_id
+            if status:
+                args["status"] = status
+            if include_completed:
+                args["include_completed"] = True
+            return await client.execute("list_tasks", args)
+
+    result = _run(_list())
+    raw_tasks = _getval(result, "tasks", [])
+    total = _getval(result, "total", len(raw_tasks))
+
+    def _render(data: list) -> None:
+        proxied = [task_proxy(t) for t in data]
+        table = format_task_table(proxied)
+        console.print(table)
+        if not proxied:
+            console.print("[dim]No tasks found.[/]")
+
+    emit(ctx, raw_tasks, entity="task", total=total, render=_render)
+
+
+@task.command("show")
+@click.argument("task_id")
+@click.pass_context
+@_handle_errors
+def task_show(ctx: click.Context, task_id: str) -> None:
+    """Show full task detail: fields, dependencies, context, labels."""
+    from .adapters import task_proxy
+    from .formatters import format_task_detail
+
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _show():
+        async with _get_client(api_url) as client:
+            return await client.execute("task_show", {"task_id": task_id})
+
+    result = _run(_show())
+
+    def _render(data: dict) -> None:
+        t = task_proxy(data)
+        deps_raw = _getval(data, "depends_on", [])
+        blocks_raw = _getval(data, "blocks", [])
+        deps_on = [d.get("id") if isinstance(d, dict) else d for d in deps_raw]
+        dependents = [d.get("id") if isinstance(d, dict) else d for d in blocks_raw]
+        panel = format_task_detail(t, deps_on=deps_on, dependents=dependents)
+        console.print(panel)
+
+        labels = _getval(data, "labels", [])
+        if labels:
+            console.print(f"[dim]Labels:[/] {', '.join(labels)}")
+        context = _getval(data, "context", [])
+        if context:
+            console.print(f"[dim]Context entries:[/] {len(context)}")
+
+    emit(ctx, result, entity="task", render=_render)
+
+
+@task.command("details")
+@click.argument("task_id")
+@click.pass_context
+def task_details_alias(ctx: click.Context, task_id: str) -> None:
+    """Alias of `aq task show` (kept for backward compatibility)."""
+    ctx.invoke(task_show, task_id=task_id)
+
+
+@task.command("set")
+@click.argument("task_id")
+@click.option("--branch", default=None, help="Set the task's branch name")
+@click.option("--pr-url", default=None, help="Set the task's PR URL")
+@click.option("--work-dir", default=None, help="Record the task's working directory")
+@click.option("--note", default=None, help="Append a note to the task's context")
+@click.option(
+    "--label",
+    "labels",
+    multiple=True,
+    metavar="+LABEL|-LABEL",
+    help="Add (+label) or remove (-label) a label; repeatable.",
+)
+@click.option(
+    "--meta",
+    "meta_kv",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help="Set a metadata key; repeatable.",
+)
+@click.pass_context
+@_handle_errors
+def task_set(
+    ctx: click.Context,
+    task_id: str,
+    branch: str | None,
+    pr_url: str | None,
+    work_dir: str | None,
+    note: str | None,
+    labels: tuple[str, ...],
+    meta_kv: tuple[str, ...],
+) -> None:
+    """Work-state contract writes: branch, PR URL, work dir, notes, labels, metadata.
+
+    Never changes task status — use `aq task approve|stop|restart` for that.
+    """
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    labels_add: list[str] = []
+    labels_remove: list[str] = []
+    for entry in labels:
+        if entry.startswith("-"):
+            labels_remove.append(entry[1:])
+        elif entry.startswith("+"):
+            labels_add.append(entry[1:])
+        else:
+            labels_add.append(entry)
+
+    meta: dict[str, str] = {}
+    for kv in meta_kv:
+        if "=" not in kv:
+            console.print(f"[bold red]Error:[/] --meta expects KEY=VALUE, got '{kv}'")
+            raise SystemExit(2)
+        key, _, value = kv.partition("=")
+        meta[key] = value
+
+    args: dict[str, Any] = {"task_id": task_id}
+    if branch is not None:
+        args["branch"] = branch
+    if pr_url is not None:
+        args["pr_url"] = pr_url
+    if work_dir is not None:
+        args["work_dir"] = work_dir
+    if note is not None:
+        args["note"] = note
+    if labels_add:
+        args["labels_add"] = labels_add
+    if labels_remove:
+        args["labels_remove"] = labels_remove
+    if meta:
+        args["meta"] = meta
+
+    async def _set():
+        async with _get_client(api_url) as client:
+            return await client.execute("task_set", args)
+
+    result = _run(_set())
+
+    def _render(data: dict) -> None:
+        changed = _getval(data, "fields_changed", [])
+        console.print(f"[bold green]Task updated:[/] {task_id}")
+        if changed:
+            console.print(f"  [dim]Fields:[/] {', '.join(changed)}")
+
+    emit(ctx, result, entity="task", render=_render)

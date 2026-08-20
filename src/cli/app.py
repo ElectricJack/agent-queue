@@ -162,9 +162,22 @@ def _print_full_help(ctx: click.Context) -> None:
     default=False,
     help="Output raw JSON instead of formatted tables.",
 )
+@click.option(
+    "--brief",
+    "brief",
+    is_flag=True,
+    default=False,
+    help="Trim output to each entity's lite projection (composes with --json).",
+)
 @click.version_option(version="0.1.0", prog_name="aq")
 @click.pass_context
-def cli(ctx: click.Context, api_url: str | None, help_all: bool, output_json: bool) -> None:
+def cli(
+    ctx: click.Context,
+    api_url: str | None,
+    help_all: bool,
+    output_json: bool,
+    brief: bool,
+) -> None:
     """AgentQueue CLI — Modern terminal interface for task management.
 
     Connects to the agent-queue daemon via its REST API.
@@ -172,6 +185,7 @@ def cli(ctx: click.Context, api_url: str | None, help_all: bool, output_json: bo
     ctx.ensure_object(dict)
     ctx.obj["api_url"] = api_url
     ctx.obj["json"] = output_json
+    ctx.obj["brief"] = brief
 
     if help_all:
         _print_full_help(ctx)
@@ -252,6 +266,7 @@ from . import tasks  # noqa: E402, F401
 from . import projects  # noqa: E402, F401
 from . import plugins  # noqa: E402, F401
 from . import vault  # noqa: E402, F401
+from . import agent_surface  # noqa: E402, F401
 
 
 # ---------------------------------------------------------------------------

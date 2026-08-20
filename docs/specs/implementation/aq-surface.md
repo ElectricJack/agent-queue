@@ -358,12 +358,12 @@ dicts). No new log stream, no new retention rules.
 
 ## 9. Phase Checklist
 
-**Phase S0 — output contract (no behavior change for agents)**
-- [ ] `src/cli/envelope.py` + global `--brief`; `AQ_JSON_LEGACY` escape hatch
-- [ ] `get_schema` command + `aq schema`
-- [ ] `CLIClient`: `AQ_API_URL`/`AQ_API_TOKEN` support (token unused until S2)
-- [ ] `aq task show|set|list` (+ `details` alias); route through `emit()`
-- [ ] Fix `src/cli/CLAUDE.md` stale "direct SQLite" claim
+**Phase S0 — output contract (no behavior change for agents)** — done, `wave1/1d-surface-s0`
+- [x] `src/cli/envelope.py` + global `--brief`; `AQ_JSON_LEGACY` escape hatch
+- [x] `get_schema` command + `aq schema`
+- [x] `CLIClient`: `AQ_API_URL`/`AQ_API_TOKEN` support (token unused until S2)
+- [x] `aq task show|set|list` (+ `details` alias); route through `emit()`
+- [x] Fix `src/cli/CLAUDE.md` stale "direct SQLite" claim
 
 **Phase S1 — prime and hooks**
 - [ ] `src/prime/` package: models, renderer, sections, overrides, hook_envelopes, templates
@@ -391,6 +391,83 @@ dicts). No new log stream, no new retention rules.
 ---
 
 ## 10. Test Plan
+
+### 10.0 Phase S0 (implemented)
+
+`tests/test_cli_envelope.py` (41 cases) and `tests/test_surface_commands.py` (21 cases):
+
+- **`envelope()` / `error_envelope()` shapes:** object envelope has no `pagination` key;
+  list envelope defaults `total` to `len(data)` when the caller doesn't pass one; explicit
+  `total` produces `truncated: true`; empty-list pagination; `SCHEMA_VERSION` is a stable
+  `int`; error envelope shape; round-trips through `json.dumps`/`json.loads` with no custom
+  encoder required.
+- **`emit()`:** `--json` prints the envelope; `--brief` trims via `apply_brief()` before
+  wrapping, only in JSON mode (human-mode `render` callbacks always receive the untrimmed
+  payload — see the note below); `AQ_JSON_LEGACY=1` prints the raw (pre-envelope) payload to
+  stdout plus a deprecation warning on **stderr** (verified with separate stdout/stderr
+  capture, not just combined output) and still composes with `--brief`; no-`render` fallback
+  dumps indented JSON; a `ctx.obj is None` context defaults to human mode without raising.
+- **`BRIEF_PROJECTIONS` completeness vs. models:** the five entities from design §4.2
+  (`task`, `session`, `gate`, `message`, `workspace`) are all present; `task`'s tuple matches
+  the design table field-for-field; every field in `BRIEF_PROJECTIONS["task"]` is asserted to
+  be an actual key produced by `TaskCommandsMixin._task_to_dict()` (the real `list_tasks` /
+  `aq task list --brief` row shape) and to appear as an assigned key in `_cmd_get_task`'s
+  source — i.e. the projection is checked against what the commands *actually* return, not
+  just against the design doc. `session`/`gate`/`message`/`workspace` are not yet checked
+  against real command output because no command produces their shape yet (session-runtime /
+  work-graph / supervisor-agent are still pending) — that verification is `TestBriefProjections`
+  follow-up work once those land.
+- **`get_schema` (`src/commands/surface_commands.py`):** returns `schema_version: 1` and
+  exactly the five enum families introspectable today (`task_status`, `task_type`,
+  `dependency_type`, `gate_type`, `gate_status`); each is asserted equal to the live source
+  (`src.models.TaskStatus`, `TASK_DEP_TYPES`/`GATE_TYPES`/`GATE_STATUSES` in
+  `src/database/tables.py`) so the test fails if those drift out of sync with the schema
+  projection.
+- **`task_show` / `task_set` (real in-memory SQLite DB, not mocked):** missing/unknown
+  `task_id` errors; `task_show` composes `_cmd_get_task` + `get_task_contexts` +
+  `get_task_labels` (including the empty-list, not-missing-key case); `task_set` rejects a
+  no-op call; writes `branch`/`pr_url` via `update_task` and reads them back from the DB;
+  **never changes `status`** (asserted via before/after DB read); `note` lands as a
+  `task_context` row; `labels_add`/`labels_remove` round-trip through the new
+  `add_task_label`/`remove_task_label`/`get_task_labels` DB methods
+  (`src/database/queries/task_queries.py`), including idempotent add and no-op remove; `meta`
+  round-trips through `get_all_task_meta`; `work_dir` is confirmed to land in
+  `task_metadata` (documented as a placeholder, not the final workspaces-v2 shape); the
+  return shape is confirmed to be `task_show`'s shape plus `fields_changed`.
+- **CLI (`CliRunner` + mocked `CLIClient`, patched at `src.cli.tasks._get_client` /
+  `src.cli.agent_surface._get_client` — see the note on patch targets below):** `aq task
+  list` JSON envelope + pagination; `--brief --json` trims to the five design-table fields;
+  human mode still renders a Rich table (regression guard for the pre-existing
+  `list_tasks`-backed behavior this command replaces); `aq task show` JSON envelope (no
+  `pagination` key on a single object) and human-mode panel; `aq task details` alias
+  produces byte-identical output to `aq task show`; `aq task set` sends the exact expected
+  arg dict for `--branch`/`--pr-url`/`--note`/`--label +x`/`--label -y`/`--meta k=v`, JSON
+  envelope, and a `--meta` value missing `=` exits `2` (Click usage error); `aq schema` JSON
+  envelope and human-mode table; global `--brief` flag sets `ctx.obj["brief"]`.
+- **`CLIClient` env plumbing:** `AQ_API_URL` takes priority over the legacy
+  `AGENT_QUEUE_API_URL`; `AGENT_QUEUE_API_URL` still works alone; `AQ_API_TOKEN` is read from
+  the environment into `CLIClient._token`; an explicit `token=` constructor arg wins over the
+  environment; no token present means `_token is None` (not yet enforced server-side —
+  S2 territory, confirmed unused here).
+
+**Patch-target note (fixed two pre-existing tests):** hand-crafted CLI commands import
+`_get_client` at module scope (`from .app import ..., _get_client`), so tests must patch
+`src.cli.<module>._get_client`, not `src.cli.app._get_client` — auto-generated commands
+late-bind `from . import app as _app` instead specifically so tests *can* patch the shared
+`app` module. `aq task list` moved from auto-generated to hand-crafted in this phase (nicer
+front-end over the same `list_tasks` command, needed to route through `emit()`), so
+`tests/test_cli.py::TestCLICommands::test_task_list_with_formatter` and
+`TestDaemonNotRunningPrompt::test_starts_daemon_on_yes`/`test_offers_to_start_on_connection_error`
+were updated to patch `src.cli.tasks._get_client` accordingly — same behavior under test,
+correct patch target.
+
+**Not covered in S0** (deferred to the phase that lands the backing subsystem): `aq inbox
+--inject`, `aq prime --hook-json`, `task details`'s renderer showing gate/work-state data
+(no query layer yet), exit-code `3`/`4` and `paused` mapping (no daemon-unreachable /
+out-of-scope / paused-memory path exercised by these commands yet), MCP `/mcp-task`
+integration.
+
+### 10.1 Later phases
 
 - **Unit:** renderer golden tests (fixture vault + task → expected markdown; override
   template; memory-paused slots empty); `envelope()`/`emit()` shapes incl. pagination and
