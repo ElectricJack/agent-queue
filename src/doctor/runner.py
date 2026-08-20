@@ -163,6 +163,11 @@ async def run_doctor(
     ``fix`` has its fix awaited, then the check is re-run; the post-fix result
     is reported with ``fix_applied=True``.
 
+    An *only* entry that matches neither a registered check nor a reserved id
+    is reported as an ERROR result for that id (exit code 2).  A CI gate
+    pinned to a misspelled check id must fail, not pass against an empty
+    table.
+
     Returns ``{"checks": [...], "summary": {...}, "exit_code": 0|1|2}``.
     """
     only_set = set(only) if only else None
@@ -175,10 +180,14 @@ async def run_doctor(
     fixes_applied = 0
     if fix and selected:
         by_id = {c.id: c for c in selected}
+        # ``r.id`` is normally ``check.id``, but a check is free to return a
+        # different id (plugin checks especially).  Look it up defensively —
+        # a mismatch must not turn ``--fix`` into a KeyError.
         fix_targets = [
             r
             for r in results
-            if r.severity in (Severity.WARN, Severity.ERROR) and by_id[r.id].fix is not None
+            if r.severity in (Severity.WARN, Severity.ERROR)
+            and getattr(by_id.get(r.id), "fix", None) is not None
         ]
         if fix_targets:
             fixed = await asyncio.gather(
@@ -194,7 +203,24 @@ async def run_doctor(
         if r.id in fixable_ids:
             r.fixable = True
 
-    results.extend(_reserved_placeholders({c.id for c in registry.checks()}, only_set))
+    registered_ids = {c.id for c in registry.checks()}
+    results.extend(_reserved_placeholders(registered_ids, only_set))
+
+    if only_set:
+        unknown = sorted(only_set - registered_ids - set(RESERVED_CHECK_IDS))
+        results.extend(
+            CheckResult(
+                id=check_id,
+                severity=Severity.ERROR,
+                detail=(
+                    "unknown check id — not registered and not reserved "
+                    f"(known: {', '.join(sorted(registered_ids)) or 'none'})"
+                ),
+                data={"unknown": True},
+            )
+            for check_id in unknown
+        )
+
     results.sort(key=lambda r: r.id)
 
     summary = {

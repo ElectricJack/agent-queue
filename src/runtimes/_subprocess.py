@@ -39,9 +39,12 @@ def isolated_env(
 
     Pass *config* (an ``AppConfig``) to honour ``security.env_allowlist`` and
     the ``security.env_scrub_enabled`` kill switch; without it the shipped
-    defaults apply.  The policy therefore survives this module's planned
-    deletion — the session-runtime ``SessionSpec`` builder calls ``scrub_env``
-    directly with the same arguments.
+    defaults apply.  ``ACPXRuntime`` receives its config from
+    ``RuntimeRegistry.create`` and always passes it — a call without *config*
+    means the caller has no config to give (tests, ad-hoc probes), not that
+    the operator's settings may be ignored.  The policy therefore survives
+    this module's planned deletion — the session-runtime ``SessionSpec``
+    builder calls ``scrub_env`` directly with the same arguments.
     """
     if config is not None:
         result = scrub_env_from_config(config, explicit=extra)

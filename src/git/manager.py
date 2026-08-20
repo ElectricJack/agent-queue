@@ -119,6 +119,42 @@ def _validate_ref(name: str, *, field: str = "branch") -> str:
     return name
 
 
+#: A *revision expression* — a refname plus git's navigation suffixes
+#: (``HEAD~1``, ``HEAD^``, ``main@{yesterday}``).  Same anchor as
+#: :data:`_REFNAME_RE`: the first character must be a letter or digit, so a
+#: value beginning with ``-`` still cannot be parsed as an option.  Shell
+#: metacharacters, whitespace and quotes remain excluded.
+_REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@{}~^-]*$")
+
+
+def _validate_rev(name: str, *, field: str = "revision") -> str:
+    """Like :func:`_validate_ref`, but for **read-only** revision arguments.
+
+    ``git diff`` legitimately takes revision expressions, and the tool schemas
+    the LLM reads advertise them (``vibecop``'s ``diff_ref`` names ``HEAD~3``).
+    Validating those with :func:`_validate_ref` turns an advertised, harmless
+    call into an error dict — which teaches the agent the tool is broken
+    rather than that the input was wrong.
+
+    The argument-injection property is unchanged: the first character must
+    still be alphanumeric, so a leading ``-`` remains impossible, and the
+    character class adds only git's own revision syntax.  Write paths
+    (checkout, push, delete, merge) keep the stricter :func:`_validate_ref` —
+    there is no reason to move a branch to ``HEAD@{2}`` through this API.
+    """
+    if not isinstance(name, str) or not name:
+        raise GitError(f"invalid {field}: empty value")
+    if not _REVISION_RE.match(name):
+        raise GitError(
+            f"invalid {field} {name!r}: must start with a letter or digit and contain "
+            "only refname characters plus git's revision suffixes "
+            "('~', '^', '@', '{', '}') — blocks argument injection"
+        )
+    if name.endswith(".lock"):
+        raise GitError(f"invalid {field} {name!r}: rejected by git check-ref-format rules")
+    return name
+
+
 class GitManager:
     # Environment overrides for all git/gh subprocess calls.  Prevents
     # interactive credential prompts that would otherwise write directly to
@@ -1604,7 +1640,8 @@ class GitManager:
         await self._arun(["commit", "--allow-empty", "-m", "Initial commit"], cwd=path)
 
     async def aget_diff(self, checkout_path: str, base_branch: str = "main") -> str:
-        _validate_ref(base_branch, field="base branch")
+        # Read-only: revision expressions (HEAD~1, HEAD^, main@{1}) allowed.
+        _validate_rev(base_branch, field="base branch")
         try:
             return await self._arun(["diff", base_branch, "--"], cwd=checkout_path)
         except GitError:
@@ -1615,7 +1652,8 @@ class GitManager:
         checkout_path: str,
         base_branch: str = "main",
     ) -> list[str]:
-        _validate_ref(base_branch, field="base branch")
+        # Read-only: revision expressions (HEAD~1, HEAD^, main@{1}) allowed.
+        _validate_rev(base_branch, field="base branch")
         try:
             output = await self._arun(
                 ["diff", "--name-only", base_branch, "--"], cwd=checkout_path

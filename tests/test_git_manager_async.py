@@ -601,6 +601,101 @@ class TestValidateRef:
             _validate_ref("-oops", field="base branch")
 
 
+class TestValidateRev:
+    """Read-only diff APIs accept git's revision syntax; write APIs do not.
+
+    ``_validate_ref`` rejects ``HEAD~1`` / ``HEAD^`` / ``HEAD@{1}``, which
+    turned an advertised, harmless call (``vibecop``'s ``diff_ref`` schema
+    names ``HEAD~3``) into an error dict.  ``_validate_rev`` widens the
+    character class by exactly git's revision suffixes and nothing else.
+    """
+
+    @pytest.mark.parametrize(
+        "rev",
+        [
+            "main",
+            "HEAD",
+            "HEAD~1",
+            "HEAD~10",
+            "HEAD^",
+            "HEAD^^",
+            "HEAD@{1}",
+            "main@{upstream}",
+            "aq/task-1~2",
+            "0a1b2c3",
+        ],
+    )
+    def test_accepts_revision_expressions(self, rev):
+        from src.git.manager import _validate_rev
+
+        assert _validate_rev(rev) == rev
+
+    @pytest.mark.parametrize(
+        "rev",
+        [
+            "-oops",  # the whole point: still cannot become an option
+            "--output=/etc/passwd",
+            "",
+            "a b",
+            "has;semicolon",
+            "has$dollar",
+            "has`backtick`",
+            "has|pipe",
+            "quote'name",
+            "new\nline",
+            ".hidden",
+            "/leading-slash",
+            "rev.lock",
+        ],
+    )
+    def test_still_rejects_dangerous_values(self, rev):
+        from src.git.manager import _validate_rev
+
+        with pytest.raises(GitError):
+            _validate_rev(rev)
+
+    def test_rejects_non_strings(self):
+        from src.git.manager import _validate_rev
+
+        with pytest.raises(GitError):
+            _validate_rev(None)
+
+    def test_write_apis_keep_the_stricter_guard(self):
+        """A branch must never be moved to a revision expression."""
+        from src.git.manager import _validate_ref
+
+        for rev in ("HEAD~1", "HEAD^", "HEAD@{1}"):
+            with pytest.raises(GitError):
+                _validate_ref(rev)
+
+    @pytest.mark.asyncio
+    async def test_get_diff_accepts_a_revision_expression(self, clone, mgr):
+        pathlib.Path(clone, "rev.txt").write_text("one")
+        _git(["-c", "user.name=T", "-c", "user.email=t@t.com", "add", "-A"], cwd=clone)
+        _git(
+            ["-c", "user.name=T", "-c", "user.email=t@t.com", "commit", "-m", "one"],
+            cwd=clone,
+        )
+        diff = await mgr.aget_diff(clone, "HEAD~1")
+        assert "rev.txt" in diff
+
+    @pytest.mark.asyncio
+    async def test_changed_files_accepts_a_revision_expression(self, clone, mgr):
+        pathlib.Path(clone, "rev2.txt").write_text("one")
+        _git(["-c", "user.name=T", "-c", "user.email=t@t.com", "add", "-A"], cwd=clone)
+        _git(
+            ["-c", "user.name=T", "-c", "user.email=t@t.com", "commit", "-m", "two"],
+            cwd=clone,
+        )
+        files = await mgr.aget_changed_files(clone, "HEAD~1")
+        assert "rev2.txt" in files
+
+    @pytest.mark.asyncio
+    async def test_diff_still_refuses_an_option_shaped_value(self, clone, mgr):
+        with pytest.raises(GitError):
+            await mgr.aget_diff(clone, "--output=/tmp/evil")
+
+
 class TestBranchApisValidateBeforeSpawningGit:
     """Every ref-accepting API must raise before a subprocess is created.
 

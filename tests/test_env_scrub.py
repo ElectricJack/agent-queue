@@ -12,6 +12,7 @@ import pytest
 
 from src.env_scrub import (
     BUILTIN_EXEMPT,
+    HARNESS_CREDENTIAL_ALLOWLIST,
     SENSITIVE_ENV_PATTERNS,
     STRIP_ALWAYS,
     ScrubResult,
@@ -34,13 +35,68 @@ class TestPatterns:
             "AWS_CREDENTIALS",
             "SSH_PRIVATE_KEY",
             "GithubAuth",
+            # B2: named in design §3 / the module docstring but previously kept.
+            "PG_DSN",
+            "SENTRY_DSN",
+            "SLACK_WEBHOOK_URL",
+            "APIKEY",
+            "API-KEY",
+            "GH_PAT",
+            "GITHUB_PAT",
+            "SSH_KEY",
+            "ID_RSA",
+            "SIGNING_KEY",
+            "ENCRYPTION_KEY",
+            "SESSION_KEY",
+            "PASSPHRASE",
+            "NETRC",
+            "KUBECONFIG",
         ],
     )
     def test_sensitive_keys_dropped_case_insensitively(self, key):
-        result = scrub_env({key: "s3cret", "PATH": "/usr/bin"})
+        # harness_credentials=False so the shipped provider allowlist doesn't
+        # rescue vendor-shaped names; that layer is tested separately.
+        result = scrub_env({key: "s3cret", "PATH": "/usr/bin"}, harness_credentials=False)
         assert key not in result.env
         assert key in result.dropped
         assert result.env["PATH"] == "/usr/bin"
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            # Substring lists over-match easily; these must survive.
+            "PATH",
+            "LD_LIBRARY_PATH",
+            "PYTHONPATH",
+            "KEYBOARD_LAYOUT",
+            "MONKEY_PATCH",
+            "GIT_AUTHOR_NAME",
+        ],
+    )
+    def test_near_miss_keys_are_not_dropped(self, key):
+        result = scrub_env({key: "v"}, harness_credentials=False)
+        assert result.env[key] == "v", f"{key} was dropped as a false positive"
+
+    def test_credentialed_dsn_value_is_dropped_even_with_an_innocent_name(self):
+        """Design §3 names database DSNs explicitly; the name alone misses them."""
+        result = scrub_env(
+            {
+                "DATABASE_URL": "postgres://user:password@host/db",
+                "REDIS_URL": "redis://localhost:6379/0",
+            },
+            harness_credentials=False,
+        )
+        assert "DATABASE_URL" not in result.env
+        assert result.dropped == ["DATABASE_URL"]
+        # No credentials in the URL, nothing to withhold.
+        assert result.env["REDIS_URL"] == "redis://localhost:6379/0"
+
+    def test_dsn_detection_never_leaks_the_value(self):
+        result = scrub_env(
+            {"SOME_URL": "amqp://admin:hunter2@rabbit/vhost"}, harness_credentials=False
+        )
+        assert "SOME_URL" in result.dropped
+        assert "hunter2" not in " ".join(result.dropped)
 
     @pytest.mark.parametrize(
         "key",
@@ -71,21 +127,23 @@ class TestPatterns:
 
 
 class TestAllowlist:
+    # Names deliberately outside HARNESS_CREDENTIAL_ALLOWLIST so these tests
+    # exercise the operator allowlist rather than the shipped defaults.
     def test_exact_name(self):
-        result = scrub_env({"OPENAI_API_KEY": "sk-1"}, allowlist=["OPENAI_API_KEY"])
-        assert result.env["OPENAI_API_KEY"] == "sk-1"
+        result = scrub_env({"VOYAGE_API_KEY": "sk-1"}, allowlist=["VOYAGE_API_KEY"])
+        assert result.env["VOYAGE_API_KEY"] == "sk-1"
         assert result.dropped == []
 
     def test_case_insensitive_exact_name(self):
-        result = scrub_env({"OPENAI_API_KEY": "sk-1"}, allowlist=["openai_api_key"])
-        assert result.env["OPENAI_API_KEY"] == "sk-1"
+        result = scrub_env({"VOYAGE_API_KEY": "sk-1"}, allowlist=["voyage_api_key"])
+        assert result.env["VOYAGE_API_KEY"] == "sk-1"
 
     def test_glob(self):
         result = scrub_env(
-            {"OPENAI_API_KEY": "a", "VOYAGE_API_KEY": "b", "DISCORD_TOKEN": "c"},
+            {"COHERE_API_KEY": "a", "VOYAGE_API_KEY": "b", "DISCORD_TOKEN": "c"},
             allowlist=["*_API_KEY"],
         )
-        assert result.env["OPENAI_API_KEY"] == "a"
+        assert result.env["COHERE_API_KEY"] == "a"
         assert result.env["VOYAGE_API_KEY"] == "b"
         assert "DISCORD_TOKEN" not in result.env
         assert result.dropped == ["DISCORD_TOKEN"]
@@ -113,11 +171,76 @@ class TestExplicit:
         assert result.env["CLAUDECODE"] == "0"
         assert result.dropped == []
 
+    def test_explicit_reinstates_a_strip_always_key_with_the_same_value(self):
+        """Documented, deliberate: STRIP_ALWAYS beats *inheritance*, not intent.
+
+        ``STRIP_ALWAYS`` exists so an inherited ``CLAUDECODE`` doesn't make a
+        nested CLI think it is already in a session.  A harness/profile ``env``
+        map that names the key is an operator saying otherwise, and explicit
+        intent outranks a value we only inherited.  The module docstring says
+        so; this pins the behaviour against a "removed regardless" reading.
+        """
+        result = scrub_env({"CLAUDECODE": "1"}, explicit={"CLAUDECODE": "1"})
+        assert result.env["CLAUDECODE"] == "1"
+        assert result.dropped == []
+
     def test_explicit_adds_new_keys(self):
         result = scrub_env({}, explicit={"AQ_SESSION_ID": "s-1", "AQ_API_TOKEN": "t-1"})
         assert result.env["AQ_SESSION_ID"] == "s-1"
         # An explicitly injected token survives even though it matches TOKEN.
         assert result.env["AQ_API_TOKEN"] == "t-1"
+
+
+class TestHarnessCredentialAllowlist:
+    """The scrub ships default-on; an agent CLI must still be able to log in.
+
+    Design decision recorded in ``docs/specs/design/trust-and-ops.md`` §3: a
+    fresh install authenticating by API key rather than ``claude login`` must
+    keep working after this lane merges.
+    """
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "OPENROUTER_API_KEY",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+        ],
+    )
+    def test_harness_credentials_survive_by_default(self, key):
+        result = scrub_env({key: "cred"})
+        assert result.env[key] == "cred", (
+            f"{key} was withheld — an agent harness authenticating with it "
+            "cannot start, which breaks a default install"
+        )
+        assert key not in result.dropped
+
+    @pytest.mark.parametrize(
+        "key", ["DISCORD_TOKEN", "DISCORD_BOT_TOKEN", "PG_DSN", "VOYAGE_API_KEY"]
+    )
+    def test_daemon_secrets_are_still_withheld(self, key):
+        """The allowlist is vendor-scoped, not a blanket amnesty."""
+        result = scrub_env({key: "x"})
+        assert key not in result.env
+        assert key in result.dropped
+
+    def test_defaults_can_be_turned_off(self):
+        result = scrub_env({"ANTHROPIC_API_KEY": "k"}, harness_credentials=False)
+        assert "ANTHROPIC_API_KEY" not in result.env
+
+    def test_every_default_entry_is_actually_a_sensitive_name(self):
+        """A default-allowlist entry that nothing would drop is dead weight."""
+        for pattern in HARNESS_CREDENTIAL_ALLOWLIST:
+            sample = pattern.replace("*", "API_KEY")
+            assert is_sensitive(sample), (
+                f"{pattern!r} allows {sample!r}, which the scrub would keep anyway"
+            )
 
 
 class TestStripAlways:
@@ -243,6 +366,115 @@ class TestIsolatedEnvDelegates:
         assert env["DISCORD_TOKEN"] == "t"
 
 
+class TestAcpxRuntimeHonoursTheConfig:
+    """The **real** call site: ``ACPXRuntime.wait`` → ``isolated_env``.
+
+    Regression pin for the defect this replaces: ``isolated_env(config=...)``
+    was only ever reached from a test.  Production called ``isolated_env()``
+    with no config, so ``security.env_scrub_enabled`` and
+    ``security.env_allowlist`` were unreachable — a green test over a
+    non-functional feature.  Every assertion here goes through
+    ``RuntimeRegistry.create``, the way ``src/main.py`` builds the runtime.
+    """
+
+    @staticmethod
+    def _profile():
+        from src.models import AgentProfile
+
+        return AgentProfile(
+            id="acpx-claude", name="ACPX Claude", runtime="acpx", agent_name="claude"
+        )
+
+    @staticmethod
+    def _registry(config):
+        from src.runtimes import default_registry
+
+        return default_registry(config=config)
+
+    async def _capture_env(self, config) -> dict[str, str]:
+        """Run ``wait()`` against a stubbed subprocess and return its env."""
+        from src.models import TaskContext
+
+        captured: dict = {}
+
+        async def fake_run(cmd, env, cwd, on_line, cancel_event, **kw):  # noqa: ARG001
+            captured["env"] = env
+            on_line(b'{"stopReason": "completed", "result": "done"}\n')
+            return 0
+
+        runtime = self._registry(config).create("acpx", profile=self._profile())
+        await runtime.start(
+            TaskContext(description="d", task_id="t-1", checkout_path="/tmp/ws")
+        )
+        with patch("src.runtimes.acpx.shutil.which", return_value="/usr/bin/acpx"), patch(
+            "src.runtimes.acpx.run_streaming_subprocess", side_effect=fake_run
+        ):
+            await runtime.wait()
+        return captured["env"]
+
+    async def test_daemon_secrets_are_withheld_from_the_agent(self):
+        from src.config import AppConfig
+
+        with patch.dict(
+            os.environ,
+            {"DISCORD_TOKEN": "leak-me", "PATH": "/usr/bin", "CLAUDECODE": "1"},
+            clear=True,
+        ):
+            env = await self._capture_env(AppConfig())
+
+        assert "DISCORD_TOKEN" not in env
+        assert "CLAUDECODE" not in env
+        assert env["PATH"] == "/usr/bin"
+
+    async def test_kill_switch_reaches_the_real_call_site(self):
+        from src.config import AppConfig
+
+        config = AppConfig()
+        config.security.env_scrub_enabled = False
+        with patch.dict(os.environ, {"DISCORD_TOKEN": "t"}, clear=True):
+            env = await self._capture_env(config)
+
+        assert env["DISCORD_TOKEN"] == "t", (
+            "security.env_scrub_enabled=False did not reach ACPXRuntime — the "
+            "kill switch is inert again"
+        )
+
+    async def test_operator_allowlist_reaches_the_real_call_site(self):
+        from src.config import AppConfig
+
+        config = AppConfig()
+        config.security.env_allowlist = ["VOYAGE_*"]
+        with patch.dict(
+            os.environ, {"VOYAGE_API_KEY": "v", "DISCORD_TOKEN": "d"}, clear=True
+        ):
+            env = await self._capture_env(config)
+
+        assert env["VOYAGE_API_KEY"] == "v"
+        assert "DISCORD_TOKEN" not in env
+
+    async def test_agent_keeps_its_provider_credentials(self):
+        """A fresh install authenticating by API key must still work."""
+        from src.config import AppConfig
+
+        with patch.dict(
+            os.environ,
+            {"ANTHROPIC_API_KEY": "sk-ant", "GH_TOKEN": "ghp", "DISCORD_TOKEN": "d"},
+            clear=True,
+        ):
+            env = await self._capture_env(AppConfig())
+
+        assert env["ANTHROPIC_API_KEY"] == "sk-ant"
+        assert env["GH_TOKEN"] == "ghp"
+        assert "DISCORD_TOKEN" not in env
+
+    def test_registry_passes_config_to_constructed_runtimes(self):
+        from src.config import AppConfig
+
+        config = AppConfig()
+        runtime = self._registry(config).create("acpx", profile=self._profile())
+        assert runtime._config is config
+
+
 class TestRunCommandGetsScrubbedEnv:
     """``_cmd_run_command`` must never hand the daemon env to a shell (R6).
 
@@ -324,3 +556,45 @@ class TestRunCommandGetsScrubbedEnv:
             )
 
         assert captured["env"]["DISCORD_TOKEN"] == "leak-me"
+
+    async def test_provider_credentials_are_withheld_from_the_daemon_shell(
+        self, tmp_path, monkeypatch
+    ):
+        """A diagnostic shell is not an agent harness — no vendor keys.
+
+        The harness allowlist exists so an agent CLI can authenticate.  The
+        LLM-authored shell in ``run_command`` has no such need, so it opts out
+        (``harness_credentials=False``).
+        """
+        from src.commands.system_commands import SystemCommandsMixin
+        from src.config import AppConfig
+
+        captured = {}
+
+        async def fake_shell(command, *, cwd=None, timeout=30, env=None):
+            captured["env"] = env
+            return (0, "", "")
+
+        monkeypatch.setattr(
+            "src.commands.system_commands._run_subprocess_shell", fake_shell
+        )
+
+        class Handler(SystemCommandsMixin):
+            def __init__(self, config):
+                self.config = config
+
+            async def _validate_path(self, path):
+                return path
+
+        config = AppConfig(data_dir=str(tmp_path), workspace_dir=str(tmp_path))
+        handler = Handler(config)
+
+        with patch.dict(
+            os.environ, {"ANTHROPIC_API_KEY": "sk-ant", "PATH": "/usr/bin"}, clear=True
+        ):
+            await handler._cmd_run_command(
+                {"command": "echo hi", "working_dir": str(tmp_path)}
+            )
+
+        assert "ANTHROPIC_API_KEY" not in captured["env"]
+        assert captured["env"]["PATH"] == "/usr/bin"

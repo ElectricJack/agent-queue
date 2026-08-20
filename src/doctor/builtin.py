@@ -313,11 +313,31 @@ async def _check_vault_parse(ctx: DoctorContext) -> CheckResult:
 # ---------------------------------------------------------------------------
 
 
+#: Seconds a single ``<binary> --version`` probe may take.  Module-level so
+#: tests can shorten it instead of sleeping through the real value.
+_PROBE_TIMEOUT_S = 5.0
+
+
+async def _terminate(proc) -> None:
+    """Kill and reap *proc*, never raising.  No-op when it already exited."""
+    if proc is None or proc.returncode is not None:
+        return
+    try:
+        proc.kill()
+    except (ProcessLookupError, OSError):  # pragma: no cover - race
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=2)
+    except Exception:  # pragma: no cover - best effort; CancelledError propagates
+        pass
+
+
 async def _probe_binary(name: str) -> tuple[str, bool, str]:
     """Return ``(name, ok, detail)`` for one binary, never raising."""
     path = shutil.which(name)
     if not path:
         return name, False, "not on PATH"
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             path,
@@ -325,10 +345,14 @@ async def _probe_binary(name: str) -> tuple[str, bool, str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_PROBE_TIMEOUT_S)
     except asyncio.TimeoutError:
+        # Cancelling communicate() abandons the child; kill it and reap so a
+        # doctor run never leaves a stuck `--version` process behind.
+        await _terminate(proc)
         return name, False, "--version timed out"
     except Exception as exc:
+        await _terminate(proc)
         return name, False, f"{type(exc).__name__}: {exc}"
     if proc.returncode != 0:
         return name, False, f"--version exited {proc.returncode}"
@@ -337,9 +361,22 @@ async def _probe_binary(name: str) -> tuple[str, bool, str]:
 
 
 async def _check_harness_binaries(ctx: DoctorContext) -> CheckResult:
-    """Probe git, gh and each runtime binary referenced by an active profile."""
+    """Probe the binaries the shipped runtimes and git integration need.
+
+    NARROWING (design §5.2 says "per configured harness"): the list is fixed,
+    not derived from the profiles in the vault.  Deriving it means resolving
+    every active profile's ``runtime`` / ``agent_name`` to a binary, and the
+    profile→binary mapping for the 14+ ACP agents lives in ``acpx``, not
+    here.  What is probed instead is the union the daemon can name on its own:
+    ``git`` (required — every workspace operation goes through it) plus the
+    two runtime front-ends and the forge CLI, each optional because an
+    install that uses one does not need the others.  Recorded in
+    ``docs/gates/wave1-1c-trust-ops.md`` rather than silently narrowed.
+    """
     required = ["git"]
-    optional = ["gh"]
+    # ``claude`` backs the default claude_sdk runtime; ``acpx`` backs the
+    # fan-out runtime; ``gh`` is used for PR creation.
+    optional = ["gh", "claude", "acpx"]
     # ``tmux`` is deliberately absent — session-runtime contributes tmux.server.
     results = await asyncio.gather(
         *(_probe_binary(n) for n in required + optional)
@@ -520,7 +557,18 @@ async def _check_pauses_active(ctx: DoctorContext) -> CheckResult:
 
 
 async def _check_events_registry(ctx: DoctorContext) -> CheckResult:
-    """Flag emitted event types with no registered payload schema."""
+    """Flag *observed* event types with no registered payload schema.
+
+    Reads :attr:`src.event_bus.EventBus.seen_event_types` — the set of types
+    the live bus has actually dispatched — so the result reflects this
+    daemon's real traffic.  A freshly started daemon has emitted nothing yet;
+    that reports INFO ("nothing observed"), never OK: "no problems found" and
+    "nothing was looked at" are different answers and must not read alike.
+
+    The complementary *static* half — every literal ``.emit("…")`` in ``src/``
+    has a registered schema — is enforced at test time by
+    ``tests/test_event_schema_registry_validation.py``.
+    """
     from src.event_schemas import registered_event_types
 
     registered = set(registered_event_types())
@@ -528,10 +576,9 @@ async def _check_events_registry(ctx: DoctorContext) -> CheckResult:
     emitted: set[str] = set()
     orchestrator = getattr(ctx.handler, "orchestrator", None)
     bus = getattr(orchestrator, "bus", None)
-    for attr in ("seen_event_types", "_seen_event_types"):
-        seen = getattr(bus, attr, None)
-        if seen:
-            emitted |= set(seen)
+    seen = getattr(bus, "seen_event_types", None)
+    if seen:
+        emitted |= set(seen)
     plugin_registry = getattr(orchestrator, "plugin_registry", None)
     plugin_types = getattr(plugin_registry, "_event_types", None)
     if plugin_types:
@@ -544,13 +591,31 @@ async def _check_events_registry(ctx: DoctorContext) -> CheckResult:
             severity=Severity.WARN,
             detail=f"{len(unregistered)} emitted event type(s) have no schema: "
             + ", ".join(unregistered[:5]),
-            data={"unregistered": unregistered, "registered_count": len(registered)},
+            data={
+                "unregistered": unregistered,
+                "registered_count": len(registered),
+                "observed_count": len(emitted),
+            },
+        )
+    if not emitted:
+        return CheckResult(
+            id="events.registry",
+            severity=Severity.INFO,
+            detail=(
+                f"{len(registered)} event types registered; nothing emitted yet "
+                "on this daemon, so nothing was compared (static coverage is "
+                "enforced by tests/test_event_schema_registry_validation.py)"
+            ),
+            data={"registered_count": len(registered), "observed_count": 0},
         )
     return CheckResult(
         id="events.registry",
         severity=Severity.OK,
-        detail=f"{len(registered)} event types registered; no unregistered emits observed",
-        data={"registered_count": len(registered)},
+        detail=(
+            f"{len(emitted)} observed event type(s), all registered "
+            f"({len(registered)} schemas)"
+        ),
+        data={"registered_count": len(registered), "observed_count": len(emitted)},
     )
 
 

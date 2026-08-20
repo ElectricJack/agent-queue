@@ -34,11 +34,19 @@ from src.tools import (
 
 logger = logging.getLogger(__name__)
 
-# Commands to exclude from the API entirely (internal/MCP-only).
+# Commands to exclude from the API entirely (internal/MCP-only, or too
+# dangerous to expose over HTTP).  Enforced in two places: here, so no typed
+# route is generated, and in ``/api/execute`` (``src/api/execute.py``), which
+# would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
     "load_tools",
     "send_message",
     "reply_to_user",
+    # Runs an LLM-authored string through /bin/sh on the daemon host
+    # (trust-and-ops §2.5).  Already out of MCP and the CLI; the API is the
+    # third surface, and it becomes reachable with an agent-held credential
+    # once task-scoped session tokens land.
+    "run_command",
 }
 
 

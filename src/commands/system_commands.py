@@ -676,14 +676,23 @@ class SystemCommandsMixin:
            verbatim, which rule R1 otherwise forbids.  It is *contained*
            rather than fixed:
 
-           * the command stays out of MCP (``run_command`` ∈
-             ``DEFAULT_EXCLUDED_COMMANDS``) — do not remove it from that set;
+           * every *remote* surface excludes it — MCP
+             (``DEFAULT_EXCLUDED_COMMANDS``), the CLI
+             (``src/cli/auto_commands.py`` ``EXCLUDED``) and the HTTP API
+             (``src/api/codegen.py`` ``API_EXCLUDED``, enforced both by the
+             generated routes and by ``/api/execute``).  Do not remove it from
+             any of the three.  In-process callers that hold a
+             ``CommandHandler`` directly — the supervisor's tool loop,
+             playbooks — are deliberately *not* gated: they are the callers
+             the command exists for;
            * ``working_dir`` is resolved and sandboxed through
              ``_validate_path``, so the shell cannot start outside an allowed
              directory;
            * the child gets a **scrubbed** environment (rule R6) instead of the
              daemon's, so the daemon's bot token, database DSN and API keys are
-             not reachable from the command;
+             not reachable from the command.  Provider credentials are withheld
+             too (``harness_credentials=False``): unlike an agent harness, a
+             diagnostic shell has no need to authenticate to a model vendor;
            * every invocation is logged at WARNING with the resolved directory,
              so an audit trail exists even when the result is discarded.
 
@@ -722,7 +731,7 @@ class SystemCommandsMixin:
 
         # Rule R6: never hand the daemon's own environment to an LLM-authored
         # command.  Names of withheld variables are logged; values never are.
-        scrubbed = scrub_env_from_config(self.config)
+        scrubbed = scrub_env_from_config(self.config, harness_credentials=False)
         logger.warning(
             "run_command executing LLM-authored shell string in %s "
             "(scrubbed %d env var(s)) — trust-and-ops §2.5",

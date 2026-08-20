@@ -91,7 +91,21 @@ class OpsCommandsMixin:
             only = [c.strip() for c in only.split(",") if c.strip()]
 
         ctx = DoctorContext(config=self.config, db=self.db, handler=self)
-        result = await run_doctor(registry, ctx, fix=bool(args.get("fix")), only=only)
+        try:
+            result = await run_doctor(registry, ctx, fix=bool(args.get("fix")), only=only)
+        except Exception as exc:
+            # The runner isolates individual checks, but a bug in the runner
+            # itself (or a check that returns a CheckResult with an unexpected
+            # id) must not take the command down: doctor is what an operator
+            # reaches for when things are already broken.
+            logger.exception("doctor runner crashed")
+            return {
+                "success": False,
+                "error": f"doctor runner failed: {type(exc).__name__}: {exc}",
+                "checks": [],
+                "summary": {"ok": 0, "info": 0, "warn": 0, "error": 0, "fixes_applied": 0},
+                "exit_code": 3,
+            }
         result["success"] = True
         return result
 
@@ -115,6 +129,14 @@ class OpsCommandsMixin:
         ``model`` that matches a pricing entry **and** an input/output split.
         Everything else counts toward ``unpriced_tokens`` with ``cost_usd``
         left null — the ledger is never priced at a guessed rate.
+
+        The rule applies *within* a row too.  ``get_cost_rollup`` buckets by
+        ``(group, model)``, so one bucket can hold both split and unsplit
+        ledger entries; pricing the bucket off its split sum would leave the
+        unsplit tokens counted in neither ``cost_usd`` nor
+        ``unpriced_tokens``.  Each row therefore reports its own
+        ``unpriced_tokens`` — ``tokens_used`` minus the split that was
+        actually priced — and those roll into the total.
         """
         group_by = args.get("group_by") or "project"
         if group_by not in ("project", "profile", "day"):
@@ -145,20 +167,26 @@ class OpsCommandsMixin:
         for row in rollup:
             model = row.get("model")
             entry = pricing.match(model) if model else None
-            has_split = bool(row.get("input_tokens") or row.get("output_tokens"))
+            split_tokens = (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0)
+            total_tokens = row.get("tokens_used", 0) or 0
             cost: float | None = None
-            if entry is not None and has_split:
+            if entry is not None and split_tokens:
                 cost = (
-                    row["input_tokens"] * entry.input_per_mtok / 1_000_000
-                    + row["output_tokens"] * entry.output_per_mtok / 1_000_000
+                    (row.get("input_tokens") or 0) * entry.input_per_mtok / 1_000_000
+                    + (row.get("output_tokens") or 0) * entry.output_per_mtok / 1_000_000
                 )
                 total_cost += cost
+                # Tokens in this bucket that carried no split are not covered
+                # by `cost` — count them as unpriced rather than losing them.
+                row_unpriced = max(0, total_tokens - split_tokens)
             else:
-                unpriced += row.get("tokens_used", 0)
+                row_unpriced = total_tokens
+            unpriced += row_unpriced
             rows.append(
                 {
                     **row,
                     "cost_usd": cost,
+                    "unpriced_tokens": row_unpriced,
                     "pricing_model": entry.model if entry else None,
                 }
             )

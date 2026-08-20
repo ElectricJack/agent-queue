@@ -140,11 +140,22 @@ async def _run_subprocess_shell(
        ``docs/specs/design/trust-and-ops.md`` forbids interpolating untrusted
        text into a shell string).  Its sole caller, ``_cmd_run_command``,
        receives a command authored by the chat/supervisor LLM — untrusted by
-       §2.2.  The violation is knowingly *contained*, not fixed: the command
-       stays out of MCP (``run_command`` is in ``DEFAULT_EXCLUDED_COMMANDS``),
-       the working directory is sandboxed by ``_validate_path``, and the
-       environment is scrubbed by the caller.  It disappears with the
-       in-process supervisor chat loop; do not grow new callers.
+       §2.2.  The violation is knowingly *contained*, not fixed.  Containment
+       is per-surface, and each gate lives in a different module:
+
+       * MCP — ``run_command`` ∈ ``DEFAULT_EXCLUDED_COMMANDS``
+         (``src/mcp_registration.py``);
+       * CLI — ``run_command`` ∈ ``EXCLUDED`` (``src/cli/auto_commands.py``);
+       * HTTP API — ``run_command`` ∈ ``API_EXCLUDED`` (``src/api/codegen.py``),
+         honoured by the generated routes *and* by ``/api/execute``.
+
+       In-process callers — the supervisor's own tool loop, playbooks — are
+       deliberately *not* gated: they hold a ``CommandHandler`` directly, and
+       they are the callers the command exists for.  Beyond the surface
+       gates the working directory is sandboxed by ``_validate_path``, the
+       environment is scrubbed by the caller, and every invocation is logged.
+       It disappears with the in-process supervisor chat loop; do not grow
+       new callers.
 
     Args:
         command: Shell command string.  Must come from a caller that has

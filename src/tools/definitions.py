@@ -143,6 +143,13 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_stuck_tasks": "system",
     "doctor": "system",
     "get_costs": "system",
+    "get_schema": "system",
+    # task — the agent-facing work-state surface (aq-surface §3).  task_show /
+    # task_set are categorized (not core) so they load on demand; the CLI
+    # hand-crafts ``aq task show`` / ``aq task set``, and those win over the
+    # auto-generated variants by name collision.
+    "task_show": "task",
+    "task_set": "task",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
     # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
@@ -2998,6 +3005,72 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Grouping key (default: project).",
                 },
             },
+        },
+    },
+    # -- Agent surface: schema + task work-state (aq-surface §3, §4.3) ------
+    {
+        "name": "get_schema",
+        "description": (
+            "Return the system's enum catalog — task statuses, task types, "
+            "dependency types, gate types and gate statuses — so callers never "
+            "guess magic strings.  Enums owned by subsystems that have not "
+            "landed yet are omitted rather than invented."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "task_show",
+        "description": (
+            "Full detail for one task in a single round trip: the task's "
+            "fields, its dependency view and subtasks, its attached context "
+            "rows, and its labels."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task id to show."},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "task_set",
+        "description": (
+            "Write work-state fields on a task and return the updated task. "
+            "Never performs a status transition — use the lifecycle commands "
+            "for that.  Returns 'fields_changed' listing what was written; a "
+            "call with no recognised field is an error rather than a no-op."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task id to update."},
+                "branch": {"type": "string", "description": "Branch name for this task's work."},
+                "pr_url": {"type": "string", "description": "Pull-request URL."},
+                "work_dir": {
+                    "type": "string",
+                    "description": "Directory the work happens in (recorded as task metadata).",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Free-text note appended to the task's context.",
+                },
+                "labels_add": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Labels to add.",
+                },
+                "labels_remove": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Labels to remove.",
+                },
+                "meta": {
+                    "type": "object",
+                    "description": "Arbitrary key/value task metadata to set.",
+                },
+            },
+            "required": ["task_id"],
         },
     },
 ]

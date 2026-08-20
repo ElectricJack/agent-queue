@@ -248,6 +248,52 @@ class TestFix:
         result = await run_doctor(reg, ctx)
         assert result["checks"][0]["fixable"] is False
 
+    async def test_result_id_mismatch_does_not_crash_fix(self, ctx):
+        """A check may return a CheckResult whose id isn't its own.
+
+        Plugin checks especially.  ``--fix`` used to index ``by_id[r.id]``
+        directly and raised KeyError, taking the whole command down.
+        """
+
+        async def run(_ctx):
+            return CheckResult(id="other.id", severity=Severity.WARN, detail="x")
+
+        reg = DoctorRegistry()
+        reg.register(DoctorCheck(id="mismatch.check", run=run))
+        result = await run_doctor(reg, ctx, fix=True)
+        assert {c["id"] for c in result["checks"]} >= {"other.id"}
+
+
+class TestUnknownCheckFilter:
+    """``--check typo.id`` must fail, not silently pass on an empty table."""
+
+    async def test_unknown_id_is_an_error(self, ctx):
+        reg = default_registry()
+        result = await run_doctor(reg, ctx, only=["definitely.not.a.check"])
+        row = next(c for c in result["checks"] if c["id"] == "definitely.not.a.check")
+        assert row["severity"] == "error"
+        assert "unknown check id" in row["detail"]
+        assert result["exit_code"] == 2
+
+    async def test_known_id_still_runs_alone(self, ctx):
+        reg = default_registry()
+        result = await run_doctor(reg, ctx, only=["pauses.active"])
+        assert [c["id"] for c in result["checks"]] == ["pauses.active"]
+        assert result["exit_code"] == 0
+
+    async def test_reserved_id_is_not_unknown(self, ctx):
+        reserved = sorted(RESERVED_CHECK_IDS)[0]
+        result = await run_doctor(default_registry(), ctx, only=[reserved])
+        assert [c["id"] for c in result["checks"]] == [reserved]
+        assert result["exit_code"] == 0
+
+    async def test_one_bad_id_among_good_ones_still_errors(self, ctx):
+        result = await run_doctor(
+            default_registry(), ctx, only=["pauses.active", "nope.nope"]
+        )
+        assert result["exit_code"] == 2
+        assert {c["id"] for c in result["checks"]} == {"pauses.active", "nope.nope"}
+
 
 class TestReservedChecks:
     async def test_unregistered_reserved_ids_report_info(self, ctx):
@@ -486,9 +532,45 @@ class TestVaultParseCheck:
 class TestHarnessBinariesCheck:
     async def test_git_is_present(self, ctx):
         result = await _run_single("harness.binaries", ctx)
-        # git must exist in any dev/CI environment; gh is optional.
+        # git must exist in any dev/CI environment; the rest are optional.
         assert result.severity in (Severity.OK, Severity.WARN)
         assert result.data["binaries"]["git"]["ok"] is True
+
+    async def test_probes_the_runtime_front_ends_too(self, ctx):
+        """Narrowed from "per configured harness", but not down to git+gh."""
+        result = await _run_single("harness.binaries", ctx)
+        assert {"git", "gh", "claude", "acpx"} <= set(result.data["binaries"])
+
+    async def test_timed_out_probe_kills_the_child(self, monkeypatch):
+        """A cancelled ``communicate()`` abandons the process; it must be reaped."""
+        import src.doctor.builtin as builtin
+
+        killed = {"n": 0}
+
+        class HangingProc:
+            returncode = None
+
+            async def communicate(self):
+                await asyncio.sleep(3600)
+
+            def kill(self):
+                killed["n"] += 1
+                self.returncode = -9
+
+            async def wait(self):
+                return self.returncode
+
+        async def fake_exec(*args, **kwargs):
+            return HangingProc()
+
+        monkeypatch.setattr(builtin.shutil, "which", lambda n: "/usr/bin/" + n)
+        monkeypatch.setattr(builtin.asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(builtin, "_PROBE_TIMEOUT_S", 0.01)
+
+        name, ok, detail = await builtin._probe_binary("git")
+        assert ok is False
+        assert "timed out" in detail
+        assert killed["n"] == 1, "the timed-out child was never killed"
 
 
 class TestLogsLlmSizeCheck:
@@ -537,27 +619,65 @@ class TestPausesActiveCheck:
 
 
 class TestEventsRegistryCheck:
-    async def test_ok_with_no_observed_emits(self, ctx):
-        result = await _run_single("events.registry", ctx)
-        assert result.severity is Severity.OK
-        assert result.data["registered_count"] > 0
+    """Every case here drives a **real** :class:`~src.event_bus.EventBus`.
 
-    async def test_flags_a_synthetic_unregistered_type(self, tmp_path):
-        class FakeBus:
-            seen_event_types = {"totally.made.up.event"}
+    The earlier version of this test invented ``seen_event_types`` on a fake
+    bus.  No such attribute existed anywhere in ``src/``, so on a real install
+    the check observed nothing and unconditionally reported OK.  Driving the
+    real class is what makes the check falsifiable.
+    """
 
+    @staticmethod
+    def _ctx_with_bus(tmp_path, bus):
         class FakeOrch:
-            bus = FakeBus()
             plugin_registry = None
 
         class FakeHandler:
             orchestrator = FakeOrch()
 
-        config = AppConfig(data_dir=str(tmp_path))
-        result = await _run_single(
-            "events.registry",
-            DoctorContext(config=config, db=None, handler=FakeHandler()),
+        FakeOrch.bus = bus
+        return DoctorContext(
+            config=AppConfig(data_dir=str(tmp_path)), db=None, handler=FakeHandler()
         )
+
+    async def test_nothing_observed_is_info_not_ok(self, ctx):
+        """'Nothing was looked at' must not read as 'nothing is wrong'."""
+        result = await _run_single("events.registry", ctx)
+        assert result.severity is Severity.INFO
+        assert result.data["observed_count"] == 0
+        assert result.data["registered_count"] > 0
+
+    async def test_bus_exposes_what_it_dispatched(self):
+        """The attribute the check reads must exist on the real EventBus."""
+        from src.event_bus import EventBus
+
+        bus = EventBus(validate_events=False)
+        assert bus.seen_event_types == set()
+        await bus.emit("task_completed", {"task_id": "t-1"})
+        assert "task_completed" in bus.seen_event_types
+        # A copy, not the live set — a caller cannot corrupt the bus.
+        bus.seen_event_types.add("not.real")
+        assert "not.real" not in bus.seen_event_types
+
+    async def test_registered_emits_are_ok(self, tmp_path):
+        from src.event_bus import EventBus
+        from src.event_schemas import registered_event_types
+
+        known = sorted(registered_event_types())[0]
+        bus = EventBus(validate_events=False)
+        await bus.emit(known, {})
+
+        result = await _run_single("events.registry", self._ctx_with_bus(tmp_path, bus))
+        assert result.severity is Severity.OK
+        assert result.data["observed_count"] == 1
+
+    async def test_flags_an_unregistered_type_the_bus_actually_emitted(self, tmp_path):
+        from src.event_bus import EventBus
+
+        bus = EventBus(validate_events=False)
+        await bus.emit("totally.made.up.event", {})
+
+        result = await _run_single("events.registry", self._ctx_with_bus(tmp_path, bus))
         assert result.severity is Severity.WARN
         assert "totally.made.up.event" in result.data["unregistered"]
 

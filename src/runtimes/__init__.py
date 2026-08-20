@@ -24,6 +24,19 @@ if TYPE_CHECKING:
 __all__ = ["Capability", "MessageCallback", "Runtime", "RuntimeRegistry", "default_registry"]
 
 
+def _accepts_config(cls: type) -> bool:
+    """True when *cls*'s constructor takes a ``config`` keyword."""
+    import inspect
+
+    try:
+        params = inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):  # pragma: no cover - exotic callables
+        return False
+    if "config" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 class RuntimeRegistry:
     """Looks up :class:`Runtime` classes by name.
 
@@ -38,15 +51,25 @@ class RuntimeRegistry:
     constructing fresh.  The singleton's ``start(task)`` / ``wait()`` /
     ``stop()`` lifecycle methods rely on ContextVars to keep per-task
     state isolated across concurrent dispatches.
+
+    ``config`` is the daemon's :class:`~src.config.AppConfig`.  It is handed
+    to every runtime the registry constructs so runtime-side policy that lives
+    in config — notably the ``security.env_scrub_enabled`` kill switch and
+    ``security.env_allowlist`` read by :func:`src.env_scrub.scrub_env` — is
+    actually reachable from the subprocess launch path (trust-and-ops R6).
+    ``None`` (tests, ad-hoc construction) means runtimes fall back to the
+    shipped defaults.
     """
 
     def __init__(
         self,
         runtimes: dict[str, type[Runtime]],
         singletons: "dict[str, Runtime] | None" = None,
+        config=None,
     ):
         self._runtimes = dict(runtimes)
         self._singletons: dict[str, Runtime] = dict(singletons or {})
+        self._config = config
 
     def get(self, name: str) -> type[Runtime] | None:
         return self._runtimes.get(name)
@@ -72,11 +95,20 @@ class RuntimeRegistry:
             raise ValueError(
                 f"Unknown runtime: {name!r}. Available: {sorted(self.names())}"
             )
+        # ``config`` is passed by keyword to every runtime that declares it.
+        # Runtimes predating the kwarg (e.g. a plugin-registered one) keep
+        # working — they fall back to the shipped env-scrub defaults.  The
+        # signature is inspected rather than the call being wrapped in
+        # ``except TypeError``, which would swallow a genuine TypeError from
+        # inside the constructor.
+        if _accepts_config(cls):
+            return cls(profile=profile, llm_logger=llm_logger, config=self._config)
         return cls(profile=profile, llm_logger=llm_logger)
 
 
 def default_registry(
     supervisor: "Runtime | None" = None,
+    config=None,
 ) -> RuntimeRegistry:
     """Return a :class:`RuntimeRegistry` populated with all in-tree runtimes.
 
@@ -87,6 +119,10 @@ def default_registry(
     provided it's registered as a singleton (one shared brain across all
     supervisor-runtime tasks).  When *None*, supervisor-runtime tasks
     fail with a clear "unknown runtime" error instead of misbehaving.
+
+    ``config`` is the daemon ``AppConfig``; it reaches every constructed
+    runtime so the env-scrub policy (``security.*``) is honoured at the real
+    subprocess launch site rather than only in tests.
     """
     from src.runtimes.acpx import ACPXRuntime
     from src.runtimes.claude_sdk import ClaudeSDKRuntime
@@ -100,5 +136,6 @@ def default_registry(
             ACPXRuntime.name: ACPXRuntime,
             ClaudeSDKRuntime.name: ClaudeSDKRuntime,
         },
+        config=config,
         singletons=singletons,
     )

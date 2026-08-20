@@ -96,7 +96,7 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     from src.runtimes.supervisor import Supervisor
 
     shared_supervisor = Supervisor(orch, config, llm_logger=orch.llm_logger)
-    registry = default_registry(supervisor=shared_supervisor)
+    registry = default_registry(supervisor=shared_supervisor, config=config)
     orch._runtimes = registry
     await orch.initialize()
     # Initialise the shared Supervisor's chat provider.  Failures here are

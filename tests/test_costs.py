@@ -246,6 +246,66 @@ class TestGetCostsCommand:
         assert result["unpriced_tokens"] == 1000
         assert result["rows"][0]["cost_usd"] is None
 
+    async def test_mixed_bucket_does_not_lose_the_unsplit_tokens(self, db):
+        """A bucket holding split *and* unsplit rows for the same model.
+
+        ``get_cost_rollup`` groups by ``(group, model)``, so both land in one
+        row.  Pricing that row off the split sum alone silently dropped the
+        unsplit tokens from both ``cost_usd`` and ``unpriced_tokens`` —
+        exactly what design §7's honesty rule forbids.
+        """
+        from src.models import Task, TaskStatus
+
+        await db.create_project(Project(id="p-1", name="one"))
+        await db.create_agent(
+            Agent(id="a-1", name="a", profile_id="prof", state=AgentState.IDLE)
+        )
+        await db.create_task(
+            Task(id="t-1", project_id="p-1", title="t", description="d", status=TaskStatus.READY)
+        )
+        # Same model, same project, same day: one entry with a split, one without.
+        await db.record_token_usage(
+            "p-1",
+            "a-1",
+            "t-1",
+            3000,
+            model="claude-sonnet-4-5",
+            input_tokens=2000,
+            output_tokens=1000,
+        )
+        await db.record_token_usage("p-1", "a-1", "t-1", 700, model="claude-sonnet-4-5")
+
+        handler = _Handler(
+            db,
+            _config(
+                [ModelPricing(model="claude-sonnet-4-5*", input_per_mtok=3.0, output_per_mtok=15.0)]
+            ),
+        )
+        result = await handler._cmd_get_costs({})
+
+        assert len(result["rows"]) == 1, "the two entries must share one bucket"
+        row = result["rows"][0]
+        assert row["tokens_used"] == 3700
+        assert row["cost_usd"] == pytest.approx(0.021)
+        assert row["unpriced_tokens"] == 700
+        assert result["unpriced_tokens"] == 700
+        assert result["total_cost_usd"] == pytest.approx(0.021)
+
+    async def test_every_token_is_either_priced_or_reported_unpriced(self, seeded):
+        """The accounting identity: nothing falls between the two buckets."""
+        handler = _Handler(
+            seeded,
+            _config(
+                [ModelPricing(model="claude-sonnet-4-5*", input_per_mtok=3.0, output_per_mtok=15.0)]
+            ),
+        )
+        result = await handler._cmd_get_costs({})
+        for row in result["rows"]:
+            split = (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0)
+            priced_tokens = split if row["cost_usd"] is not None else 0
+            assert priced_tokens + row["unpriced_tokens"] == row["tokens_used"], row
+        assert result["unpriced_tokens"] == sum(r["unpriced_tokens"] for r in result["rows"])
+
     async def test_group_by_validated(self, seeded):
         handler = _Handler(seeded, _config())
         assert "error" in await handler._cmd_get_costs({"group_by": "quarter"})
