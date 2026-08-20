@@ -512,3 +512,66 @@ class TestMcpServerConfigInjection:
         assert cfg.mcp_server.enabled is True
         assert cfg.mcp_server.inject_into_tasks is False
         assert cfg.mcp_server.should_inject_into_tasks is False
+
+
+class TestSessionsProviderIsBuildable:
+    """H4 — a default the registry cannot build fails every launch.
+
+    ``default_session_registry`` registers ``tmux`` only when its module
+    imports, and ``TmuxProvider`` does not exist yet.  With
+    ``provider: "tmux"`` as the default, flipping ``sessions.enabled: true``
+    on a stock install made ``providers.create("tmux")`` raise inside
+    ``_launch_session_for_task`` → ``_fail_session_launch`` → PAUSED with a
+    60 s backoff **and a Discord notification**, per task, every 60 s,
+    forever.
+    """
+
+    def test_the_shipped_default_is_buildable(self):
+        from src.config import SessionsConfig
+        from src.sessions import default_session_registry
+
+        cfg = SessionsConfig()
+        assert cfg.provider == "subprocess"
+        assert default_session_registry().get(cfg.provider) is not None
+
+    def test_enabling_an_unbuildable_provider_is_a_config_error(self, monkeypatch):
+        from src.config import SessionsConfig
+
+        cfg = SessionsConfig(enabled=True, provider="tmux")
+
+        import src.sessions as sessions_pkg
+
+        real = sessions_pkg.default_session_registry
+
+        def _without_tmux(config=None):
+            reg = real(config)
+            reg._providers.pop("tmux", None)
+            return reg
+
+        monkeypatch.setattr(sessions_pkg, "default_session_registry", _without_tmux)
+        errors = cfg.validate()
+        assert any(
+            e.field == "provider" and "not available" in e.message for e in errors
+        ), errors
+
+    def test_a_disabled_daemon_does_not_care(self, monkeypatch):
+        """The check is about launches; a flag that is off launches nothing."""
+        from src.config import SessionsConfig
+
+        import src.sessions as sessions_pkg
+
+        real = sessions_pkg.default_session_registry
+
+        def _without_tmux(config=None):
+            reg = real(config)
+            reg._providers.pop("tmux", None)
+            return reg
+
+        monkeypatch.setattr(sessions_pkg, "default_session_registry", _without_tmux)
+        assert SessionsConfig(enabled=False, provider="tmux").validate() == []
+
+    def test_a_name_outside_the_vocabulary_still_fails(self):
+        from src.config import SessionsConfig
+
+        errors = SessionsConfig(provider="nope").validate()
+        assert any(e.field == "provider" for e in errors)

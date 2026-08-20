@@ -9,9 +9,12 @@ one does not skip the rest:
 1. **Refresh observation** — who is actually alive.
 2. **Drain-ack** — the explicit end of the completion protocol.
 3. **Exit classifier** — dead process, task still open → typed verdict.
-4. **Stall ladder** — alive but silent: nudge → restart → quarantine.
-5. **Named desired-state** — converge persistent sessions (start/sleep).
-6. **Backstop** — ``stuck_timeout_seconds`` as the final net, not the
+4. **Orphans** — the two ways row and task can disagree: a live session
+   whose task is no longer open (kill it), and an open task whose session
+   row is not live (release it).
+5. **Stall ladder** — alive but silent: nudge → restart → quarantine.
+6. **Named desired-state** — converge persistent sessions (start/sleep).
+7. **Backstop** — ``stuck_timeout_seconds`` as the final net, not the
    primary defense.
 
 The single most important rule in this module: **unknown is not dead.**  A
@@ -61,7 +64,11 @@ class AdoptReport:
     adopted: list[str] = field(default_factory=list)
     dead: list[str] = field(default_factory=list)
     deferred: list[str] = field(default_factory=list)
+    #: Provider names running with no row at all.  Killed, not adopted —
+    #: see :meth:`SessionReconciler.adopt_on_start`.
     unknown_live: list[str] = field(default_factory=list)
+    #: The subset of :attr:`unknown_live` the provider actually stopped.
+    unknown_killed: list[str] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -71,11 +78,11 @@ class AdoptReport:
 class SessionReconciler:
     """The cascade step that owns session lifecycle.
 
-    Constructed once in ``src/main.py`` and handed to the orchestrator.
-    ``command_handler_getter`` is a zero-arg callable returning the
-    :class:`~src.commands.handler.CommandHandler` — a getter rather than the
-    object because the handler is built after the orchestrator and holding a
-    stale reference across a reload is a real bug.
+    Constructed once by the orchestrator, which passes itself as
+    *orchestrator* so every terminal verdict can run the same cleanup tail
+    the happy path runs (``release_session_task_resources``).  Without that
+    reference each verdict transitioned the task and stopped, leaving the
+    agent BUSY and the workspace locked for good.
     """
 
     def __init__(
@@ -86,7 +93,7 @@ class SessionReconciler:
         harnesses=None,
         spec_builder=None,
         bus=None,
-        command_handler_getter=None,
+        orchestrator=None,
         epoch: str | None = None,
     ):
         self.db = db
@@ -95,7 +102,7 @@ class SessionReconciler:
         self.harnesses = harnesses
         self.spec_builder = spec_builder
         self.bus = bus
-        self._get_handler = command_handler_getter
+        self.orchestrator = orchestrator
         self.epoch = epoch or uuid.uuid4().hex[:12]
         #: Names whose destructive handling is deferred this tick because
         #: enumeration was incomplete.  Cleared and rebuilt every tick.
@@ -168,6 +175,7 @@ class SessionReconciler:
         for step in (
             self._step_drain_ack,
             self._step_exits,
+            self._step_orphans,
             self._step_stall_ladder,
             self._step_named,
             self._step_backstop,
@@ -231,10 +239,26 @@ class SessionReconciler:
             else:
                 report.dead.append(row.id)
 
-        # Live sessions with no row at all: a daemon that died mid-launch.
+        # Live sessions with no row at all: a daemon that died between
+        # ``provider.start()`` and the row insert.  Design §8 asks for
+        # "adopt if the markers match, else quarantine-kill"; with no row
+        # there is nothing to match *against* — no task, no profile, no
+        # instance token to fence on — so the reachable half is the kill.
+        # Leaving them running is the worse failure: an unreachable agent
+        # writing to a workspace the scheduler believes is free.
         for name, handle in observed.items():
-            if name not in by_name:
-                report.unknown_live.append(name)
+            if name in by_name:
+                continue
+            report.unknown_live.append(name)
+            provider = self.providers.create(self.sessions_config.provider, self.config)
+            logger.warning(
+                "Adoption: session %r is running with no row — killing (orphan)", name
+            )
+            try:
+                await provider.stop(handle, grace=2.0)
+                report.unknown_killed.append(name)
+            except Exception:
+                logger.error("Adoption: could not stop orphan session %r", name, exc_info=True)
 
         if report.total or report.unknown_live or report.deferred:
             logger.info(
@@ -246,12 +270,39 @@ class SessionReconciler:
             )
         return report
 
-    async def adopted_task_ids(self) -> set[str]:
-        """Task ids owned by a live session — ``_recover_stale_state`` skips these."""
-        if not self.sessions_config.enabled:
+    async def adopted_task_ids(self, report: AdoptReport) -> set[str]:
+        """Task ids ``_recover_stale_state`` must skip, from *report*.
+
+        The set is "tasks whose session we **confirmed alive**", not "tasks
+        with a live row".  Those differ in four cases, and the difference is
+        the highest-blast-radius failure in this module:
+
+        * ``PartialListError`` deferred a whole prefix;
+        * the observed handle's instance token did not match the row;
+        * the provider raised while listing;
+        * **always** with the shipped ``SubprocessProvider``, whose
+          ``list_running`` is an in-memory dict that cannot see anything
+          across a daemon restart.
+
+        That last one is the real chain: adoption adopts nothing, yet every
+        live row would be exempted anyway, so recovery leaves the task
+        IN_PROGRESS, the agent BUSY, the workspace **locked** and the
+        worktree cleanup skipped — while the detached OS process is still
+        running and unreachable.  One tick later ``_step_exits`` calls it
+        dead, RAPID_CRASH re-queues, and the scheduler launches a second
+        agent into the worktree the first is still writing to.
+
+        Deriving the set from ``report.adopted`` degrades that to the old
+        blanket reset: correct if lossy, instead of protecting ghosts.
+        """
+        if not self.sessions_config.enabled or not report.adopted:
             return set()
-        rows = await self.db.list_sessions(live_only=True, lifecycle="task")
-        return {r.task_id for r in rows if r.task_id}
+        ids: set[str] = set()
+        for session_id in report.adopted:
+            row = await self.db.get_session(session_id)
+            if row is not None and row.lifecycle == "task" and row.task_id:
+                ids.add(row.task_id)
+        return ids
 
     # -- step 1: observation -----------------------------------------------
 
@@ -416,11 +467,15 @@ class SessionReconciler:
                     TaskStatus.PAUSED,
                     context="rate_limit",
                     resume_after=now + verdict.cooldown_seconds,
+                    assigned_agent_id=None,
                 )
+                await self._carry_resume_key(row, task)
+                await self._release_task(task)
                 await self._emit(
                     "task.paused",
                     task_id=task.id,
                     project_id=task.project_id,
+                    title=task.title,
                     reason="rate_limit",
                     resume_after=now + verdict.cooldown_seconds,
                 )
@@ -444,10 +499,13 @@ class SessionReconciler:
                     + self.sessions_config.restart_backoff_seconds * count,
                     assigned_agent_id=None,
                 )
+                await self._carry_resume_key(row, task)
+                await self._release_task(task)
                 await self._emit(
                     "task.restarted",
                     task_id=task.id,
                     project_id=task.project_id,
+                    title=task.title,
                     attempt=count,
                     reason="rapid_crash",
                 )
@@ -465,10 +523,13 @@ class SessionReconciler:
                 context="session_exited_without_close",
                 assigned_agent_id=None,
             )
+            await self._carry_resume_key(row, task)
+            await self._release_task(task)
             await self._emit(
                 "task.needs_attention",
                 task_id=task.id,
                 project_id=task.project_id,
+                title=task.title,
                 reason=verdict.reason,
             )
 
@@ -489,6 +550,8 @@ class SessionReconciler:
             last = row.last_activity or row.started_at
             if now - last <= ttl:
                 continue
+            if await self._still_live(row) is None:
+                continue  # already stopped/slept/quarantined this tick
 
             provider = self._provider_for(row)
             if provider is None:
@@ -510,6 +573,7 @@ class SessionReconciler:
                     "task.stalled",
                     task_id=row.task_id,
                     project_id=row.project_id,
+                    title=task.title,
                     session_id=row.id,
                     idle_seconds=now - last,
                 )
@@ -534,6 +598,7 @@ class SessionReconciler:
                         "task.nudged",
                         task_id=row.task_id,
                         project_id=row.project_id,
+                        title=task.title,
                         session_id=row.id,
                         attempt=rungs + 1,
                     )
@@ -542,7 +607,11 @@ class SessionReconciler:
             # Rungs exhausted: interrupt, kill, and let the scheduler
             # relaunch with the harness resume key so context survives.
             count = await self.db.bump_session_restarts(row.id)
-            if count > self.sessions_config.max_restarts:
+            # ``>=``, matching the rapid-crash branch.  ``>`` here allowed
+            # exactly one restart more than ``max_restarts`` before
+            # quarantine, so the two ladders disagreed about what the
+            # budget meant.
+            if count >= self.sessions_config.max_restarts:
                 await self._quarantine(row, task, reason="stall", now=now)
                 continue
             try:
@@ -559,13 +628,137 @@ class SessionReconciler:
                 resume_after=now + self.sessions_config.restart_backoff_seconds,
                 assigned_agent_id=None,
             )
+            await self._carry_resume_key(row, task)
+            await self._release_task(task)
             await self._emit(
                 "task.restarted",
                 task_id=row.task_id,
                 project_id=row.project_id,
+                title=task.title,
                 session_id=row.id,
                 attempt=count,
                 reason="stall",
+            )
+
+    # -- step 4: orphans (row and task disagree) ---------------------------
+
+    async def _step_orphans(self, live: list[SessionRecord], now: float) -> None:
+        """Reconcile the two ways a session row and its task can disagree.
+
+        Design §4.1's table has *"task already closed, session lingering →
+        normal drain path (kill, ``stopped``)"*, but nothing implemented it:
+        ``Verdict.DRAINED`` is only reachable from inside ``_step_exits``,
+        which requires a **dead** process.  There are three ways in with the
+        process still alive:
+
+        * ``complete_session_task`` releases the workspace and IDLEs the
+          agent at close time, before the ack — so an agent that closes and
+          never acks leaves a reassignable worktree with a live agent in it;
+        * ``stop_task`` finds no ``_adapters`` entry (the session fork never
+          registers one) and no live ``_running_tasks`` entry, so it cancels
+          nothing and leaves the session running;
+        * ``aq session kill`` before its own fix.
+
+        The mirror case — an open task whose session row is *not* live —
+        is handled here too: nothing else would ever free it, because
+        ``_step_exits`` and the ladder both iterate live rows only.
+
+        Ordering matters for (a): ``_step_drain_ack`` runs earlier in the
+        same tick, so an ack that has landed always wins and the agent gets
+        the graceful path.  Draining without one costs nothing — the task
+        is closed, and ``complete_session_task`` released the workspace and
+        the agent at close time — so there is nothing left for the session
+        to finish.
+        """
+        # (a) live session, task closed or gone.
+        for row in live:
+            if row.lifecycle != "task":
+                continue
+            if any(row.name.startswith(p) for p in self._deferred_prefixes):
+                continue
+            fresh = await self._still_live(row)
+            if fresh is None:
+                continue  # an earlier step in this tick already handled it
+            row = fresh
+            task = await self.db.get_task(row.task_id) if row.task_id else None
+            still_open = task is not None and task.status in (
+                TaskStatus.IN_PROGRESS,
+                TaskStatus.ASSIGNED,
+            )
+            if still_open:
+                continue
+            provider = self._provider_for(row)
+            if provider is None:
+                continue
+            logger.info(
+                "Session %s is live but task %s is %s — draining",
+                row.id,
+                row.task_id,
+                getattr(getattr(task, "status", None), "value", "gone"),
+            )
+            await self._stop_session(provider, row, reason="task_closed")
+            await self._emit(
+                "session.exited",
+                session_id=row.id,
+                name=row.name,
+                task_id=row.task_id,
+                project_id=row.project_id,
+                verdict=str(Verdict.DRAINED),
+                reason="task_closed",
+            )
+
+        # (b) open task, no live row.  Nothing else looks at this: every
+        # other step iterates ``live``, so a task whose session row went
+        # non-live without a verdict would hold its agent and workspace
+        # until the daemon restarted.
+        live_task_ids = {r.task_id for r in live if r.lifecycle == "task" and r.task_id}
+        try:
+            stranded = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
+        except Exception:
+            logger.debug("orphan sweep: cannot list in-progress tasks", exc_info=True)
+            return
+        launching = getattr(self.orchestrator, "_running_tasks", None) or {}
+        for task in stranded:
+            if task.id in live_task_ids:
+                continue
+            if task.id in launching:
+                # ``_execute_task`` is still running for this task.  It goes
+                # IN_PROGRESS *before* workspace preparation, which can be a
+                # git clone taking minutes, and the session row is written
+                # only after ``provider.start`` succeeds.  A retry therefore
+                # spends that whole window as "IN_PROGRESS with a stopped
+                # row from the previous attempt" — blocking it here would
+                # kill every relaunch.
+                continue
+            row = await self.db.get_session_for_task(task.id)
+            if row is None:
+                # Never launched as a session (legacy runtime, or the
+                # scheduler is mid-launch).  Not ours to touch.
+                continue
+            if row.state in _LIVE_STATES:
+                continue
+            if any(row.name.startswith(p) for p in self._deferred_prefixes):
+                continue
+            logger.warning(
+                "Task %s is IN_PROGRESS but session %s is %s — releasing",
+                task.id,
+                row.id,
+                row.state,
+            )
+            await self.db.set_task_meta(task.id, "needs_attention", "session_not_live")
+            await self.db.transition_task(
+                task.id,
+                TaskStatus.BLOCKED,
+                context="session_not_live",
+                assigned_agent_id=None,
+            )
+            await self._release_task(task)
+            await self._emit(
+                "task.needs_attention",
+                task_id=task.id,
+                project_id=task.project_id,
+                title=task.title,
+                reason="session_not_live",
             )
 
     # -- step 5: named desired-state ---------------------------------------
@@ -626,6 +819,10 @@ class SessionReconciler:
                 continue
             if now - (row.started_at or now) <= limit:
                 continue
+            fresh = await self._still_live(row)
+            if fresh is None:
+                continue  # already stopped/slept/quarantined this tick
+            row = fresh
             provider = self._provider_for(row)
             if provider is None:
                 continue
@@ -644,15 +841,84 @@ class SessionReconciler:
                     context="stuck_timeout",
                     assigned_agent_id=None,
                 )
+                await self._release_task(task)
                 await self._emit(
                     "task.quarantined",
                     task_id=task.id,
                     project_id=task.project_id,
+                    title=task.title,
                     session_id=row.id,
                     reason="stuck_timeout",
                 )
 
     # -- shared actions ----------------------------------------------------
+
+    async def _still_live(self, row: SessionRecord) -> SessionRecord | None:
+        """Re-read *row*, returning it only if it is still in a live state.
+
+        ``live`` is snapshotted once per tick by ``_step_observe``, but the
+        steps that follow mutate it.  A later step acting on the snapshot
+        would undo an earlier one — the exit classifier sleeps a session
+        with ``sleep_reason="rate_limit"``, and then the orphan step, still
+        holding the pre-tick row, sees a PAUSED task and stops it.  Every
+        step that *writes* re-reads first.
+        """
+        try:
+            fresh = await self.db.get_session(row.id)
+        except Exception:
+            logger.debug("could not re-read session %s", row.id, exc_info=True)
+            return None
+        if fresh is None or fresh.state not in _LIVE_STATES:
+            return None
+        return fresh
+
+    async def _release_task(self, task) -> None:
+        """Free the agent and the workspace lock a terminal task was holding.
+
+        Every non-DRAINED verdict owes this.  The legacy runtime always did
+        it (``execution.py``'s timeout / error / failure branches all call
+        ``update_agent(..., IDLE)`` and ``_release_workspaces_for_task``);
+        the first cut of this module transitioned the task and stopped,
+        which is a regression, not parity.
+
+        It matters because ``AgentReconciler``'s orphan sweep only resets a
+        BUSY agent whose *task row is missing* -- a PAUSED or BLOCKED task
+        still has one, so the agent stayed BUSY and the workspace stayed
+        locked until the daemon restarted.  With N crash-looping tasks that
+        is N agents and N workspaces burned, and the re-queued task cannot
+        acquire a workspace because its own dead predecessor still holds
+        the lock.
+        """
+        if task is None or self.orchestrator is None:
+            return
+        release = getattr(self.orchestrator, "release_session_task_resources", None)
+        if release is None:
+            return
+        try:
+            await release(task.id, agent_id=task.assigned_agent_id)
+        except Exception:
+            logger.error(
+                "Session reconciler: releasing resources for task %s failed",
+                task.id,
+                exc_info=True,
+            )
+
+    async def _carry_resume_key(self, row: SessionRecord, task) -> None:
+        """Hand this session's conversation id to the task that outlives it.
+
+        ``--session-id`` pinned the harness's own id to ours at launch, so
+        ``sessions.session_key`` *is* the ``--resume`` argument.  Writing it
+        into task metadata is the whole of "relaunch with ``--resume`` so
+        conversation context survives" -- ``_launch_session_for_task``
+        already reads ``session_resume_key`` back on the next start, and
+        before this nothing ever wrote it.
+        """
+        if task is None or not row.session_key:
+            return
+        try:
+            await self.db.set_task_meta(task.id, "session_resume_key", row.session_key)
+        except Exception:
+            logger.debug("could not persist resume key for task %s", task.id, exc_info=True)
 
     async def _try_nudge(self, provider, row: SessionRecord, text: str) -> bool:
         """Nudge, tolerating both "cannot" and "did not confirm"."""
@@ -682,11 +948,15 @@ class SessionReconciler:
             await provider.stop(self._handle(row), grace=2.0)
         except Exception:
             logger.warning("Stopping session %s failed", row.id, exc_info=True)
-        await self.db.update_session(
-            row.id,
-            state=state,
-            sleep_reason=reason if state == "sleeping" else row.sleep_reason,
-        )
+        # ``sleep_reason`` is forensics: why this session is not running.
+        # Only *write* it when this call is the reason.  Re-sending the
+        # stale in-memory value let a backstop kill on a RATE_LIMIT-slept
+        # session overwrite ``"rate_limit"`` with ``None`` -- destroying the
+        # one field that explained what happened.
+        fields = {"state": state}
+        if state == "sleeping":
+            fields["sleep_reason"] = reason
+        await self.db.update_session(row.id, **fields)
 
     async def _quarantine(self, row: SessionRecord, task, *, reason: str, now: float) -> None:
         """Terminal by default — nothing auto-releases a quarantine."""
@@ -715,10 +985,12 @@ class SessionReconciler:
                 context=f"session_{reason}",
                 assigned_agent_id=None,
             )
+            await self._release_task(task)
             await self._emit(
                 "task.quarantined",
                 task_id=task.id,
                 project_id=task.project_id,
+                title=task.title,
                 session_id=row.id,
                 reason=reason,
             )

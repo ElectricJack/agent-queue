@@ -66,9 +66,24 @@ class _StubOrchestrator:
         self._task_exec_start = {}
         self._task_pre_exec_sha = {}
         self.closed_calls: list[dict] = []
+        self._task_attachments = {}
+        self._task_added_messages = {}
+        # ``_execute_task`` guards on this: with sessions enabled and no
+        # runtimes registry it must still run, because a session-routed
+        # task never constructs a runtime.
+        self._runtimes = None
+        self.llm_logger = None
         self.session_reconciler = SessionReconciler(
             db, config, providers, harnesses=harnesses, bus=self.bus, epoch="epoch-test"
         )
+
+    async def _resolve_profile(self, task):
+        # The real cascade lives on the Orchestrator, not on a mixin.  This
+        # is the task-level leg of it, which is the one C1 exercises.
+        return await self.db.get_profile(task.profile_id) if task.profile_id else None
+
+    async def _check_constraints_before_assignment(self, action):
+        return None
 
     async def complete_session_task(self, task, **kwargs):
         self.closed_calls.append({"task_id": task.id, **kwargs})
@@ -283,8 +298,26 @@ class TestPeekNudgeAttachKill:
         await _make_session(db, provider)
         r = await handler.execute("session_kill", {"session_id": "sess-1"})
         assert r["success"] is True
-        assert (await db.get_session("sess-1")).state == "stopped"
         assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        # The process is gone from the provider...
+        assert await provider.list_running("s-") == []
+
+    async def test_kill_leaves_the_row_live_so_the_classifier_can_run(
+        self, handler, db, provider
+    ):
+        """B2: writing ``state="stopped"`` here guaranteed the opposite.
+
+        ``_step_exits`` iterates live rows only, so dropping the row out of
+        ``_LIVE_STATES`` at kill time meant no tick ever classified the
+        exit -- the task stayed IN_PROGRESS forever, the agent BUSY and the
+        workspace locked, exactly the outcome the docstring promised would
+        not happen.  The row must stay live until the ``process_alive``
+        probe says otherwise.
+        """
+        await _make_task(db)
+        await _make_session(db, provider)
+        await handler.execute("session_kill", {"session_id": "sess-1"})
+        assert (await db.get_session("sess-1")).state == "running"
 
 
 class TestDrainAckCommand:
@@ -457,38 +490,61 @@ class TestEndToEndOnFakeProvider:
 
     @pytest.fixture
     def real_orch(self, db, config, providers, harnesses, tmp_path):
-        """An orchestrator with the *real* execution-mixin methods bound in.
+        """An orchestrator with the *real* execution and workspace mixins.
 
-        Only the git/notification collaborators are stubbed — the launch
-        fork, the routing rule and the close path are the code under test.
+        What is stubbed is deliberately minimal, because C1's claim is that
+        the whole path runs:
+
+        * ``_emit_text_notify`` / ``_emit_notify`` — Discord I/O;
+        * ``_run_completion_pipeline`` — git/commit/PR, whose *return value*
+          the tests drive so both the ``(None, True)`` and the pipeline-STOP
+          branch are exercised;
+        * ``_get_default_branch`` — needs a real repo.
+
+        **Workspace release is not stubbed.**  ``_release_workspaces_for_task``
+        comes from the real ``WorkspaceMixin`` and writes to the database,
+        so every assertion about a released workspace re-reads the row
+        instead of trusting a recorder list.  The recorder is what let B1
+        (every reconciler exit path leaking the agent and the lock) sit
+        under a green test.
         """
         from src.orchestrator.execution import ExecutionMixin
+        from src.orchestrator.workspace import WorkspaceMixin
 
-        class _Orch(ExecutionMixin, _StubOrchestrator):
+        class _Orch(ExecutionMixin, WorkspaceMixin, _StubOrchestrator):
+            #: Pipeline verdict the next close should see: (pr_url, ok).
+            pipeline_result = (None, True)
+
             async def _emit_text_notify(self, *a, **k):
-                pass
+                self.text_notifies = getattr(self, "text_notifies", [])
+                self.text_notifies.append((a, k))
+
+            async def _emit_notify(self, event_type, payload=None):
+                await self.bus.emit(event_type, {"event": event_type})
 
             async def _emit_task_event(self, event_type, task, **extra):
-                await self.bus.emit(event_type, {"task_id": task.id, **extra})
-
-            async def _release_workspaces_for_task(self, task_id):
-                self.released = getattr(self, "released", [])
-                self.released.append(task_id)
-
-            def _remove_sentinel(self, path):
-                pass
+                await self.bus.emit(
+                    event_type,
+                    {"task_id": task.id, "project_id": task.project_id, **extra},
+                )
 
             async def _get_default_branch(self, project, path):
                 return "main"
 
             async def _run_completion_pipeline(self, ctx):
                 self.pipeline_ran = True
-                return (None, True)
+                return self.pipeline_result
 
-            # Not a mock: the real one is inherited from ExecutionMixin.
+            # Not mocks: the real ones are inherited from ExecutionMixin.
             complete_session_task = ExecutionMixin.complete_session_task
+            release_session_task_resources = (
+                ExecutionMixin.release_session_task_resources
+            )
+            _release_workspaces_for_task = WorkspaceMixin._release_workspaces_for_task
 
-        return _Orch(db, config, providers, harnesses)
+        orch = _Orch(db, config, providers, harnesses)
+        orch.session_reconciler.orchestrator = orch
+        return orch
 
     @pytest.fixture
     def real_handler(self, real_orch, config):
@@ -496,14 +552,26 @@ class TestEndToEndOnFakeProvider:
         real_orch._command_handler = handler
         return handler
 
-    async def _setup(self, db, tmp_path):
+    async def _setup(self, db, tmp_path, *, ready=False):
+        """Profile + agent + task + a locked workspace row.
+
+        ``ready=True`` leaves the task READY and the agent IDLE so
+        ``_execute_task`` can do the assigning itself — that is the entry
+        point C1 is supposed to exercise, and it is where the fork,
+        ``platform = None`` and workspace preparation actually run.
+        """
         await db.create_profile(
             AgentProfile(
                 id="claude-opus", name="Claude Opus", harness="claude", lifecycle="task"
             )
         )
         await db.create_agent(
-            Agent(id="a1", name="agent-1", profile_id="claude-opus", state=AgentState.BUSY)
+            Agent(
+                id="a1",
+                name="agent-1",
+                profile_id="claude-opus",
+                state=AgentState.IDLE if ready else AgentState.BUSY,
+            )
         )
         wd = tmp_path / "wd"
         wd.mkdir(exist_ok=True)
@@ -512,19 +580,56 @@ class TestEndToEndOnFakeProvider:
             Task(id="t1", project_id="p1", title="Do the thing", description="d",
                  profile_id="claude-opus")
         )
-        await db.transition_task("t1", TaskStatus.IN_PROGRESS, assigned_agent_id="a1")
-        await db.create_workspace(
-            Workspace(
-                id="ws1",
-                project_id="p1",
-                workspace_path=str(wd),
-                source_type=RepoSourceType.LINK,
-                name="main",
-                locked_by_agent_id="a1",
-                locked_by_task_id="t1",
+        if ready:
+            await db.transition_task("t1", TaskStatus.READY)
+            await db.create_workspace(
+                Workspace(
+                    id="ws1",
+                    project_id="p1",
+                    workspace_path=str(wd),
+                    source_type=RepoSourceType.LINK,
+                    name="main",
+                )
             )
-        )
+        else:
+            await db.transition_task("t1", TaskStatus.IN_PROGRESS, assigned_agent_id="a1")
+            await db.create_workspace(
+                Workspace(
+                    id="ws1",
+                    project_id="p1",
+                    workspace_path=str(wd),
+                    source_type=RepoSourceType.LINK,
+                    name="main",
+                    locked_by_agent_id="a1",
+                    locked_by_task_id="t1",
+                )
+            )
         return str(wd)
+
+    async def _launch_via_execute_task(self, db, real_orch, monkeypatch, tmp_path):
+        """Drive a launch through the *real* ``_execute_task`` entry point.
+
+        Calling ``_launch_session_for_task`` directly (what this test used
+        to do) skips the three things the fork is actually about: the
+        routing decision, ``platform = None`` for a session-routed task
+        (so no runtime adapter is ever constructed), and workspace prep.
+        """
+        wd = await self._setup(db, tmp_path, ready=True)
+
+        # Point workspace preparation at the row we created rather than at
+        # git.  Everything after it -- the fork, the launch, the row insert
+        # -- is real.
+        async def _prepare(task, agent):
+            await db.update_workspace(
+                "ws1", locked_by_agent_id="a1", locked_by_task_id=task.id
+            )
+            return wd
+
+        monkeypatch.setattr(real_orch, "_prepare_workspace", _prepare)
+
+        action = AssignAction(task_id="t1", agent_id="a1", project_id="p1")
+        await real_orch._execute_task(action)
+        return wd
 
     async def test_routing_rule_needs_both_flag_and_harness(self, real_orch, config):
         profile = AgentProfile(id="x", name="x", harness="claude")
@@ -538,16 +643,17 @@ class TestEndToEndOnFakeProvider:
         assert real_orch._is_session_routed(None) is False
 
     async def test_full_lifecycle(
-        self, db, real_orch, real_handler, provider, tmp_path, config
+        self, db, real_orch, real_handler, provider, tmp_path, config, monkeypatch
     ):
-        wd = await self._setup(db, tmp_path)
-        task = await db.get_task("t1")
-        agent = await db.get_agent("a1")
-        profile = await db.get_profile("claude-opus")
-        action = AssignAction(task_id="t1", agent_id="a1", project_id="p1")
+        # 1. Launch through the real ``_execute_task`` — routing fork,
+        #    ``platform = None``, workspace prep, then return immediately
+        #    with no stream to block on.
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
 
-        # 1. Launch — returns immediately, no stream to block on.
-        await real_orch._launch_session_for_task(action, task, agent, profile, wd)
+        # A session-routed task must never construct a runtime adapter --
+        # that is what ``platform = None`` is for, and an adapter registered
+        # here would make ``stop_task`` believe it has something to cancel.
+        assert real_orch._adapters == {}
 
         session = await db.get_session_for_task("t1")
         assert session is not None
@@ -559,6 +665,11 @@ class TestEndToEndOnFakeProvider:
         assert "session.started" in real_orch.bus.types()
         # The task is still IN_PROGRESS: launching is not completing.
         assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        # The workspace is really locked, in the database, by this task.
+        ws = await db.get_workspace("ws1")
+        assert ws.locked_by_task_id == "t1" and ws.locked_by_agent_id == "a1"
+        # H2: the resume key is persisted at launch, not left None.
+        assert session.session_key == session.id
 
         # The spawned session got the AQ_* handshake the CLI depends on.
         spec = provider.starts[0]
@@ -595,9 +706,12 @@ class TestEndToEndOnFakeProvider:
         assert real_orch.pipeline_ran is True
         assert (await db.get_task("t1")).status is TaskStatus.COMPLETED
         assert await db.get_task_meta("t1", "outcome") == "pass"
-        # The agent was freed and the workspace released at close time.
+        # The agent was freed and the workspace released at close time --
+        # asserted against the database, not against a stub's bookkeeping.
         assert (await db.get_agent("a1")).state is AgentState.IDLE
-        assert "t1" in real_orch.released
+        ws = await db.get_workspace("ws1")
+        assert ws.locked_by_task_id is None and ws.locked_by_agent_id is None
+        assert await db.get_workspace_for_task("t1") is None
 
         # 5. The agent acks the drain.
         ack = await real_handler.execute(
@@ -614,15 +728,10 @@ class TestEndToEndOnFakeProvider:
         assert await provider.list_running("s-") == []
 
     async def test_exit_without_close_is_never_treated_as_success(
-        self, db, real_orch, real_handler, provider, tmp_path
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
         """The whole point of the runtime: exit is a failure signal."""
-        wd = await self._setup(db, tmp_path)
-        task = await db.get_task("t1")
-        agent = await db.get_agent("a1")
-        profile = await db.get_profile("claude-opus")
-        action = AssignAction(task_id="t1", agent_id="a1", project_id="p1")
-        await real_orch._launch_session_for_task(action, task, agent, profile, wd)
+        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
 
         session = await db.get_session_for_task("t1")
         # The agent walks off without closing.
@@ -631,18 +740,120 @@ class TestEndToEndOnFakeProvider:
 
         assert (await db.get_task("t1")).status is not TaskStatus.COMPLETED
         assert (await db.get_session(session.id)).state in ("stopped", "quarantined")
+        # B1: the exit path owes the same cleanup the happy path does.
+        assert (await db.get_agent("a1")).state is AgentState.IDLE
+        ws = await db.get_workspace("ws1")
+        assert ws.locked_by_task_id is None
+
+    async def test_pipeline_stop_blocks_instead_of_completing(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """``outcome=pass`` is the *trigger* for the pipeline, not a verdict.
+
+        When the completion pipeline says stop (verification reopened the
+        task, work left uncommitted, ...) the task goes BLOCKED, never
+        COMPLETED.  Consistent with work-graph's ``hard -> BLOCKED``: a
+        human has to look.  No test executed this branch before, because
+        ``_run_completion_pipeline`` was stubbed to a constant ``True``.
+        """
+        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        session = await db.get_session_for_task("t1")
+        real_orch.pipeline_result = (None, False)
+
+        close = await real_handler.execute(
+            "task_close",
+            {
+                "task_id": "t1",
+                "session_id": session.id,
+                "outcome": "pass",
+                "work_outcome": "shipped",
+            },
+        )
+        assert close["success"] is True and close["status"] == "BLOCKED"
+        assert close["pipeline_ok"] is False
+        assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+        # The claim the agent made is still on the record.
+        assert await db.get_task_meta("t1", "outcome") == "pass"
+        # ...and the resources are still freed, against the database.
+        assert (await db.get_agent("a1")).state is AgentState.IDLE
+        assert (await db.get_workspace("ws1")).locked_by_task_id is None
+
+    async def test_transient_failure_retries_instead_of_going_terminal(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """H5: ``outcome=fail`` + transient follows work-graph's retry contract.
+
+        work-graph §outcome-metadata: *"transient (or absent -- legacy
+        default) -> existing retry-with-backoff path"*, and that path
+        increments ``retry_count`` and re-queues.  Sending it straight to
+        FAILED made a session-run flake terminal where a legacy one retries.
+        """
+        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        session = await db.get_session_for_task("t1")
+
+        close = await real_handler.execute(
+            "task_close",
+            {
+                "task_id": "t1",
+                "session_id": session.id,
+                "outcome": "fail",
+                "failure_class": "transient",
+                "notes": "flaky network",
+            },
+        )
+        assert close["status"] == "READY"
+        task = await db.get_task("t1")
+        assert task.status is TaskStatus.READY
+        assert task.retry_count == 1
+        # The pipeline never runs on a failure.
+        assert getattr(real_orch, "pipeline_ran", False) is False
+        # Resources freed so the retry can actually acquire a workspace.
+        assert (await db.get_agent("a1")).state is AgentState.IDLE
+        assert (await db.get_workspace("ws1")).locked_by_task_id is None
+
+    async def test_hard_failure_blocks_and_does_not_retry(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        session = await db.get_session_for_task("t1")
+        close = await real_handler.execute(
+            "task_close",
+            {
+                "task_id": "t1",
+                "session_id": session.id,
+                "outcome": "fail",
+                "failure_class": "hard",
+            },
+        )
+        assert close["status"] == "BLOCKED"
+        task = await db.get_task("t1")
+        assert task.status is TaskStatus.BLOCKED and task.retry_count == 0
+
+    async def test_transient_failure_blocks_once_retries_are_spent(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        session = await db.get_session_for_task("t1")
+        task = await db.get_task("t1")
+        await db.update_task(task.id, retry_count=task.max_retries - 1)
+
+        close = await real_handler.execute(
+            "task_close",
+            {"task_id": "t1", "session_id": session.id, "outcome": "fail"},
+        )
+        assert close["status"] == "BLOCKED"
+        assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
 
     async def test_launch_failure_pauses_rather_than_fabricating_a_result(
         self, db, real_orch, provider, tmp_path
     ):
         wd = await self._setup(db, tmp_path)
         task = await db.get_task("t1")
-        agent = await db.get_agent("a1")
         profile = await db.get_profile("claude-opus")
         action = AssignAction(task_id="t1", agent_id="a1", project_id="p1")
 
         provider.script_startup_death("s-t1")
-        await real_orch._launch_session_for_task(action, task, agent, profile, wd)
+        await real_orch._launch_session_for_task(action, task, profile, wd)
 
         assert await db.get_session_for_task("t1") is None
         task = await db.get_task("t1")
@@ -654,10 +865,9 @@ class TestEndToEndOnFakeProvider:
     ):
         wd = await self._setup(db, tmp_path)
         task = await db.get_task("t1")
-        agent = await db.get_agent("a1")
         profile = AgentProfile(id="claude-opus", name="C", harness="does-not-exist")
         action = AssignAction(task_id="t1", agent_id="a1", project_id="p1")
-        await real_orch._launch_session_for_task(action, task, agent, profile, wd)
+        await real_orch._launch_session_for_task(action, task, profile, wd)
         assert await db.get_session_for_task("t1") is None
         assert (await db.get_task("t1")).status is TaskStatus.PAUSED
 
@@ -666,8 +876,7 @@ class TestEndToEndOnFakeProvider:
     ):
         await self._setup(db, tmp_path)
         task = await db.get_task("t1")
-        agent = await db.get_agent("a1")
         profile = await db.get_profile("claude-opus")
         action = AssignAction(task_id="t1", agent_id="a1", project_id="p1")
-        await real_orch._launch_session_for_task(action, task, agent, profile, None)
+        await real_orch._launch_session_for_task(action, task, profile, None)
         assert await db.get_session_for_task("t1") is None

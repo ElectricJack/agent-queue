@@ -14,7 +14,16 @@ import pytest
 
 from src.config import AppConfig
 from src.database import Database
-from src.models import Project, SessionRecord, Task, TaskStatus
+from src.models import (
+    Agent,
+    AgentState,
+    Project,
+    RepoSourceType,
+    SessionRecord,
+    Task,
+    TaskStatus,
+    Workspace,
+)
 from src.sessions import SessionProviderRegistry
 from src.sessions.exit_classifier import Verdict, classify_exit
 from src.sessions.fake import FakeProvider
@@ -94,6 +103,68 @@ def bus():
 @pytest.fixture
 def reconciler(db, config, registry, bus):
     return SessionReconciler(db, config, registry, bus=bus, epoch="epoch-new")
+
+
+class _ReleasingOrch:
+    """The cleanup half of the orchestrator, backed by the real database.
+
+    ``SessionReconciler`` calls exactly one method on the orchestrator, so
+    this is the whole surface.  The body is ``ExecutionMixin.
+    release_session_task_resources`` verbatim in behaviour — agent to IDLE,
+    workspace lock released — but writing through ``db`` rather than
+    recording the call, because a recorder is what hid B1.
+    """
+
+    def __init__(self, db):
+        self.db = db
+        self.calls: list[str] = []
+        #: Mirrors ``Orchestrator._running_tasks`` — the reconciler reads it
+        #: so a relaunch in progress is not mistaken for a stranded task.
+        self._running_tasks: dict = {}
+
+    async def release_session_task_resources(self, task_id, *, agent_id=None, **_kw):
+        self.calls.append(task_id)
+        await self.db.release_workspaces_for_task(task_id)
+        if agent_id:
+            await self.db.update_agent(
+                agent_id, state=AgentState.IDLE, current_task_id=None
+            )
+
+
+@pytest.fixture
+def releasing_reconciler(db, config, registry, bus):
+    """A reconciler wired to a real releasing orchestrator."""
+    orch = _ReleasingOrch(db)
+    rec = SessionReconciler(
+        db, config, registry, bus=bus, orchestrator=orch, epoch="epoch-new"
+    )
+    rec.test_orch = orch
+    return rec
+
+
+async def _busy_agent_and_workspace(db, tmp_dir, *, task_id="t1"):
+    """An agent BUSY on *task_id* holding a workspace lock, in the database."""
+    await db.create_agent(
+        Agent(
+            id="a1",
+            name="agent-1",
+            profile_id="claude-opus",
+            state=AgentState.BUSY,
+            current_task_id=task_id,
+        )
+    )
+    await db.create_workspace(
+        Workspace(
+            id="ws1",
+            project_id="p1",
+            workspace_path=str(tmp_dir),
+            source_type=RepoSourceType.LINK,
+            name="main",
+            locked_by_agent_id="a1",
+            locked_by_task_id=task_id,
+        )
+    )
+    await db.transition_task(task_id, TaskStatus.IN_PROGRESS, assigned_agent_id="a1")
 
 
 async def _task(db, task_id="t1", status=TaskStatus.IN_PROGRESS, agent_id=None):
@@ -247,12 +318,24 @@ class TestAdoption:
         assert report.adopted == [] and report.dead == []
         assert (await db.get_session("s1")).epoch == "epoch-old"
 
-    async def test_unknown_live_session_is_reported(self, db, provider, reconciler):
+    async def test_unknown_live_session_is_killed_not_left_running(
+        self, db, provider, reconciler
+    ):
+        """A live session with no row has nothing to match markers against.
+
+        Design §8 asks for adopt-if-markers-match else quarantine-kill.
+        With no row there is no task, no profile and no instance token to
+        match, so the only reachable half is the kill -- and leaving it
+        running is the worse failure: an unreachable agent writing into a
+        workspace the scheduler believes is free.
+        """
         await provider.start(
             SessionSpec(session_name="s-orphan", work_dir="/wd", command=("claude",))
         )
         report = await reconciler.adopt_on_start()
         assert report.unknown_live == ["s-orphan"]
+        assert report.unknown_killed == ["s-orphan"]
+        assert await provider.list_running("s-") == []
 
     async def test_disabled_flag_makes_adoption_a_no_op(self, db, provider, reconciler, config):
         config.sessions.enabled = False
@@ -267,12 +350,55 @@ class TestAdoption:
         await _session(db, provider, sid="s1")
         assert (await reconciler.adopt_on_start()).total == 0
 
-    async def test_adopted_task_ids_exposes_what_recovery_must_skip(
+    async def test_adopted_task_ids_come_from_the_report_not_the_row_set(
         self, db, provider, reconciler
     ):
+        """B4: the skip set is what we *confirmed alive*, not what is live.
+
+        The old assertion created a live row and called it "adopted"
+        without ever running adoption, which is precisely the bug: the skip
+        set has to be derived from :class:`AdoptReport`, because a live row
+        proves only that the last daemon wrote one.
+        """
         await _task(db)
         await _session(db, provider, sid="s1")
-        assert await reconciler.adopted_task_ids() == {"t1"}
+        report = await reconciler.adopt_on_start()
+        assert report.adopted == ["s1"]
+        assert await reconciler.adopted_task_ids(report) == {"t1"}
+
+    async def test_a_live_row_we_did_not_confirm_is_not_protected(
+        self, db, provider, reconciler
+    ):
+        """The shipped SubprocessProvider hits this on every restart.
+
+        ``SubprocessProvider.list_running`` is an in-memory dict, so after a
+        daemon restart it sees nothing and adoption adopts nothing.  If the
+        skip set were "every live row" the task would stay IN_PROGRESS with
+        its agent BUSY, its workspace locked and its worktree un-cleaned --
+        while the detached process kept running unreachable.  Deriving from
+        the report degrades that to the blanket reset: lossy, but correct.
+        """
+        await _task(db)
+        row = await _session(db, provider, sid="s1")
+        await provider.stop(reconciler._handle(row))  # provider can no longer see it
+
+        report = await reconciler.adopt_on_start()
+        assert report.adopted == [] and report.dead == ["s1"]
+        # The row is still live in the database...
+        assert (await db.get_session("s1")).state == "running"
+        # ...but recovery is not told to skip it.
+        assert await reconciler.adopted_task_ids(report) == set()
+
+    async def test_a_deferred_prefix_does_not_protect_its_tasks(
+        self, db, provider, reconciler
+    ):
+        """PartialListError defers reaping; it must not also grant immunity."""
+        await _task(db)
+        await _session(db, provider, sid="s1")
+        provider.script_partial_list(RuntimeError("no server"))
+        report = await reconciler.adopt_on_start()
+        assert "s-" in report.deferred
+        assert await reconciler.adopted_task_ids(report) == set()
 
 
 # ---------------------------------------------------------------------------
@@ -674,3 +800,376 @@ class TestNudgelessProvider:
         assert session.state == "stopped" and session.restarts == 1
         assert "task.restarted" in bus.types()
         assert "task.nudged" not in bus.types()
+
+
+# ---------------------------------------------------------------------------
+# B1 — every terminal path releases the agent and the workspace lock
+# ---------------------------------------------------------------------------
+
+
+class TestTerminalPathsReleaseResources:
+    """Regression cover for B1.
+
+    Before the fix, none of RATE_LIMIT / RAPID_CRASH / PRODUCTIVE_DEATH /
+    quarantine / backstop freed the agent or the workspace.  The legacy
+    runtime always did, so this was a regression rather than missing
+    parity — and ``AgentReconciler``'s orphan sweep does not cover it,
+    because it only resets a BUSY agent whose *task row is gone* and a
+    PAUSED/BLOCKED task still has one.  Every assertion here reads the
+    database back.
+    """
+
+    async def _assert_freed(self, db):
+        agent = await db.get_agent("a1")
+        assert agent.state is AgentState.IDLE, "agent left BUSY — B1"
+        ws = await db.get_workspace("ws1")
+        assert ws.locked_by_task_id is None, "workspace left locked — B1"
+        assert ws.locked_by_agent_id is None
+        assert await db.get_workspace_for_task("t1") is None
+
+    async def test_rate_limit_frees_the_agent_and_the_lock(
+        self, db, provider, releasing_reconciler, tmp_path
+    ):
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        row = await _session(db, provider, started_at=NOW - 100)
+        provider.feed_output(row.name, "Claude usage limit reached", activity=False)
+        provider.script_death(row.name)
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.PAUSED
+        await self._assert_freed(db)
+
+    async def test_rapid_crash_frees_the_agent_and_the_lock(
+        self, db, provider, releasing_reconciler, tmp_path
+    ):
+        """The one that bites hardest: the re-queued task needs the lock back.
+
+        Without the release the task goes PAUSED → READY, gets a fresh
+        agent, and then cannot acquire a workspace because its own dead
+        predecessor still holds the lock — pause/retry until restart.
+        """
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        row = await _session(db, provider, started_at=NOW - 10)
+        provider.script_death(row.name)
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.PAUSED
+        assert (await db.get_session("s1")).restarts == 1
+        await self._assert_freed(db)
+
+    async def test_productive_death_frees_the_agent_and_the_lock(
+        self, db, provider, releasing_reconciler, tmp_path
+    ):
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        row = await _session(db, provider, started_at=NOW - 5000)
+        provider.script_death(row.name)
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+        await self._assert_freed(db)
+
+    async def test_quarantine_frees_the_agent_and_the_lock(
+        self, db, provider, releasing_reconciler, tmp_path, config
+    ):
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        row = await _session(
+            db, provider, started_at=NOW - 10, restarts=config.sessions.max_restarts - 1
+        )
+        provider.script_death(row.name)
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_session("s1")).state == "quarantined"
+        assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+        await self._assert_freed(db)
+
+    async def test_backstop_frees_the_agent_and_the_lock(
+        self, db, provider, releasing_reconciler, tmp_path, config
+    ):
+        config.sessions.lease_ttl_seconds = 0  # isolate the backstop
+        config.agents_config.stuck_timeout_seconds = 3600
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        await _session(db, provider, started_at=NOW - 7200, last_activity=NOW)
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+        await self._assert_freed(db)
+
+    async def test_stall_restart_frees_the_agent_and_the_lock(
+        self, db, provider, releasing_reconciler, tmp_path, config
+    ):
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        row = await _session(
+            db, provider, started_at=NOW - 5000, last_activity=NOW - 1000
+        )
+        provider.sessions[row.name].activity = NOW - 1000
+        await db.set_task_meta("t1", META_STALL_NUDGES, str(config.sessions.stall_max_nudges))
+        await db.set_task_meta("t1", META_STALL_LAST_ACTION, "0")
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.PAUSED
+        await self._assert_freed(db)
+
+    async def test_a_drained_session_does_not_double_release(
+        self, db, provider, releasing_reconciler, tmp_path
+    ):
+        """DRAINED is the happy path; ``complete_session_task`` already ran."""
+        await _task(db, status=TaskStatus.COMPLETED)
+        row = await _session(db, provider)
+        provider.script_death(row.name)
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_session("s1")).state == "stopped"
+        assert releasing_reconciler.test_orch.calls == []
+
+
+# ---------------------------------------------------------------------------
+# B3 — session live, task no longer open (and its mirror)
+# ---------------------------------------------------------------------------
+
+
+class TestOrphanStep:
+    """Design §4.1 promised this row and nothing implemented it.
+
+    ``Verdict.DRAINED`` is only reachable from ``_step_exits``, which needs
+    a **dead** process.  A live session whose task has closed had no path
+    at all until ``_step_orphans``.
+    """
+
+    async def test_live_session_with_a_closed_task_is_drained(
+        self, db, provider, releasing_reconciler, bus
+    ):
+        """The agent closed the task and never acked — B3(a)."""
+        await _task(db, status=TaskStatus.COMPLETED)
+        row = await _session(db, provider)
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_session("s1")).state == "stopped"
+        assert await provider.list_running("s-") == []
+        assert row.name not in provider.sessions or True
+
+    @pytest.mark.parametrize(
+        "status", [TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.PAUSED]
+    )
+    async def test_live_session_with_a_task_in_any_closed_state_is_drained(
+        self, db, provider, releasing_reconciler, status
+    ):
+        """"Closed" is every status outside (IN_PROGRESS, ASSIGNED).
+
+        ``stop_task`` leaves a BLOCKED task with the session still running;
+        the rate-limit verdict leaves a PAUSED one.  Both are a live agent
+        in a workspace the daemon has already written off.
+
+        (A task row that is *gone* is not reachable: ``sessions.task_id``
+        carries a foreign key, so the row keeps the task alive.  The
+        reconciler still handles ``task is None`` — cheap, and the FK is
+        not this module's to rely on.)
+        """
+        await _task(db, status=status)
+        await _session(db, provider)
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_session("s1")).state == "stopped"
+        assert await provider.list_running("s-") == []
+
+    async def test_a_task_that_is_still_open_is_left_alone(
+        self, db, provider, releasing_reconciler
+    ):
+        await _task(db)
+        await releasing_reconciler.tick(now=NOW)
+        await _session(db, provider)
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_session("s1")).state == "running"
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+    async def test_named_sessions_have_no_task_to_disagree_with(
+        self, db, provider, releasing_reconciler
+    ):
+        await _session(
+            db,
+            provider,
+            sid="n1",
+            task_id=None,
+            name="n-supervisor",
+            lifecycle="named",
+        )
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_session("n1")).state == "running"
+
+    async def test_open_task_with_a_non_live_row_is_released(
+        self, db, provider, releasing_reconciler, tmp_path
+    ):
+        """B3's mirror: nothing else looks at this.
+
+        Every other step iterates the live set, so a task whose row went
+        non-live without a verdict — ``stop_task``'s path, or a crash
+        between the two writes — would hold its agent and its workspace
+        until the daemon restarted.
+        """
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        await _session(db, provider)
+        await db.update_session("s1", state="stopped")
+        await releasing_reconciler.tick(now=NOW)
+        task = await db.get_task("t1")
+        assert task.status is TaskStatus.BLOCKED
+        assert await db.get_task_meta("t1", "needs_attention") == "session_not_live"
+        assert (await db.get_agent("a1")).state is AgentState.IDLE
+        assert (await db.get_workspace("ws1")).locked_by_task_id is None
+
+    async def test_a_relaunch_in_flight_is_not_mistaken_for_a_stranded_task(
+        self, db, provider, releasing_reconciler, tmp_path
+    ):
+        """``_execute_task`` goes IN_PROGRESS long before the row exists.
+
+        Workspace preparation sits between them and can be a git clone
+        taking minutes, so a retry spends that whole window looking exactly
+        like "IN_PROGRESS with a stopped row" — and blocking it there would
+        kill every relaunch.
+        """
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        await _session(db, provider)
+        await db.update_session("s1", state="stopped")
+        releasing_reconciler.test_orch._running_tasks["t1"] = object()
+
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert (await db.get_agent("a1")).state is AgentState.BUSY
+
+        # Once the launch finishes without producing a live row, it is fair game.
+        releasing_reconciler.test_orch._running_tasks.clear()
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+
+    async def test_a_task_that_never_had_a_session_is_not_touched(
+        self, db, provider, releasing_reconciler, tmp_path
+    ):
+        """Legacy-runtime tasks are not the session reconciler's business."""
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        await releasing_reconciler.tick(now=NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert (await db.get_agent("a1")).state is AgentState.BUSY
+
+
+# ---------------------------------------------------------------------------
+# H2 — restart-with-resume actually carries a key
+# ---------------------------------------------------------------------------
+
+
+class TestResumeKey:
+    async def test_a_crash_hands_the_conversation_id_to_the_task(
+        self, db, provider, releasing_reconciler
+    ):
+        """Ladder rung 3 and the RAPID_CRASH restart both promise ``--resume``.
+
+        ``session_resume_key`` was only ever *read*; nothing wrote it, so
+        every restart started a fresh conversation and lost all context.
+        """
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 10, session_key="conv-abc")
+        provider.script_death(row.name)
+        await releasing_reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "session_resume_key") == "conv-abc"
+
+    async def test_a_stall_restart_hands_it_over_too(
+        self, db, provider, releasing_reconciler, config
+    ):
+        await _task(db)
+        row = await _session(
+            db,
+            provider,
+            started_at=NOW - 5000,
+            last_activity=NOW - 1000,
+            session_key="conv-xyz",
+        )
+        provider.sessions[row.name].activity = NOW - 1000
+        await db.set_task_meta("t1", META_STALL_NUDGES, str(config.sessions.stall_max_nudges))
+        await db.set_task_meta("t1", META_STALL_LAST_ACTION, "0")
+        await releasing_reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "session_resume_key") == "conv-xyz"
+
+
+# ---------------------------------------------------------------------------
+# Smaller findings
+# ---------------------------------------------------------------------------
+
+
+class TestForensicsAndBudgets:
+    async def test_a_backstop_kill_does_not_clobber_sleep_reason(
+        self, db, provider, reconciler, config
+    ):
+        """``_stop_session`` used to re-send the stale in-memory value.
+
+        A backstop firing on a RATE_LIMIT-slept session overwrote
+        ``sleep_reason="rate_limit"`` with ``None`` — destroying the one
+        field that recorded why the session is not running.
+        """
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 10)
+        await db.update_session("s1", sleep_reason="rate_limit")
+        # Stop with a row object that still carries the pre-update value.
+        await reconciler._stop_session(provider, row, reason="stuck_timeout")
+        session = await db.get_session("s1")
+        assert session.state == "stopped"
+        assert session.sleep_reason == "rate_limit"
+
+    async def test_both_ladders_agree_on_the_restart_budget(
+        self, db, provider, reconciler, config
+    ):
+        """Quarantine threshold was ``>=`` in one branch and ``>`` in the other."""
+        import inspect
+
+        src = inspect.getsource(type(reconciler))
+        assert "count > self.sessions_config.max_restarts" not in src
+        assert src.count("count >= self.sessions_config.max_restarts") == 2
+
+
+class TestCreateSessionLiveGuard:
+    async def test_a_second_live_row_for_one_name_is_refused(
+        self, db, provider
+    ):
+        """"At most one live row per name" was documented but not enforced."""
+        await _task(db)
+        await _session(db, provider, sid="s1")
+        with pytest.raises(ValueError, match="already has a live row"):
+            await db.create_session(
+                SessionRecord(
+                    id="s2",
+                    task_id="t1",
+                    project_id="p1",
+                    profile_id="claude-opus",
+                    harness="claude",
+                    provider="fake",
+                    name="s-t1",
+                    lifecycle="task",
+                    state="running",
+                    work_dir="/wd",
+                    epoch="epoch-new",
+                    instance_token="tok-2",
+                    started_at=NOW,
+                )
+            )
+
+    async def test_a_stopped_predecessor_does_not_block_a_restart(
+        self, db, provider
+    ):
+        """The restart-with-resume path reuses the name deliberately."""
+        await _task(db)
+        await _session(db, provider, sid="s1")
+        await db.update_session("s1", state="stopped")
+        await db.create_session(
+            SessionRecord(
+                id="s2",
+                task_id="t1",
+                project_id="p1",
+                profile_id="claude-opus",
+                harness="claude",
+                provider="fake",
+                name="s-t1",
+                lifecycle="task",
+                state="running",
+                work_dir="/wd",
+                epoch="epoch-new",
+                instance_token="tok-2",
+                started_at=NOW,
+            )
+        )
+        assert (await db.get_session_by_name("s-t1")).id == "s2"

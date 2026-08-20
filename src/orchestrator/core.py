@@ -337,7 +337,10 @@ class Orchestrator(
             harnesses=self.harness_registry,
             spec_builder=self.session_spec_builder,
             bus=self.bus,
-            command_handler_getter=lambda: self._command_handler,
+            # The reconciler needs the orchestrator, not the command
+            # handler: every terminal verdict runs the same cleanup tail as
+            # the happy path (``release_session_task_resources``).
+            orchestrator=self,
             epoch=self.daemon_epoch,
         )
         # Tool catalog snapshot keyed by (project_id, server_name).  Probed
@@ -872,8 +875,8 @@ class Orchestrator(
                 )
 
                 _load_harnesses(self.harness_registry, self.config.vault_root)
-                await self.session_reconciler.adopt_on_start()
-                adopted_task_ids = await self.session_reconciler.adopted_task_ids()
+                report = await self.session_reconciler.adopt_on_start()
+                adopted_task_ids = await self.session_reconciler.adopted_task_ids(report)
             except Exception:
                 logger.error("Session adoption pass failed", exc_info=True)
         await self._recover_stale_state(skip_task_ids=adopted_task_ids)

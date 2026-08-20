@@ -475,7 +475,7 @@ class ExecutionMixin:
         # stuck-timeout backstop moved to ``SessionReconciler.tick()``
         # step 6, where it can act on a session that outlives the daemon.
         if session_routed:
-            await self._launch_session_for_task(action, task, agent, profile, workspace)
+            await self._launch_session_for_task(action, task, profile, workspace)
             return
 
         # Profile + platform were resolved earlier (before workspace prep) so
@@ -1633,7 +1633,7 @@ class ExecutionMixin:
         return bool(getattr(profile, "harness", "") or "")
 
     async def _launch_session_for_task(
-        self, action: AssignAction, task, agent, profile, workspace: str | None
+        self, action: AssignAction, task, profile, workspace: str | None
     ) -> None:
         """Start a session for *task* and return.  No wait, no result branch.
 
@@ -1651,7 +1651,7 @@ class ExecutionMixin:
         import uuid as _uuid
 
         from src.models import SessionRecord
-        from src.sessions.provider import SessionDiedDuringStartup
+        from src.sessions.provider import SessionDiedDuringStartup, SessionHandle
 
         harness_name = getattr(profile, "harness", "") or ""
         harness = self.harness_registry.get(harness_name, task.project_id)
@@ -1681,11 +1681,29 @@ class ExecutionMixin:
 
         session_id = _uuid.uuid4().hex
         instance_token = _uuid.uuid4().hex
+        # A per-session bearer token.  Server-side verification and real
+        # scoping are [[aq-surface]]'s (``AQ_API_TOKEN`` minting is listed
+        # there in trust-and-ops §11), so today this is an opaque
+        # placeholder -- but a *present* one.  ``_launch_session_for_task``
+        # used to pass nothing, which left the marker empty and quietly
+        # reduced §4's trust argument to scrubbed-env plus git-as-recovery.
+        api_token = _uuid.uuid4().hex
         resume_key = None
         try:
             resume_key = await self.db.get_task_meta(task.id, "session_resume_key")
         except Exception:
             pass
+
+        # The workspace's source_type decides whether this launch qualifies
+        # for the harness's skip-permissions flag (trust-and-ops §4).  An
+        # unreadable workspace row is the *restrictive* default -- the flag
+        # is withheld, not granted on a guess.
+        source_type = None
+        try:
+            ws_row = await self.db.get_workspace_for_task(task.id)
+            source_type = ws_row.source_type if ws_row else None
+        except Exception:
+            logger.debug("Task %s: could not read workspace source_type", task.id)
 
         spec = self.session_spec_builder.build_task_spec(
             task=task,
@@ -1695,7 +1713,9 @@ class ExecutionMixin:
             session_id=session_id,
             instance_token=instance_token,
             epoch=self.daemon_epoch,
+            api_token=api_token,
             resume_key=resume_key,
+            workspace_source_type=source_type,
         )
 
         try:
@@ -1717,24 +1737,59 @@ class ExecutionMixin:
         # adoption reconciles an orphan session by its env markers, which is
         # the recoverable direction.
         now = time.time()
-        await self.db.create_session(
-            SessionRecord(
-                id=session_id,
-                task_id=task.id,
-                project_id=task.project_id,
-                profile_id=getattr(profile, "id", "") or "",
-                harness=harness.id,
-                provider=provider.name,
-                name=spec.session_name,
-                lifecycle="task",
-                state="running",
-                work_dir=work_dir,
-                epoch=self.daemon_epoch,
-                instance_token=instance_token,
-                started_at=now,
-                last_activity=now,
+        try:
+            await self.db.create_session(
+                SessionRecord(
+                    id=session_id,
+                    task_id=task.id,
+                    project_id=task.project_id,
+                    profile_id=getattr(profile, "id", "") or "",
+                    harness=harness.id,
+                    provider=provider.name,
+                    name=spec.session_name,
+                    lifecycle="task",
+                    state="running",
+                    # ``--session-id`` already pinned the harness's own
+                    # conversation id to ours, so the resume key *is* the
+                    # session id.  Persisting it here is what makes
+                    # restart-with-resume real rather than a checklist tick:
+                    # the reconciler copies it into ``session_resume_key``
+                    # when it kills, and the next launch passes ``--resume``.
+                    session_key=session_id,
+                    work_dir=work_dir,
+                    epoch=self.daemon_epoch,
+                    instance_token=instance_token,
+                    started_at=now,
+                    last_activity=now,
+                )
             )
-        )
+        except Exception as exc:
+            # The process is already running and now has no row, so nothing
+            # would ever reconcile it.  Kill what we just started before
+            # handing the task back to the scheduler -- otherwise the generic
+            # handler upstairs sets the task READY and releases the
+            # workspace while a live agent is still writing to it.
+            logger.error("Task %s: session row insert failed", task.id, exc_info=True)
+            try:
+                await provider.stop(
+                    SessionHandle(
+                        name=spec.session_name,
+                        provider=provider.name,
+                        instance_token=instance_token,
+                    ),
+                    grace=2.0,
+                )
+            except Exception:
+                logger.error(
+                    "Task %s: could not stop the orphan session %s",
+                    task.id,
+                    spec.session_name,
+                    exc_info=True,
+                )
+            await self._fail_session_launch(
+                action, task, f"session started but its row could not be written: {exc}"
+            )
+            return
         logger.info(
             "Task %s: session %s started (%s/%s) in %s",
             task.id,
@@ -1849,6 +1904,9 @@ class ExecutionMixin:
                 )
                 completed_ok = False
 
+        # ``retry_count`` is only carried on the transient leg; the other
+        # branches are terminal and must not bump the counter.
+        new_retry: int | None = None
         if outcome == "pass" and completed_ok:
             new_status = TaskStatus.COMPLETED
             context = "session_close"
@@ -1862,12 +1920,33 @@ class ExecutionMixin:
             new_status = TaskStatus.BLOCKED
             context = "session_close_hard_failure"
         else:
-            new_status = TaskStatus.FAILED
-            context = "session_close_failed"
+            # ``transient`` -- or absent, the legacy default.  work-graph
+            # §"outcome metadata" routes this to the existing
+            # retry-with-backoff path, so it has to behave exactly like the
+            # legacy failure branch: bump ``retry_count`` and re-queue until
+            # ``max_retries`` is spent, then BLOCKED.  Sending it straight to
+            # FAILED made a session-run flake terminal where a legacy one
+            # would have been retried.
+            new_retry = (task.retry_count or 0) + 1
+            if new_retry >= (task.max_retries or 0):
+                new_status = TaskStatus.BLOCKED
+                context = "max_retries"
+            else:
+                new_status = TaskStatus.READY
+                context = "retry"
 
-        await self.db.transition_task(
-            task.id, new_status, context=context, assigned_agent_id=None
-        )
+        if new_retry is not None:
+            await self.db.transition_task(
+                task.id,
+                new_status,
+                context=context,
+                retry_count=new_retry,
+                assigned_agent_id=None,
+            )
+        else:
+            await self.db.transition_task(
+                task.id, new_status, context=context, assigned_agent_id=None
+            )
         await self._emit_task_event(
             "task.closed",
             task,
@@ -1879,22 +1958,65 @@ class ExecutionMixin:
 
         # Release the workspace and free the agent -- the session is on its
         # way out, and the next task should not wait for the drain-ack.
-        if workspace_path:
-            try:
-                self._remove_sentinel(workspace_path)
-            except Exception:
-                pass
-        await self._release_workspaces_for_task(task.id)
-        if task.assigned_agent_id:
-            await self.db.update_agent(
-                task.assigned_agent_id, state=AgentState.IDLE, current_task_id=None
-            )
-            self._adapters.pop(task.assigned_agent_id, None)
-        self._task_exec_start.pop(task.id, None)
-        self._task_pre_exec_sha.pop(task.id, None)
+        await self.release_session_task_resources(
+            task.id, agent_id=task.assigned_agent_id, workspace_path=workspace_path
+        )
 
         return {
             "status": new_status.value,
             "pr_url": pr_url,
             "pipeline_ok": completed_ok,
+            "retry_count": new_retry,
         }
+
+    async def release_session_task_resources(
+        self,
+        task_id: str,
+        *,
+        agent_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> None:
+        """Free everything a session-run task was holding.  Idempotent.
+
+        The cleanup tail every terminal path owes: sentinel removed,
+        workspace lock released, agent back to IDLE, per-task bookkeeping
+        dropped.  ``complete_session_task`` is the happy path; the
+        :class:`~src.sessions.reconciler.SessionReconciler` calls this on
+        every *non*-happy one (rate-limit, rapid crash, productive death,
+        quarantine, backstop, task-closed).
+
+        Before this existed each reconciler verdict transitioned the task
+        and stopped -- leaving the agent BUSY and the workspace locked
+        forever, because ``AgentReconciler``'s orphan sweep only frees an
+        agent whose task *row* is gone, and a PAUSED/BLOCKED task still
+        has one.  N crash-looping tasks burned N agents and N workspaces
+        until the daemon restarted.
+
+        Safe to call twice: ``_release_workspaces_for_task`` is a no-op on
+        an already-released task and ``update_agent`` is a plain write.
+        """
+        if workspace_path is None:
+            try:
+                ws = await self.db.get_workspace_for_task(task_id)
+                workspace_path = ws.workspace_path if ws else None
+            except Exception:
+                workspace_path = None
+        if workspace_path:
+            try:
+                self._remove_sentinel(workspace_path)
+            except Exception:
+                pass
+        try:
+            await self._release_workspaces_for_task(task_id)
+        except Exception:
+            logger.error("Task %s: workspace release failed", task_id, exc_info=True)
+        if agent_id:
+            try:
+                await self.db.update_agent(
+                    agent_id, state=AgentState.IDLE, current_task_id=None
+                )
+            except Exception:
+                logger.error("Task %s: could not idle agent %s", task_id, agent_id, exc_info=True)
+            self._adapters.pop(agent_id, None)
+        self._task_exec_start.pop(task_id, None)
+        self._task_pre_exec_sha.pop(task_id, None)

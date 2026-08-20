@@ -31,6 +31,7 @@ class _Profile:
     model: str = ""
     effort: str = ""
     harness: str = "claude"
+    permission_mode: str = ""
 
 
 class _McpCfg:
@@ -78,6 +79,13 @@ def _build(builder, harness=CLAUDE, profile=None, **kw):
     )
 
 
+def _isolated(builder, **kw):
+    """A build in a real per-task worktree — where skip-permissions applies."""
+    from src.models import RepoSourceType
+
+    return _build(builder, workspace_source_type=RepoSourceType.WORKTREE, **kw)
+
+
 class TestNames:
     def test_task_name(self):
         assert task_session_name("task-1") == "s-task-1"
@@ -107,13 +115,127 @@ class TestNames:
         )
 
 
+class TestSkipPermissionsGating:
+    """B5 — trust-and-ops §4 scopes the flag to isolated worktrees.
+
+    §4: skip-permissions applies *"when — and only when — the session's
+    ``work_dir`` is an isolated per-task worktree"*, and *"sessions outside
+    an isolated worktree do not get skip-permissions by default; profiles
+    must opt in."*  ``_compose_argv`` used to append the flag whenever the
+    harness declared one, so on today's ``LINK`` workspaces it ran
+    ``--dangerously-skip-permissions`` in the operator's real checkout.
+    """
+
+    FLAG = "--dangerously-skip-permissions"
+
+    def test_a_worktree_gets_the_flag(self, builder):
+        assert self.FLAG in _isolated(builder).command
+
+    def test_a_linked_checkout_does_not(self, builder):
+        from src.models import RepoSourceType
+
+        spec = _build(builder, workspace_source_type=RepoSourceType.LINK)
+        assert self.FLAG not in spec.command
+
+    def test_a_clone_does_not(self, builder):
+        from src.models import RepoSourceType
+
+        spec = _build(builder, workspace_source_type=RepoSourceType.CLONE)
+        assert self.FLAG not in spec.command
+
+    def test_an_unknown_workspace_defaults_to_withholding(self, builder):
+        """The restrictive default: no source type means no flag."""
+        assert self.FLAG not in _build(builder).command
+
+    def test_a_profile_can_opt_in_explicitly(self, builder):
+        from src.models import RepoSourceType
+
+        spec = _build(
+            builder,
+            profile=_Profile(permission_mode="bypassPermissions"),
+            workspace_source_type=RepoSourceType.LINK,
+        )
+        assert self.FLAG in spec.command
+
+    def test_another_permission_mode_is_not_an_opt_in(self, builder):
+        from src.models import RepoSourceType
+
+        spec = _build(
+            builder,
+            profile=_Profile(permission_mode="acceptEdits"),
+            workspace_source_type=RepoSourceType.LINK,
+        )
+        assert self.FLAG not in spec.command
+
+    def test_a_harness_without_the_flag_never_gets_one(self, builder):
+        harness = replace(CLAUDE, permission_flag="")
+        assert self.FLAG not in _isolated(builder, harness=harness).command
+
+    def test_the_policy_helper_is_the_single_definition(self):
+        from src.models import RepoSourceType
+        from src.sessions.spec import skip_permissions_allowed
+
+        assert skip_permissions_allowed(_Profile(), RepoSourceType.WORKTREE) is True
+        assert skip_permissions_allowed(_Profile(), RepoSourceType.LINK) is False
+        assert skip_permissions_allowed(_Profile(), None) is False
+        assert (
+            skip_permissions_allowed(
+                _Profile(permission_mode="bypassPermissions"), None
+            )
+            is True
+        )
+
+
+class TestHookSettingsWiring:
+    """The hook payload has to be *pointed at*, not merely written."""
+
+    def test_settings_flag_is_emitted_when_hooks_render(self, builder, tmp_path):
+        harness = replace(
+            CLAUDE,
+            supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+            settings_flag="--settings",
+        )
+        spec = _build(builder, harness=harness)
+        argv = list(spec.command)
+        assert "--settings" in argv
+        assert argv[argv.index("--settings") + 1] == ".aq/hooks/claude.json"
+        assert any(dest == ".aq/hooks/claude.json" for dest, _ in spec.files)
+
+    def test_no_settings_flag_when_the_harness_writes_no_hooks(self, builder):
+        assert "--settings" not in _build(builder).command
+
+    def test_the_shipped_claude_harness_wires_them_together(self, tmp_path):
+        """``supports_hooks: true`` must not be an advertisement for a dead file."""
+        from src.sessions.harness_registry import HarnessRegistry, load_from_vault
+        from src.vault import ensure_default_harnesses
+
+        ensure_default_harnesses(str(tmp_path))
+        registry = HarnessRegistry()
+        load_from_vault(registry, str(tmp_path / "vault"))
+        claude = registry.get("claude", None)
+        assert claude.supports_hooks and claude.hook_files
+        assert claude.settings_flag, (
+            "claude declares hook_files but no settings_flag — the payload is inert"
+        )
+
+
 class TestArgvComposition:
     def test_basic_argv(self, builder):
-        spec = _build(builder)
+        spec = _isolated(builder)
         assert spec.command[0] == "claude"
         assert "--dangerously-skip-permissions" in spec.command
         # Prompt rides argv as the final positional.
         assert spec.command[-1] == spec.prompt
+
+    def test_the_bootstrap_prompt_asks_for_heartbeats(self, builder):
+        """H3 — nothing else tells the agent the lease exists.
+
+        With S3 deferred the lease has two feeds, and on a nudgeless
+        provider a long quiet tool call goes straight to interrupt+kill.
+        """
+        spec = _build(builder)
+        assert "aq task heartbeat" in spec.prompt
 
     def test_model_flag_only_when_the_profile_sets_a_model(self, builder):
         assert "--model" not in _build(builder).command

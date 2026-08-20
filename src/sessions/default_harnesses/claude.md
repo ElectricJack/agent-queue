@@ -23,6 +23,7 @@ vault watcher; no restart, no release.
   "permission_flag": "--dangerously-skip-permissions",
   "model_flag": "--model",
   "session_id_flag": "--session-id",
+  "settings_flag": "--settings",
   "resume": {
     "style": "flag",
     "flag": "--resume",
@@ -77,12 +78,23 @@ vault watcher; no restart, no release.
 matching, so either spelling in this file works — but if you retype the
 line, do not "fix" the character.
 
-**`permission_flag`** relies on the trust argument in
-[[design/trust-and-ops]]: the agent runs inside a disposable worktree with
-a scrubbed environment, so skipping in-session permission prompts trades a
-prompt no human is present to answer for a blast radius that is already
-bounded. Remove the flag to get interactive permission prompts back — the
-session is attachable, so a human *can* answer them.
+**`permission_flag` is permission to use the flag, not a promise to.**
+It relies on the trust argument in [[design/trust-and-ops]] §4: the agent
+runs inside a disposable worktree with a scrubbed environment, so skipping
+in-session permission prompts trades a prompt no human is present to answer
+for a blast radius that is already bounded. That argument only holds where
+the premise does, so `SessionSpecBuilder` emits the flag **only** when the
+session's `work_dir` is an isolated git worktree
+(`RepoSourceType.WORKTREE`) or the profile explicitly sets
+`permission_mode: bypassPermissions`. In a `link`ed checkout of the
+operator's real repo it is withheld. Remove the flag from this file to get
+interactive permission prompts back everywhere — the session is attachable,
+so a human *can* answer them.
+
+**`settings_flag`** is what makes `hook_files` live. The hook JSON is
+written into the work_dir, and `--settings .aq/hooks/claude.json` is what
+tells the CLI to read it; without the flag the file is inert and
+`supports_hooks: true` is a lie.
 
 **`skip_escape_before_enter: true`** — Claude submits cleanly on Enter. Some
 harnesses need an Escape first to leave a mode; grok's Escape *clears* the

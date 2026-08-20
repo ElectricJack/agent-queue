@@ -356,7 +356,7 @@ re-adopts across restarts. These keys tune that reconciliation loop.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `bool` | `False` | Master switch. `false` means the legacy runtimes are the only execution path and every session module stays dormant. |
-| `provider` | `str` | `"tmux"` | `tmux` \| `subprocess` \| `fake`. Validated against that set. `tmux` is registered only on hosts where its module imports. |
+| `provider` | `str` | `"subprocess"` | `tmux` \| `subprocess` \| `fake`. Validated against that set, **and** — when `enabled` — against what `default_session_registry()` can actually build on this host, so a name the registry lacks is a config error at load rather than a failed launch per task. `tmux` is registered only on hosts where its module imports; it defaults to `subprocess` while `TmuxProvider` is deferred. |
 | `tmux_socket` | `str` | `"aq"` | `tmux -L` socket name — one server per daemon, so two daemons on one host cannot see each other's sessions. |
 | `lease_ttl_seconds` | `int` | `480` | No transcript activity and no `aq task heartbeat` for this long marks a task **stalled** (not dead) and starts the ladder. `0` disables the ladder. |
 | `stall_max_nudges` | `int` | `3` | Nudges before the ladder escalates to interrupt + restart-with-resume. |

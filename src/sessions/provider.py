@@ -334,8 +334,27 @@ class SessionProvider(ABC):
 
         The drain-ack handshake rides here: the agent's ``aq session
         drain-ack`` marks the session, and the reconciler reads it back.
+
+        **Durability is deliberately not part of this contract, and it does
+        differ per provider.**  A tmux provider implements this with
+        ``set-environment`` on the session, which the *server* owns — so the
+        value survives a daemon restart.  :class:`SubprocessProvider` keeps
+        it in a per-process dict inside the daemon, so a restart loses it
+        and every key reads back ``None``.
+
+        That asymmetry is acceptable rather than accidental: the only thing
+        riding this channel is the drain-ack, and a lost ack self-heals.
+        The agent is idle with its task already closed, so the next tick's
+        new orphan step (live session, task no longer open) drains it on the
+        task state instead of the marker.  Do not put anything here that
+        cannot survive being silently forgotten.
         """
 
     @abstractmethod
     async def get_meta(self, h: SessionHandle, key: str) -> str | None:
-        """Read back a value set by :meth:`set_meta` (``None`` when absent)."""
+        """Read back a value set by :meth:`set_meta` (``None`` when absent).
+
+        See :meth:`set_meta` on durability: ``None`` may mean "never set" or
+        "set, then the daemon restarted".  Callers must treat the absence of
+        a marker as no information, never as a negative answer.
+        """

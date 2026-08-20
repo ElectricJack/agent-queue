@@ -87,6 +87,25 @@ class SessionQueryMixin:
     """Query mixin for the ``sessions`` table.  Expects ``self._engine``."""
 
     async def create_session(self, session: SessionRecord) -> None:
+        """Insert a session row, enforcing one *live* row per name.
+
+        The module docstring argues (correctly) that ``sessions.name`` must
+        not be UNIQUE, and that the invariant we actually need is "at most
+        one live row per name".  That invariant was documented and *latent*
+        — nothing checked it — which is how a failed adoption pass could
+        leave a live row for a name and then have the scheduler insert a
+        second one beside it.  A cheap read before the insert makes it
+        enforced.
+        """
+        if session.state in _LIVE_STATES:
+            existing = await self.list_sessions(name=session.name, live_only=True)
+            clash = [r for r in existing if r.id != session.id]
+            if clash:
+                raise ValueError(
+                    f"session name {session.name!r} already has a live row "
+                    f"({', '.join(r.id for r in clash)}) — stop it before "
+                    "starting another"
+                )
         async with self._engine.begin() as conn:
             await conn.execute(
                 insert(sessions).values(

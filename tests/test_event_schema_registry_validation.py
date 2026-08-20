@@ -489,6 +489,85 @@ _CANONICAL_PAYLOADS["session.restart_requested"] = {
     "handoff_id": "ctx-456",
 }
 
+# -- session-runtime (lane 2A) -------------------------------------------
+_CANONICAL_PAYLOADS.update(
+    {
+        "session.started": {
+            "session_id": "sess-1",
+            "name": "s-t-1",
+            "task_id": "t-1",
+            "project_id": "proj-1",
+        },
+        "session.killed": {
+            "session_id": "sess-1",
+            "name": "s-t-1",
+        },
+        "session.adopted": {
+            "session_id": "sess-1",
+            "name": "s-t-1",
+        },
+        "session.exited": {
+            "session_id": "sess-1",
+            "name": "s-t-1",
+            "verdict": "Verdict.RAPID_CRASH",
+        },
+        "session.drain_acked": {
+            "session_id": "sess-1",
+            "name": "s-t-1",
+        },
+        "session.premature_drain": {
+            "session_id": "sess-1",
+        },
+        "session.sleeping": {
+            "session_id": "sess-1",
+            "name": "n-supervisor",
+            "reason": "idle_timeout",
+        },
+        "session.quarantined": {
+            "session_id": "sess-1",
+            "name": "s-t-1",
+            "reason": "rapid_crash",
+        },
+        "task.stalled": {
+            "task_id": "t-1",
+            "project_id": "proj-1",
+            "title": "Implement feature X",
+            "session_id": "sess-1",
+        },
+        "task.nudged": {
+            "task_id": "t-1",
+            "project_id": "proj-1",
+            "title": "Implement feature X",
+            "session_id": "sess-1",
+        },
+        "task.restarted": {
+            "task_id": "t-1",
+            "project_id": "proj-1",
+            "title": "Implement feature X",
+            "reason": "rapid_crash",
+        },
+        "task.quarantined": {
+            "task_id": "t-1",
+            "project_id": "proj-1",
+            "title": "Implement feature X",
+            "reason": "stuck_timeout",
+        },
+        "task.needs_attention": {
+            "task_id": "t-1",
+            "project_id": "proj-1",
+            "title": "Implement feature X",
+            "reason": "session_exited_without_close",
+        },
+        "task.closed": {
+            "task_id": "t-1",
+            "project_id": "proj-1",
+            "title": "Implement feature X",
+            "outcome": "pass",
+            "status": "COMPLETED",
+        },
+    }
+)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (a) Valid payloads pass validation silently

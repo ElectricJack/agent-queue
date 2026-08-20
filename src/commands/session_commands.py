@@ -244,10 +244,19 @@ class SessionCommandsMixin:
     async def _cmd_session_kill(self, args: dict) -> dict:
         """Fenced kill.  The task then goes through the exit classifier.
 
-        This deliberately does **not** transition the task: the next
-        reconciler tick sees a dead process and classifies it, so a manual
-        kill and a crash travel the same path — and a human killing a
-        session can never accidentally mark a task complete.
+        This deliberately does **not** transition the task, **and does not
+        write ``state`` on the row either**: the next reconciler tick sees a
+        dead process and classifies it, so a manual kill and a crash travel
+        the same path — and a human killing a session can never accidentally
+        mark a task complete.
+
+        Writing ``state="stopped"`` here used to *guarantee* the opposite of
+        that docstring.  ``_step_exits`` iterates live rows only, so dropping
+        the row out of ``_LIVE_STATES`` meant nothing ever classified the
+        exit: the task stayed IN_PROGRESS forever, the agent BUSY, the
+        workspace locked.  The row is left live and the ``process_alive``
+        probe — which is now the *only* thing that decides a session is
+        dead — reports what actually happened.
         """
         session, err = await self._resolve_session(args)
         if err:
@@ -261,7 +270,6 @@ class SessionCommandsMixin:
             )
         except Exception as exc:
             return {"error": f"kill failed: {exc}"}
-        await self.db.update_session(session.id, state="stopped")
         await self.orchestrator.bus.emit(
             "session.killed",
             {
@@ -271,7 +279,15 @@ class SessionCommandsMixin:
                 "project_id": session.project_id,
             },
         )
-        return {"success": True, "session_id": session.id, "state": "stopped"}
+        return {
+            "success": True,
+            "session_id": session.id,
+            "state": session.state,
+            "note": (
+                "process signalled; the next reconciler tick classifies the exit "
+                "and releases the task"
+            ),
+        }
 
     async def _cmd_session_drain_ack(self, args: dict) -> dict:
         """Agent-facing: "I am done, you may kill me."

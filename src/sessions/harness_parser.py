@@ -70,6 +70,7 @@ HARNESS_KNOWN_KEYS: frozenset[str] = frozenset(
         "model_flag",
         "effort_flag",
         "session_id_flag",
+        "settings_flag",
         "resume",
         "ready_delay_ms",
         "ready_prompt_prefix",
@@ -123,6 +124,10 @@ class Harness:
     model_flag: str = ""
     effort_flag: str = ""
     session_id_flag: str = ""
+    #: Flag that points the harness at a settings/hooks file, e.g. Claude's
+    #: ``--settings``.  Emitted only when ``hook_files`` actually rendered —
+    #: without it the hook payload is written and never read.
+    settings_flag: str = ""
     resume: ResumeSpec = field(default_factory=ResumeSpec)
     ready_delay_ms: int = 0
     ready_prompt_prefix: str | None = None
@@ -334,6 +339,7 @@ def parse_harness_markdown(
         model_flag=str(config.get("model_flag") or ""),
         effort_flag=str(config.get("effort_flag") or ""),
         session_id_flag=str(config.get("session_id_flag") or ""),
+        settings_flag=str(config.get("settings_flag") or ""),
         resume=resume,
         ready_delay_ms=ready_delay,
         ready_prompt_prefix=config.get("ready_prompt_prefix") or None,
@@ -365,6 +371,7 @@ _INHERITABLE = (
     "model_flag",
     "effort_flag",
     "session_id_flag",
+    "settings_flag",
     "ready_delay_ms",
     "ready_prompt_prefix",
     "process_names",

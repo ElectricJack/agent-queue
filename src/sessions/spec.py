@@ -42,21 +42,67 @@ __all__ = [
     "sanitize_name",
     "task_session_name",
     "named_session_name",
+    "skip_permissions_allowed",
+    "BYPASS_PERMISSION_MODE",
     "BOOTSTRAP_PROMPT",
 ]
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
 
+#: ``profile.permission_mode`` value that is an explicit opt-in to the
+#: harness's skip-permissions flag outside an isolated worktree.  Same
+#: vocabulary the Claude SDK runtime already uses
+#: (:data:`src.profiles.parser.VALID_PERMISSION_MODES`), so an operator
+#: writes one word in one place and both runtimes honour it.
+BYPASS_PERMISSION_MODE = "bypassPermissions"
+
 #: The bootstrap prompt.  Deliberately tiny — see the module docstring.
 #: ``{}`` fields: task_id, work_dir.
+#:
+#: The heartbeat line is load-bearing, not advice.  With the transcript
+#: reader deferred the lease has exactly two feeds — the provider's
+#: ``last_activity`` and an explicit ``aq task heartbeat`` — and on the
+#: subprocess provider ``last_activity`` is log-file mtime.  A long quiet
+#: tool call therefore climbs the stall ladder, and a provider without
+#: ``Cap.NUDGE`` skips straight to interrupt+kill.  Nothing else in the
+#: system tells the agent to heartbeat, so this prompt has to.
 BOOTSTRAP_PROMPT = (
     "You are running task {task_id} in {work_dir}.\n"
     "Run `aq prime` first and follow what it tells you.\n"
+    "Before any command that will run quiet for more than a few minutes "
+    "(long builds, full test suites, large installs), call "
+    "`aq task heartbeat {task_id}` — silence past the lease is read as a "
+    "stall and the daemon will interrupt you.\n"
     "When the work is done, close the task explicitly:\n"
     "  aq task close {task_id} --outcome pass --work-outcome shipped\n"
     "  aq session drain-ack\n"
     "Exiting without `aq task close` is treated as a failure, not a success."
 )
+
+
+def skip_permissions_allowed(profile, workspace_source_type) -> bool:
+    """Whether this launch may carry the harness's skip-permissions flag.
+
+    [[design/trust-and-ops]] §4 is narrow about this: skip-permissions
+    applies *"when — and only when — the session's ``work_dir`` is an
+    isolated per-task worktree"*, and *"sessions outside an isolated
+    worktree do not get skip-permissions by default; profiles must opt
+    in."*  The trust argument is the bounded blast radius of a disposable
+    worktree, so a session running in the operator's real checkout (today's
+    common case — worktree execution is a later lane, and most workspaces
+    are ``LINK``) does not get to borrow it.
+
+    Two ways to qualify:
+
+    * the workspace is a git worktree (``RepoSourceType.WORKTREE``), or
+    * the profile sets ``permission_mode: bypassPermissions``, which is the
+      explicit opt-in §4 asks for.
+    """
+    value = getattr(workspace_source_type, "value", workspace_source_type)
+    if isinstance(value, str) and value.lower() == "worktree":
+        return True
+    mode = str(getattr(profile, "permission_mode", "") or "").strip()
+    return mode == BYPASS_PERMISSION_MODE
 
 #: Bootstrap for a named (persistent) session — no task in scope.
 NAMED_BOOTSTRAP_PROMPT = (
@@ -117,8 +163,15 @@ class SessionSpecBuilder:
         api_token: str = "",
         resume_key: str | None = None,
         prompt: str | None = None,
+        workspace_source_type=None,
     ) -> SessionSpec:
-        """Spec for a one-task session (``lifecycle="task"``)."""
+        """Spec for a one-task session (``lifecycle="task"``).
+
+        *workspace_source_type* is the :class:`~src.models.RepoSourceType`
+        of the workspace behind *work_dir*.  It is what
+        :func:`skip_permissions_allowed` reads; omitting it is the safe
+        default (no skip-permissions unless the profile opted in).
+        """
         name = task_session_name(task.id)
         bootstrap = prompt if prompt is not None else BOOTSTRAP_PROMPT.format(
             task_id=task.id, work_dir=work_dir
@@ -139,6 +192,7 @@ class SessionSpecBuilder:
             resume_key=resume_key,
             bootstrap=bootstrap,
             lifecycle="task",
+            allow_skip_permissions=skip_permissions_allowed(profile, workspace_source_type),
         )
 
     def build_named_spec(
@@ -207,9 +261,11 @@ class SessionSpecBuilder:
         resume_key: str | None,
         bootstrap: str,
         lifecycle: str,
+        allow_skip_permissions: bool = False,
     ) -> SessionSpec:
         files: list[tuple[str, str]] = []
 
+        hook_files = self._hook_files(harness)
         prompt = None if harness.prompt_mode == "none" else bootstrap
         argv = self._compose_argv(
             harness=harness,
@@ -219,9 +275,11 @@ class SessionSpecBuilder:
             prompt=prompt,
             session_name=session_name,
             files=files,
+            allow_skip_permissions=allow_skip_permissions,
+            hook_files=hook_files,
         )
 
-        files.extend(self._hook_files(harness))
+        files.extend(hook_files)
 
         env = build_session_env(
             session_id=session_id,
@@ -265,6 +323,8 @@ class SessionSpecBuilder:
         prompt: str | None,
         session_name: str,
         files: list[tuple[str, str]],
+        allow_skip_permissions: bool = False,
+        hook_files: list[tuple[str, str]] | None = None,
     ) -> list[str]:
         argv: list[str] = [harness.command]
 
@@ -285,8 +345,25 @@ class SessionSpecBuilder:
         if effort and harness.effort_flag:
             argv.extend([harness.effort_flag, effort])
 
+        # Declaring the flag in a harness file is *permission to use it*,
+        # not an instruction to always use it -- see
+        # :func:`skip_permissions_allowed` for the trust-and-ops §4 rule.
         if harness.permission_flag:
-            argv.append(harness.permission_flag)
+            if allow_skip_permissions:
+                argv.append(harness.permission_flag)
+            else:
+                logger.debug(
+                    "Session %s: withholding %s -- work_dir is not an isolated "
+                    "worktree and the profile did not opt in",
+                    session_name,
+                    harness.permission_flag,
+                )
+
+        # The hook payload is only live if the harness is actually pointed at
+        # it.  Writing the file and never passing the flag was a harness that
+        # advertised ``supports_hooks: true`` and shipped a dead file.
+        if hook_files and harness.settings_flag:
+            argv.extend([harness.settings_flag, hook_files[0][0]])
 
         if resume_key and harness.resume.style == "flag":
             argv.extend([harness.resume.flag, resume_key])

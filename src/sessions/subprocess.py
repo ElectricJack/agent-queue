@@ -244,10 +244,24 @@ class SubprocessProvider(SessionProvider):
 
 
 def _write_spec_files(spec: SessionSpec) -> None:
-    """Materialise ``spec.files`` under ``work_dir`` before launch."""
-    root = Path(spec.work_dir)
+    """Materialise ``spec.files`` under ``work_dir`` before launch.
+
+    Destinations are operator data (the keys of a harness file's
+    ``hook_files``), so they are joined and then *checked* rather than
+    trusted: a ``../`` or an absolute path would otherwise write outside
+    the work_dir.  Low severity — an operator editing a vault harness can
+    already run arbitrary commands — but the check is one line.
+    """
+    root = Path(spec.work_dir).resolve()
     for rel, content in spec.files:
-        target = root / rel
+        target = (root / rel).resolve()
+        if not target.is_relative_to(root):
+            logger.warning(
+                "Session %s: refusing to write %r outside the work_dir",
+                spec.session_name,
+                rel,
+            )
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
