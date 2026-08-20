@@ -100,6 +100,13 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "prompt management, daemon control"
         ),
     ),
+    "message": CategoryMeta(
+        name="message",
+        description=(
+            "Inter-agent and user message queue — send, reply, inbox, and list "
+            "the messages that carry all chat and handoff traffic"
+        ),
+    ),
     "mcp": CategoryMeta(
         name="mcp",
         description=(

@@ -1,0 +1,7 @@
+[
+  {
+    "rule": "missing_title",
+    "node": "a",
+    "severity": "error"
+  }
+]

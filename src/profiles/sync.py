@@ -187,6 +187,39 @@ def derive_profile_id(rel_path: str) -> str | None:
     return None
 
 
+def _check_harness_exists(harness: str | None, source_path: str) -> str | None:
+    """Return a warning string when *harness* has no vault definition.
+
+    The harness registry lives at ``<vault_root>/harnesses/<id>.md`` and is
+    owned by the session-runtime spec.  Per supervisor-agent §7 a missing
+    harness is a **warning**, never an error, so profiles can land before
+    their harness does.  When the registry directory doesn't exist at all
+    (session-runtime not installed yet) this stays silent — warning on
+    every profile in that situation would be pure noise.
+
+    *source_path* is used to locate the vault root; when it isn't inside a
+    vault the check is skipped.
+    """
+    if not harness or not source_path:
+        return None
+
+    parts = Path(source_path).resolve().parts
+    try:
+        vault_index = len(parts) - 1 - list(reversed(parts)).index("vault")
+    except ValueError:
+        return None
+
+    harness_dir = Path(*parts[: vault_index + 1]) / "harnesses"
+    if not harness_dir.is_dir():
+        return None
+    if (harness_dir / f"{harness}.md").is_file():
+        return None
+    return (
+        f"Harness '{harness}' has no definition at {harness_dir}/{harness}.md "
+        "(profile still synced — define the harness before running named sessions)"
+    )
+
+
 async def sync_profile_to_db(
     parsed: ParsedProfile,
     db: Any,
@@ -262,10 +295,24 @@ async def sync_profile_to_db(
         memory_scope_id=profile_dict.get("memory_scope_id"),
         runtime=profile_dict.get("runtime", "claude_sdk"),
         agent_name=profile_dict.get("agent_name", ""),
+        harness=profile_dict.get("harness"),
+        lifecycle=profile_dict.get("lifecycle", "task"),
+        mode=profile_dict.get("mode"),
+        wake_mode=profile_dict.get("wake_mode"),
+        idle_timeout=profile_dict.get("idle_timeout"),
+        max_session_age=profile_dict.get("max_session_age"),
     )
 
     # 5. Soft-validate tool names (warnings, not errors -- per spec).
     warnings: list[str] = []
+
+    # Harness existence is a *warning*, never an error: the harness registry
+    # (``vault/harnesses/``) belongs to the session-runtime spec, and
+    # profiles are allowed to land before their harness does (§7).
+    harness_warning = _check_harness_exists(profile.harness, source_path)
+    if harness_warning:
+        warnings.append(harness_warning)
+
     if profile.allowed_tools:
         from src.known_tools import validate_tool_names
 

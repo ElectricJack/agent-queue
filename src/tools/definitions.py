@@ -60,6 +60,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "create_mcp_server": "mcp",
     "edit_mcp_server": "mcp",
     "delete_mcp_server": "mcp",
+    # message — inter-agent / user message queue (supervisor-agent §6.1)
+    "message_send": "message",
+    "message_reply": "message",
+    "message_inbox": "message",
+    "message_list": "message",
     # vault — reference stub management
     "scan_stub_staleness": "system",
     # memory — provided by the external aq-memory plugin (install via `aq plugin install`)
@@ -89,6 +94,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "remove_dependency": "task",
     "get_chain_health": "task",
     "list_active_tasks_all_projects": "task",
+    "create_task_graph": "task",
     # playbook — compilation, run management, human-in-the-loop resume
     "compile_playbook": "playbook",
     "run_playbook": "playbook",
@@ -2933,6 +2939,181 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {"type": "string"},
             },
             "required": ["name"],
+        },
+    },
+
+    # -- messages (supervisor-agent spec §6.1) ------------------------------
+    {
+        "name": "message_send",
+        "description": (
+            "Queue a message to a session, task, profile, or user.  Messages "
+            "are the single transport for user<->agent and agent<->agent "
+            "traffic; delivery is asynchronous."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Owning project"},
+                "to_kind": {
+                    "type": "string",
+                    "enum": ["session", "task", "profile", "user"],
+                    "description": "Recipient kind",
+                },
+                "to_id": {
+                    "type": "string",
+                    "description": (
+                        "Recipient id: a session name (supervisor-<project_id>), "
+                        "task id, profile id, or user handle"
+                    ),
+                },
+                "body": {"type": "string", "description": "Markdown message body"},
+                "subject": {"type": "string", "description": "Optional subject line"},
+                "from_kind": {
+                    "type": "string",
+                    "enum": ["session", "user", "system"],
+                    "description": "Sender kind (default: user)",
+                },
+                "from_id": {"type": "string", "description": "Sender id"},
+                "thread_id": {
+                    "type": "string",
+                    "description": "Conversation grouping key (Discord channel, chat id)",
+                },
+                "priority": {
+                    "type": "integer",
+                    "description": "Delivery ordering, lower first (default 100)",
+                    "default": 100,
+                },
+                "archive_after_inject": {
+                    "type": "boolean",
+                    "description": "Archive the row once injected into a prompt",
+                    "default": False,
+                },
+                "reply_to_id": {"type": "string", "description": "Message this replies to"},
+            },
+            "required": ["to_kind", "to_id", "body", "from_id"],
+        },
+    },
+    {
+        "name": "message_reply",
+        "description": (
+            "Reply to a message by id.  Marks the original read, writes a "
+            "linked reply row addressed back to its sender, and emits "
+            "message.replied so chat surfaces can render it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "Message being replied to"},
+                "body": {"type": "string", "description": "Markdown reply body"},
+                "subject": {"type": "string", "description": "Optional subject line"},
+                "from_kind": {
+                    "type": "string",
+                    "enum": ["session", "user", "system"],
+                    "description": "Override the inferred replier kind",
+                },
+                "from_id": {"type": "string", "description": "Override the inferred replier id"},
+                "via": {
+                    "type": "string",
+                    "description": "Delivery marker, e.g. transcript_tail",
+                },
+            },
+            "required": ["message_id", "body"],
+        },
+    },
+    {
+        "name": "message_inbox",
+        "description": (
+            "List the pending (undelivered) messages for one recipient.  With "
+            "inject=true it also marks them delivered and archives any rows "
+            "flagged archive_after_inject."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to_kind": {
+                    "type": "string",
+                    "enum": ["session", "task", "profile", "user"],
+                    "description": "Recipient kind",
+                },
+                "to_id": {"type": "string", "description": "Recipient id"},
+                "inject": {
+                    "type": "boolean",
+                    "description": "Mark the returned messages delivered",
+                    "default": False,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Max rows (default 50, or max_inject_per_prompt when injecting)"
+                    ),
+                },
+            },
+            "required": ["to_kind", "to_id"],
+        },
+    },
+    {
+        "name": "message_list",
+        "description": (
+            "List messages newest-first with project, thread, and recipient "
+            "filters.  Use since=<epoch> to poll for new traffic."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Filter by project"},
+                "thread_id": {"type": "string", "description": "Filter by conversation thread"},
+                "to_kind": {
+                    "type": "string",
+                    "enum": ["session", "task", "profile", "user"],
+                    "description": "Filter by recipient kind",
+                },
+                "to_id": {"type": "string", "description": "Filter by recipient id"},
+                "include_archived": {
+                    "type": "boolean",
+                    "description": "Include archived rows",
+                    "default": False,
+                },
+                "since": {
+                    "type": "number",
+                    "description": "Only messages created after this epoch timestamp",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows (default 100)",
+                    "default": 100,
+                },
+            },
+        },
+    },
+    {
+        "name": "create_task_graph",
+        "description": (
+            "Create a whole task graph in one transaction from a graph "
+            "document or a vault spec's fenced aq-graph block.  Validates "
+            "vars, keys, dependency types, profiles, cycles, and spec "
+            "references first; dry_run returns the report without writing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Owning project"},
+                "graph": {
+                    "type": "object",
+                    "description": "Graph document (version/vars/defaults/parent/nodes)",
+                },
+                "spec_path": {
+                    "type": "string",
+                    "description": (
+                        "Vault spec path whose fenced aq-graph block defines the "
+                        "graph (relative to the vault root or absolute)"
+                    ),
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Validate and report assigned ids without writing",
+                    "default": False,
+                },
+            },
         },
     },
 ]

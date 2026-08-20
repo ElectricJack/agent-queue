@@ -1,0 +1,7 @@
+[
+  {
+    "rule": "cycle",
+    "node": null,
+    "severity": "error"
+  }
+]

@@ -525,6 +525,62 @@ class AgentProfile:
     # ``agent_name`` at sync-time; for every other runtime this field is
     # unused / empty.
     agent_name: str = ""
+    # -- Named-session pass-through storage (supervisor-agent spec §3.2/§7) --
+    # Validated at profile parse time; the harness *schema* (what "claude"
+    # means) is owned by the session-runtime spec, so as far as this layer
+    # is concerned these are opaque storage.
+    #
+    # ``harness``         — session-runtime harness id (any string).
+    # ``lifecycle``       — "task" (default) | "named".
+    # ``mode``            — "always" | "on_demand"; named lifecycle only.
+    # ``wake_mode``       — "resume" | "fresh"; named lifecycle only.
+    # ``idle_timeout``    — seconds before an on_demand session sleeps.
+    # ``max_session_age`` — seconds before a named session is recycled.
+    harness: str | None = None
+    lifecycle: str = "task"
+    mode: str | None = None
+    wake_mode: str | None = None
+    idle_timeout: int | None = None
+    max_session_age: int | None = None
+
+
+@dataclass
+class Message:
+    """One row of the ``messages`` table — the single inter-agent/user queue.
+
+    Carries every user↔session and session↔session exchange (supervisor-agent
+    design §6).  Timestamps are Float epoch seconds, matching every other
+    table in this schema; the application sets them, never the database.
+
+    ``from_kind`` is one of ``session`` | ``user`` | ``system``;
+    ``to_kind`` is one of ``session`` | ``task`` | ``profile`` | ``user``.
+    Both are enforced by named CHECK constraints on the table.
+    """
+
+    id: str
+    project_id: str
+    from_kind: str
+    from_id: str
+    to_kind: str
+    to_id: str
+    body: str
+    subject: str | None = None
+    thread_id: str | None = None
+    priority: int = 100
+    created_at: float = 0.0
+    delivered_at: float | None = None
+    read_at: float | None = None
+    archive_after_inject: bool = False
+    archived_at: float | None = None
+    reply_to_id: str | None = None
+    via: str | None = None
+
+
+#: Legal ``messages.from_kind`` values (mirrors ``ck_messages_from_kind``).
+MESSAGE_FROM_KINDS: frozenset[str] = frozenset({"session", "user", "system"})
+
+#: Legal ``messages.to_kind`` values (mirrors ``ck_messages_to_kind``).
+MESSAGE_TO_KINDS: frozenset[str] = frozenset({"session", "task", "profile", "user"})
 
 
 @dataclass

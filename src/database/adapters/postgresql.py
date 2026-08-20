@@ -29,6 +29,7 @@ from src.database.queries.archive_queries import ArchiveQueryMixin
 from src.database.queries.chat_queries import ChatQueryMixin
 from src.database.queries.dependency_queries import DependencyQueryMixin
 from src.database.queries.event_queries import EventQueryMixin
+from src.database.queries.message_queries import MessageQueriesMixin
 from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
@@ -63,6 +64,7 @@ class PostgreSQLDatabaseAdapter(
     EventQueryMixin,
     ArchiveQueryMixin,
     ChatQueryMixin,
+    MessageQueriesMixin,
     PluginQueryMixin,
     PlaybookQueryMixin,
     WorkflowQueryMixin,

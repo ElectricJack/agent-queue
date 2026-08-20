@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "vars": {
+    "base": "main"
+  },
+  "nodes": [
+    {
+      "key": "a",
+      "title": "No references here",
+      "acceptance": [
+        "done"
+      ]
+    }
+  ]
+}

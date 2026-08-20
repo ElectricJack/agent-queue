@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "key": "a",
+      "title": "First",
+      "acceptance": [
+        "done"
+      ]
+    },
+    {
+      "key": "a",
+      "title": "Second",
+      "acceptance": [
+        "done"
+      ]
+    }
+  ]
+}

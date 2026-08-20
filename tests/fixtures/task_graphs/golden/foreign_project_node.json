@@ -1,0 +1,7 @@
+[
+  {
+    "rule": "foreign_project_node",
+    "node": "a",
+    "severity": "error"
+  }
+]
