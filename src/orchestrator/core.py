@@ -73,6 +73,7 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -314,6 +315,36 @@ class Orchestrator(
         from src.profiles.mcp_registry import McpRegistry
 
         self.mcp_registry = McpRegistry()
+        # ---- Session runtime (docs/specs/design/session-runtime.md) ------
+        # Harness descriptions (vault/harnesses/*.md), the provider
+        # registry, the spec builder and the reconciler.  All constructed
+        # unconditionally so `aq session list` and the tests work with the
+        # feature flag off; nothing spawns until ``sessions.enabled``.
+        from src.sessions import default_session_registry
+        from src.sessions.harness_registry import HarnessRegistry
+        from src.sessions.reconciler import SessionReconciler
+        from src.sessions.spec import SessionSpecBuilder
+
+        self.harness_registry = HarnessRegistry()
+        self.session_providers = default_session_registry(config)
+        self.session_spec_builder = SessionSpecBuilder(config, self.harness_registry)
+        # AQ_DAEMON_EPOCH: identifies this daemon *run*.  Provenance for
+        # adoption, never a validity test — an older-epoch session is still
+        # adoptable, and the instance token is what fences kills.
+        self.daemon_epoch = uuid.uuid4().hex[:12]
+        self.session_reconciler = SessionReconciler(
+            self.db,
+            config,
+            self.session_providers,
+            harnesses=self.harness_registry,
+            spec_builder=self.session_spec_builder,
+            bus=self.bus,
+            # The reconciler needs the orchestrator, not the command
+            # handler: every terminal verdict runs the same cleanup tail as
+            # the happy path (``release_session_task_resources``).
+            orchestrator=self,
+            epoch=self.daemon_epoch,
+        )
         # Tool catalog snapshot keyed by (project_id, server_name).  Probed
         # once at startup; refreshed per-server by the vault watcher hook
         # and the probe-mcp-server command.
@@ -848,7 +879,23 @@ class Orchestrator(
         """
         await self.db.initialize()
         await self._sync_profiles_from_config()
-        await self._recover_stale_state()
+        # Adoption runs *before* recovery: a session that survived the
+        # restart must be re-bound before the blanket reset would otherwise
+        # yank its task out from under it.  Harnesses are loaded first
+        # because adoption reads process_names off them.
+        adopted_task_ids: set[str] = set()
+        if self.config.sessions.enabled:
+            try:
+                from src.sessions.harness_registry import (
+                    load_from_vault as _load_harnesses,
+                )
+
+                _load_harnesses(self.harness_registry, self.config.vault_root)
+                report = await self.session_reconciler.adopt_on_start()
+                adopted_task_ids = await self.session_reconciler.adopted_task_ids(report)
+            except Exception:
+                logger.error("Session adoption pass failed", exc_info=True)
+        await self._recover_stale_state(skip_task_ids=adopted_task_ids)
 
         # Initialize VaultManager — central path resolution and directory
         # management for the vault.  Must be available before any subsystem
@@ -906,6 +953,11 @@ class Orchestrator(
             self.mcp_registry,
             vault_root=self.config.vault_root,
         )
+        # Harness files ride the same watcher — editing a harness changes
+        # how the next session launches, with no restart and no release.
+        from src.sessions.harness_registry import register_harness_handlers
+
+        register_harness_handlers(self.vault_watcher, self.harness_registry)
         # Seed the synthetic agent-queue entry so the dashboard can show
         # "Built-in" plus its plugin tools, and profiles can reference it
         # by name.
@@ -1384,6 +1436,16 @@ class Orchestrator(
 
         load_mcp_registry(self.mcp_registry, self.config.vault_root)
 
+        # Same for harness files (vault/harnesses/*.md).  A harness is one
+        # CLI coding agent as markdown — the file is the source of truth,
+        # so this is a projection, not a cache of a DB table.
+        from src.sessions.harness_registry import load_from_vault as load_harness_registry
+
+        try:
+            load_harness_registry(self.harness_registry, self.config.vault_root)
+        except Exception:
+            logger.warning("Harness registry load failed", exc_info=True)
+
         # Probe every registry entry (parallel) and populate the in-memory
         # tool catalog.  Builtin entries are resolved in-process via the
         # resolver set up above; external entries hit the network.  A
@@ -1411,8 +1473,14 @@ class Orchestrator(
         except Exception as e:
             logger.warning("Startup README scan failed: %s", e)
 
-    async def _recover_stale_state(self) -> None:
+    async def _recover_stale_state(self, skip_task_ids: set[str] | None = None) -> None:
         """Reset any in-flight work from a previous daemon run.
+
+        ``skip_task_ids`` are tasks owned by a session that was adopted on
+        boot (session-runtime §4.4).  Their agents are genuinely still
+        working, so resetting them would abort live work — the one case
+        where the blanket reset below is wrong.  ``aq daemon start --reset``
+        forces the old behavior by skipping adoption entirely.
 
         After a restart, no adapter processes are actually running, so any
         tasks marked IN_PROGRESS or agents marked BUSY are stale artifacts
@@ -1429,9 +1497,25 @@ class Orchestrator(
         idempotent (the agent sees the workspace as the previous agent left
         it, including any partial commits).
         """
+        skip_task_ids = skip_task_ids or set()
+        # Agents holding an adopted task keep their BUSY state and their
+        # workspace lock — the session behind them never stopped.
+        protected_agents: set[str] = set()
+        if skip_task_ids:
+            for tid in skip_task_ids:
+                t = await self.db.get_task(tid)
+                if t is not None and t.assigned_agent_id:
+                    protected_agents.add(t.assigned_agent_id)
+            logger.info(
+                "Recovery: %d task(s) owned by adopted sessions are exempt from reset",
+                len(skip_task_ids),
+            )
+
         # Reset BUSY agents to IDLE
         agents = await self.db.list_agents()
         for a in agents:
+            if a.id in protected_agents:
+                continue
             if a.state == AgentState.BUSY:
                 logger.info("Recovery: resetting agent '%s' from %s to IDLE", a.name, a.state.value)
                 await self.db.update_agent(a.id, state=AgentState.IDLE, current_task_id=None)
@@ -1506,6 +1590,11 @@ class Orchestrator(
         all_workspaces = await self.db.list_workspaces()
         self._recover_worktree_base_paths(all_workspaces)
         for ws in all_workspaces:
+            if ws.locked_by_agent_id in protected_agents:
+                # An adopted session is still working in here; removing the
+                # worktree or the sentinel would pull the floor out from
+                # under a live agent.
+                continue
             if ws.is_slot:
                 # Slot directories keep their own `.aq-worktree.json`; the
                 # legacy `.agent-queue-lock` sentinel is not used there.
@@ -1526,7 +1615,7 @@ class Orchestrator(
                     ws.workspace_path,
                 )
                 await self._cleanup_worktree_workspace(ws)
-            elif ws.locked_by_agent_id:
+            elif ws.locked_by_agent_id and ws.locked_by_agent_id not in protected_agents:
                 logger.info(
                     "Recovery: releasing workspace lock '%s' (was locked by %s)",
                     ws.id,
@@ -1549,6 +1638,11 @@ class Orchestrator(
         # keys off *having subtasks*, not off is_plan_subtask.
         tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
         for t in tasks:
+            if t.id in skip_task_ids:
+                logger.info(
+                    "Recovery: task '%s' kept IN_PROGRESS — its session was adopted", t.id
+                )
+                continue
             if await self.db.get_subtasks(t.id):
                 logger.info(
                     "Recovery: leaving container task '%s' (%s) IN_PROGRESS — it has subtasks",
@@ -2030,15 +2124,18 @@ class Orchestrator(
             return
 
     async def _reconcile_sessions(self) -> None:
-        """Reconcile desired vs. actual agent sessions.
+        """Reconcile desired vs. actual agent sessions — one reconciler tick.
 
-        Wave 2 lane 2A fills this in — see
-        docs/specs/implementation/session-runtime.md (``SessionReconciler``).
-        Expected body: drive the reconciler one tick (start/stop/nudge/
-        restart/quarantine) against the ``sessions`` table.
+        Deterministic and LLM-free, like every other cascade step.  The
+        reconciler swallows its own per-step failures (see
+        ``SessionReconciler.tick``), so a wedged provider degrades one step
+        rather than stopping the cascade.
+
+        See docs/specs/design/session-runtime.md §4.
         """
         if not self.config.sessions.enabled:
             return
+        await self.session_reconciler.tick()
 
     async def _deliver_messages(self) -> None:
         """Deliver queued inter-agent messages to their recipients.

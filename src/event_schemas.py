@@ -77,6 +77,37 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title", "reason"],
         "optional": ["resume_after"],
     },
+    # -- session-runtime lifecycle (SessionReconciler._emit) ----------------
+    #
+    # The reconciler emits these directly on the bus rather than through
+    # ``_emit_task_event``, but they still carry the task.* base triple:
+    # every consumer of a task event can rely on task_id/project_id/title,
+    # and a family that quietly opted out would be the drift these
+    # invariant tests exist to catch.
+    "task.stalled": {
+        "required": ["task_id", "project_id", "title", "session_id"],
+        "optional": ["idle_seconds"],
+    },
+    "task.nudged": {
+        "required": ["task_id", "project_id", "title", "session_id"],
+        "optional": ["attempt"],
+    },
+    "task.restarted": {
+        "required": ["task_id", "project_id", "title", "reason"],
+        "optional": ["session_id", "attempt"],
+    },
+    "task.quarantined": {
+        "required": ["task_id", "project_id", "title", "reason"],
+        "optional": ["session_id"],
+    },
+    "task.needs_attention": {
+        "required": ["task_id", "project_id", "title", "reason"],
+        "optional": ["session_id"],
+    },
+    "task.closed": {
+        "required": ["task_id", "project_id", "title", "outcome", "status"],
+        "optional": ["work_outcome", "pr_url", "retry_count"],
+    },
     "task.waiting_input": {
         "required": ["task_id", "project_id", "title", "question"],
         "optional": [],
@@ -552,6 +583,46 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
     "session.restart_requested": {
         "required": ["task_id", "reason", "handoff_id"],
         "optional": ["session_id"],
+    },
+    # -- launch / operator surface (literal emits) --------------------------
+    "session.started": {
+        "required": ["session_id", "name", "task_id", "project_id"],
+        "optional": ["provider", "harness", "work_dir"],
+    },
+    "session.killed": {
+        "required": ["session_id", "name"],
+        "optional": ["task_id", "project_id"],
+    },
+    # -- reconciler (emitted through SessionReconciler._emit) ---------------
+    #
+    # These go out via an indirection (``self._emit(event, **payload)``), so
+    # the literal-emit scan in tests/test_event_schema_registry_validation.py
+    # cannot see them.  They are registered here anyway: an event the static
+    # scan misses is exactly the kind that drifts away from its schema
+    # unnoticed, and ``validate_event`` still checks them at runtime.
+    "session.adopted": {
+        "required": ["session_id", "name"],
+        "optional": ["task_id", "project_id"],
+    },
+    "session.exited": {
+        "required": ["session_id", "name", "verdict"],
+        "optional": ["task_id", "project_id", "reason"],
+    },
+    "session.drain_acked": {
+        "required": ["session_id", "name"],
+        "optional": ["task_id", "project_id"],
+    },
+    "session.premature_drain": {
+        "required": ["session_id"],
+        "optional": ["task_id", "project_id"],
+    },
+    "session.sleeping": {
+        "required": ["session_id", "name", "reason"],
+        "optional": ["project_id"],
+    },
+    "session.quarantined": {
+        "required": ["session_id", "name", "reason"],
+        "optional": ["task_id", "project_id"],
     },
 }
 

@@ -213,10 +213,13 @@ class TestConditionalRegistration:
     def test_only_backed_commands_are_registered(self, real_handler):
         bot = FakeBot(real_handler)
         registered = setup_commands(bot)
-        assert registered == ["status", "tasks"]
-        assert set(bot.tree.commands) == {"status", "tasks"}
-        # The four M1-pending commands must not be published to the guild.
-        for name in ("explain", "peek", "gates", "attach"):
+        # /peek and /attach joined when the sessions lane landed
+        # ``session_peek`` / ``session_attach`` -- which is the mechanism
+        # working, not a regression (see the test below).
+        assert registered == ["attach", "peek", "status", "tasks"]
+        assert set(bot.tree.commands) == {"attach", "peek", "status", "tasks"}
+        # The still-pending commands must not be published to the guild.
+        for name in ("explain", "gates"):
             assert name not in bot.tree.commands
 
     def test_command_appears_once_its_backend_lands(self, real_handler):

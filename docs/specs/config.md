@@ -343,6 +343,47 @@ Note that `supervisor.observation.enabled` is also paused by default for the
 same reason (it gates `ChatObserver` construction — it is the real chat
 analyzer switch; there is no `chat_analyzer.enabled`).
 
+### 4.10.2 `sessions` Section
+
+Maps to `SessionsConfig`. The YAML key is `sessions`. See
+[`design/session-runtime.md`](design/session-runtime.md) §7 and
+[`implementation/session-runtime.md`](implementation/session-runtime.md) §5.
+
+Under the session runtime an agent is not a stream the daemon blocks on: it
+is an independent OS session that the daemon starts, observes, nudges and
+re-adopts across restarts. These keys tune that reconciliation loop.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `bool` | `False` | Master switch. `false` means the legacy runtimes are the only execution path and every session module stays dormant. |
+| `provider` | `str` | `"subprocess"` | `tmux` \| `subprocess` \| `fake`. Validated against that set, **and** — when `enabled` — against what `default_session_registry()` can actually build on this host, so a name the registry lacks is a config error at load rather than a failed launch per task. `tmux` is registered only on hosts where its module imports; it defaults to `subprocess` while `TmuxProvider` is deferred. |
+| `tmux_socket` | `str` | `"aq"` | `tmux -L` socket name — one server per daemon, so two daemons on one host cannot see each other's sessions. |
+| `lease_ttl_seconds` | `int` | `480` | No transcript activity and no `aq task heartbeat` for this long marks a task **stalled** (not dead) and starts the ladder. `0` disables the ladder. |
+| `stall_max_nudges` | `int` | `3` | Nudges before the ladder escalates to interrupt + restart-with-resume. |
+| `stall_backoff_seconds` | `int` | `300` | Minimum gap between ladder rungs. |
+| `max_restarts` | `int` | `3` | Restarts within `restart_window_seconds` before a session is quarantined. Counters persist on the `sessions` row, so the ladder survives a daemon restart. |
+| `restart_window_seconds` | `int` | `600` | Also the rapid-crash window: a death inside it is classified `RAPID_CRASH` rather than `PRODUCTIVE_DEATH`. |
+| `restart_backoff_seconds` | `int` | `30` | Base backoff before a crashed task is re-queued; multiplied by the restart count. |
+| `dialog_budget_seconds` | `int` | `8` | **One shared budget** for the whole startup-dialog table, not per dialog. Per-dialog budgets are how the Gas City runtime blew its start deadline. |
+| `nudge_debounce_ms` | `int` | `500` | Minimum gap between injections into one session. |
+| `state_cache_ttl_seconds` | `int` | `2` | TTL of the provider state cache — the tmux provider does at most one `list-panes` and one `ps` per reconciler tick. |
+| `transcript_poll_seconds` | `int` | `2` | Transcript reader poll interval (Phase S3). |
+| `adopt_on_start` | `bool` | `True` | Run the boot-time adoption pass. With it off, surviving sessions are not re-bound and `_recover_stale_state` resets their tasks. |
+
+Validation (`SessionsConfig.validate`): `provider` must be one of the three
+names; every integer key must be `>= 0`.
+
+**Rollout and rollback.** A task takes the session path only when
+`sessions.enabled` is true **and** its resolved profile sets `harness:`
+(profile markdown `## Config`). Because profiles can be project-scoped, that
+gives per-profile and per-project opt-in with no extra config. Rollback is
+flipping `enabled` back to `false` or removing `harness:` from one profile —
+live sessions then drain naturally, and `aq session kill` cleans stragglers.
+
+Per-profile session knobs (`harness`, `lifecycle`, `mode`, `wake_mode`,
+`idle_timeout`, `max_session_age`) live in profile markdown, not here: they
+are per-agent-type, and profile markdown is where per-agent-type truth lives.
+
 ### 4.11 `rate_limits` Section
 
 Maps directly to `AppConfig.rate_limits` as a raw dict. The YAML key is `rate_limits`.

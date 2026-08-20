@@ -26,6 +26,7 @@ from src.models import (
     Project,
     ProjectStatus,
     RepoConfig,
+    SessionRecord,
     Task,
     TaskStatus,
     Workflow,
@@ -250,6 +251,27 @@ class DatabaseBackend(Protocol):
         *,
         worktree_slot_cap: int | None = None,
     ) -> int: ...
+
+    # --- Sessions (session-runtime spec §2.3) ---
+
+    async def create_session(self, session: SessionRecord) -> None: ...
+    async def get_session(self, session_id: str) -> SessionRecord | None: ...
+    async def get_session_by_name(self, name: str) -> SessionRecord | None: ...
+    async def get_session_for_task(self, task_id: str) -> SessionRecord | None: ...
+    async def list_sessions(
+        self,
+        *,
+        state: str | None = None,
+        states: list[str] | tuple[str, ...] | None = None,
+        lifecycle: str | None = None,
+        project_id: str | None = None,
+        name: str | None = None,
+        live_only: bool = False,
+    ) -> list[SessionRecord]: ...
+    async def update_session(self, session_id: str, **fields) -> int: ...
+    async def bump_session_restarts(self, session_id: str) -> int: ...
+    async def touch_session_activity(self, session_id: str, ts: float) -> None: ...
+    async def delete_session(self, session_id: str) -> None: ...
 
     # --- Token Ledger ---
 

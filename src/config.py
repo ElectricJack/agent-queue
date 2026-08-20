@@ -838,7 +838,15 @@ class SessionsConfig:
     """
 
     enabled: bool = False
-    provider: str = "tmux"  # tmux | subprocess | fake
+    #: ``subprocess`` while tmux is deferred.  The default has to be a
+    #: provider ``default_session_registry`` can actually build: with
+    #: ``tmux`` here, flipping ``enabled: true`` on a stock install made
+    #: ``providers.create("tmux")`` raise on every launch, which pauses the
+    #: task for 60 s *and posts a Discord notification* -- per task, every
+    #: 60 s, forever.  ``validate()`` also refuses a provider this host
+    #: cannot construct, so the failure is a config error at load rather
+    #: than a notification loop at runtime.
+    provider: str = "subprocess"  # tmux | subprocess | fake
     tmux_socket: str = "aq"
     lease_ttl_seconds: int = 480
     stall_max_nudges: int = 3
@@ -864,6 +872,26 @@ class SessionsConfig:
                     f"must be one of {sorted(self._VALID_PROVIDERS)}, got '{self.provider}'",
                 )
             )
+        elif self.enabled:
+            # A name in the vocabulary is not the same as a class this host
+            # can build -- tmux is POSIX-only and is not implemented yet, so
+            # the registry simply will not have it.  Catch that here, once,
+            # instead of at every task launch.
+            try:
+                from src.sessions import default_session_registry
+
+                if default_session_registry().get(self.provider) is None:
+                    errors.append(
+                        ConfigError(
+                            "sessions",
+                            "provider",
+                            f"'{self.provider}' is not available on this host "
+                            "(not implemented, or unsupported platform) -- "
+                            "sessions.enabled would fail every launch",
+                        )
+                    )
+            except Exception:  # pragma: no cover - registry import problems
+                pass
         for name in (
             "lease_ttl_seconds",
             "stall_max_nudges",

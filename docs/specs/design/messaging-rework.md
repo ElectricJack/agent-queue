@@ -152,7 +152,7 @@ supervisor session owns its own conversation memory (`--resume`).
 | `/explain <task>` | `task_explain` | "Why isn't X running" is *the* support question; explain is built for it ([[work-graph]]). |
 | `/peek <task>` | `session_peek` | See the live pane without leaving Discord; complements thread streaming. |
 | `/gates [project]` | `gate_list` | What is waiting on a human right now. |
-| `/attach <task>` | `session_attach_command` | Prints the `tmux attach` command — the bridge to the real terminal. |
+| `/attach <task>` | `session_attach` | Prints the `tmux attach` command — the bridge to the real terminal. |
 
 Selection rule: **read-only or navigation only**. Every mutation flows through gate buttons,
 thread replies, supervisor chat, or the dashboard — mutating slash commands are exactly the
@@ -291,7 +291,7 @@ model in `src/api/models/` + generated client — never a dashboard-private endp
 
 | # | Feature | Commands | Response models |
 |---|---|---|---|
-| 1 | **Sessions view** — list with state, auto-refreshing peek, copyable attach command, nudge box, logs | `session_list`, `session_peek`, `session_attach_command`, `session_nudge`, `session_logs` | `SessionSummary`, `SessionListResponse`, `SessionPeekResponse`, `SessionAttachResponse`, `SessionNudgeResponse`, `SessionLogsResponse` |
+| 1 | **Sessions view** — list with state, auto-refreshing peek, copyable attach command, nudge box, logs | `session_list`, `session_peek`, `session_attach`, `session_nudge`, `session_logs` | `SessionSummary`, `SessionListResponse`, `SessionPeekResponse`, `SessionAttachResponse`, `SessionNudgeResponse`, `SessionLogsResponse` |
 | 2 | **Task explain + graph** — typed edges, gates, blockers with reasons | `task_explain`, `task_graph` | `TaskExplainResponse` (blocker list: dep/gate/cap/budget/affinity/lease…), `TaskGraphResponse` (typed nodes/edges, gate nodes, cross-project edges flagged) |
 | 3 | **Gates / approvals inbox** — all pending human gates across projects, one-click resolve | `gate_list`, `gate_resolve` | `GateSummary`, `GateListResponse`, `GateResolveResponse` |
 | 4 | **Supervisor chat panel** — per-project chat with the supervisor session | `session_message_send`, `session_message_history` (command wrappers over [[supervisor-agent]]'s relay: `POST /api/sessions/{name}/message`, `GET /api/sessions/{name}/messages`) | `ChatMessage`, `ChatHistoryResponse`, `MessageSendResponse` |

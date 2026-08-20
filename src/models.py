@@ -1177,3 +1177,43 @@ class PipelineContext:
     pr_url: str | None = None
     plan_needs_approval: bool = False
     verification_reopened: bool = False
+
+
+@dataclass(frozen=True)
+class SessionRecord:
+    """One row of the ``sessions`` table — an OS-level agent run.
+
+    Maps 1:1 to ``src/database/tables.py::sessions``.  Frozen because a
+    session row is *observed* state: the reconciler writes through
+    ``update_session`` and re-reads, rather than mutating a shared object a
+    concurrent tick might be holding.
+
+    ``task_id`` is None for named (persistent) sessions.  ``state`` is one
+    of ``starting | running | draining | stopped | sleeping | quarantined``;
+    "stalled" is derived from the lease TTL versus ``last_activity`` and is
+    deliberately never stored.
+
+    ``epoch`` is provenance (which daemon run launched this), not a validity
+    test — an older-epoch session is still adoptable.  ``instance_token`` is
+    the kill fence: it is compared against the observed process before any
+    signal, so a name-reusing successor is never hit.
+    """
+
+    id: str
+    project_id: str
+    profile_id: str
+    harness: str
+    provider: str
+    name: str
+    lifecycle: str
+    work_dir: str
+    epoch: str
+    instance_token: str
+    started_at: float
+    task_id: str | None = None
+    state: str = "starting"
+    session_key: str | None = None
+    last_activity: float | None = None
+    restarts: int = 0
+    quarantined_at: float | None = None
+    sleep_reason: str | None = None

@@ -430,32 +430,84 @@ from one profile); live sessions drain naturally — `aq session kill` cleans st
 ## 7. Phase Checklist
 
 **Phase S0 — substrate**
-- [ ] `src/sessions/provider.py` (ABC, Cap, SessionSpec, exceptions) + `env.py` + registry
-- [ ] `sessions` table in `tables.py` + Alembic migration (SQLite + PG) + `SessionQueryMixin`
-- [ ] `FakeProvider` + provider conformance suite
-- [ ] `SessionsConfig` + validation + config docs
+- [x] `src/sessions/provider.py` (ABC, Cap, SessionSpec, exceptions) + `env.py` + registry
+- [x] `sessions` table in `tables.py` + Alembic migration (SQLite + PG) + `SessionQueryMixin`
+      — table and migration landed as Wave 0 substrate (`93a8a9e48fb8`); the mixin is
+      lane 2A's. **`sessions.name` stays non-unique** — see `session_queries.py`'s module
+      docstring for the reasoning (restart-with-resume and sleep/wake both reuse a name,
+      and stopped rows are kept as history), so no follow-up revision was needed and the
+      chain remains single-headed.
+- [x] `FakeProvider` + provider conformance suite (parametrized over `PROVIDER_CASES`;
+      tmux joins by adding one entry carrying `pytest.mark.tmux`)
+- [x] `SessionsConfig` + validation + config docs (`docs/specs/config.md` §4.10.2)
 
 **Phase S1 — tmux + harness**
-- [ ] `harness_parser.py` / `harness_registry.py` + vault sync + shipped `vault/harnesses/claude.md`
+- [x] `harness_parser.py` / `harness_registry.py` + vault sync + shipped `vault/harnesses/claude.md`
 - [ ] `TmuxProvider` (probe, create flags, readiness, dialogs, nudge, peek, activity, kill,
-      state cache) + `proctable.py` + `dialogs.py`
-- [ ] `SubprocessProvider`
-- [ ] `SessionSpecBuilder` (names, argv, prompt delivery incl. >1 KB temp file, env markers,
-      hook material)
+      state cache) + `proctable.py` + `dialogs.py` — **deferred: needs a POSIX host.**
+      `DialogRule` (the data shape) lives in `provider.py`; `dialogs.py` owns the runner.
+- [x] `SubprocessProvider` — with one honest gap: `list_running` only sees sessions this
+      daemon started, because the env-marker process scan lives in the deferred
+      `proctable.py`. Nothing is mis-reaped; nothing is re-adopted either.
+- [x] `SessionSpecBuilder` (names, argv, prompt delivery incl. >1 KB temp file, env markers,
+      hook material). **`permission_flag` is gated, not unconditional**: per
+      [[trust-and-ops]] §4 the flag rides argv only when the workspace is an isolated
+      worktree (`RepoSourceType.WORKTREE`) or the profile sets
+      `permission_mode: bypassPermissions` — see `spec.skip_permissions_allowed`. Until
+      [[worktree-execution]] lands most workspaces are `LINK`s to a real checkout, which is
+      precisely the case §4 excludes. `settings_flag` (`--settings`) is emitted whenever
+      `hook_files` render, so the hook payload is read rather than merely written.
 
 **Phase S2 — orchestration**
-- [ ] `SessionReconciler` (adopt, drain-ack, exit classifier, stall ladder, named
-      desired-state, backstop) wired into `run_one_cycle` + `initialize`
-- [ ] `_launch_session_for_task` fork in `_execute_task`; routing rule + feature flag
-- [ ] `_cmd_task_close` / `_cmd_task_heartbeat` / `_cmd_session_*` in `src/commands/`
-- [ ] Events registered; Discord thread streaming consuming transcript-sourced
-      `notify.task_message`
+- [x] `SessionReconciler` (adopt, drain-ack, exit classifier, orphans, stall ladder,
+      backstop) wired into `run_one_cycle` + `initialize`. **Named desired-state converges
+      one way only**: idle drain to `sleeping` is implemented; start/wake/recycle-via-handoff
+      need the message routing [[supervisor-agent]] owns and are deferred rather than
+      half-built.
+      - Every terminal verdict runs the same cleanup tail as the happy path
+        (`ExecutionMixin.release_session_task_resources`: agent → IDLE, workspace lock
+        released). The reconciler holds an orchestrator reference for exactly this.
+      - `_step_orphans` implements §4.1's "task already closed, session lingering" row and
+        its mirror ("open task, row not live"). `Verdict.DRAINED` alone could not: it is
+        only reachable from `_step_exits`, which requires a dead process.
+      - The `_recover_stale_state` skip set comes from `AdoptReport.adopted` — sessions we
+        **confirmed alive** — not from "every live row". With `provider: subprocess` the
+        two differ on every restart.
+      - Unknown-live sessions (running, no row) are killed at adoption. With no row there
+        are no markers to match against, so §8's "adopt if markers match else
+        quarantine-kill" reduces to the kill.
+- [x] `_launch_session_for_task` fork in `_execute_task`; routing rule + feature flag
+- [x] `_cmd_task_close` / `_cmd_task_heartbeat` / `_cmd_session_*` in `src/commands/`
+      (plus a hand-crafted `aq session` CLI group, because `aq session drain-ack` is half
+      of the completion protocol and cannot wait for a later phase)
+- [x] Events registered — `session.started/.adopted/.exited/.drain_acked/.sleeping/
+      .quarantined/.killed/.premature_drain`, `task.stalled/.nudged/.restarted/
+      .quarantined/.needs_attention/.closed`, all on the existing bus.
+      Discord thread streaming from transcript-sourced `notify.task_message` is **S3**
+      (it needs the transcript readers). The reconciler's `task.*` events carry the base
+      triple (`task_id`, `project_id`, `title`) like every other `task.*` producer.
+- [x] Restart-with-resume carries a key. `sessions.session_key` is written at launch
+      (`--session-id` already pins the harness's conversation id to ours, so the resume key
+      *is* the session id) and copied into `session_resume_key` task metadata whenever the
+      reconciler kills — rapid crash, stall restart, rate limit, productive death. Before
+      this, ladder rung 3 and the RAPID_CRASH restart both started a fresh conversation.
+- [x] The bootstrap prompt and `prime/templates/completion_protocol.md` both instruct the
+      agent to `aq task heartbeat` before long quiet commands. With S3 deferred the lease
+      has only two feeds, and a nudgeless provider (subprocess) skips the ladder's nudge
+      rungs straight to interrupt+kill — so nothing else would keep a healthy agent alive
+      through an 8-minute build.
+- [x] `sessions.provider` defaults to `subprocess` while tmux is deferred, and
+      `SessionsConfig.validate()` rejects a provider the registry cannot build. With
+      `tmux` as the default, flipping `enabled: true` on a stock install paused every task
+      for 60 s *and* posted a Discord notification, per task, forever.
 
 **Phase S3 — observation**
 - [ ] `transcripts/base.py` + `claude.py` + `TranscriptWatcher` (events, token ledger,
       activity/heartbeat)
 - [ ] `GET /api/sessions/{id}/stream` SSE + peek fallback
 - [ ] Hook templates written at spec-build (SessionStart/PreCompact/UserPromptSubmit; no Stop)
+      — the *plumbing* is done (`hook_files` render into the work_dir and `--settings`
+      points the CLI at them); the remaining work is the template payloads themselves.
 
 **Phase S4 — dual-run and cutover**
 - [ ] Dual-run comparison on test project; fix divergences

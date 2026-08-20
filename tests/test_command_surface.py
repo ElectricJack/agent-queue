@@ -51,6 +51,21 @@ KNOWN_AUTO_REGISTERED: frozenset[str] = frozenset(
         # known_auto_discovered treatment of the same two names.
         "prime",
         "task_handoff",
+        # session-runtime Phase S2 (src/commands/session_commands.py) --
+        # operator/CLI surface (list, show, peek, attach, nudge, logs,
+        # kill) plus the agent-facing drain-ack.  Not part of the nine-
+        # command task-scope MCP allowlist, so they are left to auto-
+        # discovery rather than given rich schemas.  ``task_close`` and
+        # ``task_heartbeat`` *are* task-scope and keep their typed
+        # definitions in src/tools/definitions.py.
+        "session_attach",
+        "session_drain_ack",
+        "session_kill",
+        "session_list",
+        "session_logs",
+        "session_nudge",
+        "session_peek",
+        "session_show",
     }
 )
 
@@ -63,9 +78,6 @@ KNOWN_AUTO_REGISTERED: frozenset[str] = frozenset(
 #: method exists on ``CommandHandler``.
 PENDING_UNLANDED_COMMANDS: frozenset[str] = frozenset(
     {
-        # Lane 2A (session-runtime) — src/commands/session_commands.py.
-        "task_close",
-        "task_heartbeat",
         # Lane 2D (supervisor-agent) landed message_send/message_reply/
         # message_inbox/message_list (src/commands/message_commands.py) and
         # create_task_graph (src/commands/task_commands.py); ask_human is
