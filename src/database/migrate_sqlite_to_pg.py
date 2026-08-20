@@ -16,49 +16,83 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from sqlalchemy import select, text, insert, update, Integer
+from sqlalchemy import Integer, insert, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from src.database.engine import create_postgres_engine, create_sqlite_engine
 from src.database.tables import (
     agent_profiles,
     agents,
+    api_session_tokens,
     archived_tasks,
     chat_analyzer_suggestions,
     events,
+    gates,
+    merge_slots,
+    messages,
+    playbook_runs,
     plugin_data,
     plugins,
+    project_constraints,
     projects,
     rate_limits,
     repos,
+    sessions,
     system_config,
     task_context,
     task_criteria,
     task_dependencies,
+    task_gates,
+    task_labels,
+    task_metadata,
     task_results,
     task_tools,
+    task_workspace_requirements,
     tasks,
     token_ledger,
+    workflows,
+    workspace_kinds,
     workspaces,
 )
 
 logger = logging.getLogger(__name__)
 
 # Tables in FK-safe insertion order.
-# agents is inserted with current_task_id=NULL first, then updated after tasks.
+#
+# This list must cover every table in ``tables.metadata`` — a missing table is
+# silently dropped data for anyone migrating a SQLite install to PostgreSQL.
+# ``tests/test_migrate_sqlite_to_pg.py`` asserts the two sets match so the list
+# cannot drift when a new table is added to ``tables.py``.
+#
+# Circular and self-referential FKs are handled by inserting the offending
+# columns as NULL (see ``_DEFERRED_COLS``) and restoring them afterwards.
 _ORDERED_TABLES = [
     # No FK dependencies
     system_config,
     agent_profiles,
     plugins,
     rate_limits,
+    events,
+    workspace_kinds,
+    playbook_runs,
+    api_session_tokens,
+    chat_analyzer_suggestions,
+    archived_tasks,
     # FK → agent_profiles
     projects,
     # FK → projects
     repos,
+    gates,
+    merge_slots,
+    project_constraints,
+    # FK → projects, playbook_runs
+    workflows,
+    # FK → projects (reply_to_id is a self-FK — deferred)
+    messages,
     # FK → repos (current_task_id deferred)
     agents,
-    # FK → projects, repos, agents, agent_profiles, workspaces (but workspaces FK is nullable)
+    # FK → projects, repos, agents, agent_profiles, workflows
+    # (preferred_workspace_id and parent_task_id deferred)
     tasks,
     # FK → projects, agents, tasks
     workspaces,
@@ -66,21 +100,33 @@ _ORDERED_TABLES = [
     task_criteria,
     task_dependencies,
     task_context,
+    task_metadata,
     task_tools,
+    task_labels,
+    task_workspace_requirements,
+    # FK → gates, tasks
+    task_gates,
+    # FK → projects, tasks
+    sessions,
     # FK → projects, agents, tasks
     token_ledger,
     task_results,
-    events,
     # hooks and hook_runs tables removed (playbooks spec §13 Phase 3)
-    # No enforced FKs
-    chat_analyzer_suggestions,
-    archived_tasks,
     # FK → plugins
     plugin_data,
 ]
 
-# Columns to NULL out on first insert for agents (circular FK with tasks)
-_AGENT_DEFERRED_COLS = {"current_task_id"}
+# Columns NULLed out on first insert because they point at a table that is
+# inserted later (or at the same table), then restored by
+# ``_fixup_deferred_columns``.  Keyed by table name.
+_DEFERRED_COLS: dict[str, frozenset[str]] = {
+    # agents ⇄ tasks circular FK
+    "agents": frozenset({"current_task_id"}),
+    # tasks → workspaces (inserted later) and tasks → tasks (self-FK)
+    "tasks": frozenset({"preferred_workspace_id", "parent_task_id"}),
+    # messages → messages (self-FK)
+    "messages": frozenset({"reply_to_id"}),
+}
 
 
 async def migrate_sqlite_to_postgres(
@@ -109,7 +155,7 @@ async def migrate_sqlite_to_postgres(
     try:
         await _check_pg_empty(pg_engine)
         counts = await _copy_tables(sqlite_engine, pg_engine, progress_cb)
-        await _fixup_agent_task_ids(sqlite_engine, pg_engine)
+        await _fixup_deferred_columns(sqlite_engine, pg_engine)
         await _reset_sequences(pg_engine)
         return counts
     finally:
@@ -167,12 +213,10 @@ async def _copy_tables(
                     progress_cb(table.name, 0)
                 continue
 
-            # For agents, NULL out current_task_id on first pass
-            if table is agents:
-                rows = [
-                    {k: (None if k in _AGENT_DEFERRED_COLS else v) for k, v in row.items()}
-                    for row in rows
-                ]
+            # NULL out columns whose FK target is not inserted yet
+            deferred = _DEFERRED_COLS.get(table.name)
+            if deferred:
+                rows = [{k: (None if k in deferred else v) for k, v in row.items()} for row in rows]
 
             await dst_conn.execute(insert(table), [dict(r) for r in rows])
 
@@ -187,25 +231,42 @@ async def _copy_tables(
     return counts
 
 
-async def _fixup_agent_task_ids(src: AsyncEngine, dst: AsyncEngine) -> None:
-    """Restore agents.current_task_id values that were NULLed during insert."""
-    async with src.connect() as src_conn:
-        result = await src_conn.execute(
-            select(agents.c.id, agents.c.current_task_id).where(
-                agents.c.current_task_id.is_not(None)
+async def _fixup_deferred_columns(src: AsyncEngine, dst: AsyncEngine) -> None:
+    """Restore the ``_DEFERRED_COLS`` values that were NULLed during insert."""
+    for table in _ORDERED_TABLES:
+        names = _DEFERRED_COLS.get(table.name)
+        if not names:
+            continue
+
+        pk_cols = list(table.primary_key.columns)
+        deferred_cols = [table.c[name] for name in sorted(names)]
+
+        async with src.connect() as src_conn:
+            result = await src_conn.execute(
+                select(*pk_cols, *deferred_cols).where(
+                    or_(*[col.is_not(None) for col in deferred_cols])
+                )
             )
+            rows = result.fetchall()
+
+        if not rows:
+            continue
+
+        async with dst.begin() as dst_conn:
+            for row in rows:
+                pk_values = row[: len(pk_cols)]
+                stmt = update(table)
+                for col, value in zip(pk_cols, pk_values):
+                    stmt = stmt.where(col == value)
+                stmt = stmt.values(dict(zip([c.name for c in deferred_cols], row[len(pk_cols) :])))
+                await dst_conn.execute(stmt)
+
+        logger.info(
+            "Restored deferred columns %s for %d rows in %s",
+            sorted(names),
+            len(rows),
+            table.name,
         )
-        rows = result.fetchall()
-
-    if not rows:
-        return
-
-    async with dst.begin() as dst_conn:
-        for agent_id, task_id in rows:
-            await dst_conn.execute(
-                update(agents).where(agents.c.id == agent_id).values(current_task_id=task_id)
-            )
-    logger.info("Restored current_task_id for %d agents", len(rows))
 
 
 async def _reset_sequences(engine: AsyncEngine) -> None:
