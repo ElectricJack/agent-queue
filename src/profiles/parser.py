@@ -51,24 +51,28 @@ CONFIG_KNOWN_KEYS = frozenset(
         "max_tokens_per_task",
         "runtime",
         "agent_name",
-        # Session-runtime keys (docs/specs/implementation/session-runtime.md
-        # §5).  ``harness`` names a vault/harnesses/<name>.md file; the rest
-        # are named-session policy.  Kept as Config keys rather than config
-        # .yaml entries because they are per-agent-type, and the profile
-        # markdown is where per-agent-type truth lives.
+        # Named-session fields (supervisor-agent spec §7).  ``workspaces``
+        # is parsed and validated here but is *not* persisted on
+        # ``agent_profiles`` — session-runtime owns attachment resolution.
         "harness",
         "lifecycle",
+        "mode",
         "wake_mode",
         "idle_timeout",
         "max_session_age",
+        "workspaces",
     }
 )
 
-#: Valid ``lifecycle`` values — ``task`` (one session per task) or ``named``
-#: (persistent session that sleeps and wakes).
+# Valid ``lifecycle`` values.  ``task`` is the default (one session per
+# task); ``named`` is a long-lived session addressed by name (mechanics
+# owned by the session-runtime spec).
 VALID_LIFECYCLES = frozenset({"task", "named"})
 
-#: Valid ``wake_mode`` values.  Empty means "use the shipped default".
+# Valid ``mode`` values — meaningful only with ``lifecycle: named``.
+VALID_MODES = frozenset({"always", "on_demand"})
+
+# Valid ``wake_mode`` values — meaningful only with ``lifecycle: named``.
 VALID_WAKE_MODES = frozenset({"resume", "fresh"})
 
 # Valid permission_mode values (passed to the Claude Code SDK).
@@ -548,6 +552,102 @@ def _validate_config(config: dict) -> list[str]:
             "'codex', 'gemini', etc.)"
         )
 
+    errors.extend(_validate_session_config(config))
+
+    return errors
+
+
+def _validate_session_config(config: dict) -> list[str]:
+    """Validate the named-session ``## Config`` keys (supervisor-agent §7).
+
+    - **harness** — any non-empty string.  Existence is *not* checked here:
+      the harness registry (``vault/harnesses/``) is owned by the
+      session-runtime spec, and profiles are allowed to land before their
+      harness does.  Sync emits a warning instead.
+    - **lifecycle** — :data:`VALID_LIFECYCLES`; defaults to ``"task"``.
+    - **mode** / **wake_mode** / **idle_timeout** — only valid with
+      ``lifecycle: named``; a parse error otherwise, so a typo'd lifecycle
+      can't silently strand a session config.
+    - **max_session_age** — positive integer seconds, named lifecycle only.
+    - **workspaces** — list of workspace-kind ids (strings).
+    """
+    errors: list[str] = []
+
+    # --- lifecycle --- resolved first; the rest key off it.
+    lifecycle = "task"
+    if "lifecycle" in config:
+        raw = config["lifecycle"]
+        if not isinstance(raw, str):
+            errors.append(f"Config 'lifecycle' must be a string, got {type(raw).__name__}")
+        elif raw not in VALID_LIFECYCLES:
+            errors.append(
+                f"Config 'lifecycle' must be one of {sorted(VALID_LIFECYCLES)}, got '{raw}'"
+            )
+        else:
+            lifecycle = raw
+
+    # --- harness --- opaque string; the schema belongs to session-runtime.
+    if "harness" in config:
+        harness = config["harness"]
+        if not isinstance(harness, str):
+            errors.append(f"Config 'harness' must be a string, got {type(harness).__name__}")
+        elif not harness.strip():
+            errors.append("Config 'harness' must not be empty")
+
+    named_only_enums = (
+        ("mode", VALID_MODES),
+        ("wake_mode", VALID_WAKE_MODES),
+    )
+    for key, valid in named_only_enums:
+        if key not in config:
+            continue
+        value = config[key]
+        if not isinstance(value, str):
+            errors.append(f"Config '{key}' must be a string, got {type(value).__name__}")
+            continue
+        if value not in valid:
+            errors.append(f"Config '{key}' must be one of {sorted(valid)}, got '{value}'")
+            continue
+        if lifecycle != "named":
+            errors.append(
+                f"Config '{key}' is only valid with lifecycle 'named' "
+                f"(this profile's lifecycle is '{lifecycle}')"
+            )
+
+    for key in ("idle_timeout", "max_session_age"):
+        if key not in config:
+            continue
+        value = config[key]
+        if isinstance(value, bool) or not isinstance(value, int):
+            errors.append(
+                f"Config '{key}' must be a positive integer (seconds), "
+                f"got {type(value).__name__}"
+            )
+            continue
+        if value <= 0:
+            errors.append(f"Config '{key}' must be positive, got {value}")
+            continue
+        if lifecycle != "named":
+            errors.append(
+                f"Config '{key}' is only valid with lifecycle 'named' "
+                f"(this profile's lifecycle is '{lifecycle}')"
+            )
+
+    # --- workspaces --- declared attachments; resolved by session-runtime.
+    if "workspaces" in config:
+        workspaces = config["workspaces"]
+        if not isinstance(workspaces, list):
+            errors.append(
+                f"Config 'workspaces' must be a list of workspace-kind ids, "
+                f"got {type(workspaces).__name__}"
+            )
+        else:
+            for entry in workspaces:
+                if not isinstance(entry, str) or not entry.strip():
+                    errors.append(
+                        f"Config 'workspaces' entries must be non-empty strings, got {entry!r}"
+                    )
+
     return errors
 
 
@@ -854,18 +954,20 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     if parsed.config.get("agent_name"):
         result["agent_name"] = parsed.config["agent_name"]
 
-    # Config -> session-runtime fields.  ``harness`` is the routing switch
-    # (see AgentProfile.harness); the rest is named-session policy.
-    if parsed.config.get("harness"):
-        result["harness"] = str(parsed.config["harness"])
-    if parsed.config.get("lifecycle"):
-        result["lifecycle"] = str(parsed.config["lifecycle"])
-    if parsed.config.get("wake_mode"):
-        result["wake_mode"] = str(parsed.config["wake_mode"])
-    for _key in ("idle_timeout", "max_session_age"):
-        raw = parsed.config.get(_key)
-        if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
-            result[_key] = raw
+    # Config → named-session fields (supervisor-agent §7).  Pass-through
+    # storage; validated above, interpreted by the session runtime.
+    for key in ("harness", "lifecycle", "mode", "wake_mode"):
+        if parsed.config.get(key):
+            result[key] = parsed.config[key]
+    for key in ("idle_timeout", "max_session_age"):
+        value = parsed.config.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            result[key] = value
+    # ``workspaces`` has no agent_profiles column — session-runtime owns
+    # attachment resolution.  Surfaced for callers that read the parsed
+    # profile directly (it is dropped on the way to the DB row).
+    if parsed.config.get("workspaces"):
+        result["workspaces"] = list(parsed.config["workspaces"])
 
     # Tools → allowed_tools.  Strip the embedded MCP server prefix at sync
     # time so the DB always stores canonical bare names — the supervisor's

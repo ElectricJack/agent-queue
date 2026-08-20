@@ -525,22 +525,62 @@ class AgentProfile:
     # ``agent_name`` at sync-time; for every other runtime this field is
     # unused / empty.
     agent_name: str = ""
-    # -- Session runtime (docs/specs/design/session-runtime.md §6) --------
-    # ``harness`` names a ``vault/harnesses/<name>.md`` file describing one
-    # CLI coding agent.  Its presence, together with ``sessions.enabled``,
-    # is the routing rule: a profile with a harness runs as a session, a
-    # profile without one keeps its ``runtime`` verbatim.  That makes
-    # rollout per-profile and per-project (profiles are project-scoped) and
-    # rollback a one-line edit.
-    harness: str = ""
-    # ``task`` — one session per task, killed after drain-ack.
-    # ``named`` — persistent (supervisor, warm workers); sleeps and wakes.
+    # -- Named-session pass-through storage (supervisor-agent spec §3.2/§7) --
+    # Validated at profile parse time; the harness *schema* (what "claude"
+    # means) is owned by the session-runtime spec, so as far as this layer
+    # is concerned these are opaque storage.
+    #
+    # ``harness``         — session-runtime harness id (any string).
+    # ``lifecycle``       — "task" (default) | "named".
+    # ``mode``            — "always" | "on_demand"; named lifecycle only.
+    # ``wake_mode``       — "resume" | "fresh"; named lifecycle only.
+    # ``idle_timeout``    — seconds before an on_demand session sleeps.
+    # ``max_session_age`` — seconds before a named session is recycled.
+    harness: str | None = None
     lifecycle: str = "task"
-    # Named-session knobs.  Zero/empty means "no policy": no idle drain, no
-    # age recycling, fresh start on wake.
-    wake_mode: str = ""  # "resume" | "fresh"
-    idle_timeout: int = 0  # seconds of no activity before drain to sleeping
-    max_session_age: int = 0  # seconds before handoff + recycle
+    mode: str | None = None
+    wake_mode: str | None = None
+    idle_timeout: int | None = None
+    max_session_age: int | None = None
+
+
+@dataclass
+class Message:
+    """One row of the ``messages`` table — the single inter-agent/user queue.
+
+    Carries every user↔session and session↔session exchange (supervisor-agent
+    design §6).  Timestamps are Float epoch seconds, matching every other
+    table in this schema; the application sets them, never the database.
+
+    ``from_kind`` is one of ``session`` | ``user`` | ``system``;
+    ``to_kind`` is one of ``session`` | ``task`` | ``profile`` | ``user``.
+    Both are enforced by named CHECK constraints on the table.
+    """
+
+    id: str
+    project_id: str
+    from_kind: str
+    from_id: str
+    to_kind: str
+    to_id: str
+    body: str
+    subject: str | None = None
+    thread_id: str | None = None
+    priority: int = 100
+    created_at: float = 0.0
+    delivered_at: float | None = None
+    read_at: float | None = None
+    archive_after_inject: bool = False
+    archived_at: float | None = None
+    reply_to_id: str | None = None
+    via: str | None = None
+
+
+#: Legal ``messages.from_kind`` values (mirrors ``ck_messages_from_kind``).
+MESSAGE_FROM_KINDS: frozenset[str] = frozenset({"session", "user", "system"})
+
+#: Legal ``messages.to_kind`` values (mirrors ``ck_messages_to_kind``).
+MESSAGE_TO_KINDS: frozenset[str] = frozenset({"session", "task", "profile", "user"})
 
 
 @dataclass
@@ -934,13 +974,13 @@ class SessionRecord:
     """One row of the ``sessions`` table — an OS-level agent run.
 
     Maps 1:1 to ``src/database/tables.py::sessions``.  Frozen because a
-    session row is observed state: the reconciler writes it through
-    ``update_session`` and re-reads, rather than mutating a shared object
-    that a concurrent tick might be holding.
+    session row is *observed* state: the reconciler writes through
+    ``update_session`` and re-reads, rather than mutating a shared object a
+    concurrent tick might be holding.
 
     ``task_id`` is None for named (persistent) sessions.  ``state`` is one
     of ``starting | running | draining | stopped | sleeping | quarantined``;
-    "stalled" is *derived* from the lease TTL versus ``last_activity`` and is
+    "stalled" is derived from the lease TTL versus ``last_activity`` and is
     deliberately never stored.
 
     ``epoch`` is provenance (which daemon run launched this), not a validity
