@@ -683,9 +683,14 @@ _ALL_TOOL_DEFINITIONS = [
                     "enum": ["exclusive", "branch-isolated", "directory-isolated"],
                     "description": (
                         "Workspace lock mode. 'exclusive' (default): one agent per "
-                        "workspace. 'branch-isolated': multiple agents on separate "
-                        "branches in the same repo. 'directory-isolated': multiple "
-                        "agents on separate directories (future)."
+                        "workspace. 'branch-isolated': DEPRECATED — it is now an "
+                        "alias for 'exclusive'. The worktree fallback that made it "
+                        "mean 'multiple agents on separate branches in the same "
+                        "repo' was retired (worktree-execution spec §7.4); parallel "
+                        "work in one repo is provided by worktree slots, which are "
+                        "chosen by the workspace kind's 'mode', not by this field. "
+                        "'directory-isolated': multiple agents on separate "
+                        "directories (not yet implemented)."
                     ),
                 },
                 "requires_kinds": {
@@ -1003,7 +1008,11 @@ _ALL_TOOL_DEFINITIONS = [
                 "workspace_mode": {
                     "type": ["string", "null"],
                     "enum": ["exclusive", "branch-isolated", "directory-isolated", None],
-                    "description": ("Workspace lock mode. Set to null to clear (optional)"),
+                    "description": (
+                        "Workspace lock mode. Set to null to clear (optional). "
+                        "'branch-isolated' is DEPRECATED and behaves as "
+                        "'exclusive' — see create_task."
+                    ),
                 },
             },
             "required": ["task_id"],

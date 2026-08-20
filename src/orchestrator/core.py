@@ -221,6 +221,7 @@ class Orchestrator(
         # each scheduling tick before Scheduler.schedule().  See
         # docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md.
         from src.orchestrator.agent_reconciler import AgentReconciler
+
         self._agent_reconciler = AgentReconciler(
             self.db, worktrees_enabled=config.worktrees.enabled
         )
@@ -342,6 +343,11 @@ class Orchestrator(
         # by task id.  See workspaces-v2 spec §6 + §8.  Cleared on task
         # completion in _release_workspaces_for_task.
         self._task_attachments: dict[str, "WorkspaceAttachmentSet"] = {}  # noqa: F821
+        # Why the last _prepare_workspace for a task returned None, when the
+        # answer is "wait, this is normal" rather than "something is wrong".
+        # Read and cleared by _execute_task's no-workspace backoff so it can
+        # stay quiet about an expected wait.  Keyed by task id.
+        self._workspace_wait_reasons: dict[str, str] = {}
 
     def _git_mutex(self, workspace_path: str) -> asyncio.Lock:
         """Get or create an asyncio.Lock for shared git operations on a workspace."""
@@ -1483,16 +1489,39 @@ class Orchestrator(
         # even when the DB lock was already released (e.g. _prepare_workspace
         # acquired + detected sentinel + released lock, but never deleted file).
         #
-        # Worktree workspaces (source_type=WORKTREE) are cleaned up: the git
-        # worktree is removed and the workspace record is deleted.  These are
-        # dynamically created for branch-isolated mode and should not persist
-        # across restarts.
+        # *Legacy* branch-isolated worktree rows (source_type=WORKTREE with
+        # no slot_index) are cleaned up: the git worktree is removed and the
+        # record deleted.  Those were created dynamically per task and should
+        # not persist across restarts.
+        #
+        # **Slot rows are not.**  A slot is durable inventory (design §3.4,
+        # §6 "adopt, don't delete"): its directory holds warm caches and
+        # possibly uncommitted work, and `git worktree remove` here — with
+        # its `--force` fallback — would destroy both on every daemon start.
+        # They are unlocked and left alone; `_cleanup_worktree_workspace`
+        # short-circuits for them, and the sweep below re-registers their
+        # slot->base mapping so the git mutex keeps serializing.
+        # Full adoption (git worktree list cross-check, prune, repair) is
+        # phase 4.
         all_workspaces = await self.db.list_workspaces()
+        self._recover_worktree_base_paths(all_workspaces)
         for ws in all_workspaces:
+            if ws.is_slot:
+                # Slot directories keep their own `.aq-worktree.json`; the
+                # legacy `.agent-queue-lock` sentinel is not used there.
+                if ws.locked_by_agent_id or ws.locked_by_task_id:
+                    logger.info(
+                        "Recovery: releasing worktree slot '%s' at %s "
+                        "(directory and branch preserved)",
+                        ws.id,
+                        ws.workspace_path,
+                    )
+                    await self.db.release_workspace(ws.id)
+                continue
             self._remove_sentinel(ws.workspace_path)
             if ws.source_type == RepoSourceType.WORKTREE:
                 logger.info(
-                    "Recovery: cleaning up worktree workspace '%s' at %s",
+                    "Recovery: cleaning up legacy worktree workspace '%s' at %s",
                     ws.id,
                     ws.workspace_path,
                 )
@@ -2084,9 +2113,21 @@ class Orchestrator(
         # cannot be assigned work if all its workspaces are locked by
         # running agents.  This prevents the scheduler from assigning
         # more tasks than can physically execute in parallel.
+        #
+        # Pass the slot cap under worktree mode for the same reason the
+        # reconciler does (worktree-execution §6.7): the 1-arg form counts
+        # *inventory*, which under worktree mode means counting the base —
+        # a row no agent can ever acquire — as available, while ignoring the
+        # slots that can be created on demand.
+        worktrees_enabled = self._worktrees_enabled()
         workspace_counts: dict[str, int] = {}
         for p in projects:
-            workspace_counts[p.id] = await self.db.count_available_workspaces(p.id)
+            workspace_counts[p.id] = await self.db.count_available_workspaces(
+                p.id,
+                worktree_slot_cap=(
+                    self._project_slot_cap(p) if worktrees_enabled else None
+                ),
+            )
 
         # NOTE: tasks_completed_in_window is empty here, which effectively
         # disables the min_task_guarantee phase of the scheduler.  All projects

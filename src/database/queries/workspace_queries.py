@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 
-from sqlalchemy import case, delete, insert, select, true, update
+from sqlalchemy import case, delete, func, insert, nulls_first, select, true, update
 
 from src.database.tables import workspaces
 from src.models import (
@@ -22,6 +22,15 @@ _source_type_order = case(
     (workspaces.c.source_type == "clone", 0),
     else_=1,
 )
+
+
+def _is_worktree_mode(kind) -> bool:
+    """True when *kind* is a git kind provisioned as base + slot worktrees."""
+    return (
+        kind is not None
+        and getattr(kind, "is_git_repo", False)
+        and getattr(kind, "mode", None) == KIND_MODE_WORKTREE
+    )
 
 
 class WorkspaceQueryMixin:
@@ -280,6 +289,7 @@ class WorkspaceQueryMixin:
         locked_by_agent_id: str,
         prefer_workspace_id: str | None = None,
         kind_mode: str | None = None,
+        worktree_slot_cap: int | None = None,
     ) -> Workspace | None:
         """Atomically acquire one unlocked workspace of a given kind.
 
@@ -309,19 +319,32 @@ class WorkspaceQueryMixin:
                 candidate set is the kind's **slot rows** and the base is
                 excluded (§2.3, §6.3): a base is used for fetch, branch
                 queries and worktree bookkeeping, never as an agent cwd.
+            worktree_slot_cap: The project's ``max_concurrent_agents``, when
+                known.  Under worktree mode, slots whose index is at or above
+                the cap are **out of cap** — the cap shrank since they were
+                made — and must not be handed out.  This is the symmetric
+                bound to the one ``count_available_workspaces`` and
+                ``_ensure_worktree_slots_for_task`` already apply; without it
+                capacity could report 0 while acquisition still succeeded.
+                Retirement of out-of-cap slots is the phase-4 reaper's job;
+                refusing to acquire them is correct at every phase.
 
         Returns the locked workspace, or ``None`` if no instance was free.
         """
         now = time.time()
         lock_mode_value = mode  # already lowercase, e.g. "exclusive"
 
-        # Worktree mode: only slot rows are acquirable.  ``true()`` keeps the
-        # legacy path a byte-for-byte no-op in the generated SQL shape.
-        slot_filter = (
-            workspaces.c.slot_index.isnot(None)
-            if kind_mode == KIND_MODE_WORKTREE
-            else true()
-        )
+        # Worktree mode: only slot rows are acquirable, and only those inside
+        # the project's current cap.  ``true()`` keeps the legacy path a
+        # byte-for-byte no-op in the generated SQL shape.
+        if kind_mode == KIND_MODE_WORKTREE:
+            slot_filter = workspaces.c.slot_index.isnot(None)
+            if worktree_slot_cap is not None:
+                slot_filter = slot_filter & (
+                    workspaces.c.slot_index < worktree_slot_cap
+                )
+        else:
+            slot_filter = true()
 
         async with self._engine.begin() as conn:
             candidate_ids: list[str] = []
@@ -352,7 +375,14 @@ class WorkspaceQueryMixin:
                         & (workspaces.c.enabled.is_(True))
                         & slot_filter
                     )
-                    .order_by(workspaces.c.slot_index, workspaces.c.id)
+                    # ``nulls_first`` is explicit for cross-dialect
+                    # determinism: on the legacy path ``slot_filter`` is
+                    # ``true()``, so NULL-``slot_index`` rows are in the set,
+                    # and SQLite sorts NULLs first while PostgreSQL sorts them
+                    # last — same candidate set, different winner.
+                    .order_by(
+                        nulls_first(workspaces.c.slot_index), workspaces.c.id
+                    )
                 )
             ).fetchall()
             for row in rows:
@@ -559,10 +589,23 @@ class WorkspaceQueryMixin:
         lazily on demand.  Counting inventory there would refuse to create
         any agent at all, and the project would never start.
         """
-        rows = [w for w in await self.list_workspaces(project_id) if w.enabled]
-
+        # The legacy path stays a single SQL COUNT: it runs per project on
+        # every 5 s cascade cycle and, with worktrees off (the default), no
+        # kind resolution is needed to answer it.
         if worktree_slot_cap is None:
-            return sum(1 for w in rows if w.locked_by_agent_id is None)
+            async with self._engine.begin() as conn:
+                result = await conn.execute(
+                    select(func.count())
+                    .select_from(workspaces)
+                    .where(
+                        (workspaces.c.project_id == project_id)
+                        & (workspaces.c.locked_by_agent_id.is_(None))
+                        & (workspaces.c.enabled.is_(True))
+                    )
+                )
+                return result.fetchone()[0]
+
+        rows = [w for w in await self.list_workspaces(project_id) if w.enabled]
 
         # Resolve each distinct kind once (project row shadows system row).
         kinds: dict[str, object] = {}
@@ -571,25 +614,27 @@ class WorkspaceQueryMixin:
             if kid not in kinds:
                 kinds[kid] = await self.resolve_workspace_kind(project_id, kid)
 
-        # Only the *first* non-slot row of a worktree-mode kind is the base
-        # (§7.3).  Any further clone rows contribute nothing under worktree
-        # mode — they are not acquirable (§2.3) and their capacity would
-        # otherwise be double-counted against the same cap.
-        bases: dict[str, str] = {}
-        for w in sorted(rows, key=lambda w: w.id):
-            kid = w.kind_id or "project-repo"
-            if w.slot_index is None and kid not in bases:
-                bases[kid] = w.id
+        # Only *the* base row of a worktree-mode kind carries capacity (§7.3);
+        # any further clone rows contribute nothing under worktree mode — they
+        # are not acquirable (§2.3) and would otherwise double-count the same
+        # cap.  "Which row is the base" is defined in exactly one place —
+        # ``find_worktree_base`` — and asked here rather than re-derived.  A
+        # second, subtly different rule (sorting by id alone, ignoring the
+        # CLONE-before-LINK preference) used to live here; when a LINK row's
+        # id sorted before the CLONE row the two rules designated different
+        # bases, capacity was measured against a base owning no slots, and the
+        # reconciler created agents that could never acquire anything.
+        bases: dict[str, str | None] = {}
+        for kid, kind in kinds.items():
+            if _is_worktree_mode(kind):
+                base = await self.find_worktree_base(project_id, kid)
+                bases[kid] = base.id if base is not None else None
 
         total = 0
         for w in rows:
             kid = w.kind_id or "project-repo"
             kind = kinds.get(kid)
-            worktree_mode = (
-                kind is not None
-                and getattr(kind, "is_git_repo", False)
-                and getattr(kind, "mode", None) == KIND_MODE_WORKTREE
-            )
+            worktree_mode = _is_worktree_mode(kind)
             if not worktree_mode:
                 if w.locked_by_agent_id is None:
                     total += 1

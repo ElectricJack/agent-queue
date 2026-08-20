@@ -649,6 +649,138 @@ class TestGitManagerWorktreePrimitives:
         assert asyncio.run(GitManager().aworktree_base_path(str(d))) is None
 
 
+
+# ────────────────────── §3.2 salvage: binaries and size ──────────────────
+
+
+class TestSalvageFidelity:
+    """F7: what ``salvage_dirty`` archives has to be enough to restore."""
+
+    def _slot(self, mgr, base_ws, kind, task_id="tsk-prev"):
+        slot = asyncio.run(mgr.create_slot(base_ws, kind, 0))
+        asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id=task_id)))
+        return slot
+
+    def test_binary_payload_survives_salvage(self, mgr, base_ws, kind, db):
+        """Without ``--binary`` git emits only "Binary files ... differ", and
+        the ``reset --hard`` that follows destroys the bytes for good."""
+        slot = self._slot(mgr, base_ws, kind)
+        blob = bytes(range(256)) * 8
+        (Path(slot.workspace_path) / "logo.png").write_bytes(blob)
+
+        asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next")))
+
+        assert len(db.contexts) == 1
+        patch = db.contexts[0]["content"]
+        assert "GIT binary patch" in patch, (
+            "a binary diff without --binary is unappliable; the bytes are gone "
+            f"after the reset. Got: {patch[:200]!r}"
+        )
+        assert not (Path(slot.workspace_path) / "logo.png").exists()
+
+        # And it really restores: apply the patch to the now-clean slot.
+        patch_file = Path(slot.workspace_path).parent / "salvage.patch"
+        with open(patch_file, "w", encoding="utf-8", newline="") as f:
+            f.write(patch)
+        _git(["apply", "--binary", str(patch_file)], cwd=slot.workspace_path)
+        assert (Path(slot.workspace_path) / "logo.png").read_bytes() == blob
+
+    def test_oversized_patch_is_replaced_by_its_diffstat(
+        self, base_ws, kind, db, bus, mutexes
+    ):
+        m = WorktreeSlotManager(
+            db=db,
+            git=GitManager(),
+            bus=bus,
+            config=WorktreesConfig(
+                enabled=True, setup_timeout_seconds=60, salvage_max_bytes=512
+            ),
+            git_mutex=mutexes,
+        )
+        slot = asyncio.run(m.create_slot(base_ws, kind, 0))
+        asyncio.run(m.reset_slot_for_task(slot, FakeTask(id="tsk-prev")))
+        (Path(slot.workspace_path) / "huge.txt").write_text("x" * 200_000)
+
+        asyncio.run(m.reset_slot_for_task(slot, FakeTask(id="tsk-next")))
+
+        assert len(db.contexts) == 1
+        content = db.contexts[0]["content"]
+        assert len(content) < 4096, "task_contexts is not a blob store"
+        assert "salvage_max_bytes" in content
+        assert "huge.txt" in content, "the operator still learns what was lost"
+
+    def test_cap_of_zero_disables_the_bound(self, base_ws, kind, db, bus, mutexes):
+        m = WorktreeSlotManager(
+            db=db,
+            git=GitManager(),
+            bus=bus,
+            config=WorktreesConfig(
+                enabled=True, setup_timeout_seconds=60, salvage_max_bytes=0
+            ),
+            git_mutex=mutexes,
+        )
+        slot = asyncio.run(m.create_slot(base_ws, kind, 0))
+        asyncio.run(m.reset_slot_for_task(slot, FakeTask(id="tsk-prev")))
+        (Path(slot.workspace_path) / "huge.txt").write_text("x" * 200_000)
+        asyncio.run(m.reset_slot_for_task(slot, FakeTask(id="tsk-next")))
+        assert len(db.contexts[0]["content"]) > 100_000
+
+
+# ───────────────── §3.4 restore after a task ends badly ──────────────────
+
+
+class TestRestoreSlotAfterTask:
+    """F4: the clone cleanup ladder is wrong on every rung inside a worktree."""
+
+    def _dirty_slot(self, mgr, base_ws, kind):
+        slot = asyncio.run(mgr.create_slot(base_ws, kind, 0))
+        asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-1")))
+        d = Path(slot.workspace_path)
+        (d / "README.md").write_text("unfinished")
+        (d / "scratch.tmp").write_text("junk")
+        cache = d / "node_modules"
+        cache.mkdir()
+        (cache / "dep.js").write_text("expensive")
+        return slot, d, cache
+
+    def test_salvages_cleans_and_keeps_the_caches(self, mgr, base_ws, kind, db):
+        slot, d, cache = self._dirty_slot(mgr, base_ws, kind)
+
+        assert asyncio.run(mgr.restore_slot_after_task(slot, task_id="tsk-1")) is True
+
+        assert _git(["status", "--porcelain"], cwd=d) == ""
+        assert not (d / "scratch.tmp").exists()
+        assert cache.joinpath("dep.js").exists(), "no -x: warm caches survive"
+        assert [c["type"] for c in db.contexts] == ["worktree_salvage"]
+        assert "unfinished" in db.contexts[0]["content"]
+
+    def test_never_touches_the_shared_stash_stack(self, mgr, base_ws, kind, base_repo):
+        slot, _d, _c = self._dirty_slot(mgr, base_ws, kind)
+        asyncio.run(mgr.restore_slot_after_task(slot, task_id="tsk-1"))
+        assert _git(["stash", "list"], cwd=base_repo) == ""
+        assert _git(["stash", "list"], cwd=slot.workspace_path) == ""
+
+    def test_slot_stays_on_its_task_branch(self, mgr, base_ws, kind):
+        """The branch is the artifact; checking out the default branch here
+        would both abandon it and fail (the base holds that branch)."""
+        slot, d, _c = self._dirty_slot(mgr, base_ws, kind)
+        asyncio.run(mgr.restore_slot_after_task(slot, task_id="tsk-1"))
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=d) == "aq/tsk-1"
+
+    def test_a_stale_index_lock_does_not_block_the_restore(self, mgr, base_ws, kind):
+        """F14: a killed agent leaves ``.git/worktrees/<slot>/index.lock``,
+        which is *not* under ``<slot>/.git`` — that is a file, not a dir."""
+        slot, d, _c = self._dirty_slot(mgr, base_ws, kind)
+        git_dir = Path(GitManager._resolve_git_dir(str(d)))
+        assert git_dir.is_dir() and git_dir != d / ".git"
+        (git_dir / "index.lock").write_text("")
+
+        asyncio.run(mgr.restore_slot_after_task(slot, task_id="tsk-1"))
+
+        assert not (git_dir / "index.lock").exists()
+        assert _git(["status", "--porcelain"], cwd=d) == ""
+
+
 # ───────────────────────────── events registry ───────────────────────────
 
 

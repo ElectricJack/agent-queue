@@ -121,7 +121,16 @@ class WorkspaceMode(Enum):
     """
 
     EXCLUSIVE = "exclusive"  # One agent, one workspace (current default)
-    BRANCH_ISOLATED = "branch-isolated"  # Multiple agents, same repo, different branches
+    #: **Deprecated — an alias for EXCLUSIVE.**  It once meant "multiple
+    #: agents, same repo, different branches", implemented by a fallback that
+    #: derived a throwaway worktree from a locked clone.  That fallback is
+    #: retired (worktree-execution §7.4): parallel work in one repo is
+    #: provided by worktree *slots*, selected by the workspace kind's ``mode``
+    #: rather than by a per-task lock mode.  A task that sets this now gets
+    #: exclusive locking, and when clones are exhausted the same PAUSED +
+    #: 60 s backoff every exclusive task gets.  Kept as an accepted value so
+    #: existing task rows and callers keep working.
+    BRANCH_ISOLATED = "branch-isolated"
     DIRECTORY_ISOLATED = (
         "directory-isolated"  # Multiple agents, same branch, different dirs (deferred — stub only)
     )
@@ -430,7 +439,15 @@ class WorkspaceKind:
     auto_attach: bool = False
     # Git provisioning strategy (worktree-execution §2.1).  Meaningful only
     # when ``is_git_repo``.  One of :data:`WORKSPACE_KIND_MODES`.
-    mode: str = KIND_MODE_WORKTREE
+    #
+    # ``None`` is a distinct third state, produced only by the markdown
+    # *parser*: it means "the frontmatter says nothing about mode", which
+    # ``upsert_workspace_kind`` coalesces to "leave the stored value alone".
+    # Defaulting an absent key to ``worktree`` instead silently flips every
+    # upgrading install's ``project-repo`` kind from ``exclusive-clone`` to
+    # ``worktree`` on the first daemon start — and on every start after.
+    # Rows read back from the DB always carry a concrete value.
+    mode: str | None = KIND_MODE_WORKTREE
     # Shell commands run once inside a freshly created slot, and again when
     # the list changes (worktree-execution §3.6).  Operator-authored config.
     worktree_setup: list[str] = field(default_factory=list)

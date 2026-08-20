@@ -12,6 +12,9 @@ What lives here (P1 + P2)
   provisioning up to the project's agent cap.
 * :meth:`reset_slot_for_task` — the per-assignment reset (salvage → fetch →
   hard reset + clean → fresh ``aq/<task_id>`` branch → sentinel).
+* :meth:`restore_slot_after_task` — the slot-shaped replacement for the
+  clone path's commit → stash → ``clean -fdx`` cleanup ladder, none of whose
+  rungs is safe inside a worktree.
 * :meth:`salvage_dirty` — archive a crashed predecessor's work as a patch on
   a ``task_context`` row rather than stashing it.  ``git stash`` is
   deliberately never used: the stash stack is shared by every worktree of a
@@ -141,11 +144,18 @@ class WorktreeSlotManager:
             # some Windows installs) and an operator's own rules may be in any
             # encoding.  ``surrogateescape`` round-trips undecodable bytes
             # untouched instead of raising or corrupting them.
-            existing = (
-                exclude.read_text(encoding="utf-8", errors="surrogateescape")
-                if exclude.exists()
-                else ""
-            )
+            #
+            # ``newline=""`` on both read and write disables universal-newline
+            # translation, so an LF-terminated exclude file is not silently
+            # rewritten as CRLF on Windows (and vice versa) just because we
+            # appended one block to it.
+            if exclude.exists():
+                with exclude.open(
+                    encoding="utf-8", errors="surrogateescape", newline=""
+                ) as f:
+                    existing = f.read()
+            else:
+                existing = ""
         except OSError as e:
             logger.warning("Cannot read %s: %s", exclude, e)
             return False
@@ -167,7 +177,9 @@ class WorktreeSlotManager:
 
         try:
             info_dir.mkdir(parents=True, exist_ok=True)
-            exclude.write_text(updated, encoding="utf-8", errors="surrogateescape")
+            exclude.write_text(
+                updated, encoding="utf-8", errors="surrogateescape", newline=""
+            )
         except OSError as e:
             logger.warning("Cannot write %s: %s", exclude, e)
             return False
@@ -354,6 +366,14 @@ class WorktreeSlotManager:
         base_path = base_ws.workspace_path if base_ws else str(slot_dir)
         prev = self.read_sentinel(slot_dir)
 
+        # A slot left mid-rebase — or holding a stale index.lock — by a killed
+        # agent fails both `reset --hard` and `switch`, which would send every
+        # task that lands on it down the PAUSED path indefinitely.  The legacy
+        # clone path has always cleared that first (`aprepare_for_task`);
+        # slots need it just as much.  Outside the mutex block, because this
+        # goes through the locking ``_arun``.
+        await self._abort_in_progress(slot_dir)
+
         salvaged = await self.salvage_dirty(
             slot_ws, prev.task_id if prev else None, incoming_task_id=task.id
         )
@@ -416,6 +436,66 @@ class WorktreeSlotManager:
         )
         return branch
 
+    async def restore_slot_after_task(
+        self,
+        slot_ws: Workspace,
+        *,
+        task_id: str | None = None,
+    ) -> bool:
+        """Return a slot to a clean tree after a task ends badly.
+
+        The slot-mode replacement for the legacy
+        ``_cleanup_workspace_for_next_task``, whose three-step
+        commit → **stash** → ``clean -fdx`` ladder is wrong in a worktree on
+        every rung:
+
+        * ``git stash`` pushes onto the **repository-wide** stash stack, which
+          every worktree of the base shares — a pop in one slot can restore
+          another slot's work.  Design §3.2 forbids it outright, which is why
+          :meth:`salvage_dirty` exists.
+        * ``clean -fdx`` destroys the gitignored caches (``node_modules``,
+          build output) whose survival is the entire economic argument for
+          reusing a slot.
+        * ``git checkout <default_branch>`` fails hard in a slot — git refuses
+          a branch already checked out in the base, which is the normal
+          topology.
+
+        So: salvage → ``reset --hard`` → ``clean -fd`` (never ``-x``), and the
+        slot deliberately stays on its task branch.  The branch is the durable
+        artifact (§3.4); the next :meth:`reset_slot_for_task` moves it.
+
+        Returns True when uncommitted work was archived to a task context.
+        """
+        slot_dir = Path(slot_ws.workspace_path)
+        base_ws = await self._base_of(slot_ws)
+        base_path = base_ws.workspace_path if base_ws else str(slot_dir)
+        prev = self.read_sentinel(slot_dir)
+
+        await self._abort_in_progress(slot_dir)
+        salvaged = await self.salvage_dirty(
+            slot_ws, prev.task_id if prev else task_id, incoming_task_id=task_id
+        )
+
+        async with self._git_mutex(base_path):
+            try:
+                await self.git._arun_unlocked(["reset", "--hard"], cwd=str(slot_dir))
+                await self.git._arun_unlocked(
+                    ["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir)
+                )
+            except GitError as e:
+                # Never fatal: the next reset_slot_for_task repeats this under
+                # its own error handling, and a slot that cannot be cleaned
+                # simply fails acquisition-time setup instead of a task.
+                logger.warning("Could not restore slot %s: %s", slot_dir, e)
+        return salvaged
+
+    async def _abort_in_progress(self, slot_dir: Path | str) -> None:
+        """Best-effort ``merge/rebase/cherry-pick --abort`` + stale-lock sweep."""
+        try:
+            await self.git.aabort_in_progress_operations(str(slot_dir))
+        except Exception as e:  # best-effort by contract
+            logger.debug("Abort-in-progress failed in %s: %s", slot_dir, e)
+
     async def salvage_dirty(
         self,
         slot_ws: Workspace,
@@ -430,6 +510,12 @@ class WorktreeSlotManager:
         work.  The patch lands on the *previous* task (from the sentinel) so
         it is attributable; on the incoming task when the predecessor is
         unknown.  Returns True when something was archived.
+
+        ``--binary`` is not optional: without it git emits only
+        ``Binary files a/x and b/x differ`` and the following ``reset --hard``
+        destroys the bytes, so an image, a fixture or a compiled asset would
+        be silently unrecoverable.  Patches past ``salvage_max_bytes`` are
+        replaced by their ``--stat`` summary rather than stored whole.
         """
         if not self.config.salvage_dirty:
             return False
@@ -438,9 +524,7 @@ class WorktreeSlotManager:
             if not await self.git.ahas_uncommitted_changes(slot_dir):
                 return False
             await self.git._arun_unlocked(["add", "-A"], cwd=slot_dir)
-            patch = await self.git._arun_unlocked(
-                ["diff", "--cached", "HEAD"], cwd=slot_dir
-            )
+            patch = await self.git.astaged_patch(slot_dir)
         except GitError as e:
             logger.warning("Salvage failed in %s: %s", slot_dir, e)
             return False
@@ -452,6 +536,27 @@ class WorktreeSlotManager:
         if not owner:
             logger.warning("Dirty slot %s has no owner to attribute salvage to", slot_dir)
             return False
+
+        cap = getattr(self.config, "salvage_max_bytes", 0) or 0
+        if cap and len(patch.encode("utf-8", "replace")) > cap:
+            try:
+                stat = await self.git._arun_unlocked(
+                    ["diff", "--cached", "--stat", "HEAD"], cwd=slot_dir
+                )
+            except GitError:
+                stat = "(diffstat unavailable)"
+            logger.warning(
+                "Salvage patch from %s exceeds salvage_max_bytes=%d — archiving "
+                "the diffstat only; the working-tree content is not recoverable",
+                slot_dir,
+                cap,
+            )
+            patch = (
+                f"# Salvage patch omitted: it exceeded worktrees.salvage_max_bytes "
+                f"({cap} bytes).\n"
+                f"# Only the diffstat is kept: the contents of the files below "
+                f"were NOT archived and are gone after the slot reset.\n\n{stat}"
+            )
         try:
             await self.db.add_task_context(
                 owner,

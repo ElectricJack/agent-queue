@@ -106,7 +106,8 @@ Slots are created lazily up to the cap, on demand when acquisition finds fewer f
 
 A slot is reused across tasks; per assignment it is reset to a pristine per-task state:
 
-1. **Salvage dirty state.** If the worktree is dirty (a crashed or sloppy predecessor), do **not** stash — stashes rot invisibly in the shared repo. Instead: `git add -A`, capture `git diff --cached HEAD` as a patch, archive it as `task_context(type=worktree_salvage)` on the *previous* task (from the sentinel's `task_id`; on the incoming task if unknown), then hard-reset. Work is preserved in a visible, per-task place (principle #2) and the slot is deterministic.
+0. **Clear any interrupted git operation.** `merge|rebase|cherry-pick --abort` plus a stale-lock sweep, exactly as the clone path has always done. A slot left mid-rebase by a killed agent fails both `reset --hard` and `switch`, which would send every task that lands on it into the PAUSED backoff indefinitely. Note the lock files live under `<base>/.git/worktrees/<slot>/`, not `<slot>/.git` — a worktree's `.git` is a *file*.
+1. **Salvage dirty state.** If the worktree is dirty (a crashed or sloppy predecessor), do **not** stash — the stash stack is **repository-wide**, shared by the base and every sibling slot, so a `pop` in one slot can restore another slot's work. Instead: `git add -A`, capture `git diff --cached --binary HEAD` as a patch, archive it as `task_context(type=worktree_salvage)` on the *previous* task (from the sentinel's `task_id`; on the incoming task if unknown), then hard-reset. `--binary` is required: without it git emits only `Binary files … differ` and the reset destroys the bytes. Patches larger than `worktrees.salvage_max_bytes` (default 5 MiB) are replaced by their `--stat` summary — `task_contexts` is not a blob store. Work is preserved in a visible, per-task place (principle #2) and the slot is deterministic.
 2. `git fetch origin` (via the base mutex; §3.5 on failure).
 3. `git reset --hard` + `git clean -fd` — **without `-x`**, so gitignored caches (`node_modules`, build dirs) survive and slot reuse keeps its amortization value. The sentinel is exempted (`-e .aq-worktree.json`).
 4. Fresh branch: `git switch -c aq/<task_id> origin/<default>` (or `origin/<base_branch>` when the task specifies `base_branch`). If the branch already exists (task retry), `git switch aq/<task_id>` followed by a rebase onto the start point. A continuation task (§4.3) resumes its predecessor's branch instead: `git switch aq/<orig_task_id>`, no reset of the branch tip.
@@ -122,7 +123,7 @@ The slot is the session `work_dir` (delivery owned by the session-runtime spec).
 ### 3.4 On close: the branch is the artifact
 
 - `shipped` → the branch is pushed and PR'd or merged (§4). The slot is *not* torn down; it is reset by the next assignment.
-- `blocked | abandoned | failed` → the branch is kept for `retain_failed_days` (default 7) for forensics and retry, then pruned. The slot itself returns to the free pool immediately — the branch survives independently of the worktree, which is the point.
+- `blocked | abandoned | failed` → the branch is kept for `retain_failed_days` (default 7) for forensics and retry, then pruned. The slot itself returns to the free pool immediately — the branch survives independently of the worktree, which is the point. Before the slot returns to the pool the *same* salvage → `reset --hard` → `clean -fd` sequence as §3.2 runs (`WorktreeSlotManager.restore_slot_after_task`), and the slot deliberately stays on its task branch. The clone-mode cleanup ladder — commit, else **stash**, else `clean -fdx`, then `checkout <default_branch>` — must never run against a slot: the stash is shared (§3.2), `-x` destroys the warm caches that are the whole point of slot reuse, and the checkout fails outright because the base already holds the default branch.
 - Merged `aq/*` branches are pruned locally in the base; remote pruning per `prune_remote_branches` policy.
 
 ### 3.5 Failure modes
@@ -170,6 +171,14 @@ Rebase or merge conflict → abort cleanly, release the merge slot, and:
 
 The branch is untouched by the failure; it remains the durable artifact for whoever resolves the conflict.
 
+### 4.4 Plan subtasks share one branch, and therefore serialize
+
+Subtasks of a plan all resume the parent's branch (`resume_branch = parent.branch_name`) so the whole plan lands as one PR. Git allows a branch to be checked out in exactly one worktree, so two sibling subtasks dispatched into two slots cannot both hold it: the second `git switch` is refused, its slot is released, and the task takes the ordinary 60 s PAUSED backoff until the sibling finishes. **A parallel plan therefore executes serially.**
+
+**Decision: accept the serialization; keep the shared branch.** The alternative — a branch per subtask, folded into the parent branch at integration — is a real design change, not a bug fix: it needs somewhere to do the folding, and that place is the merge slot, which does not exist until Phase 3. Building a second integration path in Phase 2 for Phase 3 to replace is the wrong order, and "one plan, one branch, one PR" is a property the plan model deliberately has. Revisit in Phase 3 with `_phase_integrate` in hand; until then, plans get isolation and atomicity rather than parallelism, which is the trade the shared branch was always making.
+
+What *is* fixed now is the reporting. The refusal was surfacing as a per-attempt Discord "Git Error", which described a scheduling wait as a fault. It is now recognised (`_is_branch_busy_error`) and logged as the expected wait it is. The same applies to the pool ramp: slots are created one per dispatch, so a cold cap-N project needs N−1 dispatch rounds to warm up, each previously costing a "No Workspace — use /add-workspace" notice for a condition the operator can neither cause nor fix. Both now pause quietly; genuine exhaustion still notifies.
+
 ---
 
 ## 5. Reaping — slots, not tasks
@@ -185,6 +194,8 @@ Branch pruning is a separate reaper concern: merged `aq/*` branches (`git branch
 ## 6. Daemon Restart: Adopt, Don't Delete
 
 `_recover_stale_state` today removes every `source_type=WORKTREE` workspace on boot. **That stops.** Slot worktrees belong to agent slots, not to a daemon run. On restart the daemon *adopts*: it cross-checks `git worktree list --porcelain` in each base against slot rows and sentinels, repairs the exclude block, runs `git worktree prune` for stale registrations, and re-registers rows for intact directories. Lock release for genuinely dead tasks follows the existing recovery logic (and, once the session-runtime spec lands, its liveness-checked adoption) — but the directories and branches survive. `--reset` remains the admin escape hatch for a wholesale wipe.
+
+Full adoption is Phase 4. Phase 2 ships the half that makes the interim survivable: `_cleanup_worktree_workspace` short-circuits on `is_slot`, so recovery unlocks slot rows and leaves both directory and branch alone, and every slot's `{slot_path -> base_path}` entry is rebuilt from one `list_workspaces()` sweep during recovery. That second half matters on its own — the map is what `_resolve_git_lock` reads to serialize a slot's `fetch` against the base's shared object store, and a task that was IN_PROGRESS across a restart never re-enters `_prepare_workspace`, so building the map only there would leave it permanently unregistered. The map is a startup projection of the DB, not an incrementally-built cache.
 
 ---
 

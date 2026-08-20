@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from src.models import KIND_MODE_WORKTREE, WORKSPACE_KIND_MODES, WorkspaceKind
+from src.models import WORKSPACE_KIND_MODES, WorkspaceKind
 
 # Lock-mode values accepted in the frontmatter.  Match WorkspaceMode.value.
 _VALID_LOCK_MODES = frozenset({"exclusive", "branch_isolated", "directory_isolated"})
@@ -50,14 +50,25 @@ def parse_workspace_kind_file(path: Path, project_id: str) -> WorkspaceKind:
     # Git provisioning strategy (worktree-execution §2.1 / §3.6).  The
     # frontmatter is the source of truth (principle #1); ``worktrees.enabled``
     # is only the rollout gate applied at acquisition time.
-    mode = fm.get("mode", KIND_MODE_WORKTREE)
-    if mode is None:
-        mode = KIND_MODE_WORKTREE
-    mode = str(mode)
-    if mode not in WORKSPACE_KIND_MODES:
-        raise ValueError(
-            f"{path}: mode={mode!r} is not one of {sorted(WORKSPACE_KIND_MODES)}"
-        )
+    #
+    # An **absent** ``mode:`` key parses to ``None``, which
+    # ``upsert_workspace_kind`` reads as "leave the stored value alone".  It
+    # must not default to ``worktree``: ``WorkspaceKindStore.bootstrap`` only
+    # writes files that do not already exist, so an install upgrading with a
+    # pre-``mode`` ``project-repo.md`` never gains the key — and defaulting
+    # would then upsert ``worktree`` over the migration's ``exclusive-clone``
+    # backfill on the first daemon start, and on every start after,
+    # falsifying §7.1 ("no existing install changes behavior on upgrade") at
+    # the data layer.  ``WorkspaceKindStore.backfill_mode_frontmatter``
+    # injects the DB's value into such files so the markdown becomes
+    # explicit; this parse rule is what keeps the window safe.
+    mode = fm.get("mode")
+    if mode is not None:
+        mode = str(mode)
+        if mode not in WORKSPACE_KIND_MODES:
+            raise ValueError(
+                f"{path}: mode={mode!r} is not one of {sorted(WORKSPACE_KIND_MODES)}"
+            )
 
     setup_raw = fm.get("worktree_setup", [])
     if setup_raw is None:

@@ -372,12 +372,35 @@ class ExecutionMixin:
                     resume_after=time.time() + no_ws_backoff,
                 )
                 await self.db.update_agent(action.agent_id, state=AgentState.IDLE)
-                await self._emit_text_notify(
-                    f"**No Workspace:** Task `{task.id}` paused for "
-                    f"{no_ws_backoff}s — project `{action.project_id}` has no "
-                    f"available workspaces. Use `/add-workspace` to create one.",
-                    project_id=action.project_id,
-                )
+                # Some waits are expected and self-clearing.  Telling the
+                # operator to "/add-workspace" while the slot pool is simply
+                # ramping — one slot per dispatch, so a cold cap-N project
+                # needs N-1 rounds — is both wrong and, at one notice per
+                # round, noisy.  Same for two plan subtasks queueing on their
+                # shared parent branch (worktree-execution §4.4).
+                wait_reason = self._workspace_wait_reasons.pop(action.task_id, None)
+                if wait_reason == "slot_warming":
+                    logger.info(
+                        "Task %s paused %ds — worktree slot pool for project %s is "
+                        "still warming up (one slot is provisioned per dispatch)",
+                        task.id,
+                        no_ws_backoff,
+                        action.project_id,
+                    )
+                elif wait_reason == "branch_busy":
+                    logger.info(
+                        "Task %s paused %ds — a sibling plan subtask holds the "
+                        "shared plan branch in another slot",
+                        task.id,
+                        no_ws_backoff,
+                    )
+                else:
+                    await self._emit_text_notify(
+                        f"**No Workspace:** Task `{task.id}` paused for "
+                        f"{no_ws_backoff}s — project `{action.project_id}` has no "
+                        f"available workspaces. Use `/add-workspace` to create one.",
+                        project_id=action.project_id,
+                    )
                 # Drop the platform we registered above; the task is paused.
                 self._adapters.pop(action.agent_id, None)
                 return

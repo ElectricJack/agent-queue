@@ -382,25 +382,214 @@ class TestPhaseBoundaries:
         finally:
             await o.shutdown()
 
-    async def test_verify_automerge_is_still_the_clone_path(self):
-        """Phase 2 does not change merge behavior — deliberately.
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Phase 3 owns this: _phase_verify must skip its auto-merge under "
+            "worktree mode, because integration belongs to the merge slot. "
+            "Today it attempts `git checkout <default>` in the slot, which git "
+            "refuses while the base holds that branch — so it usually fails "
+            "harmlessly with a logged warning rather than merging without the "
+            "slot. 'Usually' is the problem: if the base is not on its default "
+            "branch the checkout succeeds and the merge really does run "
+            "un-serialized. When phase 3 lands, this xfail turns into a strict "
+            "failure and the test becomes the assertion."
+        ),
+    )
+    async def test_verify_skips_the_automerge_under_worktree_mode(
+        self, tmp_path, base_repo
+    ):
+        from src.models import AgentOutput, PipelineContext
 
-        ``_phase_verify`` still auto-merges the task branch into the default
-        branch, which contradicts merge-slot serialization.  The spec resolves
-        that by skipping the auto-merge under worktree mode, and that
-        resolution belongs to phase 3.  This test pins the *current* state so
-        the change is visible when phase 3 lands rather than silent.
-        """
-        import inspect
+        o = await _orch(tmp_path, worktrees_enabled=True)
+        try:
+            await _seed(o, base_repo, mode=KIND_MODE_WORKTREE, cap=1)
+            task, agent = await _mk(o, "tsk-1", "a-1")
+            slot = Path(await o._prepare_workspace(task, agent))
+            (slot / "work.txt").write_text("done")
+            _git(["add", "-A"], cwd=slot)
+            _git(["commit", "-m", "work"], cwd=slot)
 
-        from src.orchestrator.git_ops import GitOpsMixin
+            issued: list[list[str]] = []
+            real_arun = o.git._arun
 
-        src = inspect.getsource(GitOpsMixin._phase_verify)
-        assert "auto-merge" in src.lower(), (
-            "if the auto-merge left _phase_verify, phase 3 has landed and this "
-            "guard should be replaced by its worktree-mode assertions"
-        )
-        assert "worktree" not in src.lower(), (
-            "_phase_verify became worktree-aware — that is phase 3's change, "
-            "not phase 2's; update this test alongside it"
-        )
+            async def recording(args, cwd=None, timeout=None):
+                issued.append(list(args))
+                return await real_arun(args, cwd=cwd, timeout=timeout)
+
+            o.git._arun = recording
+            try:
+                await o._phase_verify(
+                    PipelineContext(
+                        task=await o.db.get_task("tsk-1"),
+                        agent=agent,
+                        output=AgentOutput(success=True, exit_code=0),
+                        workspace_path=str(slot),
+                        workspace_id="ws-base",
+                        repo=None,
+                        default_branch="main",
+                        project=await o.db.get_project("p1"),
+                    )
+                )
+            finally:
+                o.git._arun = real_arun
+
+            assert ["checkout", "main"] not in issued, (
+                "the auto-merge must not even be attempted in a slot — "
+                "integration is the merge slot's job (design §4.2)"
+            )
+        finally:
+            await o.shutdown()
+
+
+# ─────────────────── restart: adopt, don't delete (F1 / F8) ──────────────
+
+
+class TestRecoveryDoesNotDestroySlots:
+    """`_recover_stale_state` walks every ``source_type=WORKTREE`` row.
+
+    Slot rows are now in that set, and `aworktree_base_path` resolves them
+    (the retired `_get_worktree_base_path` returned None and accidentally
+    spared them), so an unguarded call would run `git worktree remove` with
+    a `--force` fallback against a live slot on every daemon start.
+    """
+
+    async def _slot_with_work(self, o, base_repo):
+        await _seed(o, base_repo, mode=KIND_MODE_WORKTREE, cap=2)
+        task, agent = await _mk(o, "tsk-1", "a-1")
+        slot = Path(await o._prepare_workspace(task, agent))
+        (slot / "in-progress.txt").write_text("uncommitted work")
+        cache = slot / "node_modules"
+        cache.mkdir()
+        (cache / "dep.js").write_text("expensive")
+        return slot, cache
+
+    async def test_uncommitted_work_and_caches_survive_a_restart(
+        self, tmp_path, base_repo
+    ):
+        o = await _orch(tmp_path, worktrees_enabled=True)
+        try:
+            slot, cache = await self._slot_with_work(o, base_repo)
+
+            await o._recover_stale_state()
+
+            assert slot.is_dir(), "the slot directory must survive a restart"
+            assert (slot / "in-progress.txt").read_text() == "uncommitted work"
+            assert cache.joinpath("dep.js").exists(), "warm caches must survive"
+            assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=slot) == "aq/tsk-1"
+
+            rows = await o.db.list_slots_for_base("ws-base")
+            assert len(rows) == 1, "the slot row must survive too"
+            assert rows[0].locked_by_agent_id is None, "but its stale lock is released"
+            assert rows[0].locked_by_task_id is None
+
+            # Still a registered worktree of the base.
+            paths = {
+                str(Path(e["path"]).resolve())
+                for e in await o.git.aworktree_list(str(base_repo))
+            }
+            assert str(slot.resolve()) in paths
+        finally:
+            await o.shutdown()
+
+    async def test_recovery_rebuilds_the_slot_to_base_lock_map(
+        self, tmp_path, base_repo
+    ):
+        """F8: a task IN_PROGRESS across a restart never re-enters
+        `_prepare_workspace`, so a map built only there stays empty and the
+        slot's `fetch` stops serializing against the base's object store."""
+        o = await _orch(tmp_path, worktrees_enabled=True)
+        try:
+            slot, _cache = await self._slot_with_work(o, base_repo)
+
+            # Simulate the fresh process: nothing cached in memory.
+            o._worktree_base_paths.clear()
+            o._git_mutexes.clear()
+            assert o._resolve_git_lock(str(slot)) is None
+
+            await o._recover_stale_state()
+
+            assert o._resolve_git_lock(str(slot)) is o._git_mutexes[str(base_repo)]
+        finally:
+            await o.shutdown()
+
+    async def test_legacy_branch_isolated_rows_are_still_cleaned(
+        self, tmp_path, base_repo
+    ):
+        """The guard is `is_slot`, not `source_type` — pre-lane rows still go."""
+        o = await _orch(tmp_path, worktrees_enabled=True)
+        try:
+            await _seed(o, base_repo, mode=KIND_MODE_WORKTREE, cap=2)
+            legacy_dir = tmp_path / "legacy-worktree"
+            await o.git.aworktree_add(str(base_repo), str(legacy_dir), ref="main")
+            await o.db.create_workspace(
+                Workspace(
+                    id="ws-legacy",
+                    project_id="p1",
+                    workspace_path=str(legacy_dir),
+                    source_type=RepoSourceType.WORKTREE,
+                    kind_id="project-repo",
+                )
+            )
+
+            await o._recover_stale_state()
+
+            assert await o.db.get_workspace("ws-legacy") is None
+            assert not legacy_dir.exists()
+        finally:
+            await o.shutdown()
+
+
+# ──────────────── terminal failure never stashes in a slot (F4) ──────────
+
+
+class TestTerminalCleanupInASlot:
+    async def test_cleanup_salvages_instead_of_stashing(self, tmp_path, base_repo):
+        o = await _orch(tmp_path, worktrees_enabled=True)
+        try:
+            await _seed(o, base_repo, mode=KIND_MODE_WORKTREE, cap=1)
+            task, agent = await _mk(o, "tsk-1", "a-1")
+            slot = Path(await o._prepare_workspace(task, agent))
+            (slot / "README.md").write_text("half-done")
+            (slot / "junk.tmp").write_text("junk")
+            cache = slot / "node_modules"
+            cache.mkdir()
+            (cache / "dep.js").write_text("expensive")
+
+            await o._cleanup_workspace_for_next_task(str(slot), "main", "tsk-1")
+
+            # 1. No stash anywhere — the stack is shared with the base.
+            assert _git(["stash", "list"], cwd=base_repo) == ""
+            assert _git(["stash", "list"], cwd=slot) == ""
+            # 2. Warm caches survive (never `clean -fdx`).
+            assert cache.joinpath("dep.js").exists()
+            # 3. Still on the task branch — `checkout main` would fail anyway,
+            #    the base holds it.
+            assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=slot) == "aq/tsk-1"
+            assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=base_repo) == "main"
+            # 4. And the work is recoverable.
+            salvage = [
+                c
+                for c in await o.db.get_task_contexts("tsk-1")
+                if c["type"] == "worktree_salvage"
+            ]
+            assert len(salvage) == 1 and "half-done" in salvage[0]["content"]
+            assert _git(["status", "--porcelain"], cwd=slot) == ""
+            assert not (slot / "junk.tmp").exists()
+        finally:
+            await o.shutdown()
+
+    async def test_clone_workspaces_keep_the_legacy_ladder(self, tmp_path, base_repo):
+        """The slot branch must not change exclusive-clone behavior."""
+        o = await _orch(tmp_path, worktrees_enabled=False)
+        try:
+            await _seed(o, base_repo, mode=KIND_MODE_EXCLUSIVE_CLONE, cap=1)
+            (base_repo / "dirty.txt").write_text("uncommitted")
+
+            await o._cleanup_workspace_for_next_task(str(base_repo), "main", "tsk-x")
+
+            # The clone path commits rather than salvaging, and ends on main.
+            assert _git(["status", "--porcelain"], cwd=base_repo) == ""
+            assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=base_repo) == "main"
+        finally:
+            await o.shutdown()

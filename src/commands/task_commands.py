@@ -1023,7 +1023,8 @@ class TaskCommandsMixin:
             result["warning"] = (
                 "workspace_mode='directory-isolated' is accepted but not yet implemented. "
                 "The task will fail at execution time. This mode is reserved for future "
-                "monorepo support. Use 'exclusive' or 'branch-isolated' instead."
+                "monorepo support. Use 'exclusive' instead ('branch-isolated' is "
+                "deprecated and now behaves identically to 'exclusive')."
             )
 
         # Cross-project warning: if project_id was implicitly inherited from
@@ -1393,7 +1394,8 @@ class TaskCommandsMixin:
             result["warning"] = (
                 "workspace_mode='directory-isolated' is accepted but not yet implemented. "
                 "The task will fail at execution time. This mode is reserved for future "
-                "monorepo support. Use 'exclusive' or 'branch-isolated' instead."
+                "monorepo support. Use 'exclusive' instead ('branch-isolated' is "
+                "deprecated and now behaves identically to 'exclusive')."
             )
         return result
 

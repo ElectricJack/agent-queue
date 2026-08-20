@@ -17,6 +17,17 @@ from src.models import (
 
 logger = logging.getLogger(__name__)
 
+# git's wording for "that branch is checked out in another worktree".  Both
+# phrasings are in the wild depending on which command refused (`switch`,
+# `checkout`, `worktree add`).
+_BRANCH_BUSY_MARKERS = ("already checked out", "already used by worktree")
+
+
+def _is_branch_busy_error(exc: Exception) -> bool:
+    """True when a git failure is "that branch lives in another worktree"."""
+    text = str(exc).lower()
+    return any(m in text for m in _BRANCH_BUSY_MARKERS)
+
 
 class WorkspaceMixin:
     """Workspace management methods mixed into Orchestrator."""
@@ -109,17 +120,31 @@ class WorkspaceMixin:
             )
 
         worktrees_enabled = self._worktrees_enabled()
+        pool_warming = False
         if worktrees_enabled:
             # Slots are created lazily, on demand, when acquisition would
             # otherwise find fewer free slots than the cap allows
             # (worktree-execution §3.1 / §6.3).
-            await self._ensure_worktree_slots_for_task(task, project)
+            pool_warming = await self._ensure_worktree_slots_for_task(task, project)
 
+        self._workspace_wait_reasons.pop(task.id, None)
         try:
             attachment_set = await acquire_for_task(
-                self.db, task, agent.id, worktrees_enabled=worktrees_enabled
+                self.db,
+                task,
+                agent.id,
+                worktrees_enabled=worktrees_enabled,
+                worktree_slot_cap=(
+                    self._project_slot_cap(project) if worktrees_enabled else None
+                ),
             )
         except AcquisitionFailed:
+            if pool_warming:
+                # The slot pool has not reached the cap yet: growth is one
+                # slot per dispatch, so a cold cap-N project needs N-1 more
+                # rounds.  That is an expected ramp, not a misconfiguration —
+                # the operator has nothing to fix and no workspace to add.
+                self._workspace_wait_reasons[task.id] = "slot_warming"
             return None
 
         # Stash the attachment set so Phase 7 (runtime integration) can
@@ -333,7 +358,18 @@ class WorkspaceMixin:
 
         return workspace
 
-    async def _ensure_worktree_slots_for_task(self, task: Task, project) -> None:
+    @staticmethod
+    def _project_slot_cap(project) -> int:
+        """Slot cap for a project — design §2.2: slot count == agent cap.
+
+        One definition, used by slot growth, acquisition and capacity
+        counting alike, so the three cannot drift apart.
+        """
+        if project is None:
+            return 1
+        return max(1, getattr(project, "max_concurrent_agents", 1) or 1)
+
+    async def _ensure_worktree_slots_for_task(self, task: Task, project) -> bool:
         """Lazily grow the slot pool for every worktree-mode kind the task needs.
 
         Design §3.1: slots are created on demand, up to the project's agent
@@ -344,12 +380,16 @@ class WorkspaceMixin:
 
         Failures here are never fatal: acquisition simply finds nothing free
         and the task takes the existing no-workspace PAUSED backoff.
+
+        Returns True when some worktree-mode kind is still below its cap —
+        i.e. a subsequent acquisition failure means "the pool is still
+        warming up", an expected ramp the operator cannot and need not fix,
+        rather than a genuine shortage.
         """
         from src.orchestrator.workspace_attachments import effective_requirements
 
-        cap = 1
-        if project is not None:
-            cap = max(1, getattr(project, "max_concurrent_agents", 1) or 1)
+        cap = self._project_slot_cap(project)
+        warming = False
 
         seen: set[str] = set()
         for req in await effective_requirements(self.db, task):
@@ -377,6 +417,8 @@ class WorkspaceMixin:
 
             in_cap = [s for s in slots if (s.slot_index or 0) < cap]
             free = [s for s in in_cap if s.locked_by_agent_id is None]
+            if len(in_cap) < cap:
+                warming = True
             if free or len(in_cap) >= cap:
                 continue  # something is acquirable, or we are already at cap
 
@@ -392,6 +434,7 @@ class WorkspaceMixin:
                     task.project_id,
                     e,
                 )
+        return warming
 
     def _register_slot_bases(self, slots, base_path: str) -> None:
         """Record ``slot_path -> base_path`` for the sync git-lock resolver.
@@ -403,6 +446,35 @@ class WorkspaceMixin:
         for slot in slots:
             self._worktree_base_paths[slot.workspace_path] = base_path
         self._git_mutex(base_path)  # ensure the lock exists for the resolver
+
+    def _recover_worktree_base_paths(self, all_workspaces: list[Workspace]) -> None:
+        """Rebuild ``slot_path -> base_path`` for *every* slot row at startup.
+
+        ``_resolve_git_lock`` must be sync (``GitManager._arun`` calls it
+        inline), so it reads a dict rather than asking git.  Building that
+        dict only in ``_prepare_workspace`` made it an incremental cache with
+        a restart-shaped hole: a task that was IN_PROGRESS when the daemon
+        died never re-enters prepare, so its slot stayed unregistered and its
+        ``fetch`` stopped serializing against the base's shared object store.
+
+        Populating it from one ``list_workspaces()`` sweep during recovery
+        makes the map a *projection of the DB* instead — every slot that
+        exists is registered before any git command can run.
+        """
+        by_id = {ws.id: ws for ws in all_workspaces}
+        for ws in all_workspaces:
+            if not ws.is_slot or not ws.base_workspace_id:
+                continue
+            base = by_id.get(ws.base_workspace_id)
+            if base is None:
+                logger.warning(
+                    "Slot %s references missing base workspace %s — git "
+                    "serialization for it cannot be restored",
+                    ws.id,
+                    ws.base_workspace_id,
+                )
+                continue
+            self._register_slot_bases([ws], base.workspace_path)
 
     async def _prepare_slot_workspace(self, task: Task, project, attachment) -> str | None:
         """Prepare an acquired slot worktree for *task*.  Returns its path.
@@ -446,14 +518,33 @@ class WorkspaceMixin:
                 kind=attachment.kind,
             )
         except Exception as e:
-            logger.error(
-                "Worktree slot reset failed for task %s in %s: %s", task.id, slot_dir, e
-            )
-            await self._emit_text_notify(
-                f"**Git Error:** Task `{task.id}` — worktree slot setup failed: {e}\n"
-                f"Slot released. Task will retry when a slot is available.",
-                project_id=task.project_id,
-            )
+            if _is_branch_busy_error(e):
+                # Two plan subtasks of the same parent resume the *same*
+                # branch, and git refuses to check one branch out in two
+                # worktrees.  That is a scheduling wait, not a git error:
+                # siblings serialize onto the plan branch by design
+                # (worktree-execution §4.4), and the loser retries after the
+                # normal PAUSED backoff.  Reporting it as a Git Error once per
+                # attempt is pure noise.
+                logger.info(
+                    "Task %s waits for branch %s — a sibling holds it in another "
+                    "slot; retrying after the no-workspace backoff",
+                    task.id,
+                    resume_branch,
+                )
+                self._workspace_wait_reasons[task.id] = "branch_busy"
+            else:
+                logger.error(
+                    "Worktree slot reset failed for task %s in %s: %s",
+                    task.id,
+                    slot_dir,
+                    e,
+                )
+                await self._emit_text_notify(
+                    f"**Git Error:** Task `{task.id}` — worktree slot setup failed: {e}\n"
+                    f"Slot released. Task will retry when a slot is available.",
+                    project_id=task.project_id,
+                )
             await self._release_workspace_and_cleanup(ws)
             return None
 
@@ -482,10 +573,32 @@ class WorkspaceMixin:
     async def _cleanup_worktree_workspace(self, ws: Workspace) -> None:
         """Remove a *legacy* git worktree and delete its workspace record.
 
-        Reached only by pre-worktree-execution branch-isolated rows; slot
-        rows short-circuit in :meth:`_release_workspace_and_cleanup`.
-        Retired with them in phase 6.
+        Intended for pre-worktree-execution branch-isolated rows, retired
+        with them in phase 6.  **Slot rows short-circuit here, not only at
+        the call sites** — a slot outlives every task that uses it (design
+        §3.4) and only ``WorktreeSlotManager.reap_slot`` (phase 4) may
+        delete one.
+
+        The guard lives in this method deliberately, because three callers
+        reach it: :meth:`_release_workspace_and_cleanup`,
+        :meth:`_release_workspaces_for_task` and
+        ``Orchestrator._recover_stale_state`` — and the last walks *every*
+        ``source_type=WORKTREE`` row, which now includes slots.  Since
+        ``aworktree_base_path`` resolves a slot successfully (unlike the
+        retired ``_get_worktree_base_path`` filename parsing), an unguarded
+        call would run ``git worktree remove`` with a ``--force`` fallback
+        against a live slot on every daemon restart, destroying uncommitted
+        work and every warm cache.  One guard here covers all three callers.
         """
+        if ws.is_slot:
+            logger.debug(
+                "Not deleting slot workspace %s at %s — slots are reaped, never "
+                "cleaned up (worktree-execution §3.4/§6)",
+                ws.id,
+                ws.workspace_path,
+            )
+            await self.db.release_workspace(ws.id)
+            return
         base_path = self._worktree_base_paths.get(
             ws.workspace_path
         ) or await self.git.aworktree_base_path(ws.workspace_path)
@@ -682,6 +795,29 @@ class WorkspaceMixin:
                             e,
                         )
 
+    async def _slot_workspace_at(self, path: str) -> Workspace | None:
+        """The slot ``workspaces`` row whose directory is *path*, if any.
+
+        Several cleanup paths only ever receive a filesystem path (they run
+        off ``pipeline_ctx.workspace_path``), but slot and clone need opposite
+        treatment, so the row has to be recovered from the path.  Comparison
+        is normalized — case-folded on Windows — because paths reach here from
+        both the DB and git.
+        """
+        if not path:
+            return None
+        target = os.path.normcase(os.path.abspath(path))
+        try:
+            rows = await self.db.list_workspaces()
+        except Exception:  # pragma: no cover - defensive
+            return None
+        for ws in rows:
+            if not ws.is_slot or not ws.workspace_path:
+                continue
+            if os.path.normcase(os.path.abspath(ws.workspace_path)) == target:
+                return ws
+        return None
+
     async def _cleanup_workspace_for_next_task(
         self,
         workspace: str | None,
@@ -698,15 +834,39 @@ class WorkspaceMixin:
         verification retry, to prevent dirty workspace state from blocking
         or confusing the next task assigned to this workspace.
 
-        Cleanup strategy (best-effort, most-conservative-first):
+        Cleanup strategy for a **clone** (best-effort, most-conservative-first):
         0. Abort any in-progress git operations and remove stale lock files.
         1. Commit any uncommitted changes (preserves work).
         2. Stash if commit fails (preserves work, less accessible).
         3. Force-clean workspace as last resort (reset --hard + clean -fdx).
         4. Switch to the default branch.
+
+        **A slot worktree takes a different route entirely** — see
+        :meth:`WorktreeSlotManager.restore_slot_after_task`.  Every rung of
+        the ladder above is wrong inside a worktree: the stash stack is shared
+        with the base and every sibling slot (design §3.2 forbids touching
+        it), ``clean -fdx`` destroys the warm caches that justify reusing a
+        slot, and ``checkout <default_branch>`` fails outright because the
+        base already has that branch checked out.
         """
         if not workspace:
             return
+
+        slot_ws = await self._slot_workspace_at(workspace)
+        if slot_ws is not None:
+            try:
+                await self._worktree_slots().restore_slot_after_task(
+                    slot_ws, task_id=task_id
+                )
+            except Exception as e:  # never block the terminal transition
+                logger.warning(
+                    "Task %s: could not restore slot %s after task: %s",
+                    task_id,
+                    workspace,
+                    e,
+                )
+            return
+
         try:
             if not await self.git.avalidate_checkout(workspace):
                 return

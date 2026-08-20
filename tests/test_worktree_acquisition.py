@@ -311,3 +311,146 @@ class TestWorktreeCapacityCount:
         await _worktree_project(db)
         # base + 2 slots + vault, all unlocked.
         assert await db.count_available_workspaces("p1") == 4
+
+
+# ─────────────────── one rule for "which row is the base" ────────────────
+
+
+class TestBaseDesignationIsSingleSourced:
+    """F2: capacity and acquisition must agree on the base.
+
+    ``find_worktree_base`` orders by (clone-before-link, id).  A second
+    definition that sorted by id alone lived in
+    ``count_available_workspaces``; with a LINK row whose id sorts before the
+    CLONE row the two picked *different* rows, so capacity was measured
+    against a base owning no slots — permanently reporting a full cap while
+    acquisition could hand out nothing.  Ids are generated, so which way it
+    fell was a coin flip.
+    """
+
+    async def _link_before_clone(self, db):
+        await _add_kind(
+            db,
+            kind_id="project-repo",
+            is_git_repo=True,
+            lockable=True,
+            mode=KIND_MODE_WORKTREE,
+            default_lock_mode="exclusive",
+        )
+        # 'ws-aaa-link' sorts before 'ws-zzz-clone' by id, but the base rule
+        # prefers clones.
+        await db.create_workspace(
+            Workspace(
+                id="ws-aaa-link",
+                project_id="p1",
+                workspace_path="/repo-link",
+                source_type=RepoSourceType.LINK,
+                kind_id="project-repo",
+            )
+        )
+        await _add_ws(db, ws_id="ws-zzz-clone", path="/repo", kind_id="project-repo")
+        for i in (0, 1):
+            await _add_ws(
+                db,
+                ws_id=f"ws-slot-{i}",
+                path=f"/repo/.aq/worktrees/slot-{i}",
+                kind_id="project-repo",
+                slot_index=i,
+                base_id="ws-zzz-clone",
+            )
+
+    async def test_capacity_agrees_with_acquisition_when_a_link_sorts_first(self, db):
+        await self._link_before_clone(db)
+        assert (await db.find_worktree_base("p1", "project-repo")).id == "ws-zzz-clone"
+
+        # Fill both slots.
+        for i in (1, 2):
+            await acquire_for_task(
+                db,
+                await _mktask(db, task_id=f"t{i}"),
+                (await _mkagent(db, agent_id=f"a{i}")).id,
+                worktrees_enabled=True,
+            )
+        # Nothing left to acquire...
+        assert (
+            await db.acquire_one_unlocked(
+                project_id="p1",
+                kind_id="project-repo",
+                mode="exclusive",
+                locked_by_task_id="t9",
+                locked_by_agent_id="a9",
+                kind_mode=KIND_MODE_WORKTREE,
+            )
+            is None
+        )
+        # ...so capacity for the git kind must be 0 (the vault row is the
+        # only thing left).  It used to report a full cap of 2 on top.
+        assert await db.count_available_workspaces("p1", worktree_slot_cap=2) == 1
+
+
+# ─────────────── out-of-cap slots: one bound, both directions ────────────
+
+
+class TestSlotCapBoundIsSymmetric:
+    """F5: acquisition and capacity must apply the same cap bound.
+
+    ``count_available_workspaces`` and ``_ensure_worktree_slots_for_task``
+    both bound slots at ``slot_index < cap``; ``acquire_one_unlocked`` filtered
+    only on ``slot_index IS NOT NULL``.  After a cap shrink, capacity read 0
+    while acquisition still handed out a slot above the cap.
+    """
+
+    async def _shrunk_cap(self, db):
+        await _worktree_project(db, slots=4)
+        for i in (1, 2):
+            await acquire_for_task(
+                db,
+                await _mktask(db, task_id=f"t{i}"),
+                (await _mkagent(db, agent_id=f"a{i}")).id,
+                worktrees_enabled=True,
+            )  # takes slots 0 and 1
+
+    async def test_out_of_cap_slot_is_not_acquired(self, db):
+        await self._shrunk_cap(db)
+        assert await db.count_available_workspaces("p1", worktree_slot_cap=2) == 1
+
+        got = await db.acquire_one_unlocked(
+            project_id="p1",
+            kind_id="project-repo",
+            mode="exclusive",
+            locked_by_task_id="t3",
+            locked_by_agent_id="a3",
+            kind_mode=KIND_MODE_WORKTREE,
+            worktree_slot_cap=2,
+        )
+        assert got is None, "slot-2 and slot-3 are above the cap"
+
+    async def test_without_a_cap_every_slot_is_still_a_candidate(self, db):
+        """The bound is opt-in; the caller passes it only under worktree mode."""
+        await self._shrunk_cap(db)
+        await _mktask(db, task_id="t3")
+        await _mkagent(db, agent_id="a3")
+        got = await db.acquire_one_unlocked(
+            project_id="p1",
+            kind_id="project-repo",
+            mode="exclusive",
+            locked_by_task_id="t3",
+            locked_by_agent_id="a3",
+            kind_mode=KIND_MODE_WORKTREE,
+        )
+        assert got is not None and got.slot_index == 2
+
+    async def test_in_cap_slot_is_still_acquirable(self, db):
+        await _worktree_project(db, slots=4)
+        await _mktask(db, task_id="t1")
+        await _mkagent(db, agent_id="a1")
+        got = await db.acquire_one_unlocked(
+            project_id="p1",
+            kind_id="project-repo",
+            mode="exclusive",
+            locked_by_task_id="t1",
+            locked_by_agent_id="a1",
+            kind_mode=KIND_MODE_WORKTREE,
+            worktree_slot_cap=2,
+        )
+        assert got is not None and got.slot_index == 0

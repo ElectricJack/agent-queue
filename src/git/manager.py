@@ -1994,6 +1994,49 @@ class GitManager:
         except Exception:
             return False
 
+    async def astaged_patch(self, checkout_path: str) -> str:
+        """The staged diff as an **appliable** patch.  Output is not stripped.
+
+        ``_arun`` / ``_arun_unlocked`` strip their output, which corrupts a
+        patch: ``git apply`` rejects one with no trailing newline, and a
+        binary hunk needs the blank line that terminates its base85 block —
+        so a stripped patch fails with "corrupt binary patch at line N".
+        ``--binary`` is likewise mandatory; without it git emits only
+        ``Binary files a/x and b/x differ`` and the bytes are unrecoverable.
+
+        Used by worktree salvage, whose entire purpose is that the archived
+        text can be applied later.
+        """
+        result = await self._arun_subprocess(
+            ["git", "diff", "--cached", "--binary", "HEAD"], cwd=checkout_path
+        )
+        if result.returncode != 0:
+            raise GitError(f"git diff --cached failed: {result.stderr.strip()}")
+        return result.stdout
+
+    @staticmethod
+    def _resolve_git_dir(checkout_path: str) -> str:
+        """The real git directory for a checkout — clone or worktree.
+
+        For a clone this is ``<path>/.git``.  For a linked worktree ``.git``
+        is a file containing ``gitdir: <absolute path>``; returning that path
+        is what lets lock-file cleanup find ``index.lock`` at all.  Falls back
+        to ``<path>/.git`` when the pointer cannot be read.
+        """
+        dot_git = os.path.join(checkout_path, ".git")
+        try:
+            if os.path.isfile(dot_git):
+                with open(dot_git, encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if line.startswith("gitdir:"):
+                            target = line.split(":", 1)[1].strip()
+                            if not os.path.isabs(target):
+                                target = os.path.join(checkout_path, target)
+                            return os.path.normpath(target)
+        except OSError:
+            pass
+        return dot_git
+
     async def aabort_in_progress_operations(self, checkout_path: str) -> None:
         """Abort any in-progress merge, rebase, or cherry-pick.
 
@@ -2004,8 +2047,11 @@ class GitManager:
         This is a best-effort method — individual failures are silently
         ignored because not all operations may be in progress.
         """
-        # Remove stale git lock files that block all operations
-        git_dir = os.path.join(checkout_path, ".git")
+        # Remove stale git lock files that block all operations.  In a
+        # worktree ``.git`` is a *file* holding ``gitdir: <path>``, and the
+        # index lives under ``<base>/.git/worktrees/<name>/`` — resolving it
+        # is what makes this work for slot worktrees and not only clones.
+        git_dir = self._resolve_git_dir(checkout_path)
         for lock_name in ("index.lock", "shallow.lock", "refs/heads.lock"):
             lock_path = os.path.join(git_dir, lock_name)
             try:

@@ -18,12 +18,16 @@ logger = logging.getLogger(__name__)
 # Columns updated on conflict — every column except the PK pair and created_at.
 #
 # ``mode`` and ``worktree_setup`` are here deliberately (worktree-execution
-# §3.6 + principle #1: the markdown is the source of truth).  The substrate
-# migration backfilled every pre-existing kind row to ``exclusive-clone``,
-# and ``WorkspaceKindStore.bootstrap`` renders the markdown *from* those rows
-# — so an upgrading install writes ``mode: exclusive-clone`` into its vault
-# and the next ``scan()`` upsert re-writes the same value.  Behavior only
-# changes when an operator edits the file, which is the intended knob.
+# §3.6 + principle #1: the markdown is the source of truth).  Behavior changes
+# only when an operator edits the file, which is the intended knob.
+#
+# ``mode`` is *removed* from this set when ``kind.mode is None`` — the parser's
+# encoding of "the frontmatter says nothing about mode" — so an absent key
+# means "leave the stored value alone".  ``bootstrap`` only writes markdown
+# that does not already exist, so an install upgrading with a pre-``mode``
+# ``project-repo.md`` keeps a file with no ``mode:`` key; without the coalesce
+# that file would upsert a default over the migration's ``exclusive-clone``
+# backfill on the first daemon start and on every start after.
 _UPSERT_UPDATE_COLS = (
     "description",
     "writable",
@@ -42,8 +46,17 @@ class WorkspaceKindQueryMixin:
     """Query mixin for ``workspace_kinds``. Expects ``self._engine``."""
 
     async def upsert_workspace_kind(self, kind: WorkspaceKind) -> None:
-        """Insert or update a workspace kind, keyed by ``(project_id, id)``."""
+        """Insert or update a workspace kind, keyed by ``(project_id, id)``.
+
+        ``kind.mode is None`` means "the source said nothing about mode": the
+        column is left at whatever the row already holds (and takes the
+        shipped default on insert).  Every other field is written
+        unconditionally — the markdown is the source of truth.
+        """
         now = time.time()
+        update_cols = _UPSERT_UPDATE_COLS
+        if kind.mode is None:
+            update_cols = tuple(c for c in update_cols if c != "mode")
         values = {
             "project_id": kind.project_id,
             "id": kind.id,
@@ -65,20 +78,23 @@ class WorkspaceKindQueryMixin:
                 stmt = sqlite_insert(workspace_kinds).values(**values)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["project_id", "id"],
-                    set_={c: stmt.excluded[c] for c in _UPSERT_UPDATE_COLS},
+                    set_={c: stmt.excluded[c] for c in update_cols},
                 )
                 await conn.execute(stmt)
             elif dialect == "postgresql":
                 stmt = pg_insert(workspace_kinds).values(**values)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["project_id", "id"],
-                    set_={c: stmt.excluded[c] for c in _UPSERT_UPDATE_COLS},
+                    set_={c: stmt.excluded[c] for c in update_cols},
                 )
                 await conn.execute(stmt)
             else:
                 # Generic fallback: try update, then insert if 0 rows changed.
                 update_values = {
-                    k: v for k, v in values.items() if k not in ("project_id", "id")
+                    k: v
+                    for k, v in values.items()
+                    if k not in ("project_id", "id", "created_at")
+                    and (k != "mode" or kind.mode is not None)
                 }
                 result = await conn.execute(
                     update(workspace_kinds)

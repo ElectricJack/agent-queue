@@ -116,3 +116,26 @@ def test_parse_explicit_description_wins_over_body(tmp_path: Path):
     )
     kind = parse_workspace_kind_file(md, project_id="__system__")
     assert kind.description == "Frontmatter wins"
+
+
+def test_absent_mode_parses_to_none_not_a_default(tmp_path: Path):
+    """F3: ``None`` means "the frontmatter is silent", which the upsert reads
+    as "leave the stored value alone".  A default here would flip every
+    upgrading install's kind on the first daemon start."""
+    md = tmp_path / "silent.md"
+    md.write_text("---\nid: silent\nis_git_repo: true\n---\n")
+    assert parse_workspace_kind_file(md, project_id="__system__").mode is None
+
+
+def test_explicit_mode_is_parsed(tmp_path: Path):
+    md = tmp_path / "explicit.md"
+    md.write_text("---\nid: explicit\nmode: exclusive-clone\n---\n")
+    kind = parse_workspace_kind_file(md, project_id="__system__")
+    assert kind.mode == "exclusive-clone"
+
+
+def test_parse_rejects_invalid_mode(tmp_path: Path):
+    md = tmp_path / "bad-mode.md"
+    md.write_text("---\nid: bad\nmode: sideways\n---\n")
+    with pytest.raises(ValueError, match="mode"):
+        parse_workspace_kind_file(md, project_id="__system__")
