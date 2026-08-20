@@ -170,6 +170,29 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "response": "The repo URL is https://github.com/example/repo",
         "tools_used": ["get_project", "reply_to_user"],
     },
+    # Messages (supervisor-agent §5 / design §6.3)
+    "message.sent": {
+        "message_id": "msg-abc123",
+        "project_id": "proj-1",
+        "from_kind": "user",
+        "from_id": "discord:1234",
+        "to_kind": "session",
+        "to_id": "supervisor-proj-1",
+        "thread_id": "discord:5678",
+        "subject": "status?",
+    },
+    "message.delivered": {
+        "message_id": "msg-abc123",
+        "project_id": "proj-1",
+        "method": "inject",
+    },
+    "message.replied": {
+        "message_id": "msg-abc123",
+        "reply_id": "msg-def456",
+        "project_id": "proj-1",
+        "body": "3 tasks are running.",
+        "thread_id": "discord:5678",
+    },
     # Git
     "git.commit": {
         "commit_hash": "abc123def456",

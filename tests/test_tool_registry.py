@@ -123,6 +123,7 @@ def test_registry_has_categories(registry):
         "plugin",
         "playbook",
         "mcp",
+        "message",
     }
 
     for cat in categories:
