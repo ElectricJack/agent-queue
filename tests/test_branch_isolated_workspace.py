@@ -206,12 +206,15 @@ async def orch(tmp_path):
 
 
 class TestTwoAgentsAcquireBranchIsolated:
-    """(a) Two agents acquire workspace with lock_mode='branch-isolated' on
-    same repo — both succeed."""
+    """(a) BRANCH_ISOLATED locks stay compatible at the DB level; the
+    worktree *fallback* they used to trigger is retired."""
 
-    async def test_both_agents_acquire_successfully(self, orch, git_repo):
-        """First agent locks the workspace directly; second agent gets a
-        worktree.  Both end up with usable workspaces."""
+    async def test_second_agent_gets_no_fallback_worktree(self, orch, git_repo):
+        """First agent locks the workspace; the second gets nothing.
+
+        Before worktree-execution, agent 2 was handed an ad-hoc worktree
+        carved out of agent 1's locked clone.  That fallback is gone.
+        """
         db = orch.db
         clone = git_repo["clone"]
 
@@ -281,11 +284,13 @@ class TestTwoAgentsAcquireBranchIsolated:
         assert ws1_path is not None
         assert ws1_path == clone
 
-        # Agent 2 acquires workspace — original is locked, so it should get a worktree
+        # Agent 2 finds nothing free.  The branch-isolated worktree fallback
+        # is retired (worktree-execution 6.1 / 7.4) — worktree *mode* is
+        # its principled replacement — so acquisition returns None and
+        # _execute_task's no-workspace PAUSED backoff takes over, exactly as
+        # it does for clone exhaustion.
         ws2_path = await orch._prepare_workspace(task2, agent2)
-        assert ws2_path is not None
-        assert ws2_path != ws1_path  # Different workspace path
-        assert ".worktrees-" in ws2_path  # Worktree path convention
+        assert ws2_path is None
 
     async def test_db_level_branch_isolated_compatible(self, orch):
         """Two BRANCH_ISOLATED locks on the same path are compatible at DB level."""
@@ -422,8 +427,7 @@ class TestGitMutexSerialization:
         assert execution_log[3][0] == "end"
 
     async def test_orchestrator_resolve_git_lock_worktree(self, tmp_path):
-        """The orchestrator's _resolve_git_lock maps worktree paths to the
-        base workspace's mutex."""
+        """_resolve_git_lock maps a slot path to its base workspace's mutex."""
         config = AppConfig(
             data_dir=str(tmp_path / "data"),
             database_path=str(tmp_path / "test.db"),
@@ -436,11 +440,20 @@ class TestGitMutexSerialization:
         base_path = "/repos/myrepo"
         o._git_mutex(base_path)
 
-        # A worktree path should resolve to the same mutex
-        worktree_path = "/repos/.worktrees-myrepo/task-123"
-        lock = o._resolve_git_lock(worktree_path)
+        # A slot path resolves to its base's mutex through the map built from
+        # slot rows.  The old ".worktrees-<base>/" filename parsing is retired
+        # (worktree-execution 6.2 / 7.4), so an unregistered path resolves to
+        # itself and finds no lock.
+        slot_path = "/repos/myrepo/.aq/worktrees/slot-1"
+        assert o._resolve_git_lock(slot_path) is None
+
+        o._worktree_base_paths[slot_path] = base_path
+        lock = o._resolve_git_lock(slot_path)
         assert lock is not None
         assert lock is o._git_mutexes[base_path]
+
+        # The base resolves to its own mutex.
+        assert o._resolve_git_lock(base_path) is o._git_mutexes[base_path]
 
         # A non-worktree path with no registered mutex should return None
         lock2 = o._resolve_git_lock("/some/other/path")
@@ -602,6 +615,7 @@ class TestLockReleasedOnCompletion:
 
         mock_git = MagicMock()
         mock_git.aremove_worktree = AsyncMock()
+        mock_git.aworktree_base_path = AsyncMock(return_value=clone)
         orch.git = mock_git
 
         # Release workspaces for task t-2 (the worktree task)
@@ -689,8 +703,7 @@ class TestThreeOrMoreAgentsConcurrent:
     """(f) Three or more agents can work concurrently in branch-isolated mode."""
 
     async def test_three_agents_on_same_repo(self, orch, git_repo):
-        """Three agents all get workspaces on the same repo — one gets the
-        original workspace, two get worktrees."""
+        """One clone, three agents: exactly one acquires it (spec 6.1)."""
         db = orch.db
         clone = git_repo["clone"]
 
@@ -747,19 +760,12 @@ class TestThreeOrMoreAgentsConcurrent:
         # All three agents acquire workspaces
         workspace_paths = []
         for task, agent in zip(tasks, agents):
-            ws_path = await orch._prepare_workspace(task, agent)
-            assert ws_path is not None, f"Agent {agent.id} failed to acquire workspace"
-            workspace_paths.append(ws_path)
+            workspace_paths.append(await orch._prepare_workspace(task, agent))
 
-        # All paths should be unique
-        assert len(set(workspace_paths)) == 3, (
-            f"Expected 3 unique workspace paths, got {workspace_paths}"
-        )
-
-        # First agent gets the clone, others get worktrees
+        # Only the first agent gets the single clone; the fallback that used
+        # to manufacture worktrees for the rest is retired.
         assert workspace_paths[0] == clone
-        for path in workspace_paths[1:]:
-            assert ".worktrees-" in path
+        assert workspace_paths[1:] == [None, None]
 
     async def test_three_agents_db_level(self, orch):
         """Three BRANCH_ISOLATED locks on the same path via separate projects
@@ -860,61 +866,9 @@ class TestConflictingBranchRejected:
         # Clean up the successful worktree
         await mgr.aremove_worktree(clone, wt1)
 
-    async def test_worktree_creation_failure_returns_none(self, orch, git_repo):
-        """When _create_branch_isolated_worktree fails due to a git error
-        (e.g. duplicate branch name), it returns None."""
-        db = orch.db
-        clone = git_repo["clone"]
-
-        await db.create_project(Project(id="p-1", name="alpha", repo_url=git_repo["remote"]))
-        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
-        await db.create_agent(Agent(id="a-2", name="agent-2", profile_id="claude"))
-        await db.create_task(
-            Task(
-                id="t-1",
-                project_id="p-1",
-                title="First Task",
-                description="D",
-                workspace_mode=WorkspaceMode.BRANCH_ISOLATED,
-            )
-        )
-        await db.create_task(
-            Task(
-                id="t-2",
-                project_id="p-1",
-                title="Second Task",
-                description="D",
-                workspace_mode=WorkspaceMode.BRANCH_ISOLATED,
-            )
-        )
-
-        # Create and lock base workspace
-        await db.create_workspace(
-            Workspace(
-                id="ws-1",
-                project_id="p-1",
-                workspace_path=clone,
-                source_type=RepoSourceType.CLONE,
-            )
-        )
-        await db.acquire_workspace("p-1", "a-1", "t-1", lock_mode=WorkspaceMode.BRANCH_ISOLATED)
-
-        # Mock git.acreate_worktree to raise GitError (simulating duplicate branch)
-        from unittest.mock import AsyncMock, MagicMock
-        from src.git.manager import GitError
-
-        mock_git = MagicMock()
-        mock_git.acreate_worktree = AsyncMock(side_effect=GitError("fatal: branch already exists"))
-        mock_git.make_branch_name = GitManager.make_branch_name
-        mock_git.slugify = GitManager.slugify
-        orch.git = mock_git
-
-        task2 = await db.get_task("t-2")
-        agent2 = await db.get_agent("a-2")
-        project = await db.get_project("p-1")
-
-        result = await orch._create_branch_isolated_worktree(task2, agent2, project)
-        assert result is None
+    # test_worktree_creation_failure_returns_none is gone with
+    # ``_create_branch_isolated_worktree`` (worktree-execution 6.1).  Slot
+    # creation failure is covered in tests/test_worktree_manager.py.
 
     async def test_each_task_gets_unique_branch_name(self):
         """Different tasks always produce different branch names, preventing
@@ -933,26 +887,11 @@ class TestConflictingBranchRejected:
 # ---------------------------------------------------------------------------
 
 
-class TestWorktreeBasePathResolution:
-    """Tests for _get_worktree_base_path static method."""
-
-    def test_standard_worktree_path(self):
-        base = Orchestrator._get_worktree_base_path("/repos/.worktrees-myrepo/task-123/")
-        assert base == "/repos/myrepo"
-
-    def test_no_trailing_slash(self):
-        base = Orchestrator._get_worktree_base_path("/repos/.worktrees-myrepo/task-123")
-        assert base == "/repos/myrepo"
-
-    def test_non_worktree_path(self):
-        base = Orchestrator._get_worktree_base_path("/repos/myrepo")
-        assert base is None
-
-    def test_nested_worktree_path(self):
-        base = Orchestrator._get_worktree_base_path(
-            "/home/user/dev/.worktrees-agent-queue/t-42-fix-bug/"
-        )
-        assert base == "/home/user/dev/agent-queue"
+# NOTE: TestWorktreeBasePathResolution is gone.  ``_get_worktree_base_path``
+# and its ``.worktrees-<base>/<slug>/`` filename convention are retired by
+# worktree-execution 7.4 — a worktree's base is now a DB lookup
+# (``base_workspace_id``) or ``git rev-parse --git-common-dir`` via
+# ``GitManager.aworktree_base_path``, covered in tests/test_worktree_manager.py.
 
 
 class TestWorktreeCleanup:
@@ -990,6 +929,9 @@ class TestWorktreeCleanup:
 
         mock_git = MagicMock()
         mock_git.aremove_worktree = AsyncMock()
+        # The base is resolved by asking git, not by parsing the path
+        # (worktree-execution 7.4).
+        mock_git.aworktree_base_path = AsyncMock(return_value="/repos/myrepo")
         orch.git = mock_git
 
         ws = await db.get_workspace("ws-wt-1")
@@ -1048,9 +990,11 @@ class TestWorktreeCleanup:
 
         mock_git = MagicMock()
         mock_git.aremove_worktree = AsyncMock()
+        mock_git.aworktree_base_path = AsyncMock(return_value="/repos/myrepo")
         orch.git = mock_git
 
-        # Release worktree — should delete the record
+        # A *legacy* branch-isolated worktree row (slot_index is None) keeps
+        # the old delete-on-release behavior until phase 6 drains them.
         await orch._release_workspace_and_cleanup(ws_worktree)
         assert await db.get_workspace("ws-wt-1") is None
 
@@ -1059,6 +1003,97 @@ class TestWorktreeCleanup:
         ws1_after = await db.get_workspace("ws-1")
         assert ws1_after is not None
         assert ws1_after.locked_by_agent_id is None
+
+    async def test_slot_rows_are_released_never_deleted(self, orch):
+        """A slot outlives every task that uses it.
+
+        The branch, not the worktree, is the durable artifact
+        (worktree-execution 3.4 / 6.1); only reap_slot (phase 4) removes a
+        slot.  Deleting one on release would throw away the warm caches that
+        make slot reuse worth anything.
+        """
+        db = orch.db
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+
+        await db.create_workspace(
+            Workspace(
+                id="ws-base",
+                project_id="p-1",
+                workspace_path="/repos/myrepo",
+                source_type=RepoSourceType.CLONE,
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="ws-slot-0",
+                project_id="p-1",
+                workspace_path="/repos/myrepo/.aq/worktrees/slot-0",
+                source_type=RepoSourceType.WORKTREE,
+                slot_index=0,
+                base_workspace_id="ws-base",
+            )
+        )
+        slot = await db.acquire_workspace(
+            "p-1", "a-1", "t-1", preferred_workspace_id="ws-slot-0"
+        )
+        assert slot is not None and slot.is_slot
+
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_git = MagicMock()
+        mock_git.aremove_worktree = AsyncMock()
+        orch.git = mock_git
+
+        await orch._release_workspace_and_cleanup(slot)
+
+        after = await db.get_workspace("ws-slot-0")
+        assert after is not None, "slot row must survive release"
+        assert after.locked_by_agent_id is None
+        mock_git.aremove_worktree.assert_not_awaited()
+
+    async def test_release_workspaces_for_task_keeps_slots(self, orch):
+        """The bulk release path must not sweep slots into worktree cleanup."""
+        db = orch.db
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_agent(Agent(id="a-1", name="agent-1", profile_id="claude"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+
+        await db.create_workspace(
+            Workspace(
+                id="ws-base",
+                project_id="p-1",
+                workspace_path="/repos/myrepo",
+                source_type=RepoSourceType.CLONE,
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="ws-slot-0",
+                project_id="p-1",
+                workspace_path="/repos/myrepo/.aq/worktrees/slot-0",
+                source_type=RepoSourceType.WORKTREE,
+                slot_index=0,
+                base_workspace_id="ws-base",
+            )
+        )
+        await db.acquire_workspace(
+            "p-1", "a-1", "t-1", preferred_workspace_id="ws-slot-0"
+        )
+
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_git = MagicMock()
+        mock_git.aremove_worktree = AsyncMock()
+        orch.git = mock_git
+
+        await orch._release_workspaces_for_task("t-1")
+
+        after = await db.get_workspace("ws-slot-0")
+        assert after is not None
+        assert after.locked_by_task_id is None
+        mock_git.aremove_worktree.assert_not_awaited()
 
     async def test_exclusive_blocked_by_branch_isolated(self, orch):
         """An EXCLUSIVE request on a path already locked with BRANCH_ISOLATED

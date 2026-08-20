@@ -329,30 +329,12 @@ class TestSerializedSubcommands:
         assert "commit" not in GitManager._SERIALIZED_SUBCOMMANDS
 
 
-class TestWorktreeBasePathResolution:
-    """Test the orchestrator's static _get_worktree_base_path method.
-
-    Imported from orchestrator to verify the resolution logic that the
-    lock provider depends on.
-    """
-
-    def test_worktree_path_resolves_to_base(self):
-        from src.orchestrator import Orchestrator
-
-        base = Orchestrator._get_worktree_base_path("/repos/.worktrees-myrepo/task-123/")
-        assert base == "/repos/myrepo"
-
-    def test_non_worktree_path_returns_none(self):
-        from src.orchestrator import Orchestrator
-
-        base = Orchestrator._get_worktree_base_path("/repos/myrepo")
-        assert base is None
-
-    def test_worktree_path_no_trailing_slash(self):
-        from src.orchestrator import Orchestrator
-
-        base = Orchestrator._get_worktree_base_path("/repos/.worktrees-myrepo/task-123")
-        assert base == "/repos/myrepo"
+# TestWorktreeBasePathResolution is gone: ``_get_worktree_base_path`` and its
+# ``.worktrees-<base>/<slug>/`` filename convention are retired by
+# worktree-execution 7.4.  A worktree's base is now a DB lookup
+# (``base_workspace_id``) or ``git rev-parse --git-common-dir``; the mutex
+# resolver reads a slot->base map built from slot rows.  Covered by
+# tests/test_worktree_manager.py and test_branch_isolated_workspace.py.
 
 
 class TestGitManagerMethodsSerialization:

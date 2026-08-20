@@ -1029,8 +1029,68 @@ class TestBranchIsolatedWorkspaceMode:
         ws2 = await db.acquire_workspace("p-2", "a-2", "t-2", lock_mode=WorkspaceMode.EXCLUSIVE)
         assert ws2 is None
 
-    async def test_find_branch_isolated_base(self, db):
-        """(d) find_branch_isolated_base returns BI-locked workspace for sharing."""
+    # find_branch_isolated_base is retired with the branch-isolated worktree
+    # fallback (worktree-execution 7.4).  Its replacement is
+    # find_worktree_base(project_id, kind_id): the base that hosts a kind's
+    # slot worktrees, resolved regardless of lock state because it is needed
+    # for fetch and worktree bookkeeping while every slot beneath it is busy.
+
+    async def test_find_worktree_base_picks_first_non_slot_row(self, db):
+        """The base is the first enabled non-slot row of the kind, clones
+        before links, ordered by id (spec 7.3)."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        assert await db.find_worktree_base("p-1", "project-repo") is None
+
+        await db.create_workspace(
+            Workspace(
+                id="ws-b-link",
+                project_id="p-1",
+                workspace_path="/tmp/link",
+                source_type=RepoSourceType.LINK,
+                kind_id="project-repo",
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="ws-a-clone",
+                project_id="p-1",
+                workspace_path="/tmp/clone",
+                source_type=RepoSourceType.CLONE,
+                kind_id="project-repo",
+            )
+        )
+        base = await db.find_worktree_base("p-1", "project-repo")
+        assert base is not None
+        assert base.id == "ws-a-clone", "clones are preferred over links"
+
+    async def test_find_worktree_base_ignores_slot_rows(self, db):
+        """A slot is never mistaken for its own base."""
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_workspace(
+            Workspace(
+                id="ws-base",
+                project_id="p-1",
+                workspace_path="/tmp/repo",
+                source_type=RepoSourceType.CLONE,
+                kind_id="project-repo",
+            )
+        )
+        await db.create_workspace(
+            Workspace(
+                id="ws-aaa-slot",
+                project_id="p-1",
+                workspace_path="/tmp/repo/.aq/worktrees/slot-0",
+                source_type=RepoSourceType.WORKTREE,
+                kind_id="project-repo",
+                slot_index=0,
+                base_workspace_id="ws-base",
+            )
+        )
+        base = await db.find_worktree_base("p-1", "project-repo")
+        assert base is not None and base.id == "ws-base"
+
+    async def test_find_worktree_base_is_lock_agnostic(self, db):
+        """The base must resolve while it (or its slots) are locked."""
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
@@ -1040,48 +1100,39 @@ class TestBranchIsolatedWorkspaceMode:
                 project_id="p-1",
                 workspace_path="/tmp/ws1",
                 source_type=RepoSourceType.CLONE,
+                kind_id="project-repo",
             )
         )
+        await db.acquire_workspace("p-1", "a-1", "t-1")
+        base = await db.find_worktree_base("p-1", "project-repo")
+        assert base is not None and base.id == "ws-1"
 
-        # No BI-locked workspace yet
-        base = await db.find_branch_isolated_base("p-1")
-        assert base is None
-
-        # Lock with BRANCH_ISOLATED
-        await db.acquire_workspace("p-1", "a-1", "t-1", lock_mode=WorkspaceMode.BRANCH_ISOLATED)
-
-        # Now find_branch_isolated_base should return the workspace
-        base = await db.find_branch_isolated_base("p-1")
-        assert base is not None
-        assert base.id == "ws-1"
-        assert base.lock_mode == WorkspaceMode.BRANCH_ISOLATED
-
-    async def test_find_branch_isolated_base_ignores_exclusive(self, db):
-        """(e) find_branch_isolated_base ignores exclusively-locked workspaces."""
+    async def test_list_slots_for_base(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
-        await db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
-        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
         await db.create_workspace(
             Workspace(
-                id="ws-1",
+                id="ws-base",
                 project_id="p-1",
-                workspace_path="/tmp/ws1",
-                source_type=RepoSourceType.LINK,
+                workspace_path="/tmp/repo",
+                source_type=RepoSourceType.CLONE,
+                kind_id="project-repo",
             )
         )
-
-        # Lock with EXCLUSIVE
-        await db.acquire_workspace("p-1", "a-1", "t-1", lock_mode=WorkspaceMode.EXCLUSIVE)
-
-        # find_branch_isolated_base should not return exclusively-locked workspace
-        base = await db.find_branch_isolated_base("p-1")
-        assert base is None
-
-    async def test_find_branch_isolated_base_no_workspaces(self, db):
-        """(f) find_branch_isolated_base returns None for project without workspaces."""
-        await db.create_project(Project(id="p-1", name="alpha"))
-        base = await db.find_branch_isolated_base("p-1")
-        assert base is None
+        for i in (1, 0):
+            await db.create_workspace(
+                Workspace(
+                    id=f"ws-slot-{i}",
+                    project_id="p-1",
+                    workspace_path=f"/tmp/repo/.aq/worktrees/slot-{i}",
+                    source_type=RepoSourceType.WORKTREE,
+                    kind_id="project-repo",
+                    slot_index=i,
+                    base_workspace_id="ws-base",
+                )
+            )
+        slots = await db.list_slots_for_base("ws-base")
+        assert [x.slot_index for x in slots] == [0, 1]
+        assert await db.list_slots_for_base("nope") == []
 
     async def test_branch_isolated_release_allows_reacquisition(self, db):
         """(g) Releasing a BRANCH_ISOLATED lock allows reacquisition."""
