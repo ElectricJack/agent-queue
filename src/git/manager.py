@@ -82,11 +82,53 @@ class GitError(Exception):
     pass
 
 
+# ---------------------------------------------------------------------------
+# Refname validation — trust rule R4 (docs/specs/design/trust-and-ops.md §2.4)
+# ---------------------------------------------------------------------------
+
+#: Conservative subset of ``git check-ref-format``: must start with an
+#: alphanumeric (so a name can never be read as an option), and may then
+#: contain letters, digits, ``.``, ``_``, ``/`` and ``-``.  Whitespace, ``..``,
+#: shell metacharacters and a leading ``-`` are all rejected.
+_REFNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+
+
+def _validate_ref(name: str, *, field: str = "branch") -> str:
+    """Return *name* unchanged, or raise :class:`GitError`.
+
+    Branch/ref names reach git as **positional** arguments.  System-generated
+    names (``aq/<task-id>``) are safe, but ``base_branch`` and friends can
+    arrive from task metadata — untrusted text by §2.2 — and a value beginning
+    with ``-`` would be parsed as an option rather than a ref.  Every
+    ref-accepting API validates before spawning git.
+
+    The regex is deliberately narrower than ``git check-ref-format``; a
+    legitimate but exotic branch name is fixed by renaming the branch, not by
+    loosening the guard.
+    """
+    if not isinstance(name, str) or not name:
+        raise GitError(f"invalid {field} name: empty value")
+    if not _REFNAME_RE.match(name):
+        raise GitError(
+            f"invalid {field} name {name!r}: must start with a letter or digit and "
+            "contain only letters, digits, '.', '_', '/' and '-' "
+            "(git check-ref-format subset; blocks argument injection)"
+        )
+    if ".." in name or name.endswith(".lock") or name.endswith("/"):
+        raise GitError(f"invalid {field} name {name!r}: rejected by git check-ref-format rules")
+    return name
+
+
 class GitManager:
     # Environment overrides for all git/gh subprocess calls.  Prevents
     # interactive credential prompts that would otherwise write directly to
     # /dev/tty, bypassing capture_output and flooding the terminal (or
     # freezing WSL entirely when the daemon runs headless).
+    # NOTE (trust-and-ops §2.5): this inherits the full daemon environment.
+    # Acceptable because git/gh here are daemon-side tools, not agent
+    # sessions — R6 scrubbing applies to agent subprocesses
+    # (``src.env_scrub.scrub_env``).  Revisit when worktree-execution
+    # centralizes git invocation.
     _SUBPROCESS_ENV: dict[str, str] = {
         **os.environ,
         "GIT_TERMINAL_PROMPT": "0",  # git: never prompt for credentials
@@ -1191,12 +1233,14 @@ class GitManager:
             return None
 
     async def acreate_branch(self, checkout_path: str, branch_name: str) -> None:
+        _validate_ref(branch_name)
         try:
             await self._arun(["checkout", "-b", branch_name], cwd=checkout_path)
         except GitError:
             await self._arun(["checkout", branch_name], cwd=checkout_path)
 
     async def acheckout_branch(self, checkout_path: str, branch_name: str) -> None:
+        _validate_ref(branch_name)
         await self._arun(["checkout", branch_name], cwd=checkout_path)
 
     async def alist_branches(self, checkout_path: str) -> list[str]:
@@ -1211,6 +1255,7 @@ class GitManager:
         checkout_path: str,
         default_branch: str = "main",
     ) -> None:
+        _validate_ref(default_branch, field="default branch")
         await self._arun(["fetch", "origin"], cwd=checkout_path)
         await self._arun(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
 
@@ -1219,6 +1264,7 @@ class GitManager:
         checkout_path: str,
         default_branch: str = "main",
     ) -> None:
+        _validate_ref(default_branch, field="default branch")
         try:
             await self._arun(["rebase", f"origin/{default_branch}"], cwd=checkout_path)
         except GitError:
@@ -1233,6 +1279,8 @@ class GitManager:
         branch_name: str,
         default_branch: str = "main",
     ) -> None:
+        _validate_ref(branch_name)
+        _validate_ref(default_branch, field="default branch")
         is_worktree = await self._ais_worktree(checkout_path)
         await self._arun(["fetch", "origin"], cwd=checkout_path)
 
@@ -1272,6 +1320,8 @@ class GitManager:
         default_branch: str = "main",
         rebase: bool = False,
     ) -> None:
+        _validate_ref(branch_name)
+        _validate_ref(default_branch, field="default branch")
         try:
             await self._arun(["fetch", "origin"], cwd=checkout_path)
         except GitError:
@@ -1299,6 +1349,8 @@ class GitManager:
         branch_name: str,
         default_branch: str = "main",
     ) -> bool:
+        _validate_ref(branch_name)
+        _validate_ref(default_branch, field="default branch")
         try:
             await self._arun(["push", "origin", branch_name], cwd=checkout_path)
         except GitError:
@@ -1339,6 +1391,7 @@ class GitManager:
             branch_name = await self.aget_current_branch(checkout_path)
             if not branch_name:
                 raise GitError("Could not determine current branch")
+        _validate_ref(branch_name)
         await self._arun(["pull", "origin", branch_name], cwd=checkout_path)
         return branch_name
 
@@ -1351,6 +1404,7 @@ class GitManager:
         event_bus: EventBus | None = None,
         project_id: str | None = None,
     ) -> None:
+        _validate_ref(branch_name)
         # Capture the remote ref before pushing so we can compute commit_range.
         remote_ref_before: str | None = None
         if event_bus is not None:
@@ -1403,6 +1457,8 @@ class GitManager:
         branch_name: str,
         target_branch: str = "main",
     ) -> bool:
+        _validate_ref(branch_name)
+        _validate_ref(target_branch, field="target branch")
         original = await self._arun(
             ["rev-parse", "--abbrev-ref", "HEAD"],
             cwd=checkout_path,
@@ -1430,6 +1486,8 @@ class GitManager:
         branch_name: str,
         default_branch: str = "main",
     ) -> bool:
+        _validate_ref(branch_name)
+        _validate_ref(default_branch, field="default branch")
         await self._arun(["checkout", default_branch], cwd=checkout_path)
         try:
             await self._arun(["fetch", "origin"], cwd=checkout_path)
@@ -1450,6 +1508,8 @@ class GitManager:
         default_branch: str = "main",
         max_retries: int = 1,
     ) -> tuple[bool, str]:
+        _validate_ref(branch_name)
+        _validate_ref(default_branch, field="default branch")
         await self._arun(["fetch", "origin"], cwd=checkout_path)
         await self._arun(["checkout", default_branch], cwd=checkout_path)
         await self._arun(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
@@ -1494,6 +1554,7 @@ class GitManager:
         checkout_path: str,
         default_branch: str = "main",
     ) -> None:
+        _validate_ref(default_branch, field="default branch")
         await self._arun(["checkout", default_branch], cwd=checkout_path)
         await self._arun(
             ["reset", "--hard", f"origin/{default_branch}"],
@@ -1507,6 +1568,7 @@ class GitManager:
         *,
         delete_remote: bool = True,
     ) -> None:
+        _validate_ref(branch_name)
         try:
             await self._arun(["branch", "-d", branch_name], cwd=checkout_path)
         except GitError:
@@ -1526,6 +1588,7 @@ class GitManager:
         worktree_path: str,
         branch: str,
     ) -> None:
+        _validate_ref(branch)
         os.makedirs(os.path.dirname(worktree_path), exist_ok=True)
         await self._arun(["worktree", "add", "-b", branch, worktree_path], cwd=source_path)
 
@@ -1541,8 +1604,9 @@ class GitManager:
         await self._arun(["commit", "--allow-empty", "-m", "Initial commit"], cwd=path)
 
     async def aget_diff(self, checkout_path: str, base_branch: str = "main") -> str:
+        _validate_ref(base_branch, field="base branch")
         try:
-            return await self._arun(["diff", base_branch], cwd=checkout_path)
+            return await self._arun(["diff", base_branch, "--"], cwd=checkout_path)
         except GitError:
             return ""
 
@@ -1551,8 +1615,11 @@ class GitManager:
         checkout_path: str,
         base_branch: str = "main",
     ) -> list[str]:
+        _validate_ref(base_branch, field="base branch")
         try:
-            output = await self._arun(["diff", "--name-only", base_branch], cwd=checkout_path)
+            output = await self._arun(
+                ["diff", "--name-only", base_branch, "--"], cwd=checkout_path
+            )
             return output.split("\n") if output else []
         except GitError:
             return []
@@ -1581,6 +1648,13 @@ class GitManager:
         When *event_bus* is provided, a ``git.commit`` event is emitted
         after a successful commit with the commit hash, branch, changed
         files, message, and optional *project_id* / *agent_id*.
+
+        **Trust boundary (R4, flag-value case).**  *message* is agent-authored
+        and therefore untrusted, but it only ever reaches git as the value of
+        the ``-m`` flag in an argv list — never interpolated into a shell
+        string and never in a position git could read as an option.  The
+        ``["reset", "HEAD", "--", pattern]`` call below is the template for
+        pathspec arguments.  See ``docs/specs/design/trust-and-ops.md`` §2.4.
         """
         await self._arun(["add", "-A"], cwd=checkout_path)
         if exclude_plans:
@@ -1644,6 +1718,8 @@ class GitManager:
         event_bus: EventBus | None = None,
         project_id: str | None = None,
     ) -> str:
+        _validate_ref(branch)
+        _validate_ref(base, field="base branch")
         try:
             result = await self._arun_subprocess(
                 [

@@ -298,9 +298,40 @@ def register_doctor_check(self, check: "DoctorCheck") -> None:
 ```
 
 `PluginContext.__init__` gains `doctor_registry: DoctorRegistry | None = None`
-(threaded through `src/plugins/loader.py` / `registry.py` the same way
-`command_registry` is). When `None` (tests, minimal contexts), registration is a
-logged no-op.
+(threaded through `src/plugins/registry.py` the same way `command_registry` is —
+`Orchestrator.doctor_registry` is set in `src/main.py` *before* `initialize()` and
+passed into `PluginRegistry`). When `None` (tests, minimal contexts), registration
+is a logged no-op.
+
+#### Contributed-check registration contract (as landed)
+
+The reserved ids live in `src/doctor/models.py` as `RESERVED_CHECK_IDS`, mapping
+each id to its owning workstream:
+
+| id | owner |
+|---|---|
+| `sessions.stale` | [[session-runtime]] |
+| `tmux.server` | [[session-runtime]] |
+| `worktrees.orphans` | [[worktree-execution]] |
+| `leases.stale` | [[worktree-execution]] |
+
+Doctor does **not** pre-register them. Until an owner claims an id, `run_doctor`
+synthesises `info: "check not registered (subsystem not enabled)"` with
+`data.owner` set and `data.reserved = true`, so the catalog stays complete and CI
+never fails on an absent subsystem. To claim one:
+
+1. Build a `DoctorCheck` whose `id` is exactly the reserved string and whose
+   `owner` names the workstream.
+2. Register it on the daemon-wide registry at startup —
+   `orchestrator.doctor_registry.register(check)` for core subsystems,
+   `PluginContext.register_doctor_check()` for plugins (which prefixes
+   `plugin.<name>.`). Registering a reserved id replaces the placeholder;
+   registering any *other* duplicate id raises `ValueError`.
+3. Obey the `--fix` safety rules for anything declared fixable — in particular
+   `worktrees.orphans` may only run `git worktree prune` and must never delete a
+   directory.
+
+`tests/test_doctor.py::TestReservedChecks` pins all three clauses.
 
 ### 5.6 CLI (`src/cli/doctor.py`)
 
@@ -349,22 +380,23 @@ No pricing entry, or no split → the row's tokens count toward `unpriced_tokens
 
 ## 7. Checklist
 
-- [ ] `src/env_scrub.py` with `scrub_env`, constants, `ScrubResult`
-- [ ] `SecurityConfig` + `PricingConfig`/`ModelPricing` in `src/config.py`; wired into `AppConfig`, `validate()`, `load_config()`; config_editor round-trip verified
-- [ ] `isolated_env` delegates to `scrub_env` (`src/runtimes/_subprocess.py`)
-- [ ] `_cmd_run_command` + `_run_subprocess_shell` accept/pass scrubbed env
-- [ ] `_validate_ref` guard + `--` audit applied across `GitManager` branch APIs
-- [ ] `src/doctor/` package: models, runner, builtin checks
-- [ ] `OpsCommandsMixin` (`_cmd_doctor`, `_cmd_get_costs`) added to `CommandHandler` bases
-- [ ] `DoctorRegistry` constructed in `src/main.py`, handed to handler + plugin loader
-- [ ] `PluginContext.register_doctor_check` + registry threading
-- [ ] Explicit tool definitions for `doctor` / `get_costs` in `src/tools/definitions.py`
-- [ ] `src/cli/doctor.py` (`aq doctor`, `aq costs`) registered in `src/cli/app.py`; exit codes 0/1/2/3
-- [ ] Alembic migration: `token_ledger.model/input_tokens/output_tokens`; `docs/specs/database.md` updated
-- [ ] `record_token_usage` extension + `get_cost_rollup`
-- [ ] Invariant tests: `tests/test_docs_sync.py`, `tests/test_command_surface.py`; extend event-registry and state-machine tests; golden harness test scaffold (skipped until [[design/session-runtime]] lands)
-- [ ] Reserve contributed-check ids (`sessions.stale`, `tmux.server`, `worktrees.orphans`, `leases.stale`) and document the registration contract for session-runtime / worktree-execution
-- [ ] Document `docs/gates/<change>.md` convention in `docs/specs/design/trust-and-ops.md` §8 (done) and reference it from the PR template when one exists
+- [x] `src/env_scrub.py` with `scrub_env`, constants, `ScrubResult`
+- [x] `SecurityConfig` + `PricingConfig`/`ModelPricing` in `src/config.py`; wired into `AppConfig`, `validate()`, `load_config()`; config_editor round-trip verified
+- [x] `isolated_env` delegates to `scrub_env` (`src/runtimes/_subprocess.py`)
+- [x] `_cmd_run_command` + `_run_subprocess_shell` accept/pass scrubbed env
+- [x] `_validate_ref` guard + `--` audit applied across `GitManager` branch APIs
+- [x] `src/doctor/` package: models, runner, builtin checks
+- [x] `OpsCommandsMixin` (`_cmd_doctor`, `_cmd_get_costs`) added to `CommandHandler` bases
+- [x] `DoctorRegistry` constructed in `src/main.py`, handed to handler + plugin loader
+- [x] `PluginContext.register_doctor_check` + registry threading
+- [x] Explicit tool definitions for `doctor` / `get_costs` in `src/tools/definitions.py`
+- [x] `src/cli/doctor.py` (`aq doctor`, `aq costs`) registered in `src/cli/app.py`; exit codes 0/1/2/3
+- [x] Alembic migration: `token_ledger.model/input_tokens/output_tokens` (landed in Wave 0, revision `93a8a9e48fb8`); `docs/specs/database.md` updated — the table catalog is now enforced by `tests/test_docs_sync.py`
+- [x] `record_token_usage` extension + `get_cost_rollup`
+- [x] Invariant tests: `tests/test_docs_sync.py`, `tests/test_command_surface.py`; event-registry and state-machine tests extended
+- [ ] Golden harness test scaffold — **deferred**: it asserts against a `SessionSpec` type that [[design/session-runtime]] owns and has not landed
+- [x] Reserve contributed-check ids (`sessions.stale`, `tmux.server`, `worktrees.orphans`, `leases.stale`) and document the registration contract for session-runtime / worktree-execution
+- [x] Document `docs/gates/<change>.md` convention in `docs/specs/design/trust-and-ops.md` §8 and exercise it — see `docs/gates/wave1-1c-trust-ops.md`. No PR template exists yet to reference it from.
 
 ## 8. Test Plan
 

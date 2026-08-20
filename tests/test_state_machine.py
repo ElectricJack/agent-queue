@@ -119,3 +119,61 @@ class TestDAGValidation:
         existing = {"t-2": {"t-1"}, "t-3": {"t-2"}}
         with pytest.raises(CyclicDependencyError):
             validate_dag_with_new_edge(existing, "t-1", depends_on="t-3")
+
+
+# ---------------------------------------------------------------------------
+# Enforcement-flag contract (trust-and-ops §6 — invariant tests)
+#
+# The flag itself is consumed by Workstream D's ``transition_task``.  These
+# tests pin the *contract* so that landing enforcement cannot quietly change
+# the default or the escape hatch.
+# ---------------------------------------------------------------------------
+
+
+class TestEnforcementFlagContract:
+    def test_flag_exists_and_defaults_to_warn_only(self):
+        from src.config import AppConfig, StateMachineConfig
+
+        assert StateMachineConfig().enforce is False, (
+            "state_machine.enforce must default to False — enabling strict mode by "
+            "default would turn today's warnings into hard failures on upgrade."
+        )
+        assert AppConfig().state_machine.enforce is False
+
+    def test_flag_is_parsed_from_config_yaml(self, tmp_path):
+        from src.config import load_config
+
+        path = tmp_path / "config.yaml"
+        d = tmp_path.as_posix()
+        path.write_text(
+            f"data_dir: {d}\n"
+            f"workspace_dir: {d}/ws\n"
+            f"database:\n  url: {d}/aq.db\n"
+            "discord:\n  bot_token: t\n  guild_id: '1'\n"
+            "state_machine:\n  enforce: true\n",
+            encoding="utf-8",
+        )
+        config = load_config(str(path))
+        assert config.state_machine.enforce is True
+
+    def test_flag_validates_cleanly_in_both_positions(self):
+        from src.config import StateMachineConfig
+
+        assert StateMachineConfig(enforce=True).validate() == []
+        assert StateMachineConfig(enforce=False).validate() == []
+
+    def test_predicate_enforcement_will_consult_is_available(self):
+        """``is_valid_status_transition`` is the predicate strict mode gates on.
+
+        Enforcement must reuse this table rather than re-deriving legality, so
+        the warn-only path and the strict path can never disagree.
+        """
+        from src.state_machine import is_valid_status_transition
+
+        assert is_valid_status_transition(TaskStatus.READY, TaskStatus.ASSIGNED) is True
+        assert is_valid_status_transition(TaskStatus.COMPLETED, TaskStatus.ASSIGNED) is False
+
+    def test_transition_table_is_the_single_source_of_truth(self):
+        """Every entry in the table is reachable through ``task_transition``."""
+        for (state, event), expected in VALID_TASK_TRANSITIONS.items():
+            assert task_transition(state, event) == expected

@@ -200,6 +200,7 @@ class PluginContext:
         services: dict[str, Any] | None = None,
         plugin_services_callback: Callable[[str, str, object], None] | None = None,
         active_project_id_getter: Callable | None = None,
+        doctor_registry=None,
     ):
         self._plugin_name = plugin_name
         self._install_path = Path(install_path)
@@ -219,6 +220,9 @@ class PluginContext:
             plugin_services_callback or (lambda *_args, **_kw: None)
         )
         self._active_project_id_getter = active_project_id_getter
+        # Daemon-wide DoctorRegistry, or None in minimal contexts (tests).
+        # register_doctor_check() degrades to a logged no-op when None.
+        self._doctor_registry = doctor_registry
 
         self._logger = logging.getLogger(f"plugin.{plugin_name}")
 
@@ -329,6 +333,37 @@ class PluginContext:
         if "." not in name:
             self._command_registry[name] = handler
         self._logger.debug("Registered command: %s", name)
+
+    # --- Doctor Check Registration ---
+
+    def register_doctor_check(self, check) -> None:
+        """Contribute a check to ``aq doctor``.
+
+        The id is namespaced ``plugin.<plugin name>.<id>`` unless it already
+        starts with that prefix, so a plugin can never shadow a core check.
+
+        A ``fix`` must obey the ``--fix`` safety rules
+        (``docs/specs/design/trust-and-ops.md`` §5.4): idempotent, and
+        non-destructive to primary data — it may only enforce already-configured
+        policy or clean derived/stale state.
+
+        When no registry is wired (tests, minimal contexts) this is a logged
+        no-op rather than an error.
+
+        Args:
+            check: A :class:`src.doctor.models.DoctorCheck`.
+        """
+        prefix = f"plugin.{self._plugin_name}."
+        if not check.id.startswith(prefix):
+            check.id = prefix + check.id
+        check.owner = f"plugin:{self._plugin_name}"
+        if self._doctor_registry is None:
+            self._logger.debug(
+                "register_doctor_check(%s): no doctor registry wired — ignored", check.id
+            )
+            return
+        self._doctor_registry.register(check)
+        self._logger.debug("Registered doctor check: %s", check.id)
 
     # --- Tool Registration ---
 

@@ -127,6 +127,12 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "changes": [{"file": "main.py", "op": "modified"}],
         "count": 1,
     },
+    "workspace.spec.changed": {
+        "project_id": "proj-1",
+        "workspace_path": "/workspace/proj-1",
+        "rel_path": "docs/specs/thing.md",
+        "operation": "modified",
+    },
     # Plugin
     "plugin.loaded": {"plugin": "my-plugin", "version": "1.0.0"},
     "plugin.unloaded": {"plugin": "my-plugin"},
@@ -1380,3 +1386,81 @@ class TestEndToEndEventBusIntegration:
         )
         assert len(matched) == 1
         assert len(unmatched) == 0
+
+
+# ---------------------------------------------------------------------------
+# Registry completeness (trust-and-ops §6 — invariant tests)
+# ---------------------------------------------------------------------------
+
+
+class TestRegistryCompleteness:
+    """Every event type emitted from core code must have a registered schema.
+
+    This is the static half of the `events.registry` doctor check: doctor sees
+    what a running daemon actually emitted, this test sees every literal emit
+    site in the tree.  Together they close the gap that let event types drift
+    away from their schemas.
+    """
+
+    #: Event types emitted with a literal string that deliberately have no
+    #: schema.  Keep empty if at all possible — an entry here is drift that has
+    #: been argued for, not drift that was missed.
+    UNSCHEMAED_EMITS: frozenset[str] = frozenset()
+
+    @staticmethod
+    def _literal_emit_sites() -> dict[str, set[str]]:
+        """Map ``event_type -> {source files}`` for every literal ``.emit("x")``."""
+        import pathlib
+
+        src = pathlib.Path(__file__).resolve().parent.parent / "src"
+        pattern = re.compile(r"""\.emit\(\s*["']([a-z][a-z0-9_.]*)["']""")
+        found: dict[str, set[str]] = {}
+        for path in src.rglob("*.py"):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for match in pattern.finditer(text):
+                found.setdefault(match.group(1), set()).add(
+                    path.relative_to(src).as_posix()
+                )
+        return found
+
+    def test_every_literal_emit_site_has_a_schema(self):
+        sites = self._literal_emit_sites()
+        assert sites, "emit-site scan found nothing — the regex has rotted"
+        missing = {
+            event: sorted(files)
+            for event, files in sites.items()
+            if event not in EVENT_SCHEMAS and event not in self.UNSCHEMAED_EMITS
+        }
+        assert not missing, (
+            "event types are emitted but have no schema in src/event_schemas.py: "
+            + "; ".join(f"{e} ({', '.join(f)})" for e, f in sorted(missing.items()))
+        )
+
+    def test_exclusion_list_has_not_rotted(self):
+        sites = self._literal_emit_sites()
+        stale = sorted(
+            e for e in self.UNSCHEMAED_EMITS if e not in sites or e in EVENT_SCHEMAS
+        )
+        assert not stale, f"UNSCHEMAED_EMITS lists names that no longer apply: {stale}"
+
+    def test_registered_event_types_matches_registry(self):
+        from src.event_schemas import registered_event_types
+
+        assert registered_event_types() == sorted(EVENT_SCHEMAS)
+
+    def test_every_schema_is_well_formed(self):
+        for event_type, schema in EVENT_SCHEMAS.items():
+            assert isinstance(schema.get("required"), list), event_type
+            assert isinstance(schema.get("optional"), list), event_type
+            overlap = set(schema["required"]) & set(schema["optional"])
+            assert not overlap, f"{event_type}: fields in both lists: {sorted(overlap)}"
+
+    def test_plugin_registered_types_are_visible(self):
+        """``PluginContext.register_event_type`` writes into a shared set.
+
+        The `events.registry` doctor check reads that same set, so a plugin
+        event type is never invisible to the health report.
+        """
+        from src.plugins.base import PluginContext
+
+        assert hasattr(PluginContext, "register_event_type")

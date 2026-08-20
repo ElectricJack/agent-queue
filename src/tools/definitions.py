@@ -141,6 +141,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "update_and_restart": "system",
     "run_command": "system",
     "get_stuck_tasks": "system",
+    "doctor": "system",
+    "get_costs": "system",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
     # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
@@ -2933,6 +2935,69 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {"type": "string"},
             },
             "required": ["name"],
+        },
+    },
+    # -- Ops: doctor / costs (docs/specs/design/trust-and-ops.md §5, §7) ----
+    {
+        "name": "doctor",
+        "description": (
+            "Run the health-check catalog for this install and return one "
+            "result per check: id, severity (ok/info/warn/error), detail, "
+            "whether it is fixable, and structured extras.  Checks run "
+            "concurrently with per-check timeouts; a check that crashes or "
+            "times out reports 'error' rather than hanging the command.  "
+            "Pass fix=true to apply the fix of each failing fixable check and "
+            "re-run it (fixes are idempotent and only touch derived state — "
+            "WAL, expired log dirs — never tasks, vault files or branches).  "
+            "The returned exit_code is 2 when any check errored, 1 when any "
+            "warned, otherwise 0."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "fix": {
+                    "type": "boolean",
+                    "description": "Apply fixes for failing fixable checks, then re-run them.",
+                },
+                "checks": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Restrict the run to these check ids "
+                        "(e.g. 'db.migrations', 'vault.parse')."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "get_costs",
+        "description": (
+            "Roll the token ledger up into USD using the 'pricing:' table from "
+            "config.yaml.  Rows are grouped by project (default), profile or "
+            "day, and split per model.  Honesty rule: a row is priced only "
+            "when it carries both a model matching a pricing entry and an "
+            "input/output token split — everything else is reported under "
+            "'unpriced_tokens' with a null cost rather than priced at a "
+            "guessed rate."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Restrict the rollup to one project.",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "Lower bound: '7d', '12h', or 'YYYY-MM-DD'. Omit for all time.",
+                },
+                "group_by": {
+                    "type": "string",
+                    "enum": ["project", "profile", "day"],
+                    "description": "Grouping key (default: project).",
+                },
+            },
         },
     },
 ]

@@ -129,16 +129,31 @@ async def _run_subprocess_shell(
     *,
     cwd: str | None = None,
     timeout: float = 30,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run a shell command asynchronously via ``/bin/sh -c``.
 
-    This is a coroutine.  Same semantics as ``_run_subprocess`` but
-    accepts a single shell command string.
+    .. warning::
+
+       **Trust boundary.**  This is the only place in the codebase that hands
+       a *string* to a shell (trust rule R1 in
+       ``docs/specs/design/trust-and-ops.md`` forbids interpolating untrusted
+       text into a shell string).  Its sole caller, ``_cmd_run_command``,
+       receives a command authored by the chat/supervisor LLM — untrusted by
+       §2.2.  The violation is knowingly *contained*, not fixed: the command
+       stays out of MCP (``run_command`` is in ``DEFAULT_EXCLUDED_COMMANDS``),
+       the working directory is sandboxed by ``_validate_path``, and the
+       environment is scrubbed by the caller.  It disappears with the
+       in-process supervisor chat loop; do not grow new callers.
 
     Args:
-        command: Shell command string.
+        command: Shell command string.  Must come from a caller that has
+            accepted the trust-boundary consequences above.
         cwd: Working directory.
         timeout: Maximum seconds to wait.
+        env: Environment for the child process.  ``None`` inherits the
+            daemon's environment — callers running LLM-authored commands must
+            pass a scrubbed env (see :func:`src.env_scrub.scrub_env`).
 
     Returns:
         Tuple of ``(returncode, stdout, stderr)``.
@@ -151,6 +166,7 @@ async def _run_subprocess_shell(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=env,
     )
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)

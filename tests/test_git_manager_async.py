@@ -529,3 +529,213 @@ class TestAsyncGetRecentCommits:
     async def test_returns_commits(self, clone, mgr):
         commits = await mgr.aget_recent_commits(clone)
         assert "init" in commits
+
+
+# ---------------------------------------------------------------------------
+# Refname validation — trust rule R4 (docs/specs/design/trust-and-ops.md §2.4)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateRef:
+    """The guard itself: a conservative ``git check-ref-format`` subset."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "main",
+            "aq/task-1",
+            "feature/x.y",
+            "release/2026.08",
+            "a",
+            "task_123",
+            "AQ/Task-9",
+        ],
+    )
+    def test_accepts_plausible_refnames(self, name):
+        from src.git.manager import _validate_ref
+
+        assert _validate_ref(name) == name
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "-oops",  # would be parsed as an option
+            "--upload-pack=evil",
+            "a b",  # whitespace
+            "",  # empty
+            "a..b",  # git reserves '..'
+            "trailing/",
+            "branch.lock",
+            "has;semicolon",
+            "has$dollar",
+            "has`backtick`",
+            "has|pipe",
+            "quote'name",
+            "new\nline",
+            ".hidden",  # must start alphanumeric
+            "/leading-slash",
+        ],
+    )
+    def test_rejects_dangerous_or_malformed_names(self, name):
+        from src.git.manager import _validate_ref
+
+        with pytest.raises(GitError):
+            _validate_ref(name)
+
+    def test_rejects_non_strings(self):
+        from src.git.manager import _validate_ref
+
+        with pytest.raises(GitError):
+            _validate_ref(None)
+
+    def test_error_names_the_offending_value(self):
+        from src.git.manager import _validate_ref
+
+        with pytest.raises(GitError, match="-oops"):
+            _validate_ref("-oops")
+
+    def test_error_names_the_field(self):
+        from src.git.manager import _validate_ref
+
+        with pytest.raises(GitError, match="base branch"):
+            _validate_ref("-oops", field="base branch")
+
+
+class TestBranchApisValidateBeforeSpawningGit:
+    """Every ref-accepting API must raise before a subprocess is created.
+
+    ``_arun`` is replaced with a tripwire: if git is ever spawned with an
+    injected name, the test fails loudly rather than depending on git's own
+    argument parsing to save us.
+    """
+
+    @pytest.fixture
+    def tripwire(self, mgr):
+        spawned = []
+
+        async def _boom(*args, **kwargs):
+            spawned.append(args)
+            raise AssertionError(f"git was spawned with {args!r} despite validation")
+
+        mgr._arun = _boom
+        mgr._arun_subprocess = _boom
+        return mgr
+
+    BAD = "-oops"
+
+    @pytest.mark.asyncio
+    async def test_acreate_branch(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.acreate_branch("/tmp/x", self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_acheckout_branch(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.acheckout_branch("/tmp/x", self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_aswitch_to_branch(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.aswitch_to_branch("/tmp/x", self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_aswitch_to_branch_default(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.aswitch_to_branch("/tmp/x", "ok", default_branch=self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_apull_branch(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.apull_branch("/tmp/x", self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_apush_branch(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.apush_branch("/tmp/x", self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_arebase_onto(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.arebase_onto("/tmp/x", self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_arebase_onto_target(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.arebase_onto("/tmp/x", "ok", target_branch=self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_amerge_branch(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.amerge_branch("/tmp/x", self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_adelete_branch(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.adelete_branch("/tmp/x", self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_aprepare_for_task(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.aprepare_for_task("/tmp/x", self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_amid_chain_sync(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.amid_chain_sync("/tmp/x", self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_async_and_merge(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.async_and_merge("/tmp/x", self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_arecover_workspace(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.arecover_workspace("/tmp/x", default_branch=self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_apull_latest_main(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.apull_latest_main("/tmp/x", default_branch=self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_aget_diff(self, tripwire):
+        """``aget_diff`` swallows GitError by design — the guard must not be swallowed."""
+        with pytest.raises(GitError):
+            await tripwire.aget_diff("/tmp/x", base_branch=self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_aget_changed_files(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.aget_changed_files("/tmp/x", base_branch=self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_acreate_pr_branch(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.acreate_pr("/tmp/x", self.BAD, "t", "b")
+
+    @pytest.mark.asyncio
+    async def test_acreate_pr_base(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.acreate_pr("/tmp/x", "ok", "t", "b", base=self.BAD)
+
+    @pytest.mark.asyncio
+    async def test_acreate_worktree(self, tripwire):
+        with pytest.raises(GitError):
+            await tripwire.acreate_worktree("/tmp/x", "/tmp/wt", self.BAD)
+
+
+class TestUntrustedTextStillFlowsAsFlagValues:
+    """R4's accepted case: untrusted text as a flag value is fine.
+
+    A commit message starting with ``-`` must still commit successfully — the
+    guard covers refnames, not message bodies.
+    """
+
+    @pytest.mark.asyncio
+    async def test_commit_message_starting_with_dash(self, clone, mgr):
+        pathlib.Path(clone, "hostile.txt").write_text("x")
+        committed = await mgr.acommit_all(clone, "--not-a-flag: hostile message")
+        assert committed is True
+        log = _git(["log", "-1", "--pretty=%s"], cwd=clone)
+        assert log == "--not-a-flag: hostile message"

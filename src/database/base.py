@@ -202,7 +202,18 @@ class DatabaseBackend(Protocol):
         agent_id: str,
         task_id: str,
         tokens: int,
+        *,
+        model: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
     ) -> None: ...
+    async def get_cost_rollup(
+        self,
+        *,
+        project_id: str | None = None,
+        since_ts: float | None = None,
+        group_by: str = "project",
+    ) -> list[dict]: ...
     async def get_project_token_usage(
         self,
         project_id: str,
