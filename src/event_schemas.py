@@ -460,6 +460,25 @@ _GIT_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Worktree slot events  (emitted by WorktreeSlotManager — worktree-execution §8)
+# ---------------------------------------------------------------------------
+
+_WORKTREE_SCHEMAS: dict[str, EventSchema] = {
+    "worktree.created": {
+        "required": ["project_id", "workspace_id", "slot", "path", "base_workspace_id"],
+        "optional": [],
+    },
+    "worktree.reset": {
+        "required": ["project_id", "workspace_id", "slot", "task_id", "branch"],
+        "optional": ["salvaged"],
+    },
+    "worktree.reaped": {
+        "required": ["project_id", "workspace_id", "slot", "path", "reason"],
+        "optional": [],
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Playbook events  (emitted by PlaybookExecutor — Phase 0.2.5)
 # ---------------------------------------------------------------------------
 
@@ -590,6 +609,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_NOTIFY_SCHEMAS,
     **_CHAT_SCHEMAS,
     **_GIT_SCHEMAS,
+    **_WORKTREE_SCHEMAS,
     **_PLAYBOOK_SCHEMAS,
     **_HUMAN_SCHEMAS,
     **_WORKFLOW_SCHEMAS,

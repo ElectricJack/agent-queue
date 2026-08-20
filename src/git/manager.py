@@ -70,6 +70,7 @@ import os
 import re
 import subprocess
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -125,6 +126,10 @@ def _validate_ref(name: str, *, field: str = "branch") -> str:
 #: value beginning with ``-`` still cannot be parsed as an option.  Shell
 #: metacharacters, whitespace and quotes remain excluded.
 _REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@{}~^-]*$")
+
+#: A branch-name *prefix* (``aq/``).  Same anchor as :data:`_REFNAME_RE`
+#: but a trailing ``/`` is legal — a prefix is not itself a refname.
+_BRANCH_PREFIX_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
 
 def _validate_rev(name: str, *, field: str = "revision") -> str:
@@ -1634,6 +1639,149 @@ class GitManager:
         except GitError:
             await self._arun(["worktree", "remove", "--force", worktree_path], cwd=source_path)
 
+    # ── Worktree slots (worktree-execution spec §4) ───────────────────────
+    #
+    # The primitives WorktreeSlotManager composes.  Every ref-accepting
+    # argument is guarded (trust-and-ops §2.2): slot refs are system-generated
+    # today, but ``base_branch`` reaches them from task metadata, which is
+    # untrusted text.
+
+    async def aworktree_add(
+        self,
+        base_path: str,
+        worktree_path: str,
+        *,
+        ref: str,
+        detach: bool = True,
+    ) -> None:
+        """Add a worktree at *worktree_path* checked out at *ref*.
+
+        ``detach=True`` (the default, and what slot creation uses) claims no
+        branch — branches are per task, created later by
+        ``reset_slot_for_task``.  ``detach=False`` checks *ref* out as a
+        branch, which git refuses if it is already checked out elsewhere.
+        """
+        _validate_ref(ref, field="worktree ref")
+        Path(worktree_path).parent.mkdir(parents=True, exist_ok=True)
+        args = ["worktree", "add"]
+        if detach:
+            args.append("--detach")
+        args += [worktree_path, ref]
+        await self._arun(args, cwd=base_path)
+
+    async def aworktree_prune(self, base_path: str) -> None:
+        """Drop ``.git/worktrees`` registrations whose directory is gone."""
+        await self._arun(["worktree", "prune"], cwd=base_path)
+
+    async def aworktree_list(self, base_path: str) -> list[dict]:
+        """Parsed ``git worktree list --porcelain``.
+
+        Each entry has ``path`` plus whichever of ``head`` / ``branch`` /
+        ``detached`` / ``bare`` / ``locked`` / ``prunable`` git reported.
+        ``branch`` is shortened from ``refs/heads/x`` to ``x``.
+        """
+        out = await self._arun(["worktree", "list", "--porcelain"], cwd=base_path)
+        entries: list[dict] = []
+        current: dict | None = None
+        for raw in out.splitlines():
+            line = raw.rstrip()
+            if not line:
+                if current:
+                    entries.append(current)
+                    current = None
+                continue
+            key, _, value = line.partition(" ")
+            if key == "worktree":
+                if current:
+                    entries.append(current)
+                current = {"path": value}
+            elif current is None:
+                continue
+            elif key == "HEAD":
+                current["head"] = value
+            elif key == "branch":
+                current["branch"] = (
+                    value[len("refs/heads/") :]
+                    if value.startswith("refs/heads/")
+                    else value
+                )
+            else:
+                # Valueless flags (detached, bare) and valued ones
+                # (locked <reason>, prunable <reason>).
+                current[key] = value or True
+        if current:
+            entries.append(current)
+        return entries
+
+    async def alist_merged_branches(
+        self,
+        base_path: str,
+        *,
+        into: str,
+        prefix: str = "aq/",
+    ) -> list[str]:
+        """Local branches already merged into *into*, filtered by *prefix*.
+
+        The target itself is excluded — deleting it is never what the caller
+        meant.
+        """
+        _validate_ref(into, field="merge target")
+        # An empty prefix means "no filter" — every local branch merged into
+        # *into* is a candidate.  Anything else must look like a refname stem.
+        if prefix and not _BRANCH_PREFIX_RE.match(prefix):
+            raise GitError(
+                f"invalid branch prefix {prefix!r}: must start with a letter or "
+                "digit and contain only letters, digits, '.', '_', '/' and '-'"
+            )
+        out = await self._arun(
+            ["branch", "--merged", into, "--format=%(refname:short)"],
+            cwd=base_path,
+        )
+        merged = []
+        for line in out.splitlines():
+            name = line.strip()
+            if not name or name == into or not name.startswith(prefix):
+                continue
+            merged.append(name)
+        return merged
+
+    async def adelete_local_branch(
+        self,
+        base_path: str,
+        branch: str,
+        *,
+        force: bool = False,
+    ) -> None:
+        """Delete a *local* branch.  Never touches the remote.
+
+        Distinct from :meth:`adelete_branch`, which also runs
+        ``push origin --delete`` by default — remote pruning is a separate,
+        policy-gated concern (``worktrees.prune_remote_branches``).
+        """
+        _validate_ref(branch)
+        await self._arun(["branch", "-D" if force else "-d", branch], cwd=base_path)
+
+    async def aworktree_base_path(self, path: str) -> str | None:
+        """Resolve the base repository directory for a worktree *path*.
+
+        Uses ``git rev-parse --git-common-dir`` rather than a directory naming
+        convention, so it works for any layout — worktree-execution §7.4
+        retires the ``.worktrees-<base>/`` path parsing.  Returns ``None``
+        when *path* is not inside a git repository.
+        """
+        try:
+            out = await self._arun(
+                ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=path,
+            )
+        except GitError:
+            return None
+        common = Path(out.strip())
+        if common.name == ".git":
+            return str(common.parent)
+        # Bare repo, or a layout where the common dir *is* the repo.
+        return str(common)
+
     async def ainit_repo(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
         await self._arun(["init"], cwd=path)
@@ -1846,6 +1994,49 @@ class GitManager:
         except Exception:
             return False
 
+    async def astaged_patch(self, checkout_path: str) -> str:
+        """The staged diff as an **appliable** patch.  Output is not stripped.
+
+        ``_arun`` / ``_arun_unlocked`` strip their output, which corrupts a
+        patch: ``git apply`` rejects one with no trailing newline, and a
+        binary hunk needs the blank line that terminates its base85 block —
+        so a stripped patch fails with "corrupt binary patch at line N".
+        ``--binary`` is likewise mandatory; without it git emits only
+        ``Binary files a/x and b/x differ`` and the bytes are unrecoverable.
+
+        Used by worktree salvage, whose entire purpose is that the archived
+        text can be applied later.
+        """
+        result = await self._arun_subprocess(
+            ["git", "diff", "--cached", "--binary", "HEAD"], cwd=checkout_path
+        )
+        if result.returncode != 0:
+            raise GitError(f"git diff --cached failed: {result.stderr.strip()}")
+        return result.stdout
+
+    @staticmethod
+    def _resolve_git_dir(checkout_path: str) -> str:
+        """The real git directory for a checkout — clone or worktree.
+
+        For a clone this is ``<path>/.git``.  For a linked worktree ``.git``
+        is a file containing ``gitdir: <absolute path>``; returning that path
+        is what lets lock-file cleanup find ``index.lock`` at all.  Falls back
+        to ``<path>/.git`` when the pointer cannot be read.
+        """
+        dot_git = os.path.join(checkout_path, ".git")
+        try:
+            if os.path.isfile(dot_git):
+                with open(dot_git, encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if line.startswith("gitdir:"):
+                            target = line.split(":", 1)[1].strip()
+                            if not os.path.isabs(target):
+                                target = os.path.join(checkout_path, target)
+                            return os.path.normpath(target)
+        except OSError:
+            pass
+        return dot_git
+
     async def aabort_in_progress_operations(self, checkout_path: str) -> None:
         """Abort any in-progress merge, rebase, or cherry-pick.
 
@@ -1856,8 +2047,11 @@ class GitManager:
         This is a best-effort method — individual failures are silently
         ignored because not all operations may be in progress.
         """
-        # Remove stale git lock files that block all operations
-        git_dir = os.path.join(checkout_path, ".git")
+        # Remove stale git lock files that block all operations.  In a
+        # worktree ``.git`` is a *file* holding ``gitdir: <path>``, and the
+        # index lives under ``<base>/.git/worktrees/<name>/`` — resolving it
+        # is what makes this work for slot worktrees and not only clones.
+        git_dir = self._resolve_git_dir(checkout_path)
         for lock_name in ("index.lock", "shallow.lock", "refs/heads.lock"):
             lock_path = os.path.join(git_dir, lock_name)
             try:

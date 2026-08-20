@@ -100,7 +100,12 @@ async def effective_requirements(db, task: Task) -> list[ResolvedRequirement]:
 
 
 async def acquire_for_task(
-    db, task: Task, agent_id: str
+    db,
+    task: Task,
+    agent_id: str,
+    *,
+    worktrees_enabled: bool = False,
+    worktree_slot_cap: int | None = None,
 ) -> WorkspaceAttachmentSet:
     """Acquire all required workspaces for a task.
 
@@ -117,6 +122,18 @@ async def acquire_for_task(
     Note: each per-kind lock is acquired in its own DB transaction (the
     underlying ``acquire_one_unlocked`` opens its own ``begin()``).  The
     explicit rollback loop on failure is what enforces all-or-nothing.
+
+    ``worktrees_enabled`` is the rollout gate (worktree-execution §5): while
+    it is False every git kind is treated as ``exclusive-clone`` regardless
+    of the kind's declared ``mode``, so acquisition behaves exactly as it
+    does today.  Canonical lock order and all-or-nothing rollback are
+    untouched either way (§6.3).
+
+    ``worktree_slot_cap`` is the project's ``max_concurrent_agents``.  It
+    bounds the candidate slot set to indices below the cap, matching the
+    bound ``count_available_workspaces`` and ``_ensure_worktree_slots_for_task``
+    already apply — otherwise a shrunk cap leaves capacity reporting 0 while
+    acquisition still hands out an out-of-cap slot.
     """
     requirements = await effective_requirements(db, task)
     acquired: list[WorkspaceAttachment] = []
@@ -142,6 +159,12 @@ async def acquire_for_task(
                     locked_by_task_id=task.id,
                     locked_by_agent_id=agent_id,
                     prefer_workspace_id=req.preferred_workspace_id,
+                    kind_mode=(
+                        kind.mode
+                        if worktrees_enabled and kind.is_git_repo
+                        else None
+                    ),
+                    worktree_slot_cap=worktree_slot_cap,
                 )
                 if ws is None:
                     raise AcquisitionFailed(req.kind_id)

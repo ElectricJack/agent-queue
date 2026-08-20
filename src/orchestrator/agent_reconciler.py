@@ -26,9 +26,12 @@ class AgentReconciler:
     supply matches demand subject to project.max_concurrent_agents.
     """
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, *, worktrees_enabled: bool = False):
         self._db = db
         self._warned_projects: dict[str, str] = {}
+        # Rollout gate (worktree-execution §5).  While False the workspace
+        # gate below counts inventory exactly as it does today.
+        self._worktrees_enabled = worktrees_enabled
 
     async def reconcile(self) -> ReconcileReport:
         import uuid
@@ -125,7 +128,21 @@ class AgentReconciler:
                     # has at least one available (unlocked + enabled).
                     requires_ws = self._runtime_requires_workspace(profiles.get(needed))
                     if requires_ws:
-                        avail = await self._db.count_available_workspaces(project.id)
+                        # Under worktree mode the gate must measure acquirable
+                        # *capacity*, not unlocked rows (worktree-execution
+                        # §6.7): a project with one base and zero pre-made
+                        # slots has no unlocked row but a full cap of
+                        # capacity, because slots are created lazily.  Without
+                        # this the reconciler would never create the first
+                        # agent and the project would never start.
+                        avail = await self._db.count_available_workspaces(
+                            project.id,
+                            worktree_slot_cap=(
+                                project.max_concurrent_agents
+                                if self._worktrees_enabled
+                                else None
+                            ),
+                        )
                         if avail == 0:
                             report.skipped.append(
                                 (project.id, f"no available workspace for {needed}")

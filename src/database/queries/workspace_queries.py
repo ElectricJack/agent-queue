@@ -5,10 +5,15 @@ from __future__ import annotations
 import logging
 import time
 
-from sqlalchemy import case, delete, func, insert, select, update
+from sqlalchemy import case, delete, func, insert, nulls_first, select, true, update
 
 from src.database.tables import workspaces
-from src.models import RepoSourceType, Workspace, WorkspaceMode
+from src.models import (
+    KIND_MODE_WORKTREE,
+    RepoSourceType,
+    Workspace,
+    WorkspaceMode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +22,15 @@ _source_type_order = case(
     (workspaces.c.source_type == "clone", 0),
     else_=1,
 )
+
+
+def _is_worktree_mode(kind) -> bool:
+    """True when *kind* is a git kind provisioned as base + slot worktrees."""
+    return (
+        kind is not None
+        and getattr(kind, "is_git_repo", False)
+        and getattr(kind, "mode", None) == KIND_MODE_WORKTREE
+    )
 
 
 class WorkspaceQueryMixin:
@@ -45,6 +59,8 @@ class WorkspaceQueryMixin:
                     locked_by_task_id=workspace.locked_by_task_id,
                     locked_at=workspace.locked_at,
                     enabled=workspace.enabled,
+                    slot_index=workspace.slot_index,
+                    base_workspace_id=workspace.base_workspace_id,
                     created_at=time.time(),
                 )
             )
@@ -272,6 +288,8 @@ class WorkspaceQueryMixin:
         locked_by_task_id: str,
         locked_by_agent_id: str,
         prefer_workspace_id: str | None = None,
+        kind_mode: str | None = None,
+        worktree_slot_cap: int | None = None,
     ) -> Workspace | None:
         """Atomically acquire one unlocked workspace of a given kind.
 
@@ -293,11 +311,40 @@ class WorkspaceQueryMixin:
             locked_by_agent_id: Agent acquiring the lock.
             prefer_workspace_id: Try this workspace id first; falls back to
                 first-unlocked if it's busy or doesn't match.
+            kind_mode: The kind's *git provisioning* mode (``"worktree"`` /
+                ``"exclusive-clone"`` / ``"directory-isolated"``) — distinct
+                from ``mode`` above, which is the lock mode.  Callers pass
+                this only when ``worktrees.enabled``; the flag is the rollout
+                gate (worktree-execution §5).  Under ``"worktree"`` the
+                candidate set is the kind's **slot rows** and the base is
+                excluded (§2.3, §6.3): a base is used for fetch, branch
+                queries and worktree bookkeeping, never as an agent cwd.
+            worktree_slot_cap: The project's ``max_concurrent_agents``, when
+                known.  Under worktree mode, slots whose index is at or above
+                the cap are **out of cap** — the cap shrank since they were
+                made — and must not be handed out.  This is the symmetric
+                bound to the one ``count_available_workspaces`` and
+                ``_ensure_worktree_slots_for_task`` already apply; without it
+                capacity could report 0 while acquisition still succeeded.
+                Retirement of out-of-cap slots is the phase-4 reaper's job;
+                refusing to acquire them is correct at every phase.
 
         Returns the locked workspace, or ``None`` if no instance was free.
         """
         now = time.time()
         lock_mode_value = mode  # already lowercase, e.g. "exclusive"
+
+        # Worktree mode: only slot rows are acquirable, and only those inside
+        # the project's current cap.  ``true()`` keeps the legacy path a
+        # byte-for-byte no-op in the generated SQL shape.
+        if kind_mode == KIND_MODE_WORKTREE:
+            slot_filter = workspaces.c.slot_index.isnot(None)
+            if worktree_slot_cap is not None:
+                slot_filter = slot_filter & (
+                    workspaces.c.slot_index < worktree_slot_cap
+                )
+        else:
+            slot_filter = true()
 
         async with self._engine.begin() as conn:
             candidate_ids: list[str] = []
@@ -311,6 +358,7 @@ class WorkspaceQueryMixin:
                             & (workspaces.c.kind_id == kind_id)
                             & (workspaces.c.locked_by_agent_id.is_(None))
                             & (workspaces.c.enabled.is_(True))
+                            & slot_filter
                         )
                     )
                 ).fetchone()
@@ -325,8 +373,16 @@ class WorkspaceQueryMixin:
                         & (workspaces.c.kind_id == kind_id)
                         & (workspaces.c.locked_by_agent_id.is_(None))
                         & (workspaces.c.enabled.is_(True))
+                        & slot_filter
                     )
-                    .order_by(workspaces.c.id)
+                    # ``nulls_first`` is explicit for cross-dialect
+                    # determinism: on the legacy path ``slot_filter`` is
+                    # ``true()``, so NULL-``slot_index`` rows are in the set,
+                    # and SQLite sorts NULLs first while PostgreSQL sorts them
+                    # last — same candidate set, different winner.
+                    .order_by(
+                        nulls_first(workspaces.c.slot_index), workspaces.c.id
+                    )
                 )
             ).fetchall()
             for row in rows:
@@ -398,36 +454,51 @@ class WorkspaceQueryMixin:
 
             return None
 
-    async def find_branch_isolated_base(
+    async def find_worktree_base(
         self,
         project_id: str,
+        kind_id: str,
     ) -> Workspace | None:
-        """Find a workspace locked with BRANCH_ISOLATED that can host worktrees.
+        """The base workspace that hosts a kind's slot worktrees.
 
-        Used by the orchestrator when a BRANCH_ISOLATED task has no unlocked
-        workspace available.  Returns the first workspace for the project
-        that is currently locked with ``WorkspaceMode.BRANCH_ISOLATED``.
-        The orchestrator will create a git worktree from this base workspace.
+        Replaces ``find_branch_isolated_base`` (worktree-execution §7.4 —
+        the branch-isolated fallback and its ``.worktrees-<base>/`` path
+        convention are retired).  The base is the first enabled *non-slot*
+        row of the kind, clones preferred over links, ordered by id.  Spec
+        §7.3: "the existing CLONE workspace row for the kind (first by id if
+        several)".
 
-        Prefers clone workspaces over link workspaces (clones are managed by
-        the orchestrator and more likely to have proper remote configuration).
+        Note this is deliberately independent of lock state — the base is
+        used for fetch, branch queries and ``git worktree`` bookkeeping, so
+        it must be resolvable while every slot beneath it is busy.
         """
         async with self._engine.begin() as conn:
             result = await conn.execute(
                 select(workspaces)
                 .where(
                     (workspaces.c.project_id == project_id)
-                    & (workspaces.c.locked_by_agent_id.isnot(None))
-                    & (workspaces.c.lock_mode == WorkspaceMode.BRANCH_ISOLATED.value)
+                    & (workspaces.c.kind_id == kind_id)
+                    & (workspaces.c.slot_index.is_(None))
                     & (workspaces.c.enabled.is_(True))
                 )
                 .order_by(_source_type_order, workspaces.c.id)
                 .limit(1)
             )
             row = result.mappings().fetchone()
-            if not row:
-                return None
-            return self._row_to_workspace(row)
+            return self._row_to_workspace(row) if row else None
+
+    async def list_slots_for_base(self, base_workspace_id: str) -> list[Workspace]:
+        """Every slot row bound to *base_workspace_id*, ordered by index."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(workspaces)
+                .where(
+                    (workspaces.c.base_workspace_id == base_workspace_id)
+                    & (workspaces.c.slot_index.isnot(None))
+                )
+                .order_by(workspaces.c.slot_index)
+            )
+            return [self._row_to_workspace(r) for r in result.mappings().fetchall()]
 
     async def release_workspace(self, workspace_id: str) -> None:
         """Clear lock columns on a workspace."""
@@ -499,20 +570,89 @@ class WorkspaceQueryMixin:
             row = result.fetchone()
             return row[0] if row else None
 
-    async def count_available_workspaces(self, project_id: str) -> int:
-        """Count unlocked, enabled workspaces for a project."""
-        async with self._engine.begin() as conn:
-            result = await conn.execute(
-                select(func.count())
-                .select_from(workspaces)
-                .where(
-                    (workspaces.c.project_id == project_id)
-                    & (workspaces.c.locked_by_agent_id.is_(None))
-                    & (workspaces.c.enabled.is_(True))
+    async def count_available_workspaces(
+        self,
+        project_id: str,
+        *,
+        worktree_slot_cap: int | None = None,
+    ) -> int:
+        """Count acquirable capacity for a project.
+
+        Without *worktree_slot_cap* this is the legacy count: unlocked,
+        enabled rows.  With it (the caller passes ``max_concurrent_agents``
+        only when ``worktrees.enabled``), worktree-mode git kinds are counted
+        as **capacity, not inventory** — worktree-execution §6.7.
+
+        The distinction matters to :class:`AgentReconciler`: a project with
+        one base clone and zero pre-made slots has zero unlocked rows but a
+        full cap's worth of acquirable capacity, because slots are created
+        lazily on demand.  Counting inventory there would refuse to create
+        any agent at all, and the project would never start.
+        """
+        # The legacy path stays a single SQL COUNT: it runs per project on
+        # every 5 s cascade cycle and, with worktrees off (the default), no
+        # kind resolution is needed to answer it.
+        if worktree_slot_cap is None:
+            async with self._engine.begin() as conn:
+                result = await conn.execute(
+                    select(func.count())
+                    .select_from(workspaces)
+                    .where(
+                        (workspaces.c.project_id == project_id)
+                        & (workspaces.c.locked_by_agent_id.is_(None))
+                        & (workspaces.c.enabled.is_(True))
+                    )
                 )
+                return result.fetchone()[0]
+
+        rows = [w for w in await self.list_workspaces(project_id) if w.enabled]
+
+        # Resolve each distinct kind once (project row shadows system row).
+        kinds: dict[str, object] = {}
+        for w in rows:
+            kid = w.kind_id or "project-repo"
+            if kid not in kinds:
+                kinds[kid] = await self.resolve_workspace_kind(project_id, kid)
+
+        # Only *the* base row of a worktree-mode kind carries capacity (§7.3);
+        # any further clone rows contribute nothing under worktree mode — they
+        # are not acquirable (§2.3) and would otherwise double-count the same
+        # cap.  "Which row is the base" is defined in exactly one place —
+        # ``find_worktree_base`` — and asked here rather than re-derived.  A
+        # second, subtly different rule (sorting by id alone, ignoring the
+        # CLONE-before-LINK preference) used to live here; when a LINK row's
+        # id sorted before the CLONE row the two rules designated different
+        # bases, capacity was measured against a base owning no slots, and the
+        # reconciler created agents that could never acquire anything.
+        bases: dict[str, str | None] = {}
+        for kid, kind in kinds.items():
+            if _is_worktree_mode(kind):
+                base = await self.find_worktree_base(project_id, kid)
+                bases[kid] = base.id if base is not None else None
+
+        total = 0
+        for w in rows:
+            kid = w.kind_id or "project-repo"
+            kind = kinds.get(kid)
+            worktree_mode = _is_worktree_mode(kind)
+            if not worktree_mode:
+                if w.locked_by_agent_id is None:
+                    total += 1
+                continue
+            if w.slot_index is not None:
+                continue  # counted through its base's capacity
+            if bases.get(kid) != w.id:
+                continue  # a redundant clone under worktree mode
+            locked_slots = sum(
+                1
+                for s in rows
+                if s.base_workspace_id == w.id
+                and s.slot_index is not None
+                and s.locked_by_agent_id is not None
+                and s.slot_index < worktree_slot_cap
             )
-            row = result.fetchone()
-            return row[0]
+            total += max(0, worktree_slot_cap - locked_slots)
+        return total
 
     @staticmethod
     def _row_to_workspace(row) -> Workspace:
@@ -530,4 +670,6 @@ class WorkspaceQueryMixin:
             locked_at=row["locked_at"],
             lock_mode=WorkspaceMode(raw_mode) if raw_mode else None,
             enabled=bool(row["enabled"]),
+            slot_index=row["slot_index"],
+            base_workspace_id=row["base_workspace_id"],
         )

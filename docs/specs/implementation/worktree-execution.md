@@ -155,6 +155,8 @@ worktrees:
   prune_remote_branches: false
   setup_timeout_seconds: 900  # per worktree_setup command list
   salvage_dirty: true         # false = plain hard-reset, no patch archive
+  salvage_max_bytes: 5242880  # cap on one archived patch; past it the
+                              # --stat summary is stored instead. 0 = no cap
   spawn_conflict_continuation: false  # auto-create resolve-conflict task
 ```
 
@@ -212,19 +214,25 @@ Register `worktree.created|reset|reaped` and `merge.started|succeeded|conflict` 
 ## 7. Migration Path from Clone-Based Workspaces
 
 1. The Alembic revision (§3) backfills `mode='exclusive-clone'` onto all existing kind rows — **no existing install changes behavior on upgrade**.
-2. `WorkspaceKindStore` bootstrap does not rewrite existing markdown; operators opt a project in by editing the kind file to `mode: worktree` (or a fresh install gets the new shipped default).
-3. First worktree-mode acquisition for a project designates its base: the existing CLONE workspace row for the kind (first by id if several; others stay acquirable clones until removed). Slots are created lazily beside it.
+2. `WorkspaceKindStore` bootstrap does not rewrite existing markdown. Two consequences follow, and both are handled in code rather than left implicit:
+   - An upgrading install's `project-repo.md` predates the `mode` key, so the parser must read an **absent** `mode:` as "leave the stored value alone" (`WorkspaceKind.mode = None`, coalesced in `upsert_workspace_kind`). Defaulting it would upsert `worktree` over the migration's backfill on the first daemon start and every start after, silently falsifying rule 1. `WorkspaceKindStore.backfill_mode_frontmatter` then injects the DB's value into such files once, so the file becomes the explicit source of truth it claims to be.
+   - The migration's blanket `UPDATE` cannot distinguish rows it is upgrading from rows the preceding revision seeded moments earlier, so a **fresh** install would also come out on `exclusive-clone`. `WorkspaceKindStore._normalize_fresh_install_modes` corrects that — only when there are no projects, no workspaces, and no workspace-kind markdown at all, conditions no install with any history can meet.
+
+   Operators opt an existing project in by editing the kind file to `mode: worktree`.
+3. First worktree-mode acquisition for a project designates its base: the first enabled non-slot workspace row for the kind, clones preferred over links, then by id (`find_worktree_base` — the single definition of this rule; capacity counting and acquisition must both consult it rather than re-deriving it). Slots are created lazily beside it. Any **further** non-slot rows of that kind are *not* acquirable while the kind is in worktree mode (§2.3, §6.3) — they contribute neither inventory nor capacity, and `aq workspace doctor` flags them as redundant. This is the correct reading; earlier drafts of this list said such rows "stay acquirable clones", which contradicted §2.3 and §6.3.
 4. Existing clones can be deleted by the operator once slots carry the load; `aq workspace doctor` flags redundant clones under worktree mode.
 5. Rollback: set `worktrees.enabled: false` (or per-kind `mode: exclusive-clone`) — slot rows stop being candidates, clones resume. Reap slots at leisure via `aq workspace reap`.
+6. **`workspace_mode='branch-isolated'` is deprecated on upgrade.** The branch-isolated worktree fallback is retired unflagged (§7.4 of the design spec), so the value is now an alias for `exclusive`: it required an explicit per-task opt-in that nothing sets by default, plus all clones locked, plus another branch-isolated task holding one. Tasks that set it now take the same PAUSED-with-60 s-backoff path exclusive tasks already take when clones are exhausted, emitting `task.paused` with `reason="no_workspace"`. The enum value stays accepted so existing rows and callers keep working; the tool schemas and `WorkspaceMode.BRANCH_ISOLATED` carry the deprecation note. Parallel work in one repo comes from slots, chosen by the kind's `mode`.
 
 ---
 
 ## 8. Phase Checklist
 
-- [ ] **Phase 0 — Schema & models.** Tables §3.1–3.3, Alembic revision (SQLite + PG), `models.py` dataclasses, parser fields, shipped `project-repo.md` update. `tests/test_worktree_migration.py` green on both dialects.
-- [ ] **Phase 1 — Slot manager.** `WorktreeSlotManager` (create/reset/salvage/exclude/sentinel), `GitManager` additions, `WorktreesConfig`. Unit-tested against real temp repos.
-- [ ] **Phase 2 — Acquisition & prepare.** Mode-aware `acquire_one_unlocked` + `count_available_workspaces`; `_prepare_workspace` worktree branch; retire `_create_branch_isolated_worktree` / `_get_worktree_base_path` / `find_branch_isolated_base`; `ensure_slots` lazily from `_prepare_workspace`.
+- [x] **Phase 0 — Schema & models.** Tables §3.1–3.3, Alembic revision (SQLite + PG), `models.py` dataclasses, parser fields, shipped `project-repo.md` update. `tests/test_worktree_migration.py` green on both dialects.
+- [x] **Phase 1 — Slot manager.** `WorktreeSlotManager` (create/reset/salvage/exclude/sentinel), `GitManager` additions, `WorktreesConfig`. Unit-tested against real temp repos.
+- [x] **Phase 2 — Acquisition & prepare.** Mode-aware `acquire_one_unlocked` + `count_available_workspaces`; `_prepare_workspace` worktree branch; retire `_create_branch_isolated_worktree` / `_get_worktree_base_path` / `find_branch_isolated_base`; `ensure_slots` lazily from `_prepare_workspace`. Both mode-aware counts bound candidates by the project's slot cap, so capacity and acquisition cannot disagree. `_recover_stale_state` must **not** delete slot rows: `_cleanup_worktree_workspace` short-circuits on `is_slot` for all three of its callers, and recovery rebuilds the `{slot_path -> base_path}` git-lock map from one `list_workspaces()` sweep so a task that was IN_PROGRESS across the restart keeps serializing. `_cleanup_workspace_for_next_task` routes slots to `restore_slot_after_task` (salvage → `reset --hard` → `clean -fd`) — its clone ladder stashes, `clean -fdx`s and checks out the default branch, all three of which are wrong in a worktree.
 - [ ] **Phase 3 — Merge slot & pipeline.** `merge_slots` queries, `_phase_integrate`, verify-phase expectation changes, conflict → `rejection_reason` + files + (projected) `needs_attention`, events.
+  - Carried in from the P2 review: `_phase_verify`'s auto-merge is *mostly* inert under worktree mode by accident, not design — it runs `git checkout <default_branch>` inside the slot, which git refuses while the base holds that branch (the normal topology), so it raises, is caught at `git_ops.py:661`, logs a `logger.warning`, and falls through to the not-merged path. It only actually merges un-serialized when the base is *not* on its default branch. Two things follow for P3: skip the auto-merge explicitly under worktree mode rather than relying on that refusal, and revisit the downstream branches (`git_ops.py:765/828/848`) that are written assuming a merge happened — today a task can take them after a merge that only warned.
 - [ ] **Phase 4 — Reaper & adoption.** Cascade steps 7d/7e, `adopt_existing` in recovery, `_recover_stale_state` worktree-deletion removal, branch pruning, `--reset` escape hatch.
 - [ ] **Phase 5 — Surface.** `workspace list` annotations, `workspace_doctor`, `workspace_reap`, event-registry docs, dashboard workspace view data.
 - [ ] **Phase 6 — Flag flip & cleanup.** `worktrees.enabled: true` default; delete `_cleanup_worktree_workspace` legacy path after one minor version.

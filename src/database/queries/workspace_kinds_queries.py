@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 
 from sqlalchemy import delete, insert, select, update
@@ -9,9 +11,23 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import workspace_kinds
-from src.models import SYSTEM_KIND_SCOPE, WorkspaceKind
+from src.models import KIND_MODE_WORKTREE, SYSTEM_KIND_SCOPE, WorkspaceKind
+
+logger = logging.getLogger(__name__)
 
 # Columns updated on conflict — every column except the PK pair and created_at.
+#
+# ``mode`` and ``worktree_setup`` are here deliberately (worktree-execution
+# §3.6 + principle #1: the markdown is the source of truth).  Behavior changes
+# only when an operator edits the file, which is the intended knob.
+#
+# ``mode`` is *removed* from this set when ``kind.mode is None`` — the parser's
+# encoding of "the frontmatter says nothing about mode" — so an absent key
+# means "leave the stored value alone".  ``bootstrap`` only writes markdown
+# that does not already exist, so an install upgrading with a pre-``mode``
+# ``project-repo.md`` keeps a file with no ``mode:`` key; without the coalesce
+# that file would upsert a default over the migration's ``exclusive-clone``
+# backfill on the first daemon start and on every start after.
 _UPSERT_UPDATE_COLS = (
     "description",
     "writable",
@@ -20,6 +36,8 @@ _UPSERT_UPDATE_COLS = (
     "repo_url",
     "default_lock_mode",
     "auto_attach",
+    "mode",
+    "worktree_setup",
     "updated_at",
 )
 
@@ -28,8 +46,17 @@ class WorkspaceKindQueryMixin:
     """Query mixin for ``workspace_kinds``. Expects ``self._engine``."""
 
     async def upsert_workspace_kind(self, kind: WorkspaceKind) -> None:
-        """Insert or update a workspace kind, keyed by ``(project_id, id)``."""
+        """Insert or update a workspace kind, keyed by ``(project_id, id)``.
+
+        ``kind.mode is None`` means "the source said nothing about mode": the
+        column is left at whatever the row already holds (and takes the
+        shipped default on insert).  Every other field is written
+        unconditionally — the markdown is the source of truth.
+        """
         now = time.time()
+        update_cols = _UPSERT_UPDATE_COLS
+        if kind.mode is None:
+            update_cols = tuple(c for c in update_cols if c != "mode")
         values = {
             "project_id": kind.project_id,
             "id": kind.id,
@@ -40,6 +67,8 @@ class WorkspaceKindQueryMixin:
             "repo_url": kind.repo_url,
             "default_lock_mode": kind.default_lock_mode,
             "auto_attach": kind.auto_attach,
+            "mode": kind.mode or KIND_MODE_WORKTREE,
+            "worktree_setup": json.dumps(list(kind.worktree_setup or [])),
             "created_at": kind.created_at or now,
             "updated_at": now,
         }
@@ -49,20 +78,23 @@ class WorkspaceKindQueryMixin:
                 stmt = sqlite_insert(workspace_kinds).values(**values)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["project_id", "id"],
-                    set_={c: stmt.excluded[c] for c in _UPSERT_UPDATE_COLS},
+                    set_={c: stmt.excluded[c] for c in update_cols},
                 )
                 await conn.execute(stmt)
             elif dialect == "postgresql":
                 stmt = pg_insert(workspace_kinds).values(**values)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["project_id", "id"],
-                    set_={c: stmt.excluded[c] for c in _UPSERT_UPDATE_COLS},
+                    set_={c: stmt.excluded[c] for c in update_cols},
                 )
                 await conn.execute(stmt)
             else:
                 # Generic fallback: try update, then insert if 0 rows changed.
                 update_values = {
-                    k: v for k, v in values.items() if k not in ("project_id", "id")
+                    k: v
+                    for k, v in values.items()
+                    if k not in ("project_id", "id", "created_at")
+                    and (k != "mode" or kind.mode is not None)
                 }
                 result = await conn.execute(
                     update(workspace_kinds)
@@ -158,7 +190,28 @@ class WorkspaceKindQueryMixin:
             )
 
     @staticmethod
-    def _row_to_workspace_kind(row) -> WorkspaceKind:
+    def _decode_worktree_setup(raw) -> list[str]:
+        """Decode the JSON-in-Text ``worktree_setup`` column defensively.
+
+        A hand-edited row (or a pre-migration NULL) must not take the daemon
+        down — an undecodable value degrades to "no setup commands".
+        """
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            return [str(c) for c in raw]
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("workspace_kinds.worktree_setup is not valid JSON: %r", raw)
+            return []
+        if not isinstance(parsed, list):
+            logger.warning("workspace_kinds.worktree_setup is not a list: %r", raw)
+            return []
+        return [str(c) for c in parsed]
+
+    @classmethod
+    def _row_to_workspace_kind(cls, row) -> WorkspaceKind:
         return WorkspaceKind(
             project_id=row["project_id"],
             id=row["id"],
@@ -169,6 +222,8 @@ class WorkspaceKindQueryMixin:
             repo_url=row["repo_url"],
             default_lock_mode=row["default_lock_mode"],
             auto_attach=bool(row["auto_attach"]),
+            mode=row["mode"] or KIND_MODE_WORKTREE,
+            worktree_setup=cls._decode_worktree_setup(row["worktree_setup"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

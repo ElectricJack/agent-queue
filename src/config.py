@@ -896,12 +896,21 @@ class WorktreesConfig:
     prune_remote_branches: bool = False
     setup_timeout_seconds: int = 900
     salvage_dirty: bool = True
+    # Upper bound on one archived salvage patch, in bytes.  Past it the patch
+    # is replaced by its ``--stat`` summary: a slot can hold an arbitrarily
+    # large non-ignored build artifact and ``task_contexts`` is not a blob
+    # store.  0 disables the cap.
+    salvage_max_bytes: int = 5 * 1024 * 1024
     spawn_conflict_continuation: bool = False
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if self.retain_failed_days < 0:
             errors.append(ConfigError("worktrees", "retain_failed_days", "must be >= 0"))
+        if self.salvage_max_bytes < 0:
+            errors.append(
+                ConfigError("worktrees", "salvage_max_bytes", "must be >= 0")
+            )
         if self.merge_slot_ttl_seconds <= 0:
             errors.append(ConfigError("worktrees", "merge_slot_ttl_seconds", "must be > 0"))
         if self.setup_timeout_seconds <= 0:

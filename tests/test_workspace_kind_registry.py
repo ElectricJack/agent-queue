@@ -164,3 +164,134 @@ async def test_scan_skips_invalid_files(vault_root: Path, db, caplog):
     await store.scan()
 
     assert await db.get_workspace_kind(SYSTEM_KIND_SCOPE, "good") is not None
+
+
+# ────────────── F3: `mode` must not flip on upgrade or install ───────────
+
+
+class TestModeUpgradePath:
+    """worktree-execution §7.1/§7.2 at the data layer.
+
+    `bootstrap` only writes markdown that does not already exist, so an
+    install upgrading with a pre-`mode` `project-repo.md` never gains the
+    key.  If an absent key parsed as the shipped default, `scan()` would
+    upsert `worktree` over the migration's `exclusive-clone` backfill on the
+    first daemon start — and on every start after, invisibly.
+    """
+
+    @staticmethod
+    async def _upgraded_install(vault_root: Path, db):
+        """A pre-`mode` kind file beside a migration-backfilled DB row."""
+        from src.models import KIND_MODE_EXCLUSIVE_CLONE, WorkspaceKind
+
+        await db.upsert_workspace_kind(
+            WorkspaceKind(
+                project_id=SYSTEM_KIND_SCOPE,
+                id="project-repo",
+                is_git_repo=True,
+                mode=KIND_MODE_EXCLUSIVE_CLONE,
+            )
+        )
+        sys_dir = vault_root / "workspace-kinds"
+        sys_dir.mkdir(exist_ok=True)
+        md = sys_dir / "project-repo.md"
+        md.write_text(
+            textwrap.dedent(
+                """
+                ---
+                id: project-repo
+                writable: true
+                lockable: true
+                is_git_repo: true
+                ---
+
+                # project-repo
+
+                The project's git repository.
+                """
+            ).strip()
+            + "\n"
+        )
+        return md
+
+    async def test_absent_mode_leaves_the_stored_value_alone(self, vault_root, db):
+        from src.models import KIND_MODE_EXCLUSIVE_CLONE
+
+        await self._upgraded_install(vault_root, db)
+        store = WorkspaceKindStore(db, vault_root=vault_root)
+
+        # Three daemon starts in a row must not move the value.
+        for _ in range(3):
+            await store.scan()
+            kind = await db.get_workspace_kind(SYSTEM_KIND_SCOPE, "project-repo")
+            assert kind.mode == KIND_MODE_EXCLUSIVE_CLONE
+
+    async def test_bootstrap_backfills_the_key_into_the_markdown(
+        self, vault_root, db
+    ):
+        """The file has to become explicit, or it is not the source of truth."""
+        md = await self._upgraded_install(vault_root, db)
+        store = WorkspaceKindStore(db, vault_root=vault_root)
+        await store.bootstrap()
+
+        text = md.read_text()
+        assert "mode: exclusive-clone" in text
+        assert "The project's git repository." in text, "body preserved"
+        assert "id: project-repo" in text
+
+        # Idempotent, and scan reads back what bootstrap wrote.
+        before = md.read_bytes()
+        await store.bootstrap()
+        assert md.read_bytes() == before
+        await store.scan()
+        kind = await db.get_workspace_kind(SYSTEM_KIND_SCOPE, "project-repo")
+        assert kind.mode == "exclusive-clone"
+
+    async def test_an_explicit_edit_is_still_honoured(self, vault_root, db):
+        """The operator's knob must keep working in both directions."""
+        md = await self._upgraded_install(vault_root, db)
+        md.write_text(md.read_text().replace("is_git_repo: true", "is_git_repo: true\nmode: worktree"))
+
+        await WorkspaceKindStore(db, vault_root=vault_root).scan()
+        kind = await db.get_workspace_kind(SYSTEM_KIND_SCOPE, "project-repo")
+        assert kind.mode == "worktree"
+
+    async def test_fresh_install_gets_the_shipped_default(self, vault_root, db):
+        """§7.2: the migration's blanket backfill cannot tell a fresh install
+        from an upgrading one, so it lands `exclusive-clone` on both."""
+        from src.models import KIND_MODE_EXCLUSIVE_CLONE, KIND_MODE_WORKTREE, WorkspaceKind
+
+        await db.upsert_workspace_kind(
+            WorkspaceKind(
+                project_id=SYSTEM_KIND_SCOPE,
+                id="project-repo",
+                is_git_repo=True,
+                mode=KIND_MODE_EXCLUSIVE_CLONE,
+            )
+        )
+        # No projects, no workspaces, no kind markdown: nothing has happened yet.
+        await WorkspaceKindStore(db, vault_root=vault_root).bootstrap()
+
+        kind = await db.get_workspace_kind(SYSTEM_KIND_SCOPE, "project-repo")
+        assert kind.mode == KIND_MODE_WORKTREE
+        assert "mode: worktree" in (
+            vault_root / "workspace-kinds" / "project-repo.md"
+        ).read_text()
+
+    async def test_an_install_with_history_is_never_normalized(self, vault_root, db):
+        """One project is enough to make it an upgrade, not a fresh install."""
+        from src.models import KIND_MODE_EXCLUSIVE_CLONE, Project, WorkspaceKind
+
+        await db.create_project(Project(id="p1", name="alpha"))
+        await db.upsert_workspace_kind(
+            WorkspaceKind(
+                project_id=SYSTEM_KIND_SCOPE,
+                id="project-repo",
+                is_git_repo=True,
+                mode=KIND_MODE_EXCLUSIVE_CLONE,
+            )
+        )
+        await WorkspaceKindStore(db, vault_root=vault_root).bootstrap()
+
+        kind = await db.get_workspace_kind(SYSTEM_KIND_SCOPE, "project-repo")
+        assert kind.mode == KIND_MODE_EXCLUSIVE_CLONE
