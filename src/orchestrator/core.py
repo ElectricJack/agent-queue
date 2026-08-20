@@ -221,7 +221,9 @@ class Orchestrator(
         # each scheduling tick before Scheduler.schedule().  See
         # docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md.
         from src.orchestrator.agent_reconciler import AgentReconciler
-        self._agent_reconciler = AgentReconciler(self.db)
+        self._agent_reconciler = AgentReconciler(
+            self.db, worktrees_enabled=config.worktrees.enabled
+        )
         # Live adapter instances keyed by agent_id.  Stored so we can call
         # adapter.stop() from admin commands (stop_task, timeout recovery).
         self._adapters: dict[str, object] = {}
@@ -330,6 +332,11 @@ class Orchestrator(
         # operations (fetch, gc) across branch-isolated worktrees.
         # Keyed by the base workspace path (the parent repo directory).
         self._git_mutexes: dict[str, asyncio.Lock] = {}
+        # slot/worktree path -> base repo path, for the *sync* git-lock
+        # resolver.  Replaces the retired ``.worktrees-<base>/`` filename
+        # parsing (worktree-execution §6.2): the relationship is data now,
+        # populated from slot rows as workspaces are prepared.
+        self._worktree_base_paths: dict[str, str] = {}
         # Per-task workspace attachments captured at acquisition time so the
         # runtime layer can consume them later without re-acquiring.  Keyed
         # by task id.  See workspaces-v2 spec §6 + §8.  Cleared on task
@@ -345,13 +352,17 @@ class Orchestrator(
     def _resolve_git_lock(self, cwd: str) -> asyncio.Lock | None:
         """Lock provider for :class:`GitManager`.
 
-        Resolves a ``cwd`` path to the appropriate shared git mutex.  For
-        worktree paths, the base workspace path is derived first.  Returns
-        ``None`` when the path is not part of a branch-isolated setup (i.e.
-        no serialization needed).
+        Resolves a ``cwd`` path to the shared git mutex of the repository it
+        belongs to, so every worktree of one base serializes its ``fetch`` /
+        ``gc`` / ``pull`` against the shared object store.  Returns ``None``
+        when the path has no registered mutex (no serialization needed).
+
+        The slot -> base mapping comes from ``_worktree_base_paths``, built
+        from slot rows when workspaces are prepared.  This must stay sync
+        (``GitManager._arun`` calls it inline), which is why it reads a cache
+        rather than asking git.
         """
-        base = self._get_worktree_base_path(cwd)
-        key = base if base else cwd
+        key = self._worktree_base_paths.get(cwd, cwd)
         return self._git_mutexes.get(key)
 
     def set_command_handler(self, handler: Any) -> None:

@@ -112,6 +112,13 @@ class WorktreeSlotManager:
         self.bus = bus
         self.config = config
         self._git_mutex = git_mutex
+        # Per-base provisioning lock.  Distinct from the git mutex, which
+        # ``create_slot`` takes internally — asyncio.Lock is not reentrant, so
+        # ensure_slots cannot reuse it.  Without this, two concurrent
+        # dispatches both see "no free slot", both try to create slot N, and
+        # the partial unique index on (base_workspace_id, slot_index) turns
+        # the loser into an IntegrityError instead of a queued wait.
+        self._provision_locks: dict[str, asyncio.Lock] = {}
         self.daemon_epoch = daemon_epoch or time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
         )
@@ -209,6 +216,13 @@ class WorktreeSlotManager:
         outage that blocks slot 3 still leaves slots 0–2 usable.  Returns
         every slot row for the base, existing and new, ordered by index.
         """
+        lock = self._provision_locks.setdefault(base_ws.id, asyncio.Lock())
+        async with lock:
+            return await self._ensure_slots_locked(base_ws, kind, count)
+
+    async def _ensure_slots_locked(
+        self, base_ws: Workspace, kind: WorkspaceKind, count: int
+    ) -> list[Workspace]:
         existing = await self._slots_for_base(base_ws.id)
         by_index = {ws.slot_index: ws for ws in existing}
         for idx in range(max(0, count)):

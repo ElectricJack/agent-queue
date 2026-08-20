@@ -7,13 +7,11 @@ import os
 
 from src.git.manager import GitError, GitManager
 from src.models import (
+    KIND_MODE_WORKTREE,
     RepoSourceType,
-    ResolvedRequirement,
     Task,
     TaskStatus,
     Workspace,
-    WorkspaceAttachment,
-    WorkspaceAttachmentSet,
     WorkspaceMode,
 )
 
@@ -22,6 +20,35 @@ logger = logging.getLogger(__name__)
 
 class WorkspaceMixin:
     """Workspace management methods mixed into Orchestrator."""
+
+    def _worktree_slots(self):
+        """Lazily-built :class:`WorktreeSlotManager` for this daemon.
+
+        Built on first use rather than in ``__init__`` so installs with
+        ``worktrees.enabled: false`` never construct it.
+        """
+        mgr = getattr(self, "_worktree_slot_manager", None)
+        if mgr is None:
+            from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+            mgr = WorktreeSlotManager(
+                db=self.db,
+                git=self.git,
+                bus=self.bus,
+                config=self.config.worktrees,
+                git_mutex=self._git_mutex,
+            )
+            self._worktree_slot_manager = mgr
+        return mgr
+
+    def _worktrees_enabled(self) -> bool:
+        """The rollout gate (worktree-execution §5).
+
+        While False every git kind is treated as ``exclusive-clone``
+        regardless of its declared ``mode``, so nothing below changes.
+        """
+        worktrees = getattr(self.config, "worktrees", None)
+        return bool(worktrees is not None and worktrees.enabled)
 
     @staticmethod
     def _remove_sentinel(workspace: str) -> None:
@@ -41,17 +68,24 @@ class WorkspaceMixin:
         git-provisioning sequence on the project-repo attachment.
 
         Steps:
-        1. Call ``acquire_for_task`` to obtain a :class:`WorkspaceAttachmentSet`.
+        1. Under worktree mode, lazily ensure the project's slots exist
+           (worktree-execution §3.1) so acquisition has something to take.
+        2. Call ``acquire_for_task`` to obtain a :class:`WorkspaceAttachmentSet`.
            For tasks with no explicit ``requires_kinds``, this synthesizes a
            ``project-repo`` requirement preserving today's behavior.
-        2. If acquisition fails for ``project-repo`` *and* lock_mode is
-           ``BRANCH_ISOLATED``, fall back to creating a worktree from an
-           already-locked workspace (legacy behavior).
         3. Stash the AttachmentSet on the orchestrator (Phase 7 reads it).
-        4. Run the existing branch / sentinel / git-provisioning sequence on
-           the project-repo attachment's workspace.
+        4. For a slot workspace, hand off to
+           :meth:`_prepare_slot_workspace`; otherwise run the existing
+           branch / sentinel / git-provisioning sequence on the project-repo
+           attachment's workspace.
         5. Return the workspace path (or ``None`` for tasks with no
            project-repo attachment, e.g. supervisor-style tool-call-only).
+
+        The branch-isolated worktree *fallback* is retired
+        (worktree-execution §6.1, §7.4): worktree mode is its principled
+        replacement.  Acquisition failure now uniformly returns ``None``, and
+        ``_execute_task``'s existing no-workspace PAUSED backoff covers slot
+        exhaustion exactly as it covered clone exhaustion.
 
         Error resilience: git failures (network issues, auth errors) are
         caught and reported via Discord but do NOT prevent the workspace
@@ -74,38 +108,19 @@ class WorkspaceMixin:
                 "Use 'exclusive' (default) or 'branch-isolated' instead."
             )
 
+        worktrees_enabled = self._worktrees_enabled()
+        if worktrees_enabled:
+            # Slots are created lazily, on demand, when acquisition would
+            # otherwise find fewer free slots than the cap allows
+            # (worktree-execution §3.1 / §6.3).
+            await self._ensure_worktree_slots_for_task(task, project)
+
         try:
-            attachment_set = await acquire_for_task(self.db, task, agent.id)
-        except AcquisitionFailed as e:
-            # Branch-isolated fallback: when project-repo can't be acquired
-            # and the task wants BRANCH_ISOLATED, try to share an existing
-            # locked workspace via a git worktree.  Other kind failures
-            # (e.g. package-foo) propagate as task-not-ready (return None).
-            if e.kind_id == "project-repo" and lock_mode == WorkspaceMode.BRANCH_ISOLATED:
-                fallback_ws = await self._create_branch_isolated_worktree(
-                    task, agent, project
-                )
-                if fallback_ws is None:
-                    return None
-                # Synthesize a one-attachment set so the rest of the pipeline
-                # works.  vault auto-attach is *not* re-tried here because the
-                # primary acquisition path already failed for it.
-                kind = await self.db.resolve_workspace_kind(
-                    task.project_id, "project-repo"
-                )
-                attachment_set = WorkspaceAttachmentSet(
-                    attachments=[
-                        WorkspaceAttachment(
-                            requirement=ResolvedRequirement(
-                                kind_id="project-repo", position=0,
-                            ),
-                            workspace=fallback_ws,
-                            kind=kind,
-                        ),
-                    ],
-                )
-            else:
-                return None
+            attachment_set = await acquire_for_task(
+                self.db, task, agent.id, worktrees_enabled=worktrees_enabled
+            )
+        except AcquisitionFailed:
+            return None
 
         # Stash the attachment set so Phase 7 (runtime integration) can
         # consume it without re-acquiring.
@@ -120,6 +135,13 @@ class WorkspaceMixin:
 
         ws = primary.workspace
         workspace = ws.workspace_path
+
+        if worktrees_enabled and ws.is_slot:
+            # Worktree mode replaces the whole CLONE/LINK provisioning block
+            # and the branch-name computation below (worktree-execution
+            # §6.1): reset_slot_for_task owns fetch, reset, clean and branch.
+            return await self._prepare_slot_workspace(task, project, primary)
+
         is_worktree = ws.source_type == RepoSourceType.WORKTREE
 
         # Register a git mutex for branch-isolated workspaces.  This ensures
@@ -129,9 +151,13 @@ class WorkspaceMixin:
         # workspace path (for worktrees, the parent repo; otherwise the
         # workspace itself).
         if lock_mode == WorkspaceMode.BRANCH_ISOLATED:
-            base = self._get_worktree_base_path(workspace) if is_worktree else None
+            base = (
+                await self.git.aworktree_base_path(workspace) if is_worktree else None
+            )
             mutex_key = base if base else workspace
             self._git_mutex(mutex_key)  # ensure the lock exists in the dict
+            if base:
+                self._worktree_base_paths[workspace] = base
 
         # Layer 2: Filesystem sentinel — detect concurrent access that slipped
         # past the DB-level path lock (e.g. race condition, stale lock).
@@ -208,11 +234,14 @@ class WorkspaceMixin:
         # notification so operators are aware.
         try:
             if is_worktree:
-                # WORKTREE: Created by _create_branch_isolated_worktree().
-                # The worktree directory and branch already exist.
+                # Legacy WORKTREE row: a pre-existing branch-isolated worktree
+                # from before worktree-execution retired that fallback.  New
+                # ones are never created; these are drained as their tasks
+                # finish.  The base is resolved from git itself now, not from
+                # the retired ``.worktrees-<base>/`` filename convention.
                 # Fetch is automatically serialized by the GitManager lock
                 # provider — no need for explicit mutex acquisition here.
-                base_path = self._get_worktree_base_path(workspace)
+                base_path = await self.git.aworktree_base_path(workspace)
                 if base_path and await self.git.ahas_remote(base_path):
                     await self.git._arun(["fetch", "origin"], cwd=base_path)
             else:
@@ -304,119 +333,162 @@ class WorkspaceMixin:
 
         return workspace
 
-    async def _create_branch_isolated_worktree(
-        self,
-        task: Task,
-        agent,
-        project,
-    ) -> Workspace | None:
-        """Create a git worktree for branch-isolated workspace sharing.
+    async def _ensure_worktree_slots_for_task(self, task: Task, project) -> None:
+        """Lazily grow the slot pool for every worktree-mode kind the task needs.
 
-        Called when ``lock_mode=BRANCH_ISOLATED`` and no unlocked workspace
-        is available.  Finds an existing workspace locked with
-        ``BRANCH_ISOLATED``, creates a git worktree from it, registers a
-        new workspace record (``source_type=WORKTREE``), and locks it for
-        the requesting agent.
+        Design §3.1: slots are created on demand, up to the project's agent
+        cap.  Growth is **one slot per dispatch** when nothing is free — a
+        cap-4 project reaching four slots takes four dispatches, which is the
+        same ramp the agents themselves take, and avoids paying four
+        ``worktree add`` plus four ``worktree_setup`` runs in one tick.
 
-        The worktree path convention is::
-
-            <parent_dir>/.worktrees-<base_name>/<branch-slug>/
-
-        where ``base_name`` is the basename of the base workspace and
-        ``branch-slug`` is derived from the task ID and title.
-
-        Returns the locked worktree workspace, or ``None`` if no shareable
-        base workspace was found.
+        Failures here are never fatal: acquisition simply finds nothing free
+        and the task takes the existing no-workspace PAUSED backoff.
         """
-        from src.workspace_names import generate_workspace_id
+        from src.orchestrator.workspace_attachments import effective_requirements
 
-        base_ws = await self.db.find_branch_isolated_base(task.project_id)
-        if not base_ws:
-            return None
+        cap = 1
+        if project is not None:
+            cap = max(1, getattr(project, "max_concurrent_agents", 1) or 1)
 
-        branch_name = GitManager.make_branch_name(task.id, task.title)
-        # Derive a filesystem-safe slug for the worktree directory
-        slug = GitManager.slugify(f"{task.id}-{task.title}")
-        base_dir = os.path.dirname(base_ws.workspace_path)
-        base_name = os.path.basename(base_ws.workspace_path)
-        worktree_path = os.path.join(base_dir, f".worktrees-{base_name}", slug)
+        seen: set[str] = set()
+        for req in await effective_requirements(self.db, task):
+            if req.kind_id in seen:
+                continue
+            seen.add(req.kind_id)
+
+            kind = await self.db.resolve_workspace_kind(task.project_id, req.kind_id)
+            if kind is None or not kind.is_git_repo or kind.mode != KIND_MODE_WORKTREE:
+                continue
+
+            base = await self.db.find_worktree_base(task.project_id, kind.id)
+            if base is None:
+                # No clone to hang worktrees off yet.  Provisioning the base
+                # itself stays the operator's job (spec §7.3).
+                logger.debug(
+                    "No base workspace for worktree-mode kind %s in project %s",
+                    kind.id,
+                    task.project_id,
+                )
+                continue
+
+            slots = await self.db.list_slots_for_base(base.id)
+            self._register_slot_bases(slots, base.workspace_path)
+
+            in_cap = [s for s in slots if (s.slot_index or 0) < cap]
+            free = [s for s in in_cap if s.locked_by_agent_id is None]
+            if free or len(in_cap) >= cap:
+                continue  # something is acquirable, or we are already at cap
+
+            try:
+                grown = await self._worktree_slots().ensure_slots(
+                    project, base, kind, min(cap, len(in_cap) + 1)
+                )
+                self._register_slot_bases(grown, base.workspace_path)
+            except Exception as e:
+                logger.warning(
+                    "Could not provision a worktree slot for kind %s in %s: %s",
+                    kind.id,
+                    task.project_id,
+                    e,
+                )
+
+    def _register_slot_bases(self, slots, base_path: str) -> None:
+        """Record ``slot_path -> base_path`` for the sync git-lock resolver.
+
+        Replaces the retired ``.worktrees-<base>/`` path parsing
+        (worktree-execution §6.2): the mapping is now data, read from slot
+        rows, not a filename convention.
+        """
+        for slot in slots:
+            self._worktree_base_paths[slot.workspace_path] = base_path
+        self._git_mutex(base_path)  # ensure the lock exists for the resolver
+
+    async def _prepare_slot_workspace(self, task: Task, project, attachment) -> str | None:
+        """Prepare an acquired slot worktree for *task*.  Returns its path.
+
+        Worktree-execution §3.2.  Everything the legacy path did with
+        sentinels, branch naming and clone/link provisioning is owned by
+        ``reset_slot_for_task`` instead:
+
+        * no ``.agent-queue-lock`` file — the DB lock plus the slot's own
+          ``.aq-worktree.json`` are the record (design §2.5);
+        * no plan-file cleanup — the reset already produced a pristine tree,
+          and the legacy cleanup ends by checking out the default branch,
+          which would take the slot straight back off its task branch (and
+          fails anyway when the base has that branch checked out).
+        """
+        ws = attachment.workspace
+        slot_dir = ws.workspace_path
+
+        base = (
+            await self.db.get_workspace(ws.base_workspace_id)
+            if ws.base_workspace_id
+            else None
+        )
+        if base is not None:
+            self._register_slot_bases([ws], base.workspace_path)
+
+        # Plan subtasks accumulate onto their parent's branch so the whole
+        # plan lands as one PR — that maps to the continuation/resume path
+        # rather than a fresh branch (worktree-execution §6.1).
+        resume_branch = None
+        if task.is_plan_subtask and task.parent_task_id:
+            parent = await self.db.get_task(task.parent_task_id)
+            if parent is not None and parent.branch_name:
+                resume_branch = parent.branch_name
 
         try:
-            # Serialize worktree creation via the git mutex to prevent
-            # concurrent modifications to the shared .git/worktrees/ dir.
-            async with self._git_mutex(base_ws.workspace_path):
-                await self.git.acreate_worktree(base_ws.workspace_path, worktree_path, branch_name)
-        except GitError as e:
-            logger.error(
-                "Failed to create worktree for task %s from %s: %s",
-                task.id,
-                base_ws.workspace_path,
-                e,
+            branch_name = await self._worktree_slots().reset_slot_for_task(
+                ws,
+                task,
+                resume_branch=resume_branch,
+                kind=attachment.kind,
             )
+        except Exception as e:
+            logger.error(
+                "Worktree slot reset failed for task %s in %s: %s", task.id, slot_dir, e
+            )
+            await self._emit_text_notify(
+                f"**Git Error:** Task `{task.id}` — worktree slot setup failed: {e}\n"
+                f"Slot released. Task will retry when a slot is available.",
+                project_id=task.project_id,
+            )
+            await self._release_workspace_and_cleanup(ws)
             return None
 
-        # Register a workspace record for the worktree and lock it.
-        ws_id = await generate_workspace_id(self.db)
-        worktree_ws = Workspace(
-            id=ws_id,
-            project_id=task.project_id,
-            workspace_path=worktree_path,
-            source_type=RepoSourceType.WORKTREE,
-            name=f"worktree:{base_ws.id}",
-        )
-        await self.db.create_workspace(worktree_ws)
-        ws = await self.db.acquire_workspace(
-            task.project_id,
-            agent.id,
-            task.id,
-            preferred_workspace_id=ws_id,
-            lock_mode=WorkspaceMode.BRANCH_ISOLATED,
-        )
-
-        if ws:
-            logger.info(
-                "Created branch-isolated worktree %s for task %s (base: %s)",
-                worktree_path,
-                task.id,
-                base_ws.id,
-            )
-        return ws
-
-    @staticmethod
-    def _get_worktree_base_path(worktree_path: str) -> str | None:
-        """Derive the base workspace path from a worktree path.
-
-        Worktree paths follow the convention::
-
-            <parent_dir>/.worktrees-<base_name>/<slug>/
-
-        Returns the base workspace path, or ``None`` if the path doesn't
-        match the convention.
-        """
-        parent = os.path.dirname(worktree_path.rstrip("/"))
-        worktrees_dir = os.path.basename(parent)
-        if worktrees_dir.startswith(".worktrees-"):
-            base_name = worktrees_dir[len(".worktrees-") :]
-            base_dir = os.path.dirname(parent)
-            return os.path.join(base_dir, base_name)
-        return None
+        await self.db.update_task(task.id, branch_name=branch_name)
+        return slot_dir
 
     async def _release_workspace_and_cleanup(self, ws: Workspace) -> None:
-        """Release a workspace lock and clean up worktrees if applicable.
+        """Release a workspace lock, cleaning up *legacy* worktrees only.
 
-        For regular workspaces, this just releases the DB lock.
-        For WORKTREE workspaces, it also:
-        - Removes the git worktree from the base repo
-        - Deletes the dynamically created workspace record
+        * **Slot rows** are unlocked and nothing else (worktree-execution
+          §6.1).  A slot outlives every task that uses it — the branch, not
+          the worktree, is the durable artifact — and only
+          ``WorktreeSlotManager.reap_slot`` (phase 4) ever deletes one.
+        * **Legacy branch-isolated worktree rows** keep the old behavior:
+          remove the git worktree and delete the dynamically created record.
+        * Everything else just releases the DB lock.
         """
+        if ws.is_slot:
+            await self.db.release_workspace(ws.id)
+            return
         if ws.source_type == RepoSourceType.WORKTREE:
             await self._cleanup_worktree_workspace(ws)
         else:
             await self.db.release_workspace(ws.id)
 
     async def _cleanup_worktree_workspace(self, ws: Workspace) -> None:
-        """Remove a git worktree and delete its workspace record."""
-        base_path = self._get_worktree_base_path(ws.workspace_path)
+        """Remove a *legacy* git worktree and delete its workspace record.
+
+        Reached only by pre-worktree-execution branch-isolated rows; slot
+        rows short-circuit in :meth:`_release_workspace_and_cleanup`.
+        Retired with them in phase 6.
+        """
+        base_path = self._worktree_base_paths.get(
+            ws.workspace_path
+        ) or await self.git.aworktree_base_path(ws.workspace_path)
         if base_path:
             try:
                 # Serialize worktree removal via the git mutex to prevent
@@ -440,9 +512,10 @@ class WorkspaceMixin:
         """Release all workspace locks for a task, cleaning up worktrees.
 
         Wraps ``db.release_workspaces_for_task()`` with worktree awareness.
-        For tasks that used branch-isolated worktrees, this removes the
-        git worktree and deletes the dynamically created workspace record
-        before releasing locks.  Regular workspaces are released normally.
+        For tasks that used *legacy* branch-isolated worktrees, this removes
+        the git worktree and deletes the dynamically created workspace record
+        before releasing locks.  Slot worktrees and regular workspaces are
+        released normally — never deleted.
         Also discards any cached :class:`WorkspaceAttachmentSet` for the task.
         """
         # Find all workspaces locked by this task
@@ -450,7 +523,11 @@ class WorkspaceMixin:
         worktree_ws = [
             ws
             for ws in all_ws
-            if ws.locked_by_task_id == task_id and ws.source_type == RepoSourceType.WORKTREE
+            if ws.locked_by_task_id == task_id
+            and ws.source_type == RepoSourceType.WORKTREE
+            # Slots survive their tasks (worktree-execution §3.4); they are
+            # released by the bulk update below like any other row.
+            and not ws.is_slot
         ]
 
         # Clean up worktree workspaces first (remove git worktree + delete record)
