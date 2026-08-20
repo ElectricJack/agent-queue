@@ -5,7 +5,17 @@ AgentQueueBot extends ``commands.Bot`` with:
   through natural language
 - Per-project channel routing so each project's notifications land in the right place
 - Thread-based task output streaming (one Discord thread per agent execution)
-- Message history with compaction (older messages summarized, recent kept verbatim)
+
+This is the interim M0 in-process bot (messaging rework
+docs/specs/design/messaging-rework.md §4.6 / implementation plan §3.2).  It
+keeps channel routing, task-thread streaming, gate/approval views (see
+``notification_handler.py`` / ``notifications.py``), project-channel chat,
+and a minimal set of read-only slash commands (``slash_commands.py``).
+Notes threads, channel summarization, the local message-history buffer, and
+the chat-observer/suggestion wiring were removed — replies are stateless
+per-message (no multi-turn history is threaded through ``Supervisor.chat()``
+from here).  This whole module is superseded by the out-of-process
+``aq-discord`` package at M2-M4.
 
 Key design decision: the bot maintains in-memory channel caches
 (``_project_channels``, ``_channel_to_project``) for O(1) message routing.
@@ -14,8 +24,8 @@ and kept in sync at runtime when channels are created, reassigned, or deleted.
 
 Message flow::
 
-    Discord message -> on_message routing -> _build_message_history
-    -> Supervisor.chat() -> tool-use loop -> _send_long_message -> Discord reply
+    Discord message -> on_message routing -> Supervisor.chat()
+    -> tool-use loop -> _send_long_message -> Discord reply
 
 See specs/discord/discord.md for the full specification.
 """
@@ -23,13 +33,8 @@ See specs/discord/discord.md for the full specification.
 from __future__ import annotations
 
 import asyncio
-import collections
-import hashlib
-import json
 import logging
 import os
-import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -43,29 +48,8 @@ from src.config import AppConfig
 from src.discord.notifications import format_server_started, format_server_started_embed
 from src.models import TaskStatus
 from src.orchestrator import Orchestrator
-from src.chat_observer import ChatObserver
 
 logger = logging.getLogger(__name__)
-
-MAX_HISTORY_MESSAGES = 50  # Max messages to fetch from Discord
-COMPACT_THRESHOLD = 20  # Compact older messages beyond this count
-RECENT_KEEP = 14  # Keep this many recent messages as-is after compaction
-BUFFER_IDLE_TIMEOUT = 3600  # Drop idle channel buffers after 1 hour
-
-
-@dataclass(slots=True)
-class CachedMessage:
-    """Lightweight representation of a Discord message for local buffering."""
-
-    id: int  # Discord snowflake (0 for synthetic summary messages)
-    author_name: str  # display_name or "AgentQueue"
-    is_bot: bool
-    content: str
-    created_at: float  # UTC timestamp
-    attachment_paths: list[str] | None = None  # local paths to downloaded attachments
-    reference_id: int | None = None  # message ID this is replying to (Discord reply)
-    reference_author: str | None = None  # author of the referenced message
-    reference_snippet: str | None = None  # full content of the referenced message
 
 
 class AgentQueueBot(commands.Bot):
@@ -108,27 +92,11 @@ class AgentQueueBot(commands.Bot):
         # Reverse lookup: channel_id -> project_id
         self._channel_to_project: dict[int, str] = {}
         self._processed_messages: set[int] = set()
-        self._channel_summaries: dict[
-            int, tuple[int, str]
-        ] = {}  # channel_id -> (up_to_message_id, summary)
         self._channel_locks: dict[
             int, asyncio.Lock
         ] = {}  # prevent concurrent LLM calls per channel
-        # Local message buffer — caches messages as they arrive via on_message
-        self._channel_buffers: dict[int, collections.deque[CachedMessage]] = {}
-        self._buffer_last_access: dict[int, float] = {}  # channel_id -> last access timestamp
-        self._summarization_tasks: dict[int, asyncio.Task] = {}  # channel_id -> background task
         self._boot_time: float | None = None
-        self._notes_threads: dict[int, str] = {}  # thread_id -> project_id
-        self._notes_toc_messages: dict[int, int] = {}  # thread_id -> toc_message_id
-        self._notes_threads_path = os.path.join(
-            os.path.dirname(config.database_path), "notes_threads.json"
-        )
-        self._load_notes_threads_sync()
         self._guild: discord.Guild | None = None
-        # Notes auto-refresh tracking
-        self._note_viewers: dict[int, dict[str, int]] = {}  # thread_id -> {filename: msg_id}
-        self._note_refresh_timers: dict[str, asyncio.TimerHandle] = {}  # debounce key -> timer
         # Task thread tracking — maps thread_id ↔ task_id so the bot can
         # detect when a user types into a task thread and route the message
         # appropriately (reopen completed tasks, acknowledge in-progress ones).
@@ -139,170 +107,10 @@ class AgentQueueBot(commands.Bot):
         self._task_threads: dict[int, str] = {}  # thread_id -> task_id
         self._task_thread_objects: dict[str, discord.Thread] = {}  # task_id -> Thread
         self._task_root_messages: dict[str, discord.Message] = {}  # task_id -> root msg
-        # Wire up the note-written callback
-        self.agent.handler.on_note_written = self._handle_note_written
         # RuleManager removed (playbooks spec §13 Phase 3).
-        # Chat observer for passive channel observation (Phase 5)
-        self._chat_observer: ChatObserver | None = None
-        if config.supervisor.observation.enabled:
-            self._chat_observer = ChatObserver(
-                config=config.supervisor.observation,
-                on_batch_ready=self._process_observation_batch,
-            )
-
-    def _load_notes_threads_sync(self) -> None:
-        """Synchronous load — safe for use in __init__ (before the event loop)."""
-        try:
-            if os.path.isfile(self._notes_threads_path):
-                with open(self._notes_threads_path) as f:
-                    raw = json.load(f)
-                # Keys are stored as strings in JSON; convert back to int
-                self._notes_threads = {int(k): v for k, v in raw.get("threads", raw).items()}
-                # Load TOC message IDs if present
-                toc = raw.get("toc_messages", {})
-                self._notes_toc_messages = {int(k): int(v) for k, v in toc.items()}
-        except Exception as e:
-            logger.warning("Could not load notes threads: %s", e)
-
-    async def _load_notes_threads(self) -> None:
-        """Non-blocking load — offloads file I/O to a thread."""
-        await asyncio.to_thread(self._load_notes_threads_sync)
-
-    def _save_notes_threads_sync(self) -> None:
-        """Synchronous save — used from sync callback paths (e.g. clear_project_channels)."""
-        try:
-            data = {
-                "threads": {str(k): v for k, v in self._notes_threads.items()},
-                "toc_messages": {str(k): v for k, v in self._notes_toc_messages.items()},
-            }
-            with open(self._notes_threads_path, "w") as f:
-                json.dump(data, f)
-        except Exception as e:
-            logger.warning("Could not save notes threads: %s", e)
-
-    async def _save_notes_threads(self) -> None:
-        """Non-blocking save — offloads file I/O to a thread."""
-        await asyncio.to_thread(self._save_notes_threads_sync)
-
-    async def register_notes_thread(self, thread_id: int, project_id: str) -> None:
-        self._notes_threads[thread_id] = project_id
-        await self._save_notes_threads()
-
-    async def _handle_note_written(
-        self,
-        project_id: str,
-        note_filename: str,
-        note_path: str,
-    ) -> None:
-        """Auto-refresh viewed notes when a note is written or appended.
-
-        Uses a 2-second debounce to avoid Discord rate limits when multiple
-        writes happen in quick succession.
-        """
-        debounce_key = f"{project_id}:{note_filename}"
-
-        # Cancel previous timer for this note
-        old_timer = self._note_refresh_timers.pop(debounce_key, None)
-        if old_timer:
-            old_timer.cancel()
-
-        async def _do_refresh():
-            self._note_refresh_timers.pop(debounce_key, None)
-            # Find all notes threads for this project
-            for thread_id, pid in list(self._notes_threads.items()):
-                if pid != project_id:
-                    continue
-                # Refresh viewed note content if being viewed
-                viewers = self._note_viewers.get(thread_id, {})
-                if note_filename in viewers:
-                    try:
-                        thread = self.get_channel(thread_id)
-                        if thread is None:
-                            continue
-                        # Read updated content
-                        result = await self.agent.handler.execute(
-                            "read_note",
-                            {
-                                "project_id": project_id,
-                                "title": note_filename[:-3].replace("-", " ").title(),
-                            },
-                        )
-                        if "error" in result:
-                            continue
-                        # Delete old message
-                        try:
-                            old_msg = await thread.fetch_message(viewers[note_filename])
-                            await old_msg.delete()
-                        except Exception:
-                            pass
-                        # Send updated content
-                        from src.discord.commands import NoteContentView
-
-                        content = result["content"]
-                        slug = note_filename[:-3]
-                        view = NoteContentView(
-                            project_id,
-                            slug,
-                            handler=self.agent.handler,
-                            bot=self,
-                        )
-                        if len(content) <= 1900:
-                            msg = await thread.send(
-                                f"### 📄 {result['title']} *(updated)*\n```md\n{content}\n```",
-                                view=view,
-                            )
-                        else:
-                            import io as _io
-
-                            file = discord.File(
-                                fp=_io.BytesIO(content.encode("utf-8")),
-                                filename=note_filename,
-                            )
-                            preview = content[:300].rstrip()
-                            msg = await thread.send(
-                                f"### 📄 {result['title']} *(updated)*\n"
-                                f"{preview}\n\n"
-                                f"*Full content attached ({len(content):,} chars)*",
-                                file=file,
-                                view=view,
-                            )
-                        viewers[note_filename] = msg.id
-                    except Exception as e:
-                        logger.warning("Note refresh failed: %s", e)
-
-        # Schedule with 2-second debounce
-        loop = asyncio.get_event_loop()
-        handle = loop.call_later(2.0, lambda: asyncio.ensure_future(_do_refresh()))
-        self._note_refresh_timers[debounce_key] = handle
-
-    async def _reattach_notes_views(self) -> None:
-        """Reattach NotesView buttons to existing TOC messages after bot restart."""
-        from src.discord.commands import NotesView
-
-        if not self._notes_toc_messages:
-            return
-        reattached = 0
-        for thread_id, toc_msg_id in list(self._notes_toc_messages.items()):
-            project_id = self._notes_threads.get(thread_id)
-            if not project_id:
-                continue
-            try:
-                result = await self.agent.handler.execute("list_notes", {"project_id": project_id})
-                if "error" in result:
-                    continue
-                notes = result.get("notes", [])
-                view = NotesView(
-                    project_id,
-                    notes,
-                    handler=self.agent.handler,
-                    bot=self,
-                )
-                self.add_view(view, message_id=toc_msg_id)
-                reattached += 1
-            except Exception as e:
-                logger.warning("Could not reattach notes view for thread %d: %s", thread_id, e)
-        if reattached:
-            logger.info("Reattached %d notes view(s)", reattached)
+        # Notes threads, chat-observer/suggestion wiring, and the local
+        # message-history buffer + summarization were removed in the M0
+        # messaging strip (docs/specs/design/messaging-rework.md §4.6).
 
     def update_project_channel(self, project_id: str, channel: discord.TextChannel) -> None:
         """Update the cached channel for a project at runtime.
@@ -325,8 +133,7 @@ class AgentQueueBot(commands.Bot):
         Called after project deletion to keep the in-memory cache in sync
         with the database and avoid stale routing entries.  Cleans up:
         - ``_project_channels``
-        - ``_notes_threads`` entries that map to the deleted project
-        - ``_channel_summaries`` and ``_channel_locks`` for the project's channels
+        - ``_channel_locks`` for the project's channel
         """
         # Collect Discord channel IDs before removing them from the cache so we
         # can clean up secondary caches keyed by channel ID.
@@ -336,24 +143,9 @@ class AgentQueueBot(commands.Bot):
             stale_channel_ids.add(ch.id)
             self._channel_to_project.pop(ch.id, None)
 
-        # Remove notes-thread mappings that point to the deleted project.
-        # These are also persisted to disk, so we re-save afterwards.
-        stale_thread_ids = [tid for tid, pid in self._notes_threads.items() if pid == project_id]
-        if stale_thread_ids:
-            for tid in stale_thread_ids:
-                stale_channel_ids.add(tid)
-                del self._notes_threads[tid]
-            self._save_notes_threads_sync()
-
-        # Purge channel-level caches keyed by Discord channel/thread ID.
+        # Purge channel-level caches keyed by Discord channel ID.
         for cid in stale_channel_ids:
-            self._channel_summaries.pop(cid, None)
             self._channel_locks.pop(cid, None)
-            self._channel_buffers.pop(cid, None)
-            self._buffer_last_access.pop(cid, None)
-            task = self._summarization_tasks.pop(cid, None)
-            if task and not task.done():
-                task.cancel()
 
     async def _on_project_created(self, project_id: str, auto_create_channels: bool) -> None:
         """Auto-create a Discord channel for a newly created project.
@@ -432,7 +224,7 @@ class AgentQueueBot(commands.Bot):
         return str(user_id) in allowed
 
     async def setup_hook(self) -> None:
-        from src.discord.commands import setup_commands
+        from src.discord.slash_commands import setup_commands
 
         setup_commands(self)
 
@@ -555,11 +347,6 @@ class AgentQueueBot(commands.Bot):
                         self.orchestrator.set_command_handler(self.agent.handler)
                         self.orchestrator.set_supervisor(self.agent)
 
-                    # Start ChatObserver for passive channel observation
-                    if self._chat_observer and self._chat_observer.enabled:
-                        self._chat_observer.set_project_profiles(self._build_project_profiles())
-                        await self._chat_observer.start()
-
         # Initialize LLM client via Supervisor
         try:
             if self.agent.initialize():
@@ -571,14 +358,8 @@ class AgentQueueBot(commands.Bot):
         except Exception as e:
             logger.error("Could not initialize LLM client: %s", e)
 
-        # Reattach persistent NotesView buttons on existing messages
-        await self._reattach_notes_views()
-
         # RuleManager removed (playbooks spec §13 Phase 3).
         # Playbook compilation is handled by the VaultWatcher.
-
-        # Start periodic buffer cleanup (evicts idle channel buffers)
-        asyncio.create_task(self._periodic_buffer_cleanup())
 
         # Notify all transports that the server is back online via the
         # event bus.  The Discord notification handler subscribes to this
@@ -647,8 +428,7 @@ class AgentQueueBot(commands.Bot):
     async def _delete_thinking_msg(self, msg: discord.Message | None) -> None:
         """Silently delete a thinking indicator message.
 
-        Also removes the message from ``_thinking_msg_ids`` and the channel
-        buffer so it never appears in subsequent conversation history.
+        Also removes the message from ``_thinking_msg_ids``.
 
         Fail-open: if the message was already deleted or any Discord error
         occurs, we swallow the exception so the main response flow is never
@@ -657,13 +437,6 @@ class AgentQueueBot(commands.Bot):
         if msg is None:
             return
         self._thinking_msg_ids.discard(msg.id)
-        # Remove from channel buffer so it won't appear in history
-        buf = self._channel_buffers.get(msg.channel.id)
-        if buf:
-            try:
-                buf[:] = [m for m in buf if m.id != msg.id]
-            except Exception:
-                pass
         try:
             await msg.delete()
         except discord.NotFound:
@@ -895,402 +668,6 @@ class AgentQueueBot(commands.Bot):
             else:
                 return await self._send_long_message(channel, text)
         return None
-
-    async def _process_observation_batch(self, channel_id: int, messages: list[dict]) -> None:
-        """Process a batch of observations from the ChatObserver.
-
-        This is the callback invoked when the observer has a ready batch.
-        It calls the Supervisor's observe() method for LLM analysis and
-        routes the result to the appropriate handler.
-        """
-        if not messages:
-            return
-
-        # Extract project_id from the first message
-        project_id = messages[0].get("project_id")
-        if not project_id:
-            return
-
-        try:
-            # Stage 2: LLM analysis via Supervisor
-            result = await self.agent.observe(messages=messages, project_id=project_id)
-            action = result.get("action", "ignore")
-
-            if action == "ignore":
-                pass  # Nothing to do
-
-            elif action == "memory":
-                # Store as project memory
-                content = result.get("content", "")
-                await self._store_observation_memory(project_id, content)
-
-            elif action == "suggest":
-                # Post suggestion to channel.  Forward the confidence
-                # components + derived product so the Phase-4 gate stack
-                # in _post_observation_suggestion can act on real LLM
-                # scores rather than a hardcoded value.
-                suggestion_type = result.get("suggestion_type", "context")
-                text = result.get("content", "")
-                task_title = result.get("task_title")
-                await self._post_observation_suggestion(
-                    channel_id=channel_id,
-                    project_id=project_id,
-                    suggestion={
-                        "suggestion_type": suggestion_type,
-                        "content": text,
-                        "task_title": task_title,
-                        "confidence": result.get("confidence"),
-                        "intent_confidence": result.get("intent_confidence"),
-                        "novelty": result.get("novelty"),
-                        "actionability": result.get("actionability"),
-                    },
-                )
-
-        except Exception as e:
-            logger.error("Error processing observation batch: %s", e, exc_info=True)
-
-    @staticmethod
-    def _compute_suggestion_hash(
-        project_id: str, suggestion_type: str, text: str
-    ) -> str:
-        """Return a deterministic SHA-256 hex digest for a suggestion.
-
-        Inputs are normalized (lowercased, whitespace collapsed) so cosmetic
-        differences in the LLM's wording — extra spaces, capitalization,
-        embedded tabs/newlines — still hash to the same value. The
-        ``project_id`` is included so suggestions stay scoped per project.
-
-        The components are joined with NUL bytes so two distinct triples
-        cannot accidentally collide via concatenation (e.g. type ``"a"`` +
-        text ``"bc"`` vs type ``"ab"`` + text ``"c"``).
-        """
-        norm_type = " ".join((suggestion_type or "").lower().split())
-        norm_text = " ".join((text or "").lower().split())
-        norm_project = " ".join((project_id or "").lower().split())
-        payload = b"\x00".join(
-            (norm_project.encode("utf-8"), norm_type.encode("utf-8"), norm_text.encode("utf-8"))
-        )
-        return hashlib.sha256(payload).hexdigest()
-
-    async def _post_observation_suggestion(
-        self, channel_id: int, project_id: str, suggestion: dict
-    ) -> None:
-        """Post an observation suggestion as a rich embed with Accept/Dismiss buttons.
-
-        Phase 4 — confidence gate: the suggestion is suppressed (no
-        Discord post, no DB row) when its computed
-        ``confidence = intent_confidence * novelty * actionability``
-        falls below ``config.chat_analyzer.min_confidence``.  The default
-        threshold of ``0.6`` gates out the long tail of vague,
-        duplicative, or low-intent classifications.  Suppressions emit a
-        structured log line with ``extra={"gate": "confidence", ...}`` so
-        the Phase-8 metrics command can count rejections per gate.
-
-        Phase 5 — in-flight active task gate: when the project has at
-        least one ``IN_PROGRESS`` task, the bar is raised from
-        ``min_confidence`` to ``config.chat_analyzer.in_flight_min_confidence``
-        (default ``0.85``).  Rationale: when the channel header shows
-        ``Stop Task``, the user is watching execution, not shopping for
-        new work.  We do not silence completely — a high-signal warning
-        ("two stuck tasks older than 30 min") may still be worth posting
-        — but the threshold is substantially higher.  Suppressions are
-        tagged ``gate="in_flight_active_task"``.
-
-        Phase 6 — dismiss cooldown gate: when the most recent dismissal
-        in this ``(project_id, channel_id)`` is within
-        ``config.chat_analyzer.dismiss_cooldown_seconds`` (default
-        ``600``) of "now", the suggestion is suppressed.  A user
-        dismissal is the strongest negative signal we have — honor it
-        by going quiet for that channel for a window. Setting the
-        config value to ``0`` disables the gate entirely.
-        Suppressions are tagged ``gate="dismiss_cooldown"``.
-        """
-        from src.discord.views import SuggestionView, format_suggestion_embed
-
-        channel = self.get_channel(channel_id)
-        if not channel:
-            return
-
-        suggestion_type = suggestion.get("suggestion_type", "context")
-        text = suggestion.get("content", "")
-        task_title = suggestion.get("task_title")
-
-        # Confidence gate. Pull the threshold straight from config so a
-        # hot-reload retunes the gate without a daemon restart. Suggestions
-        # without a confidence field (legacy or short-circuited) default to
-        # 1.0 — we treat unknown confidence as "trust it" rather than
-        # silently muting the legacy path.
-        threshold = getattr(
-            getattr(self.config, "chat_analyzer", None), "min_confidence", 0.6
-        )
-        confidence = float(suggestion.get("confidence", 1.0))
-
-        # The hash is needed both for the suppression footprint (Phase 8)
-        # and for the regular DB insert further down. Compute it once.
-        suggestion_hash = AgentQueueBot._compute_suggestion_hash(
-            project_id=project_id,
-            suggestion_type=suggestion_type,
-            text=text,
-        )
-
-        if confidence < threshold:
-            logger.info(
-                "suggestion suppressed: confidence below threshold",
-                extra={
-                    "gate": "confidence",
-                    "project_id": project_id,
-                    "channel_id": channel_id,
-                    "confidence": confidence,
-                    "threshold": threshold,
-                    "suggestion_type": suggestion_type,
-                },
-            )
-            # Phase 8: leave a footprint so get_chat_analyzer_metrics can
-            # count "how often did the confidence gate fire?" without
-            # scanning logs. We swallow DB errors — observability must
-            # never crash the suggestion pipeline.
-            if self.orchestrator.db:
-                try:
-                    await self.orchestrator.db.create_suppressed_chat_analyzer_suggestion(
-                        project_id=project_id,
-                        channel_id=channel_id,
-                        suggestion_type=suggestion_type,
-                        suggestion_text=text,
-                        suggestion_hash=suggestion_hash,
-                        suppressed_by="confidence",
-                    )
-                except Exception as e:
-                    logger.error("Error recording suppressed suggestion: %s", e)
-            return
-
-        # Phase 5 — in-flight active task escalates the threshold.
-        #
-        # Only consult the orchestrator when the suggestion sits in the
-        # band ``[min_confidence, in_flight_min_confidence)`` — i.e. it
-        # would post under the base gate but might fail the elevated
-        # bar. Anything already at or above ``in_flight_min_confidence``
-        # would clear both gates regardless, so we skip the round-trip
-        # to the handler. This keeps the gate cheap on the happy path
-        # (no DB read at all when the LLM is highly confident) while
-        # still firing when it matters.
-        in_flight_threshold = getattr(
-            getattr(self.config, "chat_analyzer", None),
-            "in_flight_min_confidence",
-            0.85,
-        )
-        if confidence < in_flight_threshold:
-            try:
-                lookup = await self.agent.handler.execute(
-                    "list_tasks",
-                    {"project_id": project_id, "status": "IN_PROGRESS"},
-                )
-                tasks = (
-                    lookup.get("tasks", [])
-                    if isinstance(lookup, dict)
-                    else []
-                )
-                has_active_task = bool(tasks)
-            except Exception as e:
-                # Treat lookup failure as "no active tasks" — observability
-                # never blocks delivery. The base gate has already cleared
-                # the suggestion; degrading to the base behaviour is the
-                # safe fallback.
-                logger.warning(
-                    "in-flight task lookup failed: %s",
-                    e,
-                    extra={"project_id": project_id, "channel_id": channel_id},
-                )
-                has_active_task = False
-
-            if has_active_task:
-                logger.info(
-                    "suggestion suppressed: active task in flight",
-                    extra={
-                        "gate": "in_flight_active_task",
-                        "project_id": project_id,
-                        "channel_id": channel_id,
-                        "confidence": confidence,
-                        "threshold": in_flight_threshold,
-                        "suggestion_type": suggestion_type,
-                    },
-                )
-                # Phase 8 footprint — same shape as the other gate
-                # branches. Best-effort; observability never blocks the
-                # suppression decision.
-                if self.orchestrator.db:
-                    try:
-                        await self.orchestrator.db.create_suppressed_chat_analyzer_suggestion(
-                            project_id=project_id,
-                            channel_id=channel_id,
-                            suggestion_type=suggestion_type,
-                            suggestion_text=text,
-                            suggestion_hash=suggestion_hash,
-                            suppressed_by="in_flight_active_task",
-                        )
-                    except Exception as e:
-                        logger.error(
-                            "Error recording suppressed suggestion: %s", e
-                        )
-                return
-
-        # Phase 2 — hash-dedup gate. The DB already has the read-side method
-        # (`get_suggestion_hash_exists`) but it has never been called from
-        # the bot. Now that Phase 1 reliably writes the hash on every insert,
-        # we use it here to short-circuit duplicate suggestions before they
-        # reach Discord. Scope is `(project_id, suggestion_hash)` — exactly
-        # how the DB method indexes — so a duplicate in one project does not
-        # silence a fresh suggestion in another. Errors are swallowed: a
-        # transient DB failure must not crash the suggestion pipeline (worst
-        # case: the duplicate posts, which is the pre-Phase-2 behavior).
-        if self.orchestrator.db:
-            try:
-                already_seen = await self.orchestrator.db.get_suggestion_hash_exists(
-                    project_id=project_id,
-                    suggestion_hash=suggestion_hash,
-                )
-            except Exception as e:
-                logger.error("Error checking suggestion dedup: %s", e)
-                already_seen = False
-
-            if already_seen:
-                logger.info(
-                    "suggestion suppressed: duplicate",
-                    extra={
-                        "gate": "dedup",
-                        "project_id": project_id,
-                        "channel_id": channel_id,
-                        "suggestion_hash": suggestion_hash,
-                        "suggestion_type": suggestion_type,
-                    },
-                )
-                # Phase 8 footprint — same shape as the confidence-gate
-                # branch above. Best-effort; observability never blocks
-                # the suppression decision.
-                try:
-                    await self.orchestrator.db.create_suppressed_chat_analyzer_suggestion(
-                        project_id=project_id,
-                        channel_id=channel_id,
-                        suggestion_type=suggestion_type,
-                        suggestion_text=text,
-                        suggestion_hash=suggestion_hash,
-                        suppressed_by="dedup",
-                    )
-                except Exception as e:
-                    logger.error("Error recording suppressed suggestion: %s", e)
-                return
-
-        # Phase 6 — dismiss-cooldown gate. A user dismissal is the
-        # strongest negative signal we have for "this channel doesn't
-        # want to be interrupted right now." If the most recent
-        # ``resolved_at`` for a dismissed suggestion in this
-        # ``(project_id, channel_id)`` is within ``dismiss_cooldown_seconds``
-        # of "now", suppress every suggestion regardless of content
-        # (this is the broadest mute we have — content-equality dedup
-        # already ran above; this gate is channel-wide). Setting the
-        # config value to ``0`` disables the gate entirely so operators
-        # can opt out without touching other gates.
-        cooldown_seconds = int(
-            getattr(
-                getattr(self.config, "chat_analyzer", None),
-                "dismiss_cooldown_seconds",
-                600,
-            )
-        )
-        if cooldown_seconds > 0 and self.orchestrator.db:
-            try:
-                last_dismiss = await self.orchestrator.db.get_last_dismiss_time(
-                    project_id=project_id,
-                    channel_id=channel_id,
-                )
-            except Exception as e:
-                # Defensive: a transient DB error must not crash the
-                # suggestion pipeline. Degrade to "no recent dismissal"
-                # — the worst case is a single suggestion that should
-                # have been muted slipping through, which is far better
-                # than the whole pipeline crashing.
-                logger.error("Error checking dismiss cooldown: %s", e)
-                last_dismiss = None
-
-            if last_dismiss is not None:
-                age = time.time() - float(last_dismiss)
-                if age < cooldown_seconds:
-                    logger.info(
-                        "suggestion suppressed: dismiss cooldown",
-                        extra={
-                            "gate": "dismiss_cooldown",
-                            "project_id": project_id,
-                            "channel_id": channel_id,
-                            "cooldown_seconds": cooldown_seconds,
-                            "seconds_since_last_dismiss": age,
-                            "suggestion_type": suggestion_type,
-                        },
-                    )
-                    # Phase 8 footprint — same shape as the other
-                    # gate-suppression branches. Best-effort; the
-                    # decision to suppress has already been made and
-                    # observability must not block it.
-                    try:
-                        await self.orchestrator.db.create_suppressed_chat_analyzer_suggestion(
-                            project_id=project_id,
-                            channel_id=channel_id,
-                            suggestion_type=suggestion_type,
-                            suggestion_text=text,
-                            suggestion_hash=suggestion_hash,
-                            suppressed_by="dismiss_cooldown",
-                        )
-                    except Exception as e:
-                        logger.error(
-                            "Error recording suppressed suggestion: %s", e
-                        )
-                    return
-
-        # Create database record if DB is available
-        suggestion_id = None
-        if self.orchestrator.db:
-            try:
-                suggestion_id = await self.orchestrator.db.create_chat_analyzer_suggestion(
-                    project_id=project_id,
-                    channel_id=channel_id,
-                    suggestion_type=suggestion_type,
-                    suggestion_text=text,
-                    suggestion_hash=suggestion_hash,
-                )
-            except Exception as e:
-                logger.error("Error creating suggestion record: %s", e)
-
-        embed = format_suggestion_embed(
-            suggestion_type=suggestion_type,
-            text=text,
-            project_id=project_id,
-            confidence=confidence,
-        )
-        view = SuggestionView(
-            suggestion_id=suggestion_id or 0,
-            suggestion_type=suggestion_type,
-            suggestion_text=text,
-            project_id=project_id,
-            task_title=task_title,
-            handler=self.agent.handler,
-            db=self.orchestrator.db,
-        )
-        await channel.send(embed=embed, view=view)
-
-    async def _store_observation_memory(self, project_id: str, content: str) -> None:
-        """Store observation content in project memory.
-
-        Observation storage should be wired to MemoryPlugin's save_document.
-        """
-        # TODO: wire to MemoryPlugin save_document via event bus
-        pass
-
-    def _build_project_profiles(self) -> dict[str, set[str]]:
-        """Build keyword sets from registered projects for the ChatObserver."""
-        profiles: dict[str, set[str]] = {}
-        for channel_id, project_id in self._channel_to_project.items():
-            terms = set(project_id.replace("-", " ").replace("_", " ").lower().split())
-            terms.add(project_id.lower())
-            profiles[project_id] = terms
-        return profiles
 
     async def _create_task_thread(
         self,
@@ -1639,128 +1016,6 @@ class AgentQueueBot(commands.Bot):
 
         return paths
 
-    def _should_buffer(self, channel_id: int, message: discord.Message) -> bool:
-        """Return True if this message should be cached in the local buffer.
-
-        Buffers messages from: the global bot channel, per-project channels,
-        notes threads, and channels where the bot is mentioned.
-        """
-        if self._channel and channel_id == self._channel.id:
-            return True
-        if channel_id in self._channel_to_project:
-            return True
-        if channel_id in self._notes_threads:
-            return True
-        if self.user and self.user in message.mentions:
-            return True
-        return False
-
-    def _append_to_buffer(self, channel_id: int, msg: CachedMessage) -> None:
-        """Append a message to the channel's buffer deque.
-
-        Creates the deque on first access.  Triggers background
-        summarization when the buffer exceeds ``COMPACT_THRESHOLD``.
-        """
-        buf = self._channel_buffers.get(channel_id)
-        if buf is None:
-            buf = collections.deque(maxlen=MAX_HISTORY_MESSAGES)
-            self._channel_buffers[channel_id] = buf
-        buf.append(msg)
-        self._buffer_last_access[channel_id] = time.monotonic()
-        # Fire background summarization when buffer is getting full
-        if len(buf) > COMPACT_THRESHOLD:
-            self._maybe_trigger_summarization(channel_id)
-
-    def _find_cached_message(self, channel_id: int, message_id: int) -> CachedMessage | None:
-        """Look up a message by ID in the channel's local buffer."""
-        buf = self._channel_buffers.get(channel_id)
-        if not buf:
-            return None
-        for m in reversed(buf):  # recent messages more likely to be referenced
-            if m.id == message_id:
-                return m
-        return None
-
-    def _build_thread_context(
-        self, channel_id: int, before_msg: discord.Message, limit: int = 8,
-    ) -> str | None:
-        """Build a compact text block of recent thread messages for system prompt.
-
-        Returns a formatted string of the last ``limit`` messages before
-        ``before_msg``, or None if no recent messages exist.  Thinking
-        indicator messages are excluded.
-        """
-        buf = self._channel_buffers.get(channel_id)
-        if not buf:
-            return None
-
-        before_ts = before_msg.created_at.timestamp()
-        recent = [
-            m for m in buf
-            if m.created_at < before_ts and m.id not in self._thinking_msg_ids
-        ][-limit:]
-
-        if not recent:
-            return None
-
-        lines = []
-        for msg in recent:
-            content = msg.content
-            if len(content) > 300:
-                content = content[:297] + "..."
-            lines.append(f"[{msg.author_name}]: {content}")
-
-        return "\n".join(lines)
-
-    def _maybe_trigger_summarization(self, channel_id: int) -> None:
-        """Start a background summarization task if none is already running."""
-        existing = self._summarization_tasks.get(channel_id)
-        if existing and not existing.done():
-            return  # already running
-
-        task = asyncio.create_task(self._background_summarize(channel_id))
-
-        def _cleanup(t: asyncio.Task, cid: int = channel_id) -> None:
-            self._summarization_tasks.pop(cid, None)
-            if t.exception():
-                logger.error("Background summarization error (channel %d): %s", cid, t.exception())
-
-        task.add_done_callback(_cleanup)
-        self._summarization_tasks[channel_id] = task
-
-    async def _background_summarize(self, channel_id: int) -> None:
-        """Snapshot the buffer, summarize older messages, cache the result."""
-        buf = self._channel_buffers.get(channel_id)
-        if not buf or len(buf) <= COMPACT_THRESHOLD:
-            return
-        if not self.agent.is_ready:
-            return
-
-        # Snapshot — list() on a deque is safe (GIL-atomic read)
-        snapshot = list(buf)
-        older = snapshot[:-RECENT_KEEP]
-        if not older:
-            return
-
-        last_id = older[-1].id
-        # Skip if we already have a summary covering these messages
-        cached = self._channel_summaries.get(channel_id)
-        if cached and cached[0] >= last_id:
-            return
-
-        lines = []
-        for m in older:
-            prefix = ""
-            if m.reference_author and m.reference_snippet:
-                prefix = f'(replying to {m.reference_author}: "{m.reference_snippet[:60]}") '
-            lines.append(f"{m.author_name}: {prefix}{m.content}")
-        transcript = "\n".join(lines)
-
-        summary = await self.agent.summarize(transcript)
-        if summary:
-            # GIL-atomic dict assignment
-            self._channel_summaries[channel_id] = (last_id, summary)
-
     async def on_message(self, message: discord.Message) -> None:
         """Route incoming Discord messages to the Supervisor for LLM processing.
 
@@ -1768,102 +1023,19 @@ class AgentQueueBot(commands.Bot):
         1. Posted in the global bot channel (configured in config.yaml)
         2. Posted in a per-project channel (O(1) reverse lookup via _channel_to_project)
         3. The bot is @mentioned anywhere in the guild
-        4. Posted in a registered notes thread
 
-        For project channels and notes threads, implicit project context is
-        injected into the prompt so the LLM defaults to the right project
-        without requiring the user to specify it every time.
+        For project channels, implicit project context is injected into the
+        prompt so the LLM defaults to the right project without requiring
+        the user to specify it every time.
+
+        Each message is handled statelessly — no local conversation-history
+        buffer is kept (removed in the M0 messaging strip; see the module
+        docstring). ``Supervisor.chat()`` is called with ``history=None``.
 
         Concurrency: a per-channel asyncio.Lock serializes LLM calls to
         prevent duplicate or interleaved responses when messages arrive faster
         than the LLM can respond.
         """
-        # Download any image attachments from the message before buffering.
-        # This makes local file paths available for task creation later.
-        downloaded_paths: list[str] = []
-        if message.attachments and message.author != self.user:
-            downloaded_paths = await self._download_attachments(message)
-
-        # Buffer the message locally before any early-return guards.
-        # Bot's own messages arrive back via the gateway, so this captures
-        # both user AND bot messages for the local history cache.
-        channel_id = message.channel.id
-        if self._should_buffer(channel_id, message):
-            # Capture Discord reply reference so the LLM can follow
-            # reply chains (e.g. user replying to a bot message).
-            ref_id, ref_author, ref_snippet = None, None, None
-            if message.reference and message.reference.message_id:
-                ref_id = message.reference.message_id
-                # Try to get the referenced message content from cache first
-                ref_msg = self._find_cached_message(channel_id, ref_id)
-                if ref_msg:
-                    ref_author = ref_msg.author_name
-                    ref_snippet = ref_msg.content
-                elif message.reference.resolved and isinstance(
-                    message.reference.resolved, discord.Message
-                ):
-                    # Discord sometimes pre-resolves the reference
-                    resolved = message.reference.resolved
-                    ref_author = (
-                        "AgentQueue"
-                        if resolved.author == self.user
-                        else resolved.author.display_name
-                    )
-                    ref_snippet = resolved.content if resolved.content else None
-            self._append_to_buffer(
-                channel_id,
-                CachedMessage(
-                    id=message.id,
-                    author_name="AgentQueue"
-                    if message.author == self.user
-                    else message.author.display_name,
-                    is_bot=message.author == self.user,
-                    content=message.content,
-                    created_at=message.created_at.timestamp(),
-                    attachment_paths=downloaded_paths or None,
-                    reference_id=ref_id,
-                    reference_author=ref_author,
-                    reference_snippet=ref_snippet,
-                ),
-            )
-
-        # Emit chat.message event for the chat observer (before any guards).
-        # This fires for ALL messages in project channels (including bot
-        # responses) so the analyzer sees the full conversation flow and
-        # can understand context, not just user messages in isolation.
-        project_id_for_event = self._channel_to_project.get(channel_id)
-        if project_id_for_event and message.content:
-            await self.orchestrator.bus.emit(
-                "chat.message",
-                {
-                    "channel_id": channel_id,
-                    "project_id": project_id_for_event,
-                    "author": (
-                        "AgentQueue" if message.author == self.user else message.author.display_name
-                    ),
-                    "content": message.content,
-                    "timestamp": message.created_at.timestamp(),
-                    "is_bot": message.author == self.user,
-                },
-            )
-
-            # Feed to ChatObserver for Stage 1 filtering
-            if self._chat_observer:
-                self._chat_observer.on_message(
-                    {
-                        "channel_id": channel_id,
-                        "project_id": project_id_for_event,
-                        "author": (
-                            "AgentQueue"
-                            if message.author == self.user
-                            else message.author.display_name
-                        ),
-                        "content": message.content,
-                        "timestamp": message.created_at.timestamp(),
-                        "is_bot": message.author == self.user,
-                    }
-                )
-
         # Ignore own messages
         if message.author == self.user:
             return
@@ -1892,27 +1064,26 @@ class AgentQueueBot(commands.Bot):
             return
 
         # Only respond in the global bot channel, per-project channels
-        # (when mentioned), when mentioned elsewhere, or in a notes thread
+        # (when mentioned), or when mentioned elsewhere.
         is_bot_channel = self._channel and message.channel.id == self._channel.id
         # Check if this is a per-project channel (O(1) reverse lookup)
         project_channel_id: str | None = self._channel_to_project.get(message.channel.id)
 
         is_mentioned = self.user in message.mentions
-        notes_project_id = self._notes_threads.get(message.channel.id)
-        is_notes_thread = notes_project_id is not None
 
-        if (
-            not is_bot_channel
-            and project_channel_id is None
-            and not is_mentioned
-            and not is_notes_thread
-        ):
+        if not is_bot_channel and project_channel_id is None and not is_mentioned:
             return
 
         # In project channels, require an @mention so collaborators can
         # chat freely without triggering the bot on every message.
         if project_channel_id and not is_bot_channel and not is_mentioned:
             return
+
+        # Download any image attachments from the message.  This makes
+        # local file paths available for task creation later.
+        downloaded_paths: list[str] = []
+        if message.attachments:
+            downloaded_paths = await self._download_attachments(message)
 
         # Strip the bot mention from the message text
         text = message.content
@@ -1987,50 +1158,26 @@ class AgentQueueBot(commands.Bot):
                             f"project_id='{project_channel_id}' for all project-scoped "
                             f"commands.{cross_project_hint}"
                         )
-                    elif is_notes_thread and not is_bot_channel:
-                        llm_context["channel_context"] = (
-                            f"NOTES MODE for project '{notes_project_id}'. "
-                            f"BEHAVIOR: The user will type stream-of-consciousness thoughts. "
-                            f"1. Call list_notes to see existing notes. "
-                            f"2. Categorize input — decide which note it belongs to or create new. "
-                            f"3. Use append_note to add to existing, or write_note for new. "
-                            f"4. Respond with BRIEF confirmation: which note updated + 1-line summary. "
-                            f"5. For browsing/management/comparison requests, use appropriate tools. "
-                            f"Default project_id='{notes_project_id}'."
+
+                    # Include the replied-to message in the user request when
+                    # Discord has pre-resolved the reference.  There is no
+                    # local history buffer to fall back on (removed in the
+                    # M0 messaging strip), so replies to messages outside
+                    # Discord's resolution window are not quoted.
+                    if (
+                        message.reference
+                        and message.reference.resolved
+                        and isinstance(message.reference.resolved, discord.Message)
+                    ):
+                        resolved = message.reference.resolved
+                        ref_author = (
+                            "AgentQueue"
+                            if resolved.author == self.user
+                            else resolved.author.display_name
                         )
-
-                    # Include replied-to message in user request
-                    if message.reference and message.reference.message_id:
-                        ref_id = message.reference.message_id
-                        ref_msg = self._find_cached_message(message.channel.id, ref_id)
-                        if ref_msg:
-                            user_text = (
-                                f'[Replying to {ref_msg.author_name}: '
-                                f'"{ref_msg.content}"]\n{user_text}'
-                            )
-                        elif (
-                            message.reference.resolved
-                            and isinstance(message.reference.resolved, discord.Message)
-                        ):
-                            resolved = message.reference.resolved
-                            ref_author = (
-                                "AgentQueue"
-                                if resolved.author == self.user
-                                else resolved.author.display_name
-                            )
-                            user_text = (
-                                f'[Replying to {ref_author}: '
-                                f'"{resolved.content}"]\n{user_text}'
-                            )
-
-                    # Include recent thread messages right before the user request
-                    thread_ctx = self._build_thread_context(
-                        message.channel.id, message,
-                    )
-                    if thread_ctx:
                         user_text = (
-                            f"## Recent Thread Messages\n\n{thread_ctx}"
-                            f"\n\n## User Request\n\n{user_text}"
+                            f'[Replying to {ref_author}: '
+                            f'"{resolved.content}"]\n{user_text}'
                         )
 
                     # Set active project from channel context so that git
@@ -2040,11 +1187,11 @@ class AgentQueueBot(commands.Bot):
                     prev_active = self.agent._active_project_id
                     if project_channel_id and not is_bot_channel:
                         self.agent.set_active_project(project_channel_id)
-                    elif is_notes_thread and not is_bot_channel:
-                        self.agent.set_active_project(notes_project_id)
 
-                    # Build history from Discord channel
-                    history = await self._build_message_history(message.channel, before=message)
+                    # No local conversation-history buffer (removed in the
+                    # M0 messaging strip) — each message is a stateless
+                    # single-turn call into the Supervisor.
+                    history = None
 
                     # Send a thinking indicator that updates as the agent works.
                     # This gives users real-time feedback on what the agent is
@@ -2172,229 +1319,3 @@ class AgentQueueBot(commands.Bot):
                     # channel-specific context across concurrent requests.
                     self.agent.set_active_project(prev_active)
 
-    async def _build_message_history(
-        self, channel: discord.TextChannel, before: discord.Message
-    ) -> list[dict]:
-        """Build LLM message history from the local buffer (warm path) or
-        Discord API (cold path after restart).
-
-        Uses a two-tier compaction strategy to balance context quality against
-        token cost:
-        - Messages beyond ``COMPACT_THRESHOLD`` are LLM-summarized into a single
-          compact paragraph (cached per channel to avoid re-summarizing).
-        - The most recent ``RECENT_KEEP`` messages are kept verbatim so the LLM
-          has full fidelity on the immediate conversation.
-        - Consecutive same-role messages are merged (Anthropic API requirement).
-
-        **Warm path** (zero API calls): reads from ``_channel_buffers``.
-        **Cold path** (after restart): buffer empty, falls back to Discord
-        ``channel.history()`` fetch and seeds the buffer for subsequent calls.
-        """
-        channel_id = channel.id
-
-        # Cold path — buffer is empty (first call after restart)
-        buf = self._channel_buffers.get(channel_id)
-        if not buf:
-            await self._fetch_and_seed_buffer(channel, before)
-            buf = self._channel_buffers.get(channel_id)
-
-        if not buf:
-            return []
-
-        # Warm path — read from local buffer
-        # Snapshot and filter to messages before the trigger message.
-        # Exclude transient thinking indicator messages so they never
-        # appear in conversation history sent to the LLM.
-        before_ts = before.created_at.timestamp()
-        thinking_ids = self._thinking_msg_ids
-        snapshot = [m for m in buf if m.created_at < before_ts and m.id not in thinking_ids]
-        # Keep only the most recent MAX_HISTORY_MESSAGES
-        snapshot = snapshot[-MAX_HISTORY_MESSAGES:]
-
-        if not snapshot:
-            return []
-
-        # Split into older (to compact) and recent (to keep verbatim)
-        if len(snapshot) > COMPACT_THRESHOLD:
-            older = snapshot[:-RECENT_KEEP]
-            recent = snapshot[-RECENT_KEEP:]
-        else:
-            older = []
-            recent = snapshot
-
-        messages: list[dict] = []
-
-        # Compact older messages into a summary
-        if older:
-            summary = await self._get_or_create_summary_from_cache(channel_id, older)
-            if summary:
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"[CONVERSATION SUMMARY — earlier messages]\n{summary}",
-                    }
-                )
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": "Understood, I have the conversation context.",
-                    }
-                )
-
-        # Add recent messages verbatim, with reply-chain annotations
-        for msg in recent:
-            # Build reply context prefix so the LLM can follow reply chains
-            reply_prefix = ""
-            if msg.reference_id:
-                if msg.reference_author and msg.reference_snippet:
-                    reply_prefix = (
-                        f'[replying to {msg.reference_author}: "{msg.reference_snippet}"]\n'
-                    )
-                else:
-                    # Reference exists but content not cached — try buffer lookup
-                    ref = self._find_cached_message(channel_id, msg.reference_id)
-                    if ref:
-                        reply_prefix = f'[replying to {ref.author_name}: "{ref.content}"]\n'
-                    else:
-                        reply_prefix = "[replying to an earlier message]\n"
-
-            if msg.is_bot:
-                content = f"{reply_prefix}{msg.content}" if reply_prefix else msg.content
-                messages.append({"role": "assistant", "content": content})
-            else:
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"{reply_prefix}[from {msg.author_name}]: {msg.content}",
-                    }
-                )
-
-        # Merge consecutive same-role messages (Anthropic API requirement)
-        merged: list[dict] = []
-        for m in messages:
-            if merged and merged[-1]["role"] == m["role"]:
-                merged[-1]["content"] += "\n" + m["content"]
-            else:
-                merged.append(m)
-
-        return merged
-
-    async def _fetch_and_seed_buffer(
-        self, channel: discord.TextChannel, before: discord.Message
-    ) -> None:
-        """Cold-start fallback: fetch from Discord API and populate the buffer."""
-        raw: list[discord.Message] = []
-        try:
-            async for msg in channel.history(limit=MAX_HISTORY_MESSAGES, before=before):
-                raw.append(msg)
-        except discord.Forbidden:
-            self._rate_tracker.record(403)
-            logging.getLogger(__name__).warning(
-                "Cold-start history fetch forbidden for channel %s",
-                channel.id,
-            )
-            return
-        except discord.HTTPException as exc:
-            if exc.status in (401, 429):
-                self._rate_tracker.record(exc.status)
-            logging.getLogger(__name__).warning(
-                "Cold-start history fetch failed (HTTP %d) for channel %s",
-                exc.status,
-                channel.id,
-            )
-            return
-        raw.reverse()  # oldest first
-
-        if not raw:
-            return
-
-        buf = collections.deque(maxlen=MAX_HISTORY_MESSAGES)
-        # First pass: build messages without reference content
-        for msg in raw:
-            ref_id = None
-            if msg.reference and msg.reference.message_id:
-                ref_id = msg.reference.message_id
-            buf.append(
-                CachedMessage(
-                    id=msg.id,
-                    author_name="AgentQueue"
-                    if msg.author == self.user
-                    else msg.author.display_name,
-                    is_bot=msg.author == self.user,
-                    content=msg.content,
-                    created_at=msg.created_at.timestamp(),
-                    reference_id=ref_id,
-                )
-            )
-        self._channel_buffers[channel.id] = buf
-        self._buffer_last_access[channel.id] = time.monotonic()
-        # Second pass: resolve reference authors/snippets from the buffer
-        for cached in buf:
-            if cached.reference_id:
-                ref = self._find_cached_message(channel.id, cached.reference_id)
-                if ref:
-                    cached.reference_author = ref.author_name
-                    cached.reference_snippet = ref.content[:120]
-
-    async def _get_or_create_summary_from_cache(
-        self, channel_id: int, older_messages: list[CachedMessage]
-    ) -> str | None:
-        """Return a compact summary of older cached messages, with caching."""
-        if not older_messages:
-            return None
-        if not self.agent.is_ready:
-            return None
-
-        last_id = older_messages[-1].id
-
-        # Return cached summary if it covers these messages
-        cached = self._channel_summaries.get(channel_id)
-        if cached and cached[0] >= last_id:
-            return cached[1]
-
-        # Build a transcript to summarize (include reply context)
-        lines = []
-        for msg in older_messages:
-            prefix = ""
-            if msg.reference_author and msg.reference_snippet:
-                prefix = f'(replying to {msg.reference_author}: "{msg.reference_snippet[:60]}") '
-            lines.append(f"{msg.author_name}: {prefix}{msg.content}")
-        transcript = "\n".join(lines)
-
-        summary = await self.agent.summarize(transcript)
-        if summary:
-            self._channel_summaries[channel_id] = (last_id, summary)
-        return summary
-
-    # ------------------------------------------------------------------
-    # Periodic buffer cleanup
-    # ------------------------------------------------------------------
-
-    async def _periodic_buffer_cleanup(self) -> None:
-        """Background loop that evicts idle channel buffers every 10 minutes."""
-        while True:
-            try:
-                await asyncio.sleep(600)  # 10 minutes
-                self._cleanup_stale_buffers()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error("Buffer cleanup error: %s", e)
-
-    def _cleanup_stale_buffers(self) -> None:
-        """Drop buffers for channels idle longer than ``BUFFER_IDLE_TIMEOUT``."""
-        now = time.monotonic()
-        stale = [
-            cid
-            for cid, last in self._buffer_last_access.items()
-            if now - last > BUFFER_IDLE_TIMEOUT
-        ]
-        for cid in stale:
-            self._channel_buffers.pop(cid, None)
-            self._buffer_last_access.pop(cid, None)
-            self._channel_summaries.pop(cid, None)
-            task = self._summarization_tasks.pop(cid, None)
-            if task and not task.done():
-                task.cancel()
-        if stale:
-            logger.info("Cleaned up %d idle channel buffer(s)", len(stale))

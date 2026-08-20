@@ -103,36 +103,6 @@ class DiscordConfig:
 
 
 @dataclass
-class TelegramConfig:
-    """Telegram bot connection and chat routing settings.
-
-    When ``messaging_platform`` is ``"telegram"``, these settings control
-    the Telegram bot integration.  ``use_topics`` requires the target chat
-    to be a supergroup with forum topics enabled.
-    """
-
-    bot_token: str = ""
-    chat_id: str = ""  # Main chat/group for notifications
-    authorized_users: list[str] = field(default_factory=list)  # Telegram user IDs
-    per_project_chats: dict[str, str] = field(default_factory=dict)  # project_id -> chat_id
-    use_topics: bool = True  # Use forum topics for task threads (requires supergroup)
-
-    def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        if not self.bot_token:
-            errors.append(
-                ConfigError(
-                    "telegram", "bot_token", "bot_token is required for Telegram connection"
-                )
-            )
-        if not self.chat_id:
-            errors.append(
-                ConfigError("telegram", "chat_id", "chat_id is required for Telegram connection")
-            )
-        return errors
-
-
-@dataclass
 class AgentsDefaultConfig:
     """Default timeouts for agent health monitoring and graceful shutdown."""
 
@@ -1161,9 +1131,8 @@ class AppConfig:
     profile: str = ""
     env: str = "production"
     validate_events: bool = True
-    messaging_platform: str = "discord"  # "discord" or "telegram"
+    messaging_platform: str = "discord"  # "discord" or "none"
     discord: DiscordConfig = field(default_factory=DiscordConfig)
-    telegram: TelegramConfig = field(default_factory=TelegramConfig)
     agents_config: AgentsDefaultConfig = field(default_factory=AgentsDefaultConfig)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
@@ -1311,9 +1280,24 @@ class AppConfig:
                             )
                         )
 
-        # Validate messaging_platform field
-        valid_platforms = {"discord", "telegram"}
-        if self.messaging_platform not in valid_platforms:
+        # Validate messaging_platform field. "telegram" gets a dedicated,
+        # actionable error rather than folding into the generic "must be
+        # one of" message — Telegram support was removed in the M0
+        # messaging strip (docs/specs/design/messaging-rework.md §4.6) and
+        # users migrating an old config need a clear pointer, not a silent
+        # fallback to "discord" or a generic validation error.
+        valid_platforms = {"discord", "none"}
+        if self.messaging_platform == "telegram":
+            errors.append(
+                ConfigError(
+                    "app",
+                    "messaging_platform",
+                    "Telegram support was removed (messaging rework M0). "
+                    "Set messaging_platform to 'discord' or 'none'. "
+                    "See docs/specs/design/messaging-rework.md",
+                )
+            )
+        elif self.messaging_platform not in valid_platforms:
             errors.append(
                 ConfigError(
                     "app",
@@ -1325,8 +1309,6 @@ class AppConfig:
         # Only validate the active messaging platform's config
         if self.messaging_platform == "discord":
             errors.extend(self.discord.validate())
-        elif self.messaging_platform == "telegram":
-            errors.extend(self.telegram.validate())
 
         errors.extend(self.agents_config.validate())
         errors.extend(self.scheduling.validate())
@@ -1486,7 +1468,6 @@ HOT_RELOADABLE_SECTIONS = {
 
 RESTART_REQUIRED_SECTIONS = {
     "discord",
-    "telegram",
     "messaging_platform",
     "data_dir",
     "workspace_dir",
@@ -1520,7 +1501,6 @@ _SECTION_FIELDS = {
     "env",
     "messaging_platform",
     "discord",
-    "telegram",
     "agents_config",
     "scheduling",
     "pause_retry",
@@ -1927,16 +1907,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             rate_guard_warn=int(d.get("rate_guard_warn", 1000)),
             rate_guard_critical=int(d.get("rate_guard_critical", 5000)),
             rate_guard_halt=int(d.get("rate_guard_halt", 8000)),
-        )
-
-    if "telegram" in raw:
-        tg = raw["telegram"]
-        config.telegram = TelegramConfig(
-            bot_token=tg.get("bot_token", ""),
-            chat_id=str(tg.get("chat_id", "")),
-            authorized_users=[str(u) for u in tg.get("authorized_users", [])],
-            per_project_chats={k: str(v) for k, v in tg.get("per_project_chats", {}).items()},
-            use_topics=tg.get("use_topics", True),
         )
 
     if "agents" in raw:

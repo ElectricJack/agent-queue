@@ -1,18 +1,18 @@
 """Abstract messaging transport contract.
 
 ``MessagingPort`` defines the interface that any messaging platform (Discord,
-Telegram, etc.) must implement to integrate with the Agent Queue orchestrator.
+etc.) must implement to integrate with the Agent Queue orchestrator.
 
 ``RichNotification`` and ``NotificationAction`` are platform-neutral data
 containers that describe rich messages — the transport converts them into
-its native format (Discord embeds, Telegram HTML, etc.).
+its native format (e.g. Discord embeds).
 
 Design notes:
 
 - One transport per deployment.  The config selects ``messaging: discord``
-  or ``messaging: telegram``; both implement this ABC.
+  or ``messaging: none``; both implement this ABC.
 - The orchestrator and main.py talk only to this interface — no platform
-  imports leak outside ``src/discord/`` or ``src/telegram/``.
+  imports leak outside ``src/discord/``.
 - Interactive actions (buttons, inline keyboards) are described via
   ``NotificationAction`` and rendered by each transport into its native
   widget.  Action callbacks route to ``CommandHandler.execute()``.
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
 # ---------------------------------------------------------------------------
 # Notification colors — semantic names that each transport maps to its
-# own palette (Discord embed sidebar, Telegram header emoji, etc.)
+# own palette (e.g. Discord embed sidebar color)
 # ---------------------------------------------------------------------------
 
 NOTIFICATION_COLORS = {
@@ -52,7 +52,6 @@ class NotificationAction:
 
     Each transport renders this into its native interactive widget:
     - Discord: ``discord.ui.Button`` inside a ``discord.ui.View``
-    - Telegram: ``InlineKeyboardButton`` in an ``InlineKeyboardMarkup``
 
     The ``action_id`` is passed to ``CommandHandler.execute()`` when the
     user clicks.  Extra ``args`` are forwarded as keyword arguments.
@@ -85,7 +84,6 @@ class RichNotification:
 
     - **Discord**: ``discord.Embed`` with color sidebar, fields, footer,
       and attached ``discord.ui.View`` for action buttons.
-    - **Telegram**: HTML-formatted message with inline keyboard buttons.
 
     The ``fields`` list mirrors Discord embed fields: each tuple is
     ``(name, value, inline)`` where ``inline`` hints that the field
@@ -128,9 +126,9 @@ class RichNotification:
 class MessagingPort(ABC):
     """Abstract messaging transport contract.
 
-    Both ``DiscordTransport`` and ``TelegramTransport`` implement this
-    interface.  The orchestrator and ``main.py`` interact only through
-    this ABC — never importing platform-specific types directly.
+    Concrete transports implement this interface.  The orchestrator and
+    ``main.py`` interact only through this ABC — never importing
+    platform-specific types directly.
 
     Lifecycle::
 

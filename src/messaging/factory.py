@@ -28,7 +28,7 @@ def create_messaging_adapter(
     ----------
     config:
         Application configuration — ``config.messaging_platform`` selects
-        which adapter to create (``"discord"`` or ``"telegram"``).
+        which adapter to create (``"discord"`` or ``"none"``).
     orchestrator:
         The orchestrator instance to wire into the adapter.
 
@@ -41,6 +41,10 @@ def create_messaging_adapter(
     ------
     ValueError
         If ``config.messaging_platform`` is not a recognised platform name.
+        Telegram support was removed in the M0 messaging strip
+        (docs/specs/design/messaging-rework.md §4.6) — ``"telegram"`` gets
+        a dedicated, actionable error rather than falling through to the
+        generic "unknown platform" message.
     """
     platform = config.messaging_platform
 
@@ -48,11 +52,18 @@ def create_messaging_adapter(
         from src.discord.adapter import DiscordMessagingAdapter
 
         return DiscordMessagingAdapter(config, orchestrator)
-    elif platform == "telegram":
-        from src.telegram.adapter import TelegramMessagingAdapter
+    elif platform == "none":
+        from src.messaging.null_adapter import NullMessagingAdapter
 
-        return TelegramMessagingAdapter(config, orchestrator)
+        return NullMessagingAdapter(config, orchestrator)
+    elif platform == "telegram":
+        raise ValueError(
+            "messaging_platform: 'telegram' is no longer supported — Telegram "
+            "support was removed in the messaging rework (M0). Set "
+            "messaging_platform to 'discord' or 'none' in config.yaml. "
+            "See docs/specs/design/messaging-rework.md"
+        )
     else:
         raise ValueError(
-            f"Unknown messaging platform: {platform!r}. Supported platforms: 'discord', 'telegram'"
+            f"Unknown messaging platform: {platform!r}. Supported platforms: 'discord', 'none'"
         )

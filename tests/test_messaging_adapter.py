@@ -5,9 +5,9 @@ Covers:
 - Incomplete subclass raises TypeError
 - Complete subclass can be instantiated
 - Factory raises ValueError on unknown platform
-- Factory returns correct type for "discord" and "telegram" (mocked imports)
+- Factory rejects "telegram" with a dedicated, actionable error (removed M0)
+- Factory returns correct type for "discord" and "none" (mocked imports)
 - Config: default messaging_platform is "discord" (backward compatible)
-- Config: TelegramConfig defaults
 - Config: validation only validates the active platform
 - Config: messaging_platform field in load_config
 """
@@ -22,7 +22,7 @@ import pytest
 from src.messaging.base import MessagingAdapter
 from src.messaging.factory import create_messaging_adapter
 from src.messaging import MessagingAdapter as InitAdapter, create_messaging_adapter as init_factory
-from src.config import AppConfig, TelegramConfig
+from src.config import AppConfig
 
 
 # ---------------------------------------------------------------------------
@@ -167,93 +167,27 @@ class TestCreateMessagingAdapter:
         mock_cls.assert_called_once()
         assert result is mock_instance
 
-    @patch("src.messaging.factory.TelegramMessagingAdapter", create=True)
-    def test_telegram_platform(self, mock_cls, tmp_path):
-        """Factory imports and instantiates TelegramMessagingAdapter for 'telegram'."""
-        mock_instance = MagicMock(spec=MessagingAdapter)
-        mock_cls.return_value = mock_instance
-
+    def test_telegram_platform_raises_clear_error(self, tmp_path):
+        """Factory rejects 'telegram' with a dedicated, actionable error (removed M0)."""
         config = AppConfig(data_dir=str(tmp_path / "data"))
         config.messaging_platform = "telegram"
 
-        with patch.dict(
-            "sys.modules", {"src.telegram.adapter": MagicMock(TelegramMessagingAdapter=mock_cls)}
-        ):
-            import src.messaging.factory as fmod
+        with pytest.raises(ValueError, match="[Tt]elegram"):
+            create_messaging_adapter(config, MagicMock())
 
-            original = fmod.create_messaging_adapter
+    def test_none_platform(self, tmp_path):
+        """Factory creates NullMessagingAdapter for 'none'."""
+        from src.messaging.null_adapter import NullMessagingAdapter
 
-            def patched_factory(cfg, orch):
-                if cfg.messaging_platform == "telegram":
-                    return mock_cls(cfg, orch)
-                return original(cfg, orch)
+        config = AppConfig(data_dir=str(tmp_path / "data"))
+        config.messaging_platform = "none"
 
-            result = patched_factory(config, MagicMock())
-
-        mock_cls.assert_called_once()
-        assert result is mock_instance
+        result = create_messaging_adapter(config, MagicMock())
+        assert isinstance(result, NullMessagingAdapter)
 
     def test_factory_importable_from_init(self):
         """create_messaging_adapter is importable from src.messaging."""
         assert init_factory is create_messaging_adapter
-
-
-# ---------------------------------------------------------------------------
-# TelegramConfig
-# ---------------------------------------------------------------------------
-
-
-class TestTelegramConfig:
-    """Verify TelegramConfig dataclass defaults and validation."""
-
-    def test_defaults(self):
-        tc = TelegramConfig()
-        assert tc.bot_token == ""
-        assert tc.chat_id == ""
-        assert tc.authorized_users == []
-        assert tc.per_project_chats == {}
-        assert tc.use_topics is True
-
-    def test_custom_values(self):
-        tc = TelegramConfig(
-            bot_token="123:ABC",
-            chat_id="-100123456",
-            authorized_users=["111", "222"],
-            per_project_chats={"proj1": "-100999"},
-            use_topics=False,
-        )
-        assert tc.bot_token == "123:ABC"
-        assert tc.chat_id == "-100123456"
-        assert tc.authorized_users == ["111", "222"]
-        assert tc.per_project_chats == {"proj1": "-100999"}
-        assert tc.use_topics is False
-
-    def test_validate_missing_token(self):
-        tc = TelegramConfig(chat_id="-100123")
-        errors = tc.validate()
-        assert any("bot_token" in str(e) for e in errors)
-
-    def test_validate_missing_chat_id(self):
-        tc = TelegramConfig(bot_token="123:ABC")
-        errors = tc.validate()
-        assert any("chat_id" in str(e) for e in errors)
-
-    def test_validate_all_valid(self):
-        tc = TelegramConfig(bot_token="123:ABC", chat_id="-100123")
-        errors = tc.validate()
-        assert len(errors) == 0
-
-    def test_list_isolation(self):
-        t1 = TelegramConfig()
-        t2 = TelegramConfig()
-        t1.authorized_users.append("123")
-        assert len(t2.authorized_users) == 0
-
-    def test_dict_isolation(self):
-        t1 = TelegramConfig()
-        t2 = TelegramConfig()
-        t1.per_project_chats["proj"] = "-100"
-        assert "proj" not in t2.per_project_chats
 
 
 # ---------------------------------------------------------------------------
@@ -268,41 +202,12 @@ class TestAppConfigMessagingPlatform:
         config = AppConfig(data_dir=str(tmp_path / "data"))
         assert config.messaging_platform == "discord"
 
-    def test_has_telegram_config(self, tmp_path):
-        config = AppConfig(data_dir=str(tmp_path / "data"))
-        assert isinstance(config.telegram, TelegramConfig)
-
-    def test_validation_discord_skips_telegram(self, tmp_path):
-        """When messaging_platform is 'discord', telegram config is not validated."""
+    def test_validation_none_skips_discord(self, tmp_path):
+        """When messaging_platform is 'none', discord config is not validated."""
         config = AppConfig(
             data_dir=str(tmp_path / "data"),
-            messaging_platform="discord",
-            discord=MagicMock(validate=MagicMock(return_value=[])),
-            telegram=TelegramConfig(),  # empty — would fail if validated
-        )
-        # Patch the sections that have validate() called
-        config.agents_config = MagicMock(validate=MagicMock(return_value=[]))
-        config.scheduling = MagicMock(validate=MagicMock(return_value=[]))
-        config.pause_retry = MagicMock(validate=MagicMock(return_value=[]))
-        config.chat_provider = MagicMock(validate=MagicMock(return_value=[]))
-        config.supervisor = MagicMock(validate=MagicMock(return_value=[]))
-        config.auto_task = MagicMock(validate=MagicMock(return_value=[]))
-        config.archive = MagicMock(validate=MagicMock(return_value=[]))
-        config.llm_logging = MagicMock(validate=MagicMock(return_value=[]))
-        config.memory = MagicMock(validate=MagicMock(return_value=[]))
-
-        errors = config.validate()
-        error_strs = [str(e) for e in errors]
-        # No telegram errors should appear
-        assert not any("telegram" in s for s in error_strs)
-
-    def test_validation_telegram_skips_discord(self, tmp_path):
-        """When messaging_platform is 'telegram', discord config is not validated."""
-        config = AppConfig(
-            data_dir=str(tmp_path / "data"),
-            messaging_platform="telegram",
+            messaging_platform="none",
             discord=MagicMock(),  # empty — would fail if validated
-            telegram=TelegramConfig(bot_token="123:ABC", chat_id="-100123"),
         )
         config.agents_config = MagicMock(validate=MagicMock(return_value=[]))
         config.scheduling = MagicMock(validate=MagicMock(return_value=[]))
@@ -328,14 +233,16 @@ class TestAppConfigMessagingPlatform:
         platform_errors = [e for e in errors if "messaging_platform" in str(e)]
         assert len(platform_errors) >= 1
 
-    def test_validation_telegram_invalid_config_surfaces_errors(self, tmp_path):
-        """When telegram is active, missing telegram fields produce errors."""
-        config = AppConfig(
-            data_dir=str(tmp_path / "data"),
-            messaging_platform="telegram",
-            telegram=TelegramConfig(),  # empty bot_token and chat_id
-        )
+    def test_validation_telegram_gets_clear_error(self, tmp_path):
+        """messaging_platform: 'telegram' produces a dedicated, actionable error.
+
+        Telegram support was removed in the M0 messaging strip — a user
+        migrating a stale config must get a hard error with a clear
+        pointer, not a silent fallback to another platform or a generic
+        "must be one of" message.
+        """
+        config = AppConfig(data_dir=str(tmp_path / "data"), messaging_platform="telegram")
         errors = config.validate()
-        error_strs = [str(e) for e in errors]
-        assert any("bot_token" in s for s in error_strs)
-        assert any("chat_id" in s for s in error_strs)
+        platform_errors = [e for e in errors if "messaging_platform" in str(e)]
+        assert len(platform_errors) >= 1
+        assert any("elegram" in str(e) for e in platform_errors)

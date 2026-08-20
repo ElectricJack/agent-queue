@@ -206,7 +206,7 @@ class TaskThreadOpenEvent(NotifyEvent):
 class TaskMessageEvent(NotifyEvent):
     """A message within a task's execution stream.
 
-    When ``stream_id`` is set, the Discord/Telegram receiver treats the
+    When ``stream_id`` is set, the Discord receiver treats the
     message as a *live update* and edits a single message in place
     instead of posting a new one per call.  Used by streaming runtimes
     (e.g. ACPX) so per-token chunks appear as one growing message rather
@@ -351,7 +351,7 @@ class PlaybookRunStartedEvent(NotifyEvent):
     """Emitted when a playbook run begins executing its entry node.
 
     Drives the dashboard's live-runs panel and refreshes registry rows as
-    soon as a run kicks off. Also routes Discord/Telegram notifications to
+    soon as a run kicks off. Also routes Discord notifications to
     the project channel (when ``project_id`` is set via the trigger event)
     or the system channel for system-scoped playbooks.
     """
@@ -408,7 +408,7 @@ class PlaybookRunFailedEvent(NotifyEvent):
 class PlaybookRunPausedEvent(NotifyEvent):
     """Emitted when a playbook run pauses at a ``wait_for_human`` node.
 
-    Surfaces the review request to human operators via Discord, Telegram, or
+    Surfaces the review request to human operators via Discord or
     other notification transports.  The ``last_response`` field contains the
     last assistant message (capped at 2000 chars) so the reviewer has
     immediate context about what the playbook has done and why human input

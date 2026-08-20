@@ -4,7 +4,7 @@ Comprehensive test suite covering the full lifecycle of human-in-the-loop
 playbook execution per ``docs/specs/design/playbooks.md`` Section 9:
 
 (a) ``wait_for_human`` node pauses and persists state to DB with status "paused"
-(b) Notification sent via Discord/Telegram with context summary
+(b) Notification sent via Discord with context summary
 (c) ``human.review.completed`` event resumes from saved conversation state
 (d) Resumed run continues to next node with human input appended
 (e) Structured input (approve/reject/feedback) influences transition
@@ -307,12 +307,12 @@ class TestWaitForHumanPauses:
 
 
 # ---------------------------------------------------------------------------
-# (b) Notification sent via Discord/Telegram with context summary
+# (b) Notification sent via Discord with context summary
 # ---------------------------------------------------------------------------
 
 
 class TestPauseNotification:
-    """Roadmap 5.4.6 case (b): notification is sent via Discord/Telegram
+    """Roadmap 5.4.6 case (b): notification is sent via Discord
     with context summary of what the playbook has done so far."""
 
     async def test_paused_event_emitted_on_bus(

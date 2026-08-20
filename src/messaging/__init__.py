@@ -1,8 +1,10 @@
 """Platform-agnostic messaging abstraction layer.
 
-Provides the ``MessagingPort`` ABC that both Discord and Telegram transports
-implement, plus the ``RichNotification`` / ``NotificationAction`` types used
-to describe rich messages without coupling to any specific chat platform.
+Provides the ``MessagingPort`` ABC that messaging transports implement, plus
+the ``RichNotification`` / ``NotificationAction`` types used to describe
+rich messages without coupling to any specific chat platform.  Today the
+only transport is Discord; ``NullMessagingAdapter`` implements the same
+contract as a no-op for ``messaging_platform: "none"``.
 
 The ``MessagingAdapter`` ABC is the higher-level orchestrator-facing contract,
 and ``create_messaging_adapter()`` is the factory that selects the correct

@@ -70,9 +70,6 @@ postgresql = [
 ollama = [
     "openai>=1.0.0",
 ]
-telegram = [
-    "python-telegram-bot[ext]>=20.0",
-]
 mcp = [
     "mcp>=1.0.0",
 ]
