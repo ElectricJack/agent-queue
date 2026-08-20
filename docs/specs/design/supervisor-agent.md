@@ -394,12 +394,15 @@ Validation is deterministic — the daemon never "interprets" a graph:
 | Unknown `{var}` reference, or unused declared var | error / warning |
 | Duplicate node `key` | error |
 | `needs.on` names neither a graph key nor an existing task id | error |
+| `needs.on` names the node itself, **any** dep type | error (`self_edge`; the cycle check only walks blocking edges, and `task_dependencies` has a `task_id != depends_on_task_id` constraint) |
 | Cycle among blocking dep types within the graph | error (topological check) |
 | `dep_type` not in the work-graph registry (`blocks`, `parent-child`, `waits-for`, `conditional-blocks`; non-blocking `discovered-from`, `related`, `duplicates`, `supersedes`) | error |
 | Unknown `profile` (against `agent_profiles`, project overrides included) | error |
+| `profile` already scoped to **another** project (`project:<other>:<name>`) | error (`foreign_project_profile`) — scope resolution is otherwise idempotent for this project's own prefix |
 | Node title empty / missing | error |
 | No `acceptance` on a node | warning (created anyway) |
 | `spec_ref` path missing from the vault, or section heading not found | error for `--from-spec`; warning for `--graph` |
+| `spec_ref` path resolving **outside** the vault root — `..`, an absolute path, or a symlink out | error always (`spec_ref_outside_vault`), never a warning. Graphs are authored by an LLM from spec text that may be attacker-influenced, and `src/prime/sections._render_spec_ref` inlines the resolved file into another agent's prompt. Containment is enforced at **both** ends. |
 | `needs.on` resolves to a task in another project without `cross_project: true` | error (explicit cross-project edges only, todo §3b) |
 | Any node targeting another project | error — graphs are single-project |
 

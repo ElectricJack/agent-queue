@@ -210,6 +210,28 @@ class TestReply:
         assert reply.from_kind == "session"
         assert reply.from_id == "task-1"
 
+    async def test_reply_to_a_system_sent_message_fails_cleanly(self, setup):
+        """`system` is a valid from_kind but not a valid to_kind.
+
+        The reply mirrors `to_kind = original.from_kind`, so this used to hit
+        `ck_messages_to_kind` and surface a raw sqlite3.IntegrityError with the
+        whole chat body echoed into the bound-parameter dump.
+        """
+        handler, db, _bus = setup
+        sent = await handler._cmd_message_send(
+            _send_args(from_kind="system", from_id="orchestrator", body="secret body text")
+        )
+        result = await handler._cmd_message_reply(
+            {"message_id": sent["message_id"], "body": "ok"}
+        )
+        assert "cannot reply to a 'system' message" in result["error"]
+        # No raw SQL, and above all no message body, in the error text.
+        assert "IntegrityError" not in result["error"]
+        assert "secret body text" not in result["error"]
+        assert "reply_id" not in result
+        # Nothing was written.
+        assert len(await db.list_messages(project_id="p1")) == 1
+
 
 # ---------------------------------------------------------------------------
 # message_inbox

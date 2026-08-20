@@ -68,6 +68,36 @@ class TestNameResolution:
             await resolve_session_project("supervisor", handler)
         assert exc.value.status_code == 404
 
+    @pytest.mark.parametrize("name", ["junkrole-agent-queue", "-agent-queue", "agent-queue"])
+    async def test_unvalidated_role_is_404(self, name, handler):
+        """The old left-to-right hyphen walk never checked the role, so any
+        prefix — including none — resolved and queued a row addressed to a
+        session that will never exist."""
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc:
+            await resolve_session_project(name, handler)
+        assert exc.value.status_code == 404
+
+    async def test_role_boundary_beats_hyphen_position(self, handler):
+        """`code-reviewer-myproj` with projects {myproj, reviewer-myproj}
+        resolved to `reviewer-myproj` — the wrong project — because the walk
+        took the first suffix that happened to be real."""
+        from fastapi import HTTPException
+
+        await handler.db.create_project(Project(id="myproj", name="My Proj"))
+        await handler.db.create_project(Project(id="reviewer-myproj", name="Reviewer Proj"))
+
+        with pytest.raises(HTTPException) as exc:
+            await resolve_session_project("code-reviewer-myproj", handler)
+        assert exc.value.status_code == 404
+
+        assert await resolve_session_project("supervisor-myproj", handler) == "myproj"
+        assert (
+            await resolve_session_project("supervisor-reviewer-myproj", handler)
+            == "reviewer-myproj"
+        )
+
 
 class TestPostMessage:
     def test_queues_a_row(self, client, handler):

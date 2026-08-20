@@ -18,6 +18,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from src.aq_uri import path_is_within
 from src.prompt_builder import extract_section
 
 from .models import SECTION_TITLES, PrimeSection
@@ -122,6 +123,15 @@ def _render_spec_ref(config: Any, row: dict) -> str:
     heading degrade to a visible "unresolved" note rather than raising —
     the producer (task_graph, a parallel lane) may not exist yet, and a
     dangling ref must never break prime delivery.
+
+    **Containment is enforced here, not only at graph-validation time.** This
+    function inlines the referenced file into another agent's prompt — the
+    whole file when no ``section`` is given — so a row that reached the DB by
+    any path other than a validated graph (direct ``task_context`` write, an
+    older row, a future producer) must not become an arbitrary file read.
+    The validator closes the same hole at authoring time
+    (``src/task_graph/validator.resolve_spec_path_checked``); both ends are
+    closed deliberately.
     """
     raw = row.get("content") or "{}"
     try:
@@ -131,9 +141,19 @@ def _render_spec_ref(config: Any, row: dict) -> str:
 
     ref_path = ref.get("path") or ""
     ref_section = ref.get("section") or ""
+    vault_root = getattr(config, "vault_root", None)
+    if not vault_root:
+        return f"**spec_ref unresolved:** `{ref_path}` (no vault root configured)"
+
     resolved = Path(ref_path)
     if not resolved.is_absolute():
-        resolved = Path(config.vault_root) / ref_path
+        resolved = Path(vault_root) / ref_path
+
+    if not path_is_within(resolved, vault_root):
+        return (
+            f"**spec_ref refused:** `{ref_path}` resolves outside the vault "
+            "- refusing to inline it"
+        )
 
     content = _read_text(resolved)
     if content is None:

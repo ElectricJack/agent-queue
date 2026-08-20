@@ -41,6 +41,8 @@ def _load_graph_document(graph_file: str) -> dict:
 
     import yaml
 
+    from src.task_graph.parser import MAX_GRAPH_DOCUMENT_CHARS
+
     if graph_file == "-":
         text = click.get_text_stream("stdin").read()
     else:
@@ -50,13 +52,26 @@ def _load_graph_document(graph_file: str) -> dict:
         except OSError as exc:
             raise click.UsageError(f"could not read graph file {graph_file!r}: {exc}") from exc
 
+    if len(text) > MAX_GRAPH_DOCUMENT_CHARS:
+        raise click.UsageError(
+            f"graph document is {len(text)} characters, over the "
+            f"{MAX_GRAPH_DOCUMENT_CHARS} limit"
+        )
+
+    # RecursionError is caught alongside the parse errors: this is the one
+    # decode that happens client-side, so a deeply nested document piped to
+    # `--graph -` has no daemon-side net to fall into.
     try:
         data = json.loads(text)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError as exc:
             raise click.UsageError(f"graph document is neither valid JSON nor YAML: {exc}") from exc
+        except RecursionError as exc:
+            raise click.UsageError(
+                "graph document nesting is too deep to parse"
+            ) from exc
     if not isinstance(data, dict):
         raise click.UsageError(
             f"graph document must be an object, got {type(data).__name__}"

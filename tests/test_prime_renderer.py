@@ -206,6 +206,67 @@ class TestTaskContextSection:
         assert "heading not found" in body
 
 
+class TestSpecRefContainment:
+    """``_render_spec_ref`` inlines the referenced file into another agent's
+    prompt — the whole file when no ``section`` is given. Containment is
+    enforced here as well as in the graph validator, because a row can reach
+    ``task_context`` by paths other than a validated graph.
+    """
+
+    SECRET = "sk-do-not-leak"
+
+    @pytest.fixture
+    def secret_file(self, tmp_path):
+        target = tmp_path / "outside" / "secret.md"
+        _write(str(target), f"## Secret\n{self.SECRET}\n")
+        return target
+
+    async def _context_body(self, db, config, ref: dict) -> str:
+        await db.add_task_context(
+            "task-1", type="spec_ref", label="spec", content=json.dumps(ref)
+        )
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        return {s.key: s.body for s in doc.sections}["task_context"]
+
+    async def test_dotdot_traversal_is_refused(self, db, config, task, secret_file):
+        rel = os.path.relpath(secret_file, config.vault_root)
+        body = await self._context_body(db, config, {"path": rel, "section": "Secret"})
+        assert self.SECRET not in body
+        assert "refused" in body
+
+    async def test_absolute_path_outside_the_vault_is_refused(self, db, config, task, secret_file):
+        body = await self._context_body(db, config, {"path": str(secret_file)})
+        assert self.SECRET not in body
+        assert "refused" in body
+
+    async def test_whole_file_inlining_is_refused_too(self, db, config, task, secret_file):
+        """No ``section`` means the *entire* file would be inlined."""
+        rel = os.path.relpath(secret_file, config.vault_root)
+        body = await self._context_body(db, config, {"path": rel})
+        assert self.SECRET not in body
+
+    async def test_symlink_out_of_the_vault_is_refused(self, db, config, task, secret_file):
+        link = os.path.join(config.vault_root, "projects", "proj-1", "specs", "escape.md")
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        try:
+            os.symlink(secret_file, link)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation not permitted on this host")
+        body = await self._context_body(
+            db, config, {"path": "projects/proj-1/specs/escape.md"}
+        )
+        assert self.SECRET not in body
+        assert "refused" in body
+
+    async def test_in_vault_reference_is_unaffected(self, db, config, task):
+        spec_rel = os.path.join("projects", "proj-1", "specs", "widget.md")
+        _write(os.path.join(config.vault_root, spec_rel), "## 3. Schema\nSchema body.\n")
+        body = await self._context_body(
+            db, config, {"path": spec_rel, "section": "3. Schema"}
+        )
+        assert "Schema body." in body
+
+
 # ---------------------------------------------------------------------------
 # Workspaces section
 # ---------------------------------------------------------------------------

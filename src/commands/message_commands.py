@@ -189,6 +189,22 @@ class MessageCommandsMixin:
         if not body or not str(body).strip():
             return {"error": "body is required"}
 
+        # A reply is addressed to the original's *sender*, so that sender has
+        # to be an addressable recipient.  ``system`` is in MESSAGE_FROM_KINDS
+        # but not MESSAGE_TO_KINDS (``ck_messages_to_kind`` enforces that), and
+        # ``message_send`` accepts from_kind="system" — so without this guard a
+        # reply to a system-sent message reaches create_message and surfaces a
+        # raw IntegrityError with the whole chat body echoed in the bound
+        # parameters.  Fail cleanly before the insert instead.
+        if original.from_kind not in MESSAGE_TO_KINDS:
+            return {
+                "error": (
+                    f"cannot reply to a '{original.from_kind}' message — "
+                    f"'{original.from_kind}' is not an addressable recipient "
+                    f"(addressable: {', '.join(sorted(MESSAGE_TO_KINDS))})"
+                )
+            }
+
         # The reply comes *from* whoever the original was addressed to and
         # goes *to* whoever sent it — mirroring, per design §6.2.  ``task``
         # and ``profile`` recipients have no from_kind of their own, so a

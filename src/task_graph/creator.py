@@ -120,6 +120,16 @@ def _compose_description(node: GraphNode) -> str:
     nothing reads that table into a prompt yet, and a task whose acceptance
     an agent can't see is a task written badly (design §4 Rules).  So they
     are appended to the description too.
+
+    .. warning::
+
+       This double-write is **coupled to ``task_criteria`` having no reader.**
+       This function is that table's only writer, and
+       ``src/database/queries/task_queries.py`` exposes no getter — see the
+       comment on ``src/prime/sections.build_task_section``, which carries the
+       description precisely because the criteria are unreachable.  The day
+       someone adds a getter and wires it into the prime document, section 3
+       renders every criterion twice.  Drop this append in the same change.
     """
     description = (node.description or node.title or "").strip()
     criteria = [c.strip() for c in node.acceptance if c and c.strip()]

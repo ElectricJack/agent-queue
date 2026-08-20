@@ -57,6 +57,25 @@ def _prompts_root() -> Path:
     return Path(__file__).parent / "prompts"
 
 
+def path_is_within(candidate: str | Path, root: str | Path) -> bool:
+    """True when *candidate* resolves to a path inside *root*.
+
+    Symlink-aware: both sides are fully resolved first, so a symlink inside
+    the root that points outside it is correctly rejected.  Used by every
+    surface that turns author-supplied text into a file read — see
+    ``src/task_graph/validator.resolve_spec_path`` and
+    ``src/prime/sections._render_spec_ref``.  Returns ``False`` rather than
+    raising on an unresolvable path: callers treat "can't prove containment"
+    as "not contained".
+    """
+    try:
+        resolved = Path(candidate).resolve()
+        base = Path(root).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return resolved == base or resolved.is_relative_to(base)
+
+
 def allowed_roots(config: _ConfigLike) -> list[Path]:
     """Return the absolute directory roots under which ``aq://`` paths resolve.
 

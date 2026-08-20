@@ -81,6 +81,19 @@ class TestArgumentHandling:
         )
         assert "not found in the vault" in result["error"]
 
+    async def test_spec_path_escaping_the_vault_is_refused(self, setup, tmp_path):
+        """`spec_path` accepted absolute paths and joined relative ones without
+        normalisation, so `--from-spec` was an arbitrary file read."""
+        handler, _db, _vault = setup
+        outside = tmp_path / "secret.md"
+        outside.write_text("# Secret\n\n```aq-graph\n{}\n```\n", encoding="utf-8")
+
+        for path in ("../secret.md", str(outside)):
+            result = await handler._cmd_create_task_graph(
+                {"project_id": "p1", "spec_path": path}
+            )
+            assert "outside the vault" in result["error"], path
+
 
 class TestGraphSource:
     async def test_inline_graph_creates_everything(self, setup):

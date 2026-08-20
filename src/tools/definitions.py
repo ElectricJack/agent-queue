@@ -3404,7 +3404,9 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": (
                         "Vault spec path whose fenced aq-graph block defines the "
-                        "graph (relative to the vault root or absolute)"
+                        "graph, relative to the vault root (e.g. "
+                        "'projects/<pid>/specs/x.md'). Paths that resolve "
+                        "outside the vault are refused."
                     ),
                 },
                 "dry_run": {

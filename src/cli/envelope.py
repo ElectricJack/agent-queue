@@ -101,17 +101,37 @@ def envelope(data: Any, *, total: int | None = None) -> dict:
     return env
 
 
-def error_envelope(code: str, message: str) -> dict:
+def error_envelope(code: str, message: str, details: Any = None) -> dict:
     """Build the versioned error envelope (design §4.1).
 
     Known codes: ``command_error``, ``not_found``, ``out_of_scope``,
     ``daemon_unreachable``, ``paused``.
+
+    *details* is the command's structured error payload when it has one
+    (``create_task_graph`` returns ``errors``/``warnings`` finding lists).
+    Additive under ``error``, so it does not bump ``schema_version``.
     """
+    error: dict[str, Any] = {"code": code, "message": message}
+    if details:
+        error["details"] = details
     return {
         "schema_version": SCHEMA_VERSION,
-        "error": {"code": code, "message": message},
+        "error": error,
         "data": None,
     }
+
+
+def emit_error(code: str, message: str, details: Any = None) -> None:
+    """Print one error envelope as valid JSON on **stdout**.
+
+    Deliberately ``click.echo`` and not the Rich console: the CLI's console
+    writes to stdout, so a Rich-formatted error under ``--json`` landed in
+    the stream the consumer is parsing and broke ``json.loads`` on
+    ``Expecting value: line 1 column 1`` — and Rich hard-wraps at terminal
+    width, splitting the message mid-sentence. Agent-facing commands
+    (``aq reply``, ``aq inbox``) depend on this staying machine-readable.
+    """
+    click.echo(json.dumps(error_envelope(code, message, details), default=str))
 
 
 def emit(

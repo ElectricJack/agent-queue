@@ -148,6 +148,21 @@ class TestParseGraph:
             parse_graph({"version": 7, "nodes": [{"key": "a", "title": "A"}]})
         assert exc.value.errors[0].rule == "bad_version"
 
+    def test_deep_nesting_is_a_finding_not_a_recursion_error(self):
+        """``parser.py`` caught only JSONDecodeError/YAMLError, so a deeply
+        nested document raised an uncaught RecursionError out of parse_graph."""
+        bomb = "[" * 4000 + "]" * 4000
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(bomb)
+        assert exc.value.errors  # structured, not a bare stack overflow
+
+    def test_document_over_the_size_cap_is_rejected(self):
+        from src.task_graph.parser import MAX_GRAPH_DOCUMENT_CHARS
+
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph("x" * (MAX_GRAPH_DOCUMENT_CHARS + 1))
+        assert [e.rule for e in exc.value.errors] == ["document_too_large"]
+
     def test_all_structural_errors_reported_at_once(self):
         with pytest.raises(GraphParseError) as exc:
             parse_graph(
@@ -221,6 +236,277 @@ class TestSubstituteVars:
         before = graph.nodes[0].description
         substitute_vars(graph)
         assert graph.nodes[0].description == before
+
+    def test_a_var_whose_value_is_a_var_resolves_fully(self):
+        """Single-pass expansion left a literal ``{b}`` in the created task."""
+        graph = parse_graph(
+            {"version": 1, "vars": {"a": "{b}", "b": "boom"}, "nodes": [{"key": "n", "title": "{a}"}]}
+        )
+        used, unknown = substitute_vars(graph)
+        assert graph.nodes[0].title == "boom"
+        assert unknown == set()
+        # Both names count as used — `b` is referenced transitively, so
+        # reporting it as unused_var was a false positive.
+        assert {"a", "b"} <= used
+
+    def test_circular_var_is_reported_not_silently_left_literal(self):
+        graph = parse_graph(
+            {"version": 1, "vars": {"a": "{b}", "b": "{a}"}, "nodes": [{"key": "n", "title": "{a}"}]}
+        )
+        _used, unknown = substitute_vars(graph)
+        assert unknown & {"a", "b"}
+
+    def test_parent_profile_is_expanded(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "vars": {"p": "coding"},
+                "parent": {"title": "P", "profile": "{p}"},
+                "nodes": [{"key": "n", "title": "N"}],
+            }
+        )
+        used, unknown = substitute_vars(graph)
+        assert graph.parent.profile == "coding"
+        assert unknown == set()
+        assert "p" in used
+
+    def test_context_type_is_expanded(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "vars": {"kind": "spec_ref"},
+                "nodes": [
+                    {"key": "n", "title": "N", "context": [{"type": "{kind}", "path": "x.md"}]}
+                ],
+            }
+        )
+        used, unknown = substitute_vars(graph)
+        assert graph.nodes[0].context[0].type == "spec_ref"
+        assert unknown == set()
+        assert "kind" in used
+
+
+class TestVarSubstitutionThroughValidation:
+    async def test_chained_var_produces_no_spurious_findings(self, vault):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "vars": {"a": "{b}", "b": "boom"},
+                "nodes": [{"key": "n", "title": "{a}", "acceptance": ["x"]}],
+            }
+        )
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+        assert [f.rule for f in findings] == []
+        assert graph.nodes[0].title == "boom"
+
+    async def test_var_in_parent_profile_is_accepted(self, vault):
+        """`unused_var 'p'` + `unknown_profile '{p}'` on a correct document."""
+        graph = parse_graph(
+            {
+                "version": 1,
+                "vars": {"p": "coding"},
+                "parent": {"title": "P", "profile": "{p}"},
+                "nodes": [{"key": "n", "title": "N", "acceptance": ["x"]}],
+            }
+        )
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+        assert [f.rule for f in findings] == []
+        assert graph.parent.profile == "coding"
+
+
+# ---------------------------------------------------------------------------
+# Self-edges (all dep types)
+# ---------------------------------------------------------------------------
+
+
+class TestSelfEdges:
+    @pytest.mark.parametrize("dep_type", ["blocks", "related", "parent-child", "waits-for"])
+    async def test_self_edge_is_rejected_for_every_dep_type(self, dep_type, vault):
+        """A non-blocking self-edge used to validate clean, then die at insert
+        against ``CheckConstraint("task_id != depends_on_task_id")``."""
+        graph = parse_graph(
+            {
+                "version": 1,
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "needs": [{"on": "a", "dep_type": dep_type}],
+                    }
+                ],
+            }
+        )
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+        errors, _warnings = split_findings(findings)
+        assert "self_edge" in {f.rule for f in errors}
+        assert [f.node for f in errors if f.rule == "self_edge"] == ["a"]
+
+    async def test_a_genuine_two_node_edge_is_untouched(self, vault):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"]},
+                    {
+                        "key": "b",
+                        "title": "B",
+                        "acceptance": ["x"],
+                        "needs": [{"on": "a", "dep_type": "related"}],
+                    },
+                ],
+            }
+        )
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+        assert [f.rule for f in findings] == []
+
+
+# ---------------------------------------------------------------------------
+# Profile scoping
+# ---------------------------------------------------------------------------
+
+
+class TestProfileScoping:
+    async def test_another_projects_scoped_profile_is_rejected(self, vault):
+        """`project:p2:coding` in a p1 graph validated clean and was written
+        verbatim into ``tasks.profile_id``."""
+        graph = parse_graph(
+            {
+                "version": 1,
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "profile": "project:p2:coding"}
+                ],
+            }
+        )
+        db = _FakeDB(profiles={"coding", "project:p2:coding"})
+        findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
+        errors, _ = split_findings(findings)
+        assert {f.rule for f in errors} == {"foreign_project_profile"}
+        assert graph.nodes[0].profile == "project:p2:coding"  # never rewritten
+
+    async def test_foreign_scoped_parent_profile_is_rejected(self, vault):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "parent": {"title": "P", "profile": "project:p2:coding"},
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"]}],
+            }
+        )
+        db = _FakeDB(profiles={"project:p2:coding"})
+        findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
+        assert {f.rule for f in split_findings(findings)[0]} == {"foreign_project_profile"}
+
+    async def test_own_scoped_profile_resolves_idempotently(self, vault):
+        """Writing the fully-scoped id yourself must not double-prefix."""
+        graph = parse_graph(
+            {
+                "version": 1,
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "profile": "project:p1:special"}
+                ],
+            }
+        )
+        db = _FakeDB(profiles={"project:p1:special"})
+        findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
+        assert [f.rule for f in findings] == []
+        assert graph.nodes[0].profile == "project:p1:special"
+
+
+# ---------------------------------------------------------------------------
+# spec_ref containment (arbitrary-file-read into another agent's prompt)
+# ---------------------------------------------------------------------------
+
+
+class TestSpecRefContainment:
+    """``spec_ref`` paths must stay inside the vault.
+
+    The graph is authored by an LLM from vault specs whose text may be
+    attacker-influenced, and the resolved file is inlined verbatim into
+    another agent's prime document by ``src/prime/sections._render_spec_ref``.
+    """
+
+    @staticmethod
+    def _graph_with_ref(path: str):
+        return parse_graph(
+            {
+                "version": 1,
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "context": [{"type": "spec_ref", "path": path}],
+                    }
+                ],
+            }
+        )
+
+    @pytest.fixture
+    def secret(self, vault, tmp_path):
+        """A real file next to the vault, i.e. outside it."""
+        target = tmp_path / "secret.md"
+        target.write_text("## Secret\nsk-do-not-leak\n", encoding="utf-8")
+        return target
+
+    async def test_dotdot_traversal_is_an_error(self, vault, secret):
+        graph = self._graph_with_ref("../secret.md")
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+        errors, _ = split_findings(findings)
+        assert {f.rule for f in errors} == {"spec_ref_outside_vault"}
+
+    async def test_absolute_path_outside_the_vault_is_an_error(self, vault, secret):
+        graph = self._graph_with_ref(str(secret))
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+        errors, _ = split_findings(findings)
+        assert {f.rule for f in errors} == {"spec_ref_outside_vault"}
+
+    async def test_symlink_pointing_outside_the_vault_is_an_error(self, vault, secret):
+        link = Path(vault) / "projects" / "p1" / "specs" / "escape.md"
+        try:
+            link.symlink_to(secret)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation not permitted on this host")
+        graph = self._graph_with_ref("projects/p1/specs/escape.md")
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+        errors, _ = split_findings(findings)
+        assert {f.rule for f in errors} == {"spec_ref_outside_vault"}
+
+    async def test_an_in_vault_reference_still_resolves(self, vault):
+        graph = self._graph_with_ref("projects/p1/specs/messages-table.md")
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+        assert [f.rule for f in findings] == []
+
+    async def test_an_in_vault_absolute_reference_still_resolves(self, vault):
+        spec = Path(vault) / "projects" / "p1" / "specs" / "messages-table.md"
+        graph = self._graph_with_ref(str(spec))
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+        assert [f.rule for f in findings] == []
+
+    def test_resolve_spec_path_refuses_escapes(self, vault, secret):
+        from src.task_graph.validator import resolve_spec_path, resolve_spec_path_checked
+
+        for path in ("../secret.md", str(secret)):
+            assert resolve_spec_path(path, vault_root=vault, source_path=None) is None
+            assert resolve_spec_path_checked(path, vault_root=vault, source_path=None) == (
+                None,
+                "outside_vault",
+            )
+
+    async def test_traversal_is_refused_even_when_the_target_does_not_exist(self, vault):
+        """Containment is decided before existence, so a traversal attempt is
+        reported as one rather than as a benign 'file not found'."""
+        graph = self._graph_with_ref("../../not/here/at/all.md")
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+        errors, _ = split_findings(findings)
+        assert {f.rule for f in errors} == {"spec_ref_outside_vault"}
+
+    def test_resolve_spec_path_distinguishes_missing_from_escaping(self, vault):
+        from src.task_graph.validator import resolve_spec_path_checked
+
+        assert resolve_spec_path_checked("nope.md", vault_root=vault, source_path=None) == (
+            None,
+            "not_found",
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -243,6 +243,100 @@ class TestOrchestratorLifecycle:
         assert t2.status == TaskStatus.READY
 
 
+class TestRecoverStaleState:
+    """Restart recovery must not resurrect container tasks.
+
+    A plan parent or graph parent is IN_PROGRESS *because* its children are
+    running.  Resetting one to READY makes the scheduler dispatch it: it takes
+    the project's exclusive `project-repo` lock and launches an agent on a
+    prompt whose whole content is the parent title, blocking its own children.
+    A graph parent is IN_PROGRESS for the graph's entire lifetime, so the
+    window is days.
+    """
+
+    async def test_container_task_with_subtasks_is_left_in_progress(self, orch):
+        # A project only, no workspace: these tests never schedule anything,
+        # and `_create_project_with_workspace` hands every caller the same
+        # hard-coded `/tmp/test-workspace`, which races under `-n auto`.
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(
+            Task(
+                id="parent-1",
+                project_id="p-1",
+                title="Messages table + delivery engine",
+                description="Messages table + delivery engine",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="child-1",
+                project_id="p-1",
+                title="Schema",
+                description="Schema",
+                status=TaskStatus.IN_PROGRESS,
+                parent_task_id="parent-1",
+            )
+        )
+
+        await orch._recover_stale_state()
+
+        parent = await orch.db.get_task("parent-1")
+        child = await orch.db.get_task("child-1")
+        assert parent.status == TaskStatus.IN_PROGRESS
+        # The leaf is genuinely stale and must still be recovered.
+        assert child.status == TaskStatus.READY
+
+    async def test_a_plain_stale_task_is_still_recovered(self, orch):
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_agent(Agent(id="a-dead", name="claude-1", profile_id="claude"))
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Test",
+                description="Do it",
+                status=TaskStatus.IN_PROGRESS,
+                assigned_agent_id="a-dead",
+            )
+        )
+
+        await orch._recover_stale_state()
+
+        task = await orch.db.get_task("t-1")
+        assert task.status == TaskStatus.READY
+        assert task.assigned_agent_id is None
+
+    async def test_container_task_still_auto_completes(self, orch):
+        """`_check_plan_parent_completion` keys off *having subtasks*, so the
+        parent left IN_PROGRESS is not stranded."""
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(
+            Task(
+                id="parent-1",
+                project_id="p-1",
+                title="Parent",
+                description="Parent",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="child-1",
+                project_id="p-1",
+                title="Child",
+                description="Child",
+                status=TaskStatus.COMPLETED,
+                parent_task_id="parent-1",
+            )
+        )
+
+        await orch._recover_stale_state()
+        await orch._check_plan_parent_completion()
+
+        assert (await orch.db.get_task("parent-1")).status == TaskStatus.COMPLETED
+
+
 def _make_plan_toucher(workspace):
     """Create an on_wait callback that touches pre-created plan files.
 

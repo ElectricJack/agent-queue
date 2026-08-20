@@ -419,6 +419,10 @@ class TestCLIClient:
         mock_http.request.return_value = typed_resp
         # Also mock .post for fallback path
         fallback_resp = MagicMock(spec=httpx.Response)
+        # `status_code` is set in httpx.Response.__init__, not on the class, so
+        # spec= doesn't provide it. `_execute_generic` reads it to map 401/403
+        # onto ScopeDeniedError (aq-surface §4.1 exit code 4).
+        fallback_resp.status_code = status_code
         fallback_resp.json = lambda: _ok(json_body)
         mock_http.post.return_value = fallback_resp
         mock_http.aclose = AsyncMock()
@@ -446,6 +450,7 @@ class TestCLIClient:
 
         mock_http = self._mock_httpx_for_typed(200, {})
         error_resp = MagicMock(spec=httpx.Response)
+        error_resp.status_code = 200
         error_resp.json = lambda: {"ok": False, "error": "Task not found"}
         mock_http.post.return_value = error_resp
 
@@ -463,6 +468,7 @@ class TestCLIClient:
         import httpx
 
         fallback_resp = MagicMock(spec=httpx.Response)
+        fallback_resp.status_code = 200
         fallback_resp.json = lambda: _ok({"custom": "result"})
         mock_http.post.return_value = fallback_resp
 
@@ -960,7 +966,9 @@ class TestDaemonNotRunningPrompt:
         # Phase S0 — patch the module it actually imports `_get_client` from.
         with patch("src.cli.tasks._get_client", return_value=mock_client):
             result = runner.invoke(cli, ["task", "list"], input="n\n")
-            assert result.exit_code == 1
+            # aq-surface §4.1: 3 is "daemon unreachable", distinct from 1
+            # ("command error"). It used to be 1 for everything.
+            assert result.exit_code == 3
             assert "not running" in result.output.lower()
             assert "aq start" in result.output
 

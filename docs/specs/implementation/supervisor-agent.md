@@ -368,7 +368,10 @@ today's behavior; `messages.enabled` alone = queue/inbox/prime mode (no sessions
 - [ ] **Phase 1 — commands, API, CLI**: `MessageCommandsMixin` wired into
       `CommandHandler`; `src/api/messages.py` router in `create_app()`; MCP/CLI
       auto-exposure verified; `aq message *`, `aq reply`, `aq chat --once` (poll mode);
-      slim-MCP allowlist entries.
+      ~~slim-MCP allowlist entries~~ — **not part of Phase 1.**
+      `mcp_server.task_scope` is an aq-surface Phase-3 placeholder with no consumer
+      (see [[implementation/aq-surface]] §S3); there is nothing to allowlist until
+      `register_task_scope_tools` exists.
 - [ ] **Phase 2 — graphs**: `src/task_graph/` parser/validator/creator with goldens;
       `_cmd_create_task_graph`; `aq task create --graph|--from-spec|--dry-run`;
       `spec_ref` context rows (prime rendering lands with aq-surface); vault
@@ -383,6 +386,53 @@ today's behavior; `messages.enabled` alone = queue/inbox/prime mode (no sessions
 - [ ] **Phase 5 — planner cutover**: `planner`/`reviewer` profiles exercised end-to-end;
       `planner.legacy_plan_discovery` default false; drain in-flight
       `AWAITING_PLAN_APPROVAL` tasks; docs updated (`plan-parser.md` marked superseded).
+
+### 11.1 Open questions the delivery engine must settle (Phase 3)
+
+Recorded during the adversarial review of the Phase 0–2 merge. None is a bug
+*today* — Phase 1 only queues rows, nothing reads them — but each becomes one
+the moment `MessageDeliveryEngine` starts consuming the queue. Decide them
+before writing the engine, not after.
+
+**Message scoping — the big one.** `messages.project_id` is written on every row
+and read by almost nothing:
+
+- `get_pending_messages` has **no project filter at all**, and
+  `idx_messages_pending` (`to_kind, to_id, delivered_at, priority, created_at`)
+  bakes that in — adding a filter later means a new index, not just a `WHERE`.
+  `to_kind=profile` and `to_kind=user` recipients are inherently project-agnostic
+  ids, so two projects' messages to the same `to_id` land in one inbox. Verified.
+- `_cmd_message_list` with no `project_id` argument and no active project returns
+  **every project's** messages.
+- `message.*` events fan out to **all** `/ws/events` clients regardless of project.
+  Chat bodies are more sensitive than the task notifications that channel was
+  designed for; scope the fan-out, or route chat over a separate channel.
+
+Pick one model deliberately — recipient ids are globally unique, or delivery is
+always project-scoped — and make queries, index, and event fan-out agree.
+
+**`mark_delivered` and archived rows.** The compare-and-set is genuinely correct
+(three concurrent callers → `[True, False, False]`), but it only checks
+`delivered_at IS NULL`, so it succeeds on an already-**archived** row. Decide
+whether archiving should close the row to delivery.
+
+**`task_criteria` is write-only.** `src/task_graph/creator.py` is the only writer
+and there is no getter, so `_compose_description`'s double-write of acceptance
+criteria into the task description is invisible. The moment anyone adds a reader,
+prime section 3 renders the criteria twice. See the comment on `_compose_description`.
+
+**Transaction boundary.** `creator.py` reaches through to `db._engine` to get one
+transaction across five tables. The atomicity is *verified correct* (injected
+failure at insert 4 and during `task_criteria` both left zero rows) — but the
+right shape is a `db.transaction()` context manager on the query layer, so the
+next multi-table writer doesn't copy the reach-through as folk wisdom.
+
+**Cosmetic, no action required now.**
+
+- `messages are disabled` surfaces from the relay as HTTP 422; 503 is more honest.
+- `extract_graph_block` matches a nested ` ```aq-graph ` fence *inside* an outer
+  fence, so a spec that merely **documents** a graph gets it extracted; and an
+  unclosed fence silently swallows the rest of the file.
 
 ---
 

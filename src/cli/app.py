@@ -57,19 +57,68 @@ def _get_client(api_url: str | None = None):
     return CLIClient(base_url=api_url)
 
 
-def _handle_errors(func):
-    """Decorator that catches CLI client errors and prints them nicely.
+def _json_mode() -> bool:
+    """True when the current invocation carries the global ``--json`` flag."""
+    ctx = click.get_current_context(silent=True)
+    return bool((ctx.obj or {}).get("json")) if ctx is not None else False
 
-    When the daemon is not running, offers to start it and retry.
+
+def _render_command_findings(details: dict) -> None:
+    """Print a command's structured ``errors``/``warnings`` finding lists.
+
+    ``create_task_graph`` reports every rule that failed at once; without
+    this the CLI printed only the summary line ("graph validation failed
+    with 3 error(s)") and the author never learned *which* rules failed.
+    Rule names are not wrapped in square brackets — Rich would read those
+    as markup and swallow the text.
+    """
+    for severity, key in (("error", "errors"), ("warning", "warnings")):
+        for finding in details.get(key) or []:
+            if not isinstance(finding, dict):
+                continue
+            colour = "red" if severity == "error" else "yellow"
+            where = f" ({finding['node']})" if finding.get("node") else ""
+            console.print(
+                f"  [{colour}]{severity}[/] {finding.get('rule')}{where}: "
+                f"{finding.get('detail')}"
+            )
+
+
+def _handle_errors(func):
+    """Decorator that catches CLI client errors and reports them.
+
+    Two modes, per ``docs/specs/design/aq-surface.md`` §4.1:
+
+    - ``--json``: exactly one error envelope on **stdout**, no Rich
+      formatting and **no interactive prompt** — agent-facing commands
+      (``aq reply``, ``aq inbox``) must never hang on a ``[Y/n]`` or return
+      human text into a stream something is parsing.
+    - human: Rich output, and an offer to start the daemon when it is down.
+
+    Exit codes: 1 command error, 3 daemon unreachable, 4 auth/scope denied.
     """
     import functools
+    from .envelope import emit_error
     from .exceptions import CommandError, DaemonNotRunningError
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        as_json = _json_mode()
+
+        def _fail_command(exc: CommandError) -> None:
+            if as_json:
+                emit_error(exc.code, exc.detail_message, exc.details or None)
+            else:
+                console.print(f"[bold red]Error:[/] {exc}")
+                _render_command_findings(exc.details or {})
+            raise SystemExit(exc.exit_code)
+
         try:
             return func(*args, **kwargs)
-        except DaemonNotRunningError:
+        except DaemonNotRunningError as exc:
+            if as_json:
+                emit_error(exc.code, str(exc))
+                raise SystemExit(exc.exit_code)
             console.print("[bold red]Daemon is not running.[/]")
             if console.input("[bold]Start the daemon? [Y/n] [/]").strip().lower() in (
                 "",
@@ -83,20 +132,18 @@ def _handle_errors(func):
                     # Retry the original command
                     try:
                         return func(*args, **kwargs)
-                    except DaemonNotRunningError:
+                    except DaemonNotRunningError as retry_exc:
                         console.print("[bold red]Error:[/] Still cannot connect to daemon.")
-                        raise SystemExit(1)
-                    except CommandError as e:
-                        console.print(f"[bold red]Error:[/] {e}")
-                        raise SystemExit(1)
+                        raise SystemExit(retry_exc.exit_code)
+                    except CommandError as retry_exc:
+                        _fail_command(retry_exc)
                 else:
-                    raise SystemExit(1)
+                    raise SystemExit(exc.exit_code)
             else:
                 console.print("[dim]Run 'aq start' to start the daemon.[/]")
-                raise SystemExit(1)
-        except CommandError as e:
-            console.print(f"[bold red]Error:[/] {e}")
-            raise SystemExit(1)
+                raise SystemExit(exc.exit_code)
+        except CommandError as exc:
+            _fail_command(exc)
 
     return wrapper
 

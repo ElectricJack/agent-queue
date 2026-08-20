@@ -56,27 +56,37 @@ class SessionMessageResponse(BaseModel):
     state: str  # "queued" | "delivered"
 
 
+#: Logical session roles this build knows how to address.  ``planner`` and
+#: ``reviewer`` join it when those sessions exist; until then an unknown role
+#: is a 404, not a row queued to a session that will never read it.
+KNOWN_SESSION_ROLES: tuple[str, ...] = ("supervisor",)
+
+
 async def resolve_session_project(name: str, ch) -> str:
     """Map a logical session name to its project id.
 
     Logical names are ``<role>-<project_id>`` (``supervisor-agent-queue``).
-    Project ids themselves contain hyphens, so the split is resolved against
-    the project table rather than guessed: the leftmost split whose suffix is
-    a real project wins.
+    The split is on the **known role prefix**, not on hyphen position: the
+    old left-to-right walk never validated the role, so ``junkrole-agent-queue``
+    and even ``-agent-queue`` resolved happily, and ``code-reviewer-myproj``
+    with projects ``{myproj, reviewer-myproj}`` picked the wrong one.
 
-    Raises ``HTTPException(404)`` when no split resolves.
+    Raises ``HTTPException(404)`` when the role is unknown or the project
+    doesn't exist.
     """
-    for idx, char in enumerate(name):
-        if char != "-":
+    for role in KNOWN_SESSION_ROLES:
+        prefix = f"{role}-"
+        if not name.startswith(prefix):
             continue
-        candidate = name[idx + 1 :]
-        if not candidate:
-            continue
-        if await ch.db.get_project(candidate):
+        candidate = name[len(prefix) :]
+        if candidate and await ch.db.get_project(candidate):
             return candidate
     raise HTTPException(
         status_code=404,
-        detail=f"Unknown session name '{name}' (expected <role>-<project_id>)",
+        detail=(
+            f"Unknown session name '{name}' (expected <role>-<project_id>, "
+            f"role one of: {', '.join(KNOWN_SESSION_ROLES)})"
+        ),
     )
 
 

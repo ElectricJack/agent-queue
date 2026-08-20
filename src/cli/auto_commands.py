@@ -216,9 +216,18 @@ def _make_auto_command(
             try:
                 result = _app._run(_exec())
             except Exception as exc:
+                # Same contract as `_handle_errors` in app.py (aq-surface
+                # §4.1): under --json one error envelope on stdout, never a
+                # prompt; exit 1 / 3 / 4 by error kind.
+                from .envelope import emit_error
                 from .exceptions import CommandError, DaemonNotRunningError
 
+                as_json = _app._json_mode()
+
                 if isinstance(exc, DaemonNotRunningError):
+                    if as_json:
+                        emit_error(exc.code, str(exc))
+                        raise SystemExit(exc.exit_code)
                     console.print("[bold red]Daemon is not running.[/]")
                     if console.input("[bold]Start the daemon? [Y/n] [/]").strip().lower() in (
                         "",
@@ -231,13 +240,17 @@ def _make_auto_command(
                             console.print()
                             result = _app._run(_exec())
                         else:
-                            raise SystemExit(1)
+                            raise SystemExit(exc.exit_code)
                     else:
                         console.print("[dim]Run 'aq start' to start the daemon.[/]")
-                        raise SystemExit(1)
+                        raise SystemExit(exc.exit_code)
                 elif isinstance(exc, CommandError):
-                    console.print(f"[bold red]Error:[/] {exc}")
-                    raise SystemExit(1)
+                    if as_json:
+                        emit_error(exc.code, exc.detail_message, exc.details or None)
+                    else:
+                        console.print(f"[bold red]Error:[/] {exc}")
+                        _app._render_command_findings(exc.details or {})
+                    raise SystemExit(exc.exit_code)
                 else:
                     raise
 

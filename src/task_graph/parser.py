@@ -32,6 +32,12 @@ from src.task_graph.models import (
 #: The fence language that marks a spec's graph block (design §8.1).
 GRAPH_FENCE_LANG = "aq-graph"
 
+#: Hard ceiling on a graph document, in characters.  5000 nodes parse to well
+#: under this; the cap exists to stop a pathological document (deep nesting,
+#: expansion bombs) reaching the JSON/YAML parsers at all.  Rejected as a
+#: normal structural finding, not an exception the caller has to guess at.
+MAX_GRAPH_DOCUMENT_CHARS = 2_000_000
+
 _FENCE_RE = re.compile(
     r"^(?P<fence>`{3,}|~{3,})[ \t]*" + GRAPH_FENCE_LANG + r"[ \t]*\r?$",
     re.MULTILINE,
@@ -217,6 +223,17 @@ def _load_document(source: str, fmt: str) -> dict:
     if not text:
         raise GraphParseError([_err("empty_document", "graph document is empty")])
 
+    if len(text) > MAX_GRAPH_DOCUMENT_CHARS:
+        raise GraphParseError(
+            [
+                _err(
+                    "document_too_large",
+                    f"graph document is {len(text)} characters, over the "
+                    f"{MAX_GRAPH_DOCUMENT_CHARS} limit",
+                )
+            ]
+        )
+
     attempts: list[str] = {"auto": ["json", "yaml"], "json": ["json"], "yaml": ["yaml"]}.get(
         fmt, []
     )
@@ -234,6 +251,13 @@ def _load_document(source: str, fmt: str) -> dict:
                 data = yaml.safe_load(text)
         except (json.JSONDecodeError, yaml.YAMLError) as exc:
             last_detail = str(exc)
+            continue
+        except RecursionError:
+            # Both parsers recurse on nesting depth; `"["*4000 + "]"*4000` is
+            # under the size cap and still blows the stack.  A RecursionError
+            # escaping parse_graph reaches the CLI (`--graph -`) with no
+            # containing net at all, so it becomes a structural finding here.
+            last_detail = "document nesting is too deep to parse"
             continue
         if isinstance(data, dict):
             return data

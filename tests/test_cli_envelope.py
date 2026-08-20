@@ -636,3 +636,215 @@ class TestCLIClientEnvPlumbing:
 
         client = CLIClient(base_url="http://x")
         assert client._token is None
+
+
+# ---------------------------------------------------------------------------
+# Error path: --json must stay machine-readable (aq-surface §4.1)
+# ---------------------------------------------------------------------------
+
+
+class TestJsonErrorEnvelope:
+    """`error_envelope()` was referenced nowhere in `src/` — only in tests.
+
+    Under `--json` a failure printed Rich-formatted human text to the *Rich
+    console*, which writes to **stdout**, so `json.loads` on the CLI's output
+    died with `Expecting value: line 1 column 1`. Agent-facing commands
+    (`aq reply`, `aq inbox`) are the ones the supervisor profile teaches.
+    """
+
+    def test_command_error_is_valid_json_on_stdout(self, runner):
+        from src.cli.app import cli
+        from src.cli.exceptions import CommandError
+
+        mock = _mock_client({"list_tasks": CommandError("list_tasks", "boom")})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["--json", "task", "list"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)  # would raise before the fix
+        assert payload["schema_version"] == SCHEMA_VERSION
+        assert payload["error"]["code"] == "command_error"
+        assert payload["error"]["message"] == "boom"
+        assert payload["data"] is None
+
+    def test_command_error_carries_structured_details(self, runner):
+        """`create_task_graph` reports every failed rule at once; the CLI only
+        ever printed the summary count."""
+        from src.cli.app import cli
+        from src.cli.exceptions import CommandError
+
+        findings = {
+            "errors": [{"rule": "cycle", "node": None, "detail": "a → b → a", "severity": "error"}],
+            "warnings": [
+                {"rule": "no_acceptance", "node": "a", "detail": "none", "severity": "warning"}
+            ],
+        }
+        exc = CommandError(
+            "create_task_graph", "graph validation failed with 1 error(s)", details=findings
+        )
+        mock = _mock_client({"create_task_graph": exc})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(
+                cli, ["--json", "task", "create", "--from-spec", "x.md", "-p", "p1"]
+            )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["error"]["details"]["errors"][0]["rule"] == "cycle"
+        assert payload["error"]["details"]["warnings"][0]["rule"] == "no_acceptance"
+
+    def test_human_mode_renders_each_failed_rule(self, runner):
+        from src.cli.app import cli
+        from src.cli.exceptions import CommandError
+
+        exc = CommandError(
+            "create_task_graph",
+            "graph validation failed with 2 error(s)",
+            details={
+                "errors": [
+                    {"rule": "cycle", "node": None, "detail": "a → b → a", "severity": "error"},
+                    {
+                        "rule": "unknown_profile",
+                        "node": "b",
+                        "detail": "no such profile",
+                        "severity": "error",
+                    },
+                ]
+            },
+        )
+        mock = _mock_client({"create_task_graph": exc})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["task", "create", "--from-spec", "x.md", "-p", "p1"])
+        assert result.exit_code == 1
+        assert "cycle" in result.output
+        assert "unknown_profile" in result.output
+
+    def test_daemon_unreachable_exits_3_and_never_prompts(self, runner):
+        """Under --json the daemon-down path used to print
+        `Start the daemon? [Y/n]` and then `Aborted!` — so `aq reply` /
+        `aq inbox` hung or returned junk instead of an envelope."""
+        from src.cli.app import cli
+        from src.cli.exceptions import DaemonNotRunningError
+
+        mock = _mock_client({"list_tasks": DaemonNotRunningError("http://127.0.0.1:8081")})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["--json", "task", "list"], input="")
+        assert result.exit_code == 3
+        payload = json.loads(result.stdout)
+        assert payload["error"]["code"] == "daemon_unreachable"
+        assert "Start the daemon?" not in result.output
+
+    def test_scope_denied_exits_4(self, runner):
+        from src.cli.app import cli
+        from src.cli.exceptions import ScopeDeniedError
+
+        mock = _mock_client({"list_tasks": ScopeDeniedError("list_tasks", "not available")})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["--json", "task", "list"])
+        assert result.exit_code == 4
+        assert json.loads(result.stdout)["error"]["code"] == "out_of_scope"
+
+    def test_agent_facing_reply_error_is_parseable(self, runner):
+        from src.cli.app import cli
+        from src.cli.exceptions import DaemonNotRunningError
+
+        mock = _mock_client({"message_reply": DaemonNotRunningError("http://127.0.0.1:8081")})
+        with patch("src.cli.messages._get_client", return_value=mock):
+            result = runner.invoke(cli, ["--json", "reply", "msg-1", "ok"], input="")
+        assert result.exit_code == 3
+        assert json.loads(result.stdout)["error"]["code"] == "daemon_unreachable"
+
+    def test_human_mode_daemon_prompt_is_preserved(self, runner):
+        from src.cli.app import cli
+        from src.cli.exceptions import DaemonNotRunningError
+
+        mock = _mock_client({"list_tasks": DaemonNotRunningError("http://127.0.0.1:8081")})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["task", "list"], input="n\n")
+        assert result.exit_code == 3
+        assert "Start the daemon?" in result.output
+
+
+class TestErrorDetailsPlumbing:
+    """`/api/execute` forwarded only `result["error"]`, so the structured
+    `errors`/`warnings` a command reports never reached the CLI at all.
+    """
+
+    async def test_api_execute_forwards_the_rest_of_the_error_payload(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.api.execute import ExecuteRequest, api_execute
+
+        ch = MagicMock()
+        ch.execute = AsyncMock(
+            return_value={
+                "error": "graph validation failed with 1 error(s)",
+                "errors": [{"rule": "cycle", "node": None, "detail": "a → a"}],
+                "warnings": [],
+            }
+        )
+        resp = await api_execute(ExecuteRequest(command="create_task_graph", args={}), ch)
+        body = json.loads(resp.body)
+        assert body["ok"] is False
+        assert body["error"] == "graph validation failed with 1 error(s)"
+        assert body["details"]["errors"][0]["rule"] == "cycle"
+
+    async def test_api_execute_omits_details_when_there_are_none(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.api.execute import ExecuteRequest, api_execute
+
+        ch = MagicMock()
+        ch.execute = AsyncMock(return_value={"error": "nope"})
+        resp = await api_execute(ExecuteRequest(command="get_task", args={}), ch)
+        body = json.loads(resp.body)
+        assert body == {"ok": False, "error": "nope"}
+
+    async def test_client_attaches_details_to_command_error(self):
+        import httpx
+
+        from src.cli.client import CLIClient
+        from src.cli.exceptions import CommandError
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "ok": False,
+                    "error": "graph validation failed with 1 error(s)",
+                    "details": {"errors": [{"rule": "cycle"}]},
+                },
+            )
+
+        client = CLIClient(base_url="http://x")
+        client._http = httpx.AsyncClient(
+            base_url="http://x", transport=httpx.MockTransport(handler)
+        )
+        try:
+            with pytest.raises(CommandError) as exc:
+                await client._execute_generic("create_task_graph", {})
+            assert exc.value.details["errors"][0]["rule"] == "cycle"
+            assert exc.value.exit_code == 1
+        finally:
+            await client._http.aclose()
+
+    async def test_client_maps_403_to_scope_denied(self):
+        import httpx
+
+        from src.cli.client import CLIClient
+        from src.cli.exceptions import ScopeDeniedError
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                403, json={"ok": False, "error": "Command 'run_command' is not available"}
+            )
+
+        client = CLIClient(base_url="http://x")
+        client._http = httpx.AsyncClient(
+            base_url="http://x", transport=httpx.MockTransport(handler)
+        )
+        try:
+            with pytest.raises(ScopeDeniedError) as exc:
+                await client._execute_generic("run_command", {})
+            assert exc.value.exit_code == 4
+            assert "not available" in exc.value.detail_message
+        finally:
+            await client._http.aclose()

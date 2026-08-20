@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from .exceptions import CommandError, DaemonNotRunningError
+from .exceptions import CommandError, DaemonNotRunningError, ScopeDeniedError
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,10 @@ def _relay_error(resp: Any) -> str:
         payload = resp.json()
     except Exception:
         return f"HTTP {resp.status_code}"
-    detail = payload.get("detail") if isinstance(payload, dict) else None
+    detail = None
+    if isinstance(payload, dict):
+        # FastAPI raises with `detail`; /api/execute answers with `error`.
+        detail = payload.get("detail") or payload.get("error")
     return str(detail or payload or f"HTTP {resp.status_code}")
 
 
@@ -260,9 +263,18 @@ class CLIClient:
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             raise DaemonNotRunningError(self._base_url, cause=exc) from exc
 
+        if resp.status_code in (401, 403):
+            # aq-surface §4.1 exit code 4: auth/scope denial is not a command
+            # error the caller can fix by changing its arguments.
+            raise ScopeDeniedError(command, _relay_error(resp))
+
         data = resp.json()
         if not data.get("ok"):
-            raise CommandError(command, data.get("error", "Unknown error"))
+            raise CommandError(
+                command,
+                data.get("error", "Unknown error"),
+                details=data.get("details"),
+            )
         return data.get("result", {})
 
     # -- Chat relay (supervisor-agent §6.2) ---------------------------------

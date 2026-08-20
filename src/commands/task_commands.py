@@ -1188,7 +1188,7 @@ class TaskCommandsMixin:
             split_findings,
             validate_graph,
         )
-        from src.task_graph.validator import resolve_spec_path
+        from src.task_graph.validator import resolve_spec_path_checked
 
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
@@ -1206,7 +1206,16 @@ class TaskCommandsMixin:
 
         try:
             if spec_path:
-                resolved = resolve_spec_path(spec_path, vault_root=vault_root, source_path=None)
+                resolved, reason = resolve_spec_path_checked(
+                    spec_path, vault_root=vault_root, source_path=None
+                )
+                if reason == "outside_vault":
+                    return {
+                        "error": (
+                            f"Spec '{spec_path}' resolves outside the vault — "
+                            "spec paths must stay inside the vault root"
+                        )
+                    }
                 if resolved is None:
                     return {"error": f"Spec '{spec_path}' not found in the vault"}
                 with open(resolved, encoding="utf-8") as handle:

@@ -56,10 +56,17 @@ async def api_execute(body: ExecuteRequest, ch=Depends(get_command_handler)) -> 
         )
 
     if "error" in result:
-        return JSONResponse(
-            {"ok": False, "error": result["error"]},
-            status_code=200,
-        )
+        # Forward the rest of the error payload under `details`. Commands like
+        # `create_task_graph` return a structured `errors`/`warnings` list
+        # alongside the one-line summary; dropping it here is what made the
+        # "report every finding at once" design unreachable from the CLI,
+        # which only ever saw "graph validation failed with 3 error(s)".
+        # `ok`/`error` are unchanged, so existing consumers are unaffected.
+        payload: dict = {"ok": False, "error": result["error"]}
+        details = {k: v for k, v in result.items() if k != "error"}
+        if details:
+            payload["details"] = json.loads(json.dumps(details, default=str))
+        return JSONResponse(payload, status_code=200)
     return JSONResponse(
         {"ok": True, "result": json.loads(json.dumps(result, default=str))},
         status_code=200,

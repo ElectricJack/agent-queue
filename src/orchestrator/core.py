@@ -1495,9 +1495,28 @@ class Orchestrator(
                 )
                 await self.db.release_workspace(ws.id)
 
-        # Reset IN_PROGRESS tasks back to READY so they get re-scheduled
+        # Reset IN_PROGRESS tasks back to READY so they get re-scheduled.
+        #
+        # Container tasks are excluded. A plan parent or graph parent is
+        # IN_PROGRESS *because* its children are running — not because an
+        # agent died holding it. Resetting one to READY makes the scheduler
+        # pick it up, take the project's exclusive project-repo lock, and
+        # launch an agent on a prompt whose whole content is the parent
+        # title, blocking its own children while _phase_verify judges the
+        # resulting git state. A graph parent stays IN_PROGRESS for the
+        # entire graph lifetime, so the window is days, not minutes.
+        #
+        # They still auto-complete correctly: _check_plan_parent_completion
+        # keys off *having subtasks*, not off is_plan_subtask.
         tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
         for t in tasks:
+            if await self.db.get_subtasks(t.id):
+                logger.info(
+                    "Recovery: leaving container task '%s' (%s) IN_PROGRESS — it has subtasks",
+                    t.id,
+                    t.title,
+                )
+                continue
             logger.info(
                 "Recovery: resetting task '%s' (%s) from IN_PROGRESS to READY", t.id, t.title
             )
