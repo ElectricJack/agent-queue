@@ -1286,6 +1286,9 @@ _STATIC_DIRS: list[str] = [
     "vault/projects",
     # Templates for new profiles, playbooks, etc.
     "vault/templates",
+    # Harness descriptions (one CLI agent per markdown file) --
+    # docs/specs/design/session-runtime.md §6.
+    "vault/harnesses",
 ]
 
 
@@ -1324,6 +1327,7 @@ def ensure_vault_layout(data_dir: str) -> None:
         os.makedirs(path, exist_ok=True)
 
     ensure_default_templates(data_dir)
+    ensure_default_harnesses(data_dir)
     ensure_default_playbooks(data_dir)
     ensure_default_agent_type_playbooks(data_dir)
     ensure_supervisor_profile(data_dir)
@@ -1479,6 +1483,54 @@ def ensure_default_playbooks(data_dir: str) -> dict:
             ", ".join(result["created"]),
         )
 
+    return result
+
+
+def ensure_default_harnesses(data_dir: str) -> dict:
+    """Install bundled harness files into ``vault/harnesses/`` if absent.
+
+    A harness is one CLI coding agent described as markdown
+    (``command``, prompt delivery, resume style, readiness prompt, startup
+    dialogs) — see ``docs/specs/design/session-runtime.md`` §6.  Shipping
+    ``claude.md`` means a fresh install can run the session runtime without
+    the operator authoring anything.
+
+    **Idempotent**: an existing file is never overwritten.  The vault copy
+    is the source of truth once it exists; edits survive upgrades, and a
+    user who wants the shipped version back deletes their copy.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+
+    Returns:
+        Dict with ``created`` and ``skipped`` filename lists.
+    """
+    defaults_dir = os.path.join(os.path.dirname(__file__), "sessions", "default_harnesses")
+    harness_dir = os.path.join(data_dir, "vault", "harnesses")
+    os.makedirs(harness_dir, exist_ok=True)
+
+    result: dict = {"created": [], "skipped": []}
+    if not os.path.isdir(defaults_dir):
+        logger.debug("No default harnesses directory found at %s", defaults_dir)
+        return result
+
+    for filename in sorted(os.listdir(defaults_dir)):
+        if not filename.endswith(".md"):
+            continue
+        dst_path = os.path.join(harness_dir, filename)
+        if os.path.exists(dst_path):
+            result["skipped"].append(filename)
+            continue
+        shutil.copy2(os.path.join(defaults_dir, filename), dst_path)
+        result["created"].append(filename)
+
+    if result["created"]:
+        logger.info(
+            "Installed %d default harness(es) to %s: %s",
+            len(result["created"]),
+            harness_dir,
+            ", ".join(result["created"]),
+        )
     return result
 
 

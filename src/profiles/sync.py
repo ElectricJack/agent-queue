@@ -262,6 +262,11 @@ async def sync_profile_to_db(
         memory_scope_id=profile_dict.get("memory_scope_id"),
         runtime=profile_dict.get("runtime", "claude_sdk"),
         agent_name=profile_dict.get("agent_name", ""),
+        harness=profile_dict.get("harness", ""),
+        lifecycle=profile_dict.get("lifecycle", "task"),
+        wake_mode=profile_dict.get("wake_mode", ""),
+        idle_timeout=profile_dict.get("idle_timeout", 0),
+        max_session_age=profile_dict.get("max_session_age", 0),
     )
 
     # 5. Soft-validate tool names (warnings, not errors -- per spec).

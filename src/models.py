@@ -525,6 +525,22 @@ class AgentProfile:
     # ``agent_name`` at sync-time; for every other runtime this field is
     # unused / empty.
     agent_name: str = ""
+    # -- Session runtime (docs/specs/design/session-runtime.md §6) --------
+    # ``harness`` names a ``vault/harnesses/<name>.md`` file describing one
+    # CLI coding agent.  Its presence, together with ``sessions.enabled``,
+    # is the routing rule: a profile with a harness runs as a session, a
+    # profile without one keeps its ``runtime`` verbatim.  That makes
+    # rollout per-profile and per-project (profiles are project-scoped) and
+    # rollback a one-line edit.
+    harness: str = ""
+    # ``task`` — one session per task, killed after drain-ack.
+    # ``named`` — persistent (supervisor, warm workers); sleeps and wakes.
+    lifecycle: str = "task"
+    # Named-session knobs.  Zero/empty means "no policy": no idle drain, no
+    # age recycling, fresh start on wake.
+    wake_mode: str = ""  # "resume" | "fresh"
+    idle_timeout: int = 0  # seconds of no activity before drain to sleeping
+    max_session_age: int = 0  # seconds before handoff + recycle
 
 
 @dataclass
@@ -911,3 +927,43 @@ class PipelineContext:
     pr_url: str | None = None
     plan_needs_approval: bool = False
     verification_reopened: bool = False
+
+
+@dataclass(frozen=True)
+class SessionRecord:
+    """One row of the ``sessions`` table — an OS-level agent run.
+
+    Maps 1:1 to ``src/database/tables.py::sessions``.  Frozen because a
+    session row is observed state: the reconciler writes it through
+    ``update_session`` and re-reads, rather than mutating a shared object
+    that a concurrent tick might be holding.
+
+    ``task_id`` is None for named (persistent) sessions.  ``state`` is one
+    of ``starting | running | draining | stopped | sleeping | quarantined``;
+    "stalled" is *derived* from the lease TTL versus ``last_activity`` and is
+    deliberately never stored.
+
+    ``epoch`` is provenance (which daemon run launched this), not a validity
+    test — an older-epoch session is still adoptable.  ``instance_token`` is
+    the kill fence: it is compared against the observed process before any
+    signal, so a name-reusing successor is never hit.
+    """
+
+    id: str
+    project_id: str
+    profile_id: str
+    harness: str
+    provider: str
+    name: str
+    lifecycle: str
+    work_dir: str
+    epoch: str
+    instance_token: str
+    started_at: float
+    task_id: str | None = None
+    state: str = "starting"
+    session_key: str | None = None
+    last_activity: float | None = None
+    restarts: int = 0
+    quarantined_at: float | None = None
+    sleep_reason: str | None = None

@@ -33,6 +33,7 @@ from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
+from src.database.queries.session_queries import SessionQueryMixin
 from src.database.queries.task_queries import TaskQueryMixin
 from src.database.queries.task_requirements_queries import TaskRequirementsQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
@@ -58,6 +59,7 @@ class SQLiteDatabaseAdapter(
     WorkspaceQueryMixin,
     WorkspaceKindQueryMixin,
     TaskRequirementsQueryMixin,
+    SessionQueryMixin,
     TokenQueryMixin,
     ResultQueryMixin,
     EventQueryMixin,

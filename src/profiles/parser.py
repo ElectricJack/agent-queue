@@ -45,8 +45,31 @@ KNOWN_SECTIONS = STRUCTURED_SECTIONS | PROMPT_SECTIONS
 
 # Known Config-block keys with deterministic validation.
 CONFIG_KNOWN_KEYS = frozenset(
-    {"model", "permission_mode", "max_tokens_per_task", "runtime", "agent_name"}
+    {
+        "model",
+        "permission_mode",
+        "max_tokens_per_task",
+        "runtime",
+        "agent_name",
+        # Session-runtime keys (docs/specs/implementation/session-runtime.md
+        # §5).  ``harness`` names a vault/harnesses/<name>.md file; the rest
+        # are named-session policy.  Kept as Config keys rather than config
+        # .yaml entries because they are per-agent-type, and the profile
+        # markdown is where per-agent-type truth lives.
+        "harness",
+        "lifecycle",
+        "wake_mode",
+        "idle_timeout",
+        "max_session_age",
+    }
 )
+
+#: Valid ``lifecycle`` values — ``task`` (one session per task) or ``named``
+#: (persistent session that sleeps and wakes).
+VALID_LIFECYCLES = frozenset({"task", "named"})
+
+#: Valid ``wake_mode`` values.  Empty means "use the shipped default".
+VALID_WAKE_MODES = frozenset({"resume", "fresh"})
 
 # Valid permission_mode values (passed to the Claude Code SDK).
 # Empty string is handled separately (means "use adapter default").
@@ -830,6 +853,19 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
         result["runtime"] = parsed.config["runtime"]
     if parsed.config.get("agent_name"):
         result["agent_name"] = parsed.config["agent_name"]
+
+    # Config -> session-runtime fields.  ``harness`` is the routing switch
+    # (see AgentProfile.harness); the rest is named-session policy.
+    if parsed.config.get("harness"):
+        result["harness"] = str(parsed.config["harness"])
+    if parsed.config.get("lifecycle"):
+        result["lifecycle"] = str(parsed.config["lifecycle"])
+    if parsed.config.get("wake_mode"):
+        result["wake_mode"] = str(parsed.config["wake_mode"])
+    for _key in ("idle_timeout", "max_session_age"):
+        raw = parsed.config.get(_key)
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+            result[_key] = raw
 
     # Tools → allowed_tools.  Strip the embedded MCP server prefix at sync
     # time so the DB always stores canonical bare names — the supervisor's

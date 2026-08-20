@@ -26,6 +26,7 @@ from src.notifications.events import (
 )
 from src.profiles.sync import underlying_agent_type
 from src.models import (
+    AgentOutput,
     AgentResult,
     AgentState,
     PipelineContext,
@@ -270,7 +271,7 @@ class ExecutionMixin:
         """
         from src.orchestrator.core import _parse_reset_time
 
-        if not self._runtimes:
+        if not self._runtimes and not self.config.sessions.enabled:
             logger.error("Cannot execute task %s: no platforms registry configured", action.task_id)
             await self._emit_text_notify(
                 f"**Error:** Cannot execute task `{action.task_id}` — no agent adapter configured.",
@@ -331,13 +332,22 @@ class ExecutionMixin:
         else:
             logger.info("Task %s: no profile (using system defaults)", task.id)
 
+        # ── Session-runtime routing (session-runtime spec §6.2) ──────────
+        # Session path iff ``sessions.enabled`` AND the resolved profile
+        # declares a ``harness``.  Per-profile and per-project opt-in falls
+        # out of that for free, because profiles are project-scoped.  A
+        # profile without ``harness`` keeps its ``runtime:`` verbatim.
+        session_routed = self._is_session_routed(profile)
+
         platform_name = profile.runtime if profile else self.config.default_runtime
-        platform = self._runtimes.create(
-            platform_name, profile=profile, llm_logger=self.llm_logger
-        )
-        # Store platform reference so admin commands (stop_task, timeout handler)
-        # can call platform.stop() to terminate the agent process.
-        self._adapters[action.agent_id] = platform
+        platform = None
+        if not session_routed:
+            platform = self._runtimes.create(
+                platform_name, profile=profile, llm_logger=self.llm_logger
+            )
+            # Store platform reference so admin commands (stop_task, timeout
+            # handler) can call platform.stop() to terminate the agent process.
+            self._adapters[action.agent_id] = platform
 
         project = await self.db.get_project(action.project_id)
         if getattr(platform, "requires_workspace", True):
@@ -453,6 +463,24 @@ class ExecutionMixin:
                 project_id=action.project_id,
             ),
         )
+
+        # ── Session-runtime fork: launch and return ──────────────────────
+        # Everything below this point is the legacy blocking pipeline:
+        # build a prompt, start an adapter, await its stream, branch on the
+        # result.  A session-routed task does none of it.  Its full prompt
+        # comes from ``aq prime``, its progress arrives as events, and its
+        # completion arrives as ``aq task close`` — so this method's job
+        # ends the moment the session exists.
+        #
+        # Note the wrapper above (``_execute_task_safe_inner``) still wraps
+        # this coroutine in ``asyncio.wait_for(stuck_timeout_seconds)``.
+        # That is harmless rather than overlooked: the coroutine now returns
+        # in milliseconds, so the timeout can never fire on it.  The real
+        # stuck-timeout backstop moved to ``SessionReconciler.tick()``
+        # step 6, where it can act on a session that outlives the daemon.
+        if session_routed:
+            await self._launch_session_for_task(action, task, agent, profile, workspace)
+            return
 
         # Profile + platform were resolved earlier (before workspace prep) so
         # the workspace decision could honor platform.requires_workspace.
@@ -1607,3 +1635,286 @@ class ExecutionMixin:
                 await started_msg.delete()
             except Exception as e:
                 logger.debug("Could not delete task-started message for %s: %s", action.task_id, e)
+
+    # ======================================================================
+    # Session runtime -- launch and return (session-runtime spec §4, §6)
+    # ======================================================================
+
+    def _is_session_routed(self, profile) -> bool:
+        """True when this profile's tasks run as sessions.
+
+        Two conditions, both required: the daemon-wide ``sessions.enabled``
+        flag, and a ``harness`` on the resolved profile.  Rollback is
+        therefore either flipping the flag or removing ``harness:`` from one
+        profile -- no code change, and live sessions drain naturally.
+        """
+        if not self.config.sessions.enabled:
+            return False
+        return bool(getattr(profile, "harness", "") or "")
+
+    async def _launch_session_for_task(
+        self, action: AssignAction, task, agent, profile, workspace: str | None
+    ) -> None:
+        """Start a session for *task* and return.  No wait, no result branch.
+
+        Steps 6-9 of the legacy pipeline (stream, token accounting, result
+        branch, cleanup) do not happen here.  They moved to
+        ``_cmd_task_close`` (the agent declaring completion) and to
+        ``SessionReconciler`` (everything the agent failed to declare).
+
+        A launch failure is *not* a task failure with a fabricated result:
+        the task is paused with a backoff so the normal scheduler retries,
+        because "the CLI could not start" is almost always an install or
+        config problem that a retry after 60 s either fixes or repeats
+        visibly.
+        """
+        import uuid as _uuid
+
+        from src.models import SessionRecord
+        from src.sessions.provider import SessionDiedDuringStartup
+
+        harness_name = getattr(profile, "harness", "") or ""
+        harness = self.harness_registry.get(harness_name, task.project_id)
+        if harness is None:
+            await self._fail_session_launch(
+                action,
+                task,
+                f"profile '{getattr(profile, 'id', '?')}' declares harness "
+                f"'{harness_name}' but no such harness file exists in the vault "
+                f"(vault/harnesses/{harness_name}.md)",
+            )
+            return
+
+        provider_name = self.config.sessions.provider
+        try:
+            provider = self.session_providers.create(provider_name, self.config)
+        except ValueError as exc:
+            await self._fail_session_launch(action, task, str(exc))
+            return
+
+        work_dir = workspace or ""
+        if not work_dir:
+            await self._fail_session_launch(
+                action, task, "session launch needs a work_dir but none was prepared"
+            )
+            return
+
+        session_id = _uuid.uuid4().hex
+        instance_token = _uuid.uuid4().hex
+        resume_key = None
+        try:
+            resume_key = await self.db.get_task_meta(task.id, "session_resume_key")
+        except Exception:
+            pass
+
+        spec = self.session_spec_builder.build_task_spec(
+            task=task,
+            profile=profile,
+            harness=harness,
+            work_dir=work_dir,
+            session_id=session_id,
+            instance_token=instance_token,
+            epoch=self.daemon_epoch,
+            resume_key=resume_key,
+        )
+
+        try:
+            await provider.start(spec)
+        except SessionDiedDuringStartup as exc:
+            await self._fail_session_launch(
+                action,
+                task,
+                f"session died during startup: {exc}",
+                stderr_path=exc.start_stderr_path,
+            )
+            return
+        except Exception as exc:
+            await self._fail_session_launch(action, task, f"session launch failed: {exc}")
+            return
+
+        # The row is written *after* the session exists, so a crash between
+        # the two leaves an orphan session rather than a phantom row -- and
+        # adoption reconciles an orphan session by its env markers, which is
+        # the recoverable direction.
+        now = time.time()
+        await self.db.create_session(
+            SessionRecord(
+                id=session_id,
+                task_id=task.id,
+                project_id=task.project_id,
+                profile_id=getattr(profile, "id", "") or "",
+                harness=harness.id,
+                provider=provider.name,
+                name=spec.session_name,
+                lifecycle="task",
+                state="running",
+                work_dir=work_dir,
+                epoch=self.daemon_epoch,
+                instance_token=instance_token,
+                started_at=now,
+                last_activity=now,
+            )
+        )
+        logger.info(
+            "Task %s: session %s started (%s/%s) in %s",
+            task.id,
+            spec.session_name,
+            provider.name,
+            harness.id,
+            work_dir,
+        )
+        await self.bus.emit(
+            "session.started",
+            {
+                "session_id": session_id,
+                "name": spec.session_name,
+                "task_id": task.id,
+                "project_id": task.project_id,
+                "provider": provider.name,
+                "harness": harness.id,
+                "work_dir": work_dir,
+            },
+        )
+
+    async def _fail_session_launch(
+        self, action: AssignAction, task, reason: str, stderr_path: str | None = None
+    ) -> None:
+        """Pause the task with a backoff after a failed session launch."""
+        backoff = 60
+        logger.error("Task %s: session launch failed -- %s", task.id, reason)
+        await self.db.transition_task(
+            action.task_id,
+            TaskStatus.PAUSED,
+            context="session_launch_failed",
+            resume_after=time.time() + backoff,
+            assigned_agent_id=None,
+        )
+        await self.db.update_agent(action.agent_id, state=AgentState.IDLE, current_task_id=None)
+        await self._release_workspaces_for_task(action.task_id)
+        detail = f"\nStartup output: `{stderr_path}`" if stderr_path else ""
+        await self._emit_text_notify(
+            f"**Session launch failed:** task `{task.id}` -- {reason}. "
+            f"Retrying in {backoff}s.{detail}",
+            project_id=action.project_id,
+        )
+
+    async def complete_session_task(
+        self,
+        task,
+        *,
+        outcome: str,
+        work_outcome: str = "",
+        failure_class: str = "",
+        commit: str = "",
+        notes: str = "",
+    ) -> dict:
+        """Run the completion pipeline for a session-closed task.
+
+        Called from ``_cmd_task_close``.  Deliberately shares
+        ``_run_completion_pipeline`` with the legacy path so the only thing
+        that differs between the two runtimes is launch/observe/close --
+        commit, push, PR and verify behave identically, which is what makes
+        the dual-run comparison meaningful.
+        """
+        agent = (
+            await self.db.get_agent(task.assigned_agent_id)
+            if task.assigned_agent_id
+            else None
+        )
+        ws = await self.db.get_workspace_for_task(task.id)
+        project = await self.db.get_project(task.project_id)
+        workspace_path = ws.workspace_path if ws else None
+        default_branch = await self._get_default_branch(project, workspace_path)
+
+        repo = (
+            RepoConfig(
+                id=f"project-{task.project_id}",
+                project_id=task.project_id,
+                source_type=ws.source_type,
+                url=project.repo_url if project else "",
+                default_branch=default_branch,
+            )
+            if ws
+            else None
+        )
+
+        # ``PipelineContext.output`` is synthesized from the close arguments:
+        # the agent told us what happened, so there is no stream to summarize.
+        output = AgentOutput(
+            result=AgentResult.COMPLETED if outcome == "pass" else AgentResult.FAILED,
+            summary=notes or "",
+            error_message=None if outcome == "pass" else (notes or "closed as failed"),
+        )
+        ctx = PipelineContext(
+            task=task,
+            agent=agent,
+            output=output,
+            workspace_path=workspace_path,
+            workspace_id=ws.id if ws else None,
+            repo=repo,
+            default_branch=default_branch,
+            project=project,
+        )
+
+        pr_url = None
+        completed_ok = True
+        if outcome == "pass":
+            try:
+                pr_url, completed_ok = await self._run_completion_pipeline(ctx)
+            except Exception:
+                logger.error(
+                    "Task %s: completion pipeline raised during task close",
+                    task.id,
+                    exc_info=True,
+                )
+                completed_ok = False
+
+        if outcome == "pass" and completed_ok:
+            new_status = TaskStatus.COMPLETED
+            context = "session_close"
+        elif outcome == "pass":
+            # Pipeline said stop (verification reopened, uncommitted work,
+            # ...).  BLOCKED, not COMPLETED: the agent's word is the trigger
+            # for the pipeline, not a substitute for it.
+            new_status = TaskStatus.BLOCKED
+            context = "session_close_pipeline_stop"
+        elif failure_class == "hard":
+            new_status = TaskStatus.BLOCKED
+            context = "session_close_hard_failure"
+        else:
+            new_status = TaskStatus.FAILED
+            context = "session_close_failed"
+
+        await self.db.transition_task(
+            task.id, new_status, context=context, assigned_agent_id=None
+        )
+        await self._emit_task_event(
+            "task.closed",
+            task,
+            outcome=outcome,
+            work_outcome=work_outcome,
+            status=new_status.value,
+            pr_url=pr_url or "",
+        )
+
+        # Release the workspace and free the agent -- the session is on its
+        # way out, and the next task should not wait for the drain-ack.
+        if workspace_path:
+            try:
+                self._remove_sentinel(workspace_path)
+            except Exception:
+                pass
+        await self._release_workspaces_for_task(task.id)
+        if task.assigned_agent_id:
+            await self.db.update_agent(
+                task.assigned_agent_id, state=AgentState.IDLE, current_task_id=None
+            )
+            self._adapters.pop(task.assigned_agent_id, None)
+        self._task_exec_start.pop(task.id, None)
+        self._task_pre_exec_sha.pop(task.id, None)
+
+        return {
+            "status": new_status.value,
+            "pr_url": pr_url,
+            "pipeline_ok": completed_ok,
+        }
