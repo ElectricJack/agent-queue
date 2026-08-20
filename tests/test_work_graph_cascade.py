@@ -170,6 +170,44 @@ class TestAuthority:
         assert not any("blocked-state divergence" in r.message for r in caplog.records)
         assert await status_of(orch, "finalize") == TaskStatus.READY
 
+    # -- divergence logging is edge-triggered (P2-7) and reports the
+    #    deferred count (P2-8) ------------------------------------------
+
+    def _warnings(self, caplog):
+        return [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    async def test_a_persisting_divergence_is_logged_once(self, orch, caplog):
+        """This runs every 5 s; one stuck plan parent must not emit 17 000
+        identical WARNINGs a day."""
+        with caplog.at_level(logging.INFO, logger="src.orchestrator.monitoring"):
+            for _ in range(4):
+                orch._log_promotion_divergence({"a": "deps_met"}, {}, set(), False)
+        assert len(self._warnings(caplog)) == 1
+
+    async def test_a_changed_divergence_is_logged_again(self, orch, caplog):
+        with caplog.at_level(logging.INFO, logger="src.orchestrator.monitoring"):
+            orch._log_promotion_divergence({"a": "deps_met"}, {}, set(), False)
+            orch._log_promotion_divergence({"a": "deps_met"}, {}, set(), False)
+            orch._log_promotion_divergence({"b": "deps_met"}, {}, set(), False)
+        assert len(self._warnings(caplog)) == 2
+
+    async def test_a_clearing_divergence_is_recorded(self, orch, caplog):
+        """When it clears, the INFO line changes and the WARNING stops."""
+        with caplog.at_level(logging.INFO, logger="src.orchestrator.monitoring"):
+            orch._log_promotion_divergence({"a": "deps_met"}, {}, set(), False)
+            caplog.clear()
+            orch._log_promotion_divergence({}, {}, set(), False)
+        assert self._warnings(caplog) == []
+        assert any("0 legacy-only" in r.getMessage() for r in caplog.records)
+
+    async def test_the_deferred_count_is_reported(self, orch, caplog):
+        """Without it, "zero divergence for a week" and "the oracle judged
+        nothing for a week" look identical in the log."""
+        with caplog.at_level(logging.INFO, logger="src.orchestrator.monitoring"):
+            orch._log_promotion_divergence({}, {}, {"x", "y"}, False)
+        assert any("2 deferred to the projection" in r.getMessage() for r in caplog.records)
+        assert self._warnings(caplog) == []
+
 
 # ── Promotion behaviour under the projection ─────────────────────────────
 

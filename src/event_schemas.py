@@ -98,19 +98,26 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
 # ---------------------------------------------------------------------------
 
 _WORK_GRAPH_SCHEMAS: dict[str, EventSchema] = {
-    # task.* events carry the base triple (task_id, project_id, title) like
-    # every other member of the namespace.
+    # These three are produced by the *projection*, not by
+    # ``_emit_task_event``: the blocked-state recompute and the conditional
+    # cascade write them for rows they touched in bulk, identified by
+    # (task_id, project_id) plus a reason tag.  ``title`` is therefore
+    # **optional**, not part of the base triple — `_cmd_list_event_triggers`
+    # publishes these keys as the documented contract, and requiring a field
+    # no producer emits would advertise a shape consumers cannot rely on.
+    # An emitter that later routes one of these through ``_emit_task_event``
+    # supplies ``title`` for free and still validates.
     "task.blocked": {
-        "required": ["task_id", "project_id", "title"],
-        "optional": ["reason"],
+        "required": ["task_id", "project_id"],
+        "optional": ["title", "reason"],
     },
     "task.unblocked": {
-        "required": ["task_id", "project_id", "title"],
-        "optional": ["reason"],
+        "required": ["task_id", "project_id"],
+        "optional": ["title", "reason"],
     },
     "task.skipped_conditional": {
-        "required": ["task_id", "project_id", "title"],
-        "optional": ["reason"],
+        "required": ["task_id", "project_id"],
+        "optional": ["title", "reason"],
     },
     "dependency.added": {
         "required": ["task_id", "depends_on", "dep_type"],

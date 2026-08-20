@@ -217,18 +217,40 @@ class MonitoringMixin:
         context strings are cosmetic.
 
         Tasks the legacy scan deferred on (typed edges it predates) are
-        excluded: there is no second opinion to compare against, so counting
-        them would drown the signal the observation window is looking for.
+        excluded from the comparison: there is no second opinion to compare
+        against, so counting them would drown the signal the observation
+        window is looking for.  Their **count** is still reported, at INFO —
+        without it "zero divergence for a week" cannot be told apart from
+        "the oracle judged nothing all week".
+
+        Logging is edge-triggered.  This runs every 5 s, and a divergence
+        persists until someone acts on it: one stuck plan parent re-logged at
+        WARNING 17 000 times a day buries the very signal the window exists to
+        collect.  A line is emitted only when the reported state changes, so
+        each distinct divergence appears once, and its clearing appears once.
         """
-        only_legacy = sorted(set(legacy) - set(projected) - deferred)
-        only_projected = sorted(set(projected) - set(legacy) - deferred)
+        only_legacy = tuple(sorted(set(legacy) - set(projected) - deferred))
+        only_projected = tuple(sorted(set(projected) - set(legacy) - deferred))
+
+        state = (only_legacy, only_projected, len(deferred))
+        if state == getattr(self, "_last_divergence_state", None):
+            return
+        self._last_divergence_state = state
+
+        logger.info(
+            "blocked-state shadow: %d deferred to the projection, "
+            "%d legacy-only, %d projection-only",
+            len(deferred),
+            len(only_legacy),
+            len(only_projected),
+        )
         if not only_legacy and not only_projected:
             return
         logger.warning(
             "blocked-state divergence (%s authoritative): legacy-only=%s projection-only=%s",
             "projection" if authoritative else "legacy scan",
-            only_legacy or "-",
-            only_projected or "-",
+            list(only_legacy) or "-",
+            list(only_projected) or "-",
         )
 
     async def _close_dead_conditional_tasks(self) -> None:
