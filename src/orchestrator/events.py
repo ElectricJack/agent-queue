@@ -223,9 +223,16 @@ class EventsMixin:
         Failed or blocked tasks do NOT satisfy stage completion; the playbook
         is expected to handle those via ``task.failed`` listeners.
 
+        No-op while the playbook subsystem is paused
+        (``playbooks.enabled=false``).  This single early return covers all
+        four call sites (approval.py, core.py, execution.py, monitoring.py).
+        See docs/specs/implementation/feature-pauses.md P10.
+
         Args:
             task: The task that just completed.
         """
+        if not self.config.playbooks.enabled:
+            return
         if not task.workflow_id:
             return
 

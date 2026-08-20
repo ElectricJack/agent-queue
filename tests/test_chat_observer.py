@@ -118,7 +118,9 @@ def test_batch_ready_by_count():
     from src.config import ObservationConfig
     from src.chat_observer import ChatObserver
 
-    config = ObservationConfig(max_buffer_size=3)
+    # ``enabled`` is paused by default (feature-pauses §2.3) — opt in
+    # explicitly so this test exercises the batching logic it is about.
+    config = ObservationConfig(enabled=True, max_buffer_size=3)
     obs = ChatObserver(config, project_profiles={"my-game": {"particle"}})
     for i in range(3):
         obs.on_message(_make_message(f"particle issue {i}"))
@@ -194,5 +196,6 @@ def test_observer_config_wired_to_supervisor_config(tmp_path):
 
     app = AppConfig(data_dir=str(tmp_path / "data"))
     assert hasattr(app.supervisor, "observation")
-    assert app.supervisor.observation.enabled is True
+    # Paused by default — see docs/specs/design/feature-pauses.md §2.3.
+    assert app.supervisor.observation.enabled is False
     assert app.supervisor.observation.batch_window_seconds == 60

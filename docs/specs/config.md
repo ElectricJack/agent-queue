@@ -223,6 +223,15 @@ This section configures the optional semantic memory subsystem powered by [memse
 
 The subsystem is **disabled by default** — set `enabled: true` to activate it. When disabled (or when the `memsearch` package is not installed), all memory operations are no-ops with no impact on normal operation.
 
+> **Temporary — framework overhaul pause.** `memory.enabled` is currently a
+> subsystem pause flag: while it is `false` the `aq-memory` plugin is not
+> loaded, the L1/L2 prompt tiers stay empty, reflection is forced to
+> `level: "off"`, and every memory command returns
+> `memory is paused (memory.enabled=false)`. **No data is deleted** — Milvus
+> collections, vault markdown and facts files are all preserved, and
+> re-enabling is a config flip plus a restart with no migration.
+> See [`design/feature-pauses.md`](design/feature-pauses.md). Restart required.
+
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `bool` | `False` | Whether the memory subsystem is active. Must be explicitly set to `true` to enable. |
@@ -305,6 +314,34 @@ memory:
   milvus_token: ${MILVUS_TOKEN}
   recall_top_k: 10
 ```
+
+### 4.10.1 `playbooks` Section
+
+Maps to `PlaybooksConfig`. The YAML key is `playbooks`.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `bool` | `False` | Whether the playbook/workflow subsystem is active. |
+
+> **Temporary — framework overhaul pause.** While `playbooks.enabled` is
+> `false` the `PlaybookManager`, `TimerService`, the playbook and
+> workflow-stage resume handlers and the orphan-workflow recovery pass are
+> **not constructed**, no `timer.*` events are emitted, the vault watcher
+> ignores `playbooks/` directories, and every playbook/workflow command
+> returns `playbooks are paused (playbooks.enabled=false)`. **No data is
+> deleted** — `playbook_runs` rows and compiled JSON under
+> `{data_dir}/compiled/` are preserved untouched.
+> See [`design/feature-pauses.md`](design/feature-pauses.md). Restart required.
+>
+> Plugin `@cron` jobs are a separate mechanism and keep running while
+> playbooks are paused.
+
+The related top-level keys `max_daily_playbook_tokens` and
+`max_concurrent_playbook_runs` remain top-level (see §4.1) and are unchanged.
+
+Note that `supervisor.observation.enabled` is also paused by default for the
+same reason (it gates `ChatObserver` construction — it is the real chat
+analyzer switch; there is no `chat_analyzer.enabled`).
 
 ### 4.11 `rate_limits` Section
 

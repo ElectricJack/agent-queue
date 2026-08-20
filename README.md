@@ -128,6 +128,26 @@ asyncio event loop
 
 ## How the Self-Improvement Loop Works
 
+> **Currently paused (framework overhaul).** `memory.enabled` and
+> `playbooks.enabled` both default to `false`, so the memory and playbook
+> subsystems are not constructed at startup and their commands return
+> `memory is paused (memory.enabled=false)` /
+> `playbooks are paused (playbooks.enabled=false)`. The diagram below
+> describes the loop as it works when both flags are `true`.
+>
+> **Operator notes while paused:**
+> - **No data is deleted.** `playbook_runs` rows, compiled playbook JSON
+>   under `{data_dir}/compiled/`, vault markdown and Milvus collections are
+>   all preserved.
+> - Milvus (a server, or the Milvus-Lite file under
+>   `~/.agent-queue/memsearch/`) may be stopped while memory is paused — the
+>   daemon will not touch it. **Do not delete its data directory**; there is
+>   no re-index step on the un-pause path by design.
+> - Re-enabling is a config flip plus a daemon restart. Both flags are
+>   restart-required; hot reload will not apply them. No migrations.
+>
+> See `docs/specs/design/feature-pauses.md`.
+
 ```
 Task Execution
   └── Agent saves insights during work (memory_save, memory_fact_store)

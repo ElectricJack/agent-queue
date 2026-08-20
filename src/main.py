@@ -314,6 +314,23 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
         "invalid_count": tracker.count,
     }
 
+    # Subsystem pause flags (feature-pauses.md §6).  A paused subsystem is a
+    # *configured* state, never a failure: ``ok`` stays True and the severity
+    # is informational.  The flag name is included so an operator can act on
+    # it without grepping the config.
+    for check_name, flag, enabled in (
+        ("memory", "memory.enabled", orch.config.memory.enabled),
+        ("playbooks", "playbooks.enabled", orch.config.playbooks.enabled),
+    ):
+        if not enabled:
+            checks[check_name] = {
+                "check": check_name,
+                "ok": True,
+                "state": "paused",
+                "severity": "info",
+                "flag": flag,
+            }
+
     return checks
 
 

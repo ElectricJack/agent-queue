@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import dataclasses
 import json
 import logging
 import os
@@ -223,7 +224,16 @@ class Supervisor(Runtime):
         self._provider: ChatProvider | None = None
         self._llm_logger = llm_logger
         self.handler = CommandHandler(orchestrator, config)
-        self.reflection = ReflectionEngine(config.supervisor.reflection)
+        # Reflection is part of the memory subsystem: its whole point is to
+        # produce insights that land in L1/L2.  With memory paused there is
+        # nowhere for a verdict to go, so force the engine to ``level="off"``
+        # rather than spending tokens.  ``should_reflect()`` /
+        # ``determine_depth()`` then decline at every call site.
+        # See docs/specs/implementation/feature-pauses.md M5.
+        _refl_cfg = config.supervisor.reflection
+        if not config.memory.enabled:
+            _refl_cfg = dataclasses.replace(_refl_cfg, level="off")
+        self.reflection = ReflectionEngine(_refl_cfg)
         self._registry = _ToolRegistry()
         # ``_last_messages`` and ``_last_tool_actions`` are exposed via
         # properties below (backed by per-asyncio-task ContextVars).

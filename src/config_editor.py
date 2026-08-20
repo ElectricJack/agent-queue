@@ -48,6 +48,30 @@ SECTION_NOTES: dict[str, str] = {
     "work_graph": "Framework overhaul: blocked-state projection, gates, typed edges.",
 }
 
+# Individual flags that gate a whole subsystem at construction time.  Keys are
+# dotted paths into the schema; each entry annotates the field with
+# ``restart_required`` and a human-readable ``description`` so the
+# dashboard/CLI can render the pause banner without hard-coding the list.
+# See docs/specs/implementation/feature-pauses.md §2.5.
+FLAG_NOTES: dict[str, str] = {
+    "memory.enabled": (
+        "Temporary — overhaul pause. When false the aq-memory plugin is not "
+        "loaded, L1/L2 prompt tiers stay empty and reflection is forced off. "
+        "Data is preserved. See docs/specs/design/feature-pauses.md."
+    ),
+    "playbooks.enabled": (
+        "Temporary — overhaul pause. When false PlaybookManager, TimerService, "
+        "the resume handlers and workflow recovery are not started. "
+        "playbook_runs rows and compiled JSON are preserved. "
+        "See docs/specs/design/feature-pauses.md."
+    ),
+    "supervisor.observation.enabled": (
+        "Temporary — overhaul pause. ``observation.enabled`` is the chat "
+        "analyzer switch; false means ChatObserver is not constructed. "
+        "See docs/specs/design/feature-pauses.md."
+    ),
+}
+
 
 def _round_trip_yaml():
     """Lazy import of ruamel.yaml configured for round-trip editing.
@@ -252,6 +276,19 @@ def build_config_schema() -> dict[str, Any]:
         note = SECTION_NOTES.get(name)
         if note:
             prop["x-note"] = note
+
+    # Annotate the individual subsystem-pause flags (feature-pauses §2.5).
+    for dotted, description in FLAG_NOTES.items():
+        node: Any = schema
+        for part in dotted.split("."):
+            if not isinstance(node, dict):
+                node = None
+                break
+            node = node.get("properties", {}).get(part)
+        if isinstance(node, dict):
+            node["restart_required"] = True
+            node["description"] = description
+
     schema["x-classification"] = classification
     return schema
 

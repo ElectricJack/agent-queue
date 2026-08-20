@@ -73,7 +73,9 @@ def test_observation_config_defaults():
     from src.config import ObservationConfig
 
     cfg = ObservationConfig()
-    assert cfg.enabled is True
+    # Paused by default during the framework overhaul — this is the real
+    # chat-analyzer switch.  See docs/specs/design/feature-pauses.md §2.3.
+    assert cfg.enabled is False
     assert cfg.batch_window_seconds == 60
     assert cfg.max_buffer_size == 20
     assert cfg.stage1_keywords == []
@@ -92,7 +94,8 @@ def test_supervisor_config_has_observation():
 
     cfg = SupervisorConfig()
     assert hasattr(cfg, "observation")
-    assert cfg.observation.enabled is True
+    # Paused by default — see docs/specs/design/feature-pauses.md §2.3.
+    assert cfg.observation.enabled is False
 
 
 def test_observation_config_from_yaml():

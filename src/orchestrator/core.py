@@ -939,137 +939,173 @@ class Orchestrator(
         # V1 memory/*.md watcher handlers removed (roadmap 8.6).
         # Memory file watching is now handled by MemoryPlugin.
 
-        # Register playbook .md watcher handlers (playbooks spec §17).
-        # Detects changes to playbook files across all vault scopes so they
-        # can be recompiled into executable graphs.  The PlaybookManager
-        # handles compilation, versioning, and error recovery (keeping the
-        # previous compiled version active on failure — roadmap 5.1.7).
-        from src.playbooks.handler import register_playbook_handlers
-        from src.playbooks.manager import PlaybookManager
+        # ------------------------------------------------------------------
+        # Playbook subsystem (paused by ``playbooks.enabled=false``).
+        #
+        # Everything in this block is *not constructed* while paused --
+        # PlaybookManager, the timer service, both resume handlers and the
+        # orphan-workflow recovery pass.  Compiled JSON under
+        # ``{data_dir}/compiled/`` and every ``playbook_runs`` row are left
+        # exactly as they are: paused means frozen, never deleted.
+        # See docs/specs/implementation/feature-pauses.md §4 (P1-P8, P11).
+        # ------------------------------------------------------------------
+        if self.config.playbooks.enabled:
+            # Register playbook .md watcher handlers (playbooks spec §17).
+            # Detects changes to playbook files across all vault scopes so they
+            # can be recompiled into executable graphs.  The PlaybookManager
+            # handles compilation, versioning, and error recovery (keeping the
+            # previous compiled version active on failure — roadmap 5.1.7).
+            from src.playbooks.handler import register_playbook_handlers
+            from src.playbooks.manager import PlaybookManager
 
-        # Ensure a chat provider is available for playbook compilation.
-        # self._chat_provider is only set when use_llm_parser is enabled,
-        # so create one from the config if needed.
-        playbook_provider = self._chat_provider
-        if playbook_provider is None:
+            # Ensure a chat provider is available for playbook compilation.
+            # self._chat_provider is only set when use_llm_parser is enabled,
+            # so create one from the config if needed.
+            playbook_provider = self._chat_provider
+            if playbook_provider is None:
+                try:
+                    from src.chat_providers import create_chat_provider
+
+                    playbook_provider = create_chat_provider(self.config.chat_provider)
+                except Exception:
+                    logger.warning("No chat provider for playbook compilation")
+
+            self.playbook_manager = PlaybookManager(
+                chat_provider=playbook_provider,
+                config=self.config,
+                event_bus=self.bus,
+                data_dir=self.config.data_dir,
+                playbook_max_tokens=self.config.chat_provider.playbook_max_tokens,
+            )
+            # Restore previously compiled playbooks from disk so version numbers
+            # continue from where they left off and source-hash change detection
+            # can skip recompilation of unchanged files (roadmap 5.1.5).
+            await self.playbook_manager.load_from_disk()
+
+            vault_root = os.path.join(self.config.data_dir, "vault")
+
+            # Prune orphans synchronously — this is a fast file-scan with no LLM
+            # calls, and we want orphan compiled JSONs out of ``_active`` before
+            # trigger dispatch wires up.
             try:
-                from src.chat_providers import create_chat_provider
-
-                playbook_provider = create_chat_provider(self.config.chat_provider)
+                await self.playbook_manager.prune_orphan_compilations(vault_root)
             except Exception:
-                logger.warning("No chat provider for playbook compilation")
+                logger.warning("Orphan compiled-playbook prune failed", exc_info=True)
 
-        self.playbook_manager = PlaybookManager(
-            chat_provider=playbook_provider,
-            config=self.config,
-            event_bus=self.bus,
-            data_dir=self.config.data_dir,
-            playbook_max_tokens=self.config.chat_provider.playbook_max_tokens,
-        )
-        # Restore previously compiled playbooks from disk so version numbers
-        # continue from where they left off and source-hash change detection
-        # can skip recompilation of unchanged files (roadmap 5.1.5).
-        await self.playbook_manager.load_from_disk()
+            # Reconcile vault playbooks with the compiled registry: compile any
+            # ``.md`` that's present on disk but not yet in the active registry.
+            # Runs as a background task because each uncompiled playbook costs
+            # ~30s of LLM latency; blocking startup on a fresh vault full of
+            # defaults would delay profile sync, Discord bot init, and the HTTP
+            # server by many minutes.  Tasks that need a specific playbook
+            # should wait for its compile event or rely on the vault-watcher
+            # create-event path.
+            async def _reconcile_in_background() -> None:
+                try:
+                    await self.playbook_manager.reconcile_compilations(vault_root)
+                except Exception:
+                    logger.warning("Playbook compilation reconcile failed", exc_info=True)
 
-        vault_root = os.path.join(self.config.data_dir, "vault")
+            asyncio.create_task(_reconcile_in_background())
 
-        # Prune orphans synchronously — this is a fast file-scan with no LLM
-        # calls, and we want orphan compiled JSONs out of ``_active`` before
-        # trigger dispatch wires up.
-        try:
-            await self.playbook_manager.prune_orphan_compilations(vault_root)
-        except Exception:
-            logger.warning("Orphan compiled-playbook prune failed", exc_info=True)
+            # Wire trigger dispatch: when a playbook's trigger event fires on
+            # the bus, create a PlaybookRunner and execute the graph.  Without
+            # this, events fire but playbooks never auto-run.
+            self.playbook_manager.on_trigger = self._on_playbook_trigger
+            subscribed = self.playbook_manager.subscribe_to_events()
+            logger.info("Subscribed to %d playbook trigger event(s)", subscribed)
 
-        # Reconcile vault playbooks with the compiled registry: compile any
-        # ``.md`` that's present on disk but not yet in the active registry.
-        # Runs as a background task because each uncompiled playbook costs
-        # ~30s of LLM latency; blocking startup on a fresh vault full of
-        # defaults would delay profile sync, Discord bot init, and the HTTP
-        # server by many minutes.  Tasks that need a specific playbook
-        # should wait for its compile event or rely on the vault-watcher
-        # create-event path.
-        async def _reconcile_in_background() -> None:
-            try:
-                await self.playbook_manager.reconcile_compilations(vault_root)
-            except Exception:
-                logger.warning("Playbook compilation reconcile failed", exc_info=True)
+            register_playbook_handlers(
+                self.vault_watcher,
+                playbook_manager=self.playbook_manager,
+            )
 
-        asyncio.create_task(_reconcile_in_background())
+            # Timer service (playbooks spec §7, roadmap 5.3.7) — emits synthetic
+            # ``timer.*`` events for playbooks with periodic triggers.  Scans the
+            # playbook manager for ``timer.{interval}`` triggers and only tracks
+            # intervals that have at least one active subscriber.
+            from src.timer_service import TimerService
 
-        # Wire trigger dispatch: when a playbook's trigger event fires on
-        # the bus, create a PlaybookRunner and execute the graph.  Without
-        # this, events fire but playbooks never auto-run.
-        self.playbook_manager.on_trigger = self._on_playbook_trigger
-        subscribed = self.playbook_manager.subscribe_to_events()
-        logger.info("Subscribed to %d playbook trigger event(s)", subscribed)
+            self.timer_service = TimerService(
+                event_bus=self.bus,
+                playbook_manager=self.playbook_manager,
+                state_path=os.path.join(self.config.data_dir, "timer_state.json"),
+            )
+            self.timer_service.start()
 
-        register_playbook_handlers(
-            self.vault_watcher,
-            playbook_manager=self.playbook_manager,
-        )
+            # Playbook resume handler (roadmap 5.4.3) — subscribes to
+            # ``human.review.completed`` events and resumes paused playbook
+            # runs from their saved conversation state.  External systems
+            # (Discord buttons, API endpoints) fire the event; this handler
+            # validates, creates a Supervisor, and delegates to
+            # PlaybookRunner.resume().
+            from src.playbooks.resume_handler import PlaybookResumeHandler
 
-        # Timer service (playbooks spec §7, roadmap 5.3.7) — emits synthetic
-        # ``timer.*`` events for playbooks with periodic triggers.  Scans the
-        # playbook manager for ``timer.{interval}`` triggers and only tracks
-        # intervals that have at least one active subscriber.
-        from src.timer_service import TimerService
+            self.playbook_resume_handler = PlaybookResumeHandler(
+                db=self.db,
+                event_bus=self.bus,
+                orchestrator=self,
+                playbook_manager=self.playbook_manager,
+                config=self.config,
+            )
+            self.playbook_resume_handler.subscribe()
 
-        self.timer_service = TimerService(
-            event_bus=self.bus,
-            playbook_manager=self.playbook_manager,
-            state_path=os.path.join(self.config.data_dir, "timer_state.json"),
-        )
-        self.timer_service.start()
+            # Workflow stage resume handler (Roadmap 7.5.5) — subscribes to
+            # ``workflow.stage.completed`` events and automatically resumes
+            # coordination playbook runs that are paused waiting for stage
+            # completion.  This enables long-running playbooks that span
+            # multiple workflow stages with event-triggered resumption.
+            from src.workflow_stage_resume_handler import WorkflowStageResumeHandler
 
-        # Playbook resume handler (roadmap 5.4.3) — subscribes to
-        # ``human.review.completed`` events and resumes paused playbook
-        # runs from their saved conversation state.  External systems
-        # (Discord buttons, API endpoints) fire the event; this handler
-        # validates, creates a Supervisor, and delegates to
-        # PlaybookRunner.resume().
-        from src.playbooks.resume_handler import PlaybookResumeHandler
+            self.workflow_stage_resume_handler = WorkflowStageResumeHandler(
+                db=self.db,
+                event_bus=self.bus,
+                orchestrator=self,
+                playbook_manager=self.playbook_manager,
+                config=self.config,
+            )
+            self.workflow_stage_resume_handler.subscribe()
 
-        self.playbook_resume_handler = PlaybookResumeHandler(
-            db=self.db,
-            event_bus=self.bus,
-            orchestrator=self,
-            playbook_manager=self.playbook_manager,
-            config=self.config,
-        )
-        self.playbook_resume_handler.subscribe()
+            # Orphan workflow recovery (Roadmap 7.5.6) — detect and recover
+            # workflows whose coordination playbook died (crashed, failed,
+            # timed out).  Tasks continue independently; this module handles
+            # re-emitting missed events and alerting operators.
+            from src.orphan_workflow_recovery import OrphanWorkflowRecovery
 
-        # Workflow stage resume handler (Roadmap 7.5.5) — subscribes to
-        # ``workflow.stage.completed`` events and automatically resumes
-        # coordination playbook runs that are paused waiting for stage
-        # completion.  This enables long-running playbooks that span
-        # multiple workflow stages with event-triggered resumption.
-        from src.workflow_stage_resume_handler import WorkflowStageResumeHandler
+            self.orphan_workflow_recovery = OrphanWorkflowRecovery(
+                db=self.db,
+                event_bus=self.bus,
+            )
+            recovery_summary = await self.orphan_workflow_recovery.recover_on_startup()
+            if recovery_summary.get("checked"):
+                logger.info(
+                    "Orphan workflow recovery: %s",
+                    {k: v for k, v in recovery_summary.items() if k != "details"},
+                )
 
-        self.workflow_stage_resume_handler = WorkflowStageResumeHandler(
-            db=self.db,
-            event_bus=self.bus,
-            orchestrator=self,
-            playbook_manager=self.playbook_manager,
-            config=self.config,
-        )
-        self.workflow_stage_resume_handler.subscribe()
-
-        # Orphan workflow recovery (Roadmap 7.5.6) — detect and recover
-        # workflows whose coordination playbook died (crashed, failed,
-        # timed out).  Tasks continue independently; this module handles
-        # re-emitting missed events and alerting operators.
-        from src.orphan_workflow_recovery import OrphanWorkflowRecovery
-
-        self.orphan_workflow_recovery = OrphanWorkflowRecovery(
-            db=self.db,
-            event_bus=self.bus,
-        )
-        recovery_summary = await self.orphan_workflow_recovery.recover_on_startup()
-        if recovery_summary.get("checked"):
+        else:
+            # Paused: leave every playbook attribute as ``None`` so the
+            # ``getattr``/``if x:`` guards at the call sites (shutdown(),
+            # run_one_cycle(), src/commands/playbook_commands.py) see a
+            # falsy value rather than a missing attribute.
+            #
+            # NOTE for future maintainers: TimerService is the *sole*
+            # producer of ``timer.*``/``cron.*`` bus events and its timer
+            # map comes exclusively from ``PlaybookManager.get_all_triggers()``.
+            # While playbooks are paused nothing emits those events.  A new
+            # periodic consumer must use plugin ``@cron`` (which stays ON via
+            # ``PluginRegistry.tick_cron()``) or a hardcoded cascade step --
+            # not a ``timer.*`` subscription.
+            self.playbook_manager = None
+            self.timer_service = None
+            self.playbook_resume_handler = None
+            self.workflow_stage_resume_handler = None
+            self.orphan_workflow_recovery = None
             logger.info(
-                "Orphan workflow recovery: %s",
-                {k: v for k, v in recovery_summary.items() if k != "details"},
+                "Playbooks subsystem PAUSED (playbooks.enabled=false) — "
+                "PlaybookManager/TimerService/resume handlers/workflow recovery "
+                "not started; playbook_runs and compiled JSON preserved. "
+                "See docs/specs/design/feature-pauses.md"
             )
 
         # Register override file watcher handlers (memory-scoping spec §5).
@@ -1104,7 +1140,10 @@ class Orchestrator(
         from src.workspace_spec_watcher import WorkspaceSpecWatcher
 
         self.workspace_spec_watcher: WorkspaceSpecWatcher | None = None
-        if self.config.memory.spec_watcher_enabled:
+        # ``memory.enabled`` is the section master flag — the spec watcher is
+        # memory-accumulation plumbing, so it stays down while memory is
+        # paused (feature-pauses.md M8).
+        if self.config.memory.enabled and self.config.memory.spec_watcher_enabled:
             self.workspace_spec_watcher = WorkspaceSpecWatcher(
                 db=self.db,
                 bus=self.bus,
@@ -1128,7 +1167,11 @@ class Orchestrator(
         from src.reference_stub_enricher import ReferenceStubEnricher
 
         self.reference_stub_enricher: ReferenceStubEnricher | None = None
-        if self.config.memory.spec_watcher_enabled and self.config.memory.stub_enrichment_enabled:
+        if (
+            self.config.memory.enabled
+            and self.config.memory.spec_watcher_enabled
+            and self.config.memory.stub_enrichment_enabled
+        ):
             self.reference_stub_enricher = ReferenceStubEnricher(
                 bus=self.bus,
                 vault_projects_dir=self.config.vault_projects,
@@ -1168,7 +1211,20 @@ class Orchestrator(
             discovered = await self.plugin_registry.discover_plugins()
             if discovered:
                 logger.info("Discovered %d plugins: %s", len(discovered), discovered)
-            loaded = await self.plugin_registry.load_all()
+            # Feature pause (feature-pauses.md M1): when the memory
+            # subsystem is paused the aq-memory plugin is simply not loaded.
+            # The registry is told *what* to skip; it never mutates the
+            # plugin's DB status, so re-enabling is a config flip + restart.
+            skip_plugins: frozenset[str] = (
+                frozenset() if self.config.memory.enabled else frozenset({"aq-memory", "memory"})
+            )
+            if skip_plugins:
+                logger.info(
+                    "Memory subsystem PAUSED (memory.enabled=false) — aq-memory plugin "
+                    "not loaded; L1/L2 prompt tiers empty; reflection off; data "
+                    "preserved. See docs/specs/design/feature-pauses.md"
+                )
+            loaded = await self.plugin_registry.load_all(skip=skip_plugins)
             if loaded:
                 logger.info("Loaded %d plugins", loaded)
         except Exception as e:

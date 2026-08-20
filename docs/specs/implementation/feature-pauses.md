@@ -297,29 +297,55 @@ relying on the old defaults is part of the checklist.
 
 ## 12. Checklist
 
-- [ ] `src/config.py`: flip `MemoryConfig.enabled` default + parse default (§2.1)
-- [ ] `src/config.py`: add `PlaybooksConfig`, `AppConfig.playbooks`, raw parse (§2.2)
-- [ ] `src/config.py`: flip `ObservationConfig.enabled` default + parse default (§2.3)
-- [ ] `src/config.py`: `playbooks` → `RESTART_REQUIRED_SECTIONS` + `_SECTION_FIELDS` (§2.4)
-- [ ] `src/config_editor.py`: schema entries for both flags (§2.5)
-- [ ] `docs/specs/config.md`: document both flags as temporary (§2.6)
-- [ ] `src/plugins/registry.py`: `load_all(skip=...)` param (M2)
-- [ ] `src/orchestrator/core.py`: pass memory skip set + memory PAUSED log line (M1)
-- [ ] `src/orchestrator/core.py`: gate spec watcher + stub enricher on `memory.enabled` (M8)
-- [ ] `src/runtimes/supervisor.py`: force reflection level `"off"` when memory paused (M5)
-- [ ] `src/orchestrator/core.py`: wrap playbook wiring block; `None` attributes; playbooks
+Implemented on `wave1/1a-feature-pauses` (Wave 1 Lane 1A).  Items marked
+"(Wave 0)" were already landed by the substrate commit and only verified here.
+
+- [x] `src/config.py`: flip `MemoryConfig.enabled` default + parse default (§2.1)
+- [x] `src/config.py`: add `PlaybooksConfig`, `AppConfig.playbooks`, raw parse (§2.2) — Wave 0
+- [x] `src/config.py`: flip `ObservationConfig.enabled` default + parse default (§2.3)
+- [x] `src/config.py`: `playbooks` → `RESTART_REQUIRED_SECTIONS` + `_SECTION_FIELDS` (§2.4) — Wave 0
+- [x] `src/config_editor.py`: schema entries for both flags (§2.5) — section `x-note`s
+      came from Wave 0; this lane added the per-flag `FLAG_NOTES` annotation
+      (`restart_required: true` + description) for `memory.enabled`,
+      `playbooks.enabled` and `supervisor.observation.enabled`
+- [x] `docs/specs/config.md`: document both flags as temporary (§2.6)
+- [x] `src/plugins/registry.py`: `load_all(skip=...)` param (M2)
+- [x] `src/orchestrator/core.py`: pass memory skip set + memory PAUSED log line (M1)
+- [x] `src/orchestrator/core.py`: gate spec watcher + stub enricher on `memory.enabled` (M8)
+- [x] `src/runtimes/supervisor.py`: force reflection level `"off"` when memory paused (M5)
+- [x] `src/orchestrator/core.py`: wrap playbook wiring block; `None` attributes; playbooks
       PAUSED log line (P1–P8, P11)
-- [ ] `src/orchestrator/monitoring.py`: early return in `_check_paused_playbook_timeouts` (P9)
-- [ ] `src/orchestrator/events.py`: early return in `_check_workflow_stage_completion` (P10)
-- [ ] `src/commands/handler.py`: `PAUSED_PLAYBOOK_COMMANDS`, memory-name matcher, gate in
+- [x] `src/orchestrator/monitoring.py`: early return in `_check_paused_playbook_timeouts` (P9)
+- [x] `src/orchestrator/events.py`: early return in `_check_workflow_stage_completion` (P10)
+- [x] `src/commands/handler.py`: `PAUSED_PLAYBOOK_COMMANDS`, memory-name matcher, gate in
       `execute()` with exact error strings (§5)
-- [ ] Verify memory command extras against the aq-memory plugin's registered names (§5)
-- [ ] Sweep tests for implicit reliance on old defaults; add fixture opt-ins (§8)
-- [ ] New tests per §10 (config defaults, gate, paused startup, reflection off,
-      early-returns, data preservation)
-- [ ] Hand doctor check contract (§6) to trust-and-ops; optional `_health_checks()` mirror
-- [ ] Ops note: Milvus may be stopped while paused; never delete its data dir (§7)
-- [ ] Annotate `docs/specs/design/self-improvement.md` and `playbooks.md` Status lines as
+- [x] Verify memory command extras against the aq-memory plugin's registered names (§5).
+      The plugin is not installed on the dev machine, so the names were taken from
+      the in-tree references: `memory_search`, `memory_stats`, `memory_reindex`,
+      `compact_memory` (`src/api/models/memory.py`, `src/cli/auto_commands.py`).
+      All are covered by the `memory_` prefix rule plus the `compact_memory`
+      extra.  The matcher also accepts the plugin-qualified `aq-memory.` prefix,
+      because `PluginContext.register_command` registers both shapes.
+- [x] Sweep tests for implicit reliance on old defaults; add fixture opt-ins (§8) —
+      `tests/test_config_supervisor.py`, `tests/test_chat_observer.py` (expectation
+      updates) and `tests/test_workflow_stage_completion.py` (`playbooks.enabled=True`
+      fixture opt-in).  No skip markers were needed.
+- [x] New tests per §10 — `tests/test_feature_pauses.py` (63 tests: config defaults,
+      gate, paused/enabled startup, plugin skip, reflection off, early returns,
+      empty L1/L2 end to end, data preservation)
+- [x] Hand doctor check contract (§6) to trust-and-ops; optional `_health_checks()` mirror —
+      the `_health_checks()` mirror in `src/main.py` is implemented and tested.  The
+      `aq doctor` implementation itself remains owned by trust-and-ops (G.1); the
+      payload shape to copy is the one emitted by `_health_checks()`.
+- [x] Ops note: Milvus may be stopped while paused; never delete its data dir (§7) —
+      there is no `ops/README` in the tree, so the note lives in `README.md` next to
+      the self-improvement-loop section (and in `docs/specs/config.md` §4.10).
+- [x] Annotate `docs/specs/design/self-improvement.md` and `playbooks.md` Status lines as
       "Paused (feature-pauses.md)" — no content rewrite
-- [ ] `pytest tests/ -n auto` green; manual smoke: boot paused daemon, run one task, confirm
-      empty L1/L2 and no `timer.*` events
+- [x] `pytest tests/ -n auto`: **zero new failures** against the Wave 0 baseline on this
+      machine (~117 pre-existing failures, unrelated to this lane).  A full green suite
+      is not currently achievable here — see the lane report.
+      **Not done:** the manual smoke test (booting a real paused daemon) — it needs
+      Discord credentials this environment does not have.  The equivalent assertions
+      (no `timer.*` events across cycles, empty L1/L2, both PAUSED log lines) are
+      covered by `tests/test_feature_pauses.py` instead.

@@ -4,7 +4,7 @@ tags: [design, self-improvement, memory, orchestrator, observability]
 
 # Self-Improvement Loop
 
-**Status:** Draft
+**Status:** Draft — **Paused** ([[feature-pauses]]; `memory.enabled=false`)
 **Principles:** [[guiding-design-principles]] (#4 the system improves with use, #5 reduce human effort)
 **Related:** [[memory-scoping]], [[memory-plugin]], [[vault]], [[playbooks]], [[profiles]]
 
