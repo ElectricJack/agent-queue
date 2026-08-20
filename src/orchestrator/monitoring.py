@@ -15,10 +15,15 @@ from src.notifications.events import (
     ChainStuckEvent,
     StuckDefinedTaskEvent,
 )
-from src.models import Task, TaskStatus
+from src.models import DepType, Task, TaskStatus
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
+
+# Edge kinds the pre-work-graph readiness scan has no rule for.  A task
+# carrying one is deferred to the ``is_blocked`` projection rather than
+# guessed at (see ``_legacy_promotion_decisions``).
+_LEGACY_UNKNOWN_DEP_TYPES = frozenset({DepType.WAITS_FOR.value, DepType.CONDITIONAL_BLOCKS.value})
 
 
 class MonitoringMixin:
@@ -45,31 +50,101 @@ class MonitoringMixin:
                 )
 
     async def _check_defined_tasks(self) -> None:
-        """Promote DEFINED/BLOCKED tasks to READY when all dependencies are satisfied.
+        """Promote DEFINED/BLOCKED tasks to READY when the graph allows it.
 
-        Scans all DEFINED tasks and checks their dependency list:
-        - Tasks with no dependencies are immediately promoted to READY.
-        - Tasks with dependencies are promoted only when every upstream
-          dependency has reached COMPLETED status.
+        Two independent deciders run every cycle (work-graph implementation
+        spec §6.2):
 
-        Also scans BLOCKED tasks that have dependencies — if all deps are now
-        COMPLETED, the task is promoted to READY (e.g. a task that was blocked
-        on a dependency chain and the upstream has since completed).
+        * **legacy** — the historical per-task dependency scan, including the
+          ``is_plan_subtask`` special case;
+        * **projection** — one indexed read of ``tasks.is_blocked``, the
+          persisted blocked-state projection.
 
-        Special handling for plan subtasks:
-        - Skipped if the parent plan is still in AWAITING_PLAN_APPROVAL.
-        - If the parent plan is IN_PROGRESS (approved, subtasks running),
-          the parent dependency is treated as met — only non-parent
-          dependencies must be COMPLETED.
+        Which one *acts* is the ``work_graph.blocked_state_authoritative``
+        flag; the other still runs and any disagreement is logged.  That is
+        shadow mode (§9): the projection earns authority only after an
+        observation window with zero divergence, and rollback is a config
+        flip because the legacy scan stays in the tree.
+
+        Conditional-edge disposal runs first so a contingency task that can
+        never fire is closed rather than considered for promotion.
 
         This runs after ``_check_awaiting_approval`` so that freshly-merged
         PRs can unblock their dependents in the same cycle.
         """
+        await self._close_dead_conditional_tasks()
+
         defined = await self.db.list_tasks(status=TaskStatus.DEFINED)
         # Also check BLOCKED tasks — their dependencies may have been
         # satisfied since they were blocked, allowing them to proceed.
         blocked = await self.db.list_tasks(status=TaskStatus.BLOCKED)
+
+        legacy, deferred = await self._legacy_promotion_decisions(defined, blocked)
+        projected = await self._projected_promotion_decisions(defined, blocked)
+
+        authoritative = self.config.work_graph.blocked_state_authoritative
+        self._log_promotion_divergence(legacy, projected, deferred, authoritative)
+
+        if authoritative:
+            decisions = projected
+        else:
+            # The legacy scan predates typed edges and cannot judge a task
+            # that carries one; for those it defers to the projection.  Its
+            # verdict still rules every classic `blocks`-only graph, which is
+            # what the shadow window is actually evidence about.
+            decisions = dict(legacy)
+            for task_id in deferred:
+                if task_id in projected:
+                    decisions[task_id] = projected[task_id]
+
+        for task_id in sorted(decisions):
+            await self.db.transition_task(task_id, TaskStatus.READY, context=decisions[task_id])
+
+    async def _legacy_promotion_decisions(
+        self,
+        defined: list[Task],
+        blocked: list[Task],
+    ) -> tuple[dict[str, str], set[str]]:
+        """The pre-projection readiness scan, as a pure decision function.
+
+        Returns ``({task_id: transition_context}, deferred_ids)``.  Preserved
+        verbatim (bar the compute/apply split) so it can act as the
+        shadow-mode oracle:
+
+        - DEFINED with no dependencies → READY;
+        - DEFINED/BLOCKED whose every blocking dependency is COMPLETED → READY;
+        - plan subtasks whose parent is AWAITING_PLAN_APPROVAL are withheld,
+          and an IN_PROGRESS parent counts as satisfied (the special case the
+          ``parent-child`` edge type generalises away).
+
+        The scan only ever knew two shapes: ``blocks`` edges, and the
+        plan-subtask parent edge.  A task carrying an edge kind it predates
+        (``waits-for``, ``conditional-blocks``, or ``parent-child`` outside a
+        plan subtask) is **deferred** — reported in the second return value
+        and left to the projection.  Deferring rather than guessing matters:
+        ``are_dependencies_met`` would read a ``conditional-blocks`` edge to a
+        COMPLETED dependency as *satisfied* and run a contingency task whose
+        condition never fired.
+
+        Deciding before applying is safe: every promotion here targets READY,
+        and READY never satisfies another task's dependency.
+        """
+        decisions: dict[str, str] = {}
+        deferred: set[str] = set()
         for task in [*defined, *blocked]:
+            typed_edges = await self.db.get_typed_dependencies(task.id)
+            is_plan_child = bool(task.is_plan_subtask and task.parent_task_id)
+            if any(
+                dep_type in _LEGACY_UNKNOWN_DEP_TYPES
+                or (
+                    dep_type == DepType.PARENT_CHILD.value
+                    and not (is_plan_child and target == task.parent_task_id)
+                )
+                for target, dep_type in typed_edges
+            ):
+                deferred.add(task.id)
+                continue
+
             # Plan subtask special handling: the parent plan transitions to
             # IN_PROGRESS (not COMPLETED) when approved, so standard
             # are_dependencies_met() would block forever.  We treat the
@@ -83,22 +158,14 @@ class MonitoringMixin:
                     # Check only non-parent dependencies.
                     deps = await self.db.get_dependencies(task.id)
                     non_parent_deps = deps - {task.parent_task_id}
-                    if not non_parent_deps:
-                        await self.db.transition_task(
-                            task.id, TaskStatus.READY, context="deps_met_plan_parent_active"
-                        )
-                    else:
-                        # All non-parent deps must be COMPLETED
-                        all_met = True
-                        for dep_id in non_parent_deps:
-                            dep_task = await self.db.get_task(dep_id)
-                            if not dep_task or dep_task.status != TaskStatus.COMPLETED:
-                                all_met = False
-                                break
-                        if all_met:
-                            await self.db.transition_task(
-                                task.id, TaskStatus.READY, context="deps_met_plan_parent_active"
-                            )
+                    all_met = True
+                    for dep_id in non_parent_deps:
+                        dep_task = await self.db.get_task(dep_id)
+                        if not dep_task or dep_task.status != TaskStatus.COMPLETED:
+                            all_met = False
+                            break
+                    if all_met:
+                        decisions[task.id] = "deps_met_plan_parent_active"
                     continue
 
             deps = await self.db.get_dependencies(task.id)
@@ -107,13 +174,102 @@ class MonitoringMixin:
                     # No dependencies — promote DEFINED to READY.
                     # (BLOCKED tasks with no deps stay blocked — they were
                     # blocked for other reasons like verification failure.)
-                    await self.db.transition_task(
-                        task.id, TaskStatus.READY, context="deps_met_no_deps"
-                    )
+                    decisions[task.id] = "deps_met_no_deps"
             else:
-                deps_met = await self.db.are_dependencies_met(task.id)
-                if deps_met:
-                    await self.db.transition_task(task.id, TaskStatus.READY, context="deps_met")
+                if await self.db.are_dependencies_met(task.id):
+                    decisions[task.id] = "deps_met"
+        return decisions, deferred
+
+    async def _projected_promotion_decisions(
+        self,
+        defined: list[Task],
+        blocked: list[Task],
+    ) -> dict[str, str]:
+        """Promotion straight off the ``is_blocked`` projection (design §4.4).
+
+        - ``DEFINED ∧ is_blocked = 0`` → READY.
+        - ``BLOCKED ∧ is_blocked = 0`` → READY **only** when the task carries
+          at least one blocking edge or gate; a failure-BLOCKED task has no
+          graph blocker and must stay put.
+        """
+        decisions: dict[str, str] = {task.id: "deps_met" for task in defined if not task.is_blocked}
+
+        recoverable = [task.id for task in blocked if not task.is_blocked]
+        if recoverable:
+            with_blockers = await self.db.tasks_with_graph_blockers(recoverable)
+            for task_id in recoverable:
+                if task_id in with_blockers:
+                    decisions[task_id] = "deps_met"
+        return decisions
+
+    def _log_promotion_divergence(
+        self,
+        legacy: dict[str, str],
+        projected: dict[str, str],
+        deferred: set[str],
+        authoritative: bool,
+    ) -> None:
+        """Log where the two deciders disagree.
+
+        The observation gate on flipping ``blocked_state_authoritative``: a
+        window of clean cycles is the evidence that the projection matches
+        the scan it replaces.  Only the *sets* are compared — the transition
+        context strings are cosmetic.
+
+        Tasks the legacy scan deferred on (typed edges it predates) are
+        excluded: there is no second opinion to compare against, so counting
+        them would drown the signal the observation window is looking for.
+        """
+        only_legacy = sorted(set(legacy) - set(projected) - deferred)
+        only_projected = sorted(set(projected) - set(legacy) - deferred)
+        if not only_legacy and not only_projected:
+            return
+        logger.warning(
+            "blocked-state divergence (%s authoritative): legacy-only=%s projection-only=%s",
+            "projection" if authoritative else "legacy scan",
+            only_legacy or "-",
+            only_projected or "-",
+        )
+
+    async def _close_dead_conditional_tasks(self) -> None:
+        """Dispose of contingency tasks whose condition can never fire.
+
+        A ``conditional-blocks`` edge is satisfied only by the dependency's
+        *terminal failure*.  Once that dependency reaches COMPLETED the edge
+        is permanently unsatisfiable, so a task whose only remaining blocker
+        is such an edge would sit in the queue forever.  It is closed as a
+        no-op instead (work-graph design §3.1).
+
+        Gated on ``work_graph.conditional_autoclose`` (default on).  It is
+        deliberately independent of ``blocked_state_authoritative``: the
+        "dead conditional edge" test is a direct graph fact, not a read of
+        the projection, and ``conditional-blocks`` edges only exist where
+        someone explicitly created one.
+        """
+        if not self.config.work_graph.conditional_autoclose:
+            return
+
+        try:
+            dead = await self.db.find_dead_conditional_tasks()
+        except Exception:
+            logger.error("conditional auto-close: query failed", exc_info=True)
+            return
+
+        for task_id, project_id in dead:
+            try:
+                await self.db.set_task_meta(task_id, "work_outcome", "no-op")
+                await self.db.transition_task(
+                    task_id, TaskStatus.COMPLETED, context="conditional_dep_completed"
+                )
+                await self.db.log_event(
+                    "task.skipped_conditional",
+                    project_id=project_id,
+                    task_id=task_id,
+                    payload="conditional-blocks dependency completed — contingency not needed",
+                )
+                logger.info("Task %s auto-closed: its conditional dependency completed", task_id)
+            except Exception:
+                logger.error("conditional auto-close: failed to close %s", task_id, exc_info=True)
 
     async def _check_plan_parent_completion(self) -> None:
         """Auto-complete plan parent tasks when all their subtasks are done.
@@ -208,8 +364,14 @@ class MonitoringMixin:
                 StuckDefinedTaskEvent(
                     task=build_task_detail(task),
                     blocking_deps=[
-                        {"id": dep_id, "title": dep_title, "status": dep_status}
-                        for dep_id, dep_title, dep_status in blocking
+                        {
+                            "id": dep_id,
+                            "title": dep_title,
+                            "status": dep_status,
+                            "dep_type": dep_type,
+                            "project_id": dep_project_id,
+                        }
+                        for dep_id, dep_title, dep_status, dep_type, dep_project_id in blocking
                     ],
                     stuck_hours=stuck_hours,
                     project_id=task.project_id,
@@ -218,7 +380,8 @@ class MonitoringMixin:
 
             # Log the event
             blocking_info = ", ".join(
-                f"{dep_id}({dep_status})" for dep_id, _, dep_status in blocking[:10]
+                f"{dep_id}({dep_status}, {dep_type})"
+                for dep_id, _, dep_status, dep_type, _ in blocking[:10]
             )
             await self.db.log_event(
                 "stuck_defined_task",

@@ -1,44 +1,125 @@
-"""Task dependency operations."""
+"""Task dependency operations.
+
+Edges are typed (``task_dependencies.dep_type``, work-graph design §3).  Only
+the four *blocking* kinds gate readiness; the rest are provenance.  Every
+mutation here recomputes ``tasks.is_blocked`` inside its own transaction so
+the projection can never lag the graph.
+"""
 
 from __future__ import annotations
 
 from sqlalchemy import and_, delete, insert, or_, select
 
 from src.database.tables import task_dependencies, tasks
-from src.models import Task, TaskStatus
+from src.models import BLOCKING_DEP_TYPES, DepType, Task, TaskStatus
+
+
+def _dep_type_filter(dep_types: frozenset[str] | set[str] | None):
+    """Build the ``dep_type IN (...)`` clause, defaulting to blocking edges."""
+    effective = BLOCKING_DEP_TYPES if dep_types is None else dep_types
+    return task_dependencies.c.dep_type.in_(sorted(effective))
 
 
 class DependencyQueryMixin:
     """Query mixin for task dependency operations.  Expects ``self._engine``."""
 
-    async def add_dependency(self, task_id: str, depends_on: str) -> None:
-        """Add a dependency edge between two tasks."""
+    async def add_dependency(
+        self,
+        task_id: str,
+        depends_on: str,
+        dep_type: str = DepType.BLOCKS.value,
+    ) -> None:
+        """Add a typed dependency edge between two tasks.
+
+        Insert + blocked-state recompute in one transaction (design §4.2).
+        """
         async with self._engine.begin() as conn:
             await conn.execute(
-                insert(task_dependencies).values(task_id=task_id, depends_on_task_id=depends_on)
+                insert(task_dependencies).values(
+                    task_id=task_id,
+                    depends_on_task_id=depends_on,
+                    dep_type=dep_type,
+                )
             )
+            flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
+        await self.log_blocked_flips(flipped)
 
-    async def get_dependencies(self, task_id: str) -> set[str]:
-        """Return IDs of tasks that *task_id* depends on."""
+    async def get_dependencies(
+        self,
+        task_id: str,
+        dep_types: frozenset[str] | None = None,
+    ) -> set[str]:
+        """Return IDs of tasks that *task_id* depends on.
+
+        Defaults to the *blocking* edge kinds so existing callers keep their
+        "these hold me back" semantics once provenance edges are present.
+        Pass an explicit set to widen.
+        """
         async with self._engine.begin() as conn:
             result = await conn.execute(
                 select(task_dependencies.c.depends_on_task_id).where(
-                    task_dependencies.c.task_id == task_id
+                    and_(
+                        task_dependencies.c.task_id == task_id,
+                        _dep_type_filter(dep_types),
+                    )
                 )
             )
             return {r[0] for r in result.fetchall()}
 
-    async def get_all_dependencies(self) -> dict[str, set[str]]:
-        """Return the full dependency graph as {task_id: {dep_ids}}."""
+    async def get_typed_dependencies(self, task_id: str) -> list[tuple[str, str]]:
+        """Return ``(depends_on_task_id, dep_type)`` for every outgoing edge."""
         async with self._engine.begin() as conn:
-            result = await conn.execute(select(task_dependencies))
+            result = await conn.execute(
+                select(
+                    task_dependencies.c.depends_on_task_id,
+                    task_dependencies.c.dep_type,
+                )
+                .where(task_dependencies.c.task_id == task_id)
+                .order_by(
+                    task_dependencies.c.dep_type.asc(),
+                    task_dependencies.c.depends_on_task_id.asc(),
+                )
+            )
+            return [(r[0], r[1]) for r in result.fetchall()]
+
+    async def get_all_dependencies(
+        self,
+        dep_types: frozenset[str] | None = None,
+    ) -> dict[str, set[str]]:
+        """Return the dependency graph as ``{task_id: {dep_ids}}``.
+
+        Blocking edges only by default — cycle validation runs over exactly
+        the edges that can deadlock (design §11).
+        """
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(
+                    task_dependencies.c.task_id,
+                    task_dependencies.c.depends_on_task_id,
+                ).where(_dep_type_filter(dep_types))
+            )
             deps: dict[str, set[str]] = {}
-            for r in result.mappings().fetchall():
-                deps.setdefault(r["task_id"], set()).add(r["depends_on_task_id"])
+            for tid, dep_id in result.fetchall():
+                deps.setdefault(tid, set()).add(dep_id)
             return deps
 
+    async def get_parent_child_edges(self) -> dict[str, set[str]]:
+        """Return ``{child_id: {container_ids}}`` for ``parent-child`` edges.
+
+        Feeds the ``waits-for`` deadlock rule (design §11): a waiter may not
+        fan in over a container it is itself a descendant of.
+        """
+        return await self.get_all_dependencies(dep_types=frozenset({DepType.PARENT_CHILD.value}))
+
     async def are_dependencies_met(self, task_id: str) -> bool:
-        """Check whether all upstream dependencies are COMPLETED."""
+        """Check whether all upstream *blocking* dependencies are COMPLETED.
+
+        Legacy readiness scan — retained deliberately through the shadow-mode
+        window so ``_check_defined_tasks`` has an independent oracle to
+        compare the ``is_blocked`` projection against.  It collapses into a
+        shim over ``is_blocked`` once the projection becomes authoritative
+        (implementation spec §4.2).
+        """
         async with self._engine.begin() as conn:
             result = await conn.execute(
                 select(task_dependencies.c.depends_on_task_id, tasks.c.status)
@@ -47,7 +128,12 @@ class DependencyQueryMixin:
                         tasks, tasks.c.id == task_dependencies.c.depends_on_task_id
                     )
                 )
-                .where(task_dependencies.c.task_id == task_id)
+                .where(
+                    and_(
+                        task_dependencies.c.task_id == task_id,
+                        _dep_type_filter(None),
+                    )
+                )
             )
             rows = result.mappings().fetchall()
             return all(r["status"] == TaskStatus.COMPLETED.value for r in rows)
@@ -122,6 +208,7 @@ class DependencyQueryMixin:
                 .where(
                     and_(
                         tasks.c.status == TaskStatus.DEFINED.value,
+                        _dep_type_filter(None),
                         dep_tasks.c.status.in_([TaskStatus.BLOCKED.value, TaskStatus.FAILED.value]),
                     )
                 )
@@ -132,11 +219,22 @@ class DependencyQueryMixin:
     async def get_blocking_dependencies(
         self,
         task_id: str,
-    ) -> list[tuple[str, str, str]]:
-        """Return (dep_task_id, dep_title, dep_status) for unmet dependencies."""
+    ) -> list[tuple[str, str, str, str, str]]:
+        """Return unmet blocking dependencies for *task_id*.
+
+        Each entry is ``(dep_task_id, dep_title, dep_status, dep_type,
+        dep_project_id)``.  The project id lets renderers name the other
+        project on cross-project edges (design §3.3).
+        """
         async with self._engine.begin() as conn:
             result = await conn.execute(
-                select(tasks.c.id, tasks.c.title, tasks.c.status)
+                select(
+                    tasks.c.id,
+                    tasks.c.title,
+                    tasks.c.status,
+                    task_dependencies.c.dep_type,
+                    tasks.c.project_id,
+                )
                 .select_from(
                     task_dependencies.join(
                         tasks, tasks.c.id == task_dependencies.c.depends_on_task_id
@@ -145,18 +243,26 @@ class DependencyQueryMixin:
                 .where(
                     and_(
                         task_dependencies.c.task_id == task_id,
+                        _dep_type_filter(None),
                         tasks.c.status != TaskStatus.COMPLETED.value,
                     )
                 )
             )
-            return [(r[0], r[1], r[2]) for r in result.fetchall()]
+            return [(r[0], r[1], r[2], r[3], r[4]) for r in result.fetchall()]
 
-    async def get_dependents(self, task_id: str) -> set[str]:
+    async def get_dependents(
+        self,
+        task_id: str,
+        dep_types: frozenset[str] | None = None,
+    ) -> set[str]:
         """Return task IDs that directly depend on *task_id* (reverse lookup)."""
         async with self._engine.begin() as conn:
             result = await conn.execute(
                 select(task_dependencies.c.task_id).where(
-                    task_dependencies.c.depends_on_task_id == task_id
+                    and_(
+                        task_dependencies.c.depends_on_task_id == task_id,
+                        _dep_type_filter(dep_types),
+                    )
                 )
             )
             return {r[0] for r in result.fetchall()}
@@ -168,6 +274,9 @@ class DependencyQueryMixin:
         """Batch-fetch dependency data for multiple tasks in two queries.
 
         Returns a mapping of task_id -> {"depends_on": [...], "blocks": [...]}.
+        Every edge kind is included — this feeds graph views, which show
+        provenance edges too; each ``depends_on`` entry carries its
+        ``dep_type``.
         """
         if not task_ids:
             return {}
@@ -180,6 +289,7 @@ class DependencyQueryMixin:
                 select(
                     task_dependencies.c.task_id,
                     task_dependencies.c.depends_on_task_id,
+                    task_dependencies.c.dep_type,
                     tasks.c.status,
                 )
                 .select_from(
@@ -196,6 +306,7 @@ class DependencyQueryMixin:
                         {
                             "id": row["depends_on_task_id"],
                             "status": row["status"],
+                            "dep_type": row["dep_type"],
                         }
                     )
 
@@ -212,27 +323,47 @@ class DependencyQueryMixin:
                     result_map[blocked_by]["blocks"].append(row["task_id"])
 
         for entry in result_map.values():
-            entry["blocks"] = sorted(entry["blocks"])
+            entry["blocks"] = sorted(set(entry["blocks"]))
 
         return result_map
 
-    async def remove_dependency(self, task_id: str, depends_on: str) -> None:
-        """Remove a single dependency edge."""
+    async def remove_dependency(
+        self,
+        task_id: str,
+        depends_on: str,
+        dep_type: str | None = None,
+    ) -> None:
+        """Remove a dependency edge.
+
+        ``dep_type=None`` removes every edge kind between the pair.
+        Delete + recompute in one transaction.
+        """
+        conditions = [
+            task_dependencies.c.task_id == task_id,
+            task_dependencies.c.depends_on_task_id == depends_on,
+        ]
+        if dep_type is not None:
+            conditions.append(task_dependencies.c.dep_type == dep_type)
         async with self._engine.begin() as conn:
-            await conn.execute(
-                delete(task_dependencies).where(
-                    and_(
-                        task_dependencies.c.task_id == task_id,
-                        task_dependencies.c.depends_on_task_id == depends_on,
-                    )
-                )
-            )
+            await conn.execute(delete(task_dependencies).where(and_(*conditions)))
+            flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
+        await self.log_blocked_flips(flipped)
 
     async def remove_all_dependencies_on(self, depends_on_task_id: str) -> None:
         """Remove all dependency edges pointing to a given task."""
         async with self._engine.begin() as conn:
+            # Snapshot the former dependents *before* the delete — afterwards
+            # the edges that identify them are gone.
+            rows = await conn.execute(
+                select(task_dependencies.c.task_id).where(
+                    task_dependencies.c.depends_on_task_id == depends_on_task_id
+                )
+            )
+            former = {r[0] for r in rows.fetchall()}
             await conn.execute(
                 delete(task_dependencies).where(
                     task_dependencies.c.depends_on_task_id == depends_on_task_id
                 )
             )
+            flipped = await self.recompute_blocked(former | {depends_on_task_id}, conn=conn)
+        await self.log_blocked_flips(flipped)

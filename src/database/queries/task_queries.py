@@ -20,6 +20,7 @@ from src.database.tables import (
     tasks,
     token_ledger,
 )
+from src.database.queries.blocked_state import apply_label_filters
 from src.models import Task, TaskStatus, TaskType, VerificationType, WorkspaceMode
 from src.state_machine import is_valid_status_transition
 
@@ -63,6 +64,10 @@ class TaskQueryMixin:
                     affinity_agent_id=task.affinity_agent_id,
                     affinity_reason=task.affinity_reason,
                     workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
+                    # A brand-new row has no edges yet, so it starts
+                    # unblocked; the edges that follow recompute it
+                    # (work-graph implementation spec §4.1).
+                    is_blocked=0,
                     created_at=now,
                     updated_at=now,
                 )
@@ -81,8 +86,16 @@ class TaskQueryMixin:
         self,
         project_id: str | None = None,
         status: TaskStatus | None = None,
+        *,
+        labels: list[str] | None = None,
+        any_label: list[str] | None = None,
     ) -> list[Task]:
-        """List tasks with optional project/status filters."""
+        """List tasks with optional project/status/label filters.
+
+        ``labels`` is all-of, ``any_label`` is any-of (work-graph design §6).
+        Neither filters ``hold:*`` — listing shows what *exists*; only the
+        ready frontier filters what to *do*.
+        """
         stmt = select(tasks)
         conditions = []
         if project_id:
@@ -91,6 +104,8 @@ class TaskQueryMixin:
             conditions.append(tasks.c.status == status.value)
         if conditions:
             stmt = stmt.where(and_(*conditions))
+        if labels or any_label:
+            stmt = apply_label_filters(stmt, labels=labels, any_label=any_label)
         stmt = stmt.order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
@@ -146,16 +161,33 @@ class TaskQueryMixin:
             result = await conn.execute(stmt)
             return {r["status"]: r["cnt"] for r in result.mappings().fetchall()}
 
-    async def update_task(self, task_id: str, **kwargs) -> None:
-        """Update arbitrary task fields."""
+    @staticmethod
+    def _coerce_task_values(kwargs: dict) -> dict:
+        """Normalise enum-valued kwargs to their DB representation."""
         values = {}
         for key, value in kwargs.items():
             if isinstance(value, (TaskStatus, VerificationType, TaskType, WorkspaceMode)):
                 value = value.value
             values[key] = value
+        return values
+
+    async def update_task(self, task_id: str, **kwargs) -> None:
+        """Update arbitrary task fields.
+
+        ``status`` should be routed through :meth:`transition_task`, which
+        validates the move and recomputes the blocked-state projection.  A
+        raw ``status=`` here still recomputes (so the projection can never
+        go stale) but skips validation; an invariant test guards production
+        call sites.
+        """
+        values = self._coerce_task_values(kwargs)
         values["updated_at"] = time.time()
         async with self._engine.begin() as conn:
             await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
+            flipped: set[str] = set()
+            if "status" in kwargs:
+                flipped = await self.recompute_blocked({task_id}, conn=conn)
+        await self.log_blocked_flips(flipped)
 
     async def transition_task(
         self,
@@ -164,42 +196,75 @@ class TaskQueryMixin:
         *,
         context: str = "",
         **kwargs,
-    ) -> None:
+    ) -> set[str]:
         """Update task status with state-machine validation.
 
-        Fetches the current status, checks it against the formal state
-        machine, and logs a warning if the transition is not valid.  The
-        update is **always applied** regardless of validation outcome
-        (logging-only enforcement).
+        Read, validate, apply and recompute ``is_blocked`` happen in **one**
+        transaction (work-graph implementation spec §4.1), so no reader can
+        observe the new status against the old projection.
+
+        Validation stays warn-only in this phase — the ``state_machine.
+        enforce`` flag and the ``force`` bypass land with WG-5.
+
+        Returns the set of task ids whose ``is_blocked`` flipped; the
+        matching ``task.blocked`` / ``task.unblocked`` audit rows are written
+        after the transaction commits.
         """
-        task = await self.get_task(task_id)
-        if task is None:
-            logger.warning("transition_task: task '%s' not found, cannot validate", task_id)
-            await self.update_task(task_id, status=new_status, **kwargs)
-            return
+        values = self._coerce_task_values(kwargs)
+        flipped: set[str] = set()
 
-        current_status = task.status
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(select(tasks.c.status).where(tasks.c.id == task_id))
+            ).fetchone()
 
-        if current_status == new_status:
-            if kwargs:
-                await self.update_task(task_id, **kwargs)
-            return
+            if row is None:
+                logger.warning("transition_task: task '%s' not found, cannot validate", task_id)
+                values["status"] = new_status.value
+                values["updated_at"] = time.time()
+                await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
+                return set()
 
-        if not is_valid_status_transition(current_status, new_status):
-            ctx = f" ({context})" if context else ""
-            logger.warning(
-                "Invalid task status transition: %s -> %s for task '%s'%s",
-                current_status.value,
-                new_status.value,
-                task_id,
-                ctx,
-            )
+            current_status = TaskStatus(row[0])
 
-        await self.update_task(task_id, status=new_status, **kwargs)
+            if current_status == new_status:
+                if values:
+                    values["updated_at"] = time.time()
+                    await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
+                # Status is unchanged, so no projection can flip.
+                return set()
+
+            if not is_valid_status_transition(current_status, new_status):
+                ctx = f" ({context})" if context else ""
+                logger.warning(
+                    "Invalid task status transition: %s -> %s for task '%s'%s",
+                    current_status.value,
+                    new_status.value,
+                    task_id,
+                    ctx,
+                )
+
+            values["status"] = new_status.value
+            values["updated_at"] = time.time()
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
+            flipped = await self.recompute_blocked({task_id}, conn=conn)
+
+        await self.log_blocked_flips(flipped)
+        return flipped
 
     async def delete_task(self, task_id: str) -> None:
-        """Delete a task and all related child rows."""
+        """Delete a task and all related child rows.
+
+        The former dependents (and any fan-in waiters that reach this task
+        through a container) are snapshotted before the edges disappear and
+        recomputed in the same transaction.
+        """
         async with self._engine.begin() as conn:
+            # Snapshot everything whose projection this deletion can change,
+            # *while the edges still exist*.
+            affected = await self._collect_affected({task_id}, conn)
+            affected.discard(task_id)
+
             await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
             await conn.execute(delete(token_ledger).where(token_ledger.c.task_id == task_id))
             await conn.execute(
@@ -211,8 +276,12 @@ class TaskQueryMixin:
             await conn.execute(delete(task_criteria).where(task_criteria.c.task_id == task_id))
             await conn.execute(delete(task_context).where(task_context.c.task_id == task_id))
             await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
+            await conn.execute(delete(task_labels).where(task_labels.c.task_id == task_id))
             await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
             await conn.execute(delete(tasks).where(tasks.c.id == task_id))
+
+            flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
+        await self.log_blocked_flips(flipped)
 
     async def get_task_updated_at(self, task_id: str) -> float | None:
         """Return the ``updated_at`` timestamp for a task, or *None*."""
@@ -419,6 +488,7 @@ class TaskQueryMixin:
             workspace_mode=(
                 WorkspaceMode(row["workspace_mode"]) if row.get("workspace_mode") else None
             ),
+            is_blocked=bool(row.get("is_blocked", 0)),
             created_at=row.get("created_at", 0.0),
             updated_at=row.get("updated_at", 0.0),
         )

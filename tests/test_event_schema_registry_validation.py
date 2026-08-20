@@ -103,6 +103,47 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "title": "Implement feature X",
         "question": "Which database should I use?",
     },
+    # Work graph (docs/specs/design/work-graph.md §10.2)
+    "task.blocked": {
+        "task_id": "t-1",
+        "project_id": "proj-1",
+        "title": "Implement feature X",
+        "reason": "graph",
+    },
+    "task.unblocked": {
+        "task_id": "t-1",
+        "project_id": "proj-1",
+        "title": "Implement feature X",
+        "reason": "graph",
+    },
+    "task.skipped_conditional": {
+        "task_id": "t-1",
+        "project_id": "proj-1",
+        "title": "Roll back the migration",
+        "reason": "conditional-blocks dependency completed",
+    },
+    "dependency.added": {
+        "task_id": "t-2",
+        "depends_on": "t-1",
+        "dep_type": "blocks",
+        "project_id": "proj-1",
+    },
+    "dependency.removed": {
+        "task_id": "t-2",
+        "depends_on": "t-1",
+        "dep_type": "blocks",
+        "project_id": "proj-1",
+    },
+    "label.added": {
+        "task_id": "t-1",
+        "label": "hold:alice",
+        "project_id": "proj-1",
+    },
+    "label.removed": {
+        "task_id": "t-1",
+        "label": "hold:alice",
+        "project_id": "proj-1",
+    },
     # Note / knowledge
     "note.created": {
         "project_id": "proj-1",

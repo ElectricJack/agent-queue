@@ -57,6 +57,8 @@ class TestTaskEvent:
             "PLAN_REJECTED",
             "PLAN_DELETED",
             "SUBTASKS_COMPLETED",
+            # Work-graph conditional-edge disposal (design §3.1)
+            "CONDITIONAL_DEAD",
             "TIMEOUT",
             "EXECUTION_ERROR",
             "RECOVERY",
@@ -169,12 +171,19 @@ class TestWorkspacesV2:
         )
 
         vault_kind = WorkspaceKind(
-            project_id=SYSTEM_KIND_SCOPE, id="vault",
-            writable=True, lockable=False, is_git_repo=False, auto_attach=True,
+            project_id=SYSTEM_KIND_SCOPE,
+            id="vault",
+            writable=True,
+            lockable=False,
+            is_git_repo=False,
+            auto_attach=True,
         )
         ws = Workspace(
-            id="v1", project_id="p1", workspace_path="/vault",
-            source_type=RepoSourceType.LINK, kind_id="vault",
+            id="v1",
+            project_id="p1",
+            workspace_path="/vault",
+            source_type=RepoSourceType.LINK,
+            kind_id="vault",
         )
         req = ResolvedRequirement(kind_id="vault", position=10000)
         att = WorkspaceAttachment(requirement=req, workspace=ws, kind=vault_kind)

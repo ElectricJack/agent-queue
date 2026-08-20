@@ -1227,6 +1227,28 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "The task that must complete first (upstream task)",
                 },
+                "dep_type": {
+                    "type": "string",
+                    "enum": [
+                        "blocks",
+                        "parent-child",
+                        "waits-for",
+                        "conditional-blocks",
+                        "discovered-from",
+                        "related",
+                        "duplicates",
+                        "supersedes",
+                    ],
+                    "description": (
+                        "Edge kind (default 'blocks'). Blocking kinds gate "
+                        "readiness: 'blocks' waits for completion, "
+                        "'parent-child' marks a container that withholds its "
+                        "children until released, 'waits-for' fans in over a "
+                        "container's children, 'conditional-blocks' runs only "
+                        "if the dependency terminally failed. The rest are "
+                        "provenance only and never block."
+                    ),
+                },
             },
             "required": ["task_id", "depends_on"],
         },
@@ -1248,6 +1270,13 @@ _ALL_TOOL_DEFINITIONS = [
                 "depends_on": {
                     "type": "string",
                     "description": "The upstream task to remove as a dependency",
+                },
+                "dep_type": {
+                    "type": "string",
+                    "description": (
+                        "Only remove the edge of this kind. Omit to remove "
+                        "every edge kind between the pair."
+                    ),
                 },
             },
             "required": ["task_id", "depends_on"],
@@ -1536,8 +1565,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": (
-                        "Filter to a specific project. Omit to aggregate "
-                        "across every project."
+                        "Filter to a specific project. Omit to aggregate across every project."
                     ),
                 },
                 "since_hours": {

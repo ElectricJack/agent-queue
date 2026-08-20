@@ -84,6 +84,53 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Work-graph events  (docs/specs/design/work-graph.md §10.2)
+#
+# ``task.blocked`` / ``task.unblocked`` are written by the blocked-state
+# recompute for every row whose projection flipped, after the mutating
+# transaction commits.  ``task.skipped_conditional`` comes from the
+# conditional auto-close cascade when a contingency task's edge can never
+# fire again.  The ``dependency.*`` / ``label.*`` pairs are graph-edit
+# provenance.
+#
+# ``gate.created`` / ``gate.resolved`` / ``gate.expired`` are registered by
+# WG-3, together with the gate sweep that emits them.
+# ---------------------------------------------------------------------------
+
+_WORK_GRAPH_SCHEMAS: dict[str, EventSchema] = {
+    # task.* events carry the base triple (task_id, project_id, title) like
+    # every other member of the namespace.
+    "task.blocked": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["reason"],
+    },
+    "task.unblocked": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["reason"],
+    },
+    "task.skipped_conditional": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["reason"],
+    },
+    "dependency.added": {
+        "required": ["task_id", "depends_on", "dep_type"],
+        "optional": ["project_id"],
+    },
+    "dependency.removed": {
+        "required": ["task_id", "depends_on"],
+        "optional": ["dep_type", "project_id"],
+    },
+    "label.added": {
+        "required": ["task_id", "label"],
+        "optional": ["project_id"],
+    },
+    "label.removed": {
+        "required": ["task_id", "label"],
+        "optional": ["project_id"],
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Note / knowledge events
 # ---------------------------------------------------------------------------
 
@@ -479,6 +526,7 @@ _CRON_SCHEMAS: dict[str, EventSchema] = {
 
 EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_TASK_SCHEMAS,
+    **_WORK_GRAPH_SCHEMAS,
     **_NOTE_SCHEMAS,
     **_FILE_SCHEMAS,
     **_PLUGIN_SCHEMAS,
