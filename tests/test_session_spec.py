@@ -1,0 +1,462 @@
+"""SessionSpecBuilder — names, argv composition, prompt delivery, env.
+
+See docs/specs/implementation/session-runtime.md §3.4 and §8.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+
+import pytest
+
+from src.sessions.env import AQ_MARKER_KEYS, STARTUP_PROMPT_DELIVERED, build_session_env
+from src.sessions.harness_parser import Harness, ResumeSpec
+from src.sessions.spec import (
+    SessionSpecBuilder,
+    named_session_name,
+    sanitize_name,
+    task_session_name,
+)
+
+
+@dataclass
+class _Task:
+    id: str = "task-1"
+    project_id: str = "proj-1"
+
+
+@dataclass
+class _Profile:
+    id: str = "claude-opus"
+    model: str = ""
+    effort: str = ""
+    harness: str = "claude"
+
+
+class _McpCfg:
+    host = "127.0.0.1"
+    port = 8081
+
+
+class _Cfg:
+    mcp_server = _McpCfg()
+    security = None
+    data_dir = "/tmp/aq"
+
+
+CLAUDE = Harness(
+    id="claude",
+    name="Claude Code",
+    command="claude",
+    prompt_mode="arg",
+    permission_flag="--dangerously-skip-permissions",
+    model_flag="--model",
+    session_id_flag="--session-id",
+    resume=ResumeSpec(style="flag", flag="--resume"),
+    process_names=("claude", "node"),
+    max_argv_prompt_bytes=1024,
+)
+
+
+@pytest.fixture
+def builder():
+    return SessionSpecBuilder(_Cfg())
+
+
+def _build(builder, harness=CLAUDE, profile=None, **kw):
+    return builder.build_task_spec(
+        task=_Task(),
+        profile=profile or _Profile(),
+        harness=harness,
+        work_dir="/wd",
+        session_id="sess-abc",
+        instance_token="tok-1",
+        epoch="epoch-1",
+        api_url="http://127.0.0.1:8081",
+        api_token="token-xyz",
+        **kw,
+    )
+
+
+class TestNames:
+    def test_task_name(self):
+        assert task_session_name("task-1") == "s-task-1"
+
+    def test_named_without_project(self):
+        assert named_session_name("supervisor") == "n-supervisor"
+
+    def test_named_with_project(self):
+        assert named_session_name("supervisor", "proj-1") == "n-supervisor--proj-1"
+
+    def test_sanitization_folds_unsafe_characters(self):
+        assert sanitize_name("project:web/dev thing") == "project-web-dev-thing"
+        assert sanitize_name("a..b") == "a-b"
+
+    def test_sanitized_names_match_the_declared_charset(self):
+        import re
+
+        for raw in ("project:web dev", "task/42", "-leading-", "ünïcødé"):
+            assert re.fullmatch(r"[A-Za-z0-9_-]+", sanitize_name(raw))
+
+    def test_empty_input_never_produces_an_empty_name(self):
+        assert sanitize_name("///") == "unnamed"
+
+    def test_scoped_profile_id_survives_into_a_usable_name(self):
+        assert named_session_name("project:web:reviewer", "proj-1") == (
+            "n-project-web-reviewer--proj-1"
+        )
+
+
+class TestArgvComposition:
+    def test_basic_argv(self, builder):
+        spec = _build(builder)
+        assert spec.command[0] == "claude"
+        assert "--dangerously-skip-permissions" in spec.command
+        # Prompt rides argv as the final positional.
+        assert spec.command[-1] == spec.prompt
+
+    def test_model_flag_only_when_the_profile_sets_a_model(self, builder):
+        assert "--model" not in _build(builder).command
+        spec = _build(builder, profile=_Profile(model="opus"))
+        argv = list(spec.command)
+        assert argv[argv.index("--model") + 1] == "opus"
+
+    def test_model_flag_skipped_when_the_harness_has_none(self, builder):
+        harness = replace(CLAUDE, model_flag="")
+        spec = _build(builder, harness=harness, profile=_Profile(model="opus"))
+        assert "opus" not in spec.command
+
+    def test_effort_flag(self, builder):
+        harness = replace(CLAUDE, effort_flag="--effort")
+        spec = _build(builder, harness=harness, profile=_Profile(effort="high"))
+        argv = list(spec.command)
+        assert argv[argv.index("--effort") + 1] == "high"
+
+    def test_session_id_flag_pins_our_id_when_not_resuming(self, builder):
+        spec = _build(builder)
+        argv = list(spec.command)
+        assert argv[argv.index("--session-id") + 1] == "sess-abc"
+
+    def test_resume_flag_style_appends_the_key(self, builder):
+        spec = _build(builder, resume_key="prev-key")
+        argv = list(spec.command)
+        assert argv[argv.index("--resume") + 1] == "prev-key"
+
+    def test_session_id_flag_is_not_combined_with_resume(self, builder):
+        """A resumed session already has an id; passing both is a conflict."""
+        spec = _build(builder, resume_key="prev-key")
+        assert "--session-id" not in spec.command
+
+    def test_resume_subcommand_style_goes_before_the_flags(self, builder):
+        codex = Harness(
+            id="codex",
+            command="codex",
+            prompt_mode="arg",
+            args=("--full-auto",),
+            resume=ResumeSpec(style="subcommand", subcommand="resume"),
+        )
+        spec = _build(builder, harness=codex, resume_key="k1")
+        assert list(spec.command)[:3] == ["codex", "resume", "k1"]
+        # ...and the harness's own args still follow.
+        assert "--full-auto" in spec.command
+
+    def test_harness_args_are_preserved_in_order(self, builder):
+        harness = replace(CLAUDE, args=("--a", "--b"))
+        argv = list(_build(builder, harness=harness).command)
+        assert argv.index("--a") < argv.index("--b")
+
+
+class TestPromptDelivery:
+    def test_mode_arg_puts_the_prompt_last(self, builder):
+        spec = _build(builder)
+        assert spec.prompt_mode == "arg"
+        assert spec.command[-1] == spec.prompt
+        assert spec.files == ()
+
+    def test_mode_flag_puts_the_flag_immediately_before_the_prompt(self, builder):
+        harness = replace(CLAUDE, prompt_mode="flag", prompt_flag="--prompt")
+        spec = _build(builder, harness=harness)
+        argv = list(spec.command)
+        assert argv[-2] == "--prompt"
+        assert argv[-1] == spec.prompt
+
+    def test_mode_none_delivers_no_prompt_at_all(self, builder):
+        harness = replace(CLAUDE, prompt_mode="none")
+        spec = _build(builder, harness=harness)
+        assert spec.prompt is None
+        assert spec.command[-1] != ""
+        assert "aq prime" not in " ".join(spec.command)
+
+    def test_bootstrap_prompt_is_short_and_names_the_protocol(self, builder):
+        spec = _build(builder)
+        assert len(spec.prompt) < 600  # short on purpose
+        assert "aq prime" in spec.prompt
+        assert "aq task close" in spec.prompt
+        assert "aq session drain-ack" in spec.prompt
+        assert "task-1" in spec.prompt
+
+    def test_oversized_prompt_moves_to_a_file(self, builder):
+        big = "x" * 5000
+        spec = _build(builder, prompt=big)
+        assert spec.prompt == big
+        # The prompt itself is nowhere in argv.
+        assert big not in spec.command
+        rel, content = spec.files[0]
+        assert rel.startswith(".aq/tmp/") and content == big
+
+    def test_oversized_prompt_argv_stays_small_and_execs_the_harness(self, builder):
+        big = "x" * 20000
+        spec = _build(builder, prompt=big)
+        argv = list(spec.command)
+        assert argv[0] == "sh" and argv[1] == "-c"
+        assert "exec" in argv[2]
+        # tmux's new-session command buffer is ~2 KB -- the whole argv must
+        # stay far under it however long the prompt gets.
+        assert len(" ".join(argv)) < 1024
+        assert "claude" in argv
+
+    def test_oversized_prompt_under_flag_mode_keeps_the_flag(self, builder):
+        harness = replace(CLAUDE, prompt_mode="flag", prompt_flag="--prompt")
+        spec = _build(builder, harness=harness, prompt="y" * 5000)
+        assert list(spec.command)[-1] == "--prompt"
+
+    def test_threshold_is_bytes_not_characters(self, builder):
+        """A prompt of multi-byte characters must count as its byte length."""
+        harness = replace(CLAUDE, max_argv_prompt_bytes=100)
+        # 60 characters, 180 bytes.
+        spec = _build(builder, harness=harness, prompt="é" * 60)
+        assert spec.files, "multi-byte prompt should have overflowed to a file"
+
+    def test_exactly_at_the_threshold_still_rides_argv(self, builder):
+        harness = replace(CLAUDE, max_argv_prompt_bytes=100)
+        spec = _build(builder, harness=harness, prompt="z" * 100)
+        assert spec.files == ()
+
+
+class TestEnvMarkers:
+    def test_all_nine_markers_present_for_a_task_session(self, builder):
+        spec = _build(builder)
+        for key in AQ_MARKER_KEYS:
+            assert key in spec.env, key
+        assert spec.env["AQ_SESSION_ID"] == "sess-abc"
+        assert spec.env["AQ_TASK_ID"] == "task-1"
+        assert spec.env["AQ_PROJECT_ID"] == "proj-1"
+        assert spec.env["AQ_PROFILE"] == "claude-opus"
+        assert spec.env["AQ_DAEMON_EPOCH"] == "epoch-1"
+        assert spec.env["AQ_INSTANCE_TOKEN"] == "tok-1"
+        assert spec.env["AQ_WORK_DIR"] == "/wd"
+
+    def test_aq_task_id_matches_the_name_the_cli_falls_back_to(self, builder):
+        """The other half of ``aq prime`` / ``aq handoff``'s handshake."""
+        import inspect
+
+        from src.cli import agent_surface
+
+        source = inspect.getsource(agent_surface)
+        assert 'os.environ.get("AQ_TASK_ID")' in source
+        assert 'os.environ.get("AQ_SESSION_ID")' in source
+        spec = _build(builder)
+        assert "AQ_TASK_ID" in spec.env and "AQ_SESSION_ID" in spec.env
+
+    def test_startup_prompt_delivered_is_set_when_the_prompt_rode_argv(self, builder):
+        spec = _build(builder)
+        assert spec.env[STARTUP_PROMPT_DELIVERED] == "1"
+
+    def test_startup_prompt_delivered_is_absent_for_prompt_mode_none(self, builder):
+        harness = replace(CLAUDE, prompt_mode="none")
+        spec = _build(builder, harness=harness)
+        assert STARTUP_PROMPT_DELIVERED not in spec.env
+
+    def test_named_session_omits_task_id_rather_than_setting_it_empty(self, builder):
+        spec = builder.build_named_spec(
+            profile=_Profile(id="supervisor"),
+            harness=CLAUDE,
+            project_id="proj-1",
+            work_dir="/wd",
+            session_id="s1",
+            instance_token="t1",
+        )
+        assert "AQ_TASK_ID" not in spec.env
+        assert spec.lifecycle == "named"
+        assert spec.session_name == "n-supervisor--proj-1"
+
+    def test_harness_env_is_merged(self, builder):
+        harness = replace(CLAUDE, env=(("MY_FLAG", "1"),))
+        assert _build(builder, harness=harness).env["MY_FLAG"] == "1"
+
+    def test_claudecode_is_stripped(self):
+        env = build_session_env(
+            session_id="s",
+            task_id="t",
+            project_id="p",
+            profile_id="pr",
+            epoch="e",
+            instance_token="i",
+            work_dir="/wd",
+            api_url="http://x",
+            api_token="tok",
+            base={"CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "PATH": "/usr/bin"},
+        )
+        assert "CLAUDECODE" not in env
+        assert "CLAUDE_CODE_ENTRYPOINT" not in env
+        assert env["PATH"] == "/usr/bin"
+
+    def test_a_harness_cannot_reintroduce_claudecode(self):
+        """Explicit entries normally win -- this is the one exception."""
+        env = build_session_env(
+            session_id="s",
+            task_id="t",
+            project_id="p",
+            profile_id="pr",
+            epoch="e",
+            instance_token="i",
+            work_dir="/wd",
+            api_url="http://x",
+            api_token="tok",
+            harness_env={"CLAUDECODE": "1"},
+            base={},
+        )
+        assert "CLAUDECODE" not in env
+
+    def test_scrub_withholds_daemon_secrets_but_keeps_harness_credentials(self):
+        env = build_session_env(
+            session_id="s",
+            task_id="t",
+            project_id="p",
+            profile_id="pr",
+            epoch="e",
+            instance_token="i",
+            work_dir="/wd",
+            api_url="http://x",
+            api_token="tok",
+            base={
+                "DISCORD_BOT_TOKEN": "secret",
+                "DATABASE_DSN": "postgres://u:p@h/db",
+                "ANTHROPIC_API_KEY": "sk-ant",
+                "PATH": "/usr/bin",
+            },
+        )
+        assert "DISCORD_BOT_TOKEN" not in env
+        assert "DATABASE_DSN" not in env
+        # An agent CLI that cannot authenticate is not a safer agent.
+        assert env["ANTHROPIC_API_KEY"] == "sk-ant"
+        # AQ_API_TOKEN is explicit, so it survives despite looking secret.
+        assert env["AQ_API_TOKEN"] == "tok"
+
+    def test_config_kill_switch_is_honoured_when_config_is_passed(self):
+        class _Sec:
+            env_scrub_enabled = False
+            env_allowlist = ()
+
+        class _C:
+            security = _Sec()
+
+        env = build_session_env(
+            session_id="s",
+            task_id="t",
+            project_id="p",
+            profile_id="pr",
+            epoch="e",
+            instance_token="i",
+            work_dir="/wd",
+            api_url="http://x",
+            api_token="tok",
+            config=_C(),
+            base={"DISCORD_BOT_TOKEN": "secret"},
+        )
+        # With the switch off only STRIP_ALWAYS applies -- which is exactly
+        # what "kill switch" has to mean for it to be a rollback.
+        assert env["DISCORD_BOT_TOKEN"] == "secret"
+
+    def test_spec_builder_passes_config_into_the_scrub(self, builder):
+        """1C's bug was calling the scrub without a config; pin the fix."""
+        import inspect
+
+        from src.sessions import spec as spec_mod
+
+        source = inspect.getsource(spec_mod.SessionSpecBuilder._build)
+        assert "config=self.config" in source
+
+
+class TestHookMaterial:
+    def test_hook_templates_are_rendered_into_the_work_dir(self, builder):
+        harness = replace(
+            CLAUDE,
+            supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        )
+        spec = _build(builder, harness=harness)
+        by_path = dict(spec.files)
+        assert ".aq/hooks/claude.json" in by_path
+        content = by_path[".aq/hooks/claude.json"]
+        assert "SessionStart" in content and "aq prime --hook-json" in content
+        assert "PreCompact" in content and "aq handoff --auto" in content
+        # No Stop hook: completion is explicit, and a Stop hook would
+        # re-introduce exit-as-signal.
+        assert '"Stop"' not in content
+
+    def test_no_hook_files_when_the_harness_does_not_support_hooks(self, builder):
+        harness = replace(
+            CLAUDE,
+            supports_hooks=False,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        )
+        assert _build(builder, harness=harness).files == ()
+
+    def test_a_missing_template_is_skipped_not_fatal(self, builder):
+        harness = replace(
+            CLAUDE, supports_hooks=True, hook_files=((".aq/x.json", "hooks/ghost.json"),)
+        )
+        spec = _build(builder, harness=harness)
+        assert spec.files == ()  # launch still proceeds
+
+
+class TestSpecShape:
+    def test_readiness_and_process_hints_come_from_the_harness(self, builder):
+        harness = replace(
+            CLAUDE, ready_delay_ms=2500, ready_prompt_prefix="> ", skip_escape_before_enter=False
+        )
+        spec = _build(builder, harness=harness)
+        assert spec.ready_delay_ms == 2500
+        assert spec.ready_prompt_prefix == "> "
+        assert spec.process_names == ("claude", "node")
+        assert spec.skip_escape_before_enter is False
+
+    def test_spec_is_frozen(self, builder):
+        spec = _build(builder)
+        with pytest.raises(Exception):
+            spec.session_name = "other"
+
+    def test_instance_token_rides_the_spec(self, builder):
+        assert _build(builder).instance_token == "tok-1"
+
+    def test_default_api_url_falls_back_to_the_mcp_endpoint(self, builder):
+        spec = builder.build_task_spec(
+            task=_Task(),
+            profile=_Profile(),
+            harness=CLAUDE,
+            work_dir="/wd",
+            session_id="s",
+            instance_token="t",
+        )
+        assert spec.env["AQ_API_URL"] == "http://127.0.0.1:8081"
+
+    def test_wildcard_bind_is_rewritten_to_loopback(self):
+        class _Wild:
+            host = "0.0.0.0"
+            port = 9000
+
+        class _C:
+            mcp_server = _Wild()
+            security = None
+
+        b = SessionSpecBuilder(_C())
+        spec = b.build_task_spec(
+            task=_Task(),
+            profile=_Profile(),
+            harness=CLAUDE,
+            work_dir="/wd",
+            session_id="s",
+            instance_token="t",
+        )
+        assert spec.env["AQ_API_URL"] == "http://127.0.0.1:9000"
