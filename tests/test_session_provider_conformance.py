@@ -63,11 +63,21 @@ PROVIDER_CASES: list[ProviderCase] = [
         factory=SubprocessProvider,
         long_running=_python_sleeper(),
     ),
-    # tmux joins here when its provider lands:
-    #   ProviderCase(id="tmux", factory=TmuxProvider,
-    #                long_running=_python_sleeper(),
-    #                marks=(pytest.mark.tmux,))
 ]
+
+try:
+    from src.sessions.tmux import TmuxProvider
+except ImportError:
+    pass
+else:
+    PROVIDER_CASES.append(
+        ProviderCase(
+            id="tmux",
+            factory=TmuxProvider,
+            long_running=_python_sleeper(),
+            marks=(pytest.mark.tmux,),
+        )
+    )
 
 
 def _params():
@@ -81,9 +91,15 @@ def case(request) -> ProviderCase:
 
 @pytest.fixture
 def provider(case, tmp_path):
+    class _Sessions:
+        # Unique per test: keeps xdist workers (and any real daemon on the
+        # default "aq" socket) out of each other's tmux servers.
+        tmux_socket = f"aq-test-{tmp_path.name}"
+
     class _Cfg:
         data_dir = str(tmp_path / "state")
         security = None
+        sessions = _Sessions()
 
     return case.factory(config=_Cfg())
 

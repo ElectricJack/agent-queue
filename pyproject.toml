@@ -110,6 +110,7 @@ markers = [
     "functional: tests that launch real Claude CLI (require auth + API key)",
     "functional_mcp: functional tests requiring npm/npx for MCP servers",
     "integration: tests requiring external dependencies (Milvus Lite, etc.)",
+    "tmux: tests requiring a real tmux binary (POSIX only)",
 ]
 
 [tool.ruff]
