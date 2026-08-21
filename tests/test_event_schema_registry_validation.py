@@ -582,6 +582,30 @@ _CANONICAL_PAYLOADS.update(
             "harness": "claude",
             "work_dir": "/tmp/wd",
         },
+        "merge.started": {
+            "project_id": "proj-1",
+            "task_id": "t-1",
+            "branch": "aq/t-1",
+            "target": "main",
+        },
+        "merge.succeeded": {
+            "project_id": "proj-1",
+            "task_id": "t-1",
+            "branch": "aq/t-1",
+            "target": "main",
+            "merged_at": 1700000000.0,
+        },
+        "merge.conflict": {
+            "project_id": "proj-1",
+            "task_id": "t-1",
+            "branch": "aq/t-1",
+            "target": "main",
+            "files": ["src/foo.py"],
+        },
+        "merge.lease_broken": {
+            "project_id": "proj-1",
+            "reason": "lease expired mid-integration",
+        },
         "task.stalled": {
             "task_id": "t-1",
             "project_id": "proj-1",

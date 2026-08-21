@@ -1080,6 +1080,10 @@ class TestPhaseVerifyNormalTask:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
+        # These tests cover the exclusive-clone verify path (auto-merge
+        # remediations); with worktrees enabled (the default since P6) the
+        # project-repo kind routes to _phase_integrate instead.
+        config.worktrees.enabled = False
         o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
 
@@ -1867,6 +1871,8 @@ class TestCompletionPipelineVerify:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
+        # Exclusive-clone pipeline semantics — see TestPhaseVerifyNormalTask.
+        config.worktrees.enabled = False
         o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
 

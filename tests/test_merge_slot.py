@@ -395,8 +395,10 @@ class TestPhaseIntegrateHappyPath:
             row = await o.db.get_merge_slot("p1")
             assert row is not None and row.holder_task_id == "tsk-1"
             # Origin main should be untouched (tsk-2 never got pushed).
-            log = _git(["log", "--oneline", "origin/main"], cwd=s2)
-            assert "b" not in log
+            # Compare subjects only — an --oneline log includes abbreviated
+            # hashes, which can (and did) contain the letter "b".
+            subjects = _git(["log", "--format=%s", "origin/main"], cwd=s2).splitlines()
+            assert "b" not in subjects
         finally:
             await o.shutdown()
 
