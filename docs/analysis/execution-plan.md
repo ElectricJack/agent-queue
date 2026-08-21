@@ -125,10 +125,15 @@ drain-ack → DONE, with the task running in a real worktree slot. No tmux, no W
 
 ## 5. Deferred
 
-**Wave 2-T (needs WSL):** `TmuxProvider`, `proctable.py`, `dialogs.py`, tmux conformance tests.
-**Wave 3+:** work-graph WG-3/4/5 (gates sweep, explain, outcomes), session-runtime S3
-(transcripts/SSE), worktree P3–P6 (merge slot, reaper, adoption), supervisor P3–P5,
-aq-surface S2/S3 (auth, task-scoped MCP), messaging M1–M5, dashboard.
+**Wave 2-T (done):** `TmuxProvider`, `proctable.py`, `dialogs.py`, tmux conformance tests.
+**Wave 3 (done):** work-graph WG-3/4/5 (gates sweep, explain, outcomes), session-runtime S3
+(transcripts/SSE), worktree P3–P6 (merge slot, reaper, adoption), supervisor P3–P5.
+**Wave 4 (MVP surface):** dashboard D1–D4 (Sessions, Task explain/graph, Gates inbox,
+Supervisor chat), in-process Discord verification against the new messaging paths,
+aq-surface S2 (auth tokens; also fixes session-scoped `aq prime`).
+**Post-MVP (do not drop):** dashboard **D5 Worktrees · D6 Harness editor · D7 Doctor ·
+D8 Costs** (messaging-rework §6 M5 order), aq-surface S3 (task-scoped MCP) + S4
+(measurement), messaging M2–M4 (out-of-process `packages/aq-discord/` bridge).
 
 ## 6. Manual, not automatable
 
