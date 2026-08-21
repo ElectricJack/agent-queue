@@ -68,6 +68,7 @@ class _FakeWS:
     """Minimal WebSocket stand-in matching FastAPI's protocol surface."""
 
     def __init__(self, after_seq: str | None = None):
+        self.headers: dict[str, str] = {}
         self.query_params: dict[str, str] = {}
         if after_seq is not None:
             self.query_params["after_seq"] = after_seq
@@ -77,6 +78,9 @@ class _FakeWS:
 
     async def accept(self):
         self.accepted = True
+
+    async def close(self, code: int = 1000, reason: str = ""):
+        self._closed = True
 
     async def send_json(self, data: dict):
         if self._closed:
