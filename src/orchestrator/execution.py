@@ -1023,7 +1023,25 @@ class ExecutionMixin:
             logger.info("Task %s: running completion pipeline", task.id)
             pr_url, completed_ok = await self._run_completion_pipeline(pipeline_ctx)
 
-            if pipeline_ctx.plan_needs_approval and completed_ok:
+            if (
+                pipeline_ctx.plan_needs_approval
+                and completed_ok
+                and self._should_run_legacy_plan_region(task)
+            ):
+                # Gated by ``config.planner.legacy_plan_discovery``
+                # (supervisor-agent §9 row 4). ``_phase_plan_discover``
+                # only sets ``plan_needs_approval`` when the legacy
+                # discovery path ran, so this extra guard is defensive:
+                # if the flag was flipped between discover and here, the
+                # legacy region (AWAITING_PLAN_APPROVAL transition +
+                # ``break_plan_into_tasks``) is skipped. Drain semantics
+                # (spec §11 P5) let already-AWAITING_PLAN_APPROVAL tasks
+                # continue on legacy — see
+                # ``_should_run_legacy_plan_region``. When the region is
+                # skipped, no planner task-graph is auto-created here:
+                # spec §9 doesn't define a concrete replacement and the
+                # Task 8 brief mandates "skip + log at info" over
+                # invented behaviour.
                 logger.info(
                     "Task %s: plan needs approval — sending notification",
                     task.id,

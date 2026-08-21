@@ -273,7 +273,20 @@ class ApprovalMixin:
             await self._notify_stuck_chain(task)
 
     async def _phase_plan_discover(self, ctx: PipelineContext) -> PhaseResult:
-        """Delegate plan discovery to the Supervisor."""
+        """Delegate plan discovery to the Supervisor.
+
+        Gated by ``config.planner.legacy_plan_discovery`` (supervisor-agent §9
+        row 5). When the flag is False AND the task is not already in
+        AWAITING_PLAN_APPROVAL (drain semantics, spec §11 P5), the phase
+        returns CONTINUE without touching the supervisor.
+        """
+        if not self._should_run_legacy_plan_region(ctx.task):
+            logger.info(
+                "Task %s: legacy plan discovery disabled — skipping _phase_plan_discover",
+                ctx.task.id,
+            )
+            return PhaseResult.CONTINUE
+
         if not hasattr(self, "_supervisor") or not self._supervisor:
             logger.info(
                 "Task %s: no supervisor available, using legacy plan discovery",
@@ -330,6 +343,24 @@ class ApprovalMixin:
             )
         return PhaseResult.CONTINUE
 
+    def _should_run_legacy_plan_region(self, task) -> bool:
+        """Gate for the legacy plan.md pipeline.
+
+        Returns True when the legacy plan-discovery path should run:
+        - ``config.planner.legacy_plan_discovery`` is True (today's default),
+          OR
+        - the task is already in ``AWAITING_PLAN_APPROVAL`` (drain semantics
+          — a mid-flight flag flip must not strand tasks that entered the
+          legacy pipeline before the switch, spec §11 P5).
+
+        See supervisor-agent.md §9 rows 4–5 and §11 Phase 5.
+        """
+        from src.models import TaskStatus
+
+        if getattr(self.config, "planner", None) is not None and self.config.planner.legacy_plan_discovery:
+            return True
+        return getattr(task, "status", None) == TaskStatus.AWAITING_PLAN_APPROVAL
+
     async def _phase_plan_generate(self, ctx: PipelineContext) -> PhaseResult:
         """Pipeline phase: discover plan files and store for approval.
 
@@ -342,7 +373,18 @@ class ApprovalMixin:
         data in ``task_context`` and sets ``ctx.plan_needs_approval = True``
         so the caller can transition the task to AWAITING_PLAN_APPROVAL
         and present the plan to the user for approval.
+
+        Gated by ``config.planner.legacy_plan_discovery`` (supervisor-agent §9
+        row 5). When the flag is False AND the task is not already in
+        AWAITING_PLAN_APPROVAL (drain semantics), returns CONTINUE without
+        scanning for plan files.
         """
+        if not self._should_run_legacy_plan_region(ctx.task):
+            logger.info(
+                "Task %s: legacy plan discovery disabled — skipping _phase_plan_generate",
+                ctx.task.id,
+            )
+            return PhaseResult.CONTINUE
         if not ctx.workspace_path:
             return PhaseResult.CONTINUE
         plan_stored = await self._discover_and_store_plan(ctx.task, ctx.workspace_path)
