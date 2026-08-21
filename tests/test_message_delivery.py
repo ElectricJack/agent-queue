@@ -445,6 +445,131 @@ class TestReplyTimeouts:
         assert await engine.check_reply_timeouts() == 0
 
 
+class TestTranscriptTailFanout:
+    async def test_tail_reply_emits_message_sent_with_full_payload(self, db):
+        sessions = FakeSessionManager()
+        bus = RecordingBus()
+        engine = make_engine(db, sessions, bus=bus)
+        msg = await _send(
+            db,
+            from_kind="user",
+            from_id="discord:1",
+            to_kind="session",
+            to_id="supervisor-p1",
+            thread_id="discord:chan-1:9",
+            subject="hi",
+        )
+        sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
+        await engine.run_delivery_pass()
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                sa_update(messages)
+                .where(messages.c.id == msg.id)
+                .values(delivered_at=time.time() - 999)
+            )
+        sessions.tail_map[("session", "supervisor-p1", "p1")] = "tail body"
+        bus.events.clear()
+
+        resolved = await engine.check_reply_timeouts()
+
+        assert resolved == 1
+        sent = [e for e in bus.events if e.event == "message.sent"]
+        replied = [e for e in bus.events if e.event == "message.replied"]
+        assert len(sent) == 1
+        assert len(replied) == 1
+        p = sent[0].payload
+        # Payload must carry the envelope Discord's _on_message_sent needs
+        # to route the message to the originating thread.
+        assert p["project_id"] == "p1"
+        assert p["from_kind"] == "session"
+        assert p["from_id"] == "supervisor-p1"
+        assert p["to_kind"] == "user"
+        assert p["to_id"] == "discord:1"
+        assert p["thread_id"] == "discord:chan-1:9"
+        # The reply row (not the original) is what got sent.
+        replies = await db.list_messages(project_id="p1", to_kind="user")
+        assert p["message_id"] == replies[0].id
+
+    async def test_tail_reply_no_message_sent_when_cas_loses(self, db, monkeypatch):
+        sessions = FakeSessionManager()
+        bus = RecordingBus()
+        engine = make_engine(db, sessions, bus=bus)
+        msg = await _send(
+            db,
+            from_kind="user",
+            from_id="discord:1",
+            to_kind="session",
+            to_id="supervisor-p1",
+            thread_id="t-x",
+        )
+        sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
+        await engine.run_delivery_pass()
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                sa_update(messages)
+                .where(messages.c.id == msg.id)
+                .values(delivered_at=time.time() - 999)
+            )
+        sessions.tail_map[("session", "supervisor-p1", "p1")] = "tail body"
+        bus.events.clear()
+
+        # Force the CAS on the newly-created reply to lose.
+        original_mark = db.mark_delivered
+
+        async def losing_mark(message_id, via):
+            if via == "transcript_tail":
+                return False
+            return await original_mark(message_id, via=via)
+
+        monkeypatch.setattr(db, "mark_delivered", losing_mark)
+
+        resolved = await engine.check_reply_timeouts()
+
+        assert resolved == 0
+        assert [e.event for e in bus.events] == []  # no replied, no sent
+
+    async def test_tail_dedupe_key_distinguishes_projects(self, db):
+        # Two projects, same thread_id — both tails should be recovered.
+        await db.create_project(Project(id="p2", name="p2"))
+        sessions = FakeSessionManager()
+        bus = RecordingBus()
+        engine = make_engine(db, sessions, bus=bus)
+
+        m1 = await _send(
+            db,
+            project_id="p1",
+            to_kind="session",
+            to_id="supervisor-p1",
+            thread_id="shared-thread",
+        )
+        m2 = await _send(
+            db,
+            project_id="p2",
+            to_kind="session",
+            to_id="supervisor-p2",
+            thread_id="shared-thread",
+        )
+        sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
+        sessions.activity_map[("session", "supervisor-p2", "p2")] = "idle"
+        await engine.run_delivery_pass()
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                sa_update(messages)
+                .where(messages.c.id.in_([m1.id, m2.id]))
+                .values(delivered_at=time.time() - 999)
+            )
+        sessions.tail_map[("session", "supervisor-p1", "p1")] = "p1 tail"
+        sessions.tail_map[("session", "supervisor-p2", "p2")] = "p2 tail"
+
+        resolved = await engine.check_reply_timeouts()
+
+        assert resolved == 2
+        p1_replies = await db.list_messages(project_id="p1", to_kind="user")
+        p2_replies = await db.list_messages(project_id="p2", to_kind="user")
+        assert len(p1_replies) == 1 and p1_replies[0].body == "p1 tail"
+        assert len(p2_replies) == 1 and p2_replies[0].body == "p2 tail"
+
+
 class TestBusOptional:
     async def test_no_bus_no_error(self, db):
         sessions = FakeSessionManager(

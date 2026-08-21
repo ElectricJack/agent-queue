@@ -200,7 +200,11 @@ class MessageDeliveryEngine:
                 continue
             # Dedupe per recipient thread so we don't post the same tail
             # twice when several delivered messages share it.
-            thread_key = msg.thread_id or f"{kind}:{target_id}:{project_id}"
+            thread_key = (
+                f"{project_id}:{msg.thread_id}"
+                if msg.thread_id
+                else f"{kind}:{target_id}:{project_id}"
+            )
             if thread_key in seen_threads:
                 continue
             tail = await self._sessions.tail_assistant_turn(
@@ -222,7 +226,11 @@ class MessageDeliveryEngine:
                 thread_id=msg.thread_id,
                 reply_to_id=msg.id,
             )
-            await self._db.mark_delivered(reply.id, via="transcript_tail")
+            claimed = await self._db.mark_delivered(reply.id, via="transcript_tail")
+            if not claimed:
+                # CAS lost — another actor already delivered this reply row.
+                # Skip both events; don't count as resolved.
+                continue
             await self._emit(
                 "message.replied",
                 {
@@ -234,6 +242,12 @@ class MessageDeliveryEngine:
                     **({"thread_id": msg.thread_id} if msg.thread_id else {}),
                 },
             )
+            # Platform renderers (e.g. Discord's _on_message_sent) subscribe
+            # to message.sent, not message.replied — so tail-recovered
+            # replies addressed to a user must fan out the same envelope
+            # _deliver_to_user emits, otherwise Discord never posts them.
+            if reply.to_kind == "user":
+                await self._emit("message.sent", _message_sent_payload(reply))
             resolved += 1
         return resolved
 
@@ -244,19 +258,7 @@ class MessageDeliveryEngine:
         for msg in pending:
             if await self._db.mark_delivered(msg.id, via="platform"):
                 delivered += 1
-                payload = {
-                    "message_id": msg.id,
-                    "project_id": msg.project_id,
-                    "from_kind": msg.from_kind,
-                    "from_id": msg.from_id,
-                    "to_kind": msg.to_kind,
-                    "to_id": msg.to_id,
-                }
-                if msg.thread_id:
-                    payload["thread_id"] = msg.thread_id
-                if msg.subject:
-                    payload["subject"] = msg.subject
-                await self._emit("message.sent", payload)
+                await self._emit("message.sent", _message_sent_payload(msg))
         return delivered
 
     async def _maybe_park(self, pending: list[Message]) -> int:
@@ -348,6 +350,28 @@ def _target_from_recipient(
     if to_kind == "session":
         return "session", to_id, project_id
     return None, None, None
+
+
+def _message_sent_payload(msg: Message) -> dict[str, Any]:
+    """Envelope emitted on ``message.sent`` for user-addressed rows.
+
+    Shared by the platform-delivery path (:meth:`_deliver_to_user`) and
+    the transcript-tail fallback so platform renderers see the identical
+    payload shape regardless of which path materialised the row.
+    """
+    payload: dict[str, Any] = {
+        "message_id": msg.id,
+        "project_id": msg.project_id,
+        "from_kind": msg.from_kind,
+        "from_id": msg.from_id,
+        "to_kind": msg.to_kind,
+        "to_id": msg.to_id,
+    }
+    if msg.thread_id:
+        payload["thread_id"] = msg.thread_id
+    if msg.subject:
+        payload["subject"] = msg.subject
+    return payload
 
 
 def _render_nudge(batch: list[Message]) -> str:
