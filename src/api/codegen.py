@@ -47,6 +47,10 @@ API_EXCLUDED = {
     # third surface, and it becomes reachable with an agent-held credential
     # once task-scoped session tokens land.
     "run_command",
+    # message_send is served by the dedicated per-session route
+    # ``POST /api/sessions/{name}/message`` (src/api/messages.py); the
+    # codegen route would duplicate it and confuse the dashboard chat page.
+    "message_send",
 }
 
 

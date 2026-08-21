@@ -175,6 +175,22 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "ask_human": "task",
     "memory_save": "memory",
     "memory_search": "memory",
+    # session — operator surface (session-runtime spec §3, §5)
+    "session_list": "system",
+    "session_show": "system",
+    "session_peek": "system",
+    "session_attach": "system",
+    "session_nudge": "system",
+    "session_logs": "system",
+    "session_kill": "system",
+    # gate — work-graph WG-3 operator surface
+    "gate_create": "task",
+    "gate_list": "task",
+    "gate_show": "task",
+    "gate_resolve": "task",
+    # explain + ready frontier — work-graph WG-4
+    "explain_task": "task",
+    "project_ready": "task",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
     # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
