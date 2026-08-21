@@ -268,6 +268,58 @@ class TestPrime:
         result = await prime_handler.execute("prime", {"task_id": task.id})
         assert "error" not in result or result.get("success") is True
 
+    async def test_pending_message_rendered_and_marked_delivered(
+        self, prime_handler, db, task
+    ):
+        """Task 3: prime is a delivery method, not a peek.
+
+        A pending ``to_kind="task"`` message appears in the ``messages``
+        section (with the same envelope as the inject hook) and is marked
+        delivered via CAS with ``via="prime"`` after rendering.  Gated on
+        ``config.messages.enabled``.
+        """
+        prime_handler.config.messages.enabled = True
+        msg = await db.create_message(
+            project_id=task.project_id,
+            from_kind="user",
+            from_id="discord:1",
+            to_kind="task",
+            to_id=task.id,
+            body="a note for the task",
+            subject="hi",
+        )
+        assert msg.delivered_at is None
+
+        result = await prime_handler.execute("prime", {"task_id": task.id})
+        messages = next(s for s in result["sections"] if s["key"] == "messages")
+        # Envelope shape matches _render_nudge / aq inbox --inject.
+        assert msg.id in messages["body"]
+        assert "user:discord:1" in messages["body"]
+        assert "a note for the task" in messages["body"]
+
+        stored = await db.get_message(msg.id)
+        assert stored.delivered_at is not None
+        assert stored.via == "prime"
+
+    async def test_pending_message_skipped_when_messages_disabled(
+        self, prime_handler, db, task
+    ):
+        """messages.enabled=False → no render, no mark_delivered."""
+        prime_handler.config.messages.enabled = False
+        msg = await db.create_message(
+            project_id=task.project_id,
+            from_kind="user",
+            from_id="discord:1",
+            to_kind="task",
+            to_id=task.id,
+            body="not for you",
+        )
+        result = await prime_handler.execute("prime", {"task_id": task.id})
+        messages = next(s for s in result["sections"] if s["key"] == "messages")
+        assert msg.id not in messages["body"]
+        stored = await db.get_message(msg.id)
+        assert stored.delivered_at is None
+
 
 # ---------------------------------------------------------------------------
 # task_handoff — Phase S1 (design §6.1)

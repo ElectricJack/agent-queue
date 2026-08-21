@@ -237,30 +237,46 @@ async def build_workspaces_section(db: Any, task: Any, work_dir: str | None) -> 
 # ---------------------------------------------------------------------------
 
 
-async def build_messages_section(db: Any, task_id: str) -> PrimeSection:
+async def build_messages_section(
+    db: Any,
+    task_id: str,
+    *,
+    config: Any = None,
+    mark_delivered: bool = False,
+) -> PrimeSection:
     """Pending messages (design §5.2 #6) + latest ``task_context(type=handoff)``.
 
-    The ``messages`` table query layer (docs/specs/implementation/
-    supervisor-agent.md) is being built in a parallel lane and does not
-    exist on the DB backend yet. Rather than import a module that may not
-    exist at this branch point, this probes for a plausible accessor via
-    ``getattr`` and renders nothing if absent — messages render empty until
-    that lane lands, exactly like memory renders empty while paused.
+    Renders pending ``to_kind="task"`` messages using the same envelope as
+    the ``UserPromptSubmit`` inject hook (``[<id> from <kind>:<id>]``
+    header + body), so the agent sees one consistent format regardless of
+    delivery path.  When *mark_delivered* is true the section marks each
+    rendered row delivered via CAS with ``via="prime"`` — this is what
+    makes prime a genuine delivery method rather than a peek.  Gated on
+    ``config.messages.enabled``; when the flag is off the messages sub-
+    section is skipped entirely (the handoff block still renders).
     """
     parts: list[str] = []
 
-    get_messages = getattr(db, "get_unread_messages_for_task", None) or getattr(
-        db, "get_task_messages", None
+    messages_enabled = bool(
+        getattr(getattr(config, "messages", None), "enabled", False)
     )
-    if get_messages is not None:
+    if messages_enabled:
         try:
-            messages = await get_messages(task_id)
+            pending = await db.get_pending_messages("task", task_id, limit=50)
         except Exception:
-            messages = []
-        for message in messages or []:
-            sender = message.get("from") or message.get("sender") or "?"
-            text = message.get("body") or message.get("content") or ""
-            parts.append(f"**message from {sender}:** {text}")
+            pending = []
+        for msg in pending or []:
+            header = f"[{msg.id} from {msg.from_kind}:{msg.from_id}]"
+            if getattr(msg, "subject", None):
+                header = f"{header} {msg.subject}"
+            parts.append(f"{header}\n{msg.body}")
+            if mark_delivered:
+                try:
+                    await db.mark_delivered(msg.id, via="prime")
+                except Exception:
+                    # Best-effort: an already-claimed row (nudge race) is
+                    # legal and non-fatal; we still rendered it above.
+                    pass
 
     rows = await db.get_task_contexts(task_id)
     handoff_rows = [r for r in rows if r.get("type") == "handoff"]

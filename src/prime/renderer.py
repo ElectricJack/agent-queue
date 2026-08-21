@@ -47,6 +47,7 @@ class PrimeRenderer:
         *,
         session_id: str | None = None,
         work_dir: str | None = None,
+        mark_messages_delivered: bool = False,
     ) -> PrimeDocument:
         """Render the full prime document for *task_id*.
 
@@ -70,7 +71,12 @@ class PrimeRenderer:
             _sections.build_task_section(task),
             await _sections.build_task_context_section(self.db, self.config, task),
             await _sections.build_workspaces_section(self.db, task, effective_work_dir),
-            await _sections.build_messages_section(self.db, task_id),
+            await _sections.build_messages_section(
+                self.db,
+                task_id,
+                config=self.config,
+                mark_delivered=mark_messages_delivered,
+            ),
             _sections.build_l1_facts_section(self.config),
             _sections.build_l2_context_section(self.config),
             _sections.build_tool_guidance_section(),

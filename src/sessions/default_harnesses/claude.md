@@ -114,3 +114,13 @@ receive the bootstrap prompt through argv (see `SessionSpecBuilder`); a
 SessionStart hook that also ran `aq prime --hook-json` on startup would
 double-inject. The hook is active exactly where the argv prompt is
 absent: resuming a session and returning from a PreCompact.
+
+**`UserPromptSubmit` runs `aq inbox --inject`** at every prompt boundary
+(supervisor-agent.md §8) — this is the prompt-boundary injection path for
+messages queued while the session was mid-turn. The hook is a no-op when
+there are no pending messages, when the recipient cannot be resolved from
+`AQ_TASK_ID`, or when the daemon is unreachable: `aq inbox` exits 0 with
+no output in all three cases so a busy or offline daemon can never block
+the agent's next prompt. `--inject` marks each rendered row delivered via
+CAS with `via="inject"`, so a racing nudge or prime render cannot double-
+deliver the same message.

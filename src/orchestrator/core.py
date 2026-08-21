@@ -377,6 +377,32 @@ class Orchestrator(
         # shares the same reader state.  Base_dir=None => Path.home()
         # (spec default).
         self.transcript_watcher = TranscriptWatcher(db=self.db, bus=self.bus)
+        # ---- Message substrate (supervisor-agent.md §5) ------------------
+        # SessionLens is the read-only window from the delivery engine into
+        # the session runtime; MessageDeliveryEngine owns the delivery
+        # policy.  Both are constructed unconditionally — the cascade step
+        # (``_deliver_messages``) gates on ``config.messages.enabled`` and
+        # ``delivery_interval``, so nothing runs while the flag is off.
+        from src.messages.delivery import MessageDeliveryEngine
+        from src.messages.session_lens import SessionLens
+
+        self.session_lens = SessionLens(
+            db=self.db,
+            providers=self.session_providers,
+            spec_builder=self.session_spec_builder,
+            harness_registry=self.harness_registry,
+            config=config,
+            profiles_loader=self._load_profile_for_lens,
+        )
+        self.message_delivery = MessageDeliveryEngine(
+            db=self.db,
+            sessions=self.session_lens,
+            config=config,
+            bus=self.bus,
+        )
+        #: Wall-clock epoch of the last successful delivery pass — used to
+        #: throttle ``_deliver_messages`` to ``config.messages.delivery_interval``.
+        self._last_delivery_pass: float = 0.0
         # Tool catalog snapshot keyed by (project_id, server_name).  Probed
         # once at startup; refreshed per-server by the vault watcher hook
         # and the probe-mcp-server command.
@@ -2466,15 +2492,37 @@ class Orchestrator(
         except Exception:
             logger.error("TranscriptWatcher tick failed", exc_info=True)
 
+    async def _load_profile_for_lens(self, profile_id: str):
+        """Async profile lookup used by :class:`SessionLens.ensure_started`.
+
+        Mirrors :meth:`_resolve_profile` but takes an id directly (the lens
+        has no task in hand): project override → system profile.  Returns
+        ``None`` when the profile does not exist so the lens can degrade
+        gracefully rather than raise.
+        """
+        return await self.db.get_profile(profile_id)
+
     async def _deliver_messages(self) -> None:
         """Deliver queued inter-agent messages to their recipients.
 
-        Wave 2 lane 2D owns the queue; the delivery engine itself is
-        explicitly out of Wave 2 scope (it needs named sessions).  See
-        docs/specs/implementation/supervisor-agent.md §10 (``MessagesConfig``).
+        Cascade step (supervisor-agent.md §5): throttled to
+        ``config.messages.delivery_interval`` so it piggybacks the 5 s
+        orchestrator cycle without over-polling on faster cadences.  Any
+        exception from the engine is logged and swallowed — a delivery
+        failure must never break the cascade.
         """
         if not self.config.messages.enabled:
             return
+        now = time.time()
+        interval = self.config.messages.delivery_interval
+        if (now - self._last_delivery_pass) < interval:
+            return
+        self._last_delivery_pass = now
+        try:
+            await self.message_delivery.run_delivery_pass()
+            await self.message_delivery.check_reply_timeouts()
+        except Exception:
+            logger.exception("Message delivery pass failed")
 
     async def _revoke_expired_tokens(self) -> None:
         """Sweep expired API session tokens out of ``api_session_tokens``.

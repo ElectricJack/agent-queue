@@ -454,3 +454,113 @@ class TestBusOptional:
         await _send(db)
         result = await engine.run_delivery_pass()
         assert result["delivered"] == 1
+
+
+# --------------------------------------------------------------------------
+# Task 3: cascade wiring — Orchestrator._deliver_messages()
+# --------------------------------------------------------------------------
+
+
+class _FakeEngine:
+    """Records calls to ``run_delivery_pass`` / ``check_reply_timeouts``.
+
+    Optional ``raise_on_pass`` makes ``run_delivery_pass`` raise so the
+    cascade's try/except is exercised.
+    """
+
+    def __init__(self, raise_on_pass: bool = False):
+        self.pass_calls: int = 0
+        self.timeout_calls: int = 0
+        self.raise_on_pass = raise_on_pass
+
+    async def run_delivery_pass(self):
+        self.pass_calls += 1
+        if self.raise_on_pass:
+            raise RuntimeError("boom")
+        return {"success": True, "delivered": 0, "skipped_busy": 0, "parked": 0}
+
+    async def check_reply_timeouts(self):
+        self.timeout_calls += 1
+        return 0
+
+
+class _FakeMessagesConfig:
+    def __init__(self, enabled: bool, delivery_interval: float = 5.0):
+        self.enabled = enabled
+        self.delivery_interval = delivery_interval
+
+
+class _FakeOrchConfig:
+    def __init__(self, enabled: bool, delivery_interval: float = 5.0):
+        self.messages = _FakeMessagesConfig(enabled, delivery_interval)
+
+
+class _StubOrch:
+    """Minimum surface :meth:`Orchestrator._deliver_messages` reads.
+
+    We import the method off the real class and bind it to this stub so we
+    can exercise the throttle + gate + try/except contract without paying
+    the full ``Orchestrator.__init__`` cost.
+    """
+
+    def __init__(self, *, enabled: bool, engine: _FakeEngine, interval: float = 5.0):
+        self.config = _FakeOrchConfig(enabled, interval)
+        self.message_delivery = engine
+        self._last_delivery_pass: float = 0.0
+
+
+class TestCascadeWiring:
+    async def test_disabled_flag_never_calls_engine(self):
+        from src.orchestrator.core import Orchestrator
+
+        engine = _FakeEngine()
+        stub = _StubOrch(enabled=False, engine=engine)
+        await Orchestrator._deliver_messages(stub)
+        assert engine.pass_calls == 0
+        assert engine.timeout_calls == 0
+
+    async def test_enabled_first_call_runs_pass_and_timeouts(self):
+        from src.orchestrator.core import Orchestrator
+
+        engine = _FakeEngine()
+        stub = _StubOrch(enabled=True, engine=engine, interval=5.0)
+        await Orchestrator._deliver_messages(stub)
+        assert engine.pass_calls == 1
+        assert engine.timeout_calls == 1
+        assert stub._last_delivery_pass > 0
+
+    async def test_throttle_skips_within_interval(self):
+        from src.orchestrator.core import Orchestrator
+
+        engine = _FakeEngine()
+        stub = _StubOrch(enabled=True, engine=engine, interval=60.0)
+        await Orchestrator._deliver_messages(stub)
+        await Orchestrator._deliver_messages(stub)
+        await Orchestrator._deliver_messages(stub)
+        assert engine.pass_calls == 1  # subsequent calls throttled out
+
+    async def test_throttle_fires_again_after_interval(self):
+        from src.orchestrator.core import Orchestrator
+
+        engine = _FakeEngine()
+        stub = _StubOrch(enabled=True, engine=engine, interval=5.0)
+        await Orchestrator._deliver_messages(stub)
+        # Pretend enough wall-clock elapsed.
+        stub._last_delivery_pass = time.time() - 10.0
+        await Orchestrator._deliver_messages(stub)
+        assert engine.pass_calls == 2
+        assert engine.timeout_calls == 2
+
+    async def test_engine_exception_does_not_propagate(self):
+        from src.orchestrator.core import Orchestrator
+
+        engine = _FakeEngine(raise_on_pass=True)
+        stub = _StubOrch(enabled=True, engine=engine, interval=5.0)
+        # Must not raise: the cascade's try/except swallows delivery
+        # failures so one bad pass cannot break the 5s cycle.
+        await Orchestrator._deliver_messages(stub)
+        assert engine.pass_calls == 1
+        # ``check_reply_timeouts`` is skipped when the pass raises — the
+        # single try/except wraps both, matching the spec §5 policy that a
+        # delivery failure is a single logical unit.
+        assert engine.timeout_calls == 0

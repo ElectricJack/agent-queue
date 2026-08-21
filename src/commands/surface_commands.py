@@ -188,12 +188,20 @@ class SurfaceCommandsMixin:
 
         from src.prime import PrimeRenderer
 
+        # Prime is a genuine delivery path when messages are enabled: the
+        # rendered pending-messages section marks each row delivered via
+        # CAS with ``via="prime"`` so a subsequent nudge / inject cannot
+        # double-deliver (supervisor-agent.md §8).
+        messages_cfg = getattr(self.config, "messages", None)
+        mark_messages_delivered = bool(getattr(messages_cfg, "enabled", False))
+
         renderer = PrimeRenderer(self.db, self.config)
         try:
             doc = await renderer.render_for_task(
                 task_id,
                 session_id=args.get("session_id"),
                 work_dir=args.get("work_dir"),
+                mark_messages_delivered=mark_messages_delivered,
             )
         except ValueError as exc:
             return {"error": str(exc)}

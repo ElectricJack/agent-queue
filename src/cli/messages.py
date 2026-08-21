@@ -283,6 +283,101 @@ def message_inbox(
 
 
 # ---------------------------------------------------------------------------
+# aq inbox — top-level alias for the UserPromptSubmit hook
+# ---------------------------------------------------------------------------
+
+
+@cli.command("inbox")
+@click.option("--to", default=None, help="Recipient as KIND:ID, e.g. session:supervisor-aq")
+@click.option("--to-kind", default=None, type=click.Choice(VALID_TO_KINDS), help="Recipient kind")
+@click.option("--to-id", default=None, help="Recipient id")
+@click.option(
+    "--inject",
+    is_flag=True,
+    default=False,
+    help="Mark the returned messages delivered (prompt-boundary injection)",
+)
+@click.option("--limit", default=None, type=int, help="Max rows")
+@click.pass_context
+def inbox(
+    ctx: click.Context,
+    to: str | None,
+    to_kind: str | None,
+    to_id: str | None,
+    inject: bool,
+    limit: int | None,
+) -> None:
+    """Show pending messages (alias for ``aq message inbox``).
+
+    This is the hook-facing form invoked from the harness's
+    ``UserPromptSubmit`` hook (``.aq/hooks/claude.json``).  It is
+    **hook-safe by design**: no pending messages, an unresolvable recipient
+    (session-scope resolution is Phase S2), or a daemon that is not running
+    all exit 0 with no stdout — so the hook never blocks the agent's next
+    prompt and never leaks tracebacks into the prompt window.  Use
+    ``aq message inbox`` for the interactive form that surfaces errors.
+    """
+    from .exceptions import CommandError, DaemonNotRunningError
+
+    # Recipient resolution.  Explicit --to / --to-kind+--to-id wins; when
+    # neither is given the hook path derives ``task:<AQ_TASK_ID>`` from the
+    # session env (``src/sessions/env.py``) so the harness's
+    # ``UserPromptSubmit`` hook just works without shell-injection tricks.
+    # No recipient AND no env → silent no-op (hook safety).
+    import os as _os
+
+    if not (to or (to_kind and to_id)):
+        env_task = _os.environ.get("AQ_TASK_ID")
+        if env_task:
+            to_kind, to_id = "task", env_task
+        else:
+            return
+    try:
+        kind, ident = _split_recipient(to, to_kind, to_id)
+    except click.UsageError:
+        return
+
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    params: dict[str, Any] = {"to_kind": kind, "to_id": ident, "inject": inject}
+    if limit is not None:
+        params["limit"] = limit
+
+    async def _inbox():
+        async with _get_client(api_url) as client:
+            return await client.execute("message_inbox", params)
+
+    try:
+        result = _run(_inbox())
+    except DaemonNotRunningError:
+        return  # daemon down → hook is a no-op, never blocks the prompt
+    except CommandError:
+        return  # command-level failures also stay silent from the hook
+    except Exception:
+        return
+
+    if not isinstance(result, dict):
+        return
+    if result.get("error"):
+        return
+    items = result.get("messages") or []
+    if not items:
+        return
+
+    # Render each message using the same envelope the delivery engine uses
+    # (``[<id> from <kind>:<id>] <subject>\n<body>``) so the agent sees one
+    # shape across nudge, inject, and prime.  Plain print (not console) so
+    # nothing Rich-formats when the hook is piped into the model context.
+    lines: list[str] = []
+    for item in items:
+        header = f"[{item.get('id', '?')} from {item.get('from', '?')}]"
+        subject = item.get("subject") or ""
+        if subject:
+            header = f"{header} {subject}"
+        lines.append(f"{header}\n{item.get('body', '')}")
+    click.echo("\n\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
 # aq message list
 # ---------------------------------------------------------------------------
 
