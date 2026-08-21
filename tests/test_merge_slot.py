@@ -78,6 +78,128 @@ async def test_concurrent_acquire_exactly_one_winner(db):
     assert sorted(results) == [False, True]
 
 
+async def test_concurrent_acquire_never_double_grants_under_load(tmp_path):
+    """Regression: production engine (StaticPool, single shared aiosqlite
+    connection) — many rounds of two concurrent acquires must never both win.
+
+    Uses the same ``create_sqlite_engine`` factory as production (file-backed
+    db, StaticPool). Serves as a smoke test against future regressions of
+    the atomic acquire path — the plain-calls case where SQLAlchemy's async
+    connection wrapper serializes statements on the shared physical
+    connection is expected to be safe today, but a change that widened any
+    await point inside the acquire (or that switched to a per-checkout
+    connection with truly-concurrent DBAPI calls) would break the
+    invariant.  Pairs with
+    ``test_concurrent_acquire_serialized_across_interleaving_mutators`` which
+    covers the case where a mutator does await between DB round-trips.
+    """
+    d = Database(str(tmp_path / "aq.db"))
+    await d.initialize()
+    await d.create_project(Project(id="p1", name="alpha"))
+    try:
+        double_grants = 0
+        for round_no in range(200):
+            task_a = f"tA-{round_no}"
+            task_b = f"tB-{round_no}"
+            results = await asyncio.gather(
+                acquire_merge_slot(d, "p1", task_a, ttl=60),
+                acquire_merge_slot(d, "p1", task_b, ttl=60),
+            )
+            wins = sum(1 for r in results if r)
+            if wins != 1:
+                double_grants += 1
+            # release whoever holds it so the next round starts clean
+            row = await d.get_merge_slot("p1")
+            if row and row.holder_task_id:
+                await release_merge_slot(d, "p1", row.holder_task_id)
+        assert double_grants == 0, (
+            f"double-acquire in {double_grants}/200 rounds — lease is not "
+            f"atomic on the shared StaticPool connection"
+        )
+    finally:
+        await d.close()
+
+
+async def test_mutator_serialization_prevents_mid_transaction_interleaving(
+    tmp_path, monkeypatch,
+):
+    """Regression: acquire/release/break must be serialized in-process so
+    that no concurrent mutator can observe or mutate an intermediate state
+    while another mutator is mid-transaction.
+
+    Direct proof of the in-process ``asyncio.Lock`` invariant: we hook
+    ``_seed_merge_slot`` on A's acquire to *await* on an event that only
+    completes after a racer starts and finishes.  If mutators are not
+    serialized, the racer's acquire completes while A is mid-transaction
+    and A observes racer as an intermediate holder.  With the fix, the
+    racer's ``acquire_merge_slot_row`` blocks on the lock until A returns,
+    so A's ``other_took`` wait times out — proving mutual exclusion.
+    """
+    d = Database(str(tmp_path / "aq.db"))
+    await d.initialize()
+    await d.create_project(Project(id="p1", name="alpha"))
+    try:
+        assert await acquire_merge_slot(d, "p1", "prime", ttl=60) is True
+        await release_merge_slot(d, "p1", "prime")
+
+        first_seed_started = asyncio.Event()
+        other_took = asyncio.Event()
+        seed_call = {"n": 0}
+        orig_seed = d._seed_merge_slot
+
+        async def racy_seed(conn, project_id, now):
+            seed_call["n"] += 1
+            await orig_seed(conn, project_id, now)
+            if seed_call["n"] == 1:
+                first_seed_started.set()
+                # If the racer manages to complete acquire_merge_slot_row
+                # while we're still inside A's transaction, mutators are
+                # NOT serialized in-process and this event fires.  With
+                # the lock fix the racer cannot start until A returns, so
+                # this wait times out.
+                try:
+                    await asyncio.wait_for(other_took.wait(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    pass
+
+        monkeypatch.setattr(d, "_seed_merge_slot", racy_seed)
+
+        racer_started = asyncio.Event()
+
+        async def racer():
+            await first_seed_started.wait()
+            racer_started.set()
+            r = await acquire_merge_slot(d, "p1", "racer", ttl=60)
+            other_took.set()
+            return r
+
+        async def acquirer_a():
+            return await acquire_merge_slot(d, "p1", "A", ttl=60)
+
+        a_res, racer_res = await asyncio.gather(acquirer_a(), racer())
+
+        # Whoever wins, exactly one holder — and never a "both True" split.
+        wins = [n for n, r in (("A", a_res), ("racer", racer_res)) if r]
+        assert len(wins) == 1, f"double-grant: A={a_res}, racer={racer_res}"
+
+        # The in-process lock invariant: racer's *body* must not have run
+        # while A was mid-acquire.  If serialized, other_took was NEVER set
+        # before A resumed (the wait_for timed out).  We verify this by
+        # asserting racer's acquire completed AFTER A's completed — i.e.
+        # A won the lease (racer got False), because racer's acquire ran
+        # entirely after A released the lock and A already held the slot.
+        assert a_res is True and racer_res is False, (
+            "expected A to acquire first and racer to see A's live lease; "
+            "got A={a_res}, racer={racer_res} — indicates mutators are "
+            "interleaving inside the transaction"
+        )
+
+        row = await d.get_merge_slot("p1")
+        assert row is not None and row.holder_task_id == "A"
+    finally:
+        await d.close()
+
+
 async def test_holder_reacquire_is_idempotent_and_renews(db):
     """The current holder can re-acquire — it extends the lease."""
     assert await acquire_merge_slot(db, "p1", "task-A", ttl=60) is True
