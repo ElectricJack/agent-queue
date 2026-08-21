@@ -40,6 +40,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   "mode": "on_demand",
   "wake_mode": "resume",
   "idle_timeout": 900,
+  "permission_mode": "bypassPermissions",
   "workspaces": ["vault", "readonly-dir"]
 }
 ```

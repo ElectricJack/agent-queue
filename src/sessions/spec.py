@@ -239,6 +239,10 @@ class SessionSpecBuilder:
             resume_key=effective_resume,
             bootstrap=bootstrap,
             lifecycle="named",
+            # Named sessions have no workspace, so only the profile's
+            # explicit ``permission_mode: bypassPermissions`` opt-in
+            # (trust-and-ops §4) can grant the skip-permissions flag.
+            allow_skip_permissions=skip_permissions_allowed(profile, None),
         )
 
     # -- internals ---------------------------------------------------------

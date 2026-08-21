@@ -54,6 +54,11 @@ while True:
     chunk = os.read(fd, 65536)
     if not chunk:
         break
+    if "--mute" not in sys.argv:
+        # Render typed input like a real TUI input line (termios ECHO is
+        # off).  --mute simulates a harness mid-turn that swallows keys.
+        sys.stdout.write(chunk.decode("utf-8", "replace").replace("\r", "\n"))
+        sys.stdout.flush()
     buf += chunk.replace(b"\r", b"\n")
     while b"\n" in buf:
         line, _, buf = buf.partition(b"\n")
@@ -63,6 +68,9 @@ while True:
             continue
         with open("received.txt", "a") as f:
             f.write(text + "\n")
+        if "--echo" in sys.argv:
+            # Claude-style: repaint the submitted prompt into the transcript.
+            print(f"❯ {text}", flush=True)
         print(f"len={len(text)}", flush=True)
         print("❯ ", flush=True)
 """
@@ -87,10 +95,16 @@ def stub_path(tmp_path) -> Path:
     return path
 
 
-def _spec(tmp_path, stub_path, *, name="s-tm1", token="tok-1", dialog=False, **kw) -> SessionSpec:
+def _spec(
+    tmp_path, stub_path, *, name="s-tm1", token="tok-1", dialog=False, echo=False, mute=False, **kw
+) -> SessionSpec:
     command = [sys.executable, str(stub_path)]
     if dialog:
         command.append("--dialog")
+    if echo:
+        command.append("--echo")
+    if mute:
+        command.append("--mute")
     defaults = dict(
         session_name=name,
         work_dir=str(tmp_path / "wd"),
@@ -173,6 +187,35 @@ class TestNudge:
         try:
             await provider.nudge(handle, "status check please")
             assert "status check please" in await _received(tmp_path)
+        finally:
+            await provider.stop(handle)
+
+    async def test_echoed_submit_is_not_misread_as_unsubmitted(self, provider, tmp_path, stub_path):
+        """Live-test regression: Claude repaints the submitted prompt into
+        the transcript, so the marker stays on screen after a successful
+        submit.  The confirm must not raise NotSubmitted for that — it
+        caused the delivery engine to re-nudge the same envelope forever."""
+        handle = await provider.start(_spec(tmp_path, stub_path, echo=True))
+        try:
+            await provider.nudge(handle, "please summarize the project state")
+            received = await _received(tmp_path)
+            assert received.count("please summarize the project state") == 1
+        finally:
+            await provider.stop(handle)
+
+    async def test_swallowed_input_raises_not_submitted(self, provider, tmp_path, stub_path):
+        """Live-test regression: a harness mid-turn can swallow typed keys
+        entirely.  The old confirm read "marker absent" as submitted and
+        the message was marked delivered without ever being seen.  Typed
+        text must *land* (render in the pane) or the nudge fails so the
+        delivery row stays pending for a retry."""
+        from src.sessions.provider import NotSubmitted
+
+        handle = await provider.start(_spec(tmp_path, stub_path, mute=True))
+        try:
+            with pytest.raises(NotSubmitted):
+                await provider.nudge(handle, "you never saw this")
+            assert "you never saw this" not in await _received(tmp_path, tries=3)
         finally:
             await provider.stop(handle)
 

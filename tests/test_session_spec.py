@@ -171,6 +171,30 @@ class TestSkipPermissionsGating:
         harness = replace(CLAUDE, permission_flag="")
         assert self.FLAG not in _isolated(builder, harness=harness).command
 
+    def test_a_named_session_profile_can_opt_in(self, builder):
+        """Named sessions have no workspace; the profile opt-in is the only
+        way for e.g. the supervisor (vault work_dir) to skip prompts."""
+        spec = builder.build_named_spec(
+            profile=_Profile(id="supervisor", permission_mode="bypassPermissions"),
+            harness=CLAUDE,
+            project_id="proj-1",
+            work_dir="/vault/projects/proj-1",
+            session_id="s1",
+            instance_token="t1",
+        )
+        assert self.FLAG in spec.command
+
+    def test_a_named_session_without_opt_in_is_withheld(self, builder):
+        spec = builder.build_named_spec(
+            profile=_Profile(id="supervisor"),
+            harness=CLAUDE,
+            project_id="proj-1",
+            work_dir="/vault/projects/proj-1",
+            session_id="s1",
+            instance_token="t1",
+        )
+        assert self.FLAG not in spec.command
+
     def test_the_policy_helper_is_the_single_definition(self):
         from src.models import RepoSourceType
         from src.sessions.spec import skip_permissions_allowed

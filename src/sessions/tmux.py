@@ -208,6 +208,7 @@ class TmuxProvider(SessionProvider):
         for key, value in (
             ("AQ_SKIP_ESCAPE", "1" if spec.skip_escape_before_enter else "0"),
             ("AQ_PROCESS_NAMES", ",".join(spec.process_names)),
+            ("AQ_READY_PREFIX", spec.ready_prompt_prefix or ""),
         ):
             with contextlib.suppress(TmuxCommandError):
                 await self._tmux("set-environment", "-t", f"={spec.session_name}", key, value)
@@ -496,6 +497,24 @@ class TmuxProvider(SessionProvider):
             self._last_nudge_at[h.name] = time.monotonic()
             self._poke[h.name] = (time.time(), before)
 
+            marker = text.strip().splitlines()[-1][-48:] if text.strip() else ""
+
+            # Landed check (live-test regression): a TUI mid-turn swallows
+            # typed keys entirely — the text never reaches the input line,
+            # yet the absence-of-marker confirm below would read that as
+            # "submitted" and the message would be marked delivered unseen.
+            # Require the marker to render before pressing Enter.  Paste-
+            # buffer pastes are exempt: harnesses collapse large pastes to
+            # a placeholder, so the marker legitimately never renders.
+            if marker and len(payload) <= _SEND_KEYS_MAX_BYTES:
+                for _poll in range(8):
+                    tail = await self._capture_tail(pane, lines=40)
+                    if marker in _normalize(tail):
+                        break
+                    await asyncio.sleep(0.15)
+                else:
+                    raise NotSubmitted(f"typed text never rendered in {h.name!r}")
+
             # Per-harness Escape semantics (§9): only when the harness says
             # it is safe — grok clears the input line, codex backtracks.
             if not await self._skip_escape(h.name):
@@ -503,14 +522,19 @@ class TmuxProvider(SessionProvider):
                 await asyncio.sleep(0.05)
 
             # Enter, then confirm submission: the pasted text must leave
-            # the input line.  Enter races bracketed paste (§9), so retry.
-            marker = text.strip().splitlines()[-1][-48:] if text.strip() else ""
+            # the *input line*.  Enter races bracketed paste (§9), so retry.
+            # Harnesses echo the submitted prompt into the transcript
+            # (Claude repaints it as ``❯ <text>``), so "marker anywhere on
+            # screen" is a false negative after a successful submit — the
+            # check is anchored to the last prompt-prefixed line instead
+            # (see :func:`_submit_pending`).
+            prefix = await self._ready_prefix_hint(h.name)
             for _attempt in range(3):
                 await self._tmux("send-keys", "-t", pane, "Enter")
                 for _poll in range(4):
                     await asyncio.sleep(0.15)
-                    tail = await self._capture_tail(pane)
-                    if not marker or marker not in _normalize(tail):
+                    tail = await self._capture_tail(pane, lines=40)
+                    if not _submit_pending(tail, marker, prefix):
                         self._poke[h.name] = (time.time(), before)
                         return
             raise NotSubmitted(f"submit unconfirmed for {h.name!r} after 3 attempts")
@@ -600,10 +624,20 @@ class TmuxProvider(SessionProvider):
         return max(stamps) if stamps else None
 
     async def _capture_tail(self, pane: str, lines: int = 5) -> str:
+        # ``capture-pane -S -N`` starts N lines *above the visible screen*
+        # and captures through the bottom — the whole screen plus history,
+        # not a tail.  The nudge submit-confirm relies on genuinely seeing
+        # only the input-box region: Claude echoes the submitted prompt
+        # into the transcript, so a whole-screen capture still contains the
+        # marker after a successful submit and every nudge reads as
+        # NotSubmitted (observed live: envelope delivered twice, row never
+        # marked).  Trim to the last N non-blank-padded lines here.
         try:
-            return await self._tmux("capture-pane", "-p", "-t", pane, "-S", f"-{lines}")
+            out = await self._tmux("capture-pane", "-p", "-t", pane)
         except TmuxCommandError:
             return ""
+        trimmed = out.rstrip("\n")
+        return "\n".join(trimmed.splitlines()[-lines:])
 
     async def _process_names_hint(self, name: str) -> tuple[str, ...]:
         """The spec's ``process_names``, recovered from the session env."""
@@ -615,6 +649,20 @@ class TmuxProvider(SessionProvider):
         if not value:
             return ()
         return tuple(part for part in value.split(",") if part)
+
+    async def _ready_prefix_hint(self, name: str) -> str:
+        """The spec's ``ready_prompt_prefix``, recovered from the session env.
+
+        Stored at start (like ``AQ_PROCESS_NAMES``) so nudges after a daemon
+        restart still know where the harness's input line is.  Empty for
+        sessions started before this key existed — the submit check then
+        falls back to the whole-tail marker scan.
+        """
+        try:
+            out = await self._tmux("show-environment", "-t", f"={name}", "AQ_READY_PREFIX")
+        except TmuxCommandError:
+            return ""
+        return _parse_environment_value(out, "AQ_READY_PREFIX") or ""
 
     async def _skip_escape(self, name: str) -> bool:
         """Whether the session's spec said to skip Escape before Enter.
@@ -629,6 +677,41 @@ class TmuxProvider(SessionProvider):
             return True
         value = _parse_environment_value(out, "AQ_SKIP_ESCAPE")
         return value != "0"
+
+
+def _submit_pending(tail: str, marker: str, prompt_prefix: str) -> bool:
+    """True while the pasted text still sits in the harness's input line.
+
+    TUI harnesses echo the submitted prompt into the transcript (Claude
+    repaints it as ``❯ <text>``), so the marker being *somewhere* on
+    screen does not mean the submit failed.  What distinguishes the two
+    states is position: the input line is the **last** prompt-prefixed
+    line in the pane (harnesses repaint it at the bottom), and unsubmitted
+    text lives at or after it, while a transcript echo lives above it.
+
+    With no ``prompt_prefix`` hint (sessions started by an older daemon),
+    fall back to the historical whole-tail scan — a false "pending" there
+    only costs a retry Enter, whereas a false "submitted" silently drops
+    the nudge.
+    """
+    if not marker:
+        return False
+    tail = _normalize(tail)
+    if marker not in tail:
+        return False
+    prefix = _normalize(prompt_prefix).strip()
+    if not prefix:
+        return True
+    lines = tail.splitlines()
+    last_prompt = None
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(prefix):
+            last_prompt = i
+    if last_prompt is None:
+        # Input line not visible (e.g. long wrapped paste pushed it out of
+        # the captured window) — treat a visible marker as still pending.
+        return True
+    return any(marker in line for line in lines[last_prompt:])
 
 
 _SAFE_META_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
