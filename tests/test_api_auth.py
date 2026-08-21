@@ -433,3 +433,91 @@ class TestTokenAuthMiddleware:
             deps._token_store = None
             deps._require_session_token = False
             await db.close()
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — revoke-expired cascade + WS handshake
+# ---------------------------------------------------------------------------
+
+
+class TestRevokeExpiredCascade:
+    async def test_revoke_expired_runs_when_flag_on(self, tmp_path):
+        db = Database(str(tmp_path / "cascade.db"))
+        await db.initialize()
+        store = SessionTokenStore(db, ttl_hours=72)
+        await db.insert_api_token(
+            token_hash="d" * 64,
+            session_id="sX", task_id=None, project_id=None,
+            created_at=time.time() - 7200, expires_at=time.time() - 3600,
+        )
+        assert await store.revoke_expired() == 1
+        assert await store.revoke_expired() == 0
+        await db.close()
+
+
+class TestWebSocketAuth:
+    async def test_invalid_token_rejects_handshake(self, tmp_path):
+        db = Database(str(tmp_path / "ws.db"))
+        await db.initialize()
+        from fastapi import FastAPI, WebSocket
+        from src.api.websocket import WebSocketManager
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        store = SessionTokenStore(db, ttl_hours=72)
+        deps._token_store = store
+        deps._require_session_token = False
+
+        app = FastAPI()
+        app.add_middleware(TokenAuthMiddleware)
+        mgr = WebSocketManager(bus, db=db)
+        mgr.start()
+
+        @app.websocket("/ws/events")
+        async def ws(websocket: WebSocket):
+            await mgr.handle(websocket)
+
+        try:
+            with TestClient(app) as c:
+                # Invalid token: connection should close before any frame.
+                with pytest.raises(Exception):
+                    with c.websocket_connect(
+                        "/ws/events",
+                        headers={"Authorization": "Bearer aqs_bogusbogusbogusbogus"},
+                    ) as w:
+                        w.receive_json()
+        finally:
+            mgr.shutdown()
+            deps._token_store = None
+            deps._require_session_token = False
+            await db.close()
+
+    async def test_no_token_permits_connection_when_not_required(self, tmp_path):
+        db = Database(str(tmp_path / "ws2.db"))
+        await db.initialize()
+        from starlette.applications import Starlette
+        from starlette.routing import WebSocketRoute
+        from src.api.websocket import WebSocketManager
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        deps._token_store = SessionTokenStore(db, ttl_hours=72)
+        deps._require_session_token = False
+
+        mgr = WebSocketManager(bus, db=db)
+        mgr.start()
+
+        async def ws_endpoint(ws_conn):
+            await mgr.handle(ws_conn)
+
+        app = Starlette(routes=[WebSocketRoute("/ws/events", ws_endpoint)])
+        app.add_middleware(TokenAuthMiddleware)
+
+        try:
+            with TestClient(app) as c:
+                with c.websocket_connect("/ws/events") as w:
+                    w.close()
+        finally:
+            mgr.shutdown()
+            deps._token_store = None
+            await db.close()

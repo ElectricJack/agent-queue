@@ -407,6 +407,14 @@ class Orchestrator(
         #: Wall-clock epoch of the last successful delivery pass — used to
         #: throttle ``_deliver_messages`` to ``config.messages.delivery_interval``.
         self._last_delivery_pass: float = 0.0
+        # aq-surface Phase S2: session-scoped API bearer-token store.
+        # Constructed on ``initialize()`` once the DB is up; the API layer
+        # reuses ``self.token_store`` so revocations and validations share
+        # a single cache.  Kept ``None`` on tests that skip initialize.
+        from src.api.auth import SessionTokenStore  # local import breaks cycle
+
+        self.token_store: SessionTokenStore | None = None
+        self._last_token_revoke_pass: float = 0.0
         # Tool catalog snapshot keyed by (project_id, server_name).  Probed
         # once at startup; refreshed per-server by the vault watcher hook
         # and the probe-mcp-server command.
@@ -940,6 +948,15 @@ class Orchestrator(
         before the Discord bot connects.
         """
         await self.db.initialize()
+        # aq-surface Phase S2: construct the session-token store now that
+        # the DB is live.  The API layer prefers this instance so
+        # revocations from the cascade sweep share the same cache as
+        # per-request validations.
+        from src.api.auth import SessionTokenStore
+
+        self.token_store = SessionTokenStore(
+            self.db, ttl_hours=self.config.api_auth.token_ttl_hours
+        )
         await self._sync_profiles_from_config()
         # Adoption runs *before* recovery: a session that survived the
         # restart must be re-bound before the blanket reset would otherwise
@@ -2531,14 +2548,33 @@ class Orchestrator(
     async def _revoke_expired_tokens(self) -> None:
         """Sweep expired API session tokens out of ``api_session_tokens``.
 
-        Wave 3 (aq-surface S2) fills this in — see
-        docs/specs/implementation/aq-surface.md §4.1
-        (``SessionTokenStore.revoke_expired``).  Gated on either flag:
-        tokens are minted by sessions, and enforcement can be on
-        independently.
+        aq-surface S2 §4.1 — ``SessionTokenStore.revoke_expired``.  Gated on
+        either flag: tokens are minted by sessions, and enforcement can be
+        on independently.  Rate-limited to one pass per 60s (the auth path
+        itself is DB-backed with an in-memory cache; the sweep is deletion,
+        not the hot path).
         """
         if not (self.config.sessions.enabled or self.config.api_auth.require_session_token):
             return
+        if self.token_store is None:
+            return
+        now = time.time()
+        if (now - self._last_token_revoke_pass) < 60.0:
+            return
+        self._last_token_revoke_pass = now
+        try:
+            n = await self.token_store.revoke_expired()
+        except Exception:
+            logger.exception("api-session token sweep failed")
+            return
+        if n:
+            try:
+                await self.bus.emit(
+                    "session.token_revoked",
+                    {"session_id": "", "count": n, "reason": "expired"},
+                )
+            except Exception:
+                logger.debug("failed to emit session.token_revoked", exc_info=True)
 
     async def _on_config_reloaded(self, data: dict) -> None:
         """Handle config.reloaded events from the ConfigWatcher.

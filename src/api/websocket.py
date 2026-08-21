@@ -40,6 +40,12 @@ class WebSocketManager:
         self._bus = bus
         self._db = db
         self._clients: dict[WebSocket, asyncio.Queue[dict[str, Any]]] = {}
+        # aq-surface Phase S2: per-connection RequestScope recorded during
+        # handshake.  TODO(S3): use self._client_scope[ws] to filter
+        # task-scoped events for session-bound clients.
+        from src.api.auth import RequestScope
+
+        self._client_scope: dict[WebSocket, RequestScope] = {}
         self._unsub: Any = None
 
     def start(self) -> None:
@@ -86,7 +92,31 @@ class WebSocketManager:
         each frame; live frames set ``seq: null`` because they are not
         necessarily backed by a DB row.
         """
+        # aq-surface Phase S2: handshake-level auth.  Same policy as REST —
+        # absent header → LOCAL_SCOPE (subject to require_session_token);
+        # invalid → close(4401); valid → session RequestScope.
+        from src.api import dependencies as _deps
+        from src.api.auth import LOCAL_SCOPE
+
+        header = websocket.headers.get("Authorization", "")
+        scope = LOCAL_SCOPE
+        store = _deps._token_store
+        require = _deps._require_session_token
+        if header.startswith("Bearer "):
+            token = header[len("Bearer ") :].strip()
+            if store is not None:
+                resolved = await store.validate(token)
+                if resolved is None:
+                    await websocket.close(code=4401, reason="invalid or expired token")
+                    return
+                scope = resolved
+        else:
+            if require:
+                await websocket.close(code=4401, reason="session token required")
+                return
+
         await websocket.accept()
+        self._client_scope[websocket] = scope
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_MAX_QUEUE_SIZE)
         # Register *before* replaying so live events queued during the
         # replay window arrive after the paged history, preserving global
@@ -197,6 +227,7 @@ class WebSocketManager:
             logger.error("WebSocket client %s error: %s", client_id, e, exc_info=True)
         finally:
             self._clients.pop(websocket, None)
+            self._client_scope.pop(websocket, None)
             logger.info(
                 "WebSocket client disconnected: %s (remaining: %d)",
                 client_id,
