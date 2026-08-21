@@ -147,9 +147,7 @@ class TestSessionTokenStore:
         db, store = await self._store(tmp_path)
         tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
         scope = await store.validate(tok)
-        assert scope == RequestScope(
-            kind="session", session_id="s1", task_id="t1", project_id="p1"
-        )
+        assert scope == RequestScope(kind="session", session_id="s1", task_id="t1", project_id="p1")
         await db.close()
 
     async def test_validate_missing_prefix_returns_none(self, tmp_path):
@@ -176,8 +174,12 @@ class TestSessionTokenStore:
         pt = TOKEN_PREFIX + "x" * 43
         real_h = hashlib.sha256(pt.encode()).hexdigest()
         await db.insert_api_token(
-            token_hash=real_h, session_id="s2", task_id=None, project_id=None,
-            created_at=time.time() - 7200, expires_at=time.time() - 3600,
+            token_hash=real_h,
+            session_id="s2",
+            task_id=None,
+            project_id=None,
+            created_at=time.time() - 7200,
+            expires_at=time.time() - 3600,
         )
         assert await store.validate(pt) is None
         await db.close()
@@ -206,8 +208,11 @@ class TestSessionTokenStore:
         db, store = await self._store(tmp_path)
         await db.insert_api_token(
             token_hash="dead" + "0" * 60,
-            session_id="sX", task_id=None, project_id=None,
-            created_at=time.time() - 7200, expires_at=time.time() - 3600,
+            session_id="sX",
+            task_id=None,
+            project_id=None,
+            created_at=time.time() - 7200,
+            expires_at=time.time() - 3600,
         )
         n = await store.revoke_expired()
         assert n == 1
@@ -447,8 +452,11 @@ class TestRevokeExpiredCascade:
         store = SessionTokenStore(db, ttl_hours=72)
         await db.insert_api_token(
             token_hash="d" * 64,
-            session_id="sX", task_id=None, project_id=None,
-            created_at=time.time() - 7200, expires_at=time.time() - 3600,
+            session_id="sX",
+            task_id=None,
+            project_id=None,
+            created_at=time.time() - 7200,
+            expires_at=time.time() - 3600,
         )
         assert await store.revoke_expired() == 1
         assert await store.revoke_expired() == 0
@@ -540,8 +548,11 @@ class TestPrimeScopeResolution:
         await db.create_project(Project(id="p1", name="P1"))
         await db.create_task(
             Task(
-                id="t1", project_id="p1", title="do it",
-                status=TaskStatus.DEFINED, description="",
+                id="t1",
+                project_id="p1",
+                title="do it",
+                status=TaskStatus.DEFINED,
+                description="",
             )
         )
 
@@ -620,8 +631,11 @@ class TestPrimeScopeResolution:
         await db.create_project(Project(id="p1", name="P1"))
         await db.create_task(
             Task(
-                id="t1", project_id="p1", title="do it",
-                status=TaskStatus.IN_PROGRESS, description="",
+                id="t1",
+                project_id="p1",
+                title="do it",
+                status=TaskStatus.IN_PROGRESS,
+                description="",
             )
         )
         now = time.time()
@@ -665,3 +679,142 @@ class TestPrimeScopeResolution:
         assert result.get("success") is True, result
         assert await store.validate(token) is None  # revoked at close
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# C1 — typed codegen routes enforce scope (parity with /api/execute)
+# ---------------------------------------------------------------------------
+
+
+from pydantic import BaseModel as _CodegenBaseModel  # noqa: E402
+
+
+class _EchoRequest(_CodegenBaseModel):
+    task_id: str | None = None
+    project_id: str | None = None
+
+
+async def _seed_codegen_app(tmp_path, cmd_name: str, *, require: bool = False):
+    """Build an app with a single codegen-generated typed route for ``cmd_name``."""
+    from src.api.codegen import _make_route_handler
+
+    db = Database(str(tmp_path / f"{cmd_name}.db"))
+    await db.initialize()
+
+    orch = MagicMock()
+    orch.db = db
+    orch._command_handler = None
+    orch.plugin_registry = None
+    config = MagicMock()
+    config.messages = MagicMock(enabled=False)
+    config.playbooks = MagicMock(enabled=True)
+    config.memory = MagicMock(enabled=True)
+    ch = CommandHandler(orch, config)
+
+    ch._recorded: list[tuple[str, dict]] = []
+
+    async def _stub(args):
+        ch._recorded.append((cmd_name, dict(args)))
+        return {"success": True, "echo": args}
+
+    setattr(ch, f"_cmd_{cmd_name}", _stub)
+
+    store = SessionTokenStore(db, ttl_hours=72)
+    deps._orchestrator = orch
+    deps._command_handler = ch
+    deps._token_store = store
+    deps._require_session_token = require
+
+    handler = _make_route_handler(cmd_name, _EchoRequest)
+    app = FastAPI()
+    app.add_api_route(f"/api/task/{cmd_name}", handler, methods=["POST"])
+    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(TokenAuthMiddleware)
+    return db, store, ch, app
+
+
+class TestCodegenRouteScopeEnforcement:
+    async def test_session_token_blocked_on_out_of_scope_typed_route(self, tmp_path):
+        """A session-scoped token cannot delete a task via the typed route."""
+        db, store, ch, app = await _seed_codegen_app(tmp_path, "delete_task")
+        try:
+            tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+            with TestClient(app) as c:
+                r = c.post(
+                    "/api/task/delete_task",
+                    headers={"Authorization": f"Bearer {tok}"},
+                    json={"task_id": "t1"},
+                )
+            assert r.status_code == 403, r.text
+            body = r.json()
+            assert "out of scope" in body["error"]
+            assert "delete_task" in body["error"]
+            # Handler must not have been reached.
+            assert ch._recorded == []
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            deps._require_session_token = False
+            await db.close()
+
+    async def test_local_scope_succeeds_on_typed_route(self, tmp_path):
+        """No-token / LOCAL_SCOPE requests still succeed on typed routes."""
+        db, store, ch, app = await _seed_codegen_app(tmp_path, "delete_task")
+        try:
+            with TestClient(app) as c:
+                r = c.post("/api/task/delete_task", json={"task_id": "t1"})
+            assert r.status_code == 200, r.text
+            assert r.json()["success"] is True
+            assert ch._recorded and ch._recorded[-1][0] == "delete_task"
+            # _scope injected on LOCAL requests too, but stripped by handler.
+            _, recorded_args = ch._recorded[-1]
+            assert "_scope" not in recorded_args
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            deps._require_session_token = False
+            await db.close()
+
+    async def test_session_token_allowed_on_in_scope_typed_route(self, tmp_path):
+        """A session token calling an in-allowlist command within its scope succeeds."""
+        db, store, ch, app = await _seed_codegen_app(tmp_path, "task_show")
+        try:
+            tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+            with TestClient(app) as c:
+                r = c.post(
+                    "/api/task/task_show",
+                    headers={"Authorization": f"Bearer {tok}"},
+                    json={"task_id": "t1"},
+                )
+            assert r.status_code == 200, r.text
+            assert r.json()["success"] is True
+            assert ch._recorded and ch._recorded[-1][0] == "task_show"
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            deps._require_session_token = False
+            await db.close()
+
+    async def test_session_token_task_id_mismatch_on_typed_route_403(self, tmp_path):
+        """Session token cannot spoof a different task_id via the typed route."""
+        db, store, ch, app = await _seed_codegen_app(tmp_path, "task_show")
+        try:
+            tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+            with TestClient(app) as c:
+                r = c.post(
+                    "/api/task/task_show",
+                    headers={"Authorization": f"Bearer {tok}"},
+                    json={"task_id": "OTHER"},
+                )
+            assert r.status_code == 403, r.text
+            assert "task_id mismatch" in r.json()["error"]
+            assert ch._recorded == []
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            deps._require_session_token = False
+            await db.close()
