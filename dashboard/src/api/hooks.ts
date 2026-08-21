@@ -60,6 +60,13 @@ import {
   updateConfig,
   updatePlaybookSource,
   getPlaybookSource,
+  sessionList,
+  sessionShow,
+  sessionPeek,
+  sessionNudge,
+  sessionAttach,
+  sessionLogs,
+  sessionKill,
 } from "./client";
 import type {
   AgentSummary,
@@ -109,6 +116,13 @@ import type {
   WorkspaceSummary,
   GetPlaybookSourceResponse,
   UpdatePlaybookSourceResponse,
+  ListSessionsResponse,
+  ShowSessionResponse,
+  SessionPeekResponse,
+  SessionNudgeResponse,
+  SessionAttachResponse,
+  SessionLogsResponse,
+  SessionSummary,
 } from "./client";
 
 // --- Re-exports — call sites should import shared types from here ---
@@ -849,6 +863,111 @@ export function useDeleteMcpServer() {
     mutationFn: async (input: { name: string; project_id?: string }) =>
       (await deleteMcpServer({ body: input, throwOnError: true })).data,
     onSuccess: (_d, variables) => invalidateMcpViews(queryClient, variables.project_id),
+  });
+}
+
+// --- Sessions (session-runtime spec) ---
+
+export type { SessionSummary, ListSessionsResponse, SessionLogsResponse };
+
+export function useSessions(projectId?: string) {
+  return useQuery({
+    queryKey: ["sessions", projectId ?? "all"],
+    queryFn: async () => {
+      const body: Record<string, unknown> = {};
+      if (projectId) body.project_id = projectId;
+      const { data } = await sessionList({ body, throwOnError: true });
+      return ((data as ListSessionsResponse).sessions ?? []) as SessionSummary[];
+    },
+    refetchInterval: 15_000,
+  });
+}
+
+export function useSession(sessionId: string) {
+  return useQuery({
+    queryKey: ["session", sessionId],
+    queryFn: async () => {
+      const { data } = await sessionShow({
+        body: { session_id: sessionId },
+        throwOnError: true,
+      });
+      return (data as ShowSessionResponse).session;
+    },
+    enabled: !!sessionId,
+    refetchInterval: 15_000,
+  });
+}
+
+export function useSessionPeek(sessionId: string, lines = 120) {
+  return useQuery({
+    queryKey: ["session-peek", sessionId, lines],
+    queryFn: async () => {
+      const { data } = await sessionPeek({
+        body: { session_id: sessionId, lines },
+        throwOnError: true,
+      });
+      return data as SessionPeekResponse;
+    },
+    enabled: !!sessionId,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useSessionAttach(sessionId: string) {
+  return useQuery({
+    queryKey: ["session-attach", sessionId],
+    queryFn: async () => {
+      const { data } = await sessionAttach({
+        body: { session_id: sessionId },
+        throwOnError: true,
+      });
+      return data as SessionAttachResponse;
+    },
+    enabled: !!sessionId,
+    staleTime: 60_000,
+  });
+}
+
+function invalidateSessionViews(
+  queryClient: ReturnType<typeof useQueryClient>,
+  sessionId?: string,
+) {
+  queryClient.invalidateQueries({ queryKey: ["sessions"] });
+  if (sessionId) {
+    queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+    queryClient.invalidateQueries({ queryKey: ["session-peek", sessionId] });
+  }
+}
+
+export function useSessionNudge() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { session_id: string; text: string }) =>
+      (await sessionNudge({ body: input, throwOnError: true })).data as SessionNudgeResponse,
+    onSuccess: (_d, variables) => invalidateSessionViews(queryClient, variables.session_id),
+  });
+}
+
+export function useSessionKill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { session_id: string }) =>
+      (await sessionKill({ body: input, throwOnError: true })).data,
+    onSuccess: (_d, variables) => invalidateSessionViews(queryClient, variables.session_id),
+  });
+}
+
+export function useSessionLogs(sessionId: string, limit = 200) {
+  return useQuery({
+    queryKey: ["session-logs", sessionId, limit],
+    queryFn: async () => {
+      const { data } = await sessionLogs({
+        body: { session_id: sessionId, limit },
+        throwOnError: true,
+      });
+      return data as SessionLogsResponse;
+    },
+    enabled: !!sessionId,
   });
 }
 

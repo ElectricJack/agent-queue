@@ -5,6 +5,7 @@ import { usePauseProject, useProject, useResumeProject } from "../../api/hooks";
 const tabs: Array<{ to: string; label: string; end?: boolean }> = [
   { to: ".", label: "Overview", end: true },
   { to: "tasks", label: "Tasks" },
+  { to: "sessions", label: "Sessions" },
   { to: "workspaces", label: "Workspaces" },
   { to: "profiles", label: "Profiles" },
   { to: "playbooks", label: "Playbooks" },

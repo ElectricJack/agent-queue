@@ -14,6 +14,9 @@ import ProjectPlaybooks from "./pages/project/Playbooks";
 import ProjectConfig from "./pages/project/Config";
 import TaskDetail from "./pages/TaskDetail";
 import PlaybookDetail from "./pages/PlaybookDetail";
+import SystemSessions from "./pages/system/Sessions";
+import ProjectSessions from "./pages/project/Sessions";
+import SessionDetail from "./pages/SessionDetail";
 
 export default function App() {
   return (
@@ -24,6 +27,7 @@ export default function App() {
         <Route path="system">
           <Route index element={<SystemOverview />} />
           <Route path="events" element={<SystemEvents />} />
+          <Route path="sessions" element={<SystemSessions />} />
           <Route path="playbooks" element={<SystemPlaybooks />} />
           <Route path="profiles" element={<SystemProfiles />} />
           <Route path="config" element={<SystemConfig />} />
@@ -32,6 +36,7 @@ export default function App() {
         <Route path="projects/:projectId" element={<ProjectLayout />}>
           <Route index element={<ProjectOverview />} />
           <Route path="tasks" element={<ProjectTasks />} />
+          <Route path="sessions" element={<ProjectSessions />} />
           <Route path="workspaces" element={<ProjectWorkspaces />} />
           <Route path="profiles" element={<ProjectProfiles />} />
           <Route path="playbooks" element={<ProjectPlaybooks />} />
@@ -39,6 +44,7 @@ export default function App() {
         </Route>
 
         <Route path="tasks/:taskId" element={<TaskDetail />} />
+        <Route path="sessions/:sessionId" element={<SessionDetail />} />
         <Route path="playbooks/:playbookId" element={<PlaybookDetail />} />
 
         {/* Legacy redirects */}
