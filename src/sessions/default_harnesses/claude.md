@@ -43,7 +43,7 @@ vault watcher; no restart, no release.
   "dialogs": [
     {
       "name": "trust-folder",
-      "pattern": "Do you trust the files in this folder?",
+      "pattern": "Do you trust the files in this folder|Is this a project you created or one you trust",
       "keys": ["Enter"]
     },
     {

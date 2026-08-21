@@ -1729,7 +1729,10 @@ class ExecutionMixin:
             )
             return
 
-        session_id = _uuid.uuid4().hex
+        # Canonical dashed form: this id rides the harness's session-id flag
+        # (``claude --session-id``) and Claude Code rejects a dashless hex
+        # string with "Invalid session ID. Must be a valid UUID."
+        session_id = str(_uuid.uuid4())
         instance_token = _uuid.uuid4().hex
         # A per-session bearer token.  Server-side verification and real
         # scoping are [[aq-surface]]'s (``AQ_API_TOKEN`` minting is listed
