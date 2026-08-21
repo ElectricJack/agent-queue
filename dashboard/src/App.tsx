@@ -15,6 +15,7 @@ import ProjectConfig from "./pages/project/Config";
 import TaskDetail from "./pages/TaskDetail";
 import PlaybookDetail from "./pages/PlaybookDetail";
 import SystemSessions from "./pages/system/Sessions";
+import SystemGates from "./pages/system/Gates";
 import ProjectSessions from "./pages/project/Sessions";
 import SessionDetail from "./pages/SessionDetail";
 
@@ -28,6 +29,7 @@ export default function App() {
           <Route index element={<SystemOverview />} />
           <Route path="events" element={<SystemEvents />} />
           <Route path="sessions" element={<SystemSessions />} />
+          <Route path="gates" element={<SystemGates />} />
           <Route path="playbooks" element={<SystemPlaybooks />} />
           <Route path="profiles" element={<SystemProfiles />} />
           <Route path="config" element={<SystemConfig />} />

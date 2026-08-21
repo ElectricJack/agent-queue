@@ -8,6 +8,7 @@ import {
   FolderIcon,
   UserGroupIcon,
   CommandLineIcon,
+  LockClosedIcon,
 } from "@heroicons/react/24/outline";
 import { useOrchestratorStatus, useProjects } from "../api/hooks";
 
@@ -22,6 +23,7 @@ const systemLinks: SystemLink[] = [
   { to: "/system", label: "Overview", icon: Squares2X2Icon, end: true },
   { to: "/system/events", label: "Events", icon: SignalIcon },
   { to: "/system/sessions", label: "Sessions", icon: CommandLineIcon },
+  { to: "/system/gates", label: "Gates", icon: LockClosedIcon },
   { to: "/system/playbooks", label: "Playbooks", icon: BookOpenIcon },
   { to: "/system/profiles", label: "Profiles", icon: UserGroupIcon },
   { to: "/system/config", label: "Config", icon: Cog6ToothIcon },

@@ -70,6 +70,9 @@ import {
   explainTask,
   projectReady,
   getTaskDependencies,
+  gateList,
+  gateShow,
+  gateResolve,
 } from "./client";
 import type {
   AgentSummary,
@@ -129,6 +132,10 @@ import type {
   ExplainTaskResponse,
   ProjectReadyResponse,
   TaskDepsResponse,
+  GateListResponse,
+  GateShowResponse,
+  GateResolveResponse,
+  GateSummary,
 } from "./client";
 
 // --- Re-exports — call sites should import shared types from here ---
@@ -1023,6 +1030,63 @@ export function useSessionLogs(sessionId: string, limit = 200) {
       return data as SessionLogsResponse;
     },
     enabled: !!sessionId,
+  });
+}
+
+// --- Gates (work-graph WG-3) ---
+
+export type { GateSummary, GateListResponse };
+
+export function useGates(
+  opts: { projectId?: string; status?: string; gateType?: string } = {},
+) {
+  return useQuery({
+    queryKey: [
+      "gates",
+      opts.projectId ?? "all",
+      opts.status ?? "any",
+      opts.gateType ?? "any",
+    ],
+    queryFn: async () => {
+      const body: Record<string, unknown> = {};
+      if (opts.projectId) body.project_id = opts.projectId;
+      if (opts.status) body.status = opts.status;
+      if (opts.gateType) body.gate_type = opts.gateType;
+      const { data } = await gateList({ body, throwOnError: true });
+      return ((data as GateListResponse).gates ?? []) as GateSummary[];
+    },
+    refetchInterval: 20_000,
+  });
+}
+
+export function useGate(gateId: string) {
+  return useQuery({
+    queryKey: ["gate", gateId],
+    queryFn: async () => {
+      const { data } = await gateShow({
+        body: { gate_id: gateId },
+        throwOnError: true,
+      });
+      return data as GateShowResponse;
+    },
+    enabled: !!gateId,
+  });
+}
+
+export function useResolveGate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      gate_id: string;
+      resolved_by: string;
+      resolution?: string;
+    }) =>
+      (await gateResolve({ body: input, throwOnError: true })).data as GateResolveResponse,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["gates"] });
+      queryClient.invalidateQueries({ queryKey: ["gate", variables.gate_id] });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
   });
 }
 
