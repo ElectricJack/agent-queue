@@ -144,6 +144,31 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "label": "hold:alice",
         "project_id": "proj-1",
     },
+    # Gates (WG-3)
+    "gate.created": {
+        "gate_id": "gate-abc123def456",
+        "gate_type": "human",
+        "project_id": "proj-1",
+        "title": "Review deployment",
+        "question": "OK to ship?",
+        "await_id": None,
+        "timeout_at": None,
+        "waiter_task_ids": ["t-1"],
+    },
+    "gate.resolved": {
+        "gate_id": "gate-abc123def456",
+        "project_id": "proj-1",
+        "resolved_by": "alice",
+        "resolution": "approved",
+        "unblocked_task_ids": ["t-1"],
+        "gate_type": "human",
+    },
+    "gate.expired": {
+        "gate_id": "gate-abc123def456",
+        "project_id": "proj-1",
+        "gate_type": "human",
+        "timeout_at": 1700000000.0,
+    },
     # Note / knowledge
     "note.created": {
         "project_id": "proj-1",

@@ -1,0 +1,225 @@
+"""Gate queries — the ``gates`` and ``task_gates`` read/write surface.
+
+Implements docs/specs/implementation/work-graph.md §4.3.  Gates block their
+attached tasks until *resolved*; every mutation here recomputes the
+``tasks.is_blocked`` projection for the waiters in the same transaction so
+readers never observe a gate change without its projection.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+import uuid
+from typing import Iterable
+
+from sqlalchemy import and_, insert, select, update
+
+from src.database.tables import gates, task_gates
+
+logger = logging.getLogger(__name__)
+
+__all__ = ["GateQueriesMixin"]
+
+
+_VALID_STATUSES = ("open", "resolved", "expired")
+
+
+def _row_to_gate(row) -> dict:
+    """Convert a ``gates`` row mapping to a plain dict."""
+    return {
+        "id": row["id"],
+        "project_id": row["project_id"],
+        "gate_type": row["gate_type"],
+        "title": row["title"],
+        "question": row["question"],
+        "await_id": row["await_id"],
+        "timeout_at": row["timeout_at"],
+        "status": row["status"],
+        "resolved_by": row["resolved_by"],
+        "resolution": row["resolution"],
+        "created_at": row["created_at"],
+    }
+
+
+class GateQueriesMixin:
+    """Gate CRUD + resolution + expiry (work-graph §4.3).
+
+    Mixed into the database adapters alongside the other query mixins.
+    Expects ``self._engine`` and the ``BlockedStateMixin``'s
+    ``recompute_blocked`` / ``log_blocked_flips`` helpers.
+    """
+
+    async def create_gate(
+        self,
+        project_id: str,
+        gate_type: str,
+        title: str,
+        *,
+        question: str = "",
+        await_id: str | None = None,
+        timeout_at: float | None = None,
+        waiter_task_ids: Iterable[str] = (),
+    ) -> str:
+        """Insert a gate + its ``task_gates`` rows and recompute waiters.
+
+        Returns the generated gate id (``gate-<uuid[:12]>``).  All writes
+        happen in one transaction so a reader can never see the gate rows
+        without the waiters' refreshed projection.
+        """
+        gate_id = "gate-" + uuid.uuid4().hex[:12]
+        waiters = sorted(set(waiter_task_ids))
+        now = time.time()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(gates).values(
+                    id=gate_id,
+                    project_id=project_id,
+                    gate_type=gate_type,
+                    title=title,
+                    question=question,
+                    await_id=await_id,
+                    timeout_at=timeout_at,
+                    status="open",
+                    created_at=now,
+                )
+            )
+            for tid in waiters:
+                await conn.execute(insert(task_gates).values(task_id=tid, gate_id=gate_id))
+            flipped: set[str] = set()
+            if waiters:
+                flipped = await self.recompute_blocked(set(waiters), conn=conn)
+        await self.log_blocked_flips(flipped)
+        return gate_id
+
+    async def resolve_gate(
+        self,
+        gate_id: str,
+        *,
+        resolved_by: str,
+        resolution: str = "",
+    ) -> set[str]:
+        """Resolve *gate_id* (idempotent) and recompute its waiters.
+
+        Returns the set of task ids whose ``is_blocked`` flipped as a result.
+        Resolving an already-``resolved`` gate is a no-op and returns the
+        empty set.  Resolving an ``expired`` gate is allowed — the caller
+        may explicitly close a timed-out gate to unblock waiters.
+        """
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(select(gates.c.status).where(gates.c.id == gate_id))
+            ).fetchone()
+            if row is None:
+                return set()
+            if row[0] == "resolved":
+                return set()
+
+            waiters = {
+                r[0]
+                for r in (
+                    await conn.execute(
+                        select(task_gates.c.task_id).where(task_gates.c.gate_id == gate_id)
+                    )
+                ).fetchall()
+            }
+            await conn.execute(
+                update(gates)
+                .where(gates.c.id == gate_id)
+                .values(status="resolved", resolved_by=resolved_by, resolution=resolution)
+            )
+            flipped = await self.recompute_blocked(waiters, conn=conn) if waiters else set()
+        await self.log_blocked_flips(flipped)
+        return flipped
+
+    async def expire_open_gates(self, now: float) -> list[str]:
+        """Mark every ``open`` gate with ``timeout_at <= now`` ``expired``.
+
+        Expiry deliberately keeps blocking (design §5.4): a timed-out
+        approval must never silently self-approve.  Waiters therefore need
+        no recompute — the projection was already 1 and stays 1.  Returns
+        the list of gate ids that were expired this call.
+        """
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(gates.c.id).where(
+                        and_(
+                            gates.c.status == "open",
+                            gates.c.timeout_at.isnot(None),
+                            gates.c.timeout_at <= now,
+                        )
+                    )
+                )
+            ).fetchall()
+            expired = [r[0] for r in rows]
+            if expired:
+                await conn.execute(
+                    update(gates)
+                    .where(gates.c.id.in_(expired))
+                    .values(status="expired")
+                )
+        return expired
+
+    async def list_gates(
+        self,
+        project_id: str | None = None,
+        status: str | None = None,
+        gate_type: str | None = None,
+    ) -> list[dict]:
+        """List gates with optional filters, newest first."""
+        stmt = select(gates)
+        conditions = []
+        if project_id is not None:
+            conditions.append(gates.c.project_id == project_id)
+        if status is not None:
+            conditions.append(gates.c.status == status)
+        if gate_type is not None:
+            conditions.append(gates.c.gate_type == gate_type)
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+        stmt = stmt.order_by(gates.c.created_at.desc())
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [_row_to_gate(r) for r in rows]
+
+    async def get_gate(self, gate_id: str) -> dict | None:
+        """Return the gate row as a dict, or ``None``."""
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(select(gates).where(gates.c.id == gate_id))
+            ).mappings().fetchone()
+        return _row_to_gate(row) if row else None
+
+    async def get_gates_for_task(self, task_id: str) -> list[dict]:
+        """Return every gate attached to *task_id*, newest first."""
+        stmt = (
+            select(gates)
+            .select_from(gates.join(task_gates, task_gates.c.gate_id == gates.c.id))
+            .where(task_gates.c.task_id == task_id)
+            .order_by(gates.c.created_at.desc())
+        )
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [_row_to_gate(r) for r in rows]
+
+    async def list_open_gates_by_type(self, gate_type: str) -> list[dict]:
+        """Return every ``open`` gate of a given type, oldest first."""
+        stmt = (
+            select(gates)
+            .where(and_(gates.c.status == "open", gates.c.gate_type == gate_type))
+            .order_by(gates.c.created_at.asc())
+        )
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [_row_to_gate(r) for r in rows]
+
+    async def get_gate_waiters(self, gate_id: str) -> set[str]:
+        """Return the set of task ids attached to *gate_id*."""
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_gates.c.task_id).where(task_gates.c.gate_id == gate_id)
+                )
+            ).fetchall()
+        return {r[0] for r in rows}

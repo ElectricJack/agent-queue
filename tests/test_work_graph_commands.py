@@ -295,3 +295,85 @@ class TestTaskSetLabelEvents:
         types = [e["event_type"] for e in await db.get_recent_events(limit=20, task_id="t")]
         assert "label.added" in types
         assert "label.removed" in types
+
+
+# ── gate commands (WG-3) ─────────────────────────────────────────────────
+
+
+class TestGateCommands:
+    async def test_gate_create_happy(self, handler, db):
+        await mktask(db, "t1")
+        res = await handler._cmd_gate_create(
+            {
+                "project_id": PROJECT_ID,
+                "gate_type": "human",
+                "title": "review",
+                "waiter_task_ids": ["t1"],
+            }
+        )
+        assert res["success"] is True
+        assert res["gate_id"].startswith("gate-")
+        # Task blocked by the gate.
+        assert (await db.get_task("t1")).is_blocked is True
+
+    async def test_gate_create_missing_fields(self, handler):
+        res = await handler._cmd_gate_create({"project_id": PROJECT_ID, "title": "x"})
+        assert res["success"] is False
+        assert "gate_type" in res["error"]
+
+    async def test_gate_list_and_show(self, handler, db):
+        await mktask(db, "t1")
+        create = await handler._cmd_gate_create(
+            {
+                "project_id": PROJECT_ID,
+                "gate_type": "human",
+                "title": "r",
+                "waiter_task_ids": ["t1"],
+            }
+        )
+        gid = create["gate_id"]
+        listed = await handler._cmd_gate_list({"project_id": PROJECT_ID})
+        assert any(g["id"] == gid for g in listed["gates"])
+        shown = await handler._cmd_gate_show({"gate_id": gid})
+        assert shown["success"] is True
+        assert shown["gate"]["id"] == gid
+        assert "t1" in shown["waiters"]
+
+    async def test_gate_resolve_unknown(self, handler):
+        res = await handler._cmd_gate_resolve(
+            {"gate_id": "gate-nonexistent", "resolved_by": "u"}
+        )
+        assert res["success"] is False
+
+    async def test_gate_resolve_happy(self, handler, db):
+        await mktask(db, "t1")
+        create = await handler._cmd_gate_create(
+            {
+                "project_id": PROJECT_ID,
+                "gate_type": "human",
+                "title": "r",
+                "waiter_task_ids": ["t1"],
+            }
+        )
+        gid = create["gate_id"]
+        res = await handler._cmd_gate_resolve({"gate_id": gid, "resolved_by": "jack"})
+        assert res["success"] is True
+        assert "t1" in res["unblocked_task_ids"]
+        assert (await db.get_task("t1")).is_blocked is False
+
+    async def test_gate_resolve_idempotent(self, handler, db):
+        await mktask(db, "t1")
+        create = await handler._cmd_gate_create(
+            {
+                "project_id": PROJECT_ID,
+                "gate_type": "human",
+                "title": "r",
+                "waiter_task_ids": ["t1"],
+            }
+        )
+        gid = create["gate_id"]
+        first = await handler._cmd_gate_resolve({"gate_id": gid, "resolved_by": "a"})
+        second = await handler._cmd_gate_resolve({"gate_id": gid, "resolved_by": "b"})
+        assert first["success"] is True
+        assert second["success"] is True
+        assert second["unblocked_task_ids"] == []

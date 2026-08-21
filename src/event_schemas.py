@@ -171,6 +171,25 @@ _WORK_GRAPH_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "label"],
         "optional": ["project_id"],
     },
+    # -- Gates (WG-3): create / resolve / expire ---------------------------
+    #
+    # Emitted on the EventBus by the gate command layer and the ``_sweep_gates``
+    # cascade step.  ``gate.created`` fires on ``_cmd_gate_create``;
+    # ``gate.resolved`` fires from both the command layer and the sweep;
+    # ``gate.expired`` fires from the sweep when overdue open gates are
+    # marked ``expired``.
+    "gate.created": {
+        "required": ["gate_id", "gate_type", "project_id", "title"],
+        "optional": ["question", "await_id", "timeout_at", "waiter_task_ids"],
+    },
+    "gate.resolved": {
+        "required": ["gate_id", "project_id", "resolved_by"],
+        "optional": ["resolution", "unblocked_task_ids", "gate_type"],
+    },
+    "gate.expired": {
+        "required": ["gate_id", "project_id"],
+        "optional": ["gate_type", "timeout_at"],
+    },
 }
 
 # ---------------------------------------------------------------------------
