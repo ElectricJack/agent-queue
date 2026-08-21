@@ -52,6 +52,22 @@ from src.orchestrator import Orchestrator
 logger = logging.getLogger(__name__)
 
 
+def supervisor_session_routing_enabled(config: Any) -> bool:
+    """Return True when project chat should ride the message queue.
+
+    Phase 4 cutover (supervisor-agent.md §9 row 2, §10):  when
+    ``supervisor_agent.enabled`` is set and ``legacy_chat`` is false, the
+    Discord chat path enqueues a ``message.send`` for ``session:supervisor-<pid>``
+    instead of invoking :meth:`Supervisor.chat` in-process.  Both flags must
+    agree — flipping ``enabled`` on while ``legacy_chat`` is still true keeps
+    the legacy behaviour so the rollout can be staged safely.
+    """
+    sa = getattr(config, "supervisor_agent", None)
+    if sa is None:
+        return False
+    return bool(getattr(sa, "enabled", False)) and not bool(getattr(sa, "legacy_chat", True))
+
+
 class AgentQueueBot(commands.Bot):
     """Discord bot that bridges user interaction to the AgentQueue orchestrator.
 
@@ -1250,41 +1266,72 @@ class AgentQueueBot(commands.Bot):
                         except Exception:
                             pass  # Fail-open — don't break the chat flow
 
-                    try:
-                        response = await self.agent.chat(
-                            user_text,
-                            message.author.display_name,
-                            history=history,
-                            on_progress=_on_progress,
-                            context=llm_context or None,
+                    # Phase 4 cutover: when supervisor_agent.enabled and
+                    # legacy_chat is off, project chat rides the message
+                    # queue instead of the in-process Supervisor.chat loop.
+                    # ThinkingView/progress UI stays only on the legacy path
+                    # — reply delivery for the new path arrives via the
+                    # ``message.sent`` renderer in the notification handler
+                    # (see supervisor-agent.md §9 rows 1–2).
+                    if (
+                        supervisor_session_routing_enabled(self.config)
+                        and project_channel_id is not None
+                    ):
+                        send_result = await self.agent.handler.execute(
+                            "message_send",
+                            {
+                                "project_id": project_channel_id,
+                                "to_kind": "session",
+                                "to_id": f"supervisor-{project_channel_id}",
+                                "from_kind": "user",
+                                "from_id": f"discord:{message.author.id}",
+                                "body": user_text,
+                                "thread_id": f"discord:{message.channel.id}",
+                            },
                         )
-                    except Exception as e:
-                        _is_auth_error = False
-                        try:
-                            import anthropic
-
-                            _is_auth_error = isinstance(e, anthropic.AuthenticationError)
-                        except ModuleNotFoundError:
-                            pass
-
-                        if _is_auth_error:
-                            # Token may have been refreshed — reload and retry once
-                            logger.warning("Auth error, reloading credentials: %s", e)
-                            if self.agent.reload_credentials():
-                                response = await self.agent.chat(
-                                    user_text,
-                                    message.author.display_name,
-                                    history=history,
-                                    on_progress=_on_progress,
-                                    context=llm_context or None,
-                                )
-                            else:
-                                response = (
-                                    "Authentication failed. Run `claude login` "
-                                    "or set `ANTHROPIC_API_KEY`."
-                                )
+                        if "error" in send_result:
+                            response = f"**Message queue error:** {send_result['error']}"
                         else:
-                            raise
+                            # No synchronous reply on the new path — the
+                            # supervisor session answers asynchronously via
+                            # ``message.sent`` -> notification handler.
+                            response = ""
+                    else:
+                        try:
+                            response = await self.agent.chat(
+                                user_text,
+                                message.author.display_name,
+                                history=history,
+                                on_progress=_on_progress,
+                                context=llm_context or None,
+                            )
+                        except Exception as e:
+                            _is_auth_error = False
+                            try:
+                                import anthropic
+
+                                _is_auth_error = isinstance(e, anthropic.AuthenticationError)
+                            except ModuleNotFoundError:
+                                pass
+
+                            if _is_auth_error:
+                                # Token may have been refreshed — reload and retry once
+                                logger.warning("Auth error, reloading credentials: %s", e)
+                                if self.agent.reload_credentials():
+                                    response = await self.agent.chat(
+                                        user_text,
+                                        message.author.display_name,
+                                        history=history,
+                                        on_progress=_on_progress,
+                                        context=llm_context or None,
+                                    )
+                                else:
+                                    response = (
+                                        "Authentication failed. Run `claude login` "
+                                        "or set `ANTHROPIC_API_KEY`."
+                                    )
+                            else:
+                                raise
 
                     # Clean up the thinking view
                     thinking_view.stop()
@@ -1302,11 +1349,23 @@ class AgentQueueBot(commands.Bot):
                                 await self._delete_thinking_msg(thinking_msg)
                         thinking_msg = None
                     else:
-                        # Normal response — delete thinking indicator and reply
+                        # Normal response — delete thinking indicator and reply.
+                        # On the Phase 4 supervisor-session path ``response`` is
+                        # empty because the answer comes later via
+                        # ``message.sent`` — swap the thinking indicator for a
+                        # subtle "queued" marker instead of posting a blank reply.
                         await self._delete_thinking_msg(thinking_msg)
                         thinking_msg = None
 
-                        await self._send_long_message(message.channel, response, reply_to=message)
+                        if response:
+                            await self._send_long_message(
+                                message.channel, response, reply_to=message
+                            )
+                        else:
+                            try:
+                                await message.add_reaction("\U0001f4ec")  # 📬
+                            except Exception:
+                                pass  # fail-open
                 except Exception as e:
                     if thinking_view is not None:
                         thinking_view.stop()

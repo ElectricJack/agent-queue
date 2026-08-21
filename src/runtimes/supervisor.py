@@ -254,7 +254,21 @@ class Supervisor(Runtime):
         (``api_key``, ``base_url``, ``keep_alive``, ``num_ctx``).
         """
         chat_cfg = self._merge_profile_into_chat_config(self.config.chat_provider)
-        provider = create_chat_provider(chat_cfg)
+        # ``create_chat_provider`` may raise if provider-specific setup fails
+        # eagerly (e.g. google-genai raises ``ValueError`` when its API key
+        # env var is missing).  ``src/main.py:105`` treats a False return as a
+        # non-fatal warning, so swallow the exception here — a raised error
+        # would tear down the whole daemon just because chat isn't wired.
+        try:
+            provider = create_chat_provider(chat_cfg)
+        except Exception as exc:
+            logger.warning(
+                "Supervisor.initialize: chat provider construction failed (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            self._provider = None
+            return False
         if provider and self._llm_logger and self._llm_logger._enabled:
             provider = LoggedChatProvider(provider, self._llm_logger, caller="supervisor.chat")
         self._provider = provider

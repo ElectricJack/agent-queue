@@ -164,6 +164,11 @@ class DiscordNotificationHandler:
             ("notify.task_message", self._on_task_message),
             ("notify.task_thread_close", self._on_task_thread_close),
             ("notify.text", self._on_text),
+            # Phase 4 cutover (supervisor-agent.md §9 row 2): replies from
+            # supervisor sessions to Discord users arrive as ``message.sent``
+            # events with ``to_kind=user``; render them into the originating
+            # project channel.
+            ("message.sent", self._on_message_sent),
         ]
         for event_type, handler in events:
             unsub = bus.subscribe(event_type, handler)
@@ -946,3 +951,38 @@ class DiscordNotificationHandler:
             event.message,
             project_id=event.project_id,
         )
+
+    # ------------------------------------------------------------------
+    # Supervisor-session chat replies (Phase 4 cutover)
+    # ------------------------------------------------------------------
+
+    async def _on_message_sent(self, data: dict) -> None:
+        """Render ``message.sent`` events destined for Discord users.
+
+        The delivery engine emits ``message.sent`` when it hands a message
+        addressed to a ``user`` recipient off to its platform (see
+        ``src/messages/delivery.py::_deliver_to_user``).  For the P4
+        cutover this is the reply path from supervisor sessions back into
+        Discord.  The payload is metadata only — fetch the body from the
+        DB and post it to the originating project's channel.
+        """
+        if data.get("to_kind") != "user":
+            return
+        project_id = data.get("project_id")
+        message_id = data.get("message_id")
+        if not project_id or not message_id:
+            return
+        try:
+            db = self.bot.orchestrator.db
+            msg = await db.get_message(message_id)
+        except Exception:
+            logger.exception("message.sent: failed to load message %s", message_id)
+            return
+        if msg is None or not msg.body:
+            return
+        try:
+            await self.bot._send_message(msg.body, project_id=project_id)
+        except Exception:
+            logger.exception(
+                "message.sent: failed to post reply for project %s", project_id
+            )

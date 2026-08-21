@@ -102,7 +102,28 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     # Initialise the shared Supervisor's chat provider.  Failures here are
     # non-fatal — supervisor-platform tasks will surface a clear error if
     # the provider couldn't be created (e.g. missing credentials).
-    if not shared_supervisor.initialize():
+    #
+    # Phase 4 cutover (supervisor-agent.md §9 row 1, §10):  when
+    # ``supervisor_agent.enabled`` and ``legacy_chat`` is false, project chat
+    # runs through supervisor *sessions* (via the message queue + delivery
+    # engine); the singleton no longer needs a chat provider for that path.
+    # Skip ``initialize()`` in that state so a missing chat-provider API key
+    # does not spam the log.  The registry registration and command-handler
+    # wiring below stay — ``runtime: supervisor`` profile tasks and the
+    # plugin ``invoke_llm`` fallback (spec §9 row 3) still resolve the
+    # singleton via ``orch.set_supervisor``.
+    _sa_cfg = getattr(config, "supervisor_agent", None)
+    _skip_supervisor_chat_init = bool(
+        _sa_cfg
+        and getattr(_sa_cfg, "enabled", False)
+        and not getattr(_sa_cfg, "legacy_chat", True)
+    )
+    if _skip_supervisor_chat_init:
+        logger.info(
+            "Shared Supervisor: skipping chat-provider init "
+            "(supervisor_agent.enabled=true, legacy_chat=false; chat runs via sessions)"
+        )
+    elif not shared_supervisor.initialize():
         logger.warning(
             "Shared Supervisor: chat provider failed to initialise — "
             "supervisor-platform tasks will fail until credentials are configured"
