@@ -17,6 +17,7 @@ import PlaybookDetail from "./pages/PlaybookDetail";
 import SystemSessions from "./pages/system/Sessions";
 import SystemGates from "./pages/system/Gates";
 import ProjectSessions from "./pages/project/Sessions";
+import ProjectChat from "./pages/project/Chat";
 import SessionDetail from "./pages/SessionDetail";
 
 export default function App() {
@@ -39,6 +40,7 @@ export default function App() {
           <Route index element={<ProjectOverview />} />
           <Route path="tasks" element={<ProjectTasks />} />
           <Route path="sessions" element={<ProjectSessions />} />
+          <Route path="chat" element={<ProjectChat />} />
           <Route path="workspaces" element={<ProjectWorkspaces />} />
           <Route path="profiles" element={<ProjectProfiles />} />
           <Route path="playbooks" element={<ProjectPlaybooks />} />

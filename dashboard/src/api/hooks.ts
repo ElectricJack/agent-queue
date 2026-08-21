@@ -137,6 +137,11 @@ import type {
   GateResolveResponse,
   GateSummary,
 } from "./client";
+import {
+  fetchChatMessages,
+  sendChatMessage,
+  type ChatMessagesResponse,
+} from "./chat";
 
 // --- Re-exports — call sites should import shared types from here ---
 export type {
@@ -1086,6 +1091,29 @@ export function useResolveGate() {
       queryClient.invalidateQueries({ queryKey: ["gates"] });
       queryClient.invalidateQueries({ queryKey: ["gate", variables.gate_id] });
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+  });
+}
+
+// --- Chat (supervisor per-project chat, supervisor-agent §6.1) ---
+
+export type { ChatMessagesResponse };
+
+export function useChatMessages(projectId: string, limit = 200) {
+  return useQuery({
+    queryKey: ["chat", projectId, limit],
+    queryFn: () => fetchChatMessages(projectId, { limit }),
+    enabled: !!projectId,
+    refetchInterval: 15_000,
+  });
+}
+
+export function useSendChatMessage(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: string) => sendChatMessage(projectId, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["chat", projectId] });
     },
   });
 }
