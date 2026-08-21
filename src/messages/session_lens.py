@@ -161,6 +161,7 @@ class SessionLens:
         config,
         profiles_loader,
         epoch: str = "",
+        token_store=None,
     ):
         self._db = db
         self._providers = providers
@@ -174,6 +175,11 @@ class SessionLens:
         #: ``sessions`` row and into the spec builder so the reconciler
         #: sees the same value on both sides of the cold-start.
         self._epoch = epoch
+        #: aq-surface Phase S2: optional session-scoped API bearer-token
+        #: store.  When present, ``ensure_started`` mints a token and
+        #: forwards it to the harness via ``AQ_API_TOKEN``.  Tests may
+        #: omit; the harness falls back to no bearer (LOCAL_SCOPE).
+        self._token_store = token_store
 
     # -- SessionManagerProto ------------------------------------------------
 
@@ -275,6 +281,21 @@ class SessionLens:
         session_id = str(uuid.uuid4())
         instance_token = uuid.uuid4().hex[:12]
 
+        # aq-surface Phase S2: mint the session's API bearer token.  Empty
+        # string when no store is wired (tests) — harness treats absent
+        # value as no-token.  task_id is None: named sessions are not
+        # bound to a task.
+        api_token = ""
+        if self._token_store is not None:
+            try:
+                api_token = await self._token_store.mint(
+                    session_id=session_id,
+                    task_id=None,
+                    project_id=derived_project,
+                )
+            except Exception:
+                logger.debug("token mint failed for supervisor %s", target_id, exc_info=True)
+
         # Let the spec builder derive the provider session name from the
         # profile+project convention (``n-supervisor--<pid>``). The
         # messaging *address* remains ``supervisor-<pid>``; the lens
@@ -292,6 +313,7 @@ class SessionLens:
             session_id=session_id,
             instance_token=instance_token,
             epoch=self._epoch,
+            api_token=api_token,
         )
         try:
             await provider.start(spec)

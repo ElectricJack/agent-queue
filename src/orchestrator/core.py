@@ -957,6 +957,11 @@ class Orchestrator(
         self.token_store = SessionTokenStore(
             self.db, ttl_hours=self.config.api_auth.token_ttl_hours
         )
+        # SessionLens was constructed before the store existed (__init__
+        # runs before initialize()); wire the reference now so supervisor
+        # cold-starts mint via the shared cache.
+        if getattr(self, "session_lens", None) is not None:
+            self.session_lens._token_store = self.token_store
         await self._sync_profiles_from_config()
         # Adoption runs *before* recovery: a session that survived the
         # restart must be re-bound before the blanket reset would otherwise

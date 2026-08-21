@@ -521,3 +521,147 @@ class TestWebSocketAuth:
             mgr.shutdown()
             deps._token_store = None
             await db.close()
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — mint at session start + prime/handoff scope resolution
+# ---------------------------------------------------------------------------
+
+from unittest.mock import AsyncMock  # noqa: E402
+
+
+class TestPrimeScopeResolution:
+    async def test_prime_resolves_task_id_from_scope(self, tmp_path):
+        from src.commands.handler import CommandHandler as _CH
+        from src.models import Project, Task, TaskStatus
+
+        db = Database(str(tmp_path / "prime.db"))
+        await db.initialize()
+        await db.create_project(Project(id="p1", name="P1"))
+        await db.create_task(
+            Task(
+                id="t1", project_id="p1", title="do it",
+                status=TaskStatus.DEFINED, description="",
+            )
+        )
+
+        orch = MagicMock()
+        orch.db = db
+        orch.plugin_registry = None
+        config = MagicMock()
+        config.messages = MagicMock(enabled=False)
+        config.playbooks = MagicMock(enabled=True)
+        config.memory = MagicMock(enabled=True)
+        ch = _CH(orch, config)
+
+        # Patch PrimeRenderer to avoid hitting the vault.
+        from src.prime import PrimeRenderer as _PR
+
+        class _Doc:
+            sections = ()
+            source = "default"
+
+            def to_markdown(self):
+                return f"# task {self._tid}"
+
+            def tokens_est(self):
+                return 3
+
+        async def _render_for_task(self, task_id, **_kw):
+            d = _Doc()
+            d._tid = task_id
+            return d
+
+        orig = _PR.render_for_task
+        _PR.render_for_task = _render_for_task  # type: ignore[assignment]
+        try:
+            result = await ch.execute(
+                "prime",
+                {
+                    "_scope": {
+                        "kind": "session",
+                        "session_id": "s1",
+                        "task_id": "t1",
+                        "project_id": "p1",
+                    }
+                },
+            )
+        finally:
+            _PR.render_for_task = orig
+        assert result.get("success") is True, result
+        assert "task t1" in result["body"]
+        await db.close()
+
+    async def test_prime_without_scope_or_arg_still_errors(self, tmp_path):
+        from src.commands.handler import CommandHandler as _CH
+
+        db = Database(str(tmp_path / "prime2.db"))
+        await db.initialize()
+        orch = MagicMock()
+        orch.db = db
+        orch.plugin_registry = None
+        config = MagicMock()
+        config.messages = MagicMock(enabled=False)
+        config.playbooks = MagicMock(enabled=True)
+        config.memory = MagicMock(enabled=True)
+        ch = _CH(orch, config)
+
+        result = await ch.execute("prime", {})
+        assert "error" in result and "no task in scope" in result["error"]
+        await db.close()
+
+    async def test_task_close_revokes_session_token(self, tmp_path):
+        """After _cmd_task_close succeeds, the session's token is revoked."""
+        from src.commands.handler import CommandHandler as _CH
+        from src.models import Project, SessionRecord, Task, TaskStatus
+
+        db = Database(str(tmp_path / "close.db"))
+        await db.initialize()
+        await db.create_project(Project(id="p1", name="P1"))
+        await db.create_task(
+            Task(
+                id="t1", project_id="p1", title="do it",
+                status=TaskStatus.IN_PROGRESS, description="",
+            )
+        )
+        now = time.time()
+        await db.create_session(
+            SessionRecord(
+                id="s1",
+                project_id="p1",
+                profile_id="worker",
+                harness="claude",
+                provider="fake",
+                name="s-t1",
+                lifecycle="task",
+                task_id="t1",
+                state="running",
+                work_dir=str(tmp_path),
+                instance_token="tok",
+                epoch="e1",
+                started_at=now,
+                last_activity=now,
+            )
+        )
+        store = SessionTokenStore(db, ttl_hours=1)
+        token = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+        assert await store.validate(token) is not None
+
+        orch = MagicMock()
+        orch.db = db
+        orch.plugin_registry = None
+        orch.token_store = store
+        orch.complete_session_task = AsyncMock(return_value={})
+        config = MagicMock()
+        config.messages = MagicMock(enabled=False)
+        config.playbooks = MagicMock(enabled=True)
+        config.memory = MagicMock(enabled=True)
+        ch = _CH(orch, config)
+
+        result = await ch.execute(
+            "task_close",
+            {"task_id": "t1", "session_id": "s1", "outcome": "pass"},
+        )
+        assert result.get("success") is True, result
+        assert await store.validate(token) is None  # revoked at close
+        await db.close()

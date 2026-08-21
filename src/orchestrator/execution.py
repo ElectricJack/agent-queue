@@ -1752,13 +1752,20 @@ class ExecutionMixin:
         # string with "Invalid session ID. Must be a valid UUID."
         session_id = str(_uuid.uuid4())
         instance_token = _uuid.uuid4().hex
-        # A per-session bearer token.  Server-side verification and real
-        # scoping are [[aq-surface]]'s (``AQ_API_TOKEN`` minting is listed
-        # there in trust-and-ops §11), so today this is an opaque
-        # placeholder -- but a *present* one.  ``_launch_session_for_task``
-        # used to pass nothing, which left the marker empty and quietly
-        # reduced §4's trust argument to scrubbed-env plus git-as-recovery.
-        api_token = _uuid.uuid4().hex
+        # A per-session bearer token.  aq-surface Phase S2 wired real
+        # session-scoped mint via :class:`SessionTokenStore`; the sha256
+        # hash is persisted and the plaintext is handed to the harness as
+        # ``AQ_API_TOKEN``.  The legacy uuid4 fallback survives for unit
+        # tests that construct execution paths without a store.
+        token_store = getattr(self, "token_store", None)
+        if token_store is not None:
+            api_token = await token_store.mint(
+                session_id=session_id,
+                task_id=task.id,
+                project_id=task.project_id,
+            )
+        else:
+            api_token = _uuid.uuid4().hex
         resume_key = None
         try:
             resume_key = await self.db.get_task_meta(task.id, "session_resume_key")

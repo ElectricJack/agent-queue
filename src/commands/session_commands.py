@@ -469,6 +469,17 @@ class SessionCommandsMixin:
             commit=str(args.get("commit") or ""),
             notes=str(args.get("notes") or ""),
         )
+        # aq-surface Phase S2: revoke any session-scoped API bearer tokens
+        # tied to the closed session.  Single choke point for terminal
+        # state; the 60s cascade sweep is the safety net if this line ever
+        # regresses.
+        token_store = getattr(self.orchestrator, "token_store", None)
+        if token_store is not None and session is not None:
+            try:
+                await token_store.revoke_session(session.id)
+            except Exception:
+                # Revoke is best-effort — expiry is the safety net.
+                pass
         return {
             "success": True,
             "task_id": task_id,
