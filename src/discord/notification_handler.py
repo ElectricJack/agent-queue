@@ -138,6 +138,9 @@ class DiscordNotificationHandler:
         #   worker       : asyncio.Task | None       (the renderer)
         self._stream_states: dict[str, dict[str, Any]] = {}
 
+        # Wave 4: track posted gate messages so gate.resolved can edit them.
+        self._gate_messages: dict[str, Any] = {}
+
         # Subscribe to all notification events
         events = [
             ("notify.task_added", self._on_task_added),
@@ -169,6 +172,9 @@ class DiscordNotificationHandler:
             # events with ``to_kind=user``; render them into the originating
             # project channel.
             ("message.sent", self._on_message_sent),
+            # Wave 4 — work-graph gates as interactive Discord embeds.
+            ("gate.created", self._on_gate_created),
+            ("gate.resolved", self._on_gate_resolved),
         ]
         for event_type, handler in events:
             unsub = bus.subscribe(event_type, handler)
@@ -180,6 +186,7 @@ class DiscordNotificationHandler:
             unsub()
         self._unsubscribes.clear()
         self._task_threads.clear()
+        self._gate_messages.clear()
 
     def _get_handler(self) -> Any:
         """Get the command handler from the bot for interactive views."""
@@ -1042,3 +1049,64 @@ class DiscordNotificationHandler:
             logger.exception(
                 "message.sent: failed to post reply for project %s", project_id
             )
+
+    # ------------------------------------------------------------------
+    # Work-graph gates (Wave 4)
+    # ------------------------------------------------------------------
+
+    async def _on_gate_created(self, data: dict) -> None:
+        """Render a gate.created event as an embed with Approve/Deny buttons."""
+        from src.discord.gate_view import GateView, build_gate_embed
+
+        gate_id = data.get("gate_id")
+        project_id = data.get("project_id")
+        if not gate_id or not project_id:
+            return
+        embed = build_gate_embed(data)
+        handler_ref = self._get_handler()
+        view = GateView(str(gate_id), handler=handler_ref)
+        brief = f"⏸ Gate `{gate_id}` — awaiting decision."
+        try:
+            msg = await self.bot._send_message(
+                brief,
+                project_id=str(project_id),
+                embed=embed,
+                view=view,
+            )
+        except Exception:
+            logger.exception("gate.created: failed to post embed for %s", gate_id)
+            return
+        if msg is not None:
+            self._gate_messages[str(gate_id)] = msg
+
+    async def _on_gate_resolved(self, data: dict) -> None:
+        """Edit the posted gate message to show the resolution, disable buttons."""
+        gate_id = data.get("gate_id")
+        if not gate_id:
+            return
+        msg = self._gate_messages.pop(str(gate_id), None)
+        if msg is None:
+            return
+        resolved_by = str(data.get("resolved_by") or "unknown")
+        resolution = str(data.get("resolution") or "").strip() or "resolved"
+        unblocked = data.get("unblocked_task_ids") or []
+        try:
+            import discord
+
+            embed = discord.Embed(
+                title=f"✅ Gate resolved — {resolution}",
+                description=f"Resolved by `{resolved_by}`.",
+                color=discord.Color.green(),
+            )
+            if unblocked:
+                shown = ", ".join(f"`{t}`" for t in unblocked[:10])
+                if len(unblocked) > 10:
+                    shown += f" (+{len(unblocked) - 10} more)"
+                embed.add_field(name="Unblocked tasks", value=shown, inline=False)
+            await self.bot._safe_api_call(
+                msg.edit(embed=embed, view=None),
+                critical=False,
+                context=f"gate.resolved edit {gate_id}",
+            )
+        except Exception:
+            logger.exception("gate.resolved: failed to edit message for %s", gate_id)
