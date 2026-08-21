@@ -1,10 +1,369 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "agent-queue",
+    "title": "AgentQueue API",
+    "description": "REST API for the agent-queue daemon.",
     "version": "0.1.0"
   },
   "paths": {
+    "/api/execute": {
+      "post": {
+        "summary": "Api Execute",
+        "description": "Run a CommandHandler command (backward-compat envelope).\n\nHonours :data:`src.api.codegen.API_EXCLUDED`.  Without this the endpoint\nis a back door around the typed routes' exclusion set \u2014 notably for\n``run_command``, whose containment (trust-and-ops \u00a72.5) depends on it\nbeing unreachable from every remote surface.",
+        "operationId": "api_execute_api_execute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tools": {
+      "get": {
+        "summary": "Api Tools",
+        "description": "Return all tool definitions for CLI auto-generation.",
+        "operationId": "api_tools_api_tools_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "summary": "Api Health Simple",
+        "description": "Simple liveness check (backward-compat).",
+        "operationId": "api_health_simple_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "description": "Full system health status.\n\nReturns 200 when all checks pass, 503 when any check indicates\na problem (ok: False).",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "Ready",
+        "description": "Readiness probe \u2014 checks messaging platform and database.\n\nReturns 200 when ready, 503 when not.",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plans/{task_id}": {
+      "get": {
+        "summary": "Plan Viewer",
+        "description": "Serve plan content as an HTML page.",
+        "operationId": "plan_viewer_plans__task_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sessions/{name}/message": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Post Session Message",
+        "description": "Queue a message addressed to the named session.",
+        "operationId": "post_session_message_api_sessions__name__message_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionMessageResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sessions/{name}/messages": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Get Session Messages",
+        "description": "Poll the conversation for a session.\n\nReturns every message in the session's project matching the filters \u2014\nboth directions of the conversation \u2014 so a poller (``aq chat --once``\nwhen the WebSocket isn't available) sees the reply as well as its own\noutbound message.",
+        "operationId": "get_session_messages_api_sessions__name__messages_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "thread_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Thread Id"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "include_archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Archived"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Session Messages Api Sessions  Name  Messages Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sessions/{session_id}/stream": {
+      "get": {
+        "summary": "Stream",
+        "operationId": "stream_api_sessions__session_id__stream_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "max_seconds",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Seconds"
+            }
+          },
+          {
+            "name": "replay_only",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Replay Only"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agent/check-profile": {
       "post": {
         "tags": [
@@ -8812,364 +9171,6 @@
           }
         }
       }
-    },
-    "/api/sessions/{session_id}/stream": {
-      "get": {
-        "summary": "Stream",
-        "operationId": "stream_api_sessions__session_id__stream_get",
-        "parameters": [
-          {
-            "name": "session_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Session Id"
-            }
-          },
-          {
-            "name": "max_seconds",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Max Seconds"
-            }
-          },
-          {
-            "name": "replay_only",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 0,
-              "title": "Replay Only"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/sessions/{name}/message": {
-      "post": {
-        "tags": [
-          "sessions"
-        ],
-        "summary": "Post Session Message",
-        "description": "Queue a message addressed to the named session.",
-        "operationId": "post_session_message_api_sessions__name__message_post",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Name"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SessionMessageRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SessionMessageResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/sessions/{name}/messages": {
-      "get": {
-        "tags": [
-          "sessions"
-        ],
-        "summary": "Get Session Messages",
-        "description": "Poll the conversation for a session.\n\nReturns every message in the session's project matching the filters \u2014\nboth directions of the conversation \u2014 so a poller (``aq chat --once``\nwhen the WebSocket isn't available) sees the reply as well as its own\noutbound message.",
-        "operationId": "get_session_messages_api_sessions__name__messages_get",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Name"
-            }
-          },
-          {
-            "name": "thread_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Thread Id"
-            }
-          },
-          {
-            "name": "since",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Since"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 500,
-              "minimum": 1,
-              "default": 100,
-              "title": "Limit"
-            }
-          },
-          {
-            "name": "include_archived",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "default": false,
-              "title": "Include Archived"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Get Session Messages Api Sessions  Name  Messages Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/health": {
-      "get": {
-        "summary": "Health",
-        "description": "Full system health status.\n\nReturns 200 when all checks pass, 503 when any check indicates\na problem (ok: False).",
-        "operationId": "health_health_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/ready": {
-      "get": {
-        "summary": "Ready",
-        "description": "Readiness probe \u2014 checks messaging platform and database.\n\nReturns 200 when ready, 503 when not.",
-        "operationId": "ready_ready_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/plans/{task_id}": {
-      "get": {
-        "summary": "Plan Viewer",
-        "description": "Serve plan content as an HTML page.",
-        "operationId": "plan_viewer_plans__task_id__get",
-        "parameters": [
-          {
-            "name": "task_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Task Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/execute": {
-      "post": {
-        "summary": "Api Execute",
-        "description": "Run a CommandHandler command (backward-compat envelope).\n\nHonours :data:`src.api.codegen.API_EXCLUDED`.  Without this the endpoint\nis a back door around the typed routes' exclusion set \u2014 notably for\n``run_command``, whose containment (trust-and-ops \u00a72.5) depends on it\nbeing unreachable from every remote surface.",
-        "operationId": "api_execute_api_execute_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ExecuteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/tools": {
-      "get": {
-        "summary": "Api Tools",
-        "description": "Return all tool definitions for CLI auto-generation.",
-        "operationId": "api_tools_api_tools_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/health": {
-      "get": {
-        "summary": "Api Health Simple",
-        "description": "Simple liveness check (backward-compat).",
-        "operationId": "api_health_simple_api_health_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
@@ -12829,8 +12830,17 @@
         "title": "ExplainReason"
       },
       "ExplainTaskRequest": {
-        "properties": {},
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task id to explain"
+          }
+        },
         "type": "object",
+        "required": [
+          "task_id"
+        ],
         "title": "ExplainTaskRequest"
       },
       "ExplainTaskResponse": {
@@ -13051,8 +13061,78 @@
         "description": "Echoed by ``gate_create`` \u2014 matches the ``gate.created`` event payload."
       },
       "GateCreateRequest": {
-        "properties": {},
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project id that owns the gate"
+          },
+          "gate_type": {
+            "type": "string",
+            "title": "Gate Type",
+            "description": "Gate kind, e.g. 'review'"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Human-readable gate title"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question",
+            "description": "Optional prompt shown to the resolver"
+          },
+          "await_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Await Id",
+            "description": "Optional external id the gate is waiting on"
+          },
+          "timeout_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout At",
+            "description": "Optional epoch after which the gate is considered expired"
+          },
+          "waiter_task_ids": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiter Task Ids",
+            "description": "Task ids that should be blocked by this gate"
+          }
+        },
         "type": "object",
+        "required": [
+          "project_id",
+          "gate_type",
+          "title"
+        ],
         "title": "GateCreateRequest"
       },
       "GateCreateResponse": {
@@ -13078,7 +13158,44 @@
         "title": "GateCreateResponse"
       },
       "GateListRequest": {
-        "properties": {},
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Filter by project"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "Filter by status (open|resolved|expired)"
+          },
+          "gate_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Type",
+            "description": "Filter by gate kind"
+          }
+        },
         "type": "object",
         "title": "GateListRequest"
       },
@@ -13102,8 +13219,35 @@
         "title": "GateListResponse"
       },
       "GateResolveRequest": {
-        "properties": {},
+        "properties": {
+          "gate_id": {
+            "type": "string",
+            "title": "Gate Id",
+            "description": "Gate id to resolve"
+          },
+          "resolved_by": {
+            "type": "string",
+            "title": "Resolved By",
+            "description": "Identity of the resolver (user id or session)"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution",
+            "description": "Optional free-text explanation stored with the resolve event"
+          }
+        },
         "type": "object",
+        "required": [
+          "gate_id",
+          "resolved_by"
+        ],
         "title": "GateResolveRequest"
       },
       "GateResolveResponse": {
@@ -13133,8 +13277,17 @@
         "title": "GateResolveResponse"
       },
       "GateShowRequest": {
-        "properties": {},
+        "properties": {
+          "gate_id": {
+            "type": "string",
+            "title": "Gate Id",
+            "description": "Gate id to fetch"
+          }
+        },
         "type": "object",
+        "required": [
+          "gate_id"
+        ],
         "title": "GateShowRequest"
       },
       "GateShowResponse": {
@@ -17647,7 +17800,7 @@
             "type": "string",
             "title": "From Id"
           },
-          "from_": {
+          "from": {
             "anyOf": [
               {
                 "type": "string"
@@ -19258,7 +19411,46 @@
         "title": "ProjectProfileRow"
       },
       "ProjectReadyRequest": {
-        "properties": {},
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Project id (falls back to the active project when omitted)"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labels",
+            "description": "Restrict frontier to tasks carrying all of these labels"
+          },
+          "any_label": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Any Label",
+            "description": "Restrict frontier to tasks carrying any of these labels"
+          }
+        },
         "type": "object",
         "title": "ProjectReadyRequest"
       },
@@ -21123,7 +21315,56 @@
         "title": "SelectFilesForInspectionResponse"
       },
       "SessionAttachRequest": {
-        "properties": {},
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "Session id (uuid4 hex)"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id",
+            "description": "Alias for session_id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Session name"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Resolve session from this task id"
+          }
+        },
         "type": "object",
         "title": "SessionAttachRequest"
       },
@@ -21151,7 +21392,68 @@
         "title": "SessionAttachResponse"
       },
       "SessionKillRequest": {
-        "properties": {},
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "Session id (uuid4 hex)"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id",
+            "description": "Alias for session_id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Session name"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Resolve session from this task id"
+          },
+          "grace": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grace",
+            "description": "Seconds to wait between signal and force-kill (default 2.0)"
+          }
+        },
         "type": "object",
         "title": "SessionKillRequest"
       },
@@ -21175,12 +21477,140 @@
         "title": "SessionKillResponse"
       },
       "SessionListRequest": {
-        "properties": {},
+        "properties": {
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State",
+            "description": "Filter by session state (starting|running|draining|...)"
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle",
+            "description": "Filter by lifecycle (task|named)"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Filter by project (falls back to the active project)"
+          },
+          "live_only": {
+            "type": "boolean",
+            "title": "Live Only",
+            "description": "Only include sessions that are not stopped/quarantined",
+            "default": false
+          }
+        },
         "type": "object",
         "title": "SessionListRequest"
       },
       "SessionLogsRequest": {
-        "properties": {},
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "Session id (uuid4 hex)"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id",
+            "description": "Alias for session_id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Session name"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Resolve session from this task id"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "Max transcript entries to return (default 100)"
+          },
+          "lines": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lines",
+            "description": "Alias for limit"
+          },
+          "n": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N",
+            "description": "Alias for limit"
+          }
+        },
         "type": "object",
         "title": "SessionLogsRequest"
       },
@@ -21316,7 +21746,80 @@
         "description": "Response shape from design \u00a77."
       },
       "SessionNudgeRequest": {
-        "properties": {},
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "Session id (uuid4 hex)"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id",
+            "description": "Alias for session_id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Session name"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Resolve session from this task id"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text",
+            "description": "Text to inject and submit"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message",
+            "description": "Alias for text"
+          }
+        },
         "type": "object",
         "title": "SessionNudgeRequest"
       },
@@ -21355,7 +21858,80 @@
         "title": "SessionNudgeResponse"
       },
       "SessionPeekRequest": {
-        "properties": {},
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "Session id (uuid4 hex)"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id",
+            "description": "Alias for session_id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Session name"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Resolve session from this task id"
+          },
+          "lines": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lines",
+            "description": "Number of tail lines to return (default 60)"
+          },
+          "n": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N",
+            "description": "Alias for lines"
+          }
+        },
         "type": "object",
         "title": "SessionPeekRequest"
       },
@@ -21394,7 +21970,56 @@
         "title": "SessionPeekResponse"
       },
       "SessionShowRequest": {
-        "properties": {},
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "Session id (uuid4 hex)"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id",
+            "description": "Alias for session_id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Session name (provider name)"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Resolve session from this task id"
+          }
+        },
         "type": "object",
         "title": "SessionShowRequest"
       },
@@ -21548,7 +22173,7 @@
           "epoch": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
