@@ -1064,7 +1064,13 @@ class DiscordNotificationHandler:
             return
         embed = build_gate_embed(data)
         handler_ref = self._get_handler()
-        view = GateView(str(gate_id), handler=handler_ref)
+        gid = str(gate_id)
+        view = GateView(
+            gid,
+            handler=handler_ref,
+            bot=self.bot,
+            on_timeout_evict=lambda g: self._gate_messages.pop(g, None),
+        )
         brief = f"⏸ Gate `{gate_id}` — awaiting decision."
         try:
             msg = await self.bot._send_message(
@@ -1076,8 +1082,18 @@ class DiscordNotificationHandler:
         except Exception:
             logger.exception("gate.created: failed to post embed for %s", gate_id)
             return
-        if msg is not None:
-            self._gate_messages[str(gate_id)] = msg
+        if msg is None:
+            # ``_send_message`` routes through ``_safe_api_call(critical=True)``
+            # which returns ``None`` under rate-guard HALT.  Log a WARNING so
+            # dropped gate prompts are visible in the operator log — otherwise
+            # a HALT would silently swallow user-facing approval requests.
+            logger.warning(
+                "gate.created: post for %s returned no message "
+                "(channel missing or rate-guard drop) — gate will not be interactive",
+                gate_id,
+            )
+            return
+        self._gate_messages[gid] = msg
 
     async def _on_gate_resolved(self, data: dict) -> None:
         """Edit the posted gate message to show the resolution, disable buttons."""

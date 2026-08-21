@@ -18,6 +18,7 @@ MVP scope (see docs/superpowers/plans/2026-08-21-wave4-discord-e2e.md):
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import discord
@@ -36,10 +37,73 @@ class GateView(discord.ui.View):
     identifies the Discord user who clicked.
     """
 
-    def __init__(self, gate_id: str, *, handler: Any | None = None) -> None:
+    def __init__(
+        self,
+        gate_id: str,
+        *,
+        handler: Any | None = None,
+        bot: Any | None = None,
+        on_timeout_evict: Callable[[str], None] | None = None,
+    ) -> None:
         super().__init__(timeout=86400)  # 24h — matches TaskApprovalView
         self.gate_id = gate_id
         self._handler = handler
+        self._bot = bot
+        self._on_timeout_evict = on_timeout_evict
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Gate button clicks behind the bot's authorization allowlist.
+
+        If no ``bot`` was passed (e.g. legacy tests or missing wiring), the
+        check is a no-op and returns True so we don't regress existing
+        behaviour. Otherwise unauthorized clickers get an ephemeral message
+        and the button callback is skipped.
+        """
+        bot = self._bot
+        if bot is None or not hasattr(bot, "_is_authorized"):
+            return True
+        try:
+            if bot._is_authorized(interaction.user.id):
+                return True
+        except Exception:
+            logger.exception(
+                "GateView.interaction_check: authorization lookup failed for gate %s",
+                self.gate_id,
+            )
+            return False
+        try:
+            await interaction.response.send_message(
+                "You are not authorized to resolve gates.",
+                ephemeral=True,
+            )
+        except Exception:
+            logger.debug(
+                "GateView.interaction_check: failed to send ephemeral rejection",
+                exc_info=True,
+            )
+        return False
+
+    async def on_timeout(self) -> None:
+        """Release any handler-owned tracking for this gate.
+
+        The notification handler stores the posted ``discord.Message`` in a
+        dict keyed by gate id so ``gate.resolved`` can edit it.  If no
+        resolution ever arrives, the entry would leak forever — so on the
+        view's 24h timeout we invoke the eviction callback the handler
+        wired in.  Uses ``pop(..., None)``-style semantics so a subsequent
+        ``gate.resolved`` (or a second timeout) is safe.
+        """
+        cb = self._on_timeout_evict
+        if cb is None:
+            return
+        try:
+            cb(self.gate_id)
+        except Exception:
+            logger.debug(
+                "GateView.on_timeout: eviction callback raised for %s",
+                self.gate_id,
+                exc_info=True,
+            )
 
     async def _resolve(
         self,

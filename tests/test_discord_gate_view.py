@@ -111,6 +111,68 @@ class TestGateView:
         await approve_btn.callback(interaction)
         interaction.response.send_message.assert_awaited_once()
 
+    async def test_unauthorized_click_blocked_and_sends_ephemeral(self):
+        """Unauthorized users cannot resolve gates via button clicks."""
+        from src.discord.gate_view import GateView
+
+        handler = _StubHandler()
+        bot = MagicMock()
+        bot._is_authorized = MagicMock(return_value=False)
+        view = GateView("g1", handler=handler, bot=bot)
+
+        interaction = MagicMock()
+        interaction.user = MagicMock(id=999)
+        interaction.response = MagicMock()
+        interaction.response.send_message = AsyncMock()
+        interaction.response.defer = AsyncMock()
+        interaction.followup = MagicMock()
+        interaction.followup.send = AsyncMock()
+        interaction.message = MagicMock()
+        interaction.message.edit = AsyncMock()
+
+        # interaction_check should reject
+        allowed = await view.interaction_check(interaction)
+        assert allowed is False
+        interaction.response.send_message.assert_awaited_once()
+        args, kwargs = interaction.response.send_message.await_args
+        text = args[0] if args else kwargs.get("content", "")
+        assert "not authorized" in text.lower()
+        assert kwargs.get("ephemeral") is True
+        # Handler must NOT have been called
+        assert handler.calls == []
+
+    async def test_authorized_click_passes_interaction_check(self):
+        from src.discord.gate_view import GateView
+
+        handler = _StubHandler()
+        bot = MagicMock()
+        bot._is_authorized = MagicMock(return_value=True)
+        view = GateView("g1", handler=handler, bot=bot)
+
+        interaction = MagicMock()
+        interaction.user = MagicMock(id=42)
+        interaction.response = MagicMock()
+        interaction.response.send_message = AsyncMock()
+
+        allowed = await view.interaction_check(interaction)
+        assert allowed is True
+        interaction.response.send_message.assert_not_awaited()
+
+    async def test_on_timeout_evicts_gate_message(self):
+        """View timeout must evict the tracked gate message to bound memory."""
+        from src.discord.gate_view import GateView
+
+        gate_messages: dict = {"g1": MagicMock()}
+
+        def evict(gid: str) -> None:
+            gate_messages.pop(gid, None)
+
+        view = GateView("g1", handler=_StubHandler(), on_timeout_evict=evict)
+        await view.on_timeout()
+        assert "g1" not in gate_messages
+        # Double-eviction safe
+        await view.on_timeout()
+
 
 @pytest.mark.asyncio
 class TestGateEventHandlers:
@@ -193,6 +255,63 @@ class TestGateEventHandlers:
 
         assert bot._safe_api_call.await_count >= 1
         assert "g2" not in h._gate_messages
+
+    async def test_gate_created_logs_warning_when_send_drops(self, caplog):
+        """When _send_message returns None (HALT/rate-guard drop), log a warning."""
+        import logging
+
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        bus = EventBus(env="dev", validate_events=False)
+        bot = self._make_bot()
+        bot._send_message = AsyncMock(return_value=None)  # simulate HALT drop
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            with caplog.at_level(logging.WARNING, logger="src.discord.notification_handler"):
+                await bus.emit(
+                    "gate.created",
+                    {
+                        "gate_id": "gdrop",
+                        "gate_type": "approval",
+                        "project_id": "p1",
+                        "title": "T",
+                    },
+                )
+            assert any(
+                "gdrop" in rec.message and rec.levelno >= logging.WARNING
+                for rec in caplog.records
+            ), f"expected warning mentioning gate id; got: {[r.message for r in caplog.records]}"
+            assert "gdrop" not in handler._gate_messages
+        finally:
+            handler.shutdown()
+
+    async def test_gate_view_timeout_evicts_from_handler_dict(self):
+        """The GateView wired by the handler evicts _gate_messages on timeout."""
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        bus = EventBus(env="dev", validate_events=False)
+        bot = self._make_bot()
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            await bus.emit(
+                "gate.created",
+                {
+                    "gate_id": "gto",
+                    "gate_type": "approval",
+                    "project_id": "p1",
+                    "title": "T",
+                },
+            )
+            assert "gto" in handler._gate_messages
+            # Grab the view attached and invoke its on_timeout
+            view = bot._send_message.await_args.kwargs.get("view")
+            assert view is not None
+            await view.on_timeout()
+            assert "gto" not in handler._gate_messages
+        finally:
+            handler.shutdown()
 
     async def test_gate_resolved_without_prior_created_is_noop(self):
         from src.discord.notification_handler import DiscordNotificationHandler
