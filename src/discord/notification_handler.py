@@ -959,31 +959,28 @@ class DiscordNotificationHandler:
     async def _on_message_sent(self, data: dict) -> None:
         """Render ``message.sent`` events destined for Discord users.
 
-        The delivery engine emits ``message.sent`` when it hands a message
-        addressed to a ``user`` recipient off to its platform (see
-        ``src/messages/delivery.py::_deliver_to_user``).  For the P4
-        cutover this is the reply path from supervisor sessions back into
-        Discord.  The payload is metadata only — fetch the body from the
-        DB and post it to the originating channel.
+        Two producer paths land here:
 
-        Scope guard: only render messages that (a) originate from a
-        supervisor/agent session (``from_kind == "session"``) — never
-        echo user-authored rows back — AND (b) carry a
-        ``thread_id`` with the ``discord:`` prefix, which the Discord
-        cutover send path sets to ``discord:<channel_id>``.  Other
-        adapters' ``to_kind=user`` messages (or future non-Discord
-        surfaces) must not be double-posted here.
+        1. ``from_kind == "session"``: supervisor/agent reply to a user
+           (Phase-4 cutover reply path).  Rendered as plain text via
+           ``_send_long_message``.
+        2. ``from_kind == "system"`` with ``from_id == "delivery-engine"``:
+           a parked-message notification from
+           ``MessageDeliveryEngine._maybe_park`` — the user's original
+           message could not be delivered.  Rendered as a warning embed
+           so the failure is visible instead of silently dropped.
+
+        Scope guards: ``to_kind`` must be ``user``; ``thread_id`` must
+        carry the ``discord:`` prefix set by the cutover send path.  User-
+        authored echoes (``from_kind == "user"``) are dropped.
         """
+        import discord
+
         if data.get("to_kind") != "user":
             return
-        # Only agent/supervisor replies — skip user-authored echoes and
-        # system-authored rows.  MESSAGE_FROM_KINDS = {session,user,system}.
-        if data.get("from_kind") != "session":
+        from_kind = data.get("from_kind")
+        if from_kind not in ("session", "system"):
             return
-        # Scope to Discord-originated threads: the cutover send path in
-        # ``src/discord/bot.py`` sets ``thread_id=f"discord:{channel_id}"``.
-        # A missing thread_id, or one from another surface, must not
-        # trigger a Discord post.
         thread_id = data.get("thread_id")
         if not isinstance(thread_id, str) or not thread_id.startswith("discord:"):
             return
@@ -991,9 +988,6 @@ class DiscordNotificationHandler:
         message_id = data.get("message_id")
         if not project_id or not message_id:
             return
-        # Parse the originating channel id out of the thread_id so replies
-        # land in the exact channel the user chatted in, even if the
-        # project's default channel has since changed.
         channel_id_str = thread_id.split(":", 1)[1] if ":" in thread_id else ""
         try:
             db = self.bot.orchestrator.db
@@ -1003,19 +997,47 @@ class DiscordNotificationHandler:
             return
         if msg is None or not msg.body:
             return
-        # Prefer the channel encoded in thread_id; fall back to the
-        # project channel resolver if the channel id can't be resolved.
+
         channel = None
         if channel_id_str.isdigit():
             try:
                 channel = self.bot.get_channel(int(channel_id_str))
             except Exception:
                 channel = None
+        if channel is None and channel_id_str.isdigit():
+            logger.warning(
+                "message.sent: channel %s not resolvable via bot.get_channel; "
+                "falling back to project channel resolver (project=%s)",
+                channel_id_str,
+                project_id,
+            )
+
         try:
-            if channel is not None:
-                await self.bot._send_long_message(channel, msg.body)
+            if from_kind == "system":
+                # Parked-message warning — render as an embed so it is
+                # visually distinct from normal supervisor replies.
+                body = msg.body
+                desc = body if len(body) <= 3800 else body[:3800] + "…"
+                embed = discord.Embed(
+                    title="⚠️ Message not delivered",
+                    description=desc,
+                    color=discord.Color.orange(),
+                )
+                brief = "⚠️ A previous message was not delivered — see details."
+                if channel is not None:
+                    await self.bot._safe_api_call(
+                        channel.send(content=brief, embed=embed),
+                        critical=False,
+                        context="message.sent parked warning",
+                    )
+                else:
+                    await self.bot._send_message(brief, project_id=project_id, embed=embed)
             else:
-                await self.bot._send_message(msg.body, project_id=project_id)
+                # from_kind == "session" — plain text reply.
+                if channel is not None:
+                    await self.bot._send_long_message(channel, msg.body)
+                else:
+                    await self.bot._send_message(msg.body, project_id=project_id)
         except Exception:
             logger.exception(
                 "message.sent: failed to post reply for project %s", project_id

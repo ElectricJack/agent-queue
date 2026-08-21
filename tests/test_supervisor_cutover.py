@@ -342,6 +342,7 @@ class TestMessageSentRenderer:
         bot._project_channels = {"p1": MagicMock()}
         bot._send_message = AsyncMock()
         bot._send_long_message = AsyncMock()
+        bot._safe_api_call = AsyncMock(return_value=None)
         bot.get_channel = MagicMock(return_value=channel)
         return bot
 
@@ -565,6 +566,90 @@ class TestMessageSentRenderer:
         args = bot._send_long_message.await_args.args
         assert args[0] is parsed_channel
         assert "delivered body" in args[1]
+
+    async def test_renders_system_authored_parked_message_as_warning(self, db):
+        """Delivery-engine parked-message notifications (from_kind="system")
+        must render in the originating Discord channel as a warning embed
+        so the user knows their message was dropped.
+        """
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        parked = await db.create_message(
+            project_id="p1",
+            from_kind="system",
+            from_id="delivery-engine",
+            to_kind="user",
+            to_id="discord:42",
+            body=(
+                "[parked] your message to session:supervisor-p1 (m-orig) "
+                "was not delivered within 6h. Original body:\n\nhello supervisor"
+            ),
+            subject="Undelivered: (no subject)",
+            thread_id="discord:999",
+        )
+        bus = EventBus(env="dev", validate_events=False)
+        parsed_channel = MagicMock()
+        bot = await self._make_bot(db, channel=parsed_channel)
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            await bus.emit(
+                "message.sent",
+                {
+                    "message_id": parked.id,
+                    "project_id": "p1",
+                    "from_kind": "system",
+                    "from_id": "delivery-engine",
+                    "to_kind": "user",
+                    "to_id": "discord:42",
+                    "thread_id": "discord:999",
+                },
+            )
+        finally:
+            handler.shutdown()
+
+        # Parked warning routed through the rate-guarded channel.send path.
+        assert bot._safe_api_call.await_count == 1
+        call = bot._safe_api_call.await_args
+        assert call.kwargs.get("context") == "message.sent parked warning"
+
+    async def test_channel_miss_emits_warning_log(self, db, caplog):
+        import logging
+
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        reply = await db.create_message(
+            project_id="p1",
+            from_kind="session",
+            from_id="supervisor-p1",
+            to_kind="user",
+            to_id="discord:42",
+            body="hi",
+            thread_id="discord:999",
+        )
+        bus = EventBus(env="dev", validate_events=False)
+        bot = await self._make_bot(db, channel=None)  # get_channel returns None
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            with caplog.at_level(logging.WARNING, logger="src.discord.notification_handler"):
+                await bus.emit(
+                    "message.sent",
+                    {
+                        "message_id": reply.id,
+                        "project_id": "p1",
+                        "from_kind": "session",
+                        "from_id": "supervisor-p1",
+                        "to_kind": "user",
+                        "to_id": "discord:42",
+                        "thread_id": "discord:999",
+                    },
+                )
+        finally:
+            handler.shutdown()
+        assert any(
+            "not resolvable" in r.message and "999" in r.message for r in caplog.records
+        )
 
 
 # ---------------------------------------------------------------------------
