@@ -282,6 +282,13 @@ class Orchestrator(
         self._last_auto_archive: float = 0.0
         self._last_memory_compact: float = 0.0  # TODO: remove once v2 compaction is wired
         self._last_failed_blocked_report: float = 0.0
+        # Throttle: gate sweep (WG-3) runs at most once per
+        # config.work_graph.gate_sweep_interval_seconds.
+        self._last_gate_sweep: float = 0.0
+        # EventBus subscription that resolves ``event`` gates live.  Set by
+        # ``_subscribe_event_gates`` on initialize; kept as an attribute so
+        # tests can toggle it deterministically.
+        self._gate_event_unsub = None
         self._config_watcher: ConfigWatcher | None = None
         self._supervisor = None  # Set via set_supervisor() in Discord bot
         # Chat provider for LLM-based plan parsing.  Optionally used by
@@ -1380,6 +1387,11 @@ class Orchestrator(
             self.bus.subscribe("config.reloaded", self._on_config_reloaded)
             self._config_watcher.start()
 
+        # Live event-gate resolution (WG-3).  Sweep is the restart-safe
+        # backstop; this subscription handles the fast path.
+        if self.config.work_graph.gate_sweep_interval_seconds > 0:
+            await self._subscribe_event_gates()
+
         # MemoryExtractor is now managed by the MemoryPlugin.
 
         # Take the vault watcher's initial snapshot now that all subsystems
@@ -2102,15 +2114,227 @@ class Orchestrator(
 
         Gating note (WG-1): this used to check
         ``work_graph.blocked_state_authoritative``, but §9's rollout puts
-        gates at stage (3) — *after* the stage-(2) flip of that flag.  Wired
-        that way, flipping the flag for the blocked-state projection would
-        silently arm the gate sweep too.  It is now gated on its own key,
-        ``gate_sweep_interval_seconds`` (``<= 0`` disables sweeping), so the
-        two rollout stages are independent.  The body is still empty, so the
-        step remains a no-op regardless.
+        gates at stage (3) — *after* the stage-(2) flip of that flag.  It is
+        gated on ``gate_sweep_interval_seconds`` (``<= 0`` disables
+        sweeping) so the two rollout stages are independent.
+
+        Order matters: the sweep runs at cascade step 2b (before
+        ``_check_defined_tasks``) so a freshly resolved gate unblocks its
+        waiter in the same cycle.
         """
-        if self.config.work_graph.gate_sweep_interval_seconds <= 0:
+        interval = self.config.work_graph.gate_sweep_interval_seconds
+        if interval <= 0:
             return
+        now = time.time()
+        if now - self._last_gate_sweep < interval:
+            return
+        self._last_gate_sweep = now
+
+        # 1. Resolve satisfied gates by type.  Timers first so a "past
+        #    timeout_at" timer resolves rather than being expired below.
+        await self._sweep_resolve_timer_gates(now)
+        await self._sweep_resolve_task_gates()
+        await self._sweep_resolve_pr_ci_gates()
+        await self._sweep_resolve_event_gates()
+
+        # 2. Expire overdue open gates — expired keeps blocking (design
+        #    §5.4), so waiters need no recompute, but the event stream must
+        #    show it.
+        try:
+            expired = await self.db.expire_open_gates(now)
+        except Exception:
+            logger.exception("_sweep_gates: expire_open_gates failed")
+            expired = []
+        for gate_id in expired:
+            try:
+                gate = await self.db.get_gate(gate_id)
+                if gate is None:
+                    continue
+                payload = {
+                    "gate_id": gate_id,
+                    "project_id": gate["project_id"],
+                    "gate_type": gate["gate_type"],
+                    "timeout_at": gate["timeout_at"],
+                }
+                await self.bus.emit("gate.expired", payload)
+                await self.db.log_event(
+                    "gate.expired",
+                    project_id=gate["project_id"],
+                    payload=gate_id,
+                )
+            except Exception:
+                logger.debug("_sweep_gates: expiry emit failed", exc_info=True)
+
+    async def _resolve_gate_and_emit(
+        self, gate_id: str, *, resolved_by: str, resolution: str = ""
+    ) -> None:
+        """Resolve *gate_id* through the DB and emit the audit + bus events.
+
+        Central helper for the sweep — any resolution path that flows
+        through here gets the same ``gate.resolved`` + ``task.unblocked``
+        events for free.  Idempotent: an already-resolved gate is a no-op.
+        """
+        gate = await self.db.get_gate(gate_id)
+        if gate is None or gate["status"] == "resolved":
+            return
+        flipped = await self.db.resolve_gate(
+            gate_id, resolved_by=resolved_by, resolution=resolution
+        )
+        payload = {
+            "gate_id": gate_id,
+            "project_id": gate["project_id"],
+            "resolved_by": resolved_by,
+            "resolution": resolution,
+            "unblocked_task_ids": sorted(flipped),
+            "gate_type": gate["gate_type"],
+        }
+        try:
+            await self.bus.emit("gate.resolved", payload)
+        except Exception:
+            logger.debug("_sweep_gates: bus emit failed", exc_info=True)
+        try:
+            await self.db.log_event(
+                "gate.resolved",
+                project_id=gate["project_id"],
+                payload=gate_id,
+            )
+        except Exception:
+            logger.debug("_sweep_gates: log_event failed", exc_info=True)
+        # task.unblocked audit rows are already written by
+        # ``log_blocked_flips`` inside ``resolve_gate`` — we don't
+        # duplicate them here.
+
+    async def _sweep_resolve_timer_gates(self, now: float) -> None:
+        """Resolve ``timer`` gates whose ``timeout_at`` has passed.
+
+        ``timer`` uses ``timeout_at`` as the *fire* time (not a hard
+        deadline).  A separate expiry pass runs first and would have
+        marked past-timeout ``timer`` gates as ``expired`` — but timers
+        are the one gate kind where "past timeout" means "satisfied", not
+        "failed", so we override that by picking any remaining open
+        ``timer`` gates whose fire time has arrived and resolving them.
+        Practically, we look at *open* timer gates only: expiry already
+        removed the ones with a passed ``timeout_at`` — so timers must be
+        resolved before the expiry pass to preserve the "fire" semantics.
+
+        To keep the ordering simple we scan open timers here and resolve
+        those with ``timeout_at <= now`` regardless of what expiry did in
+        step 1 (idempotent).  This is the "expire → resolve" order the
+        spec §6.2 documents.
+        """
+        try:
+            timers = await self.db.list_open_gates_by_type("timer")
+        except Exception:
+            logger.exception("_sweep_gates: list_open_gates_by_type(timer) failed")
+            return
+        for gate in timers:
+            if gate["timeout_at"] is not None and gate["timeout_at"] <= now:
+                await self._resolve_gate_and_emit(
+                    gate["id"], resolved_by="sweep:timer", resolution="fired"
+                )
+
+    async def _sweep_resolve_task_gates(self) -> None:
+        """Resolve ``task`` gates whose awaited task is COMPLETED."""
+        try:
+            gates = await self.db.list_open_gates_by_type("task")
+        except Exception:
+            logger.exception("_sweep_gates: list_open_gates_by_type(task) failed")
+            return
+        for gate in gates:
+            await_id = gate.get("await_id")
+            if not await_id:
+                continue
+            dep = await self.db.get_task(await_id)
+            if dep is None:
+                continue
+            if getattr(dep.status, "value", dep.status) == "COMPLETED":
+                await self._resolve_gate_and_emit(
+                    gate["id"], resolved_by="sweep:task", resolution=await_id
+                )
+
+    async def _sweep_resolve_pr_ci_gates(self) -> None:
+        """Resolve ``pr-merged``/``ci-run`` gates via ``_poll_pr_merged``."""
+        for gate_type in ("pr-merged", "ci-run"):
+            try:
+                gates = await self.db.list_open_gates_by_type(gate_type)
+            except Exception:
+                logger.exception(
+                    "_sweep_gates: list_open_gates_by_type(%s) failed", gate_type
+                )
+                continue
+            for gate in gates:
+                pr_url = gate.get("await_id")
+                if not pr_url:
+                    continue
+                merged = await self._poll_pr_merged(
+                    pr_url, project_id=gate["project_id"]
+                )
+                if merged is True:
+                    await self._resolve_gate_and_emit(
+                        gate["id"],
+                        resolved_by=f"sweep:{gate_type}",
+                        resolution=pr_url,
+                    )
+
+    async def _sweep_resolve_event_gates(self) -> None:
+        """Backstop for ``event`` gates: match persisted events after the
+        gate's creation watermark.
+
+        The EventBus subscription (``_subscribe_event_gates``) is the fast
+        path — this is the restart-safe backstop, so an event emitted while
+        the daemon was down still resolves its gate.
+        """
+        try:
+            gates = await self.db.list_open_gates_by_type("event")
+        except Exception:
+            logger.exception("_sweep_gates: list_open_gates_by_type(event) failed")
+            return
+        for gate in gates:
+            event_type = gate.get("await_id")
+            if not event_type:
+                continue
+            try:
+                rows = await self.db.get_recent_events(
+                    limit=100, event_type=event_type, since=gate["created_at"]
+                )
+            except Exception:
+                logger.debug(
+                    "_sweep_gates: get_recent_events failed", exc_info=True
+                )
+                continue
+            if rows:
+                await self._resolve_gate_and_emit(
+                    gate["id"], resolved_by="sweep:event", resolution=event_type
+                )
+
+    async def _subscribe_event_gates(self) -> None:
+        """Register the EventBus handler that resolves open ``event`` gates.
+
+        Called once from :meth:`initialize`.  Live path: an event arrives,
+        we scan open ``event`` gates whose ``await_id`` matches and resolve
+        them.  The sweep remains the backstop.
+        """
+        if self._gate_event_unsub is not None:
+            return
+
+        async def _on_event(data: dict) -> None:
+            event_type = data.get("_event_type")
+            if not event_type or event_type.startswith("gate."):
+                return  # avoid a resolve → gate.resolved → resolve loop
+            try:
+                gates = await self.db.list_open_gates_by_type("event")
+            except Exception:
+                logger.debug("event-gate handler: list failed", exc_info=True)
+                return
+            for gate in gates:
+                if gate.get("await_id") == event_type:
+                    await self._resolve_gate_and_emit(
+                        gate["id"],
+                        resolved_by="bus:event",
+                        resolution=event_type,
+                    )
+
+        self._gate_event_unsub = self.bus.subscribe("*", _on_event)
 
     async def _reap_worktree_slots(self) -> None:
         """Break expired merge-slot leases and reap retired worktree slots.

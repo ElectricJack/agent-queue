@@ -142,6 +142,36 @@ class ApprovalMixin:
                 project_id=task.project_id,
             )
 
+    async def _poll_pr_merged(
+        self, pr_url: str, *, project_id: str | None = None
+    ) -> bool | None:
+        """Poll ``gh`` for a PR's merge state.
+
+        Returns ``True`` (merged), ``False`` (still open), or ``None``
+        (closed without merge, or ``gh`` failed / no checkout).  Extracted
+        from :meth:`_check_pr_status` so :meth:`_sweep_gates` can reuse the
+        same polling body for ``pr-merged``/``ci-run`` gates without
+        duplicating the checkout-path fallback.
+        """
+        checkout_path: str | None = None
+        # Prefer a workspace for the given project; fall back to any.
+        if project_id:
+            workspaces = await self.db.list_workspaces(project_id=project_id)
+            if workspaces:
+                checkout_path = workspaces[0].workspace_path
+        if not checkout_path:
+            workspaces = await self.db.list_workspaces()
+            if workspaces:
+                checkout_path = workspaces[0].workspace_path
+        if not checkout_path:
+            return False
+
+        try:
+            return await self.git.acheck_pr_merged(checkout_path, pr_url)
+        except Exception as e:
+            logger.warning("Error polling PR %s: %s", pr_url, e)
+            return False
+
     async def _check_pr_status(self, task: Task) -> None:
         """Check whether a PR-backed AWAITING_APPROVAL task has been merged.
 
@@ -159,25 +189,23 @@ class ApprovalMixin:
         workspace has already been released.
         """
 
-        # Need a checkout path to run gh commands
+        # Prefer the workspace locked by this task; else fall back to any
+        # workspace on the project.  The extracted ``_poll_pr_merged`` covers
+        # the plain any-workspace-on-project path — we still probe the
+        # per-task workspace first here because ``AWAITING_APPROVAL`` tasks
+        # usually still hold theirs.
         checkout_path = None
-        # Try workspace locked by this task first
         ws = await self.db.get_workspace_for_task(task.id)
         if ws:
             checkout_path = ws.workspace_path
-        # Fall back to any workspace for this project
-        if not checkout_path:
-            workspaces = await self.db.list_workspaces(project_id=task.project_id)
-            if workspaces:
-                checkout_path = workspaces[0].workspace_path
-        if not checkout_path:
-            return
-
-        try:
-            merged = await self.git.acheck_pr_merged(checkout_path, task.pr_url)
-        except Exception as e:
-            logger.warning("Error checking PR for task %s: %s", task.id, e)
-            return
+        if checkout_path:
+            try:
+                merged = await self.git.acheck_pr_merged(checkout_path, task.pr_url)
+            except Exception as e:
+                logger.warning("Error checking PR for task %s: %s", task.id, e)
+                return
+        else:
+            merged = await self._poll_pr_merged(task.pr_url, project_id=task.project_id)
 
         if merged is True:
             await self.db.transition_task(task.id, TaskStatus.COMPLETED, context="pr_merged")

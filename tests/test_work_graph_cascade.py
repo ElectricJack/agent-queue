@@ -304,11 +304,151 @@ class TestGateSweepGating:
         assert "blocked_state_authoritative" not in source.split('"""')[-1]
         assert "gate_sweep_interval_seconds" in source
 
-    async def test_sweep_is_still_a_no_op(self, orch):
-        orch.config.work_graph.blocked_state_authoritative = True
-        await orch._sweep_gates()  # must not raise, must do nothing
-
     async def test_sweep_can_be_disabled_by_interval_zero(self, orch):
         orch.config.work_graph.gate_sweep_interval_seconds = 0
         assert orch.config.work_graph.validate() == []
+        # Create a timer that would otherwise fire — disabled sweep must not.
+        await mktask(orch, "t")
+        import time as _t
+
+        await orch.db.create_gate(
+            "p-1", "timer", "would-fire",
+            timeout_at=_t.time() - 10, waiter_task_ids=["t"],
+        )
         await orch._sweep_gates()
+        gate = (await orch.db.list_gates(project_id="p-1"))[0]
+        assert gate["status"] == "open"
+
+    async def test_sweep_respects_the_rate_limit(self, orch):
+        orch.config.work_graph.gate_sweep_interval_seconds = 30
+        orch._last_gate_sweep = 1e12  # far in the future
+        # Overdue gate that a real sweep would expire.
+        import time as _t
+
+        gid = await orch.db.create_gate(
+            "p-1", "human", "past", timeout_at=_t.time() - 10
+        )
+        await orch._sweep_gates()
+        assert (await orch.db.get_gate(gid))["status"] == "open"
+
+
+class TestGateSweepBehavior:
+    """WG-3: sweep resolves and expires gates and unblocks waiters."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_throttle(self, orch):
+        orch._last_gate_sweep = 0.0
+        orch.config.work_graph.blocked_state_authoritative = True
+
+    async def test_timer_gate_resolves_when_clock_passes(self, orch):
+        import time as _t
+
+        await mktask(orch, "t")
+        gid = await orch.db.create_gate(
+            "p-1", "timer", "fire", timeout_at=_t.time() - 1, waiter_task_ids=["t"]
+        )
+        assert (await orch.db.get_task("t")).is_blocked is True
+        await orch._sweep_gates()
+        assert (await orch.db.get_gate(gid))["status"] == "resolved"
+        assert (await orch.db.get_task("t")).is_blocked is False
+
+    async def test_task_gate_resolves_on_dep_completion(self, orch):
+        await mktask(orch, "dep", status=TaskStatus.COMPLETED)
+        await mktask(orch, "t")
+        gid = await orch.db.create_gate(
+            "p-1", "task", "wait dep", await_id="dep", waiter_task_ids=["t"]
+        )
+        assert (await orch.db.get_task("t")).is_blocked is True
+        await orch._sweep_gates()
+        assert (await orch.db.get_gate(gid))["status"] == "resolved"
+        assert (await orch.db.get_task("t")).is_blocked is False
+
+    async def test_task_gate_stays_open_while_dep_not_completed(self, orch):
+        await mktask(orch, "dep", status=TaskStatus.IN_PROGRESS)
+        await mktask(orch, "t")
+        gid = await orch.db.create_gate(
+            "p-1", "task", "wait dep", await_id="dep", waiter_task_ids=["t"]
+        )
+        await orch._sweep_gates()
+        assert (await orch.db.get_gate(gid))["status"] == "open"
+
+    async def test_expiry_marks_overdue_but_keeps_waiter_blocked(self, orch):
+        import time as _t
+
+        await mktask(orch, "t")
+        gid = await orch.db.create_gate(
+            "p-1", "human", "past", timeout_at=_t.time() - 1, waiter_task_ids=["t"]
+        )
+        await orch._sweep_gates()
+        assert (await orch.db.get_gate(gid))["status"] == "expired"
+        # Waiter stays blocked — expiry never silently self-approves.
+        assert (await orch.db.get_task("t")).is_blocked is True
+
+    async def test_pr_merged_gate_resolves_via_stub_poller(self, orch, monkeypatch):
+        await mktask(orch, "t")
+        gid = await orch.db.create_gate(
+            "p-1", "pr-merged", "PR", await_id="https://gh/pr/1", waiter_task_ids=["t"]
+        )
+
+        async def fake_poll(pr_url, *, project_id=None):
+            return True
+
+        monkeypatch.setattr(orch, "_poll_pr_merged", fake_poll)
+        await orch._sweep_gates()
+        assert (await orch.db.get_gate(gid))["status"] == "resolved"
+        assert (await orch.db.get_task("t")).is_blocked is False
+
+    async def test_pr_merged_gate_stays_open_while_pr_open(self, orch, monkeypatch):
+        await mktask(orch, "t")
+        gid = await orch.db.create_gate(
+            "p-1", "pr-merged", "PR", await_id="https://gh/pr/1", waiter_task_ids=["t"]
+        )
+
+        async def fake_poll(pr_url, *, project_id=None):
+            return False
+
+        monkeypatch.setattr(orch, "_poll_pr_merged", fake_poll)
+        await orch._sweep_gates()
+        assert (await orch.db.get_gate(gid))["status"] == "open"
+
+    async def test_event_gate_resolves_via_sweep_backstop(self, orch):
+        """A persisted matching event *after* gate creation resolves the gate
+        even when the live bus subscription is not active."""
+        await mktask(orch, "t")
+        gid = await orch.db.create_gate(
+            "p-1", "event", "await-deploy", await_id="deploy.completed",
+            waiter_task_ids=["t"],
+        )
+        # Persist a matching event after gate creation.
+        await orch.db.log_event("deploy.completed", project_id="p-1", payload="x")
+        await orch._sweep_gates()
+        assert (await orch.db.get_gate(gid))["status"] == "resolved"
+
+    async def test_event_gate_resolves_via_bus_subscription(self, orch):
+        """Live path: an emitted event resolves an open event-gate
+        immediately, without waiting for the sweep."""
+        await orch._subscribe_event_gates()
+        await mktask(orch, "t")
+        gid = await orch.db.create_gate(
+            "p-1", "event", "await-x", await_id="my.custom", waiter_task_ids=["t"]
+        )
+        await orch.bus.emit("my.custom", {"project_id": "p-1"})
+        # give bus a chance to drain (sync-dispatch in tests, but async safety)
+        import asyncio as _a
+
+        await _a.sleep(0)
+        assert (await orch.db.get_gate(gid))["status"] == "resolved"
+
+    async def test_resolved_gate_unblocks_waiter_in_same_cycle(self, orch):
+        """Sweep runs at step 2b, before ``_check_defined_tasks`` — a
+        freshly resolved gate must let the waiter promote in one cycle."""
+        import time as _t
+
+        await mktask(orch, "t")
+        await orch.db.create_gate(
+            "p-1", "timer", "fire", timeout_at=_t.time() - 1, waiter_task_ids=["t"]
+        )
+        # Emulate cascade step ordering: sweep -> _check_defined_tasks.
+        await orch._sweep_gates()
+        await orch._check_defined_tasks()
+        assert (await orch.db.get_task("t")).status == TaskStatus.READY
