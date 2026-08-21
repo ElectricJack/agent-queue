@@ -30,6 +30,7 @@ import time
 import uuid
 from typing import Literal, Protocol, runtime_checkable
 
+from src.models import SessionRecord
 from src.sessions.provider import (
     CapabilityUnsupported,
     NotSubmitted,
@@ -285,6 +286,42 @@ class SessionLens:
                 derived_project,
             )
             return False
+
+        # Persist the sessions row so subsequent lens ops (``activity``,
+        # ``nudge``) can resolve the just-started supervisor.  Without this
+        # step the reconciler would eventually adopt the orphan on its next
+        # tick, but the delivery engine's *same-pass* nudge would already
+        # have failed to find a row.  Mirrors the ``provider.start`` →
+        # ``db.create_session`` ordering in
+        # ``src/orchestrator/execution.py`` (crash between start and row
+        # insert leaves an orphan the reconciler can heal; the reverse
+        # would leave a phantom row).
+        try:
+            await self._db.create_session(
+                SessionRecord(
+                    id=uuid.uuid4().hex,
+                    project_id=derived_project or "",
+                    profile_id="supervisor",
+                    harness=harness.id,
+                    provider=provider_name,
+                    name=spec.session_name,
+                    lifecycle="named",
+                    work_dir=work_dir,
+                    epoch="",
+                    instance_token=instance_token,
+                    started_at=time.time(),
+                    session_key=session_id,
+                    state="running",
+                )
+            )
+        except Exception:
+            # A racing reconciler / concurrent lens call may have inserted
+            # the row already — either way the process is alive; the
+            # engine's next resolve will find it.
+            logger.debug(
+                "supervisor session row insert failed (may already exist)",
+                exc_info=True,
+            )
         return True
 
     async def nudge(
