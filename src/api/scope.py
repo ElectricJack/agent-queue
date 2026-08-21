@@ -31,6 +31,18 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
 
 
 def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | None:
+    """Enforce (and, for session scopes, inject) the request's scope.
+
+    For session-scoped requests: when the client omitted ``task_id`` /
+    ``project_id`` / ``session_id``, populate them from the token's own
+    scope so the command doesn't fall back to daemon-side defaults (e.g.
+    ``_active_project_id`` ContextVar) — the token defines the identity.
+    Mirrors what ``_cmd_prime`` and ``_cmd_task_handoff`` already do
+    explicitly.  Mismatches still reject.
+
+    ``args`` is mutated in place (same object /api/execute forwards to
+    ``ch.execute``).
+    """
     if scope.kind == "local":
         return None
     if command not in AGENT_COMMAND_SET:
@@ -41,6 +53,10 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         ("session_id", scope.session_id),
     ):
         value = args.get(key)
-        if value is not None and expected is not None and value != expected:
+        if value is None:
+            if expected is not None:
+                args[key] = expected
+            continue
+        if expected is not None and value != expected:
             return f"out of scope: {key} mismatch"
     return None

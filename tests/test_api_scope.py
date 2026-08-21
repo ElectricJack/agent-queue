@@ -49,6 +49,46 @@ class TestCheckCommandScope:
             is None
         )
 
+    def test_scope_ids_injected_when_client_omits(self):
+        """I3: omitted task_id/project_id/session_id are filled from the scope.
+
+        The command must not fall back to daemon-side defaults (e.g. the
+        ``_active_project_id`` ContextVar) when the token itself defines
+        the identity.  Mirrors what ``_cmd_prime`` / ``_cmd_task_handoff``
+        already do explicitly for their own reads of ``_current_scope``.
+        """
+        args: dict = {}
+        assert check_command_scope("task_show", args, SESSION) is None
+        assert args["task_id"] == "t1"
+        assert args["project_id"] == "p1"
+        assert args["session_id"] == "s1"
+
+    def test_scope_injection_preserves_explicit_value(self):
+        args = {"task_id": "t1"}  # matches — must not be overwritten
+        assert check_command_scope("task_show", args, SESSION) is None
+        assert args["task_id"] == "t1"
+        assert args["project_id"] == "p1"  # injected
+        assert args["session_id"] == "s1"  # injected
+
+    def test_scope_injection_does_not_apply_to_local(self):
+        args: dict = {}
+        assert check_command_scope("task_show", args, LOCAL_SCOPE) is None
+        assert args == {}  # LOCAL_SCOPE never mutates
+
+    def test_scope_injection_via_stub_command(self):
+        """Observed at the command boundary: a session-scoped call missing
+        ``project_id`` sees the token's ``project_id`` in its args dict."""
+        # /api/execute forwards the (mutated) args to CommandHandler.execute,
+        # so a stub command would receive the injected fields.  We assert on
+        # ``args`` directly here since check_command_scope is where the
+        # mutation happens; the execute path is exercised by test_api_auth's
+        # middleware tests.
+        args: dict = {"foo": "bar"}
+        assert check_command_scope("memory_search", args, SESSION) is None
+        assert args["project_id"] == "p1"
+        assert args["task_id"] == "t1"
+        assert args["foo"] == "bar"
+
     def test_agent_command_set_contents(self):
         expected = {
             "prime",
