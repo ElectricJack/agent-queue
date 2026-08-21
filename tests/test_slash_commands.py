@@ -352,3 +352,54 @@ class TestTasksCommand:
         interaction = FakeInteraction()
         await bot.tree.commands["tasks"](interaction)
         assert "embed" in interaction.followup.sent[-1][1]
+
+
+class TestGatesCommand:
+    @pytest.mark.asyncio
+    async def test_gates_command_renders_embed_list(self):
+        """/gates output must be an embed list, not raw JSON."""
+        import discord
+
+        handler = FakeHandler(
+            commands={
+                "gate_list": {
+                    "success": True,
+                    "gates": [
+                        {
+                            "id": "g1",
+                            "project_id": "p1",
+                            "gate_type": "approval",
+                            "title": "Ship v1?",
+                            "question": "Ready for prod?",
+                            "status": "open",
+                            "created_at": 0.0,
+                            "timeout_at": None,
+                            "await_id": None,
+                        }
+                    ],
+                }
+            }
+        )
+        bot = FakeBot(handler)
+        setup_commands(bot)
+        interaction = FakeInteraction()
+        await bot.tree.commands["gates"](interaction)
+        kwargs = interaction.followup.sent[-1][1]
+        embed = kwargs.get("embed")
+        assert isinstance(embed, discord.Embed)
+        # Field-based rendering: either the question or title is present.
+        rendered = " ".join(
+            (embed.title or "",)
+            + tuple((f.name + " " + f.value) for f in embed.fields)
+        )
+        assert "Ready for prod?" in rendered or "Ship v1?" in rendered
+
+    @pytest.mark.asyncio
+    async def test_gates_command_empty_renders_info_embed(self):
+        handler = FakeHandler(commands={"gate_list": {"success": True, "gates": []}})
+        bot = FakeBot(handler)
+        setup_commands(bot)
+        interaction = FakeInteraction()
+        await bot.tree.commands["gates"](interaction)
+        kwargs = interaction.followup.sent[-1][1]
+        assert "embed" in kwargs

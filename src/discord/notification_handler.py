@@ -138,6 +138,9 @@ class DiscordNotificationHandler:
         #   worker       : asyncio.Task | None       (the renderer)
         self._stream_states: dict[str, dict[str, Any]] = {}
 
+        # Wave 4: track posted gate messages so gate.resolved can edit them.
+        self._gate_messages: dict[str, Any] = {}
+
         # Subscribe to all notification events
         events = [
             ("notify.task_added", self._on_task_added),
@@ -169,6 +172,9 @@ class DiscordNotificationHandler:
             # events with ``to_kind=user``; render them into the originating
             # project channel.
             ("message.sent", self._on_message_sent),
+            # Wave 4 — work-graph gates as interactive Discord embeds.
+            ("gate.created", self._on_gate_created),
+            ("gate.resolved", self._on_gate_resolved),
         ]
         for event_type, handler in events:
             unsub = bus.subscribe(event_type, handler)
@@ -180,6 +186,7 @@ class DiscordNotificationHandler:
             unsub()
         self._unsubscribes.clear()
         self._task_threads.clear()
+        self._gate_messages.clear()
 
     def _get_handler(self) -> Any:
         """Get the command handler from the bot for interactive views."""
@@ -959,31 +966,28 @@ class DiscordNotificationHandler:
     async def _on_message_sent(self, data: dict) -> None:
         """Render ``message.sent`` events destined for Discord users.
 
-        The delivery engine emits ``message.sent`` when it hands a message
-        addressed to a ``user`` recipient off to its platform (see
-        ``src/messages/delivery.py::_deliver_to_user``).  For the P4
-        cutover this is the reply path from supervisor sessions back into
-        Discord.  The payload is metadata only — fetch the body from the
-        DB and post it to the originating channel.
+        Two producer paths land here:
 
-        Scope guard: only render messages that (a) originate from a
-        supervisor/agent session (``from_kind == "session"``) — never
-        echo user-authored rows back — AND (b) carry a
-        ``thread_id`` with the ``discord:`` prefix, which the Discord
-        cutover send path sets to ``discord:<channel_id>``.  Other
-        adapters' ``to_kind=user`` messages (or future non-Discord
-        surfaces) must not be double-posted here.
+        1. ``from_kind == "session"``: supervisor/agent reply to a user
+           (Phase-4 cutover reply path).  Rendered as plain text via
+           ``_send_long_message``.
+        2. ``from_kind == "system"`` with ``from_id == "delivery-engine"``:
+           a parked-message notification from
+           ``MessageDeliveryEngine._maybe_park`` — the user's original
+           message could not be delivered.  Rendered as a warning embed
+           so the failure is visible instead of silently dropped.
+
+        Scope guards: ``to_kind`` must be ``user``; ``thread_id`` must
+        carry the ``discord:`` prefix set by the cutover send path.  User-
+        authored echoes (``from_kind == "user"``) are dropped.
         """
+        import discord
+
         if data.get("to_kind") != "user":
             return
-        # Only agent/supervisor replies — skip user-authored echoes and
-        # system-authored rows.  MESSAGE_FROM_KINDS = {session,user,system}.
-        if data.get("from_kind") != "session":
+        from_kind = data.get("from_kind")
+        if from_kind not in ("session", "system"):
             return
-        # Scope to Discord-originated threads: the cutover send path in
-        # ``src/discord/bot.py`` sets ``thread_id=f"discord:{channel_id}"``.
-        # A missing thread_id, or one from another surface, must not
-        # trigger a Discord post.
         thread_id = data.get("thread_id")
         if not isinstance(thread_id, str) or not thread_id.startswith("discord:"):
             return
@@ -991,9 +995,6 @@ class DiscordNotificationHandler:
         message_id = data.get("message_id")
         if not project_id or not message_id:
             return
-        # Parse the originating channel id out of the thread_id so replies
-        # land in the exact channel the user chatted in, even if the
-        # project's default channel has since changed.
         channel_id_str = thread_id.split(":", 1)[1] if ":" in thread_id else ""
         try:
             db = self.bot.orchestrator.db
@@ -1003,20 +1004,125 @@ class DiscordNotificationHandler:
             return
         if msg is None or not msg.body:
             return
-        # Prefer the channel encoded in thread_id; fall back to the
-        # project channel resolver if the channel id can't be resolved.
+
         channel = None
         if channel_id_str.isdigit():
             try:
                 channel = self.bot.get_channel(int(channel_id_str))
             except Exception:
                 channel = None
+        if channel is None and channel_id_str.isdigit():
+            logger.warning(
+                "message.sent: channel %s not resolvable via bot.get_channel; "
+                "falling back to project channel resolver (project=%s)",
+                channel_id_str,
+                project_id,
+            )
+
         try:
-            if channel is not None:
-                await self.bot._send_long_message(channel, msg.body)
+            if from_kind == "system":
+                # Parked-message warning — render as an embed so it is
+                # visually distinct from normal supervisor replies.
+                body = msg.body
+                desc = body if len(body) <= 3800 else body[:3800] + "…"
+                embed = discord.Embed(
+                    title="⚠️ Message not delivered",
+                    description=desc,
+                    color=discord.Color.orange(),
+                )
+                brief = "⚠️ A previous message was not delivered — see details."
+                if channel is not None:
+                    await self.bot._safe_api_call(
+                        channel.send(content=brief, embed=embed),
+                        critical=False,
+                        context="message.sent parked warning",
+                    )
+                else:
+                    await self.bot._send_message(brief, project_id=project_id, embed=embed)
             else:
-                await self.bot._send_message(msg.body, project_id=project_id)
+                # from_kind == "session" — plain text reply.
+                if channel is not None:
+                    await self.bot._send_long_message(channel, msg.body)
+                else:
+                    await self.bot._send_message(msg.body, project_id=project_id)
         except Exception:
             logger.exception(
                 "message.sent: failed to post reply for project %s", project_id
             )
+
+    # ------------------------------------------------------------------
+    # Work-graph gates (Wave 4)
+    # ------------------------------------------------------------------
+
+    async def _on_gate_created(self, data: dict) -> None:
+        """Render a gate.created event as an embed with Approve/Deny buttons."""
+        from src.discord.gate_view import GateView, build_gate_embed
+
+        gate_id = data.get("gate_id")
+        project_id = data.get("project_id")
+        if not gate_id or not project_id:
+            return
+        embed = build_gate_embed(data)
+        handler_ref = self._get_handler()
+        gid = str(gate_id)
+        view = GateView(
+            gid,
+            handler=handler_ref,
+            bot=self.bot,
+            on_timeout_evict=lambda g: self._gate_messages.pop(g, None),
+        )
+        brief = f"⏸ Gate `{gate_id}` — awaiting decision."
+        try:
+            msg = await self.bot._send_message(
+                brief,
+                project_id=str(project_id),
+                embed=embed,
+                view=view,
+            )
+        except Exception:
+            logger.exception("gate.created: failed to post embed for %s", gate_id)
+            return
+        if msg is None:
+            # ``_send_message`` routes through ``_safe_api_call(critical=True)``
+            # which returns ``None`` under rate-guard HALT.  Log a WARNING so
+            # dropped gate prompts are visible in the operator log — otherwise
+            # a HALT would silently swallow user-facing approval requests.
+            logger.warning(
+                "gate.created: post for %s returned no message "
+                "(channel missing or rate-guard drop) — gate will not be interactive",
+                gate_id,
+            )
+            return
+        self._gate_messages[gid] = msg
+
+    async def _on_gate_resolved(self, data: dict) -> None:
+        """Edit the posted gate message to show the resolution, disable buttons."""
+        gate_id = data.get("gate_id")
+        if not gate_id:
+            return
+        msg = self._gate_messages.pop(str(gate_id), None)
+        if msg is None:
+            return
+        resolved_by = str(data.get("resolved_by") or "unknown")
+        resolution = str(data.get("resolution") or "").strip() or "resolved"
+        unblocked = data.get("unblocked_task_ids") or []
+        try:
+            import discord
+
+            embed = discord.Embed(
+                title=f"✅ Gate resolved — {resolution}",
+                description=f"Resolved by `{resolved_by}`.",
+                color=discord.Color.green(),
+            )
+            if unblocked:
+                shown = ", ".join(f"`{t}`" for t in unblocked[:10])
+                if len(unblocked) > 10:
+                    shown += f" (+{len(unblocked) - 10} more)"
+                embed.add_field(name="Unblocked tasks", value=shown, inline=False)
+            await self.bot._safe_api_call(
+                msg.edit(embed=embed, view=None),
+                critical=False,
+                context=f"gate.resolved edit {gate_id}",
+            )
+        except Exception:
+            logger.exception("gate.resolved: failed to edit message for %s", gate_id)

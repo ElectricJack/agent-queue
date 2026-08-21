@@ -182,6 +182,144 @@ class TestMessageSendPath:
         emitted = [c.args for c in bus.emit.await_args_list]
         assert any(a[0] == "message.sent" for a in emitted)
 
+    async def test_new_path_skips_thinking_view_and_reacts_on_success(self, db):
+        """On the supervisor-session path, on_message must not post the
+        legacy ThinkingView; it must acknowledge the enqueue with a 📬
+        reaction on the user's message and not call self.agent.chat.
+        """
+        from src.discord.bot import AgentQueueBot
+
+        handler, bus = _make_handler_with_messages(db)
+        bot = AgentQueueBot.__new__(AgentQueueBot)
+        bot.config = MagicMock()
+        bot.config.supervisor_agent = SupervisorAgentConfig(enabled=True, legacy_chat=False)
+        bot.config.messages = MessagesConfig(enabled=True)
+        bot.agent = MagicMock()
+        bot.agent.handler = handler
+        bot.agent.chat = AsyncMock()  # must NOT be called
+        bot.agent.is_ready = True
+        bot.agent.is_model_loaded = AsyncMock(return_value=True)
+        bot.agent._active_project_id = None
+        bot.agent.set_active_project = MagicMock()
+        bot._channel_locks = {}
+        bot._processed_messages = set()
+        bot._task_threads = {}
+        bot._thinking_msg_ids = set()
+        bot._channel = None
+        bot._channel_to_project = {123: "p1"}
+        bot._project_channels = {"p1": MagicMock(id=123)}
+        bot._boot_time = 0.0
+        bot._is_authorized = MagicMock(return_value=True)
+        bot._download_attachments = AsyncMock(return_value=[])
+        bot._delete_thinking_msg = AsyncMock()
+        bot._safe_api_call = AsyncMock(return_value=None)
+
+        async def _safe_api_call(coro, **_):
+            try:
+                return await coro
+            except Exception:
+                return None
+
+        bot._safe_api_call = AsyncMock(side_effect=_safe_api_call)
+
+        message = MagicMock()
+        message.author = MagicMock()
+        message.author.id = 42
+        message.author.display_name = "alice"
+        message.author.bot = False
+        message.channel = MagicMock()
+        message.channel.id = 123
+        message.channel.typing = MagicMock()
+        message.channel.typing.return_value.__aenter__ = AsyncMock()
+        message.channel.typing.return_value.__aexit__ = AsyncMock()
+        message.attachments = []
+        message.content = "hi supervisor"
+        message.reference = None
+        message.id = 999
+        message.created_at = MagicMock()
+        message.created_at.timestamp = MagicMock(return_value=1.0)
+        message.add_reaction = AsyncMock()
+        message.reply = AsyncMock()
+
+        _bot_user = MagicMock(id=1)
+        type(bot).user = _bot_user
+        message.mentions = [_bot_user]
+
+        with patch.object(
+            AgentQueueBot,
+            "ThinkingView",
+            side_effect=AssertionError("thinking view constructed"),
+        ):
+            await AgentQueueBot.on_message(bot, message)
+
+        message.add_reaction.assert_awaited_once_with("\U0001f4ec")
+        bot.agent.chat.assert_not_awaited()
+        bot._delete_thinking_msg.assert_not_called()
+
+    async def test_new_path_surfaces_message_send_error(self, db):
+        """A message_send error result must produce a visible error reply
+        and no 📬 reaction."""
+        from src.discord.bot import AgentQueueBot
+
+        handler, _ = _make_handler_with_messages(db)
+
+        async def _fake_execute(cmd, args):
+            if cmd == "message_send":
+                return {"error": "queue full"}
+            return {"success": True}
+
+        handler.execute = _fake_execute  # type: ignore[assignment]
+
+        bot = AgentQueueBot.__new__(AgentQueueBot)
+        bot.config = MagicMock()
+        bot.config.supervisor_agent = SupervisorAgentConfig(enabled=True, legacy_chat=False)
+        bot.config.messages = MessagesConfig(enabled=True)
+        bot.agent = MagicMock()
+        bot.agent.handler = handler
+        bot.agent.chat = AsyncMock()
+        bot.agent.is_ready = True
+        bot.agent.is_model_loaded = AsyncMock(return_value=True)
+        bot.agent._active_project_id = None
+        bot.agent.set_active_project = MagicMock()
+        bot._channel_locks = {}
+        bot._processed_messages = set()
+        bot._task_threads = {}
+        bot._thinking_msg_ids = set()
+        bot._channel = None
+        bot._channel_to_project = {123: "p1"}
+        bot._project_channels = {"p1": MagicMock(id=123)}
+        bot._boot_time = 0.0
+        bot._is_authorized = MagicMock(return_value=True)
+        bot._download_attachments = AsyncMock(return_value=[])
+        bot._delete_thinking_msg = AsyncMock()
+        bot._send_long_message = AsyncMock()
+
+        message = MagicMock()
+        message.author = MagicMock(id=42, display_name="alice", bot=False)
+        message.channel = MagicMock(id=123)
+        message.channel.typing = MagicMock()
+        message.channel.typing.return_value.__aenter__ = AsyncMock()
+        message.channel.typing.return_value.__aexit__ = AsyncMock()
+        message.attachments = []
+        message.content = "hi"
+        message.reference = None
+        message.id = 1000
+        message.created_at = MagicMock()
+        message.created_at.timestamp = MagicMock(return_value=1.0)
+        message.add_reaction = AsyncMock()
+        message.reply = AsyncMock()
+        _bot_user = MagicMock(id=1)
+        type(bot).user = _bot_user
+        message.mentions = [_bot_user]
+
+        await AgentQueueBot.on_message(bot, message)
+
+        assert bot._send_long_message.await_count == 1
+        posted = bot._send_long_message.await_args.args[1]
+        assert "Message queue error" in posted
+        assert "queue full" in posted
+        message.add_reaction.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Notification-handler wiring: message.sent -> Discord render
@@ -204,6 +342,7 @@ class TestMessageSentRenderer:
         bot._project_channels = {"p1": MagicMock()}
         bot._send_message = AsyncMock()
         bot._send_long_message = AsyncMock()
+        bot._safe_api_call = AsyncMock(return_value=None)
         bot.get_channel = MagicMock(return_value=channel)
         return bot
 
@@ -427,6 +566,90 @@ class TestMessageSentRenderer:
         args = bot._send_long_message.await_args.args
         assert args[0] is parsed_channel
         assert "delivered body" in args[1]
+
+    async def test_renders_system_authored_parked_message_as_warning(self, db):
+        """Delivery-engine parked-message notifications (from_kind="system")
+        must render in the originating Discord channel as a warning embed
+        so the user knows their message was dropped.
+        """
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        parked = await db.create_message(
+            project_id="p1",
+            from_kind="system",
+            from_id="delivery-engine",
+            to_kind="user",
+            to_id="discord:42",
+            body=(
+                "[parked] your message to session:supervisor-p1 (m-orig) "
+                "was not delivered within 6h. Original body:\n\nhello supervisor"
+            ),
+            subject="Undelivered: (no subject)",
+            thread_id="discord:999",
+        )
+        bus = EventBus(env="dev", validate_events=False)
+        parsed_channel = MagicMock()
+        bot = await self._make_bot(db, channel=parsed_channel)
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            await bus.emit(
+                "message.sent",
+                {
+                    "message_id": parked.id,
+                    "project_id": "p1",
+                    "from_kind": "system",
+                    "from_id": "delivery-engine",
+                    "to_kind": "user",
+                    "to_id": "discord:42",
+                    "thread_id": "discord:999",
+                },
+            )
+        finally:
+            handler.shutdown()
+
+        # Parked warning routed through the rate-guarded channel.send path.
+        assert bot._safe_api_call.await_count == 1
+        call = bot._safe_api_call.await_args
+        assert call.kwargs.get("context") == "message.sent parked warning"
+
+    async def test_channel_miss_emits_warning_log(self, db, caplog):
+        import logging
+
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        reply = await db.create_message(
+            project_id="p1",
+            from_kind="session",
+            from_id="supervisor-p1",
+            to_kind="user",
+            to_id="discord:42",
+            body="hi",
+            thread_id="discord:999",
+        )
+        bus = EventBus(env="dev", validate_events=False)
+        bot = await self._make_bot(db, channel=None)  # get_channel returns None
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            with caplog.at_level(logging.WARNING, logger="src.discord.notification_handler"):
+                await bus.emit(
+                    "message.sent",
+                    {
+                        "message_id": reply.id,
+                        "project_id": "p1",
+                        "from_kind": "session",
+                        "from_id": "supervisor-p1",
+                        "to_kind": "user",
+                        "to_id": "discord:42",
+                        "thread_id": "discord:999",
+                    },
+                )
+        finally:
+            handler.shutdown()
+        assert any(
+            "not resolvable" in r.message and "999" in r.message for r in caplog.records
+        )
 
 
 # ---------------------------------------------------------------------------
