@@ -27,6 +27,17 @@ Message flow::
     Discord message -> on_message routing -> Supervisor.chat()
     -> tool-use loop -> _send_long_message -> Discord reply
 
+Scope decision (Wave 4, docs/superpowers/plans/2026-08-21-wave4-discord-e2e.md):
+the ``on_message`` handler routes to the supervisor session
+(``message_send`` with ``to_id=f"supervisor-{project_id}"``) ONLY when the
+message arrives in a per-project channel AND
+``supervisor_session_routing_enabled(config)`` is True.  The global bot
+channel intentionally continues to call ``Supervisor.chat()`` in-process
+— it is not tied to any single project's supervisor session, and the
+cross-project routing helper needs the legacy tool-call loop.  Do not
+try to migrate the global channel to the message-queue path without
+first designing a "system-wide" supervisor session or a router.
+
 See specs/discord/discord.md for the full specification.
 """
 
