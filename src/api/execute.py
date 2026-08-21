@@ -33,8 +33,8 @@ class ExecuteRequest(BaseModel):
 @router.post("/api/execute")
 async def api_execute(
     body: ExecuteRequest,
-    request: Request,
     ch=Depends(get_command_handler),
+    request: Request = None,  # type: ignore[assignment]
 ) -> JSONResponse:
     """Run a CommandHandler command (backward-compat envelope).
 
@@ -57,7 +57,9 @@ async def api_execute(
     args = dict(body.args)
     args.pop("_scope", None)
 
-    scope: RequestScope = getattr(request.state, "scope", LOCAL_SCOPE)
+    scope: RequestScope = (
+        getattr(request.state, "scope", LOCAL_SCOPE) if request is not None else LOCAL_SCOPE
+    )
     scope_err = check_command_scope(body.command, args, scope)
     if scope_err is not None:
         return JSONResponse({"ok": False, "error": scope_err}, status_code=403)
