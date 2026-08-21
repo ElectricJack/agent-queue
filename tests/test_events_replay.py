@@ -134,11 +134,12 @@ class TestWebSocketReplay:
         assert live_frames[0]["seq"] is None
 
     async def test_replay_filters_non_forwarded_event_types(self, db):
-        """Replay respects the same ``notify.*`` / ``message.*`` filter as
-        live mode — otherwise a reconnect would flood the client with
-        internal ``task.*`` / ``gate.*`` traffic the live path never sends.
+        """Replay respects the same ``_FORWARDED_PREFIXES`` filter as live
+        mode.  The filter was extended in Wave-4 (D3/D1/D2) to cover
+        ``gate.*`` / ``session.*`` / ``task.*`` alongside ``notify.*`` and
+        ``message.*``; unrelated internal prefixes must still be dropped.
         """
-        await db.log_event("task.blocked", project_id=PROJECT, payload="t")
+        await db.log_event("internal.debug", project_id=PROJECT, payload="ignored")
         await db.log_event("notify.a", project_id=PROJECT, payload="a")
         await db.log_event("gate.resolved", project_id=PROJECT, payload="g")
         await db.log_event("message.chat", project_id=PROJECT, payload="c")
@@ -159,8 +160,8 @@ class TestWebSocketReplay:
         types = [f.get("_event_type") for f in ws.sent]
         assert "notify.a" in types
         assert "message.chat" in types
-        assert "task.blocked" not in types
-        assert "gate.resolved" not in types
+        assert "gate.resolved" in types  # forwarded post-Wave-4
+        assert "internal.debug" not in types
 
     async def test_live_frame_carrying_seq_is_deduped_against_replay(self, db):
         """A honest race: a live frame that carries a ``seq`` matching a

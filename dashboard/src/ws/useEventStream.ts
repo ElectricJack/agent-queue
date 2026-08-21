@@ -32,6 +32,27 @@ function setStatus(s: ConnectionStatus) {
   for (const fn of statusListeners) fn(s);
 }
 
+const LAST_SEQ_KEY = "aq:ws:last_seq";
+
+function loadLastSeq(): number | null {
+  try {
+    const raw = localStorage.getItem(LAST_SEQ_KEY);
+    if (raw == null) return null;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLastSeq(seq: number): void {
+  try {
+    localStorage.setItem(LAST_SEQ_KEY, String(seq));
+  } catch {
+    /* ignore */
+  }
+}
+
 function connect() {
   if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) {
     return;
@@ -39,7 +60,9 @@ function connect() {
 
   const wsBase = import.meta.env.VITE_WS_URL
     || `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
-  const url = `${wsBase}/ws/events`;
+  const lastSeq = loadLastSeq();
+  const qs = lastSeq != null ? `?after_seq=${lastSeq}` : "";
+  const url = `${wsBase}/ws/events${qs}`;
 
   setStatus("connecting");
   const sock = new WebSocket(url);
@@ -52,7 +75,8 @@ function connect() {
 
   sock.onmessage = (msg) => {
     try {
-      const event = JSON.parse(msg.data) as NotifyEvent;
+      const event = JSON.parse(msg.data) as NotifyEvent & { seq?: number | null };
+      if (typeof event.seq === "number") saveLastSeq(event.seq);
       for (const fn of eventListeners) fn(event);
     } catch {
       // ignore
@@ -103,6 +127,45 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
       onEvent?.(event);
 
       const type = event.event_type;
+
+      // Prefix-based invalidation for the wave-4 event families (gate.*,
+      // message.*, session.*, task.blocked/unblocked). Handled *before* the
+      // notify.* switch so the union type stays simple.
+      if (type === "gate.created" || type === "gate.resolved" || type === "gate.expired") {
+        queryClient.invalidateQueries({ queryKey: ["gates"] });
+        queryClient.invalidateQueries({ queryKey: ["gate"] });
+        queryClient.invalidateQueries({ queryKey: ["tasks"] });
+        queryClient.invalidateQueries({ queryKey: ["explain"] });
+        return;
+      }
+      if (
+        type === "message.sent" ||
+        type === "message.delivered" ||
+        type === "message.replied"
+      ) {
+        queryClient.invalidateQueries({ queryKey: ["chat"] });
+        return;
+      }
+      if (
+        type === "session.started" ||
+        type === "session.exited" ||
+        type === "session.adopted"
+      ) {
+        queryClient.invalidateQueries({ queryKey: ["sessions"] });
+        const sid = (event as { session_id?: string }).session_id;
+        if (sid) queryClient.invalidateQueries({ queryKey: ["session", sid] });
+        return;
+      }
+      if (type === "task.blocked" || type === "task.unblocked") {
+        const tid = (event as { task_id?: string }).task_id;
+        queryClient.invalidateQueries({ queryKey: ["tasks"] });
+        if (tid) {
+          queryClient.invalidateQueries({ queryKey: ["task", tid] });
+          queryClient.invalidateQueries({ queryKey: ["explain", tid] });
+        }
+        return;
+      }
+
       switch (type) {
         case "notify.task_started":
         case "notify.task_completed":

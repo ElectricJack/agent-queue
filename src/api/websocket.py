@@ -27,10 +27,16 @@ logger = logging.getLogger(__name__)
 # Max queued events per client before dropping oldest
 _MAX_QUEUE_SIZE = 1000
 
-# Event-type prefixes forwarded to WebSocket clients.  ``message.*`` joins
-# ``notify.*`` so chat surfaces (dashboard chat page, ``aq chat``) can render
-# queued → delivered → replied transitions live — supervisor-agent §6.2/§7.
-_FORWARDED_PREFIXES: tuple[str, ...] = ("notify.", "message.")
+# Event-type prefixes forwarded to WebSocket clients.  Extended (D3/D1/D2) so
+# the dashboard's gates inbox, sessions pages, and task views react live to
+# bus events — see docs/superpowers/plans/2026-08-21-wave4-dashboard-d1-d4.md.
+_FORWARDED_PREFIXES: tuple[str, ...] = (
+    "notify.",
+    "message.",
+    "gate.",
+    "session.",
+    "task.",
+)
 
 
 class WebSocketManager:
