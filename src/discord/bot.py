@@ -71,8 +71,9 @@ class AgentQueueBot(commands.Bot):
     - Registers slash commands and an authorization guard on startup
     - Resolves per-project Discord channels from the database for fast routing
     - Sets orchestrator callbacks for notifications and thread creation
-    - Handles incoming messages: routes them through Supervisor for LLM responses,
-      serializing concurrent requests per channel to avoid duplicate processing
+    - Handles incoming messages: enqueues them to the project supervisor session
+      via message_send, serializing concurrent requests per channel to avoid duplicate
+      processing
     """
 
     def __init__(self, config: AppConfig, orchestrator: Orchestrator):

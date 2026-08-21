@@ -463,14 +463,20 @@ acceptance criteria; rules: never push fixes yourself, reopen with concrete feed
 
 ## 10. What is unwired, what stays dormant
 
-| Today | Disposition |
+**Phase 4 cutover complete (2026-08-21):** Discord chat now routes exclusively to
+supervisor sessions via `message_send`. `supervisor_agent.legacy_chat` config flag
+has been deleted. `Supervisor.chat()` remains available for `runtime: supervisor`
+tasks and plugin `invoke_llm` fallback — it is no longer called for Discord messages.
+
+| Component | Disposition |
 |---|---|
-| `Supervisor.chat()` wiring: Discord bot `on_message` → `self.agent.chat(...)` (`src/discord/bot.py:2107`) | Unwired — channel messages become `messages` rows (§5) |
+| `Supervisor.chat()` Discord wiring: `on_message` → `self.agent.chat(...)` | **Removed** — channel messages become `messages` rows; `ThinkingView` deleted |
 | Telegram `self._supervisor.chat(history)` (`src/telegram/bot.py:327`) | Removed with `src/telegram/` (Workstream F, decided) |
-| Plugin `invoke_llm` fallback → `supervisor.chat` (`src/orchestrator/core.py:412`) | Dormant with the legacy flag; plugins needing LLM calls create judgment tasks instead |
+| Plugin `invoke_llm` fallback → `supervisor.chat` (`src/orchestrator/core.py:412`) | Still active — unchanged in Phase 4; plugins continue to use `Supervisor.chat()` |
+| `Supervisor.chat()` itself | **Retained** — used by `runtime: supervisor` tasks, playbook runner, and plugin `invoke_llm` fallback |
 | `src/runtimes/supervisor.py`, `src/chat_providers/` | **Dormant as reference** (decided) — frozen, not deleted before the playbook comeback |
 | `profile.runtime = "supervisor"` (tool-call-only in-process runtime) | Maps to a **restricted-tools task session** under the session runtime; the profile keeps its narrow `allowed` list, the singleton goes unused |
-| Plan discovery + `break_plan_into_tasks` | Unwired per §9, legacy flag for in-flight tasks |
+| Plan discovery + `break_plan_into_tasks` | Unwired per §9, `planner.legacy_plan_discovery` flag gates in-flight tasks |
 
 ---
 
