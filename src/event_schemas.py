@@ -624,6 +624,15 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
         "required": ["session_id", "name", "reason"],
         "optional": ["task_id", "project_id"],
     },
+    # Emitted by TranscriptWatcher when a session's transcript path cannot
+    # be resolved (missing directory, no jsonl yet).  One-shot per session
+    # id: the watcher falls back to the peek-diff path silently on
+    # subsequent ticks so a healthy session with a slow-arriving transcript
+    # does not spam the bus.
+    "session.transcript_missing": {
+        "required": ["session_id"],
+        "optional": ["task_id", "project_id", "harness", "work_dir"],
+    },
 }
 
 # ---------------------------------------------------------------------------

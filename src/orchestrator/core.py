@@ -324,6 +324,7 @@ class Orchestrator(
         from src.sessions.harness_registry import HarnessRegistry
         from src.sessions.reconciler import SessionReconciler
         from src.sessions.spec import SessionSpecBuilder
+        from src.sessions.transcripts.watcher import TranscriptWatcher
 
         self.harness_registry = HarnessRegistry()
         self.session_providers = default_session_registry(config)
@@ -345,6 +346,12 @@ class Orchestrator(
             orchestrator=self,
             epoch=self.daemon_epoch,
         )
+        # TranscriptWatcher observes live sessions' harness transcripts;
+        # constructed here so ``_reconcile_sessions`` can tick it alongside
+        # ``SessionReconciler.tick`` and every route (SSE, session_logs)
+        # shares the same reader state.  Base_dir=None => Path.home()
+        # (spec default).
+        self.transcript_watcher = TranscriptWatcher(db=self.db, bus=self.bus)
         # Tool catalog snapshot keyed by (project_id, server_name).  Probed
         # once at startup; refreshed per-server by the vault watcher hook
         # and the probe-mcp-server command.
@@ -2136,6 +2143,13 @@ class Orchestrator(
         if not self.config.sessions.enabled:
             return
         await self.session_reconciler.tick()
+        # Transcript observation runs on the same cadence; the watcher is
+        # tolerant of missing transcripts and its own per-session failures,
+        # so a wedged reader degrades one session rather than the cycle.
+        try:
+            await self.transcript_watcher.tick()
+        except Exception:
+            logger.error("TranscriptWatcher tick failed", exc_info=True)
 
     async def _deliver_messages(self) -> None:
         """Deliver queued inter-agent messages to their recipients.

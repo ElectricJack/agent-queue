@@ -1,0 +1,267 @@
+"""TranscriptWatcher — poll live sessions' transcripts every ~2 s.
+
+For each live session with a resolvable transcript:
+
+* new entries → ``notify.task_message`` events (``stream_id=session_id``,
+  so the Discord per-stream worker edits one message in place instead of
+  spamming per line),
+* assistant entries carrying ``usage`` → one ``record_token_usage`` row,
+* in-turn tail → ``touch_session_activity`` + agent ``last_heartbeat`` so
+  the stall ladder does not climb on a busy session.
+
+Missing transcript path is a one-shot ``session.transcript_missing`` event
+per session id, then peek-diff fallback (silent from the watcher — the
+existing ``session_logs`` command is the peek surface).
+
+State is kept in-process:
+
+* byte offsets per session (so the next tick reads only the new bytes),
+* seen assistant uuids (usage is idempotent per assistant entry, not per
+  line — a re-tick that re-reads a line must not double-charge tokens),
+* whether ``transcript_missing`` has already fired.
+
+That state is bounded by the number of live sessions and is discarded when
+a session's row disappears.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from src.sessions.transcripts import resolve_reader
+from src.sessions.transcripts.base import TranscriptEntry
+
+logger = logging.getLogger(__name__)
+
+__all__ = ["TranscriptWatcher", "SessionTrackingState"]
+
+
+@dataclass
+class SessionTrackingState:
+    """Per-session watcher bookkeeping."""
+
+    offset: int = 0
+    #: Assistant entry uuids for which usage has already been charged.
+    charged_uuids: set[str] = field(default_factory=set)
+    #: True once ``session.transcript_missing`` has been emitted; suppresses
+    #: repeat emissions on subsequent unresolvable ticks.
+    missing_emitted: bool = False
+    #: Path last resolved; used to detect a rotation to a new transcript
+    #: file (session_key was previously unknown, then the ``--session-id``
+    #: pin took effect and a specific jsonl became findable).
+    last_path: Path | None = None
+
+
+class TranscriptWatcher:
+    """Polls transcripts for every live session.
+
+    ``db`` needs :meth:`list_sessions`, :meth:`get_session`, :meth:`update_agent`,
+    :meth:`touch_session_activity`, :meth:`record_token_usage`.  ``bus`` needs
+    :meth:`emit`.
+    """
+
+    def __init__(
+        self,
+        *,
+        db,
+        bus,
+        base_dir: Path | None = None,
+        tail_size: int = 20,
+    ) -> None:
+        self.db = db
+        self.bus = bus
+        self.base_dir = base_dir
+        self._states: dict[str, SessionTrackingState] = {}
+        self._tail_size = tail_size
+
+    async def tick(self, *, now: float | None = None) -> None:
+        """One poll pass.  Never raises."""
+        try:
+            sessions = await self.db.list_sessions(live_only=True)
+        except Exception:
+            logger.debug("transcript watcher: list_sessions failed", exc_info=True)
+            return
+
+        seen_ids: set[str] = set()
+        for row in sessions:
+            seen_ids.add(row.id)
+            try:
+                await self._process_session(row, now=now)
+            except Exception:
+                logger.debug(
+                    "transcript watcher: processing session %s failed",
+                    row.id,
+                    exc_info=True,
+                )
+
+        # Drop bookkeeping for sessions that vanished (stopped, deleted).
+        for stale in [k for k in self._states if k not in seen_ids]:
+            self._states.pop(stale, None)
+
+    async def _process_session(self, row, *, now: float | None) -> None:
+        reader = resolve_reader(row.harness, base_dir=self.base_dir)
+        if reader is None:
+            return
+
+        state = self._states.setdefault(row.id, SessionTrackingState())
+        path = reader.resolve_path(row.work_dir, row.session_key)
+        if path is None:
+            if not state.missing_emitted:
+                await self._emit(
+                    "session.transcript_missing",
+                    session_id=row.id,
+                    task_id=row.task_id,
+                    project_id=row.project_id,
+                    harness=row.harness,
+                    work_dir=row.work_dir,
+                )
+                state.missing_emitted = True
+            return
+
+        # A resolved path clears the one-shot suppression: if the file
+        # goes away again later, we want to know.
+        state.missing_emitted = False
+        if state.last_path is not None and state.last_path != path:
+            # Rotation to a new file — start reading from its beginning
+            # rather than a byte offset that belongs to the previous file.
+            state.offset = 0
+            state.charged_uuids.clear()
+        state.last_path = path
+
+        entries, new_offset = await reader.read_new(path, state.offset)
+        state.offset = new_offset
+        if not entries:
+            return
+
+        # Resolve the agent once per tick: usage rows FK to ``agents.id``,
+        # so an unknown agent silently drops the ledger row rather than
+        # aborting the whole ingest.
+        agent_id = await self._resolve_agent_id(row)
+
+        for entry in entries:
+            await self._emit_entry(row, entry)
+            if entry.type == "assistant" and entry.usage:
+                if entry.uuid in state.charged_uuids:
+                    continue
+                if agent_id:
+                    await self._record_usage(row, entry, agent_id=agent_id)
+                state.charged_uuids.add(entry.uuid)
+
+        # Activity: use the entry timestamps, not wall clock, so a busy
+        # session catching up on backlog is not marked active *now*.
+        activity_ts = max((e.ts for e in entries if e.ts), default=0.0)
+        if activity_ts > 0:
+            try:
+                await self.db.touch_session_activity(row.id, activity_ts)
+            except Exception:
+                logger.debug(
+                    "touch_session_activity failed for %s", row.id, exc_info=True
+                )
+
+        tail = entries[-self._tail_size :]
+        if reader.infer_activity(tail) == "in-turn":
+            await self._on_in_turn(row, now=now)
+
+    async def _emit_entry(self, row, entry: TranscriptEntry) -> None:
+        """One ``notify.task_message`` per entry, stream-keyed by session id."""
+        payload = {
+            "event_type": "notify.task_message",
+            "severity": "info",
+            "category": "task_stream",
+            "project_id": row.project_id or None,
+            "task_id": row.task_id or "",
+            "message": entry.text or f"[{entry.type}]",
+            "message_type": "agent_output",
+            "stream_id": row.id,
+            "stream_done": False,
+        }
+        try:
+            await self.bus.emit("notify.task_message", payload)
+        except Exception:
+            logger.debug(
+                "transcript watcher: emit failed for %s", row.id, exc_info=True
+            )
+
+    async def _resolve_agent_id(self, row) -> str | None:
+        """The agent to attribute usage to.
+
+        Prefer the task's ``assigned_agent_id`` (that is the actual worker,
+        and it is the id joined by :meth:`get_cost_rollup`).  Fall back to
+        the session id: the token ledger's ``agent_id`` column is a
+        best-effort attribution field and would rather record a row keyed
+        by session than lose the usage entirely.
+        """
+        task_id = getattr(row, "task_id", None)
+        if task_id:
+            try:
+                task = await self.db.get_task(task_id)
+            except Exception:
+                task = None
+            if task is not None and getattr(task, "assigned_agent_id", None):
+                return task.assigned_agent_id
+        return None
+
+    async def _record_usage(
+        self, row, entry: TranscriptEntry, *, agent_id: str
+    ) -> None:
+        usage = entry.usage or {}
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        # Include cache reads in the input total so cost math is not
+        # silently short by whatever fraction of a session was cached.
+        cache_read = int(usage.get("cache_read_input_tokens") or 0)
+        cache_write = int(usage.get("cache_creation_input_tokens") or 0)
+        total = input_tokens + output_tokens + cache_read + cache_write
+        if total <= 0:
+            return
+        try:
+            await self.db.record_token_usage(
+                row.project_id,
+                agent_id,
+                row.task_id or "",
+                total,
+                model=entry.model,
+                input_tokens=input_tokens + cache_read + cache_write,
+                output_tokens=output_tokens,
+            )
+        except Exception:
+            logger.debug(
+                "transcript watcher: record_token_usage failed for %s",
+                row.id,
+                exc_info=True,
+            )
+
+    async def _on_in_turn(self, row, *, now: float | None) -> None:
+        """Bump agent heartbeat so the lease does not expire mid-turn."""
+        ts = now if now is not None else time.time()
+        try:
+            fresh = await self.db.get_session(row.id)
+        except Exception:
+            fresh = row
+        task = None
+        if fresh and fresh.task_id:
+            try:
+                task = await self.db.get_task(fresh.task_id)
+            except Exception:
+                task = None
+        agent_id = getattr(task, "assigned_agent_id", None)
+        if agent_id:
+            try:
+                await self.db.update_agent(agent_id, last_heartbeat=ts)
+            except Exception:
+                logger.debug(
+                    "update_agent(last_heartbeat) failed for %s",
+                    agent_id,
+                    exc_info=True,
+                )
+
+    async def _emit(self, event_type: str, **payload) -> None:
+        if self.bus is None:
+            return
+        try:
+            await self.bus.emit(event_type, payload)
+        except Exception:
+            logger.debug("event %s emit failed", event_type, exc_info=True)
