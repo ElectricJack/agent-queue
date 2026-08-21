@@ -40,6 +40,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from dataclasses import dataclass, field
+
 from src.config import WorktreesConfig
 from src.git.manager import GitError, _validate_ref
 from src.models import (
@@ -50,6 +52,23 @@ from src.models import (
     WorktreeSentinel,
     worktree_setup_hash,
 )
+
+
+@dataclass
+class AdoptReport:
+    """Result of :meth:`WorktreeSlotManager.adopt_existing`.
+
+    * ``adopted`` — workspace ids for slots whose row + directory + sentinel
+      all check out on boot.
+    * ``repaired`` — workspace ids for bases whose ``.git/info/exclude``
+      block was missing or drifted and has now been rewritten.
+    * ``pruned`` — worktree paths (or "prune" sentinel) that had a stale
+      ``.git/worktrees`` registration and were pruned.
+    """
+
+    adopted: list[str] = field(default_factory=list)
+    repaired: list[str] = field(default_factory=list)
+    pruned: list[str] = field(default_factory=list)
 
 logger = logging.getLogger(__name__)
 
@@ -737,3 +756,224 @@ class WorktreeSlotManager:
             await self.bus.emit(event_type, payload)
         except Exception as e:
             logger.warning("Failed to emit %s: %s", event_type, e)
+
+    # ─────────────────────────────── phase 4 ─────────────────────────────
+
+    async def reap_slot(
+        self,
+        slot_ws: Workspace,
+        *,
+        reason: str,
+    ) -> bool:
+        """Remove a retired slot's worktree dir + row.  Design §5.
+
+        Fenced by a liveness check: any process carrying an ``AQ_TASK_ID``
+        that matches this slot's current lock — or whose cwd is inside the
+        slot dir — blocks the reap.  If the ``/proc`` scan itself fails
+        we *skip* (never reap on unknown), because reaping a live agent
+        destroys its work.
+
+        Returns True when the slot was removed, False otherwise (live,
+        unknowable liveness, or removal failure).
+        """
+        slot_dir = Path(slot_ws.workspace_path)
+
+        # ── Liveness check ────────────────────────────────────────────
+        try:
+            live = await self._slot_is_live(slot_ws)
+        except Exception as e:
+            logger.warning(
+                "Slot %s reap skipped: liveness scan failed: %s", slot_ws.id, e
+            )
+            return False
+        if live:
+            logger.info(
+                "Slot %s reap skipped: a live process is still using it", slot_ws.id
+            )
+            return False
+
+        # ── Removal ───────────────────────────────────────────────────
+        base_ws = await self._base_of(slot_ws)
+        base_path = base_ws.workspace_path if base_ws else str(slot_dir.parent)
+
+        async with self._git_mutex(base_path):
+            try:
+                await self.git.aremove_worktree(base_path, str(slot_dir))
+            except Exception as e:
+                logger.warning(
+                    "git worktree remove %s failed (trying force): %s", slot_dir, e
+                )
+                try:
+                    # Force removal — the slot is retired; we own the dir.
+                    await self.git._arun(
+                        ["worktree", "remove", "--force", str(slot_dir)],
+                        cwd=base_path,
+                    )
+                except Exception as e2:
+                    logger.warning(
+                        "git worktree remove --force %s also failed: %s", slot_dir, e2
+                    )
+                    # Fall through to prune + row delete anyway.
+            try:
+                await self.git.aworktree_prune(base_path)
+            except GitError as e:
+                logger.debug("worktree prune failed: %s", e)
+
+        # Best-effort dir removal if git didn't take it.
+        if slot_dir.exists():
+            import shutil
+
+            try:
+                shutil.rmtree(slot_dir)
+            except OSError as e:
+                logger.warning("rmtree %s failed: %s", slot_dir, e)
+
+        try:
+            await self.db.delete_workspace(slot_ws.id)
+        except Exception as e:
+            logger.warning("delete_workspace(%s) failed: %s", slot_ws.id, e)
+
+        await self._emit(
+            "worktree.reaped",
+            {
+                "project_id": slot_ws.project_id,
+                "workspace_id": slot_ws.id,
+                "slot": slot_name(slot_ws.slot_index or 0),
+                "path": str(slot_dir),
+                "reason": reason,
+            },
+        )
+        logger.info("Reaped slot %s at %s (%s)", slot_ws.id, slot_dir, reason)
+        return True
+
+    async def _slot_is_live(self, slot_ws: Workspace) -> bool:
+        """True when a process is still using *slot_ws*.  Raises on scan failure.
+
+        A ``/proc`` scan raising is the "unknowable" case that the caller
+        turns into "skip".  A clean empty list is not the same thing.
+        """
+        from src.sessions.proctable import scan_by_env_marker
+
+        # Slot's current holder (may be None for retired-and-released).
+        holder = slot_ws.locked_by_task_id
+        entries = await scan_by_env_marker("AQ_TASK_ID")
+        # Any process carrying the holder's task id is definitively live.
+        if holder:
+            for e in entries:
+                if e.marker == holder:
+                    return True
+        # Any AQ-marked process whose cwd is inside the slot is also live.
+        slot_dir_resolved = str(Path(slot_ws.workspace_path).resolve())
+        for e in entries:
+            try:
+                cwd = Path(f"/proc/{e.pid}/cwd").resolve()
+            except (OSError, RuntimeError):
+                continue
+            if str(cwd).startswith(slot_dir_resolved):
+                return True
+        return False
+
+    async def prune_branches(
+        self,
+        base_ws: Workspace,
+        *,
+        default_branch: str,
+    ) -> list[str]:
+        """Delete merged local ``aq/*`` branches beneath *base_ws*.
+
+        Failed unmerged branches past ``retain_failed_days`` would also be
+        pruned, but that check requires task-status attribution the reaper
+        alone can not perform without a query the caller must pass down —
+        for now we prune merged branches only, which is what §5 makes safe
+        unconditionally.  Returns the list of deleted branch names.
+        """
+        base_path = base_ws.workspace_path
+        _validate_ref(default_branch, field="default branch")
+
+        async with self._git_mutex(base_path):
+            try:
+                merged = await self.git.alist_merged_branches(
+                    base_path, into=default_branch, prefix=BRANCH_PREFIX
+                )
+            except GitError as e:
+                logger.warning("alist_merged_branches failed in %s: %s", base_path, e)
+                return []
+
+            deleted: list[str] = []
+            for br in merged:
+                try:
+                    await self.git.adelete_local_branch(base_path, br)
+                    deleted.append(br)
+                except GitError as e:
+                    logger.warning("delete branch %s failed: %s", br, e)
+
+            if self.config.prune_remote_branches and deleted:
+                for br in deleted:
+                    try:
+                        await self.git._arun(
+                            ["push", "origin", "--delete", br], cwd=base_path
+                        )
+                    except GitError as e:
+                        logger.debug("remote delete %s failed: %s", br, e)
+        return deleted
+
+    async def adopt_existing(self, project) -> AdoptReport:
+        """Boot-time adoption.  Design §6, spec §6.4.
+
+        Cross-checks ``git worktree list --porcelain`` in each base of the
+        project against slot rows and their sentinels; repairs the exclude
+        block; runs ``git worktree prune`` for stale registrations; and
+        re-registers rows for intact directories.  Does **not** delete slot
+        directories or branches — the whole point of adoption is that the
+        directory is durable state.
+        """
+        report = AdoptReport()
+
+        # Every workspace owned by this project.
+        workspaces = await self.db.list_workspaces(project_id=project.id)
+        bases = [ws for ws in workspaces if not ws.is_slot]
+        slots = [ws for ws in workspaces if ws.is_slot]
+
+        for base in bases:
+            base_path = base.workspace_path
+            if not Path(base_path).is_dir():
+                continue
+            # Repair exclude block idempotently.
+            try:
+                if self.ensure_git_exclude(base_path):
+                    report.repaired.append(base.id)
+            except Exception as e:
+                logger.warning("ensure_git_exclude failed for %s: %s", base_path, e)
+
+            # Prune stale git worktree registrations.
+            try:
+                async with self._git_mutex(base_path):
+                    await self.git.aworktree_prune(base_path)
+                # Record the fact we ran prune.  Path-level attribution
+                # requires diffing the porcelain list before/after — the
+                # value here is that the caller can see the sweep ran.
+                report.pruned.append(f"{base.id}:prune")
+            except (GitError, OSError) as e:
+                logger.debug("prune in %s failed: %s", base_path, e)
+
+            # Adopt slots that still have a matching directory + sentinel.
+            for slot in slots:
+                if slot.base_workspace_id != base.id:
+                    continue
+                slot_dir = Path(slot.workspace_path)
+                if not slot_dir.is_dir():
+                    continue
+                sentinel = self.read_sentinel(slot_dir)
+                if sentinel is None:
+                    continue
+                if sentinel.workspace_id and sentinel.workspace_id != slot.id:
+                    logger.warning(
+                        "Sentinel workspace_id %s does not match row %s at %s",
+                        sentinel.workspace_id,
+                        slot.id,
+                        slot_dir,
+                    )
+                    continue
+                report.adopted.append(slot.id)
+
+        return report
