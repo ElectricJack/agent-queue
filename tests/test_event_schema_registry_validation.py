@@ -576,6 +576,12 @@ _CANONICAL_PAYLOADS.update(
             "name": "s-t-1",
             "reason": "rapid_crash",
         },
+        "session.transcript_missing": {
+            "session_id": "sess-1",
+            "task_id": "t-1",
+            "harness": "claude",
+            "work_dir": "/tmp/wd",
+        },
         "task.stalled": {
             "task_id": "t-1",
             "project_id": "proj-1",
