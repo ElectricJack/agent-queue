@@ -532,6 +532,118 @@ class TestHookMaterial:
         spec = _build(builder, harness=harness)
         assert spec.files == ()  # launch still proceeds
 
+    def test_hook_payload_contains_all_three_hook_events(self, builder):
+        """Design §3.8: SessionStart, PreCompact, UserPromptSubmit — no Stop."""
+        import json as _json
+
+        harness = replace(
+            CLAUDE,
+            supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        )
+        spec = _build(builder, harness=harness)
+        by_path = dict(spec.files)
+        payload = _json.loads(by_path[".aq/hooks/claude.json"])
+        hooks = payload["hooks"]
+        # All three declared events, no Stop
+        assert set(hooks.keys()) == {
+            "SessionStart", "PreCompact", "UserPromptSubmit"
+        }, hooks.keys()
+
+    def test_session_start_hook_runs_aq_prime(self, builder):
+        import json as _json
+
+        harness = replace(
+            CLAUDE, supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        )
+        payload = _json.loads(
+            dict(_build(builder, harness=harness).files)[".aq/hooks/claude.json"]
+        )
+        entries = payload["hooks"]["SessionStart"]
+        # Nested {"hooks":[{"type":"command","command":"...","timeout":30}]}
+        cmd_entry = entries[0]["hooks"][0]
+        assert cmd_entry["type"] == "command"
+        assert "aq prime" in cmd_entry["command"]
+        # Design §3.8: SessionStart hook wants 30s to render the prompt.
+        assert cmd_entry["timeout"] == 30
+
+    def test_precompact_hook_writes_handoff_no_restart(self, builder):
+        import json as _json
+
+        harness = replace(
+            CLAUDE, supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        )
+        payload = _json.loads(
+            dict(_build(builder, harness=harness).files)[".aq/hooks/claude.json"]
+        )
+        cmd_entry = payload["hooks"]["PreCompact"][0]["hooks"][0]
+        assert "aq handoff" in cmd_entry["command"]
+        # ``--auto`` = write note, do not restart (gc-flp1 scar).
+        assert "--auto" in cmd_entry["command"]
+        assert cmd_entry["timeout"] == 30
+
+    def test_user_prompt_submit_hook_injects_inbox_with_15s_timeout(self, builder):
+        import json as _json
+
+        harness = replace(
+            CLAUDE, supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        )
+        payload = _json.loads(
+            dict(_build(builder, harness=harness).files)[".aq/hooks/claude.json"]
+        )
+        cmd_entry = payload["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+        assert "aq inbox" in cmd_entry["command"]
+        assert "--inject" in cmd_entry["command"]
+        # Design §3.8: 15 s timeout, exit 0 — the injection is best-effort;
+        # a slow inbox must not block the user's next turn.
+        assert cmd_entry["timeout"] == 15
+
+    def test_no_stop_hook_in_shipped_payload(self, builder):
+        """Design §3.8: no Stop hook — completion is explicit."""
+        harness = replace(
+            CLAUDE, supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        )
+        raw = dict(_build(builder, harness=harness).files)[".aq/hooks/claude.json"]
+        assert '"Stop"' not in raw
+
+    def test_session_start_hook_matches_resume_and_compact_only(self, builder):
+        """Design §3.8: SessionStart is suppressed when the bootstrap rode
+        argv on this start; active after compaction and on resume.
+
+        Claude Code's SessionStart supports ``startup | resume | compact``
+        matchers.  Restricting to ``resume|compact`` implements the
+        suppression: fresh starts already got the prompt through argv, so
+        ``aq prime --hook-json`` on top would double-inject.
+        """
+        import json as _json
+
+        harness = replace(
+            CLAUDE, supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        )
+        payload = _json.loads(
+            dict(_build(builder, harness=harness).files)[".aq/hooks/claude.json"]
+        )
+        matcher = payload["hooks"]["SessionStart"][0].get("matcher")
+        assert matcher is not None, "SessionStart entry must declare a matcher"
+        assert "resume" in matcher and "compact" in matcher
+        assert "startup" not in matcher
+
+    def test_hook_payload_is_valid_json(self, builder):
+        import json as _json
+
+        harness = replace(
+            CLAUDE, supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+        )
+        raw = dict(_build(builder, harness=harness).files)[".aq/hooks/claude.json"]
+        # Must round-trip cleanly — a broken template breaks every launch.
+        _json.loads(raw)
+
 
 class TestSpecShape:
     def test_readiness_and_process_hints_come_from_the_harness(self, builder):

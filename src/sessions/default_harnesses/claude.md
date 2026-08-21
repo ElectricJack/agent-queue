@@ -108,3 +108,9 @@ Gas City runtime blew its start deadline.
 **No Stop hook.** Completion is explicit — `aq task close …` then
 `aq session drain-ack`. A Stop hook would re-introduce exit-as-success,
 which is the failure this whole runtime exists to remove.
+
+**`SessionStart` matches `resume|compact` only.** Fresh starts already
+receive the bootstrap prompt through argv (see `SessionSpecBuilder`); a
+SessionStart hook that also ran `aq prime --hook-json` on startup would
+double-inject. The hook is active exactly where the argv prompt is
+absent: resuming a session and returning from a PreCompact.
