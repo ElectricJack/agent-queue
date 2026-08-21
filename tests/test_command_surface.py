@@ -66,6 +66,16 @@ KNOWN_AUTO_REGISTERED: frozenset[str] = frozenset(
         "session_nudge",
         "session_peek",
         "session_show",
+        # work-graph WG-4/WG-5 (gate_commands.py, task_commands.py) --
+        # operator/CLI surface for gates, explain, and the ready frontier.
+        # Not task-scope MCP tools, so left to auto-discovery rather than
+        # given rich schemas — mirrors tests/test_mcp_server.py.
+        "explain_task",
+        "gate_create",
+        "gate_list",
+        "gate_resolve",
+        "gate_show",
+        "project_ready",
     }
 )
 

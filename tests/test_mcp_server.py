@@ -544,6 +544,16 @@ class TestDriftDetection:
             "session_nudge",
             "session_peek",
             "session_show",
+            # work-graph WG-4/WG-5 (gate_commands.py, task_commands.py) --
+            # operator/CLI surface for gates, explain, and the ready
+            # frontier.  Not task-scope MCP tools, so left to
+            # auto-discovery rather than given rich schemas.
+            "explain_task",
+            "gate_create",
+            "gate_list",
+            "gate_resolve",
+            "gate_show",
+            "project_ready",
         }
         tools = await mcp_server.list_tools()
         extra = {t.name for t in tools} - {d["name"] for d in _ALL_TOOL_DEFINITIONS}
@@ -629,6 +639,16 @@ class TestDriftDetection:
             "session_nudge",
             "session_peek",
             "session_show",
+            # work-graph WG-4/WG-5 (gate_commands.py, task_commands.py) --
+            # operator/CLI surface for gates, explain, and the ready
+            # frontier.  Not task-scope MCP tools, so left to
+            # auto-discovery rather than given rich schemas.
+            "explain_task",
+            "gate_create",
+            "gate_list",
+            "gate_resolve",
+            "gate_show",
+            "project_ready",
         }
         all_commands = _discover_all_commands()
         explicit = {d["name"] for d in _ALL_TOOL_DEFINITIONS}

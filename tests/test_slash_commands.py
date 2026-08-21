@@ -213,14 +213,13 @@ class TestConditionalRegistration:
     def test_only_backed_commands_are_registered(self, real_handler):
         bot = FakeBot(real_handler)
         registered = setup_commands(bot)
-        # /peek and /attach joined when the sessions lane landed
-        # ``session_peek`` / ``session_attach`` -- which is the mechanism
-        # working, not a regression (see the test below).
-        assert registered == ["attach", "peek", "status", "tasks"]
-        assert set(bot.tree.commands) == {"attach", "peek", "status", "tasks"}
-        # The still-pending commands must not be published to the guild.
-        for name in ("explain", "gates"):
-            assert name not in bot.tree.commands
+        # Every command's backend has now landed: /peek and /attach with the
+        # sessions lane, /explain and /gates with the work-graph lane --
+        # which is the mechanism working, not a regression (see the test
+        # below).
+        expected = ["attach", "explain", "gates", "peek", "status", "tasks"]
+        assert registered == expected
+        assert set(bot.tree.commands) == set(expected)
 
     def test_command_appears_once_its_backend_lands(self, real_handler):
         """No change needed here when a later wave ships ``gate_list``."""

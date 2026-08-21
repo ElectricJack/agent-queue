@@ -10,19 +10,18 @@ or the dashboard — never a slash command.
 |---|---|---|
 | ``/status`` | ``get_status`` + ``list_tasks`` | Highest-frequency glance. |
 | ``/tasks`` | ``list_tasks`` | Orientation before replying in a thread. |
-| ``/explain`` | ``task_explain`` | "Why isn't X running" support question. |
+| ``/explain`` | ``explain_task`` | "Why isn't X running" support question. |
 | ``/peek`` | ``session_peek`` | See the live pane without leaving Discord. |
 | ``/gates`` | ``gate_list`` | What is waiting on a human right now. |
 | ``/attach`` | ``session_attach`` | Bridge to the real terminal. |
 
-**Registration is conditional.**  ``task_explain`` and ``gate_list`` are M1
-prerequisites owned by other workstreams (implementation plan §6, M1) and do
-not exist in ``CommandHandler`` yet.  (``session_peek`` and ``session_attach``
-landed with the session-runtime lane and now register normally.  Note the
-naming: [[design/messaging-rework]] calls the attach backend
-``session_attach_command``, while [[implementation/session-runtime]] §3.8
-specifies ``_cmd_session_attach`` returning ``{"attach_command": str}`` --
-the latter is what exists.)  Registering their slash commands anyway would
+**Registration is conditional.**  Every backing command now exists —
+``session_peek``/``session_attach`` landed with the session-runtime lane and
+``explain_task``/``gate_list`` with the work-graph lane (note the naming:
+[[design/messaging-rework]] says ``task_explain`` and
+``session_attach_command``; what shipped is ``_cmd_explain_task`` and
+``_cmd_session_attach`` returning ``{"attach_command": str}``).
+Registering a slash command without its backend would
 publish autocompleting commands to the guild that can only ever answer
 ``Unknown command: ...`` — so :func:`setup_commands` resolves each backing
 command name first (built-in ``_cmd_{name}`` method, then the plugin
@@ -64,7 +63,7 @@ _MAX_INLINE = 1900  # leave headroom under Discord's 2000-char message limit
 SLASH_COMMAND_BACKENDS: dict[str, tuple[str, ...]] = {
     "status": ("get_status", "list_tasks"),
     "tasks": ("list_tasks",),
-    "explain": ("task_explain",),
+    "explain": ("explain_task",),
     "peek": ("session_peek",),
     "gates": ("gate_list",),
     "attach": ("session_attach",),
@@ -77,12 +76,7 @@ SLASH_COMMAND_BACKENDS: dict[str, tuple[str, ...]] = {
 #: command (``gates_list`` vs ``gate_list``) breaks the build instead of
 #: silently un-registering a slash command.  Entries must be deleted as the
 #: owning wave lands.
-PENDING_BACKENDS: frozenset[str] = frozenset(
-    {
-        "task_explain",  # work-graph lane
-        "gate_list",  # gates lane
-    }
-)
+PENDING_BACKENDS: frozenset[str] = frozenset()
 
 
 def command_resolves(handler, name: str) -> bool:
@@ -332,7 +326,7 @@ def setup_commands(bot: commands.Bot) -> list[str]:
         @bot.tree.command(name="explain", description="Explain why a task is (or isn't) running")
         @app_commands.describe(task="Task ID")
         async def explain_command(interaction: discord.Interaction, task: str) -> None:
-            result = await _execute(interaction, handler, "task_explain", {"task_id": task})
+            result = await _execute(interaction, handler, "explain_task", {"task_id": task})
             if result is None:
                 return
             await _reply_json(interaction, result, filename="explain.json")
