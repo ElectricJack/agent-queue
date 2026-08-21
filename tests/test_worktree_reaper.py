@@ -213,6 +213,91 @@ class TestReapSlot:
 # ── prune_branches ──────────────────────────────────────────────────────
 
 
+class TestPruneBranchesRetainFailedDays:
+    """Finding #4: prune unmerged aq/* branches whose task is terminal-FAILED
+    and whose last commit is older than ``retain_failed_days``."""
+
+    async def test_failed_old_pruned_recent_and_active_kept(
+        self, tmp_path, base_repo,
+    ):
+        from src.models import TaskStatus
+
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            # Shrink retention window to 1 day for the test.
+            o._worktree_slots().config.retain_failed_days = 1
+
+            # Failed + old: task exists and is FAILED; commit is dated
+            # well before the retention cutoff.
+            _git(["switch", "-c", "aq/failed-old"], cwd=base_repo)
+            (base_repo / "fo.txt").write_text("fo\n")
+            _git(["add", "-A"], cwd=base_repo)
+            past = "2000-01-01T00:00:00"
+            subprocess.run(
+                ["git",
+                 "-c", "user.name=T", "-c", "user.email=t@t.com",
+                 "commit", "-m", "fo",
+                 "--date", past],
+                cwd=str(base_repo),
+                check=True, capture_output=True,
+                env={**__import__("os").environ,
+                     "GIT_COMMITTER_DATE": past,
+                     "GIT_AUTHOR_DATE": past},
+            )
+            _git(["switch", "main"], cwd=base_repo)
+            await o.db.create_task(
+                Task(id="failed-old", project_id="p1",
+                     title="fo", description="",
+                     status=TaskStatus.FAILED)
+            )
+
+            # Failed + recent: FAILED task, but committed just now — keep.
+            _git(["switch", "-c", "aq/failed-recent"], cwd=base_repo)
+            (base_repo / "fr.txt").write_text("fr\n")
+            _git(["add", "-A"], cwd=base_repo)
+            _git(["commit", "-m", "fr"], cwd=base_repo)
+            _git(["switch", "main"], cwd=base_repo)
+            await o.db.create_task(
+                Task(id="failed-recent", project_id="p1",
+                     title="fr", description="",
+                     status=TaskStatus.FAILED)
+            )
+
+            # Unmerged + active: no FAILED status — keep unconditionally.
+            _git(["switch", "-c", "aq/active"], cwd=base_repo)
+            (base_repo / "ac.txt").write_text("ac\n")
+            _git(["add", "-A"], cwd=base_repo)
+            subprocess.run(
+                ["git",
+                 "-c", "user.name=T", "-c", "user.email=t@t.com",
+                 "commit", "-m", "ac", "--date", past],
+                cwd=str(base_repo),
+                check=True, capture_output=True,
+                env={**__import__("os").environ,
+                     "GIT_COMMITTER_DATE": past,
+                     "GIT_AUTHOR_DATE": past},
+            )
+            _git(["switch", "main"], cwd=base_repo)
+            # 'active' task is IN_PROGRESS (default) — keep the branch.
+            await o.db.create_task(
+                Task(id="active", project_id="p1",
+                     title="ac", description="")
+            )
+
+            base_ws = await o.db.get_workspace("ws-base")
+            mgr = o._worktree_slots()
+            pruned = await mgr.prune_branches(base_ws, default_branch="main")
+
+            branches = _git(["branch", "--list"], cwd=base_repo)
+            assert "aq/failed-old" not in branches
+            assert "aq/failed-recent" in branches
+            assert "aq/active" in branches
+            assert "aq/failed-old" in pruned
+        finally:
+            await o.shutdown()
+
+
 class TestPruneBranches:
     async def test_prunes_merged_aq_branches_keeps_unmerged(
         self, tmp_path, base_repo,

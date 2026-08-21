@@ -556,3 +556,202 @@ class TestPhaseVerifySkipsAutoMergeUnderWorktreeMode:
             assert head == "main"
         finally:
             await o.shutdown()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Adversarial-round fixes.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestPhaseIntegrateLeaseGuardedPush:
+    """Finding #1: if the lease is lost between rebase and push, do NOT push."""
+
+    async def test_lost_lease_before_push_aborts_without_pushing(
+        self, tmp_path, base_repo_for_integrate, monkeypatch,
+    ):
+        base_repo = base_repo_for_integrate
+        o = await _make_worktree_orch(tmp_path)
+        try:
+            await _seed_wt_project(o, base_repo)
+            task, agent, slot = await _prep_task_in_slot(o, base_repo)
+
+            (Path(slot) / "work.txt").write_text("hello\n")
+            _git(["add", "-A"], cwd=slot)
+            _git(["commit", "-m", "work"], cwd=slot)
+
+            # Intercept renew_merge_slot at the module level used by
+            # git_ops (the caller imports the symbol directly).  The
+            # first renew (before rebase) succeeds; subsequent renews
+            # (guarding the push) all fail — simulating the lease being
+            # broken by ``break_expired_merge_slots`` mid-integrate.
+            call_count = {"n": 0}
+            import src.orchestrator.git_ops as git_ops_mod
+
+            orig_renew = git_ops_mod.renew_merge_slot
+
+            async def flaky_renew(db, project_id, task_id, ttl):
+                call_count["n"] += 1
+                if call_count["n"] == 1:
+                    return await orig_renew(db, project_id, task_id, ttl)
+                # Simulate: another task now holds the slot.
+                await release_merge_slot(db, project_id, task_id)
+                await acquire_merge_slot(db, project_id, "OTHER-TASK", ttl=3600)
+                return False
+
+            monkeypatch.setattr(git_ops_mod, "renew_merge_slot", flaky_renew)
+
+            # Spy on git push invocations.
+            push_calls: list[list[str]] = []
+            orig_arun = o.git._arun
+
+            async def spy_arun(args, cwd=None, **kw):
+                if len(args) >= 1 and args[0] == "push":
+                    push_calls.append(list(args))
+                return await orig_arun(args, cwd=cwd, **kw)
+
+            o.git._arun = spy_arun
+
+            # Also spy on apush_branch to catch the branch push.
+            push_branch_calls: list[str] = []
+            orig_push = o.git.apush_branch
+
+            async def spy_push(*args, **kw):
+                push_branch_calls.append(args[1] if len(args) > 1 else kw.get("branch"))
+                return await orig_push(*args, **kw)
+
+            o.git.apush_branch = spy_push
+
+            ws = await o.db.get_workspace_for_task(task.id)
+            ctx = _make_pipeline_ctx(task, agent, slot, ws.id)
+
+            result = await o._phase_integrate(ctx)
+            assert result == PhaseResult.STOP
+            # No push happened — neither the branch push nor a default push.
+            assert push_branch_calls == [], (
+                f"push happened despite lost lease: {push_branch_calls!r}"
+            )
+            assert not any("main" in c for c in push_calls), (
+                f"default-branch push happened despite lost lease: {push_calls!r}"
+            )
+        finally:
+            await o.shutdown()
+
+
+class TestTaskIsWorktreeModeKindDiscrimination:
+    """Finding #2: discriminate on kind.mode, not is_slot alone."""
+
+    async def test_base_workspace_of_worktree_kind_is_worktree_mode(
+        self, tmp_path, base_repo_for_integrate,
+    ):
+        o = await _make_worktree_orch(tmp_path)
+        try:
+            await _seed_wt_project(o, base_repo_for_integrate,
+                                   mode=KIND_MODE_WORKTREE)
+            # Fabricate a ctx whose workspace_id points at the *base* row
+            # (not a slot).  The old is_slot-only detector said False; the
+            # kind.mode detector must say True.
+            base_ws = await o.db.get_workspace("ws-base")
+            assert base_ws is not None and not base_ws.is_slot
+
+            ctx = PipelineContext(
+                task=Task(id="tsk-x", project_id="p1", title="x",
+                          description=""),
+                agent=Agent(id="a-x", name="a-x", profile_id="test-profile"),
+                output=AgentOutput(result=AgentResult.COMPLETED, tokens_used=1),
+                workspace_path=base_ws.workspace_path,
+                workspace_id=base_ws.id,
+                repo=RepoConfig(id="r-1", project_id="p1",
+                                source_type=RepoSourceType.CLONE,
+                                default_branch="main"),
+                default_branch="main",
+            )
+            assert await o._task_is_worktree_mode(ctx) is True
+        finally:
+            await o.shutdown()
+
+    async def test_base_workspace_of_exclusive_clone_kind_is_not_worktree_mode(
+        self, tmp_path, base_repo_for_integrate,
+    ):
+        o = await _make_worktree_orch(tmp_path)
+        try:
+            await _seed_wt_project(o, base_repo_for_integrate,
+                                   mode=KIND_MODE_EXCLUSIVE_CLONE)
+            base_ws = await o.db.get_workspace("ws-base")
+            ctx = PipelineContext(
+                task=Task(id="tsk-x", project_id="p1", title="x",
+                          description=""),
+                agent=Agent(id="a-x", name="a-x", profile_id="test-profile"),
+                output=AgentOutput(result=AgentResult.COMPLETED, tokens_used=1),
+                workspace_path=base_ws.workspace_path,
+                workspace_id=base_ws.id,
+                repo=RepoConfig(id="r-1", project_id="p1",
+                                source_type=RepoSourceType.CLONE,
+                                default_branch="main"),
+                default_branch="main",
+            )
+            assert await o._task_is_worktree_mode(ctx) is False
+        finally:
+            await o.shutdown()
+
+
+class TestAcquireMergeSlotBusyErrorHandling:
+    """Finding #3: SQLITE_BUSY / locked surfaces as False, not exception."""
+
+    async def test_operational_error_locked_returns_false(self, tmp_path, monkeypatch):
+        d = Database(str(tmp_path / "aq.db"))
+        await d.initialize()
+        try:
+            await d.create_project(Project(id="p1", name="p", repo_url=""))
+            from sqlalchemy.exc import OperationalError
+
+            orig_seed = d._seed_merge_slot
+
+            async def busy_seed(conn, project_id, now):
+                raise OperationalError(
+                    "INSERT", {}, Exception("database is locked")
+                )
+
+            monkeypatch.setattr(d, "_seed_merge_slot", busy_seed)
+
+            # Must return False, never raise.
+            got = await acquire_merge_slot(d, "p1", "tsk-1", ttl=60)
+            assert got is False
+
+            # Restore & confirm normal acquire still works.
+            monkeypatch.setattr(d, "_seed_merge_slot", orig_seed)
+            assert await acquire_merge_slot(d, "p1", "tsk-1", ttl=60) is True
+        finally:
+            await d.close()
+
+
+class TestPhaseIntegratePushFailureRecordsReason:
+    """Finding #6: on push failure, record ``rejection_reason`` meta."""
+
+    async def test_push_failure_sets_rejection_reason(
+        self, tmp_path, base_repo_for_integrate, monkeypatch,
+    ):
+        base_repo = base_repo_for_integrate
+        o = await _make_worktree_orch(tmp_path)
+        try:
+            await _seed_wt_project(o, base_repo)
+            task, agent, slot = await _prep_task_in_slot(o, base_repo)
+            (Path(slot) / "work.txt").write_text("hello\n")
+            _git(["add", "-A"], cwd=slot)
+            _git(["commit", "-m", "work"], cwd=slot)
+
+            async def boom(*a, **kw):
+                raise RuntimeError("simulated push failure")
+
+            o.git.apush_branch = boom
+
+            ws = await o.db.get_workspace_for_task(task.id)
+            ctx = _make_pipeline_ctx(task, agent, slot, ws.id)
+
+            result = await o._phase_integrate(ctx)
+            assert result == PhaseResult.STOP
+
+            meta = await o.db.get_task_meta(task.id, "rejection_reason")
+            assert meta is not None
+            assert "push_failed" in str(meta)
+        finally:
+            await o.shutdown()

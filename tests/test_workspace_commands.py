@@ -262,14 +262,14 @@ class TestWorkspaceDoctor:
 
         result = await handler._cmd_workspace_doctor({"project_id": "p1"})
         assert result["success"] is True
-        # Either a stale_registration or the base itself is now valid — the
-        # base workspace path is the origin dir which still exists, so any
-        # entry for the missing slot dir must be caught.
-        kinds = [f["kind"] for f in result["findings"]]
-        # Note: adopt_existing may prune it; still ok if not present after
-        # a subsequent boot.  Assert only the finding-set contains at least
-        # one of {stale_registration, exclude_missing, dirty_unlocked_slot}.
-        assert isinstance(kinds, list)
+        findings = result["findings"]
+        # A stale worktree registration must produce a finding whose
+        # detail mentions the missing slot dir.
+        stale = [f for f in findings if f["kind"] == "stale_registration"]
+        assert stale, f"expected a stale_registration finding, got {findings!r}"
+        assert any(str(slot_dir) in f["detail"] for f in stale), (
+            f"expected stale finding to mention {slot_dir}, got {stale!r}"
+        )
 
     async def test_exclude_missing_finding(self, worktree_handler):
         handler, orch, base = worktree_handler
@@ -326,6 +326,20 @@ class TestWorkspaceReap:
         assert result["success"] is True
         assert result["reaped"] == []
         assert result["skipped"] and result["skipped"][0]["id"] == slot_ws.id
+        # The refused reap must NOT have deleted the slot dir or its row.
+        assert slot_dir.is_dir(), f"slot dir {slot_dir} was removed despite refusal"
+        assert await orch.db.get_workspace(slot_ws.id) is not None
+
+    async def test_all_retired_requires_project_scope(
+        self, worktree_handler,
+    ):
+        handler, orch, base = worktree_handler
+        # Clear the active project so nothing is scoped.
+        handler._active_project_id = None
+
+        result = await handler._cmd_workspace_reap({"all_retired": True})
+        assert result["success"] is False
+        assert "project" in result["error"].lower()
 
     async def test_reap_succeeds_on_retired(
         self, worktree_handler, monkeypatch,

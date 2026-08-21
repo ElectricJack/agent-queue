@@ -1250,14 +1250,17 @@ class GitOpsMixin:
     # ── worktree-mode integration ─────────────────────────────────────────
 
     async def _task_is_worktree_mode(self, ctx: PipelineContext) -> bool:
-        """True when the task's project-repo workspace is a slot worktree.
+        """True when the task's workspace kind is in worktree mode.
 
-        Worktree-execution spec §6.5: the integrate phase runs only when
-        the task ran in a slot.  Detection is a workspace-row lookup —
-        ``is_slot`` is authoritative (slot_index + base_workspace_id both
-        set).  Failures are logged and downgraded to False so a
-        misconfigured install still runs the legacy verify-merge path.
+        Worktree-execution spec §6.5: the integrate phase runs whenever
+        the task's project-repo kind is configured as worktree mode —
+        including the *base* workspace of that kind, not only the slots.
+        Discrimination is by the workspace kind's ``mode`` field; we
+        fall back to ``is_slot`` only when the kind lookup fails, so a
+        misconfigured install still routes slot workspaces correctly.
         """
+        from src.models import KIND_MODE_WORKTREE
+
         if not getattr(self.config, "worktrees", None) or not self.config.worktrees.enabled:
             return False
         ws_id = getattr(ctx, "workspace_id", None)
@@ -1270,6 +1273,20 @@ class GitOpsMixin:
             return False
         if ws is None:
             return False
+        kind_id = getattr(ws, "kind_id", None)
+        project_id = getattr(ws, "project_id", None)
+        if kind_id and project_id:
+            try:
+                kind = await self.db.resolve_workspace_kind(project_id, kind_id)
+            except Exception as e:
+                logger.warning(
+                    "worktree-mode detection: resolve_workspace_kind(%s,%s) failed: %s",
+                    project_id, kind_id, e,
+                )
+                return getattr(ws, "is_slot", False)
+            if kind is not None:
+                return getattr(kind, "mode", None) == KIND_MODE_WORKTREE
+        # No kind information — fall back to slot-based detection.
         return getattr(ws, "is_slot", False)
 
     async def _phase_integrate(self, ctx: PipelineContext) -> PhaseResult:
@@ -1411,6 +1428,21 @@ class GitOpsMixin:
             # is safe for the branch itself.  We NEVER push to default
             # from here; that's the base-side merge below.
             if has_remote:
+                # Lease-guarded push (finding #1): the rebase above may
+                # have run longer than ``merge_slot_ttl_seconds``; if
+                # ``break_expired_merge_slots`` handed the slot to
+                # another task in the meantime, we must NOT push — two
+                # concurrent pushes would race the remote.  Renew
+                # immediately before the push; if the renew fails we no
+                # longer own the lease and treat this like contention.
+                if not await renew_merge_slot(
+                    self.db, task.project_id, task.id, ttl
+                ):
+                    logger.warning(
+                        "Task %s: merge slot lease lost before pushing %s; aborting push",
+                        task.id, branch,
+                    )
+                    return PhaseResult.STOP
                 try:
                     await self.git.apush_branch(
                         workspace,
@@ -1421,6 +1453,16 @@ class GitOpsMixin:
                     )
                 except Exception as e:
                     logger.warning("Task %s: push %s failed: %s", task.id, branch, e)
+                    reason = f"push_failed: {branch}: {e}"
+                    try:
+                        await self.db.set_task_meta(
+                            task.id, "rejection_reason", reason
+                        )
+                    except Exception as meta_err:
+                        logger.warning(
+                            "Task %s: failed to record push_failed meta: %s",
+                            task.id, meta_err,
+                        )
                     await self._emit_notify(
                         "notify.push_failed",
                         PushFailedEvent(
@@ -1484,6 +1526,18 @@ class GitOpsMixin:
                     return PhaseResult.STOP
 
                 if has_remote:
+                    # Lease-guarded push (finding #1): renew immediately
+                    # before pushing to default — if the local merge took
+                    # long enough for the lease to expire, another task
+                    # may now own the slot and be about to push too.
+                    if not await renew_merge_slot(
+                        self.db, task.project_id, task.id, ttl
+                    ):
+                        logger.warning(
+                            "Task %s: merge slot lease lost before pushing to %s; aborting",
+                            task.id, default_branch,
+                        )
+                        return PhaseResult.STOP
                     try:
                         # Regular push — no --force here.  The base has
                         # just merged origin/<default> forward.
@@ -1494,6 +1548,16 @@ class GitOpsMixin:
                         logger.warning(
                             "Task %s: push %s failed: %s", task.id, default_branch, e
                         )
+                        reason = f"push_failed: {default_branch}: {e}"
+                        try:
+                            await self.db.set_task_meta(
+                                task.id, "rejection_reason", reason
+                            )
+                        except Exception as meta_err:
+                            logger.warning(
+                                "Task %s: failed to record push_failed meta: %s",
+                                task.id, meta_err,
+                            )
                         return PhaseResult.STOP
 
                 import time as _time

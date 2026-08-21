@@ -234,11 +234,20 @@ class WorktreeCommandsMixin:
             return {"success": True, "reaped": reaped, "skipped": skipped}
 
         # all_retired: sweep every slot beyond its project's cap that is
-        # not locked.
+        # not locked.  Require an explicit project scope — a bare
+        # ``all_retired`` with no active project would otherwise sweep
+        # every project on the daemon, which is almost never intended.
         project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {
+                "success": False,
+                "error": (
+                    "all_retired requires an explicit project_id (or an "
+                    "active project) — refusing to sweep every project"
+                ),
+            }
         projects = await self.db.list_projects()
-        if project_id:
-            projects = [p for p in projects if p.id == project_id]
+        projects = [p for p in projects if p.id == project_id]
         for project in projects:
             workspaces = await self.db.list_workspaces(project_id=project.id)
             cap = project.max_concurrent_agents or 0

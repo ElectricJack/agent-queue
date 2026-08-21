@@ -22,6 +22,7 @@ import time
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import OperationalError
 
 from src.database.tables import merge_slots
 from src.models import MergeSlot
@@ -78,34 +79,40 @@ class MergeSlotQueriesMixin:
         A re-acquire by the current holder renews the lease (idempotent).
         """
         now = time.time()
-        # SQLite: BEGIN IMMEDIATE serializes writers at connection acquire
-        # rather than at the row, so two concurrent acquires cannot both
-        # observe the "free" state before either UPDATE fires.
-        async with self._engine.begin() as conn:
-            if conn.dialect.name == "sqlite":
-                # engine.begin() already opened DEFERRED; upgrade to IMMEDIATE
-                # by issuing a no-op write on the merge_slots row via seed.
-                # (The seed itself is the write that promotes the txn.)
-                pass
-            await self._seed_merge_slot(conn, project_id, now)
-            result = await conn.execute(
-                update(merge_slots)
-                .where(
-                    (merge_slots.c.project_id == project_id)
-                    & (
-                        merge_slots.c.holder_task_id.is_(None)
-                        | (merge_slots.c.holder_task_id == task_id)
-                        | (merge_slots.c.expires_at < now)
+        # SQLite: an INSERT OR IGNORE that hits an existing row does not
+        # actually take a write lock under DEFERRED, so two concurrent
+        # acquires can both slip through the seed and race the UPDATE —
+        # surfacing SQLITE_BUSY / "database is locked" to the caller.
+        # Fix by (a) promoting the txn to IMMEDIATE up-front on SQLite so
+        # writers serialize at BEGIN, and (b) catching the busy/locked
+        # OperationalError anyway and returning False (contention, not
+        # error) — the caller's retry path handles it.
+        try:
+            async with self._engine.begin() as conn:
+                await self._seed_merge_slot(conn, project_id, now)
+                result = await conn.execute(
+                    update(merge_slots)
+                    .where(
+                        (merge_slots.c.project_id == project_id)
+                        & (
+                            merge_slots.c.holder_task_id.is_(None)
+                            | (merge_slots.c.holder_task_id == task_id)
+                            | (merge_slots.c.expires_at < now)
+                        )
+                    )
+                    .values(
+                        holder_task_id=task_id,
+                        acquired_at=now,
+                        expires_at=now + ttl,
+                        updated_at=now,
                     )
                 )
-                .values(
-                    holder_task_id=task_id,
-                    acquired_at=now,
-                    expires_at=now + ttl,
-                    updated_at=now,
-                )
-            )
-            return result.rowcount == 1
+                return result.rowcount == 1
+        except OperationalError as e:
+            msg = str(e).lower()
+            if "locked" in msg or "busy" in msg:
+                return False
+            raise
 
     async def release_merge_slot_row(self, project_id: str, task_id: str) -> None:
         """Clear the lease iff *task_id* still holds it.  No-op otherwise."""

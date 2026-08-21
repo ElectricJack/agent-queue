@@ -889,14 +889,23 @@ class WorktreeSlotManager:
         *,
         default_branch: str,
     ) -> list[str]:
-        """Delete merged local ``aq/*`` branches beneath *base_ws*.
+        """Delete stale local ``aq/*`` branches beneath *base_ws*.
 
-        Failed unmerged branches past ``retain_failed_days`` would also be
-        pruned, but that check requires task-status attribution the reaper
-        alone can not perform without a query the caller must pass down —
-        for now we prune merged branches only, which is what §5 makes safe
-        unconditionally.  Returns the list of deleted branch names.
+        Two categories are pruned (design §6.5):
+
+        * **Merged** local ``aq/*`` branches — always safe (spec §5).
+        * **Failed & old** local ``aq/*`` branches — the branch name
+          encodes the task id (``aq/<task_id>``); if that task exists and
+          is in a terminal-FAILED state and the branch's last commit is
+          older than ``retain_failed_days``, delete it with ``-D``
+          (force, because it's unmerged).  Branches whose task can not
+          be looked up, or whose task is not FAILED, are kept — the
+          reaper never destroys unmerged work speculatively.
+
+        Returns the combined list of deleted branch names.
         """
+        from src.models import TaskStatus
+
         base_path = base_ws.workspace_path
         _validate_ref(default_branch, field="default branch")
 
@@ -907,7 +916,7 @@ class WorktreeSlotManager:
                 )
             except GitError as e:
                 logger.warning("alist_merged_branches failed in %s: %s", base_path, e)
-                return []
+                merged = []
 
             deleted: list[str] = []
             for br in merged:
@@ -916,6 +925,59 @@ class WorktreeSlotManager:
                     deleted.append(br)
                 except GitError as e:
                     logger.warning("delete branch %s failed: %s", br, e)
+
+            # Failed-and-old pruning.
+            retain_days = int(getattr(self.config, "retain_failed_days", 0) or 0)
+            if retain_days > 0:
+                cutoff = time.time() - (retain_days * 86400.0)
+                # List all local aq/* branches with their last-commit unix time.
+                try:
+                    out = await self.git._arun(
+                        [
+                            "for-each-ref",
+                            "--format=%(refname:short) %(committerdate:unix)",
+                            f"refs/heads/{BRANCH_PREFIX}",
+                        ],
+                        cwd=base_path,
+                    )
+                except GitError as e:
+                    logger.warning("for-each-ref failed in %s: %s", base_path, e)
+                    out = ""
+                for line in out.splitlines():
+                    parts = line.strip().split()
+                    if len(parts) != 2:
+                        continue
+                    br, ts_raw = parts
+                    if br in deleted:
+                        continue
+                    try:
+                        ts = float(ts_raw)
+                    except ValueError:
+                        continue
+                    if ts >= cutoff:
+                        continue  # still within retention window
+                    # Derive task id from branch name (aq/<task_id>).
+                    if not br.startswith(BRANCH_PREFIX):
+                        continue
+                    task_id = br[len(BRANCH_PREFIX):]
+                    if not task_id:
+                        continue
+                    try:
+                        task = await self.db.get_task(task_id)
+                    except Exception as e:
+                        logger.debug("get_task(%s) failed during prune: %s", task_id, e)
+                        continue
+                    if task is None:
+                        continue  # unknown → keep
+                    status = getattr(task, "status", None)
+                    status_val = getattr(status, "value", status)
+                    if status_val != TaskStatus.FAILED.value:
+                        continue
+                    try:
+                        await self.git.adelete_local_branch(base_path, br, force=True)
+                        deleted.append(br)
+                    except GitError as e:
+                        logger.warning("force-delete branch %s failed: %s", br, e)
 
             if self.config.prune_remote_branches and deleted:
                 for br in deleted:
@@ -955,14 +1017,27 @@ class WorktreeSlotManager:
             except Exception as e:
                 logger.warning("ensure_git_exclude failed for %s: %s", base_path, e)
 
-            # Prune stale git worktree registrations.
+            # Prune stale git worktree registrations.  Only add to the
+            # report when we actually pruned something (diff porcelain
+            # list before/after) — the previous behavior appended a
+            # ``"{base_id}:prune"`` sentinel every sweep, which made the
+            # ``pruned`` list vacuous.
             try:
                 async with self._git_mutex(base_path):
+                    try:
+                        before = await self.git.aworktree_list(base_path)
+                    except Exception:
+                        before = []
                     await self.git.aworktree_prune(base_path)
-                # Record the fact we ran prune.  Path-level attribution
-                # requires diffing the porcelain list before/after — the
-                # value here is that the caller can see the sweep ran.
-                report.pruned.append(f"{base.id}:prune")
+                    try:
+                        after = await self.git.aworktree_list(base_path)
+                    except Exception:
+                        after = []
+                before_paths = {e.get("path") for e in before if e.get("path")}
+                after_paths = {e.get("path") for e in after if e.get("path")}
+                removed = before_paths - after_paths
+                for p in removed:
+                    report.pruned.append(p)
             except (GitError, OSError) as e:
                 logger.debug("prune in %s failed: %s", base_path, e)
 
