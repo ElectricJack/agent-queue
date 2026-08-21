@@ -381,8 +381,9 @@ class TestPhaseIntegrateHappyPath:
             _git(["add", "-A"], cwd=s2)
             _git(["commit", "-m", "b"], cwd=s2)
 
-            # Manually hold the merge slot for tsk-1
-            assert await acquire_merge_slot(o.db, "p1", "tsk-1", ttl=60) is True
+            # Manually hold the merge slot for tsk-1 with a long TTL so
+            # nothing preempts it under xdist load.
+            assert await acquire_merge_slot(o.db, "p1", "tsk-1", ttl=3600) is True
 
             ws2 = await o.db.get_workspace_for_task(t2.id)
             ctx2 = _make_pipeline_ctx(t2, a2, s2, ws2.id)
@@ -390,6 +391,9 @@ class TestPhaseIntegrateHappyPath:
             result = await o._phase_integrate(ctx2)
             # Contention → the phase stops without integrating.
             assert result == PhaseResult.STOP
+            # Merge slot is still held by tsk-1 (integrate never stole it).
+            row = await o.db.get_merge_slot("p1")
+            assert row is not None and row.holder_task_id == "tsk-1"
             # Origin main should be untouched (tsk-2 never got pushed).
             log = _git(["log", "--oneline", "origin/main"], cwd=s2)
             assert "b" not in log

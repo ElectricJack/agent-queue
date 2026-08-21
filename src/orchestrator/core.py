@@ -2166,16 +2166,26 @@ class Orchestrator(
                 except Exception as e:
                     logger.warning("reap_slot(%s) failed: %s", ws.id, e)
 
-            # Branch prune: one call per base for the project.
+            # Branch prune: one call per worktree-mode base for the project.
+            # Non-worktree bases (LINK targets, exclusive clones) may not even
+            # be git repos — the prune probe would error harmlessly but noisily.
+            from src.models import KIND_MODE_WORKTREE
+
             for ws in workspaces:
                 if ws.is_slot:
                     continue
                 if ws.kind_id is None:
                     continue
                 try:
-                    default_branch = (
-                        project.repo_default_branch or "main"
+                    kind = await self.db.resolve_workspace_kind(
+                        project.id, ws.kind_id
                     )
+                except Exception:
+                    kind = None
+                if kind is None or getattr(kind, "mode", None) != KIND_MODE_WORKTREE:
+                    continue
+                try:
+                    default_branch = project.repo_default_branch or "main"
                     await mgr.prune_branches(ws, default_branch=default_branch)
                 except Exception as e:
                     logger.debug("prune_branches(%s) failed: %s", ws.id, e)

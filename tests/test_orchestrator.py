@@ -78,6 +78,12 @@ async def orch(tmp_path):
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
+    # These tests predate the worktrees P6 flag flip and use MockAdapter
+    # git plus LINK paths that are not real git repos.  Keep the legacy
+    # exclusive-clone provisioning path here; worktree-specific tests
+    # live in test_worktree_prepare.py / test_worktree_reaper.py /
+    # test_merge_slot.py.
+    config.worktrees.enabled = False
     o = Orchestrator(config, runtimes=MockAdapterFactory())
     await o.initialize()
     yield o
@@ -940,6 +946,8 @@ class TestPrepareWorkspaceCleanDefault:
             workspace_dir=str(tmp_path / "workspaces"),
             data_dir=str(tmp_path / "data"),
         )
+        # Legacy clone-mode tests — worktrees P6 default flipped to True.
+        config.worktrees.enabled = False
         orch = Orchestrator(config, runtimes=MockAdapterFactory())
         await orch.initialize()
 
