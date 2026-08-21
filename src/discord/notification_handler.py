@@ -964,14 +964,37 @@ class DiscordNotificationHandler:
         ``src/messages/delivery.py::_deliver_to_user``).  For the P4
         cutover this is the reply path from supervisor sessions back into
         Discord.  The payload is metadata only — fetch the body from the
-        DB and post it to the originating project's channel.
+        DB and post it to the originating channel.
+
+        Scope guard: only render messages that (a) originate from a
+        supervisor/agent session (``from_kind == "session"``) — never
+        echo user-authored rows back — AND (b) carry a
+        ``thread_id`` with the ``discord:`` prefix, which the Discord
+        cutover send path sets to ``discord:<channel_id>``.  Other
+        adapters' ``to_kind=user`` messages (or future non-Discord
+        surfaces) must not be double-posted here.
         """
         if data.get("to_kind") != "user":
+            return
+        # Only agent/supervisor replies — skip user-authored echoes and
+        # system-authored rows.  MESSAGE_FROM_KINDS = {session,user,system}.
+        if data.get("from_kind") != "session":
+            return
+        # Scope to Discord-originated threads: the cutover send path in
+        # ``src/discord/bot.py`` sets ``thread_id=f"discord:{channel_id}"``.
+        # A missing thread_id, or one from another surface, must not
+        # trigger a Discord post.
+        thread_id = data.get("thread_id")
+        if not isinstance(thread_id, str) or not thread_id.startswith("discord:"):
             return
         project_id = data.get("project_id")
         message_id = data.get("message_id")
         if not project_id or not message_id:
             return
+        # Parse the originating channel id out of the thread_id so replies
+        # land in the exact channel the user chatted in, even if the
+        # project's default channel has since changed.
+        channel_id_str = thread_id.split(":", 1)[1] if ":" in thread_id else ""
         try:
             db = self.bot.orchestrator.db
             msg = await db.get_message(message_id)
@@ -980,8 +1003,19 @@ class DiscordNotificationHandler:
             return
         if msg is None or not msg.body:
             return
+        # Prefer the channel encoded in thread_id; fall back to the
+        # project channel resolver if the channel id can't be resolved.
+        channel = None
+        if channel_id_str.isdigit():
+            try:
+                channel = self.bot.get_channel(int(channel_id_str))
+            except Exception:
+                channel = None
         try:
-            await self.bot._send_message(msg.body, project_id=project_id)
+            if channel is not None:
+                await self.bot._send_long_message(channel, msg.body)
+            else:
+                await self.bot._send_message(msg.body, project_id=project_id)
         except Exception:
             logger.exception(
                 "message.sent: failed to post reply for project %s", project_id
