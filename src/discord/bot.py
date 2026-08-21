@@ -1144,6 +1144,8 @@ class AgentQueueBot(commands.Bot):
 
             thinking_msg: discord.Message | None = None
             thinking_view: AgentQueueBot.ThinkingView | None = None
+            tool_names_used: list[str] = []
+            response: str = ""
             async with message.channel.typing():
                 try:
                     if not self.agent.is_ready:
@@ -1209,6 +1211,50 @@ class AgentQueueBot(commands.Bot):
                     # single-turn call into the Supervisor.
                     history = None
 
+                    use_supervisor_session = (
+                        supervisor_session_routing_enabled(self.config)
+                        and project_channel_id is not None
+                    )
+
+                    if use_supervisor_session:
+                        # Supervisor-session path: no ThinkingView (its Cancel
+                        # button routes to the in-process Supervisor, wrong on
+                        # this path).  Acknowledge the enqueue with a 📬 reaction
+                        # once message_send succeeds; on error, post a visible
+                        # error reply.  The real answer arrives asynchronously
+                        # via ``message.sent`` → notification handler.
+                        send_result = await self.agent.handler.execute(
+                            "message_send",
+                            {
+                                "project_id": project_channel_id,
+                                "to_kind": "session",
+                                "to_id": f"supervisor-{project_channel_id}",
+                                "from_kind": "user",
+                                "from_id": f"discord:{message.author.id}",
+                                "body": user_text,
+                                "thread_id": f"discord:{message.channel.id}",
+                            },
+                        )
+                        if isinstance(send_result, dict) and "error" in send_result:
+                            await self._send_long_message(
+                                message.channel,
+                                f"**Message queue error:** {send_result['error']}",
+                                reply_to=message,
+                            )
+                        else:
+                            try:
+                                await self._safe_api_call(
+                                    message.add_reaction("\U0001f4ec"),
+                                    critical=False,
+                                    context="on_message ack reaction",
+                                )
+                            except Exception:
+                                pass  # fail-open
+                        response = ""  # nothing more to render on this path
+                        # Skip legacy branch entirely.
+                        return
+
+                    # Legacy Supervisor.chat() path — keep ThinkingView + progress UI.
                     # Send a thinking indicator that updates as the agent works.
                     # This gives users real-time feedback on what the agent is
                     # doing: thinking, calling tools, or composing a reply.
@@ -1219,7 +1265,6 @@ class AgentQueueBot(commands.Bot):
                         view=thinking_view,
                     )
                     self._thinking_msg_ids.add(thinking_msg.id)
-                    tool_names_used: list[str] = []
 
                     async def _on_progress(event: str, detail: str | None) -> None:
                         """Update the thinking indicator as the agent progresses.
@@ -1266,79 +1311,48 @@ class AgentQueueBot(commands.Bot):
                         except Exception:
                             pass  # Fail-open — don't break the chat flow
 
-                    # Phase 4 cutover: when supervisor_agent.enabled and
-                    # legacy_chat is off, project chat rides the message
-                    # queue instead of the in-process Supervisor.chat loop.
-                    # ThinkingView/progress UI stays only on the legacy path
-                    # — reply delivery for the new path arrives via the
-                    # ``message.sent`` renderer in the notification handler
-                    # (see supervisor-agent.md §9 rows 1–2).
-                    if (
-                        supervisor_session_routing_enabled(self.config)
-                        and project_channel_id is not None
-                    ):
-                        send_result = await self.agent.handler.execute(
-                            "message_send",
-                            {
-                                "project_id": project_channel_id,
-                                "to_kind": "session",
-                                "to_id": f"supervisor-{project_channel_id}",
-                                "from_kind": "user",
-                                "from_id": f"discord:{message.author.id}",
-                                "body": user_text,
-                                "thread_id": f"discord:{message.channel.id}",
-                            },
+                    try:
+                        response = await self.agent.chat(
+                            user_text,
+                            message.author.display_name,
+                            history=history,
+                            on_progress=_on_progress,
+                            context=llm_context or None,
                         )
-                        if "error" in send_result:
-                            response = f"**Message queue error:** {send_result['error']}"
-                        else:
-                            # No synchronous reply on the new path — the
-                            # supervisor session answers asynchronously via
-                            # ``message.sent`` -> notification handler.
-                            response = ""
-                    else:
+                    except Exception as e:
+                        _is_auth_error = False
                         try:
-                            response = await self.agent.chat(
-                                user_text,
-                                message.author.display_name,
-                                history=history,
-                                on_progress=_on_progress,
-                                context=llm_context or None,
-                            )
-                        except Exception as e:
-                            _is_auth_error = False
-                            try:
-                                import anthropic
+                            import anthropic
 
-                                _is_auth_error = isinstance(e, anthropic.AuthenticationError)
-                            except ModuleNotFoundError:
-                                pass
+                            _is_auth_error = isinstance(e, anthropic.AuthenticationError)
+                        except ModuleNotFoundError:
+                            pass
 
-                            if _is_auth_error:
-                                # Token may have been refreshed — reload and retry once
-                                logger.warning("Auth error, reloading credentials: %s", e)
-                                if self.agent.reload_credentials():
-                                    response = await self.agent.chat(
-                                        user_text,
-                                        message.author.display_name,
-                                        history=history,
-                                        on_progress=_on_progress,
-                                        context=llm_context or None,
-                                    )
-                                else:
-                                    response = (
-                                        "Authentication failed. Run `claude login` "
-                                        "or set `ANTHROPIC_API_KEY`."
-                                    )
+                        if _is_auth_error:
+                            # Token may have been refreshed — reload and retry once
+                            logger.warning("Auth error, reloading credentials: %s", e)
+                            if self.agent.reload_credentials():
+                                response = await self.agent.chat(
+                                    user_text,
+                                    message.author.display_name,
+                                    history=history,
+                                    on_progress=_on_progress,
+                                    context=llm_context or None,
+                                )
                             else:
-                                raise
+                                response = (
+                                    "Authentication failed. Run `claude login` "
+                                    "or set `ANTHROPIC_API_KEY`."
+                                )
+                        else:
+                            raise
 
-                    # Clean up the thinking view
-                    thinking_view.stop()
+                    # Post-response cleanup — only meaningful on the legacy path
+                    # (the supervisor-session branch returns before reaching here).
+                    if thinking_view is not None:
+                        thinking_view.stop()
 
                     if response == "Cancelled.":
-                        # Cancelled — update the thinking msg instead of
-                        # deleting it, so the user sees feedback in-place.
                         if thinking_msg:
                             try:
                                 await thinking_msg.edit(
@@ -1349,11 +1363,6 @@ class AgentQueueBot(commands.Bot):
                                 await self._delete_thinking_msg(thinking_msg)
                         thinking_msg = None
                     else:
-                        # Normal response — delete thinking indicator and reply.
-                        # On the Phase 4 supervisor-session path ``response`` is
-                        # empty because the answer comes later via
-                        # ``message.sent`` — swap the thinking indicator for a
-                        # subtle "queued" marker instead of posting a blank reply.
                         await self._delete_thinking_msg(thinking_msg)
                         thinking_msg = None
 
