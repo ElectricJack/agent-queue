@@ -20,6 +20,7 @@ from src.api import dependencies as deps
 from src.api.execute import router as execute_router
 from src.api.health import router as health_router
 from src.api.messages import router as messages_router
+from src.api.sessions import router as sessions_router
 from src.api.middleware import RequestContextMiddleware
 from src.api.websocket import WebSocketManager
 
@@ -84,6 +85,10 @@ def create_app(
     # Explicit because the path carries a session name; must be mounted
     # before the codegen routers so its concrete paths win.
     app.include_router(messages_router)
+
+    # Session SSE stream (S3): GET /api/sessions/{id}/stream — transcript
+    # replay + live tail with peek-diff fallback.
+    app.include_router(sessions_router)
 
     # Auto-generated typed command routes (POST /api/{category}/{command})
     from src.api.routers import register_all_routers

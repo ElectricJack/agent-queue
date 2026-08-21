@@ -231,10 +231,51 @@ class SessionCommandsMixin:
     async def _cmd_session_logs(self, args: dict) -> dict:
         """Normalized output for a session.
 
-        Transcript readers land in Phase S3.  Until then this is the peek
-        tail, labelled ``source: "peek"`` rather than dressed up as
-        structured transcript entries.
+        Transcript-sourced when a reader resolves for the session's
+        harness *and* the on-disk transcript is present; otherwise falls
+        back to the peek-diff tail.  Both paths label their source
+        (``"transcript"`` / ``"peek"``) so the caller knows which layer
+        the bytes came from — a silent switch is how an operator debugs
+        the wrong thing.
         """
+        from src.sessions.transcripts import resolve_reader
+
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+
+        base_dir = getattr(self.orchestrator, "transcript_base_dir", None)
+        reader = resolve_reader(session.harness, base_dir=base_dir)
+        if reader is not None:
+            path = reader.resolve_path(session.work_dir, session.session_key)
+            if path is not None:
+                try:
+                    entries, _ = await reader.read_new(path, 0)
+                except Exception:
+                    entries = []
+                if entries:
+                    tail_size = int(args.get("lines") or args.get("n") or 60)
+                    tail = entries[-tail_size:]
+                    return {
+                        "success": True,
+                        "session_id": session.id,
+                        "source": "transcript",
+                        "entries": [
+                            {
+                                "uuid": e.uuid,
+                                "parent_uuid": e.parent_uuid,
+                                "type": e.type,
+                                "text": e.text,
+                                "model": e.model,
+                                "usage": e.usage,
+                                "ts": e.ts,
+                            }
+                            for e in tail
+                        ],
+                    }
+
+        # Fallback: peek-diff.  Reuses the existing operator surface, then
+        # relabels so the caller sees where the bytes came from.
         result = await self._cmd_session_peek(args)
         if "error" in result:
             return result
