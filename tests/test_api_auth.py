@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from src.api.auth import LOCAL_SCOPE, RequestScope, SessionTokenStore, TOKEN_PREFIX
 from src.database import Database
 
 
@@ -124,3 +125,94 @@ class TestApiSessionTokenQueries:
         n = await db.delete_expired_api_tokens(now=now)
         assert n == 1
         await db.close()
+
+
+class TestSessionTokenStore:
+    async def _store(self, tmp_path, *, ttl_hours=72):
+        db = Database(str(tmp_path / "store.db"))
+        await db.initialize()
+        return db, SessionTokenStore(db, ttl_hours=ttl_hours)
+
+    async def test_mint_returns_prefixed_plaintext_once(self, tmp_path):
+        db, store = await self._store(tmp_path)
+        tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+        assert tok.startswith(TOKEN_PREFIX)
+        assert len(tok) >= len(TOKEN_PREFIX) + 32
+        h = hashlib.sha256(tok.encode()).hexdigest()
+        row = await db.get_api_token(h)
+        assert row is not None and row["session_id"] == "s1"
+        await db.close()
+
+    async def test_validate_happy_path(self, tmp_path):
+        db, store = await self._store(tmp_path)
+        tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+        scope = await store.validate(tok)
+        assert scope == RequestScope(
+            kind="session", session_id="s1", task_id="t1", project_id="p1"
+        )
+        await db.close()
+
+    async def test_validate_missing_prefix_returns_none(self, tmp_path):
+        db, store = await self._store(tmp_path)
+        assert await store.validate("bearer-without-prefix") is None
+        await db.close()
+
+    async def test_validate_unknown_token_returns_none(self, tmp_path):
+        db, store = await self._store(tmp_path)
+        assert await store.validate(TOKEN_PREFIX + "z" * 43) is None
+        await db.close()
+
+    async def test_validate_revoked_returns_none(self, tmp_path):
+        db, store = await self._store(tmp_path)
+        tok = await store.mint(session_id="s1", task_id=None, project_id=None)
+        assert await store.revoke_session("s1") == 1
+        assert await store.validate(tok) is None
+        await db.close()
+
+    async def test_validate_expired_returns_none(self, tmp_path):
+        db, store = await self._store(tmp_path)
+        # Insert directly with an already-expired row keyed by the hash of a
+        # plaintext we control.
+        pt = TOKEN_PREFIX + "x" * 43
+        real_h = hashlib.sha256(pt.encode()).hexdigest()
+        await db.insert_api_token(
+            token_hash=real_h, session_id="s2", task_id=None, project_id=None,
+            created_at=time.time() - 7200, expires_at=time.time() - 3600,
+        )
+        assert await store.validate(pt) is None
+        await db.close()
+
+    async def test_cache_short_circuits_second_validate(self, tmp_path, monkeypatch):
+        db, store = await self._store(tmp_path)
+        tok = await store.mint(session_id="s1", task_id=None, project_id=None)
+        assert await store.validate(tok) is not None
+
+        async def _boom(*_a, **_k):
+            raise AssertionError("cache miss")
+
+        monkeypatch.setattr(db, "get_api_token", _boom)
+        assert await store.validate(tok) is not None
+        await db.close()
+
+    async def test_revoke_session_invalidates_cache(self, tmp_path):
+        db, store = await self._store(tmp_path)
+        tok = await store.mint(session_id="s1", task_id=None, project_id=None)
+        assert await store.validate(tok) is not None  # populates cache
+        await store.revoke_session("s1")
+        assert await store.validate(tok) is None
+        await db.close()
+
+    async def test_revoke_expired_drops_and_reports(self, tmp_path):
+        db, store = await self._store(tmp_path)
+        await db.insert_api_token(
+            token_hash="dead" + "0" * 60,
+            session_id="sX", task_id=None, project_id=None,
+            created_at=time.time() - 7200, expires_at=time.time() - 3600,
+        )
+        n = await store.revoke_expired()
+        assert n == 1
+        await db.close()
+
+    def test_local_scope_singleton(self):
+        assert LOCAL_SCOPE.kind == "local"
+        assert LOCAL_SCOPE.session_id is None
