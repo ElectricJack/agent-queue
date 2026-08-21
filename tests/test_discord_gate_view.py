@@ -180,6 +180,7 @@ class TestGateEventHandlers:
         bot = MagicMock()
         bot._send_message = AsyncMock(return_value=MagicMock(spec=discord.Message))
         bot._safe_api_call = AsyncMock(return_value=None)
+        bot._is_authorized = MagicMock(return_value=True)
         bot.agent = MagicMock()
         bot.agent.handler = _StubHandler()
         bot.orchestrator = MagicMock()
@@ -279,8 +280,7 @@ class TestGateEventHandlers:
                     },
                 )
             assert any(
-                "gdrop" in rec.message and rec.levelno >= logging.WARNING
-                for rec in caplog.records
+                "gdrop" in rec.message and rec.levelno >= logging.WARNING for rec in caplog.records
             ), f"expected warning mentioning gate id; got: {[r.message for r in caplog.records]}"
             assert "gdrop" not in handler._gate_messages
         finally:
@@ -310,6 +310,47 @@ class TestGateEventHandlers:
             assert view is not None
             await view.on_timeout()
             assert "gto" not in handler._gate_messages
+        finally:
+            handler.shutdown()
+
+    async def test_gate_view_unauthorized_user_blocked_in_handler_integration(self):
+        """Unauthorized users cannot resolve gates via button clicks in live flow."""
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        bus = EventBus(env="dev", validate_events=False)
+        bot = self._make_bot()
+        bot._is_authorized = MagicMock(return_value=False)
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            await bus.emit(
+                "gate.created",
+                {
+                    "gate_id": "gauth",
+                    "gate_type": "approval",
+                    "project_id": "p1",
+                    "title": "Test",
+                },
+            )
+            assert "gauth" in handler._gate_messages
+            # Extract the view that was wired
+            view = bot._send_message.await_args.kwargs.get("view")
+            assert view is not None
+
+            # Create a mock interaction with an unauthorized user
+            interaction = MagicMock()
+            interaction.user = MagicMock(id=999)
+            interaction.response = MagicMock()
+            interaction.response.send_message = AsyncMock()
+
+            # Call interaction_check — should reject and send ephemeral
+            allowed = await view.interaction_check(interaction)
+            assert allowed is False
+            interaction.response.send_message.assert_awaited_once()
+            args, kwargs = interaction.response.send_message.await_args
+            text = args[0] if args else kwargs.get("content", "")
+            assert "not authorized" in text.lower()
+            assert kwargs.get("ephemeral") is True
         finally:
             handler.shutdown()
 
