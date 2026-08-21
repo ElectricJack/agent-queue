@@ -376,16 +376,23 @@ today's behavior; `messages.enabled` alone = queue/inbox/prime mode (no sessions
       `_cmd_create_task_graph`; `aq task create --graph|--from-spec|--dry-run`;
       `spec_ref` context rows (prime rendering lands with aq-surface); vault
       `specs/` directory convention documented in [[design/vault]].
-- [ ] **Phase 3 — delivery engine** (needs session-runtime named sessions + activity):
+- [x] **Phase 3 — delivery engine** (needs session-runtime named sessions + activity):
       `MessageDeliveryEngine` cascade step; wake-on-message; nudge envelope +
       `NotSubmitted` retry; `aq inbox --inject` hook path; prime injection +
       `archive_after_inject`; transcript-tail fallback; `aq chat` live via `/ws/events`.
-- [ ] **Phase 4 — routing cutover**: shipped profiles seeded; Discord `on_message`
-      chat path → `messages` rows behind `supervisor_agent.enabled`; dashboard chat page
-      (F.2); `legacy_chat` default flipped false; `main.py` supervisor init skipped.
-- [ ] **Phase 5 — planner cutover**: `planner`/`reviewer` profiles exercised end-to-end;
-      `planner.legacy_plan_discovery` default false; drain in-flight
-      `AWAITING_PLAN_APPROVAL` tasks; docs updated (`plan-parser.md` marked superseded).
+- [x] **Phase 4 — routing cutover** (partial): shipped profiles seeded; Discord `on_message`
+      chat path → `messages` rows behind `supervisor_agent.enabled`; `main.py` supervisor
+      init hardened (catches provider errors, returns False; skipped when
+      `supervisor_agent.enabled && !legacy_chat`). Dashboard chat page (F.2) deferred to
+      post-live-test. **Default flips deferred**: `legacy_chat` remains `True`,
+      `supervisor_agent.enabled` remains `False` — flipping is an ops decision after a
+      live end-to-end test, not an in-branch change.
+- [x] **Phase 5 — planner cutover** (partial): `legacy_plan_discovery` flag gates the
+      `AWAITING_PLAN_APPROVAL` region and `_phase_plan_discover`/`_phase_plan_generate`;
+      drain via task-state-aware `_should_run_legacy_plan_region`; skip-and-log when
+      disabled (no concrete replacement path yet). **Default flip deferred**:
+      `legacy_plan_discovery` remains `True`; drain of in-flight `AWAITING_PLAN_APPROVAL`
+      tasks and marking `plan-parser.md` superseded are post-live-test ops steps.
 
 ### 11.1 Open questions the delivery engine must settle (Phase 3)
 
@@ -411,10 +418,19 @@ and read by almost nothing:
 Pick one model deliberately — recipient ids are globally unique, or delivery is
 always project-scoped — and make queries, index, and event fan-out agree.
 
+**Resolution (Phase 3):** `get_pending_messages` stays project-unscoped — recipient
+ids are globally unique so cross-project collisions cannot occur. The delivery engine
+derives `project_id` per row from the message record itself for any calls that require
+it (e.g. `SessionLens` lookups). No index change needed.
+
 **`mark_delivered` and archived rows.** The compare-and-set is genuinely correct
 (three concurrent callers → `[True, False, False]`), but it only checks
 `delivered_at IS NULL`, so it succeeds on an already-**archived** row. Decide
 whether archiving should close the row to delivery.
+
+**Resolution (Phase 3):** Archiving closes the row to delivery. `mark_delivered`
+now includes `archived_at IS NULL` in its CAS predicate — an archived row returns
+`False` (already closed) rather than marking it delivered.
 
 **`task_criteria` is write-only.** `src/task_graph/creator.py` is the only writer
 and there is no getter, so `_compose_description`'s double-write of acceptance
@@ -426,6 +442,10 @@ transaction across five tables. The atomicity is *verified correct* (injected
 failure at insert 4 and during `task_criteria` both left zero rows) — but the
 right shape is a `db.transaction()` context manager on the query layer, so the
 next multi-table writer doesn't copy the reach-through as folk wisdom.
+
+**Resolution (Phase 3):** The delivery engine (`MessageDeliveryEngine`) uses only
+public `MessageQueriesMixin` methods — no `db._engine` access, no new transaction
+contexts. The `creator.py` reach-through is noted as tech debt but was not replicated.
 
 **Cosmetic, no action required now.**
 

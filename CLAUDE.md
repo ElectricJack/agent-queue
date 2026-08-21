@@ -17,6 +17,7 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 - **Workflows:** `workflow_stage_resume_handler.py`, `orphan_workflow_recovery.py`, `workflow_pipeline_view.py`
 - **Plugins:** `src/plugins/` (base, registry, loader, internal/)
 - **Internal plugins:** `src/plugins/internal/` (aq-files, aq-git, aq-notes, aq-vibecop)
+- **Messages:** `src/messages/` — `session_lens.py` (`SessionManagerProto`/`SessionLens`; supervisor messaging address `supervisor-<pid>` → runtime name `n-supervisor--<pid>`), `delivery.py` (`MessageDeliveryEngine`; per-`to_kind` delivery policy; parking for stale session rows; transcript-tail fallback). Cascade step in `run_one_cycle` behind `messages.enabled`; `aq inbox --inject` hook in claude harness; prime surfaces pending messages via `via="prime"`.
 - **Subsystems:** `src/runtimes/`, `src/discord/`, `src/git/`, `src/tokens/`, `src/chat_providers/`, `src/messaging/`
 - **Specs:** `docs/specs/` (source of truth — specs first, then code)
 - **Design specs:** `docs/specs/design/` (principles, playbooks, memory, self-improvement, coordination, vault, profiles, roadmap)
