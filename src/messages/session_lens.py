@@ -246,12 +246,35 @@ class SessionLens:
         project_id: str | None,
         since: float,
     ) -> str | None:
-        # Transcript-tail fallback is disabled at this layer until the
-        # reader offers a "read latest assistant turn since ts" call —
-        # today's :class:`TranscriptWatcher` is streaming-only. Returning
-        # ``None`` keeps the delivery engine in queue-and-retry mode,
-        # which is the correct degraded behavior (design §7).
-        _ = (kind, target_id, project_id, since)
+        """Last assistant turn on the target's transcript newer than *since*.
+
+        The watcher (:class:`~src.sessions.transcripts.watcher.TranscriptWatcher`)
+        is streaming-only — it holds byte offsets, not entries — so this
+        opens the reader itself and reads the whole file. That is fine at
+        this cadence: the delivery engine only reaches for the fallback
+        after ``reply_timeout`` (default 120 s), one recipient at a time.
+        """
+        from src.sessions.transcripts import resolve_reader
+
+        row, _handle = await self._resolve(
+            kind=kind, target_id=target_id, project_id=project_id
+        )
+        if row is None:
+            return None
+        reader = resolve_reader(row.harness)
+        if reader is None:
+            return None
+        path = reader.resolve_path(row.work_dir, row.session_key)
+        if path is None:
+            return None
+        try:
+            entries, _ = await reader.read_new(path, 0)
+        except Exception:
+            logger.debug("tail read failed for %s", row.name, exc_info=True)
+            return None
+        for entry in reversed(entries):
+            if entry.type == "assistant" and entry.ts and entry.ts > since:
+                return entry.text or None
         return None
 
     # -- internals ----------------------------------------------------------
