@@ -7,6 +7,7 @@ agent, no LLM.
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -39,9 +40,17 @@ async def db(tmp_path):
 
 @pytest.fixture
 def config():
+    class _Sessions:
+        # Match how the reconciler picks a provider: read
+        # ``config.sessions.provider``. Tests register the fake under this
+        # name so the lens resolves it via the same code path production
+        # uses — no test-shaped fallback in the implementation.
+        provider = "fake"
+
     class _Cfg:
         vault_root = "/tmp/vault"
         mcp_server = None
+        sessions = _Sessions()
     return _Cfg()
 
 
@@ -237,6 +246,64 @@ class TestEnsureStarted:
         sid = argv[i + 1]
         assert sid.count("-") == 4, f"session_id must be dashed uuid, got {sid!r}"
 
+    async def test_returns_false_when_configured_provider_missing(
+        self, db, providers, spec_builder, harness_registry, profiles_loader
+    ):
+        # Production must not silently fall back to ``fake`` when the
+        # operator has configured a different provider that isn't loaded:
+        # that would mask a misconfigured host. Lens should log and return
+        # False so the delivery engine leaves the supervisor asleep.
+        class _MissingSessions:
+            provider = "subprocess-not-loaded"
+
+        class _Cfg:
+            vault_root = "/tmp/vault"
+            mcp_server = None
+            sessions = _MissingSessions()
+
+        lens = SessionLens(
+            db=db,
+            providers=providers,  # only "fake" registered
+            spec_builder=spec_builder,
+            harness_registry=harness_registry,
+            config=_Cfg(),
+            profiles_loader=profiles_loader,
+        )
+        ok = await lens.ensure_started(
+            kind="supervisor", target_id="proj1", project_id="proj1"
+        )
+        assert ok is False
+        # No start was recorded on the fake provider.
+        assert providers.create("fake").starts == []
+
+    async def test_returns_false_when_work_dir_would_be_empty(
+        self, db, providers, spec_builder, harness_registry, profiles_loader
+    ):
+        # No vault_root AND no project_id → _supervisor_work_dir returns
+        # "". Passing that into the harness would produce a confusing
+        # downstream failure; instead skip cleanly.
+        class _Sessions:
+            provider = "fake"
+
+        class _Cfg:
+            vault_root = ""
+            mcp_server = None
+            sessions = _Sessions()
+
+        lens = SessionLens(
+            db=db,
+            providers=providers,
+            spec_builder=spec_builder,
+            harness_registry=harness_registry,
+            config=_Cfg(),
+            profiles_loader=profiles_loader,
+        )
+        ok = await lens.ensure_started(
+            kind="supervisor", target_id="proj1", project_id=None
+        )
+        assert ok is False
+        assert providers.create("fake").starts == []
+
 
 # ---------------------------------------------------------------------------
 # nudge()
@@ -266,6 +333,165 @@ class TestNudge:
             kind="task", target_id="never-existed", project_id="proj1", text="hi"
         )
         assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# tail_assistant_turn()
+# ---------------------------------------------------------------------------
+
+
+class TestTailAssistantTurn:
+    """Exercise the real ClaudeTranscriptReader.
+
+    The reader's ``base_dir`` defaults to ``Path.home()``; we redirect it
+    to ``tmp_path`` by pointing HOME at tmp_path (Path.home() honors HOME).
+    Then we plant a JSONL file exactly where Claude would write one, in
+    the shape the reader parses (see src/sessions/transcripts/claude.py:97
+    ``_entry_from_line`` — needs ``type``, ``uuid``, ``timestamp``,
+    ``message.content``).
+    """
+
+    @staticmethod
+    def _write_transcript(
+        tmp_path, work_dir: str, session_key: str, entries: list[dict]
+    ):
+        from src.sessions.transcripts.claude import slug_work_dir
+
+        slug = slug_work_dir(work_dir)
+        proj = tmp_path / ".claude" / "projects" / slug
+        proj.mkdir(parents=True, exist_ok=True)
+        path = proj / f"{session_key}.jsonl"
+        with path.open("w") as f:
+            for e in entries:
+                f.write(json.dumps(e))
+                f.write("\n")
+        return path
+
+    async def _seed_task_with_transcript(
+        self, db, providers, work_dir, session_key
+    ):
+        """Sessions row wired to the given work_dir + session_key."""
+        from src.sessions.provider import SessionSpec
+
+        fake = providers.create("fake")
+        task_id = "task-T"
+        await db.create_task(
+            Task(id=task_id, project_id="proj1", title="t", description="d")
+        )
+        session_name = f"s-{task_id}"
+        spec = SessionSpec(
+            session_name=session_name,
+            work_dir=work_dir,
+            command=("claude",),
+            instance_token="tok-t",
+        )
+        await fake.start(spec)
+        row = SessionRecord(
+            id="sess-T",
+            project_id="proj1",
+            profile_id="claude",
+            harness="claude",
+            provider="fake",
+            name=session_name,
+            lifecycle="task",
+            work_dir=work_dir,
+            epoch="e1",
+            instance_token="tok-t",
+            started_at=time.time(),
+            task_id=task_id,
+            session_key=session_key,
+            state="running",
+        )
+        await db.create_session(row)
+        return row
+
+    async def test_returns_assistant_text_newer_than_since(
+        self, db, providers, lens, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        work_dir = "/tmp/wd-tail-a"
+        session_key = "abc-123"
+        # One old user, one old assistant, one fresh assistant. We want
+        # ``since`` between the old assistant and the fresh one.
+        old_ts = "2024-01-01T00:00:00Z"
+        new_ts = "2030-01-01T00:00:00Z"
+        entries = [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "parentUuid": None,
+                "timestamp": old_ts,
+                "message": {"role": "user", "content": "hi"},
+            },
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "parentUuid": "u1",
+                "timestamp": old_ts,
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "old reply"}],
+                },
+            },
+            {
+                "type": "assistant",
+                "uuid": "a2",
+                "parentUuid": "a1",
+                "timestamp": new_ts,
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "fresh reply"}],
+                },
+            },
+        ]
+        self._write_transcript(tmp_path, work_dir, session_key, entries)
+        row = await self._seed_task_with_transcript(
+            db, providers, work_dir, session_key
+        )
+
+        # since = between the two assistant entries (2024 vs 2030).
+        import datetime as _dt
+
+        since = _dt.datetime(
+            2025, 1, 1, tzinfo=_dt.timezone.utc
+        ).timestamp()
+        got = await lens.tail_assistant_turn(
+            kind="task", target_id=row.task_id, project_id="proj1", since=since
+        )
+        assert got == "fresh reply"
+
+    async def test_returns_none_when_nothing_newer_than_since(
+        self, db, providers, lens, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        work_dir = "/tmp/wd-tail-b"
+        session_key = "def-456"
+        old_ts = "2020-01-01T00:00:00Z"
+        entries = [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "parentUuid": None,
+                "timestamp": old_ts,
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "stale"}],
+                },
+            },
+        ]
+        self._write_transcript(tmp_path, work_dir, session_key, entries)
+        row = await self._seed_task_with_transcript(
+            db, providers, work_dir, session_key
+        )
+
+        # since = now → the 2020 entry is not newer.
+        got = await lens.tail_assistant_turn(
+            kind="task",
+            target_id=row.task_id,
+            project_id="proj1",
+            since=time.time(),
+        )
+        assert got is None
 
 
 # ---------------------------------------------------------------------------

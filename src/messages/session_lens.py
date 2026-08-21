@@ -185,15 +185,32 @@ class SessionLens:
             logger.warning("harness %r not registered; cannot start supervisor", harness_name)
             return False
 
-        # Match the reconciler: use the operator's configured provider.
+        # Match the reconciler exactly: use the operator's configured
+        # provider. Tests must register the fake under that same name (or
+        # set ``config.sessions.provider = "fake"``) rather than relying on
+        # a production special-case that would mask a misconfigured host.
         sessions_cfg = getattr(self._config, "sessions", None)
         provider_name = getattr(sessions_cfg, "provider", None) or "subprocess"
-        if self._providers.get(provider_name) is None:
-            # Registry may only carry ``fake`` in tests / minimal setups.
-            provider_name = "fake" if self._providers.get("fake") else provider_name
-        provider = self._providers.create(provider_name)
+        try:
+            provider = self._providers.create(provider_name)
+        except ValueError:
+            logger.warning(
+                "configured session provider %r not registered; cannot start supervisor",
+                provider_name,
+            )
+            return False
 
         work_dir = self._supervisor_work_dir(project_id)
+        if not work_dir:
+            # No vault_root configured and no project_id → nowhere sensible
+            # to run the supervisor. Better to skip than to pass an empty
+            # cwd to the harness and get a confusing downstream failure.
+            logger.debug(
+                "supervisor work_dir is empty (vault_root unset, project_id=%r); "
+                "refusing to start",
+                project_id,
+            )
+            return False
         # `claude --session-id` rejects bare hex — must be dashed.
         session_id = str(uuid.uuid4())
         instance_token = uuid.uuid4().hex[:12]
