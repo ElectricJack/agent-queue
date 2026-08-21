@@ -1,0 +1,270 @@
+"""Work-graph WG-4: explain + ready frontier.
+
+Covers docs/specs/implementation/work-graph.md §6.3 and §11:
+
+* one golden per reason code (blocked_dependency / blocked_gate /
+  no_idle_agent / workspace_locked / budget_exhausted / rate_limited /
+  held),
+* ``hold:*`` label exclusion from the ready frontier,
+* cross-project blocking-dep naming,
+* explain works between ticks via the cached ``SchedulerState``,
+* ``_describe_task_blocker`` returns ``reasons[0]["detail"]`` formatting.
+"""
+
+from __future__ import annotations
+
+import time
+from unittest.mock import MagicMock
+
+import pytest
+
+from src.commands.handler import CommandHandler
+from src.config import AppConfig, DiscordConfig
+from src.database import Database
+from src.explain import build_capacity_reasons
+from src.models import AgentState, Project, Task, TaskStatus
+from src.orchestrator import Orchestrator
+
+
+PROJECT_ID = "proj-explain"
+
+
+@pytest.fixture
+async def db(tmp_path):
+    database = Database(str(tmp_path / "explain.db"))
+    await database.initialize()
+    await database.create_project(Project(id=PROJECT_ID, name="Explain"))
+    yield database
+    await database.close()
+
+
+@pytest.fixture
+def config(tmp_path):
+    return AppConfig(
+        discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+        workspace_dir=str(tmp_path / "workspaces"),
+        database_path=str(tmp_path / "test.db"),
+        data_dir=str(tmp_path / "data"),
+    )
+
+
+@pytest.fixture
+async def handler(db, config):
+    orch = Orchestrator(config)
+    orch.db = db
+    orch.git = MagicMock()
+    return CommandHandler(orch, config)
+
+
+async def mktask(db, tid, project_id=PROJECT_ID, status=TaskStatus.DEFINED, **kw):
+    await db.create_task(
+        Task(id=tid, project_id=project_id, title=tid, description=tid, status=status, **kw)
+    )
+    return tid
+
+
+def make_state(**kw):
+    """Minimal SchedulerState stand-in for capacity-reason tests."""
+    from src.scheduler import SchedulerState
+
+    return SchedulerState(
+        projects=kw.get("projects", []),
+        tasks=kw.get("tasks", []),
+        agents=kw.get("agents", []),
+        project_token_usage=kw.get("project_token_usage", {}),
+        project_active_agent_counts=kw.get("project_active_agent_counts", {}),
+        tasks_completed_in_window={},
+        project_available_workspaces=kw.get("project_available_workspaces", {}),
+        workspace_locks=kw.get("workspace_locks", {}),
+        global_budget=kw.get("global_budget"),
+        global_tokens_used=kw.get("global_tokens_used", 0),
+        provider_cooldowns=kw.get("provider_cooldowns", {}),
+        project_constraints=kw.get("project_constraints", {}),
+        now=kw.get("now", time.time()),
+        affinity_wait_seconds=kw.get("affinity_wait_seconds", 60),
+    )
+
+
+# ── Golden per reason code ───────────────────────────────────────────────
+
+
+class TestExplainCommand:
+    async def test_blocked_dependency_reason(self, handler, db):
+        await mktask(db, "dep")
+        await mktask(db, "t")
+        await db.add_dependency("t", "dep")
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        assert res["success"] is True
+        codes = [r["code"] for r in res["reasons"]]
+        assert "blocked_dependency" in codes
+        d = next(r for r in res["reasons"] if r["code"] == "blocked_dependency")
+        assert d["ref"] == "dep"
+
+    async def test_blocked_gate_reason(self, handler, db):
+        await mktask(db, "t")
+        gid = await db.create_gate(
+            PROJECT_ID, "human", "review", waiter_task_ids=["t"]
+        )
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        assert any(
+            r["code"] == "blocked_gate" and r["ref"] == gid for r in res["reasons"]
+        )
+
+    async def test_hold_label_reason(self, handler, db):
+        await mktask(db, "t", status=TaskStatus.READY)
+        await db.add_task_label("t", "hold:alice")
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        assert any(
+            r["code"] == "held" and r["ref"] == "hold:alice"
+            for r in res["reasons"]
+        )
+
+    async def test_cross_project_dep_names_the_other_project(self, handler, db):
+        other = "proj-other"
+        await db.create_project(Project(id=other, name="Other"))
+        await mktask(db, "far-dep", project_id=other)
+        await mktask(db, "t")
+        await db.add_dependency("t", "far-dep")
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        d = next(r for r in res["reasons"] if r["code"] == "blocked_dependency")
+        assert "proj-other" in d["detail"]
+
+    async def test_unknown_task(self, handler):
+        res = await handler._cmd_explain_task({"task_id": "no-such"})
+        assert res["success"] is False
+
+    async def test_missing_task_id(self, handler):
+        res = await handler._cmd_explain_task({})
+        assert res["success"] is False
+
+
+# ── Capacity reasons (build_capacity_reasons golden set) ─────────────────
+
+
+class TestBuildCapacityReasons:
+    def test_no_idle_agent(self):
+        proj = Project(id=PROJECT_ID, name="p")
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        state = make_state(
+            projects=[proj], project_available_workspaces={PROJECT_ID: 1}
+        )
+        codes = [r["code"] for r in build_capacity_reasons(task, state, {PROJECT_ID: 1}, {})]
+        assert "no_idle_agent" in codes
+
+    def test_workspace_locked(self):
+        proj = Project(id=PROJECT_ID, name="p")
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        state = make_state(projects=[proj])
+        codes = [r["code"] for r in build_capacity_reasons(task, state, {}, {PROJECT_ID: 2})]
+        assert "workspace_locked" in codes
+
+    def test_budget_exhausted(self):
+        proj = Project(id=PROJECT_ID, name="p")
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        state = make_state(
+            projects=[proj], global_budget=100, global_tokens_used=200
+        )
+        codes = [r["code"] for r in build_capacity_reasons(task, state, {PROJECT_ID: 1}, {PROJECT_ID: 1})]
+        assert "budget_exhausted" in codes
+
+    def test_rate_limited(self):
+        from src.models import Agent
+
+        proj = Project(id=PROJECT_ID, name="p")
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        agent = Agent(
+            id="a1",
+            name="a1",
+            profile_id="claude",
+            state=AgentState.IDLE,
+        )
+        agent.project_id = PROJECT_ID  # type: ignore[attr-defined]
+        now = time.time()
+        state = make_state(
+            projects=[proj],
+            agents=[agent],
+            provider_cooldowns={"claude": now + 100},
+            now=now,
+        )
+        reasons = build_capacity_reasons(task, state, {PROJECT_ID: 1}, {PROJECT_ID: 1})
+        codes = [r["code"] for r in reasons]
+        assert "rate_limited" in codes
+
+
+# ── _describe_task_blocker uses reasons[0]["detail"] ─────────────────────
+
+
+class TestDescribeTaskBlocker:
+    async def test_reuses_capacity_reasons(self, handler):
+        """The wrapper returns ``reasons[0]['detail']`` on match, and the
+        capacity-ordering "ready but not picked" fallback otherwise."""
+        proj = Project(id=PROJECT_ID, name="p")
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        state = make_state(projects=[proj], project_available_workspaces={PROJECT_ID: 0})
+        s = handler.orchestrator._describe_task_blocker(task, state, {}, {PROJECT_ID: 0})
+        assert "workspace" in s
+
+    async def test_fallback(self, handler):
+        proj = Project(id=PROJECT_ID, name="p")
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        state = make_state(
+            projects=[proj], project_available_workspaces={PROJECT_ID: 1}
+        )
+        s = handler.orchestrator._describe_task_blocker(
+            task, state, {PROJECT_ID: 1}, {PROJECT_ID: 1}
+        )
+        assert s == "ready but not picked this tick (capacity/priority ordering)"
+
+
+# ── _cmd_project_ready ───────────────────────────────────────────────────
+
+
+class TestProjectReady:
+    async def test_hold_labeled_tasks_excluded(self, handler, db):
+        await mktask(db, "a", status=TaskStatus.READY)
+        await mktask(db, "b", status=TaskStatus.READY)
+        await db.add_task_label("a", "hold:me")
+        res = await handler._cmd_project_ready({"project_id": PROJECT_ID})
+        assert res["success"] is True
+        ids = [r["task_id"] for r in res["ready"]]
+        assert "b" in ids
+        assert "a" not in ids
+        # 'a' should show up in withheld with a `held` reason.
+        held_reasons = [w for w in res["withheld"] if w["task_id"] == "a"]
+        assert held_reasons
+        assert any(r["code"] == "held" for r in held_reasons[0]["reasons"])
+
+    async def test_frontier_includes_ready_unblocked(self, handler, db):
+        await mktask(db, "r1", status=TaskStatus.READY)
+        await mktask(db, "r2", status=TaskStatus.READY)
+        res = await handler._cmd_project_ready({"project_id": PROJECT_ID})
+        assert {t["task_id"] for t in res["ready"]} == {"r1", "r2"}
+
+    async def test_missing_project_id(self, handler):
+        res = await handler._cmd_project_ready({})
+        assert res["success"] is False
+
+
+# ── Explain works between ticks via cached SchedulerState ────────────────
+
+
+class TestBetweenTicks:
+    async def test_uses_cached_scheduler_state(self, handler, db):
+        await mktask(db, "t", status=TaskStatus.READY)
+        # No tick has run — cached snapshot is None; explain should still
+        # return graph reasons (there are none) without erroring.
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        assert res["success"] is True
+
+        # Now install a synthetic cached state; explain must include capacity.
+        proj = Project(id=PROJECT_ID, name="p")
+        task_row = await db.get_task("t")
+        state = make_state(
+            projects=[proj], project_available_workspaces={PROJECT_ID: 0}
+        )
+        handler.orchestrator._last_scheduler_state = state
+        handler.orchestrator._last_scheduler_workspace_counts = {PROJECT_ID: 0}
+        handler.orchestrator._last_scheduler_idle_by_project = {}
+        res2 = await handler._cmd_explain_task({"task_id": task_row.id})
+        codes = [r["code"] for r in res2["reasons"]]
+        assert "workspace_locked" in codes

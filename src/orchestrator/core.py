@@ -96,7 +96,6 @@ from src.git.manager import GitManager
 from src.models import (
     AgentProfile,
     AgentState,
-    ProjectStatus,
     RepoSourceType,
     Task,
     TaskStatus,
@@ -158,6 +157,18 @@ def _parse_reset_time(error_msg: str) -> float | None:
 NotifyCallback = _NotifyCallbackType
 ThreadSendCallback = _ThreadSendCallbackType
 CreateThreadCallback = _CreateThreadCallbackType
+
+
+def _idle_by_project(state: "SchedulerState") -> dict[str, int]:
+    """Count idle agents grouped by project id."""
+    counts: dict[str, int] = {}
+    for agent in state.agents:
+        if agent.state != AgentState.IDLE:
+            continue
+        pid = getattr(agent, "project_id", None)
+        if pid:
+            counts[pid] = counts.get(pid, 0) + 1
+    return counts
 
 
 class Orchestrator(
@@ -285,6 +296,12 @@ class Orchestrator(
         # Throttle: gate sweep (WG-3) runs at most once per
         # config.work_graph.gate_sweep_interval_seconds.
         self._last_gate_sweep: float = 0.0
+        # Cached snapshot from the most recent ``_schedule`` tick so
+        # ``_cmd_explain_task`` can build capacity reasons between ticks
+        # (WG-4, work-graph §6.3).
+        self._last_scheduler_state = None
+        self._last_scheduler_workspace_counts: dict[str, int] = {}
+        self._last_scheduler_idle_by_project: dict[str, int] = {}
         # EventBus subscription that resolves ``event`` gates live.  Set by
         # ``_subscribe_event_gates`` on initialize; kept as an attribute so
         # tests can toggle it deterministically.
@@ -2527,6 +2544,12 @@ class Orchestrator(
         )
 
         actions = Scheduler.schedule(state)
+        # Cache the state snapshot + supporting maps so ``_cmd_explain_task``
+        # can answer between ticks with the same "why not scheduled" reasons
+        # the scheduler-blocker log uses (WG-4, work-graph §6.3).
+        self._last_scheduler_state = state
+        self._last_scheduler_workspace_counts = dict(workspace_counts)
+        self._last_scheduler_idle_by_project = _idle_by_project(state)
         # Log *why* READY tasks didn't get assigned, but only when the set of
         # unassignable reasons changes. Silent scheduler no-ops previously
         # left tasks stuck in READY forever with zero log signal.
@@ -2556,15 +2579,7 @@ class Orchestrator(
 
         # Build a per-project view of idle agents so each task reason is
         # concrete ("0 idle agents on project foo" vs generic).
-        idle_by_project: dict[str, int] = {}
-        for agent in state.agents:
-            if agent.state != AgentState.IDLE:
-                continue
-            # An agent is associated with a project via its locked workspace;
-            # idle agents have no current task but still belong to a project.
-            pid = getattr(agent, "project_id", None)
-            if pid:
-                idle_by_project[pid] = idle_by_project.get(pid, 0) + 1
+        idle_by_project = _idle_by_project(state)
 
         current_reasons: dict[str, str] = {}
         for task in ready_tasks:
@@ -2599,42 +2614,16 @@ class Orchestrator(
     ) -> str | None:
         """Best-effort reason string for why *task* wasn't scheduled this tick.
 
-        Returns ``None`` if the task didn't need to be scheduled (e.g. it's
-        just waiting on its project to be active). The reasons are heuristic
-        and rank-ordered from most specific to least; the caller only uses
-        the first match.
+        Thin wrapper over :func:`src.explain.build_capacity_reasons` so this
+        method, ``_cmd_explain_task`` and the dashboard share one source of
+        truth (WG-4, work-graph §6.3).  Returns the first capacity reason's
+        ``detail`` string, or the "ready but not picked" fallback.
         """
-        # Project-level gates
-        project = next((p for p in state.projects if p.id == task.project_id), None)
-        if not project:
-            return f"project '{task.project_id}' not found"
-        if project.status != ProjectStatus.ACTIVE:
-            return f"project '{task.project_id}' status={project.status.value}"
-        pc = state.project_constraints.get(task.project_id) if state.project_constraints else None
-        if pc and pc.pause_scheduling:
-            return f"project '{task.project_id}' pause_scheduling=True"
-        # Workspace availability
-        avail = workspace_counts.get(task.project_id, 0)
-        if avail == 0:
-            return f"no available workspace on project '{task.project_id}'"
-        # Idle-agent availability (the classic failure mode)
-        idle = idle_by_project.get(task.project_id, 0)
-        if idle == 0:
-            return f"no idle agent on project '{task.project_id}'"
-        # Global budget
-        if state.global_budget is not None and state.global_tokens_used >= state.global_budget:
-            return (
-                f"global token budget exhausted ({state.global_tokens_used}/{state.global_budget})"
-            )
-        # Provider cooldown
-        for agent in state.agents:
-            if (
-                agent.state == AgentState.IDLE
-                and getattr(agent, "project_id", None) == task.project_id
-            ):
-                cool = state.provider_cooldowns.get(agent.profile_id, 0)
-                if cool > state.now:
-                    return f"provider '{agent.profile_id}' in cooldown for {int(cool - state.now)}s"
+        from src.explain import build_capacity_reasons
+
+        reasons = build_capacity_reasons(task, state, workspace_counts, idle_by_project)
+        if reasons:
+            return reasons[0]["detail"]
         return "ready but not picked this tick (capacity/priority ordering)"
 
     _NO_PR_REMINDER_INTERVAL: int = 3600  # 1 hour

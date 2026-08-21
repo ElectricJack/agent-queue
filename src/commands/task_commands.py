@@ -3056,3 +3056,128 @@ class TaskCommandsMixin:
             info["agent_summary"] = summary[:1000]
 
         return info
+
+    # -- WG-4: explain + ready frontier ------------------------------------
+
+    async def _cmd_explain_task(self, args: dict) -> dict:
+        """Return the ordered list of reasons *task_id* isn't running.
+
+        Graph reasons first (persistent blockers), then capacity reasons
+        (transient — from the last scheduler tick's cached snapshot).
+        Cross-project blocking deps name the other project in ``detail``.
+        See docs/specs/design/work-graph.md §9.
+        """
+        from src.explain import Reason, build_capacity_reasons
+
+        task_id = args.get("task_id")
+        if not task_id:
+            return {"success": False, "error": "task_id is required"}
+        task = await self.db.get_task(str(task_id))
+        if task is None:
+            return {"success": False, "error": f"task '{task_id}' not found"}
+
+        reasons: list[Reason] = []
+
+        # 1. hold:* labels (task is deliberately withheld).
+        try:
+            labels = await self.db.get_task_labels(str(task_id))
+        except Exception:
+            labels = []
+        for lbl in labels:
+            if lbl.startswith("hold:"):
+                reasons.append(
+                    Reason(code="held", detail=f"label '{lbl}' withholds task", ref=lbl)
+                )
+
+        # 2. Blocking dependencies (open gates + typed edges).
+        try:
+            blockers = await self.db.get_blocking_dependencies(str(task_id))
+        except Exception:
+            blockers = []
+        for dep_id, dep_title, dep_status, dep_type, dep_project in blockers:
+            if dep_project and dep_project != task.project_id:
+                detail = (
+                    f"blocked by {dep_type} dep '{dep_id}' ({dep_title}) "
+                    f"status={dep_status} in project '{dep_project}'"
+                )
+            else:
+                detail = (
+                    f"blocked by {dep_type} dep '{dep_id}' ({dep_title}) "
+                    f"status={dep_status}"
+                )
+            reasons.append(
+                Reason(code="blocked_dependency", detail=detail, ref=dep_id)
+            )
+
+        # 3. Open/expired gates attached to this task.
+        try:
+            gates = await self.db.get_gates_for_task(str(task_id))
+        except Exception:
+            gates = []
+        for g in gates:
+            if g["status"] != "resolved":
+                reasons.append(
+                    Reason(
+                        code="blocked_gate",
+                        detail=(
+                            f"gate '{g['id']}' ({g['gate_type']}: {g['title']}) "
+                            f"status={g['status']}"
+                        ),
+                        ref=g["id"],
+                    )
+                )
+
+        # 4. Capacity reasons — only relevant when the task is READY.
+        state = getattr(self.orchestrator, "_last_scheduler_state", None)
+        if state is not None:
+            ws_counts = getattr(self.orchestrator, "_last_scheduler_workspace_counts", {})
+            idle = getattr(self.orchestrator, "_last_scheduler_idle_by_project", {})
+            reasons.extend(build_capacity_reasons(task, state, ws_counts, idle))
+
+        return {"success": True, "reasons": reasons}
+
+    async def _cmd_project_ready(self, args: dict) -> dict:
+        """Ready frontier for a project + withheld tasks with reasons.
+
+        Frontier excludes ``hold:*``-labeled tasks (design §6).  Withheld
+        section lists DEFINED/BLOCKED tasks and the reasons keeping them
+        out of the frontier.
+        """
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"success": False, "error": "project_id is required"}
+        labels = args.get("labels")
+        any_label = args.get("any_label")
+
+        try:
+            frontier = await self.db.get_ready_frontier(
+                str(project_id), labels=labels, any_label=any_label
+            )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+        ready = [
+            {
+                "task_id": t.id,
+                "title": t.title,
+                "priority": t.priority,
+            }
+            for t in frontier
+        ]
+
+        # Withheld: everything not READY-and-unblocked in DEFINED/BLOCKED.
+        from src.models import TaskStatus
+
+        withheld: list[dict] = []
+        for status in (TaskStatus.DEFINED, TaskStatus.BLOCKED, TaskStatus.READY):
+            for task in await self.db.list_tasks(project_id=str(project_id), status=status):
+                if status == TaskStatus.READY and not task.is_blocked:
+                    # Might still be withheld by a hold:* label.
+                    lbls = await self.db.get_task_labels(task.id)
+                    if not any(x.startswith("hold:") for x in lbls):
+                        continue
+                res = await self._cmd_explain_task({"task_id": task.id})
+                if res.get("success") and res.get("reasons"):
+                    withheld.append({"task_id": task.id, "reasons": res["reasons"]})
+
+        return {"success": True, "ready": ready, "withheld": withheld}
