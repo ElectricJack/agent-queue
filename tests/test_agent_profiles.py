@@ -44,7 +44,7 @@ async def db(tmp_path):
 @pytest.fixture
 def sample_profile():
     return AgentProfile(
-        id="reviewer",
+        id="test-reviewer",
         name="Code Reviewer",
         description="Read-only code review agent",
         model="claude-sonnet-4-5-20250514",
@@ -63,9 +63,9 @@ def sample_profile():
 class TestProfileDatabaseCRUD:
     async def test_create_and_get_profile(self, db, sample_profile):
         await db.create_profile(sample_profile)
-        result = await db.get_profile("reviewer")
+        result = await db.get_profile("test-reviewer")
         assert result is not None
-        assert result.id == "reviewer"
+        assert result.id == "test-reviewer"
         assert result.name == "Code Reviewer"
         assert result.description == "Read-only code review agent"
         assert result.model == "claude-sonnet-4-5-20250514"
@@ -93,8 +93,8 @@ class TestProfileDatabaseCRUD:
 
     async def test_update_profile(self, db, sample_profile):
         await db.create_profile(sample_profile)
-        await db.update_profile("reviewer", name="Senior Reviewer", model="")
-        result = await db.get_profile("reviewer")
+        await db.update_profile("test-reviewer", name="Senior Reviewer", model="")
+        result = await db.get_profile("test-reviewer")
         assert result.name == "Senior Reviewer"
         assert result.model == ""
         # Other fields unchanged
@@ -103,18 +103,18 @@ class TestProfileDatabaseCRUD:
     async def test_update_profile_json_fields(self, db, sample_profile):
         await db.create_profile(sample_profile)
         await db.update_profile(
-            "reviewer",
+            "test-reviewer",
             allowed_tools=["Read", "Glob"],
             mcp_servers=["new"],
         )
-        result = await db.get_profile("reviewer")
+        result = await db.get_profile("test-reviewer")
         assert result.allowed_tools == ["Read", "Glob"]
         assert result.mcp_servers == ["new"]
 
     async def test_delete_profile(self, db, sample_profile):
         await db.create_profile(sample_profile)
-        await db.delete_profile("reviewer")
-        result = await db.get_profile("reviewer")
+        await db.delete_profile("test-reviewer")
+        result = await db.get_profile("test-reviewer")
         assert result is None
 
     async def test_delete_profile_clears_task_references(self, db, sample_profile):
@@ -126,13 +126,13 @@ class TestProfileDatabaseCRUD:
                 project_id="p-1",
                 title="Test",
                 description="Test",
-                profile_id="reviewer",
+                profile_id="test-reviewer",
             )
         )
         task = await db.get_task("t-1")
-        assert task.profile_id == "reviewer"
+        assert task.profile_id == "test-reviewer"
 
-        await db.delete_profile("reviewer")
+        await db.delete_profile("test-reviewer")
         task = await db.get_task("t-1")
         assert task.profile_id is None
 
@@ -142,13 +142,13 @@ class TestProfileDatabaseCRUD:
             Project(
                 id="p-1",
                 name="test",
-                default_profile_id="reviewer",
+                default_profile_id="test-reviewer",
             )
         )
         project = await db.get_project("p-1")
-        assert project.default_profile_id == "reviewer"
+        assert project.default_profile_id == "test-reviewer"
 
-        await db.delete_profile("reviewer")
+        await db.delete_profile("test-reviewer")
         project = await db.get_project("p-1")
         assert project.default_profile_id is None
 
@@ -168,11 +168,11 @@ class TestTaskProfileId:
                 project_id="p-1",
                 title="Review code",
                 description="Review the PR",
-                profile_id="reviewer",
+                profile_id="test-reviewer",
             )
         )
         task = await db.get_task("t-1")
-        assert task.profile_id == "reviewer"
+        assert task.profile_id == "test-reviewer"
 
     async def test_create_task_without_profile_id(self, db):
         await db.create_project(Project(id="p-1", name="test"))
@@ -198,9 +198,9 @@ class TestTaskProfileId:
                 description="Test",
             )
         )
-        await db.update_task("t-1", profile_id="reviewer")
+        await db.update_task("t-1", profile_id="test-reviewer")
         task = await db.get_task("t-1")
-        assert task.profile_id == "reviewer"
+        assert task.profile_id == "test-reviewer"
 
     async def test_clear_task_profile_id(self, db, sample_profile):
         await db.create_profile(sample_profile)
@@ -211,7 +211,7 @@ class TestTaskProfileId:
                 project_id="p-1",
                 title="Test",
                 description="Test",
-                profile_id="reviewer",
+                profile_id="test-reviewer",
             )
         )
         await db.update_task("t-1", profile_id=None)
@@ -226,11 +226,11 @@ class TestProjectDefaultProfileId:
             Project(
                 id="p-1",
                 name="test",
-                default_profile_id="reviewer",
+                default_profile_id="test-reviewer",
             )
         )
         project = await db.get_project("p-1")
-        assert project.default_profile_id == "reviewer"
+        assert project.default_profile_id == "test-reviewer"
 
     async def test_create_project_without_default_profile(self, db):
         await db.create_project(Project(id="p-1", name="test"))
@@ -240,9 +240,9 @@ class TestProjectDefaultProfileId:
     async def test_update_project_default_profile(self, db, sample_profile):
         await db.create_profile(sample_profile)
         await db.create_project(Project(id="p-1", name="test"))
-        await db.update_project("p-1", default_profile_id="reviewer")
+        await db.update_project("p-1", default_profile_id="test-reviewer")
         project = await db.get_project("p-1")
-        assert project.default_profile_id == "reviewer"
+        assert project.default_profile_id == "test-reviewer"
 
 
 # ---------------------------------------------------------------------------
@@ -267,33 +267,33 @@ class TestProfileResolution:
 
     async def test_resolve_task_profile(self, orch):
         """Task with profile_id → use task's profile."""
-        await orch.db.create_profile(AgentProfile(id="reviewer", name="Reviewer"))
+        await orch.db.create_profile(AgentProfile(id="test-reviewer", name="Reviewer"))
         await orch.db.create_project(Project(id="p-1", name="test"))
         task = Task(
             id="t-1",
             project_id="p-1",
             title="Test",
             description="Test",
-            profile_id="reviewer",
+            profile_id="test-reviewer",
         )
         profile = await orch._resolve_profile(task)
         assert profile is not None
-        assert profile.id == "reviewer"
+        assert profile.id == "test-reviewer"
 
     async def test_resolve_project_default_profile(self, orch):
         """Task without profile_id, project with default → use project's default."""
-        await orch.db.create_profile(AgentProfile(id="reviewer", name="Reviewer"))
+        await orch.db.create_profile(AgentProfile(id="test-reviewer", name="Reviewer"))
         await orch.db.create_project(
             Project(
                 id="p-1",
                 name="test",
-                default_profile_id="reviewer",
+                default_profile_id="test-reviewer",
             )
         )
         task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
         profile = await orch._resolve_profile(task)
         assert profile is not None
-        assert profile.id == "reviewer"
+        assert profile.id == "test-reviewer"
 
     async def test_resolve_no_profile(self, orch):
         """Task without profile_id, project without default → None."""
@@ -304,7 +304,7 @@ class TestProfileResolution:
 
     async def test_task_profile_overrides_project_default(self, orch):
         """Task profile_id takes precedence over project default_profile_id."""
-        await orch.db.create_profile(AgentProfile(id="reviewer", name="Reviewer"))
+        await orch.db.create_profile(AgentProfile(id="test-reviewer", name="Reviewer"))
         await orch.db.create_profile(AgentProfile(id="developer", name="Developer"))
         await orch.db.create_project(
             Project(
@@ -318,10 +318,10 @@ class TestProfileResolution:
             project_id="p-1",
             title="Test",
             description="Test",
-            profile_id="reviewer",
+            profile_id="test-reviewer",
         )
         profile = await orch._resolve_profile(task)
-        assert profile.id == "reviewer"
+        assert profile.id == "test-reviewer"
 
     async def test_resolve_missing_profile_returns_none(self, orch):
         """Task references a profile_id that doesn't exist → None."""
@@ -363,7 +363,7 @@ class TestConfigFromProfile:
 
     def test_profile_overrides_allowed_tools(self):
         profile = AgentProfile(
-            id="reviewer",
+            id="test-reviewer",
             name="Reviewer",
             allowed_tools=["Read", "Glob", "Grep"],
         )
@@ -382,7 +382,7 @@ class TestConfigFromProfile:
 
     def test_full_override(self):
         profile = AgentProfile(
-            id="reviewer",
+            id="test-reviewer",
             name="Reviewer",
             model="claude-opus-4-20250514",
             permission_mode="plan",
@@ -409,7 +409,7 @@ discord:
   bot_token: "test-token"
   guild_id: "123456"
 agent_profiles:
-  reviewer:
+  test-reviewer:
     name: "Code Reviewer"
     allowed_tools:
       - Read
@@ -428,7 +428,7 @@ agent_profiles:
         assert len(config.agent_profiles) == 2
 
         # Find reviewer
-        reviewer = next(p for p in config.agent_profiles if p.id == "reviewer")
+        reviewer = next(p for p in config.agent_profiles if p.id == "test-reviewer")
         assert reviewer.name == "Code Reviewer"
         assert reviewer.allowed_tools == ["Read", "Glob", "Grep"]
         assert reviewer.system_prompt_suffix == "You are a code reviewer."
@@ -463,7 +463,7 @@ class TestProfileSyncFromConfig:
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
                 AgentProfileConfig(
-                    id="reviewer",
+                    id="test-reviewer",
                     name="Reviewer",
                     allowed_tools=["Read", "Glob"],
                 ),
@@ -472,7 +472,7 @@ class TestProfileSyncFromConfig:
         orch = Orchestrator(config)
         await orch.initialize()
 
-        profile = await orch.db.get_profile("reviewer")
+        profile = await orch.db.get_profile("test-reviewer")
         assert profile is not None
         assert profile.name == "Reviewer"
         assert profile.allowed_tools == ["Read", "Glob"]
@@ -491,7 +491,7 @@ class TestProfileSyncFromConfig:
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
-                AgentProfileConfig(id="reviewer", name="Reviewer v1"),
+                AgentProfileConfig(id="test-reviewer", name="Reviewer v1"),
             ],
         )
         orch = Orchestrator(config)
@@ -504,12 +504,12 @@ class TestProfileSyncFromConfig:
             database_path=str(tmp_path / "test.db"),
             workspace_dir=str(tmp_path / "workspaces"),
             agent_profiles=[
-                AgentProfileConfig(id="reviewer", name="Reviewer v2"),
+                AgentProfileConfig(id="test-reviewer", name="Reviewer v2"),
             ],
         )
         orch2 = Orchestrator(config2)
         await orch2.initialize()
-        profile = await orch2.db.get_profile("reviewer")
+        profile = await orch2.db.get_profile("test-reviewer")
         # Vault markdown, written on first startup, still says "Reviewer v1",
         # and the vault sync runs after YAML sync — so vault wins.
         assert profile.name == "Reviewer v1"
@@ -541,50 +541,50 @@ class TestProfileCommands:
         result = await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Code Reviewer",
                 "allowed_tools": ["Read", "Glob", "Grep"],
             },
         )
-        assert result.get("created") == "reviewer"
+        assert result.get("created") == "test-reviewer"
 
         result = await handler.execute("list_profiles", {})
         # Orchestrator initialize also installs baseline profiles (supervisor,
         # claude-code) from the default vault markdown, so the list includes
         # those alongside the one we created.
         profile_ids = {p["id"] for p in result["profiles"]}
-        assert "reviewer" in profile_ids
+        assert "test-reviewer" in profile_ids
         assert result["count"] == len(result["profiles"])
 
     async def test_get_profile(self, handler):
         await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Reviewer",
             },
         )
-        result = await handler.execute("get_profile", {"profile_id": "reviewer"})
-        assert result["id"] == "reviewer"
+        result = await handler.execute("get_profile", {"profile_id": "test-reviewer"})
+        assert result["id"] == "test-reviewer"
         assert result["name"] == "Reviewer"
 
     async def test_edit_profile(self, handler):
         await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Reviewer",
             },
         )
         result = await handler.execute(
             "edit_profile",
             {
-                "profile_id": "reviewer",
+                "profile_id": "test-reviewer",
                 "name": "Senior Reviewer",
                 "allowed_tools": ["Read"],
             },
         )
-        assert result.get("updated") == "reviewer"
+        assert result.get("updated") == "test-reviewer"
         assert "name" in result["fields"]
         assert "allowed_tools" in result["fields"]
 
@@ -592,28 +592,28 @@ class TestProfileCommands:
         await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Reviewer",
             },
         )
-        result = await handler.execute("delete_profile", {"profile_id": "reviewer"})
-        assert result.get("deleted") == "reviewer"
+        result = await handler.execute("delete_profile", {"profile_id": "test-reviewer"})
+        assert result.get("deleted") == "test-reviewer"
 
-        result = await handler.execute("get_profile", {"profile_id": "reviewer"})
+        result = await handler.execute("get_profile", {"profile_id": "test-reviewer"})
         assert "error" in result
 
     async def test_create_duplicate_profile_fails(self, handler):
         await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Reviewer",
             },
         )
         result = await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Another Reviewer",
             },
         )
@@ -624,7 +624,7 @@ class TestProfileCommands:
         await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Reviewer",
             },
         )
@@ -637,10 +637,10 @@ class TestProfileCommands:
             {
                 "project_id": pid,
                 "title": "Review code",
-                "profile_id": "reviewer",
+                "profile_id": "test-reviewer",
             },
         )
-        assert result.get("profile_id") == "reviewer"
+        assert result.get("profile_id") == "test-reviewer"
 
     async def test_create_task_with_invalid_profile_fails(self, handler):
         await handler.execute("create_project", {"name": "test"})
@@ -662,7 +662,7 @@ class TestProfileCommands:
         await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Reviewer",
             },
         )
@@ -683,7 +683,7 @@ class TestProfileCommands:
             "edit_task",
             {
                 "task_id": task_id,
-                "profile_id": "reviewer",
+                "profile_id": "test-reviewer",
             },
         )
         assert result.get("updated") == task_id
@@ -693,7 +693,7 @@ class TestProfileCommands:
         await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Reviewer",
             },
         )
@@ -706,7 +706,7 @@ class TestProfileCommands:
             {
                 "project_id": pid,
                 "title": "Test",
-                "profile_id": "reviewer",
+                "profile_id": "test-reviewer",
             },
         )
         task_id = result["created"]
@@ -727,7 +727,7 @@ class TestProfileCommands:
         await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Reviewer",
             },
         )
@@ -739,14 +739,14 @@ class TestProfileCommands:
             "edit_project",
             {
                 "project_id": pid,
-                "default_profile_id": "reviewer",
+                "default_profile_id": "test-reviewer",
             },
         )
         assert result.get("updated") == pid
         assert "default_profile_id" in result["fields"]
 
         project = await handler.orchestrator.db.get_project(pid)
-        assert project.default_profile_id == "reviewer"
+        assert project.default_profile_id == "test-reviewer"
 
     async def test_edit_project_invalid_profile_fails(self, handler):
         await handler.execute("create_project", {"name": "test"})
@@ -767,7 +767,7 @@ class TestProfileCommands:
         await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Reviewer",
             },
         )
@@ -780,13 +780,13 @@ class TestProfileCommands:
             {
                 "project_id": pid,
                 "title": "Test",
-                "profile_id": "reviewer",
+                "profile_id": "test-reviewer",
             },
         )
         task_id = result["created"]
 
         result = await handler.execute("get_task", {"task_id": task_id})
-        assert result["profile_id"] == "reviewer"
+        assert result["profile_id"] == "test-reviewer"
 
 
 # ---------------------------------------------------------------------------
@@ -875,7 +875,7 @@ class TestProfileEnforcement:
         orch, factory = setup
         await orch.db.create_profile(
             AgentProfile(
-                id="reviewer",
+                id="test-reviewer",
                 name="Reviewer",
                 allowed_tools=["Read", "Glob", "Grep"],
             )
@@ -895,13 +895,13 @@ class TestProfileEnforcement:
                 title="Review",
                 description="Review code",
                 status=TaskStatus.READY,
-                profile_id="reviewer",
+                profile_id="test-reviewer",
             )
         )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
         assert factory.last_profile is not None
-        assert factory.last_profile.id == "reviewer"
+        assert factory.last_profile.id == "test-reviewer"
 
     async def test_execute_task_no_profile_passes_none(self, setup):
         orch, factory = setup
@@ -1157,15 +1157,15 @@ class TestExportImport:
         await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Code Reviewer",
                 "allowed_tools": ["Read", "Glob", "Grep"],
                 "system_prompt_suffix": "You are a code reviewer.",
             },
         )
-        result = await handler.execute("export_profile", {"profile_id": "reviewer"})
+        result = await handler.execute("export_profile", {"profile_id": "test-reviewer"})
         assert "yaml" in result
-        assert "reviewer" in result["yaml"]
+        assert "test-reviewer" in result["yaml"]
         assert "Code Reviewer" in result["yaml"]
         await orch.db.close()
 

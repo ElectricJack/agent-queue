@@ -850,7 +850,36 @@ project-specific QA practices.
 # The supervisor is its own agent type — it coordinates agents, manages
 # tasks, and maintains high-level project understanding.  This profile is
 # written to vault/agent-types/supervisor/profile.md at startup if it doesn't exist.
-SUPERVISOR_PROFILE = """\
+#: Path to the shipped supervisor profile source (see
+#: ``src/profiles/defaults/supervisor/profile.md``).  This is the file
+#: :func:`ensure_default_profiles` copies into
+#: ``vault/agent-types/supervisor/profile.md`` on fresh installs.  The
+#: legacy chat-provider supervisor profile was retired when the
+#: named-session supervisor (supervisor-agent spec §4) landed.
+_SUPERVISOR_PROFILE_SOURCE = os.path.join(
+    os.path.dirname(__file__), "profiles", "defaults", "supervisor", "profile.md"
+)
+
+
+def _load_supervisor_profile_source() -> str:
+    """Read the shipped supervisor profile markdown.
+
+    Kept as a function (not evaluated at import time by tests) so a fresh
+    checkout without the file surfaces the missing default rather than an
+    import-time crash — mirrors how :func:`ensure_default_profiles`
+    behaves when its source directory is missing.
+    """
+    try:
+        with open(_SUPERVISOR_PROFILE_SOURCE, encoding="utf-8") as fh:
+            return fh.read()
+    except FileNotFoundError:
+        return ""
+
+
+#: Shipped supervisor profile content.  Sourced from the on-disk file so
+#: ``ensure_supervisor_profile`` and callers that assert on shipped
+#: content agree with what :func:`ensure_default_profiles` actually seeds.
+SUPERVISOR_PROFILE = _load_supervisor_profile_source() or """\
 ---
 id: supervisor
 name: Supervisor
@@ -1330,7 +1359,11 @@ def ensure_vault_layout(data_dir: str) -> None:
     ensure_default_harnesses(data_dir)
     ensure_default_playbooks(data_dir)
     ensure_default_agent_type_playbooks(data_dir)
-    ensure_supervisor_profile(data_dir)
+    # Ship the supervisor/planner/reviewer profiles into vault before
+    # legacy per-profile writers run, so a fresh install boots with the
+    # spec §4/§9 profiles the SessionLens and planner flow expect.
+    # Write-if-absent: operator edits survive reseed.
+    ensure_default_profiles(data_dir)
     # Two bundled Claude Code profiles — same CLI, different models + a
     # shared ``claude`` memory scope (see ``memory_scope_id`` in each
     # profile's frontmatter).  Tasks pick the model per-task via
@@ -1529,6 +1562,64 @@ def ensure_default_harnesses(data_dir: str) -> dict:
             "Installed %d default harness(es) to %s: %s",
             len(result["created"]),
             harness_dir,
+            ", ".join(result["created"]),
+        )
+    return result
+
+
+def ensure_default_profiles(data_dir: str) -> dict:
+    """Install bundled agent profiles into ``vault/agent-types/<id>/profile.md``.
+
+    Ships the three defaults required by the supervisor-agent spec
+    (``docs/specs/design/supervisor-agent.md`` §4 for ``supervisor``, §9
+    for ``planner`` and ``reviewer``) so a fresh install boots with the
+    profiles the SessionLens cold-start and the planner flow expect —
+    without the operator authoring anything.
+
+    Mirrors :func:`ensure_default_harnesses`: sources live in-tree at
+    ``src/profiles/defaults/<id>/profile.md``; each is copied to
+    ``vault/agent-types/<id>/profile.md`` on startup.
+
+    **Idempotent**: an existing ``profile.md`` is never overwritten.  The
+    vault copy is the source of truth once it exists; operator edits
+    survive upgrades, and a user who wants the shipped version back
+    deletes their copy.
+
+    Args:
+        data_dir: The root data directory (e.g. ``~/.agent-queue``).
+
+    Returns:
+        Dict with ``created`` (profile-id list) and ``skipped``
+        (profile-id list) — both are ids, not paths.
+    """
+    defaults_root = os.path.join(os.path.dirname(__file__), "profiles", "defaults")
+    agent_types_root = os.path.join(data_dir, "vault", "agent-types")
+
+    result: dict = {"created": [], "skipped": []}
+    if not os.path.isdir(defaults_root):
+        logger.debug("No default profiles directory found at %s", defaults_root)
+        return result
+
+    for profile_id in sorted(os.listdir(defaults_root)):
+        src_path = os.path.join(defaults_root, profile_id, "profile.md")
+        if not os.path.isfile(src_path):
+            # Only entries with a profile.md are considered — skip stray
+            # files or empty scaffolding directories.
+            continue
+        dst_dir = os.path.join(agent_types_root, profile_id)
+        dst_path = os.path.join(dst_dir, "profile.md")
+        if os.path.exists(dst_path):
+            result["skipped"].append(profile_id)
+            continue
+        os.makedirs(dst_dir, exist_ok=True)
+        shutil.copy2(src_path, dst_path)
+        result["created"].append(profile_id)
+
+    if result["created"]:
+        logger.info(
+            "Installed %d default profile(s) into %s: %s",
+            len(result["created"]),
+            agent_types_root,
             ", ".join(result["created"]),
         )
     return result

@@ -220,7 +220,7 @@ class TestL0RoleFromProfile:
         orch, factory = orch_env
 
         profile = AgentProfile(
-            id="reviewer",
+            id="test-reviewer",
             name="Code Reviewer",
             system_prompt_suffix="You review PRs for correctness and style.",
         )
@@ -236,7 +236,7 @@ class TestL0RoleFromProfile:
                 title="Test task-level L0",
                 description="Review the code",
                 status=TaskStatus.READY,
-                profile_id="reviewer",  # task-level profile
+                profile_id="test-reviewer",  # task-level profile
             )
         )
 
@@ -701,7 +701,7 @@ class TestL0L1ProfileWithoutProjectFacts:
         orch.plugin_registry.register_plugin_service("aq-memory", "memory", mock_mem)
 
         profile = AgentProfile(
-            id="reviewer",
+            id="test-reviewer",
             name="Code Reviewer",
             system_prompt_suffix="You review code.",
         )
@@ -723,7 +723,7 @@ class TestL0L1ProfileWithoutProjectFacts:
         # Verify agent_type comes from profile.id
         mock_mem.load_l1_facts.assert_called_once_with(
             project_id="p-1",
-            agent_type="reviewer",
+            agent_type="test-reviewer",
         )
 
     async def test_agent_type_none_when_no_profile(self, orch_env):

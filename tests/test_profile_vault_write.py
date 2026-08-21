@@ -88,7 +88,7 @@ class TestAgentProfileToMarkdown:
         """When only system_prompt_suffix is provided, it's split into sections."""
         suffix = "## Role\nYou are a reviewer.\n\n## Rules\n- Check for bugs\n\n## Reflection\nThink about it."
         md = agent_profile_to_markdown(
-            id="reviewer",
+            id="test-reviewer",
             name="Reviewer",
             system_prompt_suffix=suffix,
         )
@@ -400,11 +400,11 @@ class TestCommandVaultWrite:
         """create_profile should write a markdown file to the vault."""
         result = await handler.execute(
             "create_profile",
-            {"id": "reviewer", "name": "Reviewer", "model": "claude-sonnet-4-6"},
+            {"id": "test-reviewer", "name": "Reviewer", "model": "claude-sonnet-4-6"},
         )
-        assert result.get("created") == "reviewer"
+        assert result.get("created") == "test-reviewer"
 
-        vault_path = handler._vault_profile_path("reviewer")
+        vault_path = handler._vault_profile_path("test-reviewer")
         assert os.path.isfile(vault_path)
 
         # Verify the file content is valid markdown
@@ -412,7 +412,7 @@ class TestCommandVaultWrite:
             content = f.read()
         parsed = parse_profile(content)
         assert parsed.is_valid
-        assert parsed.frontmatter.id == "reviewer"
+        assert parsed.frontmatter.id == "test-reviewer"
         assert parsed.config["model"] == "claude-sonnet-4-6"
 
     async def test_create_syncs_to_db(self, handler):
@@ -434,14 +434,14 @@ class TestCommandVaultWrite:
         """edit_profile should update the vault markdown file."""
         await handler.execute(
             "create_profile",
-            {"id": "reviewer", "name": "Reviewer"},
+            {"id": "test-reviewer", "name": "Reviewer"},
         )
-        vault_path = handler._vault_profile_path("reviewer")
+        vault_path = handler._vault_profile_path("test-reviewer")
 
         await handler.execute(
             "edit_profile",
             {
-                "profile_id": "reviewer",
+                "profile_id": "test-reviewer",
                 "name": "Senior Reviewer",
                 "model": "claude-sonnet-4-6",
             },
@@ -457,13 +457,13 @@ class TestCommandVaultWrite:
         """edit_profile should sync updated file to DB."""
         await handler.execute(
             "create_profile",
-            {"id": "reviewer", "name": "Reviewer"},
+            {"id": "test-reviewer", "name": "Reviewer"},
         )
         await handler.execute(
             "edit_profile",
-            {"profile_id": "reviewer", "allowed_tools": ["Read", "Grep"]},
+            {"profile_id": "test-reviewer", "allowed_tools": ["Read", "Grep"]},
         )
-        profile = await handler.db.get_profile("reviewer")
+        profile = await handler.db.get_profile("test-reviewer")
         assert profile.allowed_tools == ["Read", "Grep"]
 
     async def test_edit_preserves_existing_fields(self, handler):
@@ -491,33 +491,33 @@ class TestCommandVaultWrite:
         """delete_profile should remove the vault markdown file."""
         await handler.execute(
             "create_profile",
-            {"id": "reviewer", "name": "Reviewer"},
+            {"id": "test-reviewer", "name": "Reviewer"},
         )
-        vault_path = handler._vault_profile_path("reviewer")
+        vault_path = handler._vault_profile_path("test-reviewer")
         assert os.path.isfile(vault_path)
 
-        await handler.execute("delete_profile", {"profile_id": "reviewer"})
+        await handler.execute("delete_profile", {"profile_id": "test-reviewer"})
         assert not os.path.isfile(vault_path)
 
     async def test_delete_removes_db_row(self, handler):
         """delete_profile should also remove the DB row."""
         await handler.execute(
             "create_profile",
-            {"id": "reviewer", "name": "Reviewer"},
+            {"id": "test-reviewer", "name": "Reviewer"},
         )
-        await handler.execute("delete_profile", {"profile_id": "reviewer"})
-        profile = await handler.db.get_profile("reviewer")
+        await handler.execute("delete_profile", {"profile_id": "test-reviewer"})
+        profile = await handler.db.get_profile("test-reviewer")
         assert profile is None
 
     async def test_duplicate_detection_via_vault(self, handler):
         """Creating a profile with an existing vault file should fail."""
         await handler.execute(
             "create_profile",
-            {"id": "reviewer", "name": "Reviewer"},
+            {"id": "test-reviewer", "name": "Reviewer"},
         )
         result = await handler.execute(
             "create_profile",
-            {"id": "reviewer", "name": "Another Reviewer"},
+            {"id": "test-reviewer", "name": "Another Reviewer"},
         )
         assert "error" in result
         assert "already exists" in result["error"]
@@ -609,13 +609,13 @@ agent_profile:
         await handler.execute(
             "create_profile",
             {
-                "id": "reviewer",
+                "id": "test-reviewer",
                 "name": "Reviewer",
                 "system_prompt_suffix": "## Role\nYou review code.\n\n## Rules\n- Be thorough",
             },
         )
 
-        vault_path = handler._vault_profile_path("reviewer")
+        vault_path = handler._vault_profile_path("test-reviewer")
         with open(vault_path) as f:
             content = f.read()
         parsed = parse_profile(content)

@@ -1137,9 +1137,9 @@ def test_supervisor_profile_parses_without_errors():
 def test_supervisor_profile_has_all_sections():
     """The supervisor profile includes the documented sections.
 
-    Supervisor does not enforce a tool whitelist (it's a chat-provider
-    LLM with access to every registered plugin tool), so no ``## Tools``
-    block is present.  Claude Code agent profiles still ship one.
+    Per supervisor-agent spec §4 the shipped supervisor is a named
+    session with Role, Config, Tools, and Rules blocks — no MCP Servers
+    or Install blocks (session-runtime owns transport concerns).
     """
     from src.profiles.parser import parse_profile
 
@@ -1148,15 +1148,11 @@ def test_supervisor_profile_has_all_sections():
 
     # Structured sections
     assert "config" in result.sections
-    assert "mcp servers" in result.sections
-    assert "install" in result.sections
-    # No Tools block — the supervisor doesn't honour a whitelist.
-    assert "tools" not in result.sections
+    assert "tools" in result.sections
 
     # Prompt sections
     assert "role" in result.sections
     assert "rules" in result.sections
-    assert "reflection" in result.sections
 
 
 def test_supervisor_profile_frontmatter():
@@ -1167,55 +1163,59 @@ def test_supervisor_profile_frontmatter():
     assert result.frontmatter.id == "supervisor"
     assert result.frontmatter.name == "Supervisor"
     assert "profile" in result.frontmatter.tags
-    assert "supervisor" in result.frontmatter.tags
+    # Shipped default carries the ``shipped`` tag (supervisor-agent §4).
+    assert "shipped" in result.frontmatter.tags
 
 
 def test_supervisor_profile_config():
-    """The supervisor profile Config block has the chat-provider fields the supervisor reads at startup.
+    """The supervisor profile Config block has the named-session fields.
 
-    Supervisor reads ``provider``, ``model``, ``max_tokens``,
-    ``playbook_max_tokens``, and ``thinking_budget`` from this block —
-    see ``Supervisor._merge_profile_into_chat_config``.  Claude-specific
-    fields like ``permission_mode`` don't apply to the supervisor
-    (it's a chat-provider LLM, not a Claude Code agent).
+    Per supervisor-agent spec §4 the shipped supervisor runs as a
+    long-lived named session with an on-demand wake mode — the
+    SessionLens cold-start reads these fields when it starts a
+    ``supervisor-<pid>`` session.
     """
     from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
     assert result.config is not None
-    assert "provider" in result.config
-    assert "model" in result.config
-    assert "max_tokens" in result.config
-    assert "playbook_max_tokens" in result.config
-    assert "thinking_budget" in result.config
+    assert result.config.get("harness") == "claude"
+    assert result.config.get("lifecycle") == "named"
+    assert result.config.get("mode") == "on_demand"
+    assert result.config.get("wake_mode") == "resume"
+    assert isinstance(result.config.get("idle_timeout"), int)
 
 
-def test_supervisor_profile_has_no_tools_block():
-    """The supervisor profile intentionally omits the ``## Tools`` section.
+def test_supervisor_profile_ships_tools_allowlist():
+    """The supervisor profile ships an explicit allow-list of `aq` verbs.
 
-    The supervisor is a chat-provider LLM that exposes every registered
-    plugin tool via its tool registry; an ``allowed``/``denied`` list in
-    the profile would be documentation-only since no code currently
-    enforces it.  Rather than ship misleading config, the template
-    omits the block entirely.
+    Per supervisor-agent spec §4 the shipped supervisor carries a tight
+    ``allowed`` list — task queries, mutation verbs it needs for graph
+    steering, gate handling, and the messaging surface — with an empty
+    ``denied`` list.
     """
     from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
-    assert "tools" not in result.sections
-    # Tools attribute defaults to an empty dict — no whitelist, no denylist.
-    assert result.tools == {}
+    assert "tools" in result.sections
+    assert isinstance(result.tools.get("allowed"), list)
+    assert result.tools["allowed"], "supervisor allowed-tools list must not be empty"
+    assert result.tools.get("denied") == []
 
 
-def test_supervisor_profile_role_mentions_coordination():
-    """The orchestrator Role section describes coordination responsibilities."""
+def test_supervisor_profile_role_mentions_supervisor_duties():
+    """The Role section describes the supervisor's non-coding responsibilities."""
     from src.profiles.parser import parse_profile
 
     result = parse_profile(SUPERVISOR_PROFILE)
     assert result.role is not None
     role_lower = result.role.lower()
     assert "supervisor" in role_lower
-    assert "delegate" in role_lower
+    # Spec §4 Role text names all four duties; check a couple of anchors
+    # so the tests fail loudly if the shipped body drifts from the spec.
+    assert "answer" in role_lower
+    assert "plan" in role_lower
+    assert "escalate" in role_lower
 
 
 def test_supervisor_profile_syncs_to_agent_profile():
