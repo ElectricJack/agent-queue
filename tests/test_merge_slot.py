@@ -755,3 +755,42 @@ class TestPhaseIntegratePushFailureRecordsReason:
             assert "push_failed" in str(meta)
         finally:
             await o.shutdown()
+
+    async def test_default_branch_push_non_git_error_sets_rejection_reason(
+        self, tmp_path, base_repo_for_integrate,
+    ):
+        """Non-GitError from default-branch push is caught symmetrically."""
+        base_repo = base_repo_for_integrate
+        o = await _make_worktree_orch(tmp_path)
+        try:
+            await _seed_wt_project(o, base_repo)
+            task, agent, slot = await _prep_task_in_slot(o, base_repo)
+            (Path(slot) / "work.txt").write_text("hello\n")
+            _git(["add", "-A"], cwd=slot)
+            _git(["commit", "-m", "work"], cwd=slot)
+
+            # Let the task-branch push (apush_branch) succeed normally,
+            # but make _arun raise a non-GitError when pushing the
+            # default branch ("main") so we exercise the broadened
+            # except-Exception path in the default-branch push block.
+            orig_arun = o.git._arun
+
+            async def arun_boom(args, cwd=None, **kw):
+                if args and args[0] == "push" and "main" in args:
+                    raise RuntimeError("simulated network failure on default push")
+                return await orig_arun(args, cwd=cwd, **kw)
+
+            o.git._arun = arun_boom
+
+            ws = await o.db.get_workspace_for_task(task.id)
+            ctx = _make_pipeline_ctx(task, agent, slot, ws.id)
+
+            result = await o._phase_integrate(ctx)
+            assert result == PhaseResult.STOP
+
+            meta = await o.db.get_task_meta(task.id, "rejection_reason")
+            assert meta is not None
+            assert "push_failed" in str(meta)
+            assert "main" in str(meta)
+        finally:
+            await o.shutdown()

@@ -397,8 +397,11 @@ class TestAdoptExisting:
             lines = await o.git.aworktree_list(str(base_repo))
             paths = [line["path"] for line in lines]
             assert str(slot_dir) not in paths
-            # (report.pruned may or may not carry it depending on git's output)
+            # report.pruned must name the path that was cleaned up.
             assert isinstance(report.pruned, list)
+            assert any(str(slot_dir) in p for p in report.pruned), (
+                f"Expected {slot_dir} in report.pruned, got: {report.pruned}"
+            )
         finally:
             await o.shutdown()
 

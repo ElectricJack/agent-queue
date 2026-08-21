@@ -1490,7 +1490,12 @@ class GitOpsMixin:
                         pass
                 base_path = base_ws.workspace_path if base_ws else workspace
 
-                await renew_merge_slot(self.db, task.project_id, task.id, ttl)
+                if not await renew_merge_slot(self.db, task.project_id, task.id, ttl):
+                    logger.warning(
+                        "Task %s: merge slot lease lost before local base merge; aborting",
+                        task.id,
+                    )
+                    return PhaseResult.STOP
 
                 merged = await self.git.amerge_branch(
                     base_path, branch, default_branch
@@ -1544,7 +1549,7 @@ class GitOpsMixin:
                         await self.git._arun(
                             ["push", "origin", default_branch], cwd=base_path
                         )
-                    except GitError as e:
+                    except Exception as e:
                         logger.warning(
                             "Task %s: push %s failed: %s", task.id, default_branch, e
                         )
