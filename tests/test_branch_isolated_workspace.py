@@ -186,12 +186,18 @@ def git_repo(tmp_path):
 
 @pytest.fixture
 async def orch(tmp_path):
-    """Create an orchestrator with mock adapters and a fresh database."""
+    """Create an orchestrator with mock adapters and a fresh database.
+
+    Branch-isolated tests predate the worktrees-enabled-by-default flip
+    (worktree-execution P6); they exercise the legacy exclusive-clone
+    fallback path, so the flag is explicitly disabled here.
+    """
     config = AppConfig(
         data_dir=str(tmp_path / "data"),
         database_path=str(tmp_path / "test.db"),
         workspace_dir=str(tmp_path / "workspaces"),
     )
+    config.worktrees.enabled = False
     o = Orchestrator(config, runtimes=MockAdapterFactory())
     await o.initialize()
     yield o

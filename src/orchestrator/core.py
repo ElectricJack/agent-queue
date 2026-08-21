@@ -290,6 +290,7 @@ class Orchestrator(
             retention_days=config.llm_logging.retention_days,
         )
         self._last_log_cleanup: float = 0.0
+        self._last_worktree_reaper: float = 0.0
         self._last_auto_archive: float = 0.0
         self._last_memory_compact: float = 0.0  # TODO: remove once v2 compaction is wired
         self._last_failed_blocked_report: float = 0.0
@@ -2370,13 +2371,79 @@ class Orchestrator(
     async def _reap_worktree_slots(self) -> None:
         """Break expired merge-slot leases and reap retired worktree slots.
 
-        Wave 2 lane 2B fills this in — see
-        docs/specs/implementation/worktree-execution.md §6.2 (cascade steps
-        7d/7e).  Expected body: ``break_expired_merge_slots`` plus a
-        rate-limited retired-slot sweep and ``prune_branches``.
+        Cascade steps 7d/7e — worktree-execution spec §6.2.  Merge-slot
+        lease breaking runs every cycle (cheap); slot reap + branch prune
+        run rate-limited (once every 5 minutes, like log cleanup) so a
+        packed cycle does not stall on filesystem I/O.
         """
         if not self.config.worktrees.enabled:
             return
+
+        # 7d — break expired merge leases (every cycle; SQL only)
+        try:
+            from src.orchestrator.merge_slot import break_expired_merge_slots
+
+            await break_expired_merge_slots(self.db, self.bus)
+        except Exception as e:
+            logger.warning("break_expired_merge_slots failed: %s", e)
+
+        # 7e — retired-slot sweep + branch prune (rate-limited)
+        import time as _time
+
+        now = _time.time()
+        if now - self._last_worktree_reaper < 300:
+            return
+        self._last_worktree_reaper = now
+
+        try:
+            projects = await self.db.list_projects()
+        except Exception as e:
+            logger.warning("_reap_worktree_slots: list_projects failed: %s", e)
+            return
+
+        mgr = self._worktree_slots()
+        for project in projects:
+            try:
+                workspaces = await self.db.list_workspaces(project_id=project.id)
+            except Exception:
+                continue
+            # Slot rows whose index >= cap are retired (§5).
+            cap = project.max_concurrent_agents or 0
+            for ws in workspaces:
+                if not ws.is_slot:
+                    continue
+                if ws.locked_by_task_id or ws.locked_by_agent_id:
+                    continue  # in use; not a candidate
+                if (ws.slot_index or 0) < cap:
+                    continue  # still within cap; kept as inventory
+                try:
+                    await mgr.reap_slot(ws, reason="retired")
+                except Exception as e:
+                    logger.warning("reap_slot(%s) failed: %s", ws.id, e)
+
+            # Branch prune: one call per worktree-mode base for the project.
+            # Non-worktree bases (LINK targets, exclusive clones) may not even
+            # be git repos — the prune probe would error harmlessly but noisily.
+            from src.models import KIND_MODE_WORKTREE
+
+            for ws in workspaces:
+                if ws.is_slot:
+                    continue
+                if ws.kind_id is None:
+                    continue
+                try:
+                    kind = await self.db.resolve_workspace_kind(
+                        project.id, ws.kind_id
+                    )
+                except Exception:
+                    kind = None
+                if kind is None or getattr(kind, "mode", None) != KIND_MODE_WORKTREE:
+                    continue
+                try:
+                    default_branch = project.repo_default_branch or "main"
+                    await mgr.prune_branches(ws, default_branch=default_branch)
+                except Exception as e:
+                    logger.debug("prune_branches(%s) failed: %s", ws.id, e)
 
     async def _reconcile_sessions(self) -> None:
         """Reconcile desired vs. actual agent sessions — one reconciler tick.

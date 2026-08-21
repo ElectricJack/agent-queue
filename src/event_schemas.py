@@ -536,6 +536,29 @@ _WORKTREE_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Merge slot / integration pipeline events (worktree-execution §4, §8)
+# ---------------------------------------------------------------------------
+
+_MERGE_SCHEMAS: dict[str, EventSchema] = {
+    "merge.started": {
+        "required": ["project_id", "task_id", "branch", "target"],
+        "optional": ["workspace_id"],
+    },
+    "merge.succeeded": {
+        "required": ["project_id", "task_id", "branch", "target"],
+        "optional": ["workspace_id", "pr_url", "merged_at"],
+    },
+    "merge.conflict": {
+        "required": ["project_id", "task_id", "branch", "target", "files"],
+        "optional": ["workspace_id", "rejection_reason"],
+    },
+    "merge.lease_broken": {
+        "required": ["project_id"],
+        "optional": ["reason"],
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Playbook events  (emitted by PlaybookExecutor — Phase 0.2.5)
 # ---------------------------------------------------------------------------
 
@@ -716,6 +739,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_CHAT_SCHEMAS,
     **_GIT_SCHEMAS,
     **_WORKTREE_SCHEMAS,
+    **_MERGE_SCHEMAS,
     **_PLAYBOOK_SCHEMAS,
     **_HUMAN_SCHEMAS,
     **_WORKFLOW_SCHEMAS,

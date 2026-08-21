@@ -140,6 +140,9 @@ async def orch_env(tmp_path):
         database_path=str(tmp_path / "test.db"),
         workspace_dir=str(tmp_path / "workspaces"),
     )
+    # These prompt-tier tests use MockAdapter git and non-real paths, which
+    # the worktrees P6 default (True) tries to provision as slots.  Disable.
+    config.worktrees.enabled = False
     factory = CapturingMockAdapterFactory()
     o = Orchestrator(config, runtimes=factory)
     await o.initialize()

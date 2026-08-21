@@ -18,6 +18,11 @@ from src.models import (
     Task,
     TaskStatus,
 )
+from src.orchestrator.merge_slot import (
+    acquire_merge_slot,
+    release_merge_slot,
+    renew_merge_slot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -527,6 +532,24 @@ class GitOpsMixin:
         if result == PhaseResult.ERROR:
             return (ctx.pr_url, False)
 
+        # Phase 3: Integration (worktree-mode only).  For exclusive-clone
+        # tasks the verify phase already handled the merge; for worktree
+        # slots this is where rebase + push + merge happens under the
+        # per-project merge slot lease.  Worktree-execution spec §6.5.
+        if await self._task_is_worktree_mode(ctx):
+            try:
+                result = await self._phase_integrate(ctx)
+            except Exception as e:
+                logger.error(
+                    "Pipeline phase 'integrate' failed for task %s: %s",
+                    ctx.task.id,
+                    e,
+                    exc_info=True,
+                )
+                return (ctx.pr_url, False)
+            if result in (PhaseResult.STOP, PhaseResult.ERROR):
+                return (ctx.pr_url, False)
+
         return (ctx.pr_url, True)
 
     async def _phase_verify(self, ctx: PipelineContext) -> PhaseResult:
@@ -603,6 +626,13 @@ class GitOpsMixin:
         else:
             requires_approval = task.requires_approval
 
+        # Worktree-mode tasks integrate via _phase_integrate under the merge
+        # slot, not via _phase_verify's auto-merge remediations.  The agent
+        # is expected to leave the slot on its task branch with everything
+        # committed; the integration phase rebases + pushes + merges.
+        # Worktree-execution spec §6.5.
+        is_worktree_task = await self._task_is_worktree_mode(ctx)
+
         # ── Auto-remediate: commit uncommitted changes ──────────────────
         # Agents frequently forget to commit their work before completing.
         # Rather than reopening the task (which often repeats the same
@@ -631,8 +661,13 @@ class GitOpsMixin:
         # For normal tasks (not intermediate, not PR workflow), the agent
         # should have merged to the default branch.  If they forgot, do
         # it automatically to avoid retry loops.
+        #
+        # Skipped for worktree-mode tasks: integration is _phase_integrate's
+        # job (under the merge slot); the slot deliberately stays on the
+        # task branch.  Worktree-execution spec §6.5.
         if (
-            not is_intermediate
+            not is_worktree_task
+            and not is_intermediate
             and not requires_approval
             and not has_uncommitted
             and current_branch != default_branch
@@ -698,8 +733,11 @@ class GitOpsMixin:
         # frequently forget this step, leaving the workspace on the task
         # branch.  Rather than reopening (which often repeats the mistake),
         # perform the merge automatically.
+        #
+        # Skipped for worktree-mode tasks — _phase_integrate owns the merge.
         if (
-            not is_intermediate
+            not is_worktree_task
+            and not is_intermediate
             and not requires_approval
             and not has_uncommitted
             and current_branch != default_branch
@@ -864,6 +902,28 @@ class GitOpsMixin:
                                 True,  # fixable — agent can push and create PR
                             )
                         )
+        elif is_worktree_task:
+            # Worktree-mode: agent is expected to leave the slot on its task
+            # branch with everything committed.  Integration is
+            # _phase_integrate's job under the merge slot — so verification
+            # here only checks the local commit state (already covered by
+            # auto-remediate above); nothing to fail on.
+            if has_uncommitted:
+                failures.append(
+                    (
+                        f"Uncommitted changes remain in the slot on "
+                        f"`{task.branch_name}` after auto-remediation.",
+                        True,
+                    )
+                )
+            if current_branch != task.branch_name:
+                failures.append(
+                    (
+                        f"Expected the slot to be on `{task.branch_name}` "
+                        f"but found `{current_branch}`.",
+                        True,
+                    )
+                )
         else:
             # Normal task / final subtask: should be on default, merged, pushed
             if current_branch == default_branch:
@@ -1186,3 +1246,364 @@ class GitOpsMixin:
             max_retries,
         )
         return True
+
+    # ── worktree-mode integration ─────────────────────────────────────────
+
+    async def _task_is_worktree_mode(self, ctx: PipelineContext) -> bool:
+        """True when the task's workspace kind is in worktree mode.
+
+        Worktree-execution spec §6.5: the integrate phase runs whenever
+        the task's project-repo kind is configured as worktree mode —
+        including the *base* workspace of that kind, not only the slots.
+        Discrimination is by the workspace kind's ``mode`` field; we
+        fall back to ``is_slot`` only when the kind lookup fails, so a
+        misconfigured install still routes slot workspaces correctly.
+        """
+        from src.models import KIND_MODE_WORKTREE
+
+        if not getattr(self.config, "worktrees", None) or not self.config.worktrees.enabled:
+            return False
+        ws_id = getattr(ctx, "workspace_id", None)
+        if not ws_id:
+            return False
+        try:
+            ws = await self.db.get_workspace(ws_id)
+        except Exception as e:
+            logger.warning("worktree-mode detection: get_workspace(%s) failed: %s", ws_id, e)
+            return False
+        if ws is None:
+            return False
+        kind_id = getattr(ws, "kind_id", None)
+        project_id = getattr(ws, "project_id", None)
+        if kind_id and project_id:
+            try:
+                kind = await self.db.resolve_workspace_kind(project_id, kind_id)
+            except Exception as e:
+                logger.warning(
+                    "worktree-mode detection: resolve_workspace_kind(%s,%s) failed: %s",
+                    project_id, kind_id, e,
+                )
+                return getattr(ws, "is_slot", False)
+            if kind is not None:
+                return getattr(kind, "mode", None) == KIND_MODE_WORKTREE
+        # No kind information — fall back to slot-based detection.
+        return getattr(ws, "is_slot", False)
+
+    async def _phase_integrate(self, ctx: PipelineContext) -> PhaseResult:
+        """Integration under the per-project merge slot.
+
+        Sequence (worktree-execution spec §6.5, design §4.2/§4.3):
+
+        1. Acquire the merge slot (blocking-with-timeout via lease).
+           Emit ``merge.started``.
+        2. In the slot: ``git fetch origin``, ``git rebase origin/<default>``.
+           Conflict → abort, record ``rejection_reason`` + conflicting
+           files, transition the task to BLOCKED, emit ``merge.conflict``,
+           release the slot, return STOP.
+        3. Push the rebased branch (never ``--force`` to *default*).
+        4. In the base: merge the task branch into default and push
+           (skipped when ``requires_approval`` — the agent will open a PR
+           on the pushed branch).
+        5. Emit ``merge.succeeded``, record ``merged_at`` metadata,
+           release the slot, return CONTINUE.
+
+        The slot is released in a ``finally`` so a crash between steps
+        does not starve every other task on the project.
+        """
+        task = ctx.task
+        workspace = ctx.workspace_path
+        default_branch = ctx.default_branch or "main"
+        branch = task.branch_name
+        if not workspace or not branch:
+            return PhaseResult.CONTINUE
+
+        # Plan subtasks share the parent's branch; only the *last* subtask
+        # of the plan does integration.  Intermediates commit and stop.
+        is_intermediate = task.is_plan_subtask and not await self._is_last_subtask(task)
+        if is_intermediate:
+            return PhaseResult.CONTINUE
+
+        if task.is_plan_subtask and task.parent_task_id:
+            parent = await self.db.get_task(task.parent_task_id)
+            requires_approval = parent.requires_approval if parent else task.requires_approval
+        else:
+            requires_approval = task.requires_approval
+
+        ttl = float(self.config.worktrees.merge_slot_ttl_seconds)
+        acquired = await acquire_merge_slot(self.db, task.project_id, task.id, ttl)
+        if not acquired:
+            logger.info(
+                "Task %s: merge slot for project %s is held; deferring integration",
+                task.id,
+                task.project_id,
+            )
+            return PhaseResult.STOP
+
+        await self._emit_bus(
+            "merge.started",
+            {
+                "project_id": task.project_id,
+                "task_id": task.id,
+                "branch": branch,
+                "target": default_branch,
+                "workspace_id": ctx.workspace_id,
+            },
+        )
+        try:
+            # Renew the lease before the potentially-slow rebase.
+            await renew_merge_slot(self.db, task.project_id, task.id, ttl)
+
+            # ── Step 2: fetch + rebase in the slot ────────────────────
+            has_remote = await self.git.ahas_remote(workspace)
+            if has_remote:
+                try:
+                    await self.git._arun(["fetch", "origin"], cwd=workspace)
+                except GitError as e:
+                    logger.warning("Task %s: fetch origin failed: %s", task.id, e)
+
+            rebase_target = (
+                f"origin/{default_branch}" if has_remote else default_branch
+            )
+            try:
+                await self.git._arun(["switch", branch], cwd=workspace)
+                await self.git._arun(["rebase", rebase_target], cwd=workspace)
+            except GitError as e:
+                # Conflict handling — design §4.3.
+                files: list[str] = []
+                try:
+                    out = await self.git._arun(
+                        ["diff", "--name-only", "--diff-filter=U"],
+                        cwd=workspace,
+                    )
+                    files = [line for line in out.splitlines() if line.strip()]
+                except GitError:
+                    pass
+                # Clean rebase state — abort so the slot is usable again.
+                try:
+                    await self.git._arun(["rebase", "--abort"], cwd=workspace)
+                except GitError:
+                    pass
+
+                reason = f"merge_conflict: rebase onto {rebase_target} failed: {e}"
+                try:
+                    await self.db.set_task_meta(task.id, "rejection_reason", reason)
+                    await self.db.set_task_meta(task.id, "conflict_files", files)
+                except Exception as meta_err:
+                    logger.warning(
+                        "Task %s: failed to record conflict meta: %s", task.id, meta_err
+                    )
+
+                try:
+                    await self.db.update_task(task.id, status=TaskStatus.BLOCKED.value)
+                except Exception as db_err:
+                    logger.warning(
+                        "Task %s: failed to transition to BLOCKED: %s", task.id, db_err
+                    )
+
+                await self._emit_bus(
+                    "merge.conflict",
+                    {
+                        "project_id": task.project_id,
+                        "task_id": task.id,
+                        "branch": branch,
+                        "target": default_branch,
+                        "files": files,
+                        "rejection_reason": reason,
+                        "workspace_id": ctx.workspace_id,
+                    },
+                )
+                await self._emit_notify(
+                    "notify.merge_conflict",
+                    MergeConflictEvent(
+                        task=build_task_detail(task),
+                        branch=branch,
+                        target_branch=default_branch,
+                        project_id=task.project_id,
+                    ),
+                )
+                return PhaseResult.STOP
+
+            # ── Step 3: push the rebased task branch ──────────────────
+            # Task branches are owned by one agent so --force-with-lease
+            # is safe for the branch itself.  We NEVER push to default
+            # from here; that's the base-side merge below.
+            if has_remote:
+                # Lease-guarded push (finding #1): the rebase above may
+                # have run longer than ``merge_slot_ttl_seconds``; if
+                # ``break_expired_merge_slots`` handed the slot to
+                # another task in the meantime, we must NOT push — two
+                # concurrent pushes would race the remote.  Renew
+                # immediately before the push; if the renew fails we no
+                # longer own the lease and treat this like contention.
+                if not await renew_merge_slot(
+                    self.db, task.project_id, task.id, ttl
+                ):
+                    logger.warning(
+                        "Task %s: merge slot lease lost before pushing %s; aborting push",
+                        task.id, branch,
+                    )
+                    return PhaseResult.STOP
+                try:
+                    await self.git.apush_branch(
+                        workspace,
+                        branch,
+                        force_with_lease=True,
+                        event_bus=self.bus,
+                        project_id=task.project_id,
+                    )
+                except Exception as e:
+                    logger.warning("Task %s: push %s failed: %s", task.id, branch, e)
+                    reason = f"push_failed: {branch}: {e}"
+                    try:
+                        await self.db.set_task_meta(
+                            task.id, "rejection_reason", reason
+                        )
+                    except Exception as meta_err:
+                        logger.warning(
+                            "Task %s: failed to record push_failed meta: %s",
+                            task.id, meta_err,
+                        )
+                    await self._emit_notify(
+                        "notify.push_failed",
+                        PushFailedEvent(
+                            task=build_task_detail(task),
+                            branch=branch,
+                            error_detail=str(e),
+                            project_id=task.project_id,
+                        ),
+                    )
+                    return PhaseResult.STOP
+
+            # ── Step 4: local merge in the base (skip for PR workflow) ─
+            merged_at: float | None = None
+            pr_url = ctx.pr_url
+            if not requires_approval:
+                base_ws = None
+                if ctx.workspace_id:
+                    try:
+                        slot_ws = await self.db.get_workspace(ctx.workspace_id)
+                        if slot_ws is not None and slot_ws.base_workspace_id:
+                            base_ws = await self.db.get_workspace(
+                                slot_ws.base_workspace_id
+                            )
+                    except Exception:
+                        pass
+                base_path = base_ws.workspace_path if base_ws else workspace
+
+                if not await renew_merge_slot(self.db, task.project_id, task.id, ttl):
+                    logger.warning(
+                        "Task %s: merge slot lease lost before local base merge; aborting",
+                        task.id,
+                    )
+                    return PhaseResult.STOP
+
+                merged = await self.git.amerge_branch(
+                    base_path, branch, default_branch
+                )
+                if not merged:
+                    # Should be rare after a successful rebase, but treat
+                    # like a conflict rather than force-anything.
+                    reason = (
+                        f"merge_conflict: base merge of {branch} into "
+                        f"{default_branch} failed after rebase"
+                    )
+                    try:
+                        await self.db.set_task_meta(
+                            task.id, "rejection_reason", reason
+                        )
+                        await self.db.update_task(
+                            task.id, status=TaskStatus.BLOCKED.value
+                        )
+                    except Exception:
+                        pass
+                    await self._emit_bus(
+                        "merge.conflict",
+                        {
+                            "project_id": task.project_id,
+                            "task_id": task.id,
+                            "branch": branch,
+                            "target": default_branch,
+                            "files": [],
+                            "rejection_reason": reason,
+                            "workspace_id": ctx.workspace_id,
+                        },
+                    )
+                    return PhaseResult.STOP
+
+                if has_remote:
+                    # Lease-guarded push (finding #1): renew immediately
+                    # before pushing to default — if the local merge took
+                    # long enough for the lease to expire, another task
+                    # may now own the slot and be about to push too.
+                    if not await renew_merge_slot(
+                        self.db, task.project_id, task.id, ttl
+                    ):
+                        logger.warning(
+                            "Task %s: merge slot lease lost before pushing to %s; aborting",
+                            task.id, default_branch,
+                        )
+                        return PhaseResult.STOP
+                    try:
+                        # Regular push — no --force here.  The base has
+                        # just merged origin/<default> forward.
+                        await self.git._arun(
+                            ["push", "origin", default_branch], cwd=base_path
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Task %s: push %s failed: %s", task.id, default_branch, e
+                        )
+                        reason = f"push_failed: {default_branch}: {e}"
+                        try:
+                            await self.db.set_task_meta(
+                                task.id, "rejection_reason", reason
+                            )
+                        except Exception as meta_err:
+                            logger.warning(
+                                "Task %s: failed to record push_failed meta: %s",
+                                task.id, meta_err,
+                            )
+                        return PhaseResult.STOP
+
+                import time as _time
+
+                merged_at = _time.time()
+                try:
+                    await self.db.set_task_meta(task.id, "merged_at", merged_at)
+                except Exception:
+                    pass
+
+            # ── Step 5: success ───────────────────────────────────────
+            payload: dict = {
+                "project_id": task.project_id,
+                "task_id": task.id,
+                "branch": branch,
+                "target": default_branch,
+                "workspace_id": ctx.workspace_id,
+            }
+            if merged_at is not None:
+                payload["merged_at"] = merged_at
+            if pr_url:
+                payload["pr_url"] = pr_url
+            await self._emit_bus("merge.succeeded", payload)
+            return PhaseResult.CONTINUE
+        finally:
+            try:
+                await release_merge_slot(self.db, task.project_id, task.id)
+            except Exception as e:
+                logger.warning(
+                    "Task %s: releasing merge slot for %s failed: %s",
+                    task.id,
+                    task.project_id,
+                    e,
+                )
+
+    async def _emit_bus(self, event_type: str, payload: dict) -> None:
+        """Best-effort event emission — never fail the pipeline on a bus hiccup."""
+        bus = getattr(self, "bus", None)
+        if bus is None:
+            return
+        try:
+            await bus.emit(event_type, payload)
+        except Exception as e:
+            logger.warning("emit %s failed: %s", event_type, e)

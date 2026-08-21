@@ -31,6 +31,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "remove_workspace": "project",
     "edit_workspace": "project",
     "queue_sync_workspaces": "project",
+    "workspace_doctor": "project",
+    "workspace_reap": "project",
     "set_project_channel": "project",
     "set_control_interface": "project",
     # agent (workspace-as-agent model — deprecated CRUD still available)
@@ -814,6 +816,50 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": "Project ID to scan workspaces for (optional if active project is set)",
+                },
+            },
+        },
+    },
+    {
+        "name": "workspace_doctor",
+        "description": (
+            "Diagnose worktree inventory. Reports drifted excludes, stale "
+            "worktree registrations, dirty unlocked slots, expired merge-slot "
+            "leases, and redundant clones under worktree mode. Read-only. "
+            "Worktree-execution spec §6.8."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project id to scope diagnosis (optional; active project when omitted).",
+                },
+            },
+        },
+    },
+    {
+        "name": "workspace_reap",
+        "description": (
+            "Explicitly reap a retired worktree slot (removes its directory + row). "
+            "Refuses live slots via /proc liveness check. Pass either "
+            "'workspace_id' to reap one slot, or 'all_retired: true' to sweep "
+            "every retired slot in the project scope. Worktree-execution spec §6.8."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Slot workspace id to reap.",
+                },
+                "all_retired": {
+                    "type": "boolean",
+                    "description": "Sweep every slot whose index is at or beyond its project's cap.",
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Restrict all_retired sweep to one project (optional).",
                 },
             },
         },

@@ -173,13 +173,62 @@ class AgentCommandsMixin:
         return result
 
     async def _cmd_list_workspaces(self, args: dict) -> dict:
-        """List workspaces with lock status."""
+        """List workspaces with lock status.
+
+        Worktree-execution §6.8 annotations: each row carries ``role``
+        (``base`` / ``slot`` / ``other``), ``slot_index``, ``mode`` (the
+        kind's git provisioning mode), ``branch`` (current HEAD when
+        readable), and ``dirty`` (True when the tree has uncommitted work).
+        Best-effort — a workspace whose directory is gone reports the
+        annotations as ``None`` rather than failing the whole call.
+        """
         project_id = args.get("project_id")
         if not project_id and self._active_project_id:
             project_id = self._active_project_id
         workspaces = await self.db.list_workspaces(project_id=project_id)
-        return {
-            "workspaces": [
+
+        # Pre-resolve kinds so annotations don't do N+1 lookups.
+        kind_cache: dict[tuple[str, str], object] = {}
+
+        async def _resolve_mode(ws) -> str | None:
+            if not ws.kind_id:
+                return None
+            key = (ws.project_id, ws.kind_id)
+            if key in kind_cache:
+                kind = kind_cache[key]
+            else:
+                try:
+                    kind = await self.db.resolve_workspace_kind(
+                        ws.project_id, ws.kind_id
+                    )
+                except Exception:
+                    kind = None
+                kind_cache[key] = kind
+            return getattr(kind, "mode", None) if kind is not None else None
+
+        git = getattr(self.orchestrator, "git", None)
+        rows: list[dict] = []
+        for ws in workspaces:
+            role = "slot" if ws.is_slot else ("base" if ws.kind_id else "other")
+            mode = await _resolve_mode(ws)
+            branch: str | None = None
+            dirty: bool | None = None
+            if git is not None:
+                try:
+                    if await git.avalidate_checkout(ws.workspace_path):
+                        try:
+                            branch = await git.aget_current_branch(ws.workspace_path)
+                        except Exception:
+                            branch = None
+                        try:
+                            dirty = await git.ahas_uncommitted_changes(
+                                ws.workspace_path
+                            )
+                        except Exception:
+                            dirty = None
+                except Exception:
+                    pass
+            rows.append(
                 {
                     "id": ws.id,
                     "project_id": ws.project_id,
@@ -191,10 +240,15 @@ class AgentCommandsMixin:
                     "locked_by_task_id": ws.locked_by_task_id,
                     "lock_mode": ws.lock_mode.value if ws.lock_mode else None,
                     "enabled": ws.enabled,
+                    # Worktree-execution §6.8 annotations
+                    "role": role,
+                    "slot_index": ws.slot_index,
+                    "mode": mode,
+                    "branch": branch,
+                    "dirty": dirty,
                 }
-                for ws in workspaces
-            ]
-        }
+            )
+        return {"workspaces": rows}
 
     async def _cmd_list_workspace_kinds(self, args: dict) -> dict:
         """List workspace kinds visible to a project (system + project overrides).

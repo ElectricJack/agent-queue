@@ -320,11 +320,14 @@ class TestReflectionForcedOff:
 
 
 def _base_config(tmp_path) -> AppConfig:
-    return AppConfig(
+    cfg = AppConfig(
         database_path=str(tmp_path / "test.db"),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
+    # Feature-pause tests don't use real git; keep legacy exclusive-clone.
+    cfg.worktrees.enabled = False
+    return cfg
 
 
 @pytest.fixture

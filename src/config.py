@@ -913,12 +913,15 @@ class SessionsConfig:
 class WorktreesConfig:
     """Per-slot git worktree execution.
 
-    Substrate placeholder — see docs/specs/implementation/worktree-execution.md §5.
+    Worktree-execution spec §5 / §9 (P6 flag flip).
     While ``enabled`` is False every git workspace kind is treated as
-    ``exclusive-clone`` regardless of its declared ``mode``.
+    ``exclusive-clone`` regardless of its declared ``mode``.  Default is
+    now True: the rollout gate has retired, and the kind's markdown
+    ``mode`` is the steady-state knob (principle #1).  Set ``enabled:
+    false`` in ``~/.agent-queue/config.yaml`` to opt out.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     retain_failed_days: int = 7
     merge_slot_ttl_seconds: int = 600
     prune_remote_branches: bool = False

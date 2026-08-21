@@ -55,6 +55,8 @@ async def orch(tmp_path):
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
+    # Mock-git tests predate the worktrees P6 default; keep legacy path.
+    config.worktrees.enabled = False
     o = Orchestrator(config, runtimes=MockAdapterFactory())
     await o.initialize()
     yield o

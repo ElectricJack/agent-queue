@@ -31,6 +31,7 @@ from src.database.queries.chat_queries import ChatQueryMixin
 from src.database.queries.dependency_queries import DependencyQueryMixin
 from src.database.queries.event_queries import EventQueryMixin
 from src.database.queries.gate_queries import GateQueriesMixin
+from src.database.queries.merge_slot_queries import MergeSlotQueriesMixin
 from src.database.queries.message_queries import MessageQueriesMixin
 from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
@@ -70,6 +71,7 @@ class PostgreSQLDatabaseAdapter(
     EventQueryMixin,
     ArchiveQueryMixin,
     ChatQueryMixin,
+    MergeSlotQueriesMixin,
     MessageQueriesMixin,
     PluginQueryMixin,
     PlaybookQueryMixin,
