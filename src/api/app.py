@@ -21,7 +21,7 @@ from src.api.execute import router as execute_router
 from src.api.health import router as health_router
 from src.api.messages import router as messages_router
 from src.api.sessions import router as sessions_router
-from src.api.middleware import RequestContextMiddleware
+from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware
 from src.api.websocket import WebSocketManager
 
 if TYPE_CHECKING:
@@ -65,6 +65,19 @@ def create_app(
         orchestrator.set_command_handler(ch)
     deps._command_handler = ch
 
+    # aq-surface Phase S2: wire the session-scoped bearer-token store.
+    # Prefer the orchestrator-owned store (single instance, single cache) so
+    # revocations flowing through the cascade sweep and per-request
+    # validations always agree.  Fall back to constructing one when the
+    # orchestrator hasn't (e.g. router-level tests that build a bare app).
+    from src.api.auth import SessionTokenStore
+
+    deps._token_store = getattr(orchestrator, "token_store", None) or SessionTokenStore(
+        orchestrator.db,
+        ttl_hours=config.api_auth.token_ttl_hours,
+    )
+    deps._require_session_token = bool(config.api_auth.require_session_token)
+
     deps._health_provider = health_provider
     deps._plan_content_provider = plan_content_provider
     deps._started_at = time.monotonic()
@@ -74,8 +87,12 @@ def create_app(
         else ""
     )
 
-    # Add request context middleware for structured logging
+    # Add request context middleware for structured logging.
+    # Starlette middlewares run in LIFO order — register RequestContext
+    # FIRST and TokenAuth LAST so TokenAuth wraps outside and resolves
+    # ``request.state.scope`` before request-context binds ``session_id``.
     app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(TokenAuthMiddleware)
 
     # Register routers — backward-compat and health first
     app.include_router(execute_router)

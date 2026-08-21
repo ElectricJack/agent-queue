@@ -10,16 +10,29 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
+    from src.api.auth import SessionTokenStore
     from src.commands.handler import CommandHandler
     from src.orchestrator import Orchestrator
 
 # Module-level state — set by the lifespan context manager in app.py.
-_orchestrator: Orchestrator | None = None
-_command_handler: CommandHandler | None = None
+_orchestrator: "Orchestrator | None" = None
+_command_handler: "CommandHandler | None" = None
 _health_provider: Callable[[], Awaitable[dict[str, Any]]] | None = None
 _plan_content_provider: Callable[[str], Awaitable[str | None]] | None = None
 _started_at: float | None = None
 _base_url: str = ""
+
+# aq-surface Phase S2: session-scoped API auth.  Populated by
+# :func:`src.api.app.create_app` at startup; ``TokenAuthMiddleware`` reads
+# both fields on every request.  A ``None`` store means "no auth wired"
+# and effectively degrades to LOCAL_SCOPE for everyone.
+_token_store: "SessionTokenStore | None" = None
+_require_session_token: bool = False
+
+
+def get_token_store() -> "SessionTokenStore":
+    assert _token_store is not None, "SessionTokenStore not initialized"
+    return _token_store
 
 
 def get_command_handler() -> CommandHandler:

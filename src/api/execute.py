@@ -12,11 +12,13 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
+from src.api.scope import check_command_scope
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,11 @@ class ExecuteRequest(BaseModel):
 
 
 @router.post("/api/execute")
-async def api_execute(body: ExecuteRequest, ch=Depends(get_command_handler)) -> JSONResponse:
+async def api_execute(
+    body: ExecuteRequest,
+    request: Request,
+    ch=Depends(get_command_handler),
+) -> JSONResponse:
     """Run a CommandHandler command (backward-compat envelope).
 
     Honours :data:`src.api.codegen.API_EXCLUDED`.  Without this the endpoint
@@ -46,8 +52,27 @@ async def api_execute(body: ExecuteRequest, ch=Depends(get_command_handler)) -> 
             status_code=403,
         )
 
+    # aq-surface Phase S2: strip any client-supplied ``_scope`` BEFORE we
+    # inject the middleware-derived one — a client cannot spoof identity.
+    args = dict(body.args)
+    args.pop("_scope", None)
+
+    scope: RequestScope = getattr(request.state, "scope", LOCAL_SCOPE)
+    scope_err = check_command_scope(body.command, args, scope)
+    if scope_err is not None:
+        return JSONResponse({"ok": False, "error": scope_err}, status_code=403)
+
+    # Forward the server-derived scope so surface commands can resolve
+    # ``task_id``/``project_id``/``session_id`` without an explicit arg.
+    args["_scope"] = {
+        "kind": scope.kind,
+        "session_id": scope.session_id,
+        "task_id": scope.task_id,
+        "project_id": scope.project_id,
+    }
+
     try:
-        result = await ch.execute(body.command, body.args)
+        result = await ch.execute(body.command, args)
     except Exception:
         logger.exception("Error executing command %s", body.command)
         return JSONResponse(

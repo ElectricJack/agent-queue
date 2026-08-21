@@ -216,3 +216,220 @@ class TestSessionTokenStore:
     def test_local_scope_singleton(self):
         assert LOCAL_SCOPE.kind == "local"
         assert LOCAL_SCOPE.session_id is None
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — TokenAuthMiddleware + execute-scope integration
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock  # noqa: E402
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from src.api import dependencies as deps  # noqa: E402
+from src.api.execute import router as execute_router  # noqa: E402
+from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware  # noqa: E402
+from src.commands.handler import CommandHandler  # noqa: E402
+
+
+async def _seed_app(tmp_path, *, require=False):
+    db = Database(str(tmp_path / "mw.db"))
+    await db.initialize()
+
+    orch = MagicMock()
+    orch.db = db
+    orch._command_handler = None
+    orch.plugin_registry = None
+    config = MagicMock()
+    config.messages = MagicMock(enabled=False)
+    config.playbooks = MagicMock(enabled=True)
+    config.memory = MagicMock(enabled=True)
+    ch = CommandHandler(orch, config)
+
+    # Register stubs via setattr so CommandHandler._cmd_* dispatch picks them up.
+    ch._recorded: list[tuple[str, dict]] = []
+
+    async def _stub(args):
+        ch._recorded.append(("stub_admin_only", dict(args)))
+        return {"success": True, "echo": args}
+
+    async def _stub_agent(args):
+        ch._recorded.append(("task_show", dict(args)))
+        return {"success": True, "echo": args}
+
+    ch._cmd_stub_admin_only = _stub
+    ch._cmd_task_show = _stub_agent
+
+    store = SessionTokenStore(db, ttl_hours=72)
+    deps._orchestrator = orch
+    deps._command_handler = ch
+    deps._token_store = store
+    deps._require_session_token = require
+
+    app = FastAPI()
+    app.include_router(execute_router)
+    # LIFO application: RequestContext added FIRST -> outer; TokenAuth LAST -> inner.
+    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(TokenAuthMiddleware)
+    return db, store, ch, app
+
+
+class TestTokenAuthMiddleware:
+    async def test_no_token_local_scope_allows_any_command(self, tmp_path):
+        db, store, ch, app = await _seed_app(tmp_path)
+        try:
+            with TestClient(app) as c:
+                r = c.post("/api/execute", json={"command": "stub_admin_only", "args": {}})
+            assert r.status_code == 200, r.text
+            assert r.json()["ok"] is True
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            deps._require_session_token = False
+            await db.close()
+
+    async def test_invalid_token_returns_401(self, tmp_path):
+        db, store, ch, app = await _seed_app(tmp_path)
+        try:
+            with TestClient(app) as c:
+                r = c.post(
+                    "/api/execute",
+                    headers={"Authorization": "Bearer aqs_bogusbogusbogusbogus"},
+                    json={"command": "task_show", "args": {}},
+                )
+            assert r.status_code == 401
+            assert r.json()["ok"] is False
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            await db.close()
+
+    async def test_valid_token_session_scope_allows_agent_command(self, tmp_path):
+        db, store, ch, app = await _seed_app(tmp_path)
+        try:
+            tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+            with TestClient(app) as c:
+                r = c.post(
+                    "/api/execute",
+                    headers={"Authorization": f"Bearer {tok}"},
+                    json={"command": "task_show", "args": {"task_id": "t1"}},
+                )
+            assert r.status_code == 200, r.text
+            assert r.json()["ok"] is True
+            # The stub records the args it was CALLED with (post _scope strip);
+            # verify the CommandHandler saw the server-injected scope by
+            # checking _current_scope was set during dispatch.  Instead we
+            # verify no _scope leaks into stub args:
+            _, recorded_args = ch._recorded[-1]
+            assert "_scope" not in recorded_args
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            await db.close()
+
+    async def test_valid_token_out_of_scope_command_403(self, tmp_path):
+        db, store, ch, app = await _seed_app(tmp_path)
+        try:
+            tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+            with TestClient(app) as c:
+                r = c.post(
+                    "/api/execute",
+                    headers={"Authorization": f"Bearer {tok}"},
+                    json={"command": "stub_admin_only", "args": {}},
+                )
+            assert r.status_code == 403
+            body = r.json()
+            assert body["ok"] is False and "stub_admin_only" in body["error"]
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            await db.close()
+
+    async def test_valid_token_task_id_mismatch_403(self, tmp_path):
+        db, store, ch, app = await _seed_app(tmp_path)
+        try:
+            tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+            with TestClient(app) as c:
+                r = c.post(
+                    "/api/execute",
+                    headers={"Authorization": f"Bearer {tok}"},
+                    json={"command": "task_show", "args": {"task_id": "OTHER"}},
+                )
+            assert r.status_code == 403
+            assert "task_id mismatch" in r.json()["error"]
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            await db.close()
+
+    async def test_client_supplied_scope_is_stripped(self, tmp_path):
+        db, store, ch, app = await _seed_app(tmp_path)
+        try:
+            tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+            # Capture what CommandHandler saw as _current_scope during dispatch.
+            captured: dict = {}
+
+            async def _stub_capture(args):
+                captured["scope"] = ch._current_scope
+                ch._recorded.append(("task_show", dict(args)))
+                return {"success": True}
+
+            ch._cmd_task_show = _stub_capture
+            with TestClient(app) as c:
+                r = c.post(
+                    "/api/execute",
+                    headers={"Authorization": f"Bearer {tok}"},
+                    json={
+                        "command": "task_show",
+                        "args": {
+                            "task_id": "t1",
+                            "_scope": {
+                                "kind": "session",
+                                "session_id": "SPOOFED",
+                                "task_id": "SPOOFED",
+                                "project_id": "SPOOFED",
+                            },
+                        },
+                    },
+                )
+            assert r.status_code == 200, r.text
+            # The scope that reached the handler is the server one, not the spoof.
+            assert captured["scope"]["session_id"] == "s1"
+            assert captured["scope"]["task_id"] == "t1"
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            await db.close()
+
+    async def test_require_session_token_true_rejects_absent(self, tmp_path):
+        db, store, ch, app = await _seed_app(tmp_path, require=True)
+        try:
+            with TestClient(app) as c:
+                r = c.post("/api/execute", json={"command": "task_show", "args": {}})
+            assert r.status_code == 401
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            deps._require_session_token = False
+            await db.close()
+
+    async def test_require_session_token_true_exempts_health(self, tmp_path):
+        db, store, ch, app = await _seed_app(tmp_path, require=True)
+        try:
+            with TestClient(app) as c:
+                r = c.get("/api/health")
+            assert r.status_code == 200
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            deps._require_session_token = False
+            await db.close()
