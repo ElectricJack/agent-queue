@@ -8,6 +8,7 @@ import pytest
 
 from src.api.codegen import API_EXCLUDED
 from src.api.models import get_all_response_models
+from src.api.models.message import MessageModel
 from src.tools import _CLI_CATEGORY_OVERRIDES, _TOOL_CATEGORIES
 
 # Commands that intentionally return an unstructured dict (extra="allow") and
@@ -51,3 +52,32 @@ def test_every_categorized_command_has_response_model(cmd_name: str) -> None:
         "but has no entry in any src/api/models/*.py RESPONSE_MODELS dict. "
         "Add one so the generated TS client has a concrete type."
     )
+
+
+def test_message_model_from_alias_round_trips() -> None:
+    """``MessageModel.from_`` must round-trip through the ``"from"`` JSON key.
+
+    ``message_to_dict`` emits ``"from": "kind:id"``; without a Pydantic alias
+    the value is silently dropped on validation and re-serialized as ``"from_"``,
+    breaking the generated TS client and any caller that reads the field.
+    """
+    raw = {
+        "id": "msg-1",
+        "project_id": "proj-1",
+        "from_kind": "user",
+        "from_id": "alice",
+        "from": "user:alice",
+        "to_kind": "session",
+        "to_id": "sess-1",
+        "to": "session:sess-1",
+        "body": "hello",
+    }
+    model = MessageModel.model_validate(raw)
+    assert model.from_ == "user:alice", (
+        "MessageModel did not populate from_ from the 'from' key in the input dict"
+    )
+    serialized = model.model_dump(by_alias=True)
+    assert serialized.get("from") == "user:alice", (
+        "MessageModel serialized 'from_' instead of 'from' — alias missing or wrong"
+    )
+    assert "from_" not in serialized, "Serialized output must use the 'from' key, not 'from_'"

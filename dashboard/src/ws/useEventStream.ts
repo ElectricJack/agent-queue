@@ -33,6 +33,7 @@ function setStatus(s: ConnectionStatus) {
 }
 
 const LAST_SEQ_KEY = "aq:ws:last_seq";
+const EPOCH_KEY = "aq:ws:epoch";
 
 function loadLastSeq(): number | null {
   try {
@@ -48,6 +49,30 @@ function loadLastSeq(): number | null {
 function saveLastSeq(seq: number): void {
   try {
     localStorage.setItem(LAST_SEQ_KEY, String(seq));
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadEpoch(): string | null {
+  try {
+    return localStorage.getItem(EPOCH_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveEpoch(epoch: string): void {
+  try {
+    localStorage.setItem(EPOCH_KEY, epoch);
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearStoredSeq(): void {
+  try {
+    localStorage.removeItem(LAST_SEQ_KEY);
   } catch {
     /* ignore */
   }
@@ -75,9 +100,22 @@ function connect() {
 
   sock.onmessage = (msg) => {
     try {
-      const event = JSON.parse(msg.data) as NotifyEvent & { seq?: number | null };
-      if (typeof event.seq === "number") saveLastSeq(event.seq);
-      for (const fn of eventListeners) fn(event);
+      const frame = JSON.parse(msg.data) as { type?: string; epoch?: string } & NotifyEvent & { seq?: number | null };
+      // Epoch guard: if the server has a different epoch (daemon restart with
+      // a fresh DB), discard the stored seq so the next reconnect does not
+      // send a stale after_seq and starve itself.  The current connection
+      // proceeds normally — the server's replay is already done and live
+      // events flow correctly.
+      if (frame.type === "hello") {
+        const storedEpoch = loadEpoch();
+        if (storedEpoch !== frame.epoch) {
+          clearStoredSeq();
+          if (frame.epoch) saveEpoch(frame.epoch);
+        }
+        return;
+      }
+      if (typeof frame.seq === "number") saveLastSeq(frame.seq);
+      for (const fn of eventListeners) fn(frame);
     } catch {
       // ignore
     }

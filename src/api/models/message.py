@@ -10,18 +10,22 @@ API_EXCLUDED and is *not* modeled here — the chat page uses the dedicated
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class MessageModel(BaseModel):
     """Rendered message dict (see ``src/commands/message_commands.py::message_to_dict``)."""
 
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "allow", "populate_by_name": True}
     id: str
     project_id: str | None = None
     from_kind: str
     from_id: str
-    from_: str | None = None  # rendered "kind:id"; keyed as "from" in JSON
+    from_: str | None = Field(
+        default=None,
+        alias="from",
+        serialization_alias="from",
+    )  # rendered "kind:id"; keyed as "from" in JSON
     to_kind: str
     to_id: str
     to: str | None = None
