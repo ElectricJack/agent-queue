@@ -1,0 +1,83 @@
+"""Guard: every categorized command surfaced through the codegen router has
+a Pydantic response model registered.  Without this, the generated TS client
+sees ``unknown`` for that call, which silently breaks the dashboard."""
+
+from __future__ import annotations
+
+import pytest
+
+from src.api.codegen import API_EXCLUDED
+from src.api.models import get_all_response_models
+from src.api.models.message import MessageModel
+from src.tools import _CLI_CATEGORY_OVERRIDES, _TOOL_CATEGORIES
+
+# Commands that intentionally return an unstructured dict (extra="allow") and
+# are declared with model_config={"extra": "allow"} elsewhere.  Add here only
+# with a code comment justifying why.
+_UNSTRUCTURED_EXEMPT: set[str] = {
+    # Pre-existing gaps outside the Wave-4 lane-A scope: these commands were
+    # already categorized without a response model before this test landed.
+    # Leaving them exempt keeps the guard useful for new additions (any new
+    # categorized command without a model still fails) without demanding a
+    # cleanup pass that isn't part of this lane.
+    "ask_human",
+    "create_task_graph",
+    "doctor",
+    "get_chat_analyzer_metrics",
+    "get_costs",
+    "get_schema",
+    "list_workspace_kinds",
+    "memory_save",
+    "task_close",
+    "task_heartbeat",
+    "task_set",
+    "task_show",
+    "workspace_doctor",
+    "workspace_reap",
+}
+
+
+@pytest.mark.parametrize(
+    "cmd_name",
+    sorted(
+        ({name for name, _cat in _TOOL_CATEGORIES.items()} | set(_CLI_CATEGORY_OVERRIDES))
+        - API_EXCLUDED
+        - _UNSTRUCTURED_EXEMPT
+    ),
+)
+def test_every_categorized_command_has_response_model(cmd_name: str) -> None:
+    models = get_all_response_models()
+    assert cmd_name in models, (
+        f"Command '{cmd_name}' is categorized (auto-generates a REST route) "
+        "but has no entry in any src/api/models/*.py RESPONSE_MODELS dict. "
+        "Add one so the generated TS client has a concrete type."
+    )
+
+
+def test_message_model_from_alias_round_trips() -> None:
+    """``MessageModel.from_`` must round-trip through the ``"from"`` JSON key.
+
+    ``message_to_dict`` emits ``"from": "kind:id"``; without a Pydantic alias
+    the value is silently dropped on validation and re-serialized as ``"from_"``,
+    breaking the generated TS client and any caller that reads the field.
+    """
+    raw = {
+        "id": "msg-1",
+        "project_id": "proj-1",
+        "from_kind": "user",
+        "from_id": "alice",
+        "from": "user:alice",
+        "to_kind": "session",
+        "to_id": "sess-1",
+        "to": "session:sess-1",
+        "body": "hello",
+    }
+    model = MessageModel.model_validate(raw)
+    assert model.from_ == "user:alice", (
+        "MessageModel did not populate from_ from the 'from' key in the input dict"
+    )
+    serialized = model.model_dump(by_alias=True)
+    assert serialized.get("from") == "user:alice", (
+        "MessageModel serialized 'from_' instead of 'from' — alias missing or wrong"
+    )
+    assert "from_" not in serialized, "Serialized output must use the 'from' key, not 'from_'"

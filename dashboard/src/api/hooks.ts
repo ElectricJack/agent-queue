@@ -60,6 +60,19 @@ import {
   updateConfig,
   updatePlaybookSource,
   getPlaybookSource,
+  sessionList,
+  sessionShow,
+  sessionPeek,
+  sessionNudge,
+  sessionAttach,
+  sessionLogs,
+  sessionKill,
+  explainTask,
+  projectReady,
+  getTaskDependencies,
+  gateList,
+  gateShow,
+  gateResolve,
 } from "./client";
 import type {
   AgentSummary,
@@ -109,7 +122,26 @@ import type {
   WorkspaceSummary,
   GetPlaybookSourceResponse,
   UpdatePlaybookSourceResponse,
+  ListSessionsResponse,
+  ShowSessionResponse,
+  SessionPeekResponse,
+  SessionNudgeResponse,
+  SessionAttachResponse,
+  SessionLogsResponse,
+  SessionSummary,
+  ExplainTaskResponse,
+  ProjectReadyResponse,
+  TaskDepsResponse,
+  GateListResponse,
+  GateShowResponse,
+  GateResolveResponse,
+  GateSummary,
 } from "./client";
+import {
+  fetchChatMessages,
+  sendChatMessage,
+  type ChatMessagesResponse,
+} from "./chat";
 
 // --- Re-exports — call sites should import shared types from here ---
 export type {
@@ -849,6 +881,240 @@ export function useDeleteMcpServer() {
     mutationFn: async (input: { name: string; project_id?: string }) =>
       (await deleteMcpServer({ body: input, throwOnError: true })).data,
     onSuccess: (_d, variables) => invalidateMcpViews(queryClient, variables.project_id),
+  });
+}
+
+// --- Explain / Ready / Task deps (work-graph WG-4) ---
+
+export type { ExplainTaskResponse, ProjectReadyResponse, TaskDepsResponse };
+
+export function useExplainTask(taskId: string) {
+  return useQuery({
+    queryKey: ["explain", taskId],
+    queryFn: async () => {
+      const { data } = await explainTask({
+        body: { task_id: taskId },
+        throwOnError: true,
+      });
+      return data as ExplainTaskResponse;
+    },
+    enabled: !!taskId,
+    refetchInterval: 20_000,
+  });
+}
+
+export function useProjectReady(projectId: string) {
+  return useQuery({
+    queryKey: ["project-ready", projectId],
+    queryFn: async () => {
+      const { data } = await projectReady({
+        body: { project_id: projectId },
+        throwOnError: true,
+      });
+      return data as ProjectReadyResponse;
+    },
+    enabled: !!projectId,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useTaskDeps(taskId: string) {
+  return useQuery({
+    queryKey: ["task-deps", taskId],
+    queryFn: async () => {
+      const { data } = await getTaskDependencies({
+        body: { task_id: taskId },
+        throwOnError: true,
+      });
+      return data as TaskDepsResponse;
+    },
+    enabled: !!taskId,
+    refetchInterval: 30_000,
+  });
+}
+
+// --- Sessions (session-runtime spec) ---
+
+export type { SessionSummary, ListSessionsResponse, SessionLogsResponse };
+
+export function useSessions(projectId?: string) {
+  return useQuery({
+    queryKey: ["sessions", projectId ?? "all"],
+    queryFn: async () => {
+      const body: Record<string, unknown> = {};
+      if (projectId) body.project_id = projectId;
+      const { data } = await sessionList({ body, throwOnError: true });
+      return ((data as ListSessionsResponse).sessions ?? []) as SessionSummary[];
+    },
+    refetchInterval: 15_000,
+  });
+}
+
+export function useSession(sessionId: string) {
+  return useQuery({
+    queryKey: ["session", sessionId],
+    queryFn: async () => {
+      const { data } = await sessionShow({
+        body: { session_id: sessionId },
+        throwOnError: true,
+      });
+      return (data as ShowSessionResponse).session;
+    },
+    enabled: !!sessionId,
+    refetchInterval: 15_000,
+  });
+}
+
+export function useSessionPeek(sessionId: string, lines = 120) {
+  return useQuery({
+    queryKey: ["session-peek", sessionId, lines],
+    queryFn: async () => {
+      const { data } = await sessionPeek({
+        body: { session_id: sessionId, lines },
+        throwOnError: true,
+      });
+      return data as SessionPeekResponse;
+    },
+    enabled: !!sessionId,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useSessionAttach(sessionId: string) {
+  return useQuery({
+    queryKey: ["session-attach", sessionId],
+    queryFn: async () => {
+      const { data } = await sessionAttach({
+        body: { session_id: sessionId },
+        throwOnError: true,
+      });
+      return data as SessionAttachResponse;
+    },
+    enabled: !!sessionId,
+    staleTime: 60_000,
+  });
+}
+
+function invalidateSessionViews(
+  queryClient: ReturnType<typeof useQueryClient>,
+  sessionId?: string,
+) {
+  queryClient.invalidateQueries({ queryKey: ["sessions"] });
+  if (sessionId) {
+    queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+    queryClient.invalidateQueries({ queryKey: ["session-peek", sessionId] });
+  }
+}
+
+export function useSessionNudge() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { session_id: string; text: string }) =>
+      (await sessionNudge({ body: input, throwOnError: true })).data as SessionNudgeResponse,
+    onSuccess: (_d, variables) => invalidateSessionViews(queryClient, variables.session_id),
+  });
+}
+
+export function useSessionKill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { session_id: string }) =>
+      (await sessionKill({ body: input, throwOnError: true })).data,
+    onSuccess: (_d, variables) => invalidateSessionViews(queryClient, variables.session_id),
+  });
+}
+
+export function useSessionLogs(sessionId: string, limit = 200) {
+  return useQuery({
+    queryKey: ["session-logs", sessionId, limit],
+    queryFn: async () => {
+      const { data } = await sessionLogs({
+        body: { session_id: sessionId, limit },
+        throwOnError: true,
+      });
+      return data as SessionLogsResponse;
+    },
+    enabled: !!sessionId,
+  });
+}
+
+// --- Gates (work-graph WG-3) ---
+
+export type { GateSummary, GateListResponse };
+
+export function useGates(
+  opts: { projectId?: string; status?: string; gateType?: string } = {},
+) {
+  return useQuery({
+    queryKey: [
+      "gates",
+      opts.projectId ?? "all",
+      opts.status ?? "any",
+      opts.gateType ?? "any",
+    ],
+    queryFn: async () => {
+      const body: Record<string, unknown> = {};
+      if (opts.projectId) body.project_id = opts.projectId;
+      if (opts.status) body.status = opts.status;
+      if (opts.gateType) body.gate_type = opts.gateType;
+      const { data } = await gateList({ body, throwOnError: true });
+      return ((data as GateListResponse).gates ?? []) as GateSummary[];
+    },
+    refetchInterval: 20_000,
+  });
+}
+
+export function useGate(gateId: string) {
+  return useQuery({
+    queryKey: ["gate", gateId],
+    queryFn: async () => {
+      const { data } = await gateShow({
+        body: { gate_id: gateId },
+        throwOnError: true,
+      });
+      return data as GateShowResponse;
+    },
+    enabled: !!gateId,
+  });
+}
+
+export function useResolveGate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      gate_id: string;
+      resolved_by: string;
+      resolution?: string;
+    }) =>
+      (await gateResolve({ body: input, throwOnError: true })).data as GateResolveResponse,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["gates"] });
+      queryClient.invalidateQueries({ queryKey: ["gate", variables.gate_id] });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+  });
+}
+
+// --- Chat (supervisor per-project chat, supervisor-agent §6.1) ---
+
+export type { ChatMessagesResponse };
+
+export function useChatMessages(projectId: string, limit = 200) {
+  return useQuery({
+    queryKey: ["chat", projectId, limit],
+    queryFn: () => fetchChatMessages(projectId, { limit }),
+    enabled: !!projectId,
+    refetchInterval: 15_000,
+  });
+}
+
+export function useSendChatMessage(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: string) => sendChatMessage(projectId, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["chat", projectId] });
+    },
   });
 }
 

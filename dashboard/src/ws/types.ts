@@ -242,6 +242,88 @@ export interface PlaybookCompilationFailedEvent extends BaseEvent {
   retries_used: number;
 }
 
+// --- Gate lifecycle ---
+
+export interface GateCreatedEvent extends BaseEvent {
+  event_type: "gate.created";
+  gate_id: string;
+  gate_type: string;
+  title: string;
+}
+
+export interface GateResolvedEvent extends BaseEvent {
+  event_type: "gate.resolved";
+  gate_id: string;
+  resolved_by: string;
+  unblocked_task_ids?: string[];
+}
+
+export interface GateExpiredEvent extends BaseEvent {
+  event_type: "gate.expired";
+  gate_id: string;
+}
+
+// --- Message lifecycle ---
+
+export interface MessageSentEvent extends BaseEvent {
+  event_type: "message.sent";
+  message_id: string;
+  to_kind: string;
+  to_id: string;
+}
+
+export interface MessageDeliveredEvent extends BaseEvent {
+  event_type: "message.delivered";
+  message_id: string;
+  method?: string;
+}
+
+export interface MessageRepliedEvent extends BaseEvent {
+  event_type: "message.replied";
+  message_id: string;
+  reply_id: string;
+}
+
+// --- Session lifecycle ---
+
+export interface SessionStartedEvent extends BaseEvent {
+  event_type: "session.started";
+  session_id: string;
+  name: string;
+  task_id?: string;
+}
+
+export interface SessionExitedEvent extends BaseEvent {
+  event_type: "session.exited";
+  session_id: string;
+  name: string;
+  verdict: string;
+}
+
+export interface SessionAdoptedEvent extends BaseEvent {
+  event_type: "session.adopted";
+  session_id: string;
+  name: string;
+}
+
+// --- Task blocked/unblocked (work-graph) ---
+
+export interface TaskBlockedGraphEvent extends BaseEvent {
+  event_type: "task.blocked";
+  task_id: string;
+  project_id: string;
+  title: string;
+  reason?: string;
+}
+
+export interface TaskUnblockedEvent extends BaseEvent {
+  event_type: "task.unblocked";
+  task_id: string;
+  project_id: string;
+  title: string;
+  reason?: string;
+}
+
 // --- Union type ---
 
 export type NotifyEvent =
@@ -270,4 +352,15 @@ export type NotifyEvent =
   | PlaybookRunResumedEvent
   | PlaybookRunTimedOutEvent
   | PlaybookCompilationSucceededEvent
-  | PlaybookCompilationFailedEvent;
+  | PlaybookCompilationFailedEvent
+  | GateCreatedEvent
+  | GateResolvedEvent
+  | GateExpiredEvent
+  | MessageSentEvent
+  | MessageDeliveredEvent
+  | MessageRepliedEvent
+  | SessionStartedEvent
+  | SessionExitedEvent
+  | SessionAdoptedEvent
+  | TaskBlockedGraphEvent
+  | TaskUnblockedEvent;

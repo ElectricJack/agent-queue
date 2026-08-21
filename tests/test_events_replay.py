@@ -47,9 +47,7 @@ class TestAfterIdPagination:
         assert len(ids) == 10
 
         # after_id=None (default) is DESC — behaviour unchanged.
-        assert [e["id"] for e in await db.get_recent_events(limit=5)] == list(
-            reversed(ids[-5:])
-        )
+        assert [e["id"] for e in await db.get_recent_events(limit=5)] == list(reversed(ids[-5:]))
 
         # after_id=first_id -> ASC, gapless.
         page1 = await db.get_recent_events(limit=3, after_id=ids[0])
@@ -90,9 +88,7 @@ class TestWebSocketReplay:
     async def test_replay_then_live_no_duplicates(self, db):
         # Persist 5 events *before* connect.
         for i in range(5):
-            await db.log_event(
-                f"notify.tick.{i}", project_id=PROJECT, payload=str(i)
-            )
+            await db.log_event(f"notify.tick.{i}", project_id=PROJECT, payload=str(i))
         rows = sorted(await db.get_recent_events(limit=100), key=lambda r: r["id"])
         first_id = rows[0]["id"]
 
@@ -134,11 +130,12 @@ class TestWebSocketReplay:
         assert live_frames[0]["seq"] is None
 
     async def test_replay_filters_non_forwarded_event_types(self, db):
-        """Replay respects the same ``notify.*`` / ``message.*`` filter as
-        live mode — otherwise a reconnect would flood the client with
-        internal ``task.*`` / ``gate.*`` traffic the live path never sends.
+        """Replay respects the same ``_FORWARDED_PREFIXES`` filter as live
+        mode.  The filter was extended in Wave-4 (D3/D1/D2) to cover
+        ``gate.*`` / ``session.*`` / ``task.*`` alongside ``notify.*`` and
+        ``message.*``; unrelated internal prefixes must still be dropped.
         """
-        await db.log_event("task.blocked", project_id=PROJECT, payload="t")
+        await db.log_event("internal.debug", project_id=PROJECT, payload="ignored")
         await db.log_event("notify.a", project_id=PROJECT, payload="a")
         await db.log_event("gate.resolved", project_id=PROJECT, payload="g")
         await db.log_event("message.chat", project_id=PROJECT, payload="c")
@@ -159,8 +156,8 @@ class TestWebSocketReplay:
         types = [f.get("_event_type") for f in ws.sent]
         assert "notify.a" in types
         assert "message.chat" in types
-        assert "task.blocked" not in types
-        assert "gate.resolved" not in types
+        assert "gate.resolved" in types  # forwarded post-Wave-4
+        assert "internal.debug" not in types
 
     async def test_live_frame_carrying_seq_is_deduped_against_replay(self, db):
         """A honest race: a live frame that carries a ``seq`` matching a
@@ -179,11 +176,7 @@ class TestWebSocketReplay:
         """
         seqs = []
         for i in range(5):
-            seqs.append(
-                await db.log_event(
-                    f"notify.tick.{i}", project_id=PROJECT, payload=str(i)
-                )
-            )
+            seqs.append(await db.log_event(f"notify.tick.{i}", project_id=PROJECT, payload=str(i)))
 
         bus = EventBus()
         mgr = WebSocketManager(bus, db=db)
@@ -238,9 +231,7 @@ class TestWebSocketReplay:
 
     async def test_no_after_seq_skips_replay(self, db):
         for i in range(3):
-            await db.log_event(
-                f"notify.tick.{i}", project_id=PROJECT, payload=str(i)
-            )
+            await db.log_event(f"notify.tick.{i}", project_id=PROJECT, payload=str(i))
         bus = EventBus()
         mgr = WebSocketManager(bus, db=db)
         mgr.start()
@@ -248,13 +239,56 @@ class TestWebSocketReplay:
 
         task = asyncio.create_task(mgr.handle(ws))  # type: ignore[arg-type]
         await asyncio.sleep(0.02)
-        # Only live events (none yet) should ship — no replay.
+        # Only the hello frame is sent — no replay, no live events yet.
         task.cancel()
         try:
             await task
         except asyncio.CancelledError:
             pass
-        assert ws.sent == []
+        non_hello = [f for f in ws.sent if f.get("type") != "hello"]
+        assert non_hello == [], f"unexpected frames besides hello: {non_hello}"
+
+    async def test_hello_frame_sent_first_with_epoch(self, db):
+        """The server sends a ``{"type": "hello", "epoch": ...}`` frame as the
+        very first message on every new connection, before any replay or live
+        events.  Clients use the epoch to detect daemon restarts and clear
+        stale persisted seq cursors."""
+        from src.api.websocket import _EPOCH
+
+        bus = EventBus()
+        mgr = WebSocketManager(bus, db=db)
+        mgr.start()
+
+        # Connect without after_seq — hello is unconditional.
+        ws_no_seq = _FakeWS(after_seq=None)
+        task = asyncio.create_task(mgr.handle(ws_no_seq))  # type: ignore[arg-type]
+        await asyncio.sleep(0.02)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert ws_no_seq.sent, "expected at least the hello frame"
+        hello = ws_no_seq.sent[0]
+        assert hello.get("type") == "hello", f"first frame must be hello, got: {hello}"
+        assert hello.get("epoch") == _EPOCH, "epoch in hello frame must match _EPOCH"
+
+        # Connect with after_seq — hello precedes replay frames.
+        await db.log_event("notify.x", project_id=PROJECT, payload="x")
+        ws_with_seq = _FakeWS(after_seq="0")
+        task2 = asyncio.create_task(mgr.handle(ws_with_seq))  # type: ignore[arg-type]
+        await asyncio.sleep(0.05)
+        task2.cancel()
+        try:
+            await task2
+        except asyncio.CancelledError:
+            pass
+
+        assert ws_with_seq.sent, "expected hello + replay frames"
+        assert ws_with_seq.sent[0].get("type") == "hello", (
+            "hello frame must be first, even when replay follows"
+        )
 
 
 # ── Registry invariant + task.blocked/unblocked emitters ─────────────────
@@ -280,12 +314,8 @@ class TestBlockedFlipEmitters:
         orch = Orchestrator(cfg)
         await orch.initialize()
         await orch.db.create_project(Project(id="p", name="p"))
-        await orch.db.create_task(
-            Task(id="t", project_id="p", title="t", description="t")
-        )
-        await orch.db.create_task(
-            Task(id="dep", project_id="p", title="dep", description="")
-        )
+        await orch.db.create_task(Task(id="t", project_id="p", title="t", description="t"))
+        await orch.db.create_task(Task(id="dep", project_id="p", title="dep", description=""))
         await orch.db.add_dependency("t", "dep")  # blocks t
 
         captured: list[tuple[str, dict]] = []

@@ -273,6 +273,34 @@ class ProcessTaskCompletionResponse(BaseModel):
     archived_path: str | None = None
 
 
+class ExplainReason(BaseModel):
+    code: str
+    detail: str = ""
+    ref: str | None = None
+
+
+class ExplainTaskResponse(BaseModel):
+    success: bool = True
+    reasons: list[ExplainReason] = []
+
+
+class ReadyTask(BaseModel):
+    task_id: str
+    title: str
+    priority: int = 0
+
+
+class WithheldTask(BaseModel):
+    task_id: str
+    reasons: list[ExplainReason] = []
+
+
+class ProjectReadyResponse(BaseModel):
+    success: bool = True
+    ready: list[ReadyTask] = []
+    withheld: list[WithheldTask] = []
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -308,4 +336,6 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_active_tasks_all_projects": ListActiveTasksAllProjectsResponse,
     "process_plan": ProcessPlanResponse,
     "process_task_completion": ProcessTaskCompletionResponse,
+    "explain_task": ExplainTaskResponse,
+    "project_ready": ProjectReadyResponse,
 }
