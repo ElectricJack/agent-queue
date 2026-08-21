@@ -30,7 +30,11 @@ class SessionSummary(BaseModel):
     restarts: int = 0
     quarantined_at: float | None = None
     sleep_reason: str | None = None
-    epoch: int | None = None
+    # ``sessions.epoch`` is a Text column (AQ_DAEMON_EPOCH — a hex string
+    # such as "5b8c0ab48772"), not an integer.  Declaring it as ``int``
+    # made ``POST /api/system/session-list`` 500 with ResponseValidationError
+    # on any live daemon row.  Match the schema in src/database/tables.py.
+    epoch: str | None = None
     idle_seconds: float = 0.0
     stalled: bool = False
 
