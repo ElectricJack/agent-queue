@@ -42,8 +42,9 @@ class EventQueryMixin:
         project_id: str | None = None,
         agent_id: str | None = None,
         task_id: str | None = None,
+        after_id: int | None = None,
     ) -> list[dict]:
-        """Return recent events, newest first, with optional filters.
+        """Return events with optional filters.
 
         Args:
             limit: Maximum number of events to return.
@@ -54,6 +55,10 @@ class EventQueryMixin:
             project_id: Filter by project ID (exact match).
             agent_id: Filter by agent ID (exact match).
             task_id: Filter by task ID (exact match).
+            after_id: Replay mode — when set, returns events with
+                ``id > after_id`` ordered by id ASC (gapless pagination for
+                WebSocket ``after_seq`` reconnect).  When ``None`` (default),
+                behaviour is unchanged: newest-first by id DESC.
         """
         conditions = []
         if event_type:
@@ -70,11 +75,17 @@ class EventQueryMixin:
             conditions.append(events.c.agent_id == agent_id)
         if task_id:
             conditions.append(events.c.task_id == task_id)
+        if after_id is not None:
+            conditions.append(events.c.id > after_id)
 
         stmt = select(events)
         if conditions:
             stmt = stmt.where(and_(*conditions))
-        stmt = stmt.order_by(events.c.id.desc()).limit(limit)
+        if after_id is not None:
+            # Replay: ascending, gapless.
+            stmt = stmt.order_by(events.c.id.asc()).limit(limit)
+        else:
+            stmt = stmt.order_by(events.c.id.desc()).limit(limit)
 
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)

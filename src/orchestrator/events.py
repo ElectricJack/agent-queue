@@ -30,6 +30,33 @@ class EventsMixin:
         payload.update(extra)
         await self.bus.emit(event_type, payload)
 
+    async def _emit_blocked_flips(self, flipped: set[str], *, reason: str = "graph") -> None:
+        """Emit ``task.blocked`` / ``task.unblocked`` on the bus for a flip set.
+
+        Complements :meth:`Database.log_blocked_flips`, which writes the same
+        transitions to the ``events`` audit table.  The bus emitters exist
+        because playbooks trigger on bus events (see work-graph §9.1 note
+        #263) — WG-1/2 wrote the audit rows only, so triggers on these types
+        could never fire.  Called from the flip-set return sites of
+        ``transition_task`` / ``resolve_gate`` — the invariant test in
+        ``tests/test_event_schema_registry_validation.py`` guards the schema.
+        """
+        if not flipped:
+            return
+        for tid in sorted(flipped):
+            try:
+                task = await self.db.get_task(tid)
+            except Exception:
+                continue
+            if task is None:
+                continue
+            is_blocked = bool(getattr(task, "is_blocked", False))
+            event_type = "task.blocked" if is_blocked else "task.unblocked"
+            try:
+                await self._emit_task_event(event_type, task, reason=reason)
+            except Exception:  # pragma: no cover — defensive
+                logger.debug("emit blocked-flip event failed", exc_info=True)
+
     async def _emit_task_failure(
         self,
         task,

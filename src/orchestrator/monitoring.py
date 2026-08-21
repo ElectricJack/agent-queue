@@ -98,7 +98,14 @@ class MonitoringMixin:
                     decisions[task_id] = projected[task_id]
 
         for task_id in sorted(decisions):
-            await self.db.transition_task(task_id, TaskStatus.READY, context=decisions[task_id])
+            flipped = await self.db.transition_task(
+                task_id, TaskStatus.READY, context=decisions[task_id]
+            )
+            # WG-4: bus emit for the flipped set so ``task.blocked`` /
+            # ``task.unblocked`` triggers actually fire.  ``log_blocked_flips``
+            # already handles the audit row.
+            if flipped:
+                await self._emit_blocked_flips(flipped, reason="promotion")
 
     async def _legacy_promotion_decisions(
         self,

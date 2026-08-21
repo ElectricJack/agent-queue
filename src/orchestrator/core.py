@@ -2217,9 +2217,11 @@ class Orchestrator(
             )
         except Exception:
             logger.debug("_sweep_gates: log_event failed", exc_info=True)
-        # task.unblocked audit rows are already written by
-        # ``log_blocked_flips`` inside ``resolve_gate`` — we don't
-        # duplicate them here.
+        # ``resolve_gate`` already wrote the audit rows via
+        # ``log_blocked_flips``; also emit on the bus so playbooks that
+        # subscribe to ``task.blocked``/``task.unblocked`` can fire
+        # (WG-4, work-graph §9.1 note #263).
+        await self._emit_blocked_flips(flipped, reason="gate:resolved")
 
     async def _sweep_resolve_timer_gates(self, now: float) -> None:
         """Resolve ``timer`` gates whose ``timeout_at`` has passed.

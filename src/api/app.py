@@ -91,7 +91,7 @@ def create_app(
     register_all_routers(app)
 
     # WebSocket event stream — forward notify.* events to connected clients
-    ws_manager = WebSocketManager(orchestrator.bus)
+    ws_manager = WebSocketManager(orchestrator.bus, db=orchestrator.db)
     ws_manager.start()
 
     @app.websocket("/ws/events")
