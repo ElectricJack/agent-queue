@@ -353,7 +353,30 @@ def setup_commands(bot: commands.Bot) -> list[str]:
             result = await _execute(interaction, handler, "gate_list", args)
             if result is None:
                 return
-            await _reply_json(interaction, result, filename="gates.json")
+            gates = result.get("gates") or []
+            if not gates:
+                await interaction.followup.send(
+                    embed=info_embed("No Gates", description="No gates waiting on a human."),
+                )
+                return
+            shown = gates[:10]
+            embed = discord.Embed(
+                title=f"⏸ Open Gates ({len(gates)})",
+                color=discord.Color.gold(),
+            )
+            for g in shown:
+                header = (
+                    f"`{g.get('id', '?')}` · "
+                    f"{g.get('gate_type', '?')} · "
+                    f"{g.get('status', '?')}"
+                )
+                desc = (g.get("question") or g.get("title") or "").strip() or "(no description)"
+                if len(desc) > 200:
+                    desc = desc[:200] + "…"
+                embed.add_field(name=header, value=desc, inline=False)
+            if len(gates) > len(shown):
+                embed.set_footer(text=f"…and {len(gates) - len(shown)} more.")
+            await interaction.followup.send(embed=embed)
 
     if _wanted("attach"):
 
