@@ -290,11 +290,14 @@ class SessionLens:
         if kind == "task":
             row = await self._db.get_session_by_name(task_session_name(target_id))
         elif kind == "agent":
-            # An agent's live session is the task session of whatever
-            # task it is currently assigned to. The messenger reaches it
-            # by target_id = task_id in that case; the agent id path
-            # would require an extra query and no consumer needs it yet.
-            row = await self._db.get_session_for_task(target_id)
+            # Message `to_kind='agent'` carries an agent id. Sessions
+            # aren't indexed by agent, but the agents table tracks
+            # `current_task_id`; resolve via that. Unknown agent or one
+            # with no current task → no session (caller reports "absent").
+            agent = await self._db.get_agent(target_id)
+            if agent is None or not agent.current_task_id:
+                return None, None
+            row = await self._db.get_session_for_task(agent.current_task_id)
         elif kind == "supervisor":
             row = await self._db.get_session_by_name(
                 named_session_name("supervisor", project_id)

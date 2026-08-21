@@ -12,7 +12,7 @@ import time
 import pytest
 
 from src.messages import Activity, SessionLens, SessionManagerProto
-from src.models import AgentProfile, Project, SessionRecord, Task
+from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
 from src.sessions.harness_parser import Harness
@@ -123,9 +123,60 @@ class TestActivity:
         got = await lens.activity(kind="task", target_id="task-missing", project_id="proj1")
         assert got == "absent"
 
-    async def test_agent_with_no_session_row_is_absent(self, lens):
+    async def test_agent_unknown_id_is_absent(self, lens):
+        # Unknown agent id → no agent row → absent (must not fall through
+        # to treating the id as a task id).
         got = await lens.activity(kind="agent", target_id="agent-missing", project_id="proj1")
         assert got == "absent"
+
+    async def test_agent_without_current_task_is_absent(self, db, lens):
+        # Agent exists but is not assigned to any task → absent.
+        await db.create_agent(
+            Agent(
+                id="agent-idle",
+                name="idle",
+                profile_id="claude",
+                state=AgentState.IDLE,
+                current_task_id=None,
+            )
+        )
+        got = await lens.activity(kind="agent", target_id="agent-idle", project_id="proj1")
+        assert got == "absent"
+
+    async def test_agent_with_current_task_and_live_session_is_busy(
+        self, db, providers, lens
+    ):
+        # Agent points at a task whose session is live and recently active.
+        row, handle = await _seed_running_task(db, providers)
+        await db.create_agent(
+            Agent(
+                id="agent-busy",
+                name="busy",
+                profile_id="claude",
+                state=AgentState.BUSY,
+                current_task_id=row.task_id,
+            )
+        )
+        providers.create("fake").sessions[handle.name].activity = time.time()
+        got = await lens.activity(kind="agent", target_id="agent-busy", project_id="proj1")
+        assert got == "busy"
+
+    async def test_agent_with_current_task_and_stale_session_is_idle(
+        self, db, providers, lens
+    ):
+        row, handle = await _seed_running_task(db, providers)
+        await db.create_agent(
+            Agent(
+                id="agent-quiet",
+                name="quiet",
+                profile_id="claude",
+                state=AgentState.BUSY,
+                current_task_id=row.task_id,
+            )
+        )
+        providers.create("fake").sessions[handle.name].activity = time.time() - 300
+        got = await lens.activity(kind="agent", target_id="agent-quiet", project_id="proj1")
+        assert got == "idle"
 
     async def test_supervisor_with_no_session_row_is_sleeping(self, lens):
         got = await lens.activity(kind="supervisor", target_id="proj1", project_id="proj1")
