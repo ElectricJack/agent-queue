@@ -2217,7 +2217,11 @@ class Orchestrator(
         # transaction), but the ~5s cycle frequency means the snapshot is
         # close enough to consistent for scheduling purposes.
         projects = await self.db.list_projects()
-        tasks = await self.db.list_tasks()
+        # Non-terminal tasks only: the scheduler reads READY rows plus the
+        # ASSIGNED/IN_PROGRESS rows behind busy-agent counts and sync
+        # blocking — never completed ones.  The unfiltered table scan was
+        # 1.7 s/cycle at 100k tasks (performance-assessment.md §1.1).
+        tasks = await self.db.list_active_tasks()
         agents = await self.db.list_agents()
 
         # Token usage within the rolling window — this is the "actual usage"

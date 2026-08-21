@@ -214,7 +214,7 @@ class VaultWatcher:
             return
 
         if not self._initialized:
-            self._snapshot()
+            await asyncio.to_thread(self._snapshot)
             self._initialized = True
             logger.info(
                 "VaultWatcher: initial snapshot of %s (%d files)",
@@ -272,12 +272,15 @@ class VaultWatcher:
 
         # Take initial snapshot if not done yet
         if not self._initialized:
-            self._snapshot()
+            await asyncio.to_thread(self._snapshot)
             self._initialized = True
             return []
 
-        # Scan and detect changes
-        changes = self._detect_changes()
+        # Run the file-system scan in a thread — os.walk + os.stat over a
+        # large vault (especially on WSL-backed filesystems) blocks the
+        # asyncio loop for the whole scan otherwise (591 ms at 10k files,
+        # 2.8 s at 50k; performance-assessment.md).
+        changes = await asyncio.to_thread(self._detect_changes)
 
         if changes:
             for change in changes:
