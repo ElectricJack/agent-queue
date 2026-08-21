@@ -237,11 +237,11 @@ def setup_commands(bot: commands.Bot) -> list[str]:
     one that can only answer ``Unknown command`` is not.
     """
 
-    # The shared command handler is owned by the Supervisor. Every slash
-    # command calls handler.execute(name, args) for its business logic and
-    # only handles Discord-specific formatting here — same convention the
-    # deleted commands.py followed.
-    handler = bot.agent.handler
+    # The shared command handler is owned by the daemon (wired in main.py).
+    # Every slash command calls handler.execute(name, args) for its business
+    # logic and only handles Discord-specific formatting here — same
+    # convention the deleted commands.py followed.
+    handler = bot.handler
 
     missing_by_command = available_slash_commands(handler)
     registered: list[str] = []

@@ -106,12 +106,21 @@ class DiscordMessagingAdapter(MessagingAdapter):
     # -------------------------------------------------------------------
 
     def get_command_handler(self) -> Any:
-        """Return the CommandHandler wired to the Discord bot."""
-        return self._bot.agent.handler
+        """Return the daemon-wide CommandHandler exposed by the bot.
+
+        Wired by ``main.py`` before transports start; the bot no longer
+        owns a private Supervisor after the chat cutover.
+        """
+        return self._bot.handler
 
     def get_supervisor(self) -> Any:
-        """Return the Supervisor wired to the Discord bot."""
-        return self._bot.agent
+        """No adapter-owned Supervisor after the cutover.
+
+        The daemon-wide Supervisor is wired directly in ``main.py``; the
+        adapter has nothing to override.  Returning ``None`` keeps the
+        ``MessagingAdapter`` ABC satisfied.
+        """
+        return None
 
     # -------------------------------------------------------------------
     # Health / diagnostics

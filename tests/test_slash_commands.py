@@ -81,7 +81,9 @@ class FakeHandler:
 class FakeBot:
     def __init__(self, handler) -> None:
         self.tree = FakeTree()
-        self.agent = SimpleNamespace(handler=handler)
+        # After the supervisor cutover, slash_commands reads bot.handler
+        # (the daemon-wide CommandHandler exposed as a property on the bot).
+        self.handler = handler
 
     def get_project_for_channel(self, channel_id):
         return None
