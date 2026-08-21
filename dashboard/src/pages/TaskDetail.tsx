@@ -14,6 +14,7 @@ import {
 } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 import TaskActions from "../components/TaskActions";
+import TaskGraph, { TaskExplain } from "./task/TaskGraph";
 
 interface FormState {
   title: string;
@@ -76,6 +77,7 @@ export default function TaskDetail() {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<FormState>(taskToForm(task));
   const [fatal, setFatal] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"details" | "explain" | "graph">("details");
 
   useEffect(() => {
     if (task) setForm(taskToForm(task));
@@ -192,6 +194,35 @@ export default function TaskDetail() {
       {/* Actions */}
       {!editing && <TaskActions task={task} />}
 
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-gray-800">
+        {(
+          [
+            { id: "details", label: "Details" },
+            { id: "explain", label: "Explain" },
+            { id: "graph", label: "Graph" },
+          ] as const
+        ).map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setActiveTab(t.id)}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
+              activeTab === t.id
+                ? "border-b-2 border-indigo-400 text-indigo-400"
+                : "text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "explain" && taskId && <TaskExplain taskId={taskId} />}
+      {activeTab === "graph" && taskId && <TaskGraph taskId={taskId} />}
+
+      {activeTab === "details" && (
+        <>
       {/* Description */}
       <section>
         <h2 className="mb-2 text-sm font-semibold uppercase text-gray-500">Description</h2>
@@ -354,6 +385,8 @@ export default function TaskDetail() {
       {/* Blocks */}
       {task.blocks && task.blocks.length > 0 && (
         <TaskRefList title="Blocks" items={task.blocks} from={from} />
+      )}
+        </>
       )}
     </div>
   );

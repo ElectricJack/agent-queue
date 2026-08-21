@@ -67,6 +67,9 @@ import {
   sessionAttach,
   sessionLogs,
   sessionKill,
+  explainTask,
+  projectReady,
+  getTaskDependencies,
 } from "./client";
 import type {
   AgentSummary,
@@ -123,6 +126,9 @@ import type {
   SessionAttachResponse,
   SessionLogsResponse,
   SessionSummary,
+  ExplainTaskResponse,
+  ProjectReadyResponse,
+  TaskDepsResponse,
 } from "./client";
 
 // --- Re-exports — call sites should import shared types from here ---
@@ -863,6 +869,55 @@ export function useDeleteMcpServer() {
     mutationFn: async (input: { name: string; project_id?: string }) =>
       (await deleteMcpServer({ body: input, throwOnError: true })).data,
     onSuccess: (_d, variables) => invalidateMcpViews(queryClient, variables.project_id),
+  });
+}
+
+// --- Explain / Ready / Task deps (work-graph WG-4) ---
+
+export type { ExplainTaskResponse, ProjectReadyResponse, TaskDepsResponse };
+
+export function useExplainTask(taskId: string) {
+  return useQuery({
+    queryKey: ["explain", taskId],
+    queryFn: async () => {
+      const { data } = await explainTask({
+        body: { task_id: taskId },
+        throwOnError: true,
+      });
+      return data as ExplainTaskResponse;
+    },
+    enabled: !!taskId,
+    refetchInterval: 20_000,
+  });
+}
+
+export function useProjectReady(projectId: string) {
+  return useQuery({
+    queryKey: ["project-ready", projectId],
+    queryFn: async () => {
+      const { data } = await projectReady({
+        body: { project_id: projectId },
+        throwOnError: true,
+      });
+      return data as ProjectReadyResponse;
+    },
+    enabled: !!projectId,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useTaskDeps(taskId: string) {
+  return useQuery({
+    queryKey: ["task-deps", taskId],
+    queryFn: async () => {
+      const { data } = await getTaskDependencies({
+        body: { task_id: taskId },
+        throwOnError: true,
+      });
+      return data as TaskDepsResponse;
+    },
+    enabled: !!taskId,
+    refetchInterval: 30_000,
   });
 }
 
