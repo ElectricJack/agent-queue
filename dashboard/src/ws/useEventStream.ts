@@ -86,7 +86,8 @@ function connect() {
   const wsBase = import.meta.env.VITE_WS_URL
     || `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
   const lastSeq = loadLastSeq();
-  const qs = lastSeq != null ? `?after_seq=${lastSeq}` : "";
+  const sentAfterSeq = lastSeq != null;
+  const qs = sentAfterSeq ? `?after_seq=${lastSeq}` : "";
   const url = `${wsBase}/ws/events${qs}`;
 
   setStatus("connecting");
@@ -103,14 +104,19 @@ function connect() {
       const frame = JSON.parse(msg.data) as { type?: string; epoch?: string } & NotifyEvent & { seq?: number | null };
       // Epoch guard: if the server has a different epoch (daemon restart with
       // a fresh DB), discard the stored seq so the next reconnect does not
-      // send a stale after_seq and starve itself.  The current connection
-      // proceeds normally — the server's replay is already done and live
-      // events flow correctly.
+      // send a stale after_seq.  If we actually sent an after_seq on this
+      // connection the server's replay cursor is stuck at the stale value and
+      // will dedup every live frame — force a reconnect immediately so the
+      // next connection starts clean (no after_seq).  If no seq was sent,
+      // simply save the new epoch and continue; no reconnect needed.
       if (frame.type === "hello") {
         const storedEpoch = loadEpoch();
         if (storedEpoch !== frame.epoch) {
           clearStoredSeq();
           if (frame.epoch) saveEpoch(frame.epoch);
+          if (sentAfterSeq) {
+            sock.close();
+          }
         }
         return;
       }
