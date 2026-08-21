@@ -680,6 +680,141 @@ class TestPrimeScopeResolution:
         assert await store.validate(token) is None  # revoked at close
         await db.close()
 
+    async def test_task_close_revokes_token_even_when_pipeline_raises(self, tmp_path):
+        """If ``complete_session_task`` raises, the session token is still revoked.
+
+        Regression guard for I2: revoke was previously only reached on the
+        success path, leaving live tokens for up to 60s (cascade) or the
+        full TTL on any pipeline exception.
+        """
+        from src.commands.handler import CommandHandler as _CH
+        from src.models import Project, SessionRecord, Task, TaskStatus
+
+        db = Database(str(tmp_path / "close_raise.db"))
+        await db.initialize()
+        await db.create_project(Project(id="p1", name="P1"))
+        await db.create_task(
+            Task(
+                id="t1",
+                project_id="p1",
+                title="do it",
+                status=TaskStatus.IN_PROGRESS,
+                description="",
+            )
+        )
+        now = time.time()
+        await db.create_session(
+            SessionRecord(
+                id="s1",
+                project_id="p1",
+                profile_id="worker",
+                harness="claude",
+                provider="fake",
+                name="s-t1",
+                lifecycle="task",
+                task_id="t1",
+                state="running",
+                work_dir=str(tmp_path),
+                instance_token="tok",
+                epoch="e1",
+                started_at=now,
+                last_activity=now,
+            )
+        )
+        store = SessionTokenStore(db, ttl_hours=1)
+        token = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+        assert await store.validate(token) is not None
+
+        orch = MagicMock()
+        orch.db = db
+        orch.plugin_registry = None
+        orch.token_store = store
+        orch.complete_session_task = AsyncMock(side_effect=RuntimeError("pipeline boom"))
+        config = MagicMock()
+        config.messages = MagicMock(enabled=False)
+        config.playbooks = MagicMock(enabled=True)
+        config.memory = MagicMock(enabled=True)
+        ch = _CH(orch, config)
+
+        result = await ch.execute(
+            "task_close",
+            {"task_id": "t1", "session_id": "s1", "outcome": "pass"},
+        )
+        # Command surfaces the error to the caller (handler.execute wraps
+        # exceptions as ``{"error": ...}``) but the token is revoked anyway.
+        assert "error" in result and "pipeline boom" in result["error"]
+        assert await store.validate(token) is None  # revoked in finally
+        await db.close()
+
+    async def test_task_close_wrong_session_owner_does_not_revoke(self, tmp_path):
+        """Early validation rejects (session owns a different task) must not revoke."""
+        from src.commands.handler import CommandHandler as _CH
+        from src.models import Project, SessionRecord, Task, TaskStatus
+
+        db = Database(str(tmp_path / "close_wrong.db"))
+        await db.initialize()
+        await db.create_project(Project(id="p1", name="P1"))
+        await db.create_task(
+            Task(
+                id="t1",
+                project_id="p1",
+                title="do it",
+                status=TaskStatus.IN_PROGRESS,
+                description="",
+            )
+        )
+        await db.create_task(
+            Task(
+                id="other-task",
+                project_id="p1",
+                title="other",
+                status=TaskStatus.IN_PROGRESS,
+                description="",
+            )
+        )
+        now = time.time()
+        await db.create_session(
+            SessionRecord(
+                id="sX",
+                project_id="p1",
+                profile_id="worker",
+                harness="claude",
+                provider="fake",
+                name="s-other",
+                lifecycle="task",
+                task_id="other-task",
+                state="running",
+                work_dir=str(tmp_path),
+                instance_token="tok",
+                epoch="e1",
+                started_at=now,
+                last_activity=now,
+            )
+        )
+        store = SessionTokenStore(db, ttl_hours=1)
+        token = await store.mint(session_id="sX", task_id="other-task", project_id="p1")
+
+        orch = MagicMock()
+        orch.db = db
+        orch.plugin_registry = None
+        orch.token_store = store
+        orch.complete_session_task = AsyncMock(return_value={})
+        config = MagicMock()
+        config.messages = MagicMock(enabled=False)
+        config.playbooks = MagicMock(enabled=True)
+        config.memory = MagicMock(enabled=True)
+        ch = _CH(orch, config)
+
+        # Session sX owns other-task, not t1 — must be refused before revoke.
+        result = await ch.execute(
+            "task_close",
+            {"task_id": "t1", "session_id": "sX", "outcome": "pass"},
+        )
+        assert result.get("success") is False and "refusing" in result["error"]
+        # Token still valid — early reject must not touch it.
+        assert await store.validate(token) is not None
+        await db.close()
+
 
 # ---------------------------------------------------------------------------
 # C1 — typed codegen routes enforce scope (parity with /api/execute)
