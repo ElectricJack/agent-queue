@@ -25,10 +25,27 @@ from src.sessions.provider import SessionHandle
 from src.sessions.spec import SessionSpecBuilder
 
 
-def _supervisor_name(project_id: str) -> str:
-    """Convention for the messaging system's supervisor recipient name
-    (spec §5 / task brief): ``supervisor-<project_id>``."""
+def _supervisor_address(project_id: str) -> str:
+    """Messaging *address* for the supervisor (spec §5): ``supervisor-<pid>``.
+
+    This is what appears in ``messages.to_id``; it is NOT the runtime
+    session name. The lens translates it to
+    :func:`~src.sessions.spec.named_session_name`
+    (``n-supervisor--<pid>``) at every runtime-facing edge so the
+    reconciler can adopt the session after a daemon restart.
+    """
     return f"supervisor-{project_id}"
+
+
+# Backwards-compat alias used by legacy call sites in this file.
+_supervisor_name = _supervisor_address
+
+
+def _supervisor_runtime_name(project_id: str) -> str:
+    """Runtime session name for a supervisor (``n-supervisor--<pid>``)."""
+    from src.sessions.spec import named_session_name
+
+    return named_session_name("supervisor", project_id)
 
 
 # ---------------------------------------------------------------------------
@@ -171,12 +188,16 @@ class TestActivity:
         got = await lens.activity(kind="task", target_id=row.task_id, project_id="proj1")
         assert got == "idle"
 
-    async def test_session_kind_resolves_supervisor_by_name(self, db, providers, lens):
+    async def test_session_kind_resolves_supervisor_by_address(self, db, providers, lens):
+        # The messaging *address* is ``supervisor-<pid>``; the row is
+        # named ``n-supervisor--<pid>``. Lens must translate and still
+        # find the row + handle.
         row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        assert row.name == _supervisor_runtime_name("proj1")
         s = providers.create("fake").sessions[handle.name]
         s.activity = time.time()
         got = await lens.activity(
-            kind="session", target_id=row.name, project_id="proj1"
+            kind="session", target_id=_supervisor_address("proj1"), project_id="proj1"
         )
         assert got == "busy"
 
@@ -212,19 +233,30 @@ class TestEnsureStarted:
         ) is False
 
     async def test_supervisor_already_running_returns_true(self, db, providers, lens):
-        row, _ = await _seed_running_supervisor(db, providers, project_id="proj1")
+        # ensure_started is addressed with the messaging address
+        # (``supervisor-<pid>``); the row it finds is
+        # ``n-supervisor--<pid>``.
+        await _seed_running_supervisor(db, providers, project_id="proj1")
         assert await lens.ensure_started(
-            kind="session", target_id=row.name, project_id="proj1"
+            kind="session",
+            target_id=_supervisor_address("proj1"),
+            project_id="proj1",
         ) is True
 
     async def test_supervisor_cold_start_spawns_via_provider(self, providers, lens):
-        name = _supervisor_name("proj1")
+        # The messaging *address* is ``supervisor-proj1``; the runtime
+        # session the provider is asked to start is named
+        # ``n-supervisor--proj1`` so the session reconciler can adopt it
+        # after a daemon restart (adoption only scans ``s-``/``n-``
+        # prefixes — see src/sessions/reconciler.py adopt_on_start).
+        address = _supervisor_address("proj1")
+        runtime_name = _supervisor_runtime_name("proj1")
         assert await lens.ensure_started(
-            kind="session", target_id=name, project_id="proj1"
+            kind="session", target_id=address, project_id="proj1"
         ) is True
         fake = providers.create("fake")
         assert len(fake.starts) == 1
-        assert fake.starts[0].session_name == name
+        assert fake.starts[0].session_name == runtime_name
         # session_id passed to the harness must be a dashed UUID (5 hex groups),
         # never bare hex — `claude --session-id` rejects bare hex.
         argv = fake.starts[0].command
@@ -235,13 +267,16 @@ class TestEnsureStarted:
     async def test_supervisor_cold_start_derives_project_from_name(
         self, providers, lens
     ):
-        # ``project_id=None`` but the name carries the project id — the
-        # lens should derive it rather than skip on empty work_dir.
-        name = _supervisor_name("proj1")
+        # ``project_id=None`` but the address carries the project id —
+        # the lens should derive it rather than skip on empty work_dir.
+        address = _supervisor_address("proj1")
+        runtime_name = _supervisor_runtime_name("proj1")
         assert await lens.ensure_started(
-            kind="session", target_id=name, project_id=None
+            kind="session", target_id=address, project_id=None
         ) is True
-        assert len(providers.create("fake").starts) == 1
+        starts = providers.create("fake").starts
+        assert len(starts) == 1
+        assert starts[0].session_name == runtime_name
 
     async def test_returns_false_when_configured_provider_missing(
         self, db, providers, spec_builder, harness_registry, profiles_loader
@@ -334,9 +369,25 @@ class TestNudge:
         assert ok is False
 
     async def test_nudge_by_session_name(self, db, providers, lens):
+        # Plain (non-supervisor) session names pass through the lens
+        # verbatim — they are already real runtime names.
         row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
         ok = await lens.nudge(
             kind="session", target_id=row.name, project_id="proj1", text="wake"
+        )
+        assert ok is True
+        assert providers.create("fake").sent_nudges == [(handle.name, "wake")]
+
+    async def test_nudge_translates_supervisor_address(self, db, providers, lens):
+        # ``supervisor-<pid>`` is translated to ``n-supervisor--<pid>``
+        # before the DB lookup; the same running session is reached.
+        row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        assert row.name == _supervisor_runtime_name("proj1")
+        ok = await lens.nudge(
+            kind="session",
+            target_id=_supervisor_address("proj1"),
+            project_id="proj1",
+            text="wake",
         )
         assert ok is True
         assert providers.create("fake").sent_nudges == [(handle.name, "wake")]
@@ -546,7 +597,10 @@ async def _seed_running_supervisor(
     from src.sessions.provider import SessionSpec
 
     fake = providers.create("fake")
-    name = _supervisor_name(project_id)
+    # DB row + provider entry are keyed on the *runtime* session name
+    # (``n-supervisor--<pid>``); the messaging address is
+    # ``supervisor-<pid>`` and the lens translates one to the other.
+    name = _supervisor_runtime_name(project_id)
     spec = SessionSpec(
         session_name=name,
         work_dir="/tmp/wd",

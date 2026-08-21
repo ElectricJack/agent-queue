@@ -24,7 +24,6 @@ directly and never calls the lens for them.
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import os
 import time
@@ -36,7 +35,7 @@ from src.sessions.provider import (
     NotSubmitted,
     SessionHandle,
 )
-from src.sessions.spec import task_session_name
+from src.sessions.spec import named_session_name, task_session_name
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +61,36 @@ Activity = Literal["idle", "busy", "sleeping", "absent"]
 _BUSY_WINDOW_SECONDS: float = 30.0
 
 
-#: Prefix that identifies a supervisor named-session by convention; the
-#: only session name the lens is licensed to cold-start (spec §6).
+#: Prefix that identifies a supervisor messaging *address* by convention;
+#: the only session name the lens is licensed to cold-start (spec §6).
+#: This is the address used in ``messages.to_id`` — NOT the runtime
+#: session name. The runtime session is named
+#: ``named_session_name("supervisor", project_id)`` → ``n-supervisor--<pid>``
+#: so that :class:`~src.sessions.reconciler.SessionReconciler` can adopt it
+#: (adoption only scans ``s-`` and ``n-`` prefixes).
 _SUPERVISOR_NAME_PREFIX: str = "supervisor-"
+
+#: Profile id for the supervisor. Used to derive the runtime session name
+#: from a ``supervisor-<pid>`` messaging address.
+_SUPERVISOR_PROFILE_ID: str = "supervisor"
+
+
+def _resolve_runtime_session_name(kind: str, target_id: str) -> str:
+    """Translate a messaging ``target_id`` to the runtime session name.
+
+    The messaging layer addresses the supervisor as ``supervisor-<pid>``
+    (spec §5), but the actual runtime session is named
+    ``n-supervisor--<pid>`` so the reconciler can adopt it after a daemon
+    restart. Every runtime-facing lookup (DB row, provider start, nudge,
+    activity, transcript tail) must speak the runtime name.
+
+    Task session names (``s-...``) and any non-supervisor session address
+    pass through unchanged — those are already real runtime names.
+    """
+    if kind == "session" and target_id.startswith(_SUPERVISOR_NAME_PREFIX):
+        project_id = target_id[len(_SUPERVISOR_NAME_PREFIX) :]
+        return named_session_name(_SUPERVISOR_PROFILE_ID, project_id or None)
+    return target_id
 
 
 @runtime_checkable
@@ -230,6 +256,15 @@ class SessionLens:
         session_id = str(uuid.uuid4())
         instance_token = uuid.uuid4().hex[:12]
 
+        # Let the spec builder derive the provider session name from the
+        # profile+project convention (``n-supervisor--<pid>``). The
+        # messaging *address* remains ``supervisor-<pid>``; the lens
+        # translates the two at every runtime-facing edge (see
+        # :func:`_resolve_runtime_session_name`). Naming the runtime
+        # session ``n-...`` is what lets
+        # :class:`~src.sessions.reconciler.SessionReconciler` adopt it
+        # after a daemon restart — adoption only scans ``s-``/``n-``
+        # prefixes.
         spec = self._spec_builder.build_named_spec(
             profile=profile,
             harness=harness,
@@ -241,12 +276,6 @@ class SessionLens:
             # it adopts. Passing empty is safe (see spec builder).
             epoch="",
         )
-        # The spec builder derives the provider session name from the
-        # profile+project convention (``n-supervisor--<pid>``), but the
-        # messaging system's supervisor recipient convention (spec §5) is
-        # ``supervisor-<pid>``: keep the two in sync so a follow-up
-        # ``get_session_by_name(target_id)`` finds the row we just spawned.
-        spec = dataclasses.replace(spec, session_name=target_id)
         try:
             await provider.start(spec)
         except Exception:
@@ -340,10 +369,14 @@ class SessionLens:
         if kind == "task":
             row = await self._db.get_session_by_name(task_session_name(target_id))
         elif kind == "session":
-            # ``target_id`` is a bare session name — resolve via the
+            # ``target_id`` is a bare session address — resolve via the
             # by-name index directly. Callers (delivery engine) never
-            # invent this; it comes off ``messages.to_id``.
-            row = await self._db.get_session_by_name(target_id)
+            # invent this; it comes off ``messages.to_id``. The supervisor
+            # is addressed as ``supervisor-<pid>`` but the runtime session
+            # row is named ``n-supervisor--<pid>`` (so the reconciler can
+            # adopt it); translate here.
+            runtime_name = _resolve_runtime_session_name(kind, target_id)
+            row = await self._db.get_session_by_name(runtime_name)
         else:
             return None, None
 
