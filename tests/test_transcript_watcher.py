@@ -216,6 +216,83 @@ async def test_missing_transcript_emits_once_and_falls_back(tmp_path, db, bus):
 
 
 @pytest.mark.asyncio
+async def test_token_split_excludes_cache_from_input(tmp_path, db, bus):
+    """input_tokens is reported as-is; cache reads/writes are NOT folded in.
+
+    Regression: an earlier revision inflated priced ``input_tokens`` by
+    adding cache_read + cache_write, producing a wrong (inflated) input
+    cost.  ``tokens`` (total) still includes cache figures for accounting.
+    """
+    work_dir = "/work/tok"
+    path = _make_transcript(tmp_path, work_dir, "sktok")
+    now = time.time()
+    _append(path, [{
+        "type": "assistant", "uuid": "a1", "parentUuid": None,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now)),
+        "message": {"role": "assistant", "model": "m",
+                     "content": [{"type": "text", "text": "x"}],
+                     "usage": {
+                         "input_tokens": 10,
+                         "output_tokens": 5,
+                         "cache_read_input_tokens": 100,
+                         "cache_creation_input_tokens": 50,
+                     }},
+    }])
+    await _make_session(db, work_dir, "sktok",
+                        session_id="stok", task_id="ttok")
+    await db.create_agent(Agent(
+        id="agent-tok", name="atok", profile_id="claude-agent",
+        state=AgentState.IDLE,
+    ))
+    await db.transition_task("ttok", TaskStatus.IN_PROGRESS,
+                              assigned_agent_id="agent-tok")
+
+    w = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await w.tick()
+
+    # Inspect the raw ledger row.
+    rollup = await db.get_cost_rollup(project_id="p1")
+    row = next(r for r in rollup if r["model"] == "m")
+    # input_tokens = raw 10, NOT 10 + 100 + 50 = 160
+    assert row["input_tokens"] == 10
+    assert row["output_tokens"] == 5
+    # tokens_used still totals everything (10 + 5 + 100 + 50 = 165)
+    assert row["tokens_used"] == 165
+
+
+@pytest.mark.asyncio
+async def test_rotation_does_not_double_charge_within_same_path(tmp_path, db, bus):
+    """A stable path across ticks must not re-charge already-seen uuids."""
+    work_dir = "/work/rot"
+    path = _make_transcript(tmp_path, work_dir, "skrot")
+    now = time.time()
+    _append(path, [{
+        "type": "assistant", "uuid": "a1", "parentUuid": None,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now)),
+        "message": {"role": "assistant", "model": "m",
+                     "content": [{"type": "text", "text": "hi"}],
+                     "usage": {"input_tokens": 7, "output_tokens": 3}},
+    }])
+    await _make_session(db, work_dir, "skrot",
+                        session_id="srot", task_id="trot")
+    await db.create_agent(Agent(
+        id="agent-rot", name="arot", profile_id="claude-agent",
+        state=AgentState.IDLE,
+    ))
+    await db.transition_task("trot", TaskStatus.IN_PROGRESS,
+                              assigned_agent_id="agent-rot")
+
+    w = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await w.tick()
+    # Second tick reads no new bytes → no new emissions, no new charge.
+    await w.tick()
+
+    rollup = await db.get_cost_rollup(project_id="p1")
+    total = sum(r["tokens_used"] for r in rollup)
+    assert total == 10, "same-path re-tick must not double-charge uuids"
+
+
+@pytest.mark.asyncio
 async def test_watcher_ignores_non_claude_harness(tmp_path, db, bus):
     await db.create_task(Task(id="tX", project_id="p1", title="T", description="d"))
     row = SessionRecord(

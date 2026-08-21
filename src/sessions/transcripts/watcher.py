@@ -127,6 +127,13 @@ class TranscriptWatcher:
         if state.last_path is not None and state.last_path != path:
             # Rotation to a new file — start reading from its beginning
             # rather than a byte offset that belongs to the previous file.
+            # We also clear ``charged_uuids`` because uuids are unique per
+            # transcript file: on rotation the new file will not repeat the
+            # old file's uuids, so nothing is lost.  Known limitation: if
+            # Claude ever re-uses a uuid across files (session resume that
+            # replays a prior turn's uuid, etc.), the same uuid seen in
+            # the *new* file would be re-charged.  We accept that trade to
+            # keep bookkeeping bounded per live session.
             state.offset = 0
             state.charged_uuids.clear()
         state.last_path = path
@@ -208,10 +215,16 @@ class TranscriptWatcher:
         self, row, entry: TranscriptEntry, *, agent_id: str
     ) -> None:
         usage = entry.usage or {}
+        # Record the true, unmodified ``input_tokens`` from usage — do NOT
+        # fold cache reads/writes in.  ``input_tokens`` is priced at the
+        # model's input rate downstream; adding cache_read (which is priced
+        # separately and cheaper) or cache_creation (priced separately and
+        # more expensive) would inflate priced input and produce a wrong
+        # cost.  Cache figures still contribute to the raw ``tokens``
+        # total for accounting; when the ledger grows dedicated columns
+        # for cache reads/writes we can pass them through explicitly.
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
-        # Include cache reads in the input total so cost math is not
-        # silently short by whatever fraction of a session was cached.
         cache_read = int(usage.get("cache_read_input_tokens") or 0)
         cache_write = int(usage.get("cache_creation_input_tokens") or 0)
         total = input_tokens + output_tokens + cache_read + cache_write
@@ -224,7 +237,7 @@ class TranscriptWatcher:
                 row.task_id or "",
                 total,
                 model=entry.model,
-                input_tokens=input_tokens + cache_read + cache_write,
+                input_tokens=input_tokens,
                 output_tokens=output_tokens,
             )
         except Exception:

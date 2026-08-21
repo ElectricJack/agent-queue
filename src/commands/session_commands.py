@@ -244,17 +244,30 @@ class SessionCommandsMixin:
         if err:
             return err
 
+        # Default cap of 100 entries per call: rereading a large JSONL and
+        # returning every entry over the CLI/MCP boundary produces multi-MB
+        # payloads for long sessions.  Callers who want a bigger window
+        # pass ``limit``/``lines``/``n`` explicitly.
         base_dir = getattr(self.orchestrator, "transcript_base_dir", None)
         reader = resolve_reader(session.harness, base_dir=base_dir)
         if reader is not None:
             path = reader.resolve_path(session.work_dir, session.session_key)
             if path is not None:
                 try:
+                    # ``read_new`` runs the blocking file IO in
+                    # ``asyncio.to_thread`` so a big transcript on a slow
+                    # disk does not stall the event loop even though we
+                    # read the whole file here before tailing.
                     entries, _ = await reader.read_new(path, 0)
                 except Exception:
                     entries = []
                 if entries:
-                    tail_size = int(args.get("lines") or args.get("n") or 60)
+                    tail_size = int(
+                        args.get("limit")
+                        or args.get("lines")
+                        or args.get("n")
+                        or 100
+                    )
                     tail = entries[-tail_size:]
                     return {
                         "success": True,

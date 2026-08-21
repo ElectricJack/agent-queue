@@ -269,3 +269,58 @@ async def test_sse_tail_delivers_appended_entries(tmp_path, db):
 
     assert "a1" in text
     assert "a2" in text
+
+
+@pytest.mark.asyncio
+async def test_sse_tail_resolves_path_after_connect(tmp_path, db):
+    """Connect before JSONL exists; create it during tail; entries arrive.
+
+    Regression: an earlier revision resolved the transcript path once at
+    connect and, if ``None``, spun the tail loop forever emitting nothing.
+    """
+    work_dir = "/w/late"
+    slug = _slug(work_dir)
+    proj_dir = tmp_path / ".claude" / "projects" / slug
+    # Deliberately do NOT create the transcript directory yet.
+    await _make_session(db, session_id="s6", task_id="t6",
+                         work_dir=work_dir, session_key="sklate")
+
+    from src.api.sessions import build_sessions_router
+    app = FastAPI()
+    app.include_router(build_sessions_router(
+        db=db, base_dir=tmp_path, poll_interval=0.05, heartbeat_interval=60.0
+    ))
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                            timeout=5.0) as client:
+
+        async def create_later():
+            await asyncio.sleep(0.25)
+            proj_dir.mkdir(parents=True, exist_ok=True)
+            path = proj_dir / "sklate.jsonl"
+            with path.open("w") as f:
+                f.write(json.dumps({
+                    "type": "assistant", "uuid": "late1", "parentUuid": None,
+                    "timestamp": _now_iso(),
+                    "message": {"role": "assistant", "model": "m",
+                                 "content": [{"type": "text", "text": "arrived"}],
+                                 "usage": {"input_tokens": 1, "output_tokens": 1}},
+                }) + "\n")
+
+        creator = asyncio.create_task(create_later())
+        try:
+            async with client.stream(
+                "GET", "/api/sessions/s6/stream", params={"max_seconds": "1.5"}
+            ) as resp:
+                body = b""
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+                text = body.decode()
+        finally:
+            await creator
+
+    assert "late1" in text, (
+        "SSE tail must re-resolve the transcript path when the file "
+        "appears after connect"
+    )

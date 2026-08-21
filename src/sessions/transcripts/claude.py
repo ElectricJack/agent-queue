@@ -15,6 +15,7 @@ returning the partial line unconsumed so the next tick re-reads it whole.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -145,24 +146,37 @@ class ClaudeTranscriptReader(TranscriptReader):
             return None
         return max(files, key=lambda p: p.stat().st_mtime)
 
-    async def read_new(
-        self, path: Path, offset: int
-    ) -> tuple[list[TranscriptEntry], int]:
+    @staticmethod
+    def _read_sync(path: Path, offset: int) -> tuple[bytes, int] | None:
+        """Blocking stat + read; returns (buf, size) or None on OSError.
+
+        Kept synchronous so :func:`asyncio.to_thread` can run it off the
+        event loop — a slow disk (network mount, contended fs) must not
+        stall reconcile or the SSE tail.
+        """
         try:
             size = path.stat().st_size
         except OSError:
-            return [], offset
+            return None
         if size <= offset:
-            return [], offset
-
-        # A tiny synchronous read is cheaper here than opening an aiofiles
-        # handle for a 2 s poll cadence — the watcher already runs on the
-        # reconciler thread and is not blocking anything hot.
+            return b"", size
         try:
             with path.open("rb") as f:
                 f.seek(offset)
-                buf = f.read()
+                return f.read(), size
         except OSError:
+            return None
+
+    async def read_new(
+        self, path: Path, offset: int
+    ) -> tuple[list[TranscriptEntry], int]:
+        # Run the blocking stat+read off the loop so a slow disk cannot
+        # stall the reconciler or a live SSE tail.
+        result = await asyncio.to_thread(self._read_sync, path, offset)
+        if result is None:
+            return [], offset
+        buf, _size = result
+        if not buf:
             return [], offset
 
         entries: list[TranscriptEntry] = []

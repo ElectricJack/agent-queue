@@ -363,7 +363,14 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
     },
     "notify.task_message": {
         "required": [*_NOTIFY_BASE_FIELDS],
-        "optional": [*_NOTIFY_BASE_OPTIONAL, "task_id", "message", "message_type"],
+        "optional": [
+            *_NOTIFY_BASE_OPTIONAL,
+            "task_id",
+            "message",
+            "message_type",
+            "stream_id",
+            "stream_done",
+        ],
     },
     "notify.task_thread_close": {
         "required": [*_NOTIFY_BASE_FIELDS],
