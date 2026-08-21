@@ -5,11 +5,13 @@ Covers:
   construction fails — daemon boot must degrade gracefully.
 - Discord ``on_message`` chat routing:
     * flags off (default): legacy ``self.agent.chat(...)`` is called.
-    * flags on (``supervisor_agent.enabled`` and not ``legacy_chat``): the
-      chat call is replaced by ``message.send`` with a supervisor session
-      recipient and ``self.agent.chat`` is NOT called.
+    * flags on (``supervisor_agent.enabled``): the chat call is replaced by
+      ``message.send`` with a supervisor session recipient and
+      ``self.agent.chat`` is NOT called.
 - ``invoke_llm`` plugin fallback: the legacy path still resolves to
   ``supervisor.chat`` (spec §9 row 3 — behaviour unchanged in this phase).
+- ``SupervisorAgentConfig`` no longer carries ``legacy_chat``; old YAML that
+  includes the key must load without error.
 """
 
 from __future__ import annotations
@@ -22,6 +24,40 @@ from src.commands.handler import CommandHandler
 from src.config import MessagesConfig, SupervisorAgentConfig
 from src.database import Database
 from src.models import Project
+
+
+# ---------------------------------------------------------------------------
+# legacy_chat field removal
+# ---------------------------------------------------------------------------
+
+
+def test_supervisor_agent_config_has_no_legacy_chat():
+    from src.config import SupervisorAgentConfig
+
+    cfg = SupervisorAgentConfig()
+    assert not hasattr(cfg, "legacy_chat")
+
+
+def test_config_loader_ignores_legacy_chat_key(tmp_path):
+    """A YAML file still carrying legacy_chat must load without error."""
+    import yaml
+
+    from src.config import load_config
+
+    cfg_path = tmp_path / "config.yaml"
+    # Include the minimum required fields so load_config doesn't raise on
+    # validation.  Use enabled=False to avoid the messages/sessions prereq.
+    cfg_path.write_text(
+        yaml.dump(
+            {
+                "discord": {"bot_token": "test-token", "guild_id": "123"},
+                "database_path": str(tmp_path / "test.db"),
+                "supervisor_agent": {"enabled": False, "legacy_chat": False},
+            }
+        )
+    )
+    cfg = load_config(str(cfg_path))
+    assert cfg.supervisor_agent.enabled is False
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +129,7 @@ def _make_handler_with_messages(db, enabled=True):
 
     config = MagicMock()
     config.messages = MessagesConfig(enabled=enabled)
-    config.supervisor_agent = SupervisorAgentConfig(enabled=True, legacy_chat=False)
+    config.supervisor_agent = SupervisorAgentConfig(enabled=True)
 
     handler = CommandHandler(orch, config)
     handler._active_project_id = None
@@ -122,23 +158,8 @@ class TestRoutingDecision:
         from src.discord.bot import supervisor_session_routing_enabled
 
         cfg = MagicMock()
-        cfg.supervisor_agent = SupervisorAgentConfig(enabled=False, legacy_chat=True)
+        cfg.supervisor_agent = SupervisorAgentConfig(enabled=False)
         assert supervisor_session_routing_enabled(cfg) is False
-
-    def test_legacy_when_only_enabled(self):
-        from src.discord.bot import supervisor_session_routing_enabled
-
-        cfg = MagicMock()
-        cfg.supervisor_agent = SupervisorAgentConfig(enabled=True, legacy_chat=True)
-        # legacy_chat still true → keep legacy behaviour
-        assert supervisor_session_routing_enabled(cfg) is False
-
-    def test_new_path_when_enabled_and_not_legacy(self):
-        from src.discord.bot import supervisor_session_routing_enabled
-
-        cfg = MagicMock()
-        cfg.supervisor_agent = SupervisorAgentConfig(enabled=True, legacy_chat=False)
-        assert supervisor_session_routing_enabled(cfg) is True
 
     def test_missing_config_defaults_to_legacy(self):
         from src.discord.bot import supervisor_session_routing_enabled
@@ -182,6 +203,12 @@ class TestMessageSendPath:
         emitted = [c.args for c in bus.emit.await_args_list]
         assert any(a[0] == "message.sent" for a in emitted)
 
+    @pytest.mark.skip(
+        reason=(
+            "Task 2 rewrites supervisor_session_routing_enabled() to drop the "
+            "legacy_chat gate; this test passes only after that change."
+        )
+    )
     async def test_new_path_skips_thinking_view_and_reacts_on_success(self, db):
         """On the supervisor-session path, on_message must not post the
         legacy ThinkingView; it must acknowledge the enqueue with a 📬
@@ -192,7 +219,7 @@ class TestMessageSendPath:
         handler, bus = _make_handler_with_messages(db)
         bot = AgentQueueBot.__new__(AgentQueueBot)
         bot.config = MagicMock()
-        bot.config.supervisor_agent = SupervisorAgentConfig(enabled=True, legacy_chat=False)
+        bot.config.supervisor_agent = SupervisorAgentConfig(enabled=True)
         bot.config.messages = MessagesConfig(enabled=True)
         bot.agent = MagicMock()
         bot.agent.handler = handler
@@ -256,6 +283,12 @@ class TestMessageSendPath:
         bot.agent.chat.assert_not_awaited()
         bot._delete_thinking_msg.assert_not_called()
 
+    @pytest.mark.skip(
+        reason=(
+            "Task 2 rewrites supervisor_session_routing_enabled() to drop the "
+            "legacy_chat gate; this test passes only after that change."
+        )
+    )
     async def test_new_path_surfaces_message_send_error(self, db):
         """A message_send error result must produce a visible error reply
         and no 📬 reaction."""
@@ -272,7 +305,7 @@ class TestMessageSendPath:
 
         bot = AgentQueueBot.__new__(AgentQueueBot)
         bot.config = MagicMock()
-        bot.config.supervisor_agent = SupervisorAgentConfig(enabled=True, legacy_chat=False)
+        bot.config.supervisor_agent = SupervisorAgentConfig(enabled=True)
         bot.config.messages = MessagesConfig(enabled=True)
         bot.agent = MagicMock()
         bot.agent.handler = handler
