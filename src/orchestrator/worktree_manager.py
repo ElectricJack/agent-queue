@@ -854,14 +854,24 @@ class WorktreeSlotManager:
         """
         from src.sessions.proctable import scan_by_env_marker
 
-        # Slot's current holder (may be None for retired-and-released).
-        holder = slot_ws.locked_by_task_id
+        # Ids to treat as this slot's live task: the DB lock's current
+        # holder, and (as a belt) the sentinel's last-assigned task id.
+        # Sentinels persist across a release, so a process still running
+        # after the DB lock cleared is still recognisable here.
+        candidate_ids: set[str] = set()
+        if slot_ws.locked_by_task_id:
+            candidate_ids.add(slot_ws.locked_by_task_id)
+        try:
+            sentinel = self.read_sentinel(slot_ws.workspace_path)
+            if sentinel and sentinel.task_id:
+                candidate_ids.add(sentinel.task_id)
+        except Exception:
+            pass
+
         entries = await scan_by_env_marker("AQ_TASK_ID")
-        # Any process carrying the holder's task id is definitively live.
-        if holder:
-            for e in entries:
-                if e.marker == holder:
-                    return True
+        for e in entries:
+            if e.marker and e.marker in candidate_ids:
+                return True
         # Any AQ-marked process whose cwd is inside the slot is also live.
         slot_dir_resolved = str(Path(slot_ws.workspace_path).resolve())
         for e in entries:
