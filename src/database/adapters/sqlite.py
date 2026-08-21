@@ -25,6 +25,7 @@ from src.database.engine import (
     run_startup_data_migrations,
 )
 from src.database.queries.agent_queries import AgentQueryMixin
+from src.database.queries.api_session_token_queries import ApiSessionTokenQueriesMixin
 from src.database.queries.archive_queries import ArchiveQueryMixin
 from src.database.queries.blocked_state import BlockedStateMixin
 from src.database.queries.chat_queries import ChatQueryMixin
@@ -76,6 +77,7 @@ class SQLiteDatabaseAdapter(
     PluginQueryMixin,
     PlaybookQueryMixin,
     WorkflowQueryMixin,
+    ApiSessionTokenQueriesMixin,
 ):
     """Async SQLite persistence layer using SQLAlchemy Core.
 
