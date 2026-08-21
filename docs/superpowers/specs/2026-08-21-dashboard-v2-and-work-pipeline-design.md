@@ -44,6 +44,25 @@ declarative policy rules. "Work that cannot start yet" is always "a task with an
 gate", and the graph shows why. Agents never understand the pipeline; they only see READY
 tasks matching their profile. The policy determines what becomes READY, when.
 
+**Clarifying notes (2026-08-21 review):**
+
+- **Stage state is derived, never stored.** No task column records "current stage".
+  A work item's pipeline position is derivable from surrounding rows: open gates (with
+  type/source/resolution), stage-task edges, and the event history. The pipeline engine
+  is **stateless** — it reacts to events and asserts graph structure idempotently; there
+  is no per-item step pointer to drift or reconcile after crashes or manual edits.
+- **One pass per task.** A task traverses the lifecycle exactly once; each stage is its
+  own task making its own single pass. A completed task never re-enters READY because of
+  process (e.g. "in review") — COMPLETED always means "an agent finished executing this".
+  The only loop-back is explicit rework via `reopen_with_feedback`, which leaves an audit
+  trail; a fresh completion event then legitimately fires fresh pipeline reactions
+  (idempotency keys are per-event).
+- **Enum-shrink direction (later phase, not this wave):** the current 11-state enum
+  contains process states smuggled into the mechanical lifecycle (`AWAITING_APPROVAL`,
+  `AWAITING_PLAN_APPROVAL`, arguably `WAITING_INPUT` and the `BLOCKED` status). The
+  long-term direction is to collapse these into `DEFINED/READY` + gates, shrinking the
+  enum toward pure mechanics. New code should not lean on the process-flavored states.
+
 ## 4. Pipeline policy layer (`kind: pipeline` playbooks)
 
 Pipeline policies are playbooks — reusing vault storage, hot reload, scoping, the
