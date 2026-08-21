@@ -1,6 +1,6 @@
 """Message CLI — ``aq message *``, ``aq reply``, ``aq chat``.
 
-Implements docs/specs/implementation/supervisor-agent.md §6.3 (Phase 1).
+Implements docs/specs/implementation/supervisor-agent.md §6.3.
 Hand-crafted rather than auto-generated so every command routes through
 :func:`src.cli.envelope.emit` and shares the versioned JSON envelope from
 aq-surface §4 — the auto-generated commands print raw payloads instead.
@@ -9,18 +9,20 @@ aq-surface §4 — the auto-generated commands print raw payloads instead.
 ``aq message reply``: it is the protocol the shipped supervisor profile
 teaches, so it has to be one word deep.
 
-``aq chat`` is **poll mode** here.  The live ``/ws/events`` subscription that
-renders ``queued → delivered → reply`` transitions belongs to Phase 3, which
-needs the delivery engine; until then the REPL polls
-``GET /api/sessions/{name}/messages?since=`` and prints the reply when it
-lands.
+``aq chat`` runs a REPL that subscribes to the daemon's ``/ws/events``
+stream (see :mod:`src.api.websocket`) and renders ``delivered → replied``
+transitions live.  If the WebSocket is unavailable (older daemon, no
+``websockets`` package, connection refused), it falls back to polling
+``GET /api/sessions/{name}/messages?since=`` — the same code path used by
+``aq chat --once`` for scripting.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, AsyncIterator
+from urllib.parse import urlparse, urlunparse
 
 import click
 
@@ -481,6 +483,201 @@ async def _exchange(
     }
 
 
+def _events_ws_url(base_url: str) -> str:
+    """Translate ``http(s)://host:port`` → ``ws(s)://host:port/ws/events``."""
+    parsed = urlparse(base_url)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return urlunparse((scheme, parsed.netloc, "/ws/events", "", "", ""))
+
+
+async def _stream_replies_ws(
+    ws_url: str,
+    message_id: str,
+    session: str,
+    *,
+    timeout: float,
+) -> AsyncIterator[dict]:
+    """Yield ``message.*`` frames from ``/ws/events`` until reply/timeout.
+
+    Yields ``{"state": "delivered"|"replied", "reply": dict | None}``.
+    Raises :class:`ConnectionError` on any transport failure so the caller
+    can fall back to polling.  ``websockets`` is a starlette dep — if the
+    import fails at runtime we treat it as unavailable, not a bug.
+    """
+    try:
+        import websockets  # type: ignore[import-not-found]
+    except ImportError as exc:  # pragma: no cover - websockets ships transitively
+        raise ConnectionError("websockets package unavailable") from exc
+
+    try:
+        connection = await websockets.connect(ws_url)
+    except (OSError, Exception) as exc:  # noqa: BLE001 — any connect failure → fallback
+        raise ConnectionError(f"cannot open {ws_url}: {exc}") from exc
+
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                raw = await asyncio.wait_for(connection.recv(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return
+            except Exception as exc:  # noqa: BLE001
+                raise ConnectionError(f"ws recv failed: {exc}") from exc
+
+            import json as _json
+
+            try:
+                frame = _json.loads(raw) if isinstance(raw, (str, bytes)) else dict(raw)
+            except Exception:
+                continue
+            event_type = frame.get("_event_type", "")
+            if not event_type.startswith("message."):
+                continue
+            # message.delivered carries the outbound message_id we sent.
+            if event_type == "message.delivered" and frame.get("message_id") == message_id:
+                yield {"state": "delivered", "reply": None}
+                continue
+            # message.replied's ``message_id`` is the *original* — the one
+            # we sent — and ``reply_id`` is the new row.
+            if event_type == "message.replied" and frame.get("message_id") == message_id:
+                yield {
+                    "state": "replied",
+                    "reply": {
+                        "id": frame.get("reply_id"),
+                        "body": frame.get("body", ""),
+                        "reply_to_id": message_id,
+                    },
+                }
+                return
+    finally:
+        try:
+            await connection.close()
+        except Exception:  # pragma: no cover - best-effort cleanup
+            pass
+
+
+async def _stream_replies_poll(
+    client,
+    session: str,
+    message_id: str,
+    *,
+    thread_id: str | None,
+    timeout: float,
+    poll_interval: float,
+    since: float,
+) -> AsyncIterator[dict]:
+    """Polling fallback: same yield contract as the WS streamer.
+
+    Only emits ``replied`` — the poll path can't observe the delivery
+    transition (there is no separate ``delivered_at`` column exposed in
+    ``list_messages``), so it goes straight from silence to the reply.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        page = await client.get_session_messages(session, thread_id=thread_id, since=since)
+        for row in page.get("messages", []):
+            if row.get("reply_to_id") == message_id:
+                yield {"state": "replied", "reply": row}
+                return
+        await asyncio.sleep(poll_interval)
+
+
+async def _stream_replies(
+    client,
+    base_url: str | None,
+    session: str,
+    message_id: str,
+    *,
+    thread_id: str | None,
+    timeout: float,
+    poll_interval: float = _POLL_INTERVAL,
+    since: float,
+) -> AsyncIterator[dict]:
+    """Prefer ``/ws/events``; fall back to polling on any transport error.
+
+    Factored out (and module-level) so tests can patch it without
+    exercising a real WebSocket.
+    """
+    ws_url = _events_ws_url(base_url or "http://127.0.0.1:8081")
+    try:
+        async for event in _stream_replies_ws(
+            ws_url, message_id, session, timeout=timeout
+        ):
+            yield event
+        return
+    except ConnectionError:
+        pass  # fall through to poll
+
+    async for event in _stream_replies_poll(
+        client,
+        session,
+        message_id,
+        thread_id=thread_id,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        since=since,
+    ):
+        yield event
+
+
+async def _live_exchange(
+    client,
+    base_url: str | None,
+    session: str,
+    text: str,
+    *,
+    thread_id: str | None,
+    timeout: float,
+    poll_interval: float = _POLL_INTERVAL,
+    on_delivered=None,
+) -> dict:
+    """Send one line and stream events until the reply lands or times out.
+
+    ``on_delivered`` is an optional sync callback invoked when the
+    ``message.delivered`` frame arrives — REPL uses it to render a
+    ``delivered`` breadcrumb; ``--once`` doesn't care.
+    """
+    since = time.time()
+    sent = await client.send_session_message(
+        session, text, from_id="cli", thread_id=thread_id
+    )
+    message_id = sent.get("message_id")
+
+    async for event in _stream_replies(
+        client,
+        base_url,
+        session,
+        message_id,
+        thread_id=thread_id,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        since=since,
+    ):
+        state = event.get("state")
+        if state == "delivered" and on_delivered is not None:
+            try:
+                on_delivered()
+            except Exception:  # pragma: no cover - cosmetic renderer
+                pass
+            continue
+        if state == "replied":
+            return {
+                "session": session,
+                "message_id": message_id,
+                "state": "replied",
+                "reply": event.get("reply"),
+            }
+    return {
+        "session": session,
+        "message_id": message_id,
+        "state": "timeout",
+        "reply": None,
+    }
+
+
 @cli.command("chat")
 @click.argument("project", required=False, default=None)
 @click.option("--once", "once", default=None, help="Send one message, print the reply, exit")
@@ -503,11 +700,9 @@ def chat(
     """Talk to a project's supervisor session.
 
     ``--once TEXT`` is the scripting form: send, wait for the reply, print it,
-    exit.  Without it you get a REPL; Ctrl-D ends it (the conversation itself
-    lives in the supervisor's session, not in this process).
-
-    Poll mode only for now — live ``queued → delivered`` transitions over
-    ``/ws/events`` arrive with the Phase 3 delivery engine.
+    exit.  Without it you get a REPL that subscribes to ``/ws/events`` and
+    renders ``delivered → replied`` transitions live; Ctrl-C or Ctrl-D ends it
+    (the conversation itself lives in the supervisor's session, not here).
     """
     if not project:
         raise click.UsageError("a project is required: aq chat <project>")
@@ -539,7 +734,7 @@ def chat(
             raise SystemExit(1)
         return
 
-    console.print(f"[dim]chat → {session}  (Ctrl-D to exit)[/]")
+    console.print(f"[dim]chat → {session}  (Ctrl-C or Ctrl-D to exit)[/]")
     while True:
         try:
             line = console.input("[bold bright_cyan]you ›[/] ").strip()
@@ -549,13 +744,26 @@ def chat(
         if not line:
             continue
 
+        def _delivered_note() -> None:
+            console.print("[dim]  ·delivered[/]")
+
         async def _turn(text: str = line):
             async with _get_client(api_url) as client:
-                return await _exchange(
-                    client, session, text, thread_id=thread_id, timeout=timeout
+                return await _live_exchange(
+                    client,
+                    api_url,
+                    session,
+                    text,
+                    thread_id=thread_id,
+                    timeout=timeout,
+                    on_delivered=_delivered_note,
                 )
 
-        result = _run(_turn())
+        try:
+            result = _run(_turn())
+        except KeyboardInterrupt:
+            console.print()
+            return
         reply = result.get("reply")
         if reply:
             console.print(f"[bold bright_magenta]{session} ›[/] {reply.get('body', '')}")

@@ -260,6 +260,127 @@ class TestChat:
 
 
 # ---------------------------------------------------------------------------
+# aq chat — live (REPL) mode
+# ---------------------------------------------------------------------------
+
+
+class TestChatLive:
+    """Live-mode REPL: subscribes to /ws/events, falls back to polling."""
+
+    def _stream_stub(self, events):
+        """Return a coroutine-free async-generator factory for _stream_replies.
+
+        The factory ignores its args and yields the scripted ``events`` — a
+        list of dicts shaped like ``{"state": ..., "reply": ...}``.
+        """
+
+        async def _gen(*args, **kwargs):
+            for evt in events:
+                yield evt
+
+        return _gen
+
+    def test_live_loop_sends_and_prints_reply(self, runner):
+        """One turn: user line → send → stream yields replied → we print it."""
+        client = _mock_client()
+        client.send_session_message = AsyncMock(
+            return_value={"success": True, "message_id": "msg-1", "state": "queued"}
+        )
+        events = [
+            {"state": "delivered", "reply": None},
+            {
+                "state": "replied",
+                "reply": {"id": "msg-2", "reply_to_id": "msg-1", "body": "hi back"},
+            },
+        ]
+        with (
+            patch("src.cli.messages._get_client", return_value=client),
+            patch("src.cli.messages._stream_replies", self._stream_stub(events)),
+        ):
+            # Feed one line then EOF via CliRunner's stdin.
+            result = runner.invoke(cli, ["chat", "p1"], input="hello\n")
+        assert result.exit_code == 0
+        assert "hi back" in result.output
+        # Verify send happened once with the right session name.
+        assert client.send_session_message.await_count == 1
+        assert client.send_session_message.await_args.args[0] == "supervisor-p1"
+        # The user's line reached the send call.
+        assert client.send_session_message.await_args.args[1] == "hello"
+
+    def test_live_loop_renders_delivered_breadcrumb(self, runner):
+        """The `delivered` transition prints something before the reply."""
+        client = _mock_client()
+        client.send_session_message = AsyncMock(return_value={"message_id": "msg-1"})
+        events = [
+            {"state": "delivered", "reply": None},
+            {"state": "replied", "reply": {"id": "msg-2", "body": "ok"}},
+        ]
+        with (
+            patch("src.cli.messages._get_client", return_value=client),
+            patch("src.cli.messages._stream_replies", self._stream_stub(events)),
+        ):
+            result = runner.invoke(cli, ["chat", "p1"], input="hi\n")
+        assert result.exit_code == 0
+        assert "delivered" in result.output
+
+    def test_fallback_poll_path_when_ws_unavailable(self, runner):
+        """When ws connect raises, the composed streamer polls list_messages."""
+        client = _mock_client()
+        client.send_session_message = AsyncMock(return_value={"message_id": "msg-1"})
+        client.get_session_messages = AsyncMock(
+            return_value={
+                "messages": [{"id": "msg-2", "reply_to_id": "msg-1", "body": "from poll"}]
+            }
+        )
+
+        async def _ws_fail(*args, **kwargs):
+            raise ConnectionError("no ws")
+            yield  # pragma: no cover — unreachable, marks function as async gen
+
+        with (
+            patch("src.cli.messages._get_client", return_value=client),
+            patch("src.cli.messages._stream_replies_ws", _ws_fail),
+        ):
+            result = runner.invoke(cli, ["chat", "p1"], input="ping\n")
+        assert result.exit_code == 0
+        assert "from poll" in result.output
+        # And the poller was actually consulted.
+        assert client.get_session_messages.await_count >= 1
+
+    def test_ctrl_c_at_prompt_exits_cleanly(self, runner):
+        """KeyboardInterrupt raised from console.input ends the REPL, exit 0."""
+        client = _mock_client()
+        client.send_session_message = AsyncMock(return_value={"message_id": "msg-1"})
+        with (
+            patch("src.cli.messages._get_client", return_value=client),
+            patch("src.cli.messages.console.input", side_effect=KeyboardInterrupt),
+        ):
+            result = runner.invoke(cli, ["chat", "p1"])
+        assert result.exit_code == 0
+        # We never got to send.
+        assert client.send_session_message.await_count == 0
+
+    def test_live_timeout_reports_no_reply_and_continues(self, runner):
+        """Empty event stream (timeout) prints the 'no reply' notice, loop continues."""
+        client = _mock_client()
+        client.send_session_message = AsyncMock(return_value={"message_id": "msg-1"})
+
+        async def _empty(*args, **kwargs):
+            if False:  # pragma: no cover
+                yield {}
+
+        with (
+            patch("src.cli.messages._get_client", return_value=client),
+            patch("src.cli.messages._stream_replies", _empty),
+        ):
+            # Send one line then EOF — the loop should print the notice and
+            # then hit EOF on the second prompt and exit 0.
+            result = runner.invoke(cli, ["chat", "p1", "--timeout", "0.1"], input="hi\n")
+        assert result.exit_code == 0
+        assert "no reply" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
 # aq task create --graph / --from-spec / --dry-run
 # ---------------------------------------------------------------------------
 
