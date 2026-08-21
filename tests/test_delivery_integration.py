@@ -222,6 +222,22 @@ class TestUserToSupervisorNudge:
         assert stored.delivered_at is not None
         assert stored.via == "nudge"
 
+        # The cold-started supervisor row must line up with the
+        # execution.py canon: id equals the dashed session_id the harness
+        # was launched with, epoch equals the daemon's, project_id is
+        # non-empty. This is what lets the reconciler adopt/resume it on
+        # restart rather than orphan-heal from scratch.
+        argv = fake.starts[0].command
+        i = argv.index("--session-id")
+        launched_sid = argv[i + 1]
+        row = await orch.db.get_session_by_name(runtime_name)
+        assert row is not None
+        assert row.id == launched_sid
+        assert row.session_key == launched_sid
+        assert row.epoch == orch.daemon_epoch
+        assert row.project_id == PROJECT_ID
+        assert row.profile_id == "supervisor"
+
 
 # ---------------------------------------------------------------------------
 # 2. Busy task session → stays pending → prime claims it

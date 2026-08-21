@@ -393,6 +393,10 @@ class Orchestrator(
             harness_registry=self.harness_registry,
             config=config,
             profiles_loader=self._load_profile_for_lens,
+            # Same daemon epoch the reconciler stamps on task launches —
+            # keeps launch provenance consistent between the two write
+            # paths into the ``sessions`` table.
+            epoch=self.daemon_epoch,
         )
         self.message_delivery = MessageDeliveryEngine(
             db=self.db,

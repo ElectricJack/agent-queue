@@ -30,6 +30,8 @@ import time
 import uuid
 from typing import Literal, Protocol, runtime_checkable
 
+from sqlalchemy.exc import IntegrityError
+
 from src.models import SessionRecord
 from src.sessions.provider import (
     CapabilityUnsupported,
@@ -158,6 +160,7 @@ class SessionLens:
         harness_registry,
         config,
         profiles_loader,
+        epoch: str = "",
     ):
         self._db = db
         self._providers = providers
@@ -167,6 +170,10 @@ class SessionLens:
         #: Async callable ``profile_id -> AgentProfile | None``. The
         #: supervisor profile ships in Task 6; tests inject a fake here.
         self._profiles_loader = profiles_loader
+        #: Daemon epoch — launch provenance mirrored into the
+        #: ``sessions`` row and into the spec builder so the reconciler
+        #: sees the same value on both sides of the cold-start.
+        self._epoch = epoch
 
     # -- SessionManagerProto ------------------------------------------------
 
@@ -215,6 +222,17 @@ class SessionLens:
 
         # Cold start.
         derived_project = target_id[len(_SUPERVISOR_NAME_PREFIX) :] or project_id
+        if not derived_project:
+            # A supervisor address always encodes a project
+            # (``supervisor-<pid>``); an empty derivation means the caller
+            # handed us a malformed address. Refuse before starting
+            # anything so we never insert a phantom row with
+            # ``project_id=""``.
+            logger.debug(
+                "supervisor address %r missing project id; refusing to start",
+                target_id,
+            )
+            return False
 
         profile = await self._profiles_loader("supervisor")
         if profile is None:
@@ -273,9 +291,7 @@ class SessionLens:
             work_dir=work_dir,
             session_id=session_id,
             instance_token=instance_token,
-            # Epoch is provenance only; the reconciler will overwrite when
-            # it adopts. Passing empty is safe (see spec builder).
-            epoch="",
+            epoch=self._epoch,
         )
         try:
             await provider.start(spec)
@@ -299,27 +315,36 @@ class SessionLens:
         try:
             await self._db.create_session(
                 SessionRecord(
-                    id=uuid.uuid4().hex,
-                    project_id=derived_project or "",
-                    profile_id="supervisor",
+                    # Mirror execution.py canon: the row id *is* the dashed
+                    # session id we handed the harness via ``--session-id``.
+                    # That single identity is what makes the row, the
+                    # harness's own conversation id and the resume key line
+                    # up on restart.
+                    id=session_id,
+                    project_id=derived_project,
+                    profile_id=getattr(profile, "id", "") or "supervisor",
                     harness=harness.id,
                     provider=provider_name,
                     name=spec.session_name,
                     lifecycle="named",
                     work_dir=work_dir,
-                    epoch="",
+                    epoch=self._epoch,
                     instance_token=instance_token,
                     started_at=time.time(),
+                    # ``--session-id`` pinned the harness's conversation id
+                    # to ours, so the resume key *is* the session id — same
+                    # invariant execution.py relies on.
                     session_key=session_id,
                     state="running",
                 )
             )
-        except Exception:
+        except IntegrityError:
             # A racing reconciler / concurrent lens call may have inserted
             # the row already — either way the process is alive; the
-            # engine's next resolve will find it.
+            # engine's next resolve will find it. Other failures propagate
+            # to ensure_started's caller.
             logger.debug(
-                "supervisor session row insert failed (may already exist)",
+                "supervisor session row insert lost the race (already exists)",
                 exc_info=True,
             )
         return True

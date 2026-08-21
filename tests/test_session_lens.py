@@ -121,6 +121,9 @@ def profiles_loader(supervisor_profile):
     return _load
 
 
+TEST_EPOCH = "epoch-cafeb0ba"
+
+
 @pytest.fixture
 def lens(db, providers, spec_builder, harness_registry, config, profiles_loader):
     return SessionLens(
@@ -130,6 +133,7 @@ def lens(db, providers, spec_builder, harness_registry, config, profiles_loader)
         harness_registry=harness_registry,
         config=config,
         profiles_loader=profiles_loader,
+        epoch=TEST_EPOCH,
     )
 
 
@@ -264,6 +268,31 @@ class TestEnsureStarted:
         sid = argv[i + 1]
         assert sid.count("-") == 4, f"session_id must be dashed uuid, got {sid!r}"
 
+        # The persisted sessions row must mirror execution.py canon:
+        # row id == spec/harness session id (not a fabricated hex),
+        # session_key == same (the harness resume key),
+        # epoch propagated from the daemon,
+        # profile_id resolved from the loaded profile (not hardcoded),
+        # project_id non-empty.
+        row = await lens._db.get_session_by_name(runtime_name)
+        assert row is not None, "cold-start must insert a sessions row"
+        assert row.id == sid, "row id must equal the spec/harness session id"
+        assert row.session_key == sid, "session_key is the harness resume key"
+        assert row.epoch == TEST_EPOCH
+        assert row.project_id == "proj1"
+        assert row.profile_id == "supervisor"
+        assert row.state == "running"
+
+    async def test_refuses_when_project_id_missing(self, providers, lens):
+        # A bare ``supervisor-`` address (empty suffix) with no project_id
+        # fallback means we can't identify the project. Refuse before we
+        # start anything, so we never insert a phantom ``project_id=""`` row.
+        ok = await lens.ensure_started(
+            kind="session", target_id="supervisor-", project_id=None
+        )
+        assert ok is False
+        assert providers.create("fake").starts == []
+
     async def test_supervisor_cold_start_derives_project_from_name(
         self, providers, lens
     ):
@@ -330,10 +359,13 @@ class TestEnsureStarted:
             harness_registry=harness_registry,
             config=_Cfg(),
             profiles_loader=profiles_loader,
+            epoch=TEST_EPOCH,
         )
-        # ``supervisor-`` with an empty suffix — nothing to derive from.
+        # Valid project id (so the earlier "missing project" refusal does
+        # not preempt this test) but no ``vault_root`` — the work_dir
+        # helper still can't compose a meaningful directory.
         ok = await lens.ensure_started(
-            kind="session", target_id="supervisor-", project_id=None
+            kind="session", target_id="supervisor-proj1", project_id="proj1"
         )
         assert ok is False
         assert providers.create("fake").starts == []
