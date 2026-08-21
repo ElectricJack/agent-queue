@@ -268,6 +268,11 @@ class CommandHandler(
         # Signature: async callback(project_id, note_filename, note_path) -> None
         # The Discord bot registers this to auto-refresh viewed notes.
         self.on_note_written: Callable | None = None
+        # aq-surface Phase S2: server-injected RequestScope dict from
+        # /api/execute (never client-supplied — stripped from args before
+        # dispatch).  Handlers that need it (e.g. ``_cmd_prime``) read
+        # ``self._current_scope`` explicitly; everything else ignores it.
+        self._current_scope: dict | None = None
 
     # The following four properties are backed by module-level ContextVars
     # so concurrent callers (Discord, supervisor-platform tasks, playbook
@@ -487,6 +492,16 @@ class CommandHandler(
         Both Discord slash commands and chat agent LLM tools call this method.
         """
         with CorrelationContext(command=name, component="command_handler"):
+            # aq-surface Phase S2: pop the server-injected ``_scope`` off
+            # BEFORE dispatch so no ``_cmd_*`` handler sees it in its
+            # ``args`` unless it explicitly reads ``self._current_scope``.
+            # Belt-and-braces defense — /api/execute already strips any
+            # client-supplied ``_scope`` before forwarding the trusted one.
+            scope = None
+            if isinstance(args, dict) and "_scope" in args:
+                args = dict(args)
+                scope = args.pop("_scope")
+            self._current_scope = scope
             mutating = self._is_mutating(name)
             if mutating:
                 logger.info("cmd %s args=%s", name, self._preview(args))
@@ -559,3 +574,6 @@ class CommandHandler(
                     exc_info=True,
                 )
                 return {"error": str(e)}
+            finally:
+                # Ensure scope does not leak across commands.
+                self._current_scope = None

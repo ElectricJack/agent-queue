@@ -179,10 +179,13 @@ class SurfaceCommandsMixin:
         """
         task_id = args.get("task_id")
         if not task_id:
+            scope = getattr(self, "_current_scope", None) or {}
+            task_id = scope.get("task_id")
+        if not task_id:
             return {
                 "error": (
-                    "task_id is required (session-scope resolution is Phase S2; "
-                    "pass task_id explicitly for now)"
+                    "task_id is required (no task in scope — pass task_id "
+                    "explicitly or run inside a task session)"
                 )
             }
 
@@ -231,11 +234,14 @@ class SurfaceCommandsMixin:
         command only records intent.
         """
         task_id = args.get("task_id")
+        scope = getattr(self, "_current_scope", None) or {}
+        if not task_id:
+            task_id = scope.get("task_id")
         if not task_id:
             return {
                 "error": (
-                    "task_id is required (session-scope resolution is Phase S2; "
-                    "pass task_id explicitly for now)"
+                    "task_id is required (no task in scope — pass task_id "
+                    "explicitly or run inside a task session)"
                 )
             }
 
@@ -244,7 +250,7 @@ class SurfaceCommandsMixin:
             return {"error": f"Task '{task_id}' not found"}
 
         auto = bool(args.get("auto", False))
-        session_id = args.get("session_id")
+        session_id = args.get("session_id") or scope.get("session_id")
         payload = {
             "subject": args.get("subject") or "",
             "detail": args.get("detail") or "",

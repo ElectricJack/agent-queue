@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from src.api.auth import LOCAL_SCOPE
 from src.api.dependencies import get_command_handler
+from src.api.scope import check_command_scope
 
 logger = logging.getLogger(__name__)
 
@@ -94,25 +97,35 @@ async def resolve_session_project(name: str, ch) -> str:
 async def post_session_message(
     name: str,
     payload: SessionMessageRequest,
+    request: Request,
     ch=Depends(get_command_handler),
 ) -> SessionMessageResponse:
     """Queue a message addressed to the named session."""
+    scope = getattr(request.state, "scope", LOCAL_SCOPE)
     project_id = await resolve_session_project(name, ch)
+    args: dict = {
+        "project_id": project_id,
+        "to_kind": "session",
+        "to_id": name,
+        "from_kind": payload.from_kind,
+        "from_id": payload.from_,
+        "body": payload.body,
+        "subject": payload.subject,
+        "thread_id": payload.thread_id,
+        "priority": payload.priority,
+    }
+    args.pop("_scope", None)
+    scope_err = check_command_scope("message_send", args, scope)
+    if scope_err is not None:
+        return JSONResponse({"error": scope_err}, status_code=403)
+    args["_scope"] = {
+        "kind": scope.kind,
+        "session_id": scope.session_id,
+        "task_id": scope.task_id,
+        "project_id": scope.project_id,
+    }
 
-    result = await ch.execute(
-        "message_send",
-        {
-            "project_id": project_id,
-            "to_kind": "session",
-            "to_id": name,
-            "from_kind": payload.from_kind,
-            "from_id": payload.from_,
-            "body": payload.body,
-            "subject": payload.subject,
-            "thread_id": payload.thread_id,
-            "priority": payload.priority,
-        },
-    )
+    result = await ch.execute("message_send", args)
     if "error" in result:
         raise HTTPException(status_code=422, detail=result["error"])
 
@@ -125,6 +138,7 @@ async def post_session_message(
 @router.get("/api/sessions/{name}/messages")
 async def get_session_messages(
     name: str,
+    request: Request,
     thread_id: str | None = Query(default=None),
     since: float | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
@@ -138,18 +152,27 @@ async def get_session_messages(
     when the WebSocket isn't available) sees the reply as well as its own
     outbound message.
     """
+    scope = getattr(request.state, "scope", LOCAL_SCOPE)
     project_id = await resolve_session_project(name, ch)
+    args: dict = {
+        "project_id": project_id,
+        "thread_id": thread_id,
+        "since": since,
+        "limit": limit,
+        "include_archived": include_archived,
+    }
+    args.pop("_scope", None)
+    scope_err = check_command_scope("message_list", args, scope)
+    if scope_err is not None:
+        return JSONResponse({"error": scope_err}, status_code=403)
+    args["_scope"] = {
+        "kind": scope.kind,
+        "session_id": scope.session_id,
+        "task_id": scope.task_id,
+        "project_id": scope.project_id,
+    }
 
-    result = await ch.execute(
-        "message_list",
-        {
-            "project_id": project_id,
-            "thread_id": thread_id,
-            "since": since,
-            "limit": limit,
-            "include_archived": include_archived,
-        },
-    )
+    result = await ch.execute("message_list", args)
     if "error" in result:
         raise HTTPException(status_code=422, detail=result["error"])
 

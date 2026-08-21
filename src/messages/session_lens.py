@@ -104,15 +104,11 @@ class SessionManagerProto(Protocol):
     these signatures verbatim.
     """
 
-    async def activity(
-        self, *, kind: str, target_id: str, project_id: str | None
-    ) -> Activity:
+    async def activity(self, *, kind: str, target_id: str, project_id: str | None) -> Activity:
         """Coarse activity signal for a message recipient."""
         ...
 
-    async def ensure_started(
-        self, *, kind: str, target_id: str, project_id: str | None
-    ) -> bool:
+    async def ensure_started(self, *, kind: str, target_id: str, project_id: str | None) -> bool:
         """Wake a supervisor-named session on demand. No-op (False) otherwise."""
         ...
 
@@ -161,6 +157,7 @@ class SessionLens:
         config,
         profiles_loader,
         epoch: str = "",
+        token_store=None,
     ):
         self._db = db
         self._providers = providers
@@ -174,12 +171,15 @@ class SessionLens:
         #: ``sessions`` row and into the spec builder so the reconciler
         #: sees the same value on both sides of the cold-start.
         self._epoch = epoch
+        #: aq-surface Phase S2: optional session-scoped API bearer-token
+        #: store.  When present, ``ensure_started`` mints a token and
+        #: forwards it to the harness via ``AQ_API_TOKEN``.  Tests may
+        #: omit; the harness falls back to no bearer (LOCAL_SCOPE).
+        self._token_store = token_store
 
     # -- SessionManagerProto ------------------------------------------------
 
-    async def activity(
-        self, *, kind: str, target_id: str, project_id: str | None
-    ) -> Activity:
+    async def activity(self, *, kind: str, target_id: str, project_id: str | None) -> Activity:
         row, handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
         if row is None or handle is None:
             return self._absent_signal(kind=kind, target_id=target_id)
@@ -202,9 +202,7 @@ class SessionLens:
             return "busy"
         return "idle"
 
-    async def ensure_started(
-        self, *, kind: str, target_id: str, project_id: str | None
-    ) -> bool:
+    async def ensure_started(self, *, kind: str, target_id: str, project_id: str | None) -> bool:
         # Only supervisor-named sessions are wake-on-demand. Task sessions
         # are launched by the task lifecycle; spawning one from the message
         # path would race the orchestrator and violate ownership.
@@ -266,14 +264,39 @@ class SessionLens:
             # to run the supervisor. Better to skip than to pass an empty
             # cwd to the harness and get a confusing downstream failure.
             logger.debug(
-                "supervisor work_dir is empty (vault_root unset, project_id=%r); "
-                "refusing to start",
+                "supervisor work_dir is empty (vault_root unset, project_id=%r); refusing to start",
                 derived_project,
             )
             return False
         # `claude --session-id` rejects bare hex — must be dashed.
         session_id = str(uuid.uuid4())
         instance_token = uuid.uuid4().hex[:12]
+
+        # aq-surface Phase S2: mint the session's API bearer token.  Empty
+        # string when no store is wired (tests) — harness treats absent
+        # value as no-token.  task_id is None: named sessions are not
+        # bound to a task.
+        api_token = ""
+        if self._token_store is not None:
+            try:
+                api_token = await self._token_store.mint(
+                    session_id=session_id,
+                    task_id=None,
+                    project_id=derived_project,
+                )
+            except Exception:
+                # Non-fatal: starting the session with an empty api_token
+                # is better than refusing to start at all — the agent will
+                # 401 on its own `aq` calls, which is loud enough to
+                # diagnose.  Log at WARNING with session id so the failure
+                # is visible in production instead of buried at DEBUG.
+                logger.warning(
+                    "token mint failed for supervisor %s (session_id=%s); "
+                    "session will start with empty api_token",
+                    target_id,
+                    session_id,
+                    exc_info=True,
+                )
 
         # Let the spec builder derive the provider session name from the
         # profile+project convention (``n-supervisor--<pid>``). The
@@ -292,6 +315,7 @@ class SessionLens:
             session_id=session_id,
             instance_token=instance_token,
             epoch=self._epoch,
+            api_token=api_token,
         )
         try:
             await provider.start(spec)
@@ -389,9 +413,7 @@ class SessionLens:
         """
         from src.sessions.transcripts import resolve_reader
 
-        row, _handle = await self._resolve(
-            kind=kind, target_id=target_id, project_id=project_id
-        )
+        row, _handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
         if row is None:
             return None
         reader = resolve_reader(row.harness)
@@ -414,7 +436,7 @@ class SessionLens:
 
     @staticmethod
     def _absent_signal(*, kind: str, target_id: str) -> Activity:
-        """"absent" for tasks and plain session names; "sleeping" only for
+        """ "absent" for tasks and plain session names; "sleeping" only for
         supervisor-named sessions (wake-able by design)."""
         if kind == "session" and target_id.startswith(_SUPERVISOR_NAME_PREFIX):
             return "sleeping"

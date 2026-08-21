@@ -262,12 +262,7 @@ class SessionCommandsMixin:
                 except Exception:
                     entries = []
                 if entries:
-                    tail_size = int(
-                        args.get("limit")
-                        or args.get("lines")
-                        or args.get("n")
-                        or 100
-                    )
+                    tail_size = int(args.get("limit") or args.get("lines") or args.get("n") or 100)
                     tail = entries[-tail_size:]
                     return {
                         "success": True,
@@ -461,14 +456,32 @@ class SessionCommandsMixin:
         if session is not None:
             await self.db.set_task_meta(task_id, "close_session_id", session.id)
 
-        result = await self.orchestrator.complete_session_task(
-            task,
-            outcome=outcome,
-            work_outcome=work_outcome,
-            failure_class=failure_class,
-            commit=str(args.get("commit") or ""),
-            notes=str(args.get("notes") or ""),
-        )
+        # aq-surface Phase S2: revoke any session-scoped API bearer tokens
+        # tied to the closed session.  Single choke point for terminal
+        # state; the 60s cascade sweep is the safety net if this line ever
+        # regresses.  Runs in ``finally`` so a pipeline exception (or a
+        # failing subsystem inside ``complete_session_task``) does not
+        # leave a live token in circulation.  We only reach this block
+        # after caller-validation passed — early rejects (wrong session
+        # owning another task, unknown session, ...) exit above and do
+        # not revoke.
+        try:
+            result = await self.orchestrator.complete_session_task(
+                task,
+                outcome=outcome,
+                work_outcome=work_outcome,
+                failure_class=failure_class,
+                commit=str(args.get("commit") or ""),
+                notes=str(args.get("notes") or ""),
+            )
+        finally:
+            token_store = getattr(self.orchestrator, "token_store", None)
+            if token_store is not None and session is not None:
+                try:
+                    await token_store.revoke_session(session.id)
+                except Exception:
+                    # Revoke is best-effort — expiry is the safety net.
+                    pass
         return {
             "success": True,
             "task_id": task_id,

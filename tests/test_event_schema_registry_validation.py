@@ -536,6 +536,11 @@ _CANONICAL_PAYLOADS["session.restart_requested"] = {
     "reason": "handoff",
     "handoff_id": "ctx-456",
 }
+_CANONICAL_PAYLOADS["session.token_revoked"] = {
+    "session_id": "sess-1",
+    "count": 1,
+    "reason": "expired",
+}
 
 # -- session-runtime (lane 2A) -------------------------------------------
 _CANONICAL_PAYLOADS.update(

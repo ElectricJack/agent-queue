@@ -112,9 +112,7 @@ class TestPostMessage:
         assert payload["message_id"].startswith("msg-")
 
     def test_from_defaults_to_user(self, client):
-        resp = client.post(
-            "/api/sessions/supervisor-agent-queue/message", json={"body": "hello"}
-        )
+        resp = client.post("/api/sessions/supervisor-agent-queue/message", json={"body": "hello"})
         assert resp.status_code == 200
 
     def test_unknown_session_is_404(self, client):
@@ -124,9 +122,7 @@ class TestPostMessage:
 
     def test_command_error_is_422(self, client, handler):
         handler.config.messages = MessagesConfig(enabled=False)
-        resp = client.post(
-            "/api/sessions/supervisor-agent-queue/message", json={"body": "hi"}
-        )
+        resp = client.post("/api/sessions/supervisor-agent-queue/message", json={"body": "hi"})
         assert resp.status_code == 422
         assert "messages are disabled" in resp.json()["detail"]
 
@@ -174,3 +170,128 @@ def test_router_is_mounted_in_create_app():
 
     source = inspect.getsource(app_module.create_app)
     assert "messages_router" in source
+
+
+# ---------------------------------------------------------------------------
+# Scope enforcement on dedicated message routes
+# ---------------------------------------------------------------------------
+
+
+from src.api import dependencies as _deps  # noqa: E402
+from src.api.auth import SessionTokenStore  # noqa: E402
+from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware  # noqa: E402
+
+
+async def _seed_messages_app(tmp_path):
+    """Build a FastAPI app with the messages router + auth middleware wired up."""
+    db = Database(str(tmp_path / "msg_scope.db"))
+    await db.initialize()
+    await db.create_project(Project(id="proj-a", name="Project A"))
+    await db.create_project(Project(id="proj-b", name="Project B"))
+
+    bus = MagicMock()
+    bus.emit = AsyncMock()
+    orch = MagicMock()
+    orch.db = db
+    orch.bus = bus
+    orch._command_handler = None
+    orch.plugin_registry = None
+
+    config = MagicMock()
+    config.messages = MessagesConfig(enabled=True)
+    config.playbooks = MagicMock(enabled=True)
+    config.memory = MagicMock(enabled=True)
+
+    ch = CommandHandler(orch, config)
+
+    store = SessionTokenStore(db, ttl_hours=72)
+    _deps._orchestrator = orch
+    _deps._command_handler = ch
+    _deps._token_store = store
+    _deps._require_session_token = False
+
+    app = FastAPI()
+    app.include_router(router)
+    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(TokenAuthMiddleware)
+    return db, store, ch, app
+
+
+class TestMessageRouteScopeEnforcement:
+    """Session-scoped tokens must not be able to send/list messages for out-of-scope projects."""
+
+    async def test_session_token_scoped_to_project_a_blocked_on_project_b_send(self, tmp_path):
+        """Token scoped to proj-a gets 403 when posting a message to a proj-b session."""
+        db, store, ch, app = await _seed_messages_app(tmp_path)
+        try:
+            tok = await store.mint(session_id="s-a", task_id=None, project_id="proj-a")
+            with TestClient(app) as c:
+                r = c.post(
+                    "/api/sessions/supervisor-proj-b/message",
+                    headers={"Authorization": f"Bearer {tok}"},
+                    json={"body": "infiltrate"},
+                )
+            assert r.status_code == 403, r.text
+            body = r.json()
+            assert "error" in body
+            assert "out of scope" in body["error"]
+        finally:
+            _deps._orchestrator = None
+            _deps._command_handler = None
+            _deps._token_store = None
+            _deps._require_session_token = False
+            await db.close()
+
+    async def test_session_token_scoped_to_project_a_blocked_on_project_b_list(self, tmp_path):
+        """Token scoped to proj-a gets 403 when listing messages for a proj-b session."""
+        db, store, ch, app = await _seed_messages_app(tmp_path)
+        try:
+            tok = await store.mint(session_id="s-a", task_id=None, project_id="proj-a")
+            with TestClient(app) as c:
+                r = c.get(
+                    "/api/sessions/supervisor-proj-b/messages",
+                    headers={"Authorization": f"Bearer {tok}"},
+                )
+            assert r.status_code == 403, r.text
+            body = r.json()
+            assert "error" in body
+            assert "out of scope" in body["error"]
+        finally:
+            _deps._orchestrator = None
+            _deps._command_handler = None
+            _deps._token_store = None
+            _deps._require_session_token = False
+            await db.close()
+
+    async def test_no_token_local_request_send_still_succeeds(self, tmp_path):
+        """Unauthenticated (LOCAL_SCOPE) requests are unaffected by scope enforcement."""
+        db, store, ch, app = await _seed_messages_app(tmp_path)
+        try:
+            with TestClient(app) as c:
+                r = c.post(
+                    "/api/sessions/supervisor-proj-a/message",
+                    json={"body": "hello from cli"},
+                )
+            assert r.status_code == 200, r.text
+            assert r.json()["success"] is True
+        finally:
+            _deps._orchestrator = None
+            _deps._command_handler = None
+            _deps._token_store = None
+            _deps._require_session_token = False
+            await db.close()
+
+    async def test_no_token_local_request_list_still_succeeds(self, tmp_path):
+        """Unauthenticated (LOCAL_SCOPE) list requests are unaffected by scope enforcement."""
+        db, store, ch, app = await _seed_messages_app(tmp_path)
+        try:
+            with TestClient(app) as c:
+                r = c.get("/api/sessions/supervisor-proj-a/messages")
+            assert r.status_code == 200, r.text
+            assert r.json()["success"] is True
+        finally:
+            _deps._orchestrator = None
+            _deps._command_handler = None
+            _deps._token_store = None
+            _deps._require_session_token = False
+            await db.close()

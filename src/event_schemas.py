@@ -682,6 +682,14 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
         "required": ["session_id"],
         "optional": ["task_id", "project_id", "harness", "work_dir"],
     },
+    # aq-surface Phase S2: emitted by
+    # ``Orchestrator._revoke_expired_tokens`` (aggregate sweep) and by the
+    # session-close revoke path (single revoke).  ``session_id`` is empty
+    # for aggregate sweeps.
+    "session.token_revoked": {
+        "required": ["session_id", "count", "reason"],
+        "optional": [],
+    },
 }
 
 # ---------------------------------------------------------------------------

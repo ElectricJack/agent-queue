@@ -18,12 +18,14 @@ import logging
 from collections import defaultdict
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, create_model
 
+from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
 from src.api.models import get_all_response_models
+from src.api.scope import check_command_scope
 from src.cli.auto_commands import _strip_category_prefix
 from src.tools import (
     CATEGORIES,
@@ -127,8 +129,35 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
     # Use Annotated to set the concrete type for FastAPI's schema generation.
     BodyType = Annotated[input_model, ...]  # noqa: N806
 
-    async def handler(body: BodyType, ch=Depends(get_command_handler)):
-        result = await ch.execute(cmd_name, body.model_dump(exclude_none=True))
+    async def handler(
+        body: BodyType,
+        ch=Depends(get_command_handler),
+        request: Request = None,  # type: ignore[assignment]
+    ):
+        # aq-surface Phase S2: mirror /api/execute's scope enforcement so
+        # session-token holders cannot reach out-of-scope commands via the
+        # typed routes.  Strip any client-supplied ``_scope`` before we
+        # inject the middleware-derived one — clients cannot spoof identity.
+        args = body.model_dump(exclude_none=True)
+        args.pop("_scope", None)
+
+        scope: RequestScope = (
+            getattr(request.state, "scope", LOCAL_SCOPE) if request is not None else LOCAL_SCOPE
+        )
+        scope_err = check_command_scope(cmd_name, args, scope)
+        if scope_err is not None:
+            return JSONResponse({"error": scope_err}, status_code=403)
+
+        # Forward the server-derived scope so surface commands can resolve
+        # ``task_id``/``project_id``/``session_id`` without an explicit arg.
+        args["_scope"] = {
+            "kind": scope.kind,
+            "session_id": scope.session_id,
+            "task_id": scope.task_id,
+            "project_id": scope.project_id,
+        }
+
+        result = await ch.execute(cmd_name, args)
         if "error" in result:
             return JSONResponse(
                 {"error": result["error"]},
