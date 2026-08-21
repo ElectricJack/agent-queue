@@ -19,6 +19,28 @@ from src.models import Project, Task
 pytestmark = pytest.mark.asyncio
 
 
+async def _ensure_agent_profile(db, profile_id: str) -> None:
+    """Insert a minimal ``agent_profiles`` row so a Task's ``profile_id`` FK
+    resolves.  Prime does not care about profile contents — only that a
+    profile-addressed message can point at a row that exists — so this
+    helper stays minimal (all server_default columns unset)."""
+    import time as _time
+
+    from sqlalchemy import insert
+
+    from src.database.tables import agent_profiles
+
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(agent_profiles).values(
+                id=profile_id,
+                name=profile_id,
+                created_at=_time.time(),
+                updated_at=_time.time(),
+            )
+        )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -319,6 +341,194 @@ class TestPrime:
         assert msg.id not in messages["body"]
         stored = await db.get_message(msg.id)
         assert stored.delivered_at is None
+
+    async def test_profile_addressed_message_rendered_and_marked_delivered(
+        self, prime_handler, db
+    ):
+        """Fix: prime must surface ``to_kind='profile'`` messages too.
+
+        The prime spec's message-gathering path was fetching only
+        ``("task", task_id)``; profile-addressed rows never made it to
+        the priming agent.  This test pins the fix — a message addressed
+        to the task's profile appears in the messages section and is
+        marked delivered via CAS with ``via="prime"``.
+        """
+        await db.create_project(Project(id="pp", name="Profile Project"))
+        await _ensure_agent_profile(db, "claude-agent")
+        t = Task(
+            id="task-with-profile",
+            project_id="pp",
+            title="T",
+            description="d",
+            profile_id="claude-agent",
+        )
+        await db.create_task(t)
+
+        prime_handler.config.messages.enabled = True
+        msg = await db.create_message(
+            project_id=t.project_id,
+            from_kind="user",
+            from_id="u:1",
+            to_kind="profile",
+            to_id="claude-agent",
+            body="hello profile",
+        )
+
+        result = await prime_handler.execute("prime", {"task_id": t.id})
+        messages = next(s for s in result["sections"] if s["key"] == "messages")
+        assert msg.id in messages["body"]
+        assert "hello profile" in messages["body"]
+
+        stored = await db.get_message(msg.id)
+        assert stored.delivered_at is not None
+        assert stored.via == "prime"
+
+    async def test_session_addressed_message_rendered_when_session_resolvable(
+        self, prime_handler, db
+    ):
+        """Session-addressed message surfaces once a session row exists.
+
+        The priming session's name is the ``s-…`` form on the
+        ``sessions`` table; ``get_session_for_task`` is the resolver.
+        When resolvable, ``("session", <name>)`` gets fetched alongside
+        task/profile inboxes.
+        """
+        import time as _time
+
+        from src.models import SessionRecord
+
+        await db.create_project(Project(id="ps", name="Session Project"))
+        await _ensure_agent_profile(db, "claude-agent")
+        t = Task(
+            id="task-with-session",
+            project_id="ps",
+            title="T",
+            description="d",
+            profile_id="claude-agent",
+        )
+        await db.create_task(t)
+
+        sess_name = f"s-{t.id}"
+        await db.create_session(
+            SessionRecord(
+                id="sess-abc",
+                project_id="ps",
+                profile_id="claude-agent",
+                harness="claude",
+                provider="fake",
+                name=sess_name,
+                lifecycle="task",
+                work_dir="/tmp/x",
+                epoch="e",
+                instance_token="tok",
+                started_at=_time.time(),
+                task_id=t.id,
+                state="running",
+            )
+        )
+
+        prime_handler.config.messages.enabled = True
+        msg = await db.create_message(
+            project_id=t.project_id,
+            from_kind="user",
+            from_id="u:1",
+            to_kind="session",
+            to_id=sess_name,
+            body="hello session",
+        )
+
+        result = await prime_handler.execute("prime", {"task_id": t.id})
+        messages = next(s for s in result["sections"] if s["key"] == "messages")
+        assert msg.id in messages["body"]
+        assert "hello session" in messages["body"]
+
+        stored = await db.get_message(msg.id)
+        assert stored.delivered_at is not None
+        assert stored.via == "prime"
+
+    async def test_task_profile_session_merged_by_priority_no_dupes(
+        self, prime_handler, db
+    ):
+        """Merging three inboxes: dedupe by id, sort by (priority, created_at).
+
+        Three messages are inserted with distinct priorities and mixed
+        recipient kinds; a fourth is a duplicate that the merged path
+        would double-render if de-duping were absent.
+        """
+        import time as _time
+
+        from src.models import SessionRecord
+
+        await db.create_project(Project(id="pm", name="Merge Project"))
+        await _ensure_agent_profile(db, "claude-agent")
+        t = Task(
+            id="task-merge",
+            project_id="pm",
+            title="T",
+            description="d",
+            profile_id="claude-agent",
+        )
+        await db.create_task(t)
+
+        sess_name = f"s-{t.id}"
+        await db.create_session(
+            SessionRecord(
+                id="sess-m",
+                project_id="pm",
+                profile_id="claude-agent",
+                harness="claude",
+                provider="fake",
+                name=sess_name,
+                lifecycle="task",
+                work_dir="/tmp/x",
+                epoch="e",
+                instance_token="tok",
+                started_at=_time.time(),
+                task_id=t.id,
+                state="running",
+            )
+        )
+
+        prime_handler.config.messages.enabled = True
+        m_task = await db.create_message(
+            project_id="pm",
+            from_kind="user", from_id="u:1",
+            to_kind="task", to_id=t.id,
+            body="task-body", priority=50,
+        )
+        m_profile = await db.create_message(
+            project_id="pm",
+            from_kind="user", from_id="u:1",
+            to_kind="profile", to_id="claude-agent",
+            body="profile-body", priority=10,
+        )
+        m_session = await db.create_message(
+            project_id="pm",
+            from_kind="user", from_id="u:1",
+            to_kind="session", to_id=sess_name,
+            body="session-body", priority=30,
+        )
+
+        result = await prime_handler.execute("prime", {"task_id": t.id})
+        messages = next(s for s in result["sections"] if s["key"] == "messages")
+        body = messages["body"]
+
+        # All three appear exactly once (dedupe check — each id occurs
+        # only once even though inboxes are queried separately).
+        for mid in (m_task.id, m_profile.id, m_session.id):
+            assert body.count(mid) == 1
+
+        # Priority order: profile (10) < session (30) < task (50).
+        pos_profile = body.index(m_profile.id)
+        pos_session = body.index(m_session.id)
+        pos_task = body.index(m_task.id)
+        assert pos_profile < pos_session < pos_task
+
+        # All three marked delivered via prime.
+        for mid in (m_task.id, m_profile.id, m_session.id):
+            stored = await db.get_message(mid)
+            assert stored.delivered_at is not None
+            assert stored.via == "prime"
 
 
 # ---------------------------------------------------------------------------

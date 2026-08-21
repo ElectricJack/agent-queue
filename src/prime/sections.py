@@ -243,17 +243,24 @@ async def build_messages_section(
     *,
     config: Any = None,
     mark_delivered: bool = False,
+    profile_id: str | None = None,
+    session_name: str | None = None,
 ) -> PrimeSection:
     """Pending messages (design §5.2 #6) + latest ``task_context(type=handoff)``.
 
-    Renders pending ``to_kind="task"`` messages using the same envelope as
-    the ``UserPromptSubmit`` inject hook (``[<id> from <kind>:<id>]``
-    header + body), so the agent sees one consistent format regardless of
-    delivery path.  When *mark_delivered* is true the section marks each
-    rendered row delivered via CAS with ``via="prime"`` — this is what
-    makes prime a genuine delivery method rather than a peek.  Gated on
-    ``config.messages.enabled``; when the flag is off the messages sub-
-    section is skipped entirely (the handoff block still renders).
+    Renders pending messages addressed to the priming context using the
+    same envelope as the ``UserPromptSubmit`` inject hook
+    (``[<id> from <kind>:<id>]`` header + body), so the agent sees one
+    consistent format regardless of delivery path.  Fetches three inboxes
+    — ``("task", task_id)``, ``("profile", profile_id)`` if known, and
+    ``("session", session_name)`` if resolvable — then merges by id,
+    de-dupes, and sorts by ``(priority asc, created_at asc)`` (the same
+    order ``get_pending_messages`` uses natively).  When *mark_delivered*
+    is true each rendered row is marked delivered via CAS with
+    ``via="prime"`` — this is what makes prime a genuine delivery method
+    rather than a peek.  Gated on ``config.messages.enabled``; when the
+    flag is off the messages sub-section is skipped entirely (the handoff
+    block still renders).
     """
     parts: list[str] = []
 
@@ -261,11 +268,26 @@ async def build_messages_section(
         getattr(getattr(config, "messages", None), "enabled", False)
     )
     if messages_enabled:
-        try:
-            pending = await db.get_pending_messages("task", task_id, limit=50)
-        except Exception:
-            pending = []
-        for msg in pending or []:
+        inbox_queries: list[tuple[str, str]] = [("task", task_id)]
+        if profile_id:
+            inbox_queries.append(("profile", profile_id))
+        if session_name:
+            inbox_queries.append(("session", session_name))
+
+        merged: dict[str, Any] = {}
+        for kind, ident in inbox_queries:
+            try:
+                pending = await db.get_pending_messages(kind, ident, limit=50)
+            except Exception:
+                pending = []
+            for msg in pending or []:
+                merged.setdefault(msg.id, msg)
+
+        ordered = sorted(
+            merged.values(),
+            key=lambda m: (getattr(m, "priority", 0), getattr(m, "created_at", 0) or 0),
+        )
+        for msg in ordered:
             header = f"[{msg.id} from {msg.from_kind}:{msg.from_id}]"
             if getattr(msg, "subject", None):
                 header = f"{header} {msg.subject}"

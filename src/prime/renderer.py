@@ -63,6 +63,23 @@ class PrimeRenderer:
 
         effective_work_dir = work_dir or await _sections.resolve_work_dir(self.db, task)
 
+        # Best-effort session-name resolution for the messages section:
+        # ``get_session_for_task`` returns the current row (see
+        # ``SessionQueryMixin`` ranking) whose ``name`` is the ``s-…``
+        # form the messaging engine addresses when ``to_kind='session'``.
+        # If the backend does not expose that helper (older adapters used
+        # in narrow tests) or no session exists yet, we silently skip the
+        # session-inbox fetch per the fix spec.
+        session_name: str | None = None
+        get_session_for_task = getattr(self.db, "get_session_for_task", None)
+        if get_session_for_task is not None:
+            try:
+                sess = await get_session_for_task(task_id)
+            except Exception:
+                sess = None
+            if sess is not None:
+                session_name = getattr(sess, "name", None)
+
         section_tuple = (
             await _sections.build_role_section(self.config, task.profile_id),
             await _sections.build_project_role_section(
@@ -76,6 +93,8 @@ class PrimeRenderer:
                 task_id,
                 config=self.config,
                 mark_delivered=mark_messages_delivered,
+                profile_id=task.profile_id,
+                session_name=session_name,
             ),
             _sections.build_l1_facts_section(self.config),
             _sections.build_l2_context_section(self.config),
