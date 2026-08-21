@@ -197,12 +197,23 @@ class TaskQueryMixin:
                 flipped = await self.recompute_blocked({task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
 
+    def set_state_machine_enforcement(self, enforce: bool) -> None:
+        """Toggle state-machine enforcement in ``transition_task``.
+
+        Called from config load/reload so the query layer doesn't have to
+        import ``AppConfig``.  Default is warn-only (``False``).  See
+        work-graph §9 stage 4 for the rollout.
+        """
+        self._sm_enforce = bool(enforce)
+
     async def transition_task(
         self,
         task_id: str,
         new_status: TaskStatus,
         *,
         context: str = "",
+        event=None,
+        force: bool = False,
         **kwargs,
     ) -> set[str]:
         """Update task status with state-machine validation.
@@ -250,6 +261,18 @@ class TaskQueryMixin:
             else:
                 if not is_valid_status_transition(current_status, new_status):
                     ctx = f" ({context})" if context else ""
+                    # WG-5: enforce raises when the flag is on and the
+                    # caller didn't opt out via ``force=True``.  Warn-only
+                    # otherwise (unchanged pre-flip behaviour).
+                    if getattr(self, "_sm_enforce", False) and not force:
+                        from src.state_machine import InvalidTransition
+
+                        raise InvalidTransition(
+                            current_status,
+                            event,
+                            from_status=current_status,
+                            to_status=new_status,
+                        )
                     logger.warning(
                         "Invalid task status transition: %s -> %s for task '%s'%s",
                         current_status.value,
@@ -434,6 +457,78 @@ class TaskQueryMixin:
                 select(task_labels.c.label).where(task_labels.c.task_id == task_id)
             )
             return sorted(r[0] for r in result.fetchall())
+
+    async def get_group_progress(self, parent_id: str) -> dict:
+        """Return computed progress for the children of *parent_id*.
+
+        Counts + Kahn-decomposition waves over ``blocks`` edges among the
+        children — never stored, always recomputed (work-graph §4.1).
+        Shape::
+
+            {
+                "parent_id": ...,
+                "total": int,
+                "done": int,        # COMPLETED
+                "ready": int,       # READY ∧ is_blocked = 0
+                "blocked": int,     # is_blocked = 1
+                "in_progress": int, # ASSIGNED / IN_PROGRESS
+                "waves": list[list[task_id]],
+            }
+        """
+        children = await self.get_subtasks(parent_id)
+        counts = {"done": 0, "ready": 0, "blocked": 0, "in_progress": 0}
+        for c in children:
+            status = getattr(c.status, "value", c.status)
+            if status == TaskStatus.COMPLETED.value:
+                counts["done"] += 1
+            elif getattr(c, "is_blocked", False):
+                counts["blocked"] += 1
+            elif status == TaskStatus.READY.value:
+                counts["ready"] += 1
+            elif status in (TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value):
+                counts["in_progress"] += 1
+
+        # Kahn waves over ``blocks`` edges internal to the child set.
+        child_ids = {c.id for c in children}
+        indeg: dict[str, int] = {cid: 0 for cid in child_ids}
+        adj: dict[str, list[str]] = {cid: [] for cid in child_ids}
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(
+                        task_dependencies.c.task_id,
+                        task_dependencies.c.depends_on_task_id,
+                    ).where(
+                        and_(
+                            task_dependencies.c.dep_type == "blocks",
+                            task_dependencies.c.task_id.in_(sorted(child_ids)),
+                            task_dependencies.c.depends_on_task_id.in_(sorted(child_ids)),
+                        )
+                    )
+                )
+            ).fetchall()
+        for tid, dep in rows:
+            adj[dep].append(tid)
+            indeg[tid] = indeg.get(tid, 0) + 1
+
+        waves: list[list[str]] = []
+        current = sorted(cid for cid, d in indeg.items() if d == 0)
+        while current:
+            waves.append(current)
+            next_wave: list[str] = []
+            for cid in current:
+                for nb in adj.get(cid, []):
+                    indeg[nb] -= 1
+                    if indeg[nb] == 0:
+                        next_wave.append(nb)
+            current = sorted(next_wave)
+
+        return {
+            "parent_id": parent_id,
+            "total": len(children),
+            **counts,
+            "waves": waves,
+        }
 
     async def get_subtasks(self, parent_task_id: str) -> list[Task]:
         """Return all direct children of a task."""

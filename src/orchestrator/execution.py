@@ -1393,6 +1393,33 @@ class ExecutionMixin:
             await self._check_defined_tasks()
 
         elif output.result == AgentResult.FAILED:
+            # WG-5: honour the ``failure_class`` outcome-metadata key.  A
+            # ``"hard"`` failure skips retry entirely and goes straight to
+            # BLOCKED — retries can't heal a structural problem.
+            try:
+                failure_class = await self.db.get_task_meta(task.id, "failure_class")
+            except Exception:
+                failure_class = None
+            if failure_class == "hard":
+                await self.db.transition_task(
+                    action.task_id,
+                    TaskStatus.BLOCKED,
+                    context="hard_failure",
+                    retry_count=task.retry_count,
+                )
+                await self._emit_task_failure(
+                    task,
+                    "hard_failure",
+                    error=output.error_message or "hard failure_class — no retry",
+                    agent_id=action.agent_id,
+                    agent_type=underlying_agent_type(profile.id) if profile else None,
+                )
+                await _notify_brief(
+                    f"🚫 Hard failure: {task.title} (`{task.id}`) — retry skipped"
+                )
+                # No workspace reset — leave the state for post-mortem.
+                await self._check_defined_tasks()
+                return
             new_retry = task.retry_count + 1
             if new_retry >= task.max_retries:
                 await self.db.transition_task(

@@ -33,10 +33,31 @@ __all__ = [
 
 
 class InvalidTransition(Exception):
-    def __init__(self, state: TaskStatus, event: TaskEvent):
+    def __init__(
+        self,
+        state: TaskStatus,
+        event: TaskEvent | None = None,
+        *,
+        from_status: TaskStatus | None = None,
+        to_status: TaskStatus | None = None,
+    ):
         self.state = state
         self.event = event
-        super().__init__(f"Invalid transition: ({state.value}, {event.value})")
+        # WG-5: enforcement callers pass ``from_status``/``to_status`` for
+        # API error payloads.  ``state`` remains the original constructor
+        # for back-compat with existing event-driven callers.
+        self.from_status = from_status if from_status is not None else state
+        self.to_status = to_status
+        if event is not None:
+            msg = f"Invalid transition: ({state.value}, {event.value})"
+        elif to_status is not None:
+            msg = (
+                f"Invalid transition: ({self.from_status.value} -> "
+                f"{to_status.value})"
+            )
+        else:
+            msg = f"Invalid transition from {state.value}"
+        super().__init__(msg)
 
 
 VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {

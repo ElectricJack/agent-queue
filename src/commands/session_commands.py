@@ -385,6 +385,10 @@ class SessionCommandsMixin:
             await self.db.set_task_meta(task_id, "work_outcome", work_outcome)
         if args.get("commit"):
             await self.db.set_task_meta(task_id, "work_commit", str(args["commit"]))
+        if args.get("branch"):
+            # WG-5: work-graph §5 lists ``work_branch`` in the outcome-meta
+            # contract; the older close surface only stored ``work_commit``.
+            await self.db.set_task_meta(task_id, "work_branch", str(args["branch"]))
         if args.get("notes"):
             await self.db.set_task_meta(task_id, "close_notes", str(args["notes"]))
         if args.get("verification"):
