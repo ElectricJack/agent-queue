@@ -149,13 +149,37 @@ class MessageQueriesMixin:
             result = await conn.execute(stmt)
             return [_row_to_message(r) for r in result.mappings().fetchall()]
 
+    async def get_pending_recipients(self) -> list[tuple[str, str, str]]:
+        """Distinct ``(to_kind, to_id, project_id)`` with pending messages.
+
+        Read-only — the delivery engine enumerates these to know whose
+        inboxes to work each cascade pass without paging every row through
+        Python. Rows are grouped so a recipient still receives one nudge
+        even if they have several pending messages across projects.
+        """
+        stmt = (
+            select(messages.c.to_kind, messages.c.to_id, messages.c.project_id)
+            .where(
+                and_(
+                    messages.c.delivered_at.is_(None),
+                    messages.c.archived_at.is_(None),
+                )
+            )
+            .distinct()
+        )
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return [(r[0], r[1], r[2]) for r in result.fetchall()]
+
     async def mark_delivered(self, message_id: str, *, via: str | None = None) -> bool:
         """Compare-and-set the delivery stamp.
 
         Returns ``True`` only when *this* call claimed the message — the
-        ``delivered_at IS NULL`` predicate makes the second (racing) caller
-        return ``False`` without overwriting the first delivery's stamp or
-        ``via`` marker.
+        ``delivered_at IS NULL AND archived_at IS NULL`` predicate makes
+        the second (racing) caller return ``False`` without overwriting
+        the first delivery's stamp or ``via`` marker, and prevents an
+        archived row from ever being claimed for delivery (spec §11.1
+        binding resolution).
         """
         async with self._engine.begin() as conn:
             result = await conn.execute(
@@ -164,6 +188,7 @@ class MessageQueriesMixin:
                     and_(
                         messages.c.id == message_id,
                         messages.c.delivered_at.is_(None),
+                        messages.c.archived_at.is_(None),
                     )
                 )
                 .values(delivered_at=time.time(), via=via)

@@ -148,6 +148,44 @@ class TestArchive:
         assert (await db.get_message(msg.id)).archived_at is not None
 
 
+class TestMarkDeliveredArchived:
+    async def test_archived_row_cannot_be_claimed(self, db):
+        """Spec §11.1 binding: ``mark_delivered`` refuses archived rows."""
+        msg = await _send(db)
+        await db.archive_messages([msg.id])
+        assert await db.mark_delivered(msg.id, via="nudge") is False
+        assert (await db.get_message(msg.id)).delivered_at is None
+
+
+class TestPendingRecipients:
+    async def test_distinct_recipients(self, db):
+        await _send(db, to_kind="session", to_id="supervisor-p1")
+        await _send(db, to_kind="session", to_id="supervisor-p1")
+        await _send(db, to_kind="task", to_id="task-1")
+        await _send(db, to_kind="user", to_id="discord:1", project_id="p2")
+
+        recips = await db.get_pending_recipients()
+        assert sorted(recips) == sorted(
+            [
+                ("session", "supervisor-p1", "p1"),
+                ("task", "task-1", "p1"),
+                ("user", "discord:1", "p2"),
+            ]
+        )
+
+    async def test_delivered_and_archived_excluded(self, db):
+        delivered = await _send(db)
+        archived = await _send(db, to_kind="task", to_id="task-x")
+        await _send(db, to_kind="task", to_id="task-y")
+        await db.mark_delivered(delivered.id, via="nudge")
+        await db.archive_messages([archived.id])
+
+        recips = await db.get_pending_recipients()
+        assert ("task", "task-y", "p1") in recips
+        assert ("task", "task-x", "p1") not in recips
+        assert ("session", "supervisor-p1", "p1") not in recips
+
+
 class TestListMessages:
     async def test_newest_first(self, db):
         first = await _send(db, body="one")
