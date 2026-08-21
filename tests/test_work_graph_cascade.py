@@ -398,6 +398,54 @@ class TestGateSweepBehavior:
         assert (await orch.db.get_gate(gid))["status"] == "resolved"
         assert (await orch.db.get_task("t")).is_blocked is False
 
+    async def test_check_pr_status_transitions_to_blocked_when_pr_closed(
+        self, orch, monkeypatch
+    ):
+        """Regression: the no-workspace fallback used to swallow
+        ``acheck_pr_merged``'s ``None`` (closed-without-merge) into
+        ``False``, so closed-unmerged PRs never transitioned to BLOCKED.
+        """
+        await mktask(orch, "t", status=TaskStatus.AWAITING_APPROVAL)
+        await orch.db.update_task("t", pr_url="https://gh/pr/9")
+
+        # Force the no-per-task-workspace branch (per-task workspace
+        # missing so we fall through to ``_poll_pr_merged``).
+        async def _no_ws_for_task(_tid):
+            return None
+
+        async def _acheck(_path, _url):
+            return None  # closed-unmerged
+
+        monkeypatch.setattr(orch.db, "get_workspace_for_task", _no_ws_for_task)
+        # Poll needs a workspace on the project (or any) to run gh;
+        # stub ``list_workspaces`` so it looks like one exists.
+        class _WS:
+            workspace_path = "/tmp/x"
+
+        async def _list_workspaces(project_id=None):
+            return [_WS()]
+
+        monkeypatch.setattr(orch.db, "list_workspaces", _list_workspaces)
+        monkeypatch.setattr(orch.git, "acheck_pr_merged", _acheck, raising=False)
+
+        # ``_check_pr_status`` calls ``_notify_stuck_chain`` / other helpers
+        # on the BLOCKED path — stub the notifiers so we exercise only the
+        # transition logic under test.
+        async def _noop(*a, **k):
+            return None
+
+        monkeypatch.setattr(orch, "_emit_text_notify", _noop)
+        monkeypatch.setattr(orch, "_emit_task_failure", _noop)
+        monkeypatch.setattr(orch, "_notify_stuck_chain", _noop)
+        monkeypatch.setattr(orch, "_resolve_profile", _noop)
+
+        # Bypass the 60s throttle.
+        orch._last_approval_check = 0
+        await orch._check_awaiting_approval()
+
+        # None from acheck_pr_merged → BLOCKED, not stuck at AWAITING_APPROVAL.
+        assert (await orch.db.get_task("t")).status == TaskStatus.BLOCKED
+
     async def test_pr_merged_gate_stays_open_while_pr_open(self, orch, monkeypatch):
         await mktask(orch, "t")
         gid = await orch.db.create_gate(
@@ -439,16 +487,48 @@ class TestGateSweepBehavior:
         await _a.sleep(0)
         assert (await orch.db.get_gate(gid))["status"] == "resolved"
 
-    async def test_resolved_gate_unblocks_waiter_in_same_cycle(self, orch):
+    async def test_resolved_gate_unblocks_waiter_in_same_cycle(
+        self, orch, monkeypatch
+    ):
         """Sweep runs at step 2b, before ``_check_defined_tasks`` — a
-        freshly resolved gate must let the waiter promote in one cycle."""
+        freshly resolved gate must let the waiter promote in one cycle.
+
+        This test drives the *real* cascade (``run_one_cycle``) and asserts
+        both (a) that ``_sweep_gates`` was called before
+        ``_check_defined_tasks`` (order), and (b) that the waiter reaches
+        READY in the same tick (behaviour).  The prior version called the
+        two methods by hand and would silently pass if the cascade wired
+        them in the wrong order.
+        """
         import time as _t
 
         await mktask(orch, "t")
         await orch.db.create_gate(
             "p-1", "timer", "fire", timeout_at=_t.time() - 1, waiter_task_ids=["t"]
         )
-        # Emulate cascade step ordering: sweep -> _check_defined_tasks.
-        await orch._sweep_gates()
-        await orch._check_defined_tasks()
+
+        call_order: list[str] = []
+        real_sweep = orch._sweep_gates
+        real_check = orch._check_defined_tasks
+
+        async def _wrap_sweep():
+            call_order.append("sweep")
+            await real_sweep()
+
+        async def _wrap_check():
+            call_order.append("check_defined")
+            await real_check()
+
+        monkeypatch.setattr(orch, "_sweep_gates", _wrap_sweep)
+        monkeypatch.setattr(orch, "_check_defined_tasks", _wrap_check)
+        # Ensure the sweep isn't rate-limited away.
+        orch._last_gate_sweep = 0
+
+        await orch.run_one_cycle()
+
+        # Order: sweep must precede _check_defined_tasks so a resolved
+        # gate lets its waiter promote inside the same tick.
+        assert "sweep" in call_order and "check_defined" in call_order
+        assert call_order.index("sweep") < call_order.index("check_defined")
+        # Behaviour: the waiter promoted to READY on this cycle.
         assert (await orch.db.get_task("t")).status == TaskStatus.READY

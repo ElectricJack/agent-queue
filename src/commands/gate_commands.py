@@ -98,7 +98,14 @@ class GateCommandsMixin:
         return {"success": True, "gate": gate, "waiters": sorted(waiters)}
 
     async def _cmd_gate_resolve(self, args: dict) -> dict:
-        """Resolve a gate (idempotent) and report unblocked waiters."""
+        """Resolve a gate (idempotent) and report unblocked waiters.
+
+        Routes through the orchestrator's ``_resolve_gate_and_emit`` helper
+        so the operator-driven path emits the same ``gate.resolved`` +
+        ``task.blocked``/``task.unblocked`` bus events that the sweep path
+        does.  Playbooks that subscribe to blocked-flip events fire whether
+        the gate is resolved by ``aq gate resolve`` or by ``_sweep_gates``.
+        """
         gate_id = args.get("gate_id")
         if not gate_id:
             return {"success": False, "error": "gate_id is required"}
@@ -110,35 +117,17 @@ class GateCommandsMixin:
         if gate is None:
             return {"success": False, "error": f"gate '{gate_id}' not found"}
 
-        flipped = await self.db.resolve_gate(
+        # Shared helper on the orchestrator: resolves the gate, emits
+        # ``gate.resolved`` + audit row, and — critically — calls
+        # ``_emit_blocked_flips`` so ``task.unblocked`` fires on the bus.
+        flipped = await self.orchestrator._resolve_gate_and_emit(
             str(gate_id),
             resolved_by=str(resolved_by),
             resolution=str(args.get("resolution") or ""),
         )
 
-        payload = {
-            "gate_id": str(gate_id),
-            "project_id": gate["project_id"],
-            "resolved_by": str(resolved_by),
-            "resolution": str(args.get("resolution") or ""),
-            "unblocked_task_ids": sorted(flipped),
-            "gate_type": gate["gate_type"],
-        }
-        try:
-            await self.orchestrator.bus.emit("gate.resolved", payload)
-        except Exception:
-            logger.debug("gate_resolve: bus emit failed", exc_info=True)
-        try:
-            await self.db.log_event(
-                "gate.resolved",
-                project_id=gate["project_id"],
-                payload=str(gate_id),
-            )
-        except Exception:
-            logger.debug("gate_resolve: log_event failed", exc_info=True)
-
         return {
             "success": True,
             "gate_id": str(gate_id),
-            "unblocked_task_ids": sorted(flipped),
+            "unblocked_task_ids": sorted(flipped or set()),
         }

@@ -133,6 +133,109 @@ class TestWebSocketReplay:
         assert len(live_frames) == 1
         assert live_frames[0]["seq"] is None
 
+    async def test_replay_filters_non_forwarded_event_types(self, db):
+        """Replay respects the same ``notify.*`` / ``message.*`` filter as
+        live mode — otherwise a reconnect would flood the client with
+        internal ``task.*`` / ``gate.*`` traffic the live path never sends.
+        """
+        await db.log_event("task.blocked", project_id=PROJECT, payload="t")
+        await db.log_event("notify.a", project_id=PROJECT, payload="a")
+        await db.log_event("gate.resolved", project_id=PROJECT, payload="g")
+        await db.log_event("message.chat", project_id=PROJECT, payload="c")
+
+        bus = EventBus()
+        mgr = WebSocketManager(bus, db=db)
+        mgr.start()
+        ws = _FakeWS(after_seq="0")
+
+        task = asyncio.create_task(mgr.handle(ws))  # type: ignore[arg-type]
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        types = [f.get("_event_type") for f in ws.sent]
+        assert "notify.a" in types
+        assert "message.chat" in types
+        assert "task.blocked" not in types
+        assert "gate.resolved" not in types
+
+    async def test_live_frame_carrying_seq_is_deduped_against_replay(self, db):
+        """A honest race: a live frame that carries a ``seq`` matching a
+        row already delivered by replay must be dropped.  We simulate the
+        race by:
+
+        1.  Persisting rows R1..R5 (assign seqs).
+        2.  Connecting with ``after_seq=R1`` so replay must ship R2..R5.
+        3.  While replay is running, emit a live bus event whose payload
+            carries ``seq=R3`` — a row the replay will also ship.
+        4.  Asserting the client sees each seq exactly once.
+
+        This exercises the dedup path in ``WebSocketManager.handle`` —
+        the earlier vacuous test sent a live frame with ``seq=None`` and
+        proved nothing.
+        """
+        seqs = []
+        for i in range(5):
+            seqs.append(
+                await db.log_event(
+                    f"notify.tick.{i}", project_id=PROJECT, payload=str(i)
+                )
+            )
+
+        bus = EventBus()
+        mgr = WebSocketManager(bus, db=db)
+        mgr.start()
+        ws = _FakeWS(after_seq=str(seqs[0]))
+
+        # Drive the handler; block send_json briefly so the live emit
+        # lands *during* the replay page (real race window).
+        original_send = ws.send_json
+        gate = asyncio.Event()
+
+        async def _slow_send(frame):
+            await original_send(frame)
+            # After the first replayed frame ships, release the racer.
+            if not gate.is_set():
+                gate.set()
+                # Yield so the racer coroutine below can schedule.
+                await asyncio.sleep(0)
+
+        ws.send_json = _slow_send  # type: ignore[assignment]
+
+        task = asyncio.create_task(mgr.handle(ws))  # type: ignore[arg-type]
+
+        async def _racer():
+            # Wait until at least one replay frame has shipped.
+            await gate.wait()
+            # Live-emit a notify frame carrying an overlapping seq (a row
+            # replay will also deliver) — the dedup should drop it.
+            await bus.emit(
+                "notify.tick.dup",
+                {"project_id": PROJECT, "seq": seqs[2]},
+            )
+
+        race = asyncio.create_task(_racer())
+        await asyncio.sleep(0.1)
+        task.cancel()
+        race.cancel()
+        for t in (task, race):
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+
+        # No duplicate seqs: every emitted seq appears at most once,
+        # regardless of whether it came from replay or live.
+        seen = [f.get("seq") for f in ws.sent if isinstance(f.get("seq"), int)]
+        assert len(seen) == len(set(seen)), f"duplicate seqs: {seen}"
+        # The live racer's frame (seq=seqs[2]) was already shipped by
+        # replay, so the dup emission must have been dropped.
+        dup_frames = [f for f in ws.sent if f.get("_event_type") == "notify.tick.dup"]
+        assert dup_frames == []
+
     async def test_no_after_seq_skips_replay(self, db):
         for i in range(3):
             await db.log_event(

@@ -123,52 +123,69 @@ async def _next_child_ordinal(db, parent_id: str) -> int:
     return max_ord + 1
 
 
-async def generate_task_id(db, parent_id: str | None = None) -> str:
-    """Generate a unique task ID, checking the DB for collisions.
-
-    When *parent_id* is set, returns a hierarchical child id
-    ``f"{parent_id}.{n}"`` (work-graph §7), where ``n`` is the next
-    sibling ordinal.  Depth is capped at ``_MAX_HIERARCHY_DEPTH``; at cap
-    the helper falls back to a fresh root id and logs a warning — the
-    caller (``_cmd_create_task``) is expected to add a
-    ``discovered-from`` edge to *parent_id* so provenance survives.
-
-    Otherwise (root id) returns the classic adjective-noun form.
-    """
-    if parent_id is not None:
-        if _hierarchy_depth(parent_id) >= _MAX_HIERARCHY_DEPTH:
-            import logging as _logging
-
-            _logging.getLogger(__name__).warning(
-                "generate_task_id: parent '%s' at depth %d hits cap %d — "
-                "falling back to root id (caller should add a "
-                "'discovered-from' edge)",
-                parent_id,
-                _hierarchy_depth(parent_id),
-                _MAX_HIERARCHY_DEPTH,
-            )
-        else:
-            n = await _next_child_ordinal(db, parent_id)
-            candidate = f"{parent_id}.{n}"
-            existing = await db.get_task(candidate)
-            if existing is None:
-                return candidate
-            # Extremely rare (racing create) — bump until unused.
-            while existing is not None:
-                n += 1
-                candidate = f"{parent_id}.{n}"
-                existing = await db.get_task(candidate)
-            return candidate
-
+async def _fresh_root_id(db) -> str:
+    """Generate a fresh adjective-noun root id, colliding-safe against the DB."""
     for _ in range(_MAX_RETRIES):
         name = f"{random.choice(ADJECTIVES)}-{random.choice(NOUNS)}"
         existing = await db.get_task(name)
         if not existing:
             return name
-
-    # Fallback: append a random 2-digit suffix
     while True:
         name = f"{random.choice(ADJECTIVES)}-{random.choice(NOUNS)}-{random.randint(10, 99)}"
         existing = await db.get_task(name)
         if not existing:
             return name
+
+
+async def child_task_id(db, parent_id: str) -> tuple[str, bool]:
+    """Return ``(id, capped)`` for a child of *parent_id* (work-graph §7).
+
+    * ``capped=False`` — hierarchical child ``f"{parent_id}.{n}"`` where
+      ``n`` is the next sibling ordinal.
+    * ``capped=True`` — parent is at ``_MAX_HIERARCHY_DEPTH`` so we return
+      a fresh root id; the caller is expected to add a ``discovered-from``
+      edge to *parent_id* so provenance survives.
+
+    ``_cmd_create_task`` is the sole caller that needs the ``capped`` flag
+    (it has the DB handle to add the edge).  ``generate_task_id`` remains
+    the shorthand for callers that don't care about the fallback signal.
+    """
+    if _hierarchy_depth(parent_id) >= _MAX_HIERARCHY_DEPTH:
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "child_task_id: parent '%s' at depth %d hits cap %d — "
+            "falling back to root id (caller should add a "
+            "'discovered-from' edge)",
+            parent_id,
+            _hierarchy_depth(parent_id),
+            _MAX_HIERARCHY_DEPTH,
+        )
+        return (await _fresh_root_id(db), True)
+
+    n = await _next_child_ordinal(db, parent_id)
+    candidate = f"{parent_id}.{n}"
+    existing = await db.get_task(candidate)
+    while existing is not None:
+        n += 1
+        candidate = f"{parent_id}.{n}"
+        existing = await db.get_task(candidate)
+    return (candidate, False)
+
+
+async def generate_task_id(db, parent_id: str | None = None) -> str:
+    """Generate a unique task ID, checking the DB for collisions.
+
+    When *parent_id* is set, returns a hierarchical child id
+    ``f"{parent_id}.{n}"`` (work-graph §7).  At depth cap the helper
+    falls back to a fresh root id and logs a warning — callers that need
+    to know about the fallback should use :func:`child_task_id` instead,
+    which returns ``(id, capped)`` so it can wire the ``discovered-from``
+    edge.
+
+    Otherwise (root id) returns the classic adjective-noun form.
+    """
+    if parent_id is not None:
+        cid, _capped = await child_task_id(db, parent_id)
+        return cid
+    return await _fresh_root_id(db)

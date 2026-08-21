@@ -104,11 +104,14 @@ class WebSocketManager:
         except Exception:
             after_seq = None
 
+        # Hoisted so the live loop's dedup check can reference it even
+        # when no replay ran.  ``after_seq is None`` disables dedup below.
+        last_replayed: int = after_seq if after_seq is not None else 0
+
         try:
             # Replay persisted events > after_seq.
             if after_seq is not None and self._db is not None:
                 cursor = after_seq
-                last_replayed = after_seq
                 while True:
                     try:
                         rows = await self._db.get_recent_events(
@@ -120,9 +123,23 @@ class WebSocketManager:
                     if not rows:
                         break
                     for row in rows:
+                        # Advance the watermark for EVERY row so live-mode
+                        # dedup covers filtered rows too — otherwise a
+                        # burst of non-forwarded rows during the race
+                        # window would leave ``last_replayed`` stale.
+                        row_id = row.get("id")
+                        if row_id is not None:
+                            last_replayed = row_id
+                        event_type = row.get("event_type") or ""
+                        if not event_type.startswith(_FORWARDED_PREFIXES):
+                            # Same filter as live mode — otherwise a
+                            # reconnect would flood the client with
+                            # internal ``task.*`` / ``gate.*`` traffic
+                            # that the live path never delivers.
+                            continue
                         frame = {
-                            "_event_type": row.get("event_type"),
-                            "seq": row.get("id"),
+                            "_event_type": event_type,
+                            "seq": row_id,
                             "project_id": row.get("project_id"),
                             "task_id": row.get("task_id"),
                             "agent_id": row.get("agent_id"),
@@ -130,7 +147,6 @@ class WebSocketManager:
                             "timestamp": row.get("timestamp"),
                         }
                         await websocket.send_json(frame)
-                        last_replayed = row.get("id") or last_replayed
                     if len(rows) < _REPLAY_PAGE:
                         break
                     cursor = rows[-1].get("id") or cursor
@@ -157,6 +173,17 @@ class WebSocketManager:
                 event = await queue.get()
                 # Live frames carry seq=None unless the emitter threaded
                 # the DB id into the payload (log_event returns the id).
+                seq = event.get("seq") if "seq" in event else None
+                # Dedup: a live frame whose seq is <= the last replayed
+                # row id would duplicate what the client already saw
+                # during replay.  Only applies when the emitter honestly
+                # threaded a persisted row id; ``seq=None`` bypasses.
+                if (
+                    after_seq is not None
+                    and isinstance(seq, int)
+                    and seq <= last_replayed
+                ):
+                    continue
                 if "seq" not in event:
                     event = {**event, "seq": None}
                 logger.info(

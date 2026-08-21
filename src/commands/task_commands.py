@@ -25,7 +25,7 @@ from src.state_machine import (
     validate_dag_with_new_edge,
     validate_waits_for,
 )
-from src.task_names import generate_task_id
+from src.task_names import child_task_id, generate_task_id
 
 from src.commands.helpers import (
     _collect_tree_task_ids,
@@ -808,7 +808,11 @@ class TaskCommandsMixin:
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
-        task_id = await generate_task_id(self.db)
+        # ``task_id`` is generated *after* parent_id validation below so
+        # hierarchical child ids ({parent}.{n}) can be wired.  Placeholder
+        # here keeps the downstream code readable.
+        task_id: str = ""
+        depth_cap_fallback = False
         requires_approval = args.get("requires_approval", False)
         # Resolve optional task_type from string to enum.
         raw_task_type = args.get("task_type")
@@ -1013,8 +1017,22 @@ class TaskCommandsMixin:
             parent = await self.db.get_task(parent_id)
             if parent is None:
                 return {"error": f"Parent task '{parent_id}' not found"}
-            if (parent_id, DepType.PARENT_CHILD.value) not in edges:
-                edges.append((parent_id, DepType.PARENT_CHILD.value))
+
+        # Wire hierarchical child ids (work-graph §7).  When ``parent_id``
+        # is set we prefer a dotted child id ({parent}.{n}); at depth cap
+        # the helper falls back to a fresh root id and we swap the
+        # ``parent-child`` edge for ``discovered-from`` so provenance
+        # survives without extending the depth chain.
+        if parent_id:
+            task_id, depth_cap_fallback = await child_task_id(self.db, parent_id)
+            if depth_cap_fallback:
+                if (parent_id, DepType.DISCOVERED_FROM.value) not in edges:
+                    edges.append((parent_id, DepType.DISCOVERED_FROM.value))
+            else:
+                if (parent_id, DepType.PARENT_CHILD.value) not in edges:
+                    edges.append((parent_id, DepType.PARENT_CHILD.value))
+        else:
+            task_id = await generate_task_id(self.db)
 
         # A task created *with* blocking edges starts DEFINED so the
         # promotion cascade decides when it becomes runnable — creating it
@@ -1046,7 +1064,7 @@ class TaskCommandsMixin:
             affinity_agent_id=affinity_agent_id,
             affinity_reason=affinity_reason,
             workspace_mode=workspace_mode,
-            parent_task_id=parent_id or None,
+            parent_task_id=(parent_id if (parent_id and not depth_cap_fallback) else None),
         )
         await self.db.create_task(task)
 

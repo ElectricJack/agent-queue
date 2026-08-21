@@ -232,6 +232,52 @@ class TestCreateTaskGraph:
         # A DEFINED container withholds its children.
         assert created.is_blocked is True
 
+    async def test_parent_id_yields_hierarchical_dotted_child_id(
+        self, handler, db
+    ):
+        """Nested creates get dotted ids ({parent}.{n}) — hierarchical id
+        generation was dead code until ``_cmd_create_task`` was wired to
+        pass ``parent_id`` down to ``child_task_id``.
+        """
+        await mktask(db, "root-x", status=TaskStatus.DEFINED)
+        res = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "c1", "parent_id": "root-x"}
+        )
+        assert res["created"] == "root-x.1"
+        res2 = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "c2", "parent_id": "root-x"}
+        )
+        assert res2["created"] == "root-x.2"
+
+    async def test_depth_cap_creates_root_id_with_discovered_from_edge(
+        self, handler, db
+    ):
+        """A create under a depth-3 parent falls back to a fresh root id
+        and gets a ``discovered-from`` edge so provenance survives
+        without extending the depth chain past the cap.
+        """
+        # Depth 3 chain: a → a.1 → a.1.2 (parent already at cap).
+        await mktask(db, "a")
+        await mktask(db, "a.1", parent_task_id="a")
+        await mktask(db, "a.1.2", parent_task_id="a.1")
+
+        res = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "deep", "parent_id": "a.1.2"}
+        )
+        cid = res["created"]
+        # Fresh root id — no dotted lineage, adjective-noun form.
+        assert "." not in cid
+        assert "-" in cid
+        # discovered-from edge points at the notional parent.
+        deps = await db.get_typed_dependencies(cid)
+        assert ("a.1.2", "discovered-from") in deps
+        # And NOT a parent-child edge (would falsely extend the chain).
+        assert ("a.1.2", "parent-child") not in deps
+        # parent_task_id is *not* set on the capped fallback — the task
+        # is a fresh root, provenance carried by the edge only.
+        created = await db.get_task(cid)
+        assert created.parent_task_id is None
+
     async def test_unknown_dependency_is_rejected(self, handler, db):
         res = await handler._cmd_create_task(
             {"project_id": PROJECT_ID, "title": "t", "depends_on": ["nope"]}
@@ -377,3 +423,37 @@ class TestGateCommands:
         assert first["success"] is True
         assert second["success"] is True
         assert second["unblocked_task_ids"] == []
+
+    async def test_gate_resolve_emits_task_unblocked_on_bus(self, handler, db):
+        """The operator resolve path must emit ``task.unblocked`` on the
+        bus for flipped waiters — playbooks that subscribe to blocked-flip
+        events would otherwise never fire for gates resolved via
+        ``aq gate resolve`` (only for gates resolved via the sweep).
+        """
+        await mktask(db, "t1")
+        create = await handler._cmd_gate_create(
+            {
+                "project_id": PROJECT_ID,
+                "gate_type": "human",
+                "title": "r",
+                "waiter_task_ids": ["t1"],
+            }
+        )
+        gid = create["gate_id"]
+
+        captured: list[tuple[str, dict]] = []
+
+        async def _spy(data):
+            captured.append((data.get("_event_type"), data))
+
+        handler.orchestrator.bus.subscribe("task.unblocked", _spy)
+
+        res = await handler._cmd_gate_resolve({"gate_id": gid, "resolved_by": "op"})
+        assert res["success"] is True
+        assert "t1" in res["unblocked_task_ids"]
+        # The command path fires task.unblocked just like _sweep_gates does.
+        types = [t for (t, _) in captured]
+        assert "task.unblocked" in types
+        # And carries the flipped task id.
+        payloads = [p for (t, p) in captured if t == "task.unblocked"]
+        assert any(p.get("task_id") == "t1" for p in payloads)

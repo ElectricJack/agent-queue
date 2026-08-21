@@ -19,10 +19,16 @@ class EventQueryMixin:
         task_id: str | None = None,
         agent_id: str | None = None,
         payload: str | None = None,
-    ) -> None:
-        """Record a lifecycle event."""
+    ) -> int:
+        """Record a lifecycle event and return the inserted row id.
+
+        The row id doubles as the WebSocket replay/live-handoff ``seq``:
+        callers that persist-then-emit thread this id into the bus
+        payload so a client reconnecting with ``after_seq=N`` can dedup
+        live frames overlapping the replay window (WG-4 spec §8).
+        """
         async with self._engine.begin() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 insert(events).values(
                     event_type=event_type,
                     project_id=project_id,
@@ -32,6 +38,12 @@ class EventQueryMixin:
                     timestamp=time.time(),
                 )
             )
+            # ``inserted_primary_key`` works for both SQLite + Postgres
+            # under SQLAlchemy Core when the PK is auto-increment.
+            try:
+                return int(result.inserted_primary_key[0])
+            except Exception:
+                return 0
 
     async def get_recent_events(
         self,

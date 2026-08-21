@@ -142,16 +142,30 @@ class ApprovalMixin:
                 project_id=task.project_id,
             )
 
+    # Accepted deviation: the base call ``_poll_pr_merged(pr_url)`` remains
+    # valid — ``project_id`` is kw-only so positional callers keep working.
     async def _poll_pr_merged(
         self, pr_url: str, *, project_id: str | None = None
     ) -> bool | None:
         """Poll ``gh`` for a PR's merge state.
 
-        Returns ``True`` (merged), ``False`` (still open), or ``None``
-        (closed without merge, or ``gh`` failed / no checkout).  Extracted
-        from :meth:`_check_pr_status` so :meth:`_sweep_gates` can reuse the
-        same polling body for ``pr-merged``/``ci-run`` gates without
-        duplicating the checkout-path fallback.
+        Returns:
+            * ``True``  — PR is merged.
+            * ``False`` — PR is still open (``gh`` said so).
+            * ``None``  — PR is closed without merge, OR the poll could
+              not run (``gh`` raised, no checkout available).
+
+        The tri-state matters at the caller: ``_check_pr_status`` uses
+        ``None`` to transition tasks to BLOCKED (closed-unmerged is a
+        distinct failure from still-open).  Swallowing ``None`` into
+        ``False`` — which the previous ``except`` did — silently kept
+        closed-unmerged PRs stuck in AWAITING_APPROVAL forever.
+
+        The sweep caller (``_sweep_resolve_pr_ci_gates``) only acts on
+        ``True`` and treats both ``False`` and ``None`` as "leave the gate
+        open", so the distinction is safe there.  Extracted from
+        :meth:`_check_pr_status` so gate sweeps and task polls share one
+        polling body.
         """
         checkout_path: str | None = None
         # Prefer a workspace for the given project; fall back to any.
@@ -164,12 +178,21 @@ class ApprovalMixin:
             if workspaces:
                 checkout_path = workspaces[0].workspace_path
         if not checkout_path:
+            # Nothing to poll from — behave as "still open" (retry next
+            # cycle when a workspace shows up).  Do not return None here:
+            # the task-poll caller maps None → BLOCKED, and blocking on
+            # "no checkout yet" would be a false positive.
             return False
 
         try:
+            # ``acheck_pr_merged`` returns ``None`` for closed-unmerged —
+            # let that propagate so ``_check_pr_status`` can transition
+            # the task to BLOCKED.  The previous ``except`` mapped every
+            # unexpected condition to False and swallowed that signal.
             return await self.git.acheck_pr_merged(checkout_path, pr_url)
         except Exception as e:
             logger.warning("Error polling PR %s: %s", pr_url, e)
+            # Transient gh failure — retry next cycle rather than block.
             return False
 
     async def _check_pr_status(self, task: Task) -> None:

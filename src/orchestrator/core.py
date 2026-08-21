@@ -2184,16 +2184,20 @@ class Orchestrator(
 
     async def _resolve_gate_and_emit(
         self, gate_id: str, *, resolved_by: str, resolution: str = ""
-    ) -> None:
+    ) -> set[str]:
         """Resolve *gate_id* through the DB and emit the audit + bus events.
 
-        Central helper for the sweep — any resolution path that flows
-        through here gets the same ``gate.resolved`` + ``task.unblocked``
-        events for free.  Idempotent: an already-resolved gate is a no-op.
+        Central helper for the sweep AND the ``_cmd_gate_resolve`` command —
+        any resolution path that flows through here gets the same
+        ``gate.resolved`` + ``task.unblocked`` events for free.  Idempotent:
+        an already-resolved gate is a no-op (returns empty set).
+
+        Returns the set of task ids whose ``is_blocked`` flipped as a
+        result — used by the command surface to report unblocked waiters.
         """
         gate = await self.db.get_gate(gate_id)
         if gate is None or gate["status"] == "resolved":
-            return
+            return set()
         flipped = await self.db.resolve_gate(
             gate_id, resolved_by=resolved_by, resolution=resolution
         )
@@ -2222,6 +2226,7 @@ class Orchestrator(
         # subscribe to ``task.blocked``/``task.unblocked`` can fire
         # (WG-4, work-graph §9.1 note #263).
         await self._emit_blocked_flips(flipped, reason="gate:resolved")
+        return flipped
 
     async def _sweep_resolve_timer_gates(self, now: float) -> None:
         """Resolve ``timer`` gates whose ``timeout_at`` has passed.

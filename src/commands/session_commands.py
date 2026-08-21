@@ -335,28 +335,38 @@ class SessionCommandsMixin:
         """
         task_id = args.get("task_id")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
 
         outcome = str(args.get("outcome") or "").strip().lower()
         if outcome not in VALID_OUTCOMES:
-            return {"error": f"outcome must be one of {list(VALID_OUTCOMES)}"}
+            return {
+                "success": False,
+                "error": f"outcome must be one of {list(VALID_OUTCOMES)}",
+            }
         failure_class = str(args.get("failure_class") or "").strip().lower()
         if failure_class and failure_class not in VALID_FAILURE_CLASSES:
-            return {"error": f"failure_class must be one of {list(VALID_FAILURE_CLASSES)}"}
+            return {
+                "success": False,
+                "error": f"failure_class must be one of {list(VALID_FAILURE_CLASSES)}",
+            }
         work_outcome = str(args.get("work_outcome") or "").strip().lower()
         if work_outcome and work_outcome not in VALID_WORK_OUTCOMES:
-            return {"error": f"work_outcome must be one of {list(VALID_WORK_OUTCOMES)}"}
+            return {
+                "success": False,
+                "error": f"work_outcome must be one of {list(VALID_WORK_OUTCOMES)}",
+            }
 
         task = await self.db.get_task(str(task_id))
         if task is None:
-            return {"error": f"No task '{task_id}'"}
+            return {"success": False, "error": f"No task '{task_id}'"}
         if task.status not in _CLOSEABLE:
             status = getattr(task.status, "value", task.status)
             return {
+                "success": False,
                 "error": (
                     f"task {task_id} is {status}, not in progress — only a running "
                     "task can be closed"
-                )
+                ),
             }
 
         caller_session_id = args.get("session_id")
@@ -364,13 +374,14 @@ class SessionCommandsMixin:
         if caller_session_id:
             session = await self.db.get_session(str(caller_session_id))
             if session is None:
-                return {"error": f"No session '{caller_session_id}'"}
+                return {"success": False, "error": f"No session '{caller_session_id}'"}
             if session.task_id and session.task_id != task_id:
                 return {
+                    "success": False,
                     "error": (
                         f"session {session.id} owns task {session.task_id}, not "
                         f"{task_id} — refusing to close another task's work"
-                    )
+                    ),
                 }
         if session is None:
             session = await self.db.get_session_for_task(str(task_id))
