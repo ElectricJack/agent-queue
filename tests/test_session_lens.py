@@ -1,8 +1,11 @@
 """SessionLens — adapter over the session runtime for the messaging engine.
 
-Covers the SessionManagerProto surface Task 2's MessageDeliveryEngine will
-consume. Fake session provider + in-memory sqlite DB — no tmux, no real
-agent, no LLM.
+Covers the SessionManagerProto surface Task 2's MessageDeliveryEngine
+consumes, using the recipient vocabulary in the spec
+(``MESSAGE_TO_KINDS = {session, task, profile, user}``). The lens itself
+speaks only ``"task"`` (task id) and ``"session"`` (session name).
+Fake session provider + in-memory sqlite DB — no tmux, no real agent, no
+LLM.
 """
 
 from __future__ import annotations
@@ -13,13 +16,19 @@ import time
 import pytest
 
 from src.messages import Activity, SessionLens, SessionManagerProto
-from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task
+from src.models import AgentProfile, Project, SessionRecord, Task
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
 from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import SessionHandle
-from src.sessions.spec import SessionSpecBuilder, named_session_name
+from src.sessions.spec import SessionSpecBuilder
+
+
+def _supervisor_name(project_id: str) -> str:
+    """Convention for the messaging system's supervisor recipient name
+    (spec §5 / task brief): ``supervisor-<project_id>``."""
+    return f"supervisor-{project_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -132,63 +141,18 @@ class TestActivity:
         got = await lens.activity(kind="task", target_id="task-missing", project_id="proj1")
         assert got == "absent"
 
-    async def test_agent_unknown_id_is_absent(self, lens):
-        # Unknown agent id → no agent row → absent (must not fall through
-        # to treating the id as a task id).
-        got = await lens.activity(kind="agent", target_id="agent-missing", project_id="proj1")
+    async def test_session_plain_name_with_no_row_is_absent(self, lens):
+        # A plain (non-supervisor) session name has no wake-on-demand path;
+        # the messenger must not spawn one.
+        got = await lens.activity(
+            kind="session", target_id="s-task-missing", project_id="proj1"
+        )
         assert got == "absent"
 
-    async def test_agent_without_current_task_is_absent(self, db, lens):
-        # Agent exists but is not assigned to any task → absent.
-        await db.create_agent(
-            Agent(
-                id="agent-idle",
-                name="idle",
-                profile_id="claude",
-                state=AgentState.IDLE,
-                current_task_id=None,
-            )
+    async def test_session_supervisor_name_with_no_row_is_sleeping(self, lens):
+        got = await lens.activity(
+            kind="session", target_id="supervisor-proj1", project_id="proj1"
         )
-        got = await lens.activity(kind="agent", target_id="agent-idle", project_id="proj1")
-        assert got == "absent"
-
-    async def test_agent_with_current_task_and_live_session_is_busy(
-        self, db, providers, lens
-    ):
-        # Agent points at a task whose session is live and recently active.
-        row, handle = await _seed_running_task(db, providers)
-        await db.create_agent(
-            Agent(
-                id="agent-busy",
-                name="busy",
-                profile_id="claude",
-                state=AgentState.BUSY,
-                current_task_id=row.task_id,
-            )
-        )
-        providers.create("fake").sessions[handle.name].activity = time.time()
-        got = await lens.activity(kind="agent", target_id="agent-busy", project_id="proj1")
-        assert got == "busy"
-
-    async def test_agent_with_current_task_and_stale_session_is_idle(
-        self, db, providers, lens
-    ):
-        row, handle = await _seed_running_task(db, providers)
-        await db.create_agent(
-            Agent(
-                id="agent-quiet",
-                name="quiet",
-                profile_id="claude",
-                state=AgentState.BUSY,
-                current_task_id=row.task_id,
-            )
-        )
-        providers.create("fake").sessions[handle.name].activity = time.time() - 300
-        got = await lens.activity(kind="agent", target_id="agent-quiet", project_id="proj1")
-        assert got == "idle"
-
-    async def test_supervisor_with_no_session_row_is_sleeping(self, lens):
-        got = await lens.activity(kind="supervisor", target_id="proj1", project_id="proj1")
         assert got == "sleeping"
 
     async def test_running_task_with_recent_activity_is_busy(self, db, providers, lens):
@@ -207,12 +171,27 @@ class TestActivity:
         got = await lens.activity(kind="task", target_id=row.task_id, project_id="proj1")
         assert got == "idle"
 
-    async def test_supervisor_running_and_recent_is_busy(self, db, providers, lens):
+    async def test_session_kind_resolves_supervisor_by_name(self, db, providers, lens):
         row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
         s = providers.create("fake").sessions[handle.name]
         s.activity = time.time()
-        got = await lens.activity(kind="supervisor", target_id="proj1", project_id="proj1")
+        got = await lens.activity(
+            kind="session", target_id=row.name, project_id="proj1"
+        )
         assert got == "busy"
+
+    async def test_session_kind_resolves_task_session_by_name(
+        self, db, providers, lens
+    ):
+        # A ``to_kind="session"`` with a task session's name should resolve
+        # the same row that ``kind="task"`` would.
+        row, handle = await _seed_running_task(db, providers)
+        s = providers.create("fake").sessions[handle.name]
+        s.activity = time.time() - 300
+        got = await lens.activity(
+            kind="session", target_id=row.name, project_id="proj1"
+        )
+        assert got == "idle"
 
 
 # ---------------------------------------------------------------------------
@@ -221,30 +200,48 @@ class TestActivity:
 
 
 class TestEnsureStarted:
-    async def test_refuses_non_supervisor_kinds(self, lens):
-        assert await lens.ensure_started(kind="task", target_id="t1", project_id="proj1") is False
-        assert await lens.ensure_started(kind="agent", target_id="a1", project_id="proj1") is False
+    async def test_refuses_task_kind(self, lens):
+        assert await lens.ensure_started(
+            kind="task", target_id="t1", project_id="proj1"
+        ) is False
+
+    async def test_refuses_plain_session_name(self, lens):
+        # Only ``supervisor-<pid>`` names are wake-on-demand.
+        assert await lens.ensure_started(
+            kind="session", target_id="s-task-1", project_id="proj1"
+        ) is False
 
     async def test_supervisor_already_running_returns_true(self, db, providers, lens):
-        await _seed_running_supervisor(db, providers, project_id="proj1")
+        row, _ = await _seed_running_supervisor(db, providers, project_id="proj1")
         assert await lens.ensure_started(
-            kind="supervisor", target_id="proj1", project_id="proj1"
+            kind="session", target_id=row.name, project_id="proj1"
         ) is True
 
     async def test_supervisor_cold_start_spawns_via_provider(self, providers, lens):
+        name = _supervisor_name("proj1")
         assert await lens.ensure_started(
-            kind="supervisor", target_id="proj1", project_id="proj1"
+            kind="session", target_id=name, project_id="proj1"
         ) is True
         fake = providers.create("fake")
-        # One start recorded, name is the supervisor named-session name.
         assert len(fake.starts) == 1
-        assert fake.starts[0].session_name == named_session_name("supervisor", "proj1")
+        assert fake.starts[0].session_name == name
         # session_id passed to the harness must be a dashed UUID (5 hex groups),
         # never bare hex — `claude --session-id` rejects bare hex.
         argv = fake.starts[0].command
         i = argv.index("--session-id")
         sid = argv[i + 1]
         assert sid.count("-") == 4, f"session_id must be dashed uuid, got {sid!r}"
+
+    async def test_supervisor_cold_start_derives_project_from_name(
+        self, providers, lens
+    ):
+        # ``project_id=None`` but the name carries the project id — the
+        # lens should derive it rather than skip on empty work_dir.
+        name = _supervisor_name("proj1")
+        assert await lens.ensure_started(
+            kind="session", target_id=name, project_id=None
+        ) is True
+        assert len(providers.create("fake").starts) == 1
 
     async def test_returns_false_when_configured_provider_missing(
         self, db, providers, spec_builder, harness_registry, profiles_loader
@@ -269,8 +266,9 @@ class TestEnsureStarted:
             config=_Cfg(),
             profiles_loader=profiles_loader,
         )
+        name = _supervisor_name("proj1")
         ok = await lens.ensure_started(
-            kind="supervisor", target_id="proj1", project_id="proj1"
+            kind="session", target_id=name, project_id="proj1"
         )
         assert ok is False
         # No start was recorded on the fake provider.
@@ -279,9 +277,9 @@ class TestEnsureStarted:
     async def test_returns_false_when_work_dir_would_be_empty(
         self, db, providers, spec_builder, harness_registry, profiles_loader
     ):
-        # No vault_root AND no project_id → _supervisor_work_dir returns
-        # "". Passing that into the harness would produce a confusing
-        # downstream failure; instead skip cleanly.
+        # No vault_root AND no project_id derivable → _supervisor_work_dir
+        # returns "". Passing that into the harness would produce a
+        # confusing downstream failure; instead skip cleanly.
         class _Sessions:
             provider = "fake"
 
@@ -298,8 +296,9 @@ class TestEnsureStarted:
             config=_Cfg(),
             profiles_loader=profiles_loader,
         )
+        # ``supervisor-`` with an empty suffix — nothing to derive from.
         ok = await lens.ensure_started(
-            kind="supervisor", target_id="proj1", project_id=None
+            kind="session", target_id="supervisor-", project_id=None
         )
         assert ok is False
         assert providers.create("fake").starts == []
@@ -333,6 +332,14 @@ class TestNudge:
             kind="task", target_id="never-existed", project_id="proj1", text="hi"
         )
         assert ok is False
+
+    async def test_nudge_by_session_name(self, db, providers, lens):
+        row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        ok = await lens.nudge(
+            kind="session", target_id=row.name, project_id="proj1", text="wake"
+        )
+        assert ok is True
+        assert providers.create("fake").sent_nudges == [(handle.name, "wake")]
 
 
 # ---------------------------------------------------------------------------
@@ -539,7 +546,7 @@ async def _seed_running_supervisor(
     from src.sessions.provider import SessionSpec
 
     fake = providers.create("fake")
-    name = named_session_name("supervisor", project_id)
+    name = _supervisor_name(project_id)
     spec = SessionSpec(
         session_name=name,
         work_dir="/tmp/wd",

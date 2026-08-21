@@ -120,7 +120,7 @@ async def _send(db, **overrides):
 class TestDeliveryPolicy:
     async def test_idle_supervisor_nudged_and_marked_delivered(self, db):
         sessions = FakeSessionManager(
-            activity_map={("supervisor", "supervisor", "p1"): "idle"}
+            activity_map={("session", "supervisor-p1", "p1"): "idle"}
         )
         bus = RecordingBus()
         engine = make_engine(db, sessions, bus=bus)
@@ -144,7 +144,7 @@ class TestDeliveryPolicy:
 
     async def test_busy_recipient_skipped(self, db):
         sessions = FakeSessionManager(
-            activity_map={("supervisor", "supervisor", "p1"): "busy"}
+            activity_map={("session", "supervisor-p1", "p1"): "busy"}
         )
         bus = RecordingBus()
         engine = make_engine(db, sessions, bus=bus)
@@ -160,20 +160,20 @@ class TestDeliveryPolicy:
 
     async def test_sleeping_supervisor_started_then_nudged(self, db):
         sessions = FakeSessionManager(
-            activity_map={("supervisor", "supervisor", "p1"): "sleeping"}
+            activity_map={("session", "supervisor-p1", "p1"): "sleeping"}
         )
         engine = make_engine(db, sessions)
         msg = await _send(db)
 
         await engine.run_delivery_pass()
 
-        assert sessions.ensure_started_calls == [("supervisor", "supervisor", "p1")]
+        assert sessions.ensure_started_calls == [("session", "supervisor-p1", "p1")]
         assert len(sessions.nudges) == 1
         assert (await db.get_message(msg.id)).delivered_at is not None
 
     async def test_sleeping_start_failure_leaves_pending(self, db):
         sessions = FakeSessionManager(
-            activity_map={("supervisor", "supervisor", "p1"): "sleeping"},
+            activity_map={("session", "supervisor-p1", "p1"): "sleeping"},
             ensure_started_returns=False,
         )
         engine = make_engine(db, sessions)
@@ -218,7 +218,7 @@ class TestDeliveryPolicy:
 
     async def test_nudge_returns_false_leaves_pending(self, db):
         sessions = FakeSessionManager(
-            activity_map={("supervisor", "supervisor", "p1"): "idle"},
+            activity_map={("session", "supervisor-p1", "p1"): "idle"},
             nudge_returns=False,
         )
         bus = RecordingBus()
@@ -234,7 +234,7 @@ class TestDeliveryPolicy:
         """Pre-marking one message means the engine's mark_delivered returns
         False and no ``message.delivered`` event is emitted for that row."""
         sessions = FakeSessionManager(
-            activity_map={("supervisor", "supervisor", "p1"): "idle"}
+            activity_map={("session", "supervisor-p1", "p1"): "idle"}
         )
         bus = RecordingBus()
         engine = make_engine(db, sessions, bus=bus)
@@ -255,7 +255,7 @@ class TestDeliveryPolicy:
 
     async def test_batch_respects_max_inject(self, db):
         sessions = FakeSessionManager(
-            activity_map={("supervisor", "supervisor", "p1"): "idle"}
+            activity_map={("session", "supervisor-p1", "p1"): "idle"}
         )
         cfg = MessagesConfig(enabled=True, max_inject_per_prompt=2)
         engine = make_engine(db, sessions, config=cfg)
@@ -272,7 +272,7 @@ class TestDeliveryPolicy:
 
     async def test_priority_ordering_preserved_in_nudge(self, db):
         sessions = FakeSessionManager(
-            activity_map={("supervisor", "supervisor", "p1"): "idle"}
+            activity_map={("session", "supervisor-p1", "p1"): "idle"}
         )
         engine = make_engine(db, sessions)
         low = await _send(db, body="low", priority=200)
@@ -285,16 +285,18 @@ class TestDeliveryPolicy:
 
 
 class TestParking:
-    async def test_stale_message_parked_to_user(self, db):
-        sessions = FakeSessionManager()  # task absent
+    async def test_stale_session_message_parked_to_user(self, db):
+        # Spec §7 line 463: the 24h park sweep applies ONLY to
+        # ``to_kind="session"`` rows.
+        sessions = FakeSessionManager()  # session absent
         bus = RecordingBus()
         engine = make_engine(db, sessions, bus=bus)
         msg = await _send(
             db,
             from_kind="user",
             from_id="discord:1",
-            to_kind="task",
-            to_id="task-1",
+            to_kind="session",
+            to_id="s-task-1",  # plain (non-supervisor) name → absent
         )
         # Backdate the row past the park horizon.
         async with db._engine.begin() as conn:
@@ -315,6 +317,66 @@ class TestParking:
         assert copies[0].reply_to_id == msg.id
         assert copies[0].to_id == "discord:1"
 
+    async def test_task_recipient_never_parked_even_when_stale(self, db):
+        # Task recipients ride into ``aq prime``; the delivery engine
+        # must not park them, no matter how long they've sat.
+        sessions = FakeSessionManager()  # task absent
+        engine = make_engine(db, sessions)
+        msg = await _send(
+            db,
+            from_kind="user",
+            from_id="discord:1",
+            to_kind="task",
+            to_id="task-1",
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                sa_update(messages)
+                .where(messages.c.id == msg.id)
+                .values(created_at=time.time() - PARK_AFTER_SECONDS - 10)
+            )
+
+        result = await engine.run_delivery_pass()
+
+        assert result["parked"] == 0
+        original = await db.get_message(msg.id)
+        assert original.archived_at is None
+        assert original.delivered_at is None
+
+
+class TestProfileRecipients:
+    async def test_profile_messages_untouched_by_pass(self, db):
+        # ``to_kind="profile"`` is project-agnostic and consumed via
+        # ``aq inbox``/prime — the delivery engine leaves it pending
+        # regardless of age and never touches a session for it.
+        sessions = FakeSessionManager()
+        bus = RecordingBus()
+        engine = make_engine(db, sessions, bus=bus)
+        msg = await _send(
+            db,
+            from_kind="user",
+            from_id="discord:1",
+            to_kind="profile",
+            to_id="supervisor",
+        )
+        # Age past the park horizon to prove it still isn't parked.
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                sa_update(messages)
+                .where(messages.c.id == msg.id)
+                .values(created_at=time.time() - PARK_AFTER_SECONDS - 10)
+            )
+
+        result = await engine.run_delivery_pass()
+
+        assert result == {"success": True, "delivered": 0, "skipped_busy": 0, "parked": 0}
+        assert sessions.nudges == []
+        assert sessions.ensure_started_calls == []
+        stored = await db.get_message(msg.id)
+        assert stored.delivered_at is None
+        assert stored.archived_at is None
+        assert bus.events == []
+
 
 class TestReplyTimeouts:
     async def test_transcript_tail_creates_reply(self, db):
@@ -330,7 +392,7 @@ class TestReplyTimeouts:
             thread_id="t-1",
         )
         # Deliver it via nudge path.
-        sessions.activity_map[("supervisor", "supervisor", "p1")] = "idle"
+        sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
         await engine.run_delivery_pass()
         # Now age its delivered_at past reply_timeout.
         async with db._engine.begin() as conn:
@@ -339,7 +401,7 @@ class TestReplyTimeouts:
                 .where(messages.c.id == msg.id)
                 .values(delivered_at=time.time() - 999)
             )
-        sessions.tail_map[("supervisor", "supervisor", "p1")] = "an assistant reply"
+        sessions.tail_map[("session", "supervisor-p1", "p1")] = "an assistant reply"
 
         resolved = await engine.check_reply_timeouts()
 
@@ -355,7 +417,7 @@ class TestReplyTimeouts:
         sessions = FakeSessionManager()
         engine = make_engine(db, sessions)
         msg = await _send(db, to_kind="session", to_id="supervisor-p1")
-        sessions.activity_map[("supervisor", "supervisor", "p1")] = "idle"
+        sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
         await engine.run_delivery_pass()
         async with db._engine.begin() as conn:
             await conn.execute(
@@ -371,9 +433,9 @@ class TestReplyTimeouts:
         cfg = MessagesConfig(enabled=True, transcript_tail_fallback=False)
         engine = make_engine(db, sessions, config=cfg)
         msg = await _send(db, to_kind="session", to_id="supervisor-p1")
-        sessions.activity_map[("supervisor", "supervisor", "p1")] = "idle"
+        sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
         await engine.run_delivery_pass()
-        sessions.tail_map[("supervisor", "supervisor", "p1")] = "some text"
+        sessions.tail_map[("session", "supervisor-p1", "p1")] = "some text"
         async with db._engine.begin() as conn:
             await conn.execute(
                 sa_update(messages)
@@ -386,7 +448,7 @@ class TestReplyTimeouts:
 class TestBusOptional:
     async def test_no_bus_no_error(self, db):
         sessions = FakeSessionManager(
-            activity_map={("supervisor", "supervisor", "p1"): "idle"}
+            activity_map={("session", "supervisor-p1", "p1"): "idle"}
         )
         engine = make_engine(db, sessions, bus=None)
         await _send(db)

@@ -33,9 +33,12 @@ logger = logging.getLogger(__name__)
 __all__ = ["MessageDeliveryEngine", "PARK_AFTER_SECONDS"]
 
 
-#: Messages pending longer than this (24 h) against a task or agent
+#: Messages pending longer than this (24 h) against a ``to_kind="session"``
 #: recipient are re-addressed to the original sender ("parked") — spec §7
-#: "park stale" mitigation for messages to dead/retired sessions.
+#: line 463 "park stale" mitigation for messages to dead/retired sessions.
+#: Task recipients ride into ``aq prime`` at the next session start and
+#: are never parked; profile recipients are consumed via ``aq inbox`` and
+#: also never parked.
 PARK_AFTER_SECONDS: float = 86_400.0
 
 
@@ -91,13 +94,21 @@ class MessageDeliveryEngine:
                 delivered += await self._deliver_to_user(pending)
                 continue
 
+            if to_kind == "profile":
+                # Profile recipients are project-agnostic and consumed by
+                # ``aq inbox`` / prime — the delivery engine never touches
+                # a session for them and never parks them (spec §11 line
+                # 403; parking horizon per spec §7 line 463 applies only
+                # to ``to_kind="session"``).
+                continue
+
             kind, target_id, resolved_project = _target_from_recipient(
                 to_kind, to_id, project_id
             )
             if kind is None:
-                # Unknown session address (e.g. to_kind=profile) → leave pending
-                # rather than guess. Parked below if it ages out.
-                parked += await self._maybe_park(pending)
+                # Legal to_kind we don't route (defensive; MESSAGE_TO_KINDS
+                # today is {session, task, profile, user} and all four are
+                # handled above). Leave pending.
                 continue
 
             activity: Activity = await self._sessions.activity(
@@ -117,7 +128,10 @@ class MessageDeliveryEngine:
                 activity = "idle"
 
             if activity == "absent":
-                parked += await self._maybe_park(pending)
+                # Task recipients: rides into prime, never parked.
+                # Session recipients: subject to the 24h parking sweep.
+                if to_kind == "session":
+                    parked += await self._maybe_park(pending)
                 continue
 
             # idle → render one nudge for the batch
@@ -246,11 +260,13 @@ class MessageDeliveryEngine:
         return delivered
 
     async def _maybe_park(self, pending: list[Message]) -> int:
-        """Re-address stale messages to the original sender (spec §7)."""
+        """Re-address stale ``to_kind="session"`` messages to the original
+        sender (spec §7 line 463). Task and profile recipients are never
+        parked; the caller must not invoke this for them."""
         now = time.time()
         parked = 0
         for msg in pending:
-            if msg.to_kind not in ("session", "task"):
+            if msg.to_kind != "session":
                 continue
             if (now - msg.created_at) < PARK_AFTER_SECONDS:
                 continue
@@ -316,19 +332,21 @@ def _target_from_recipient(
 ) -> tuple[str | None, str | None, str | None]:
     """Map (``messages.to_kind``, ``to_id``) → ``SessionManagerProto`` kind.
 
-    - ``session`` + ``supervisor-<pid>`` → ``("supervisor", "supervisor", <pid>)``
-    - ``session`` + task-ish id → ``("agent", <to_id>, <project_id>)``
-      (task-owned sessions live under an agent for the lens's purposes)
-    - ``task`` → ``("task", <to_id>, <project_id>)``
-    - anything else → ``(None, None, None)`` and the caller decides.
+    Legal ``to_kind`` set is :data:`~src.models.MESSAGE_TO_KINDS`
+    (``{session, task, profile, user}``). The delivery engine handles
+    ``user`` and ``profile`` before this call; only session-bearing kinds
+    reach here.
+
+    - ``task`` → ``("task", <task_id>, <project_id>)``
+    - ``session`` → ``("session", <session_name>, <project_id>)``
+      (``to_id`` is a session **name** such as ``supervisor-<pid>`` or
+      ``s-<task-name>`` — the lens resolves it via ``get_session_by_name``)
+    - anything else → ``(None, None, None)``.
     """
     if to_kind == "task":
         return "task", to_id, project_id
     if to_kind == "session":
-        if to_id.startswith("supervisor-"):
-            pid = to_id[len("supervisor-") :] or project_id
-            return "supervisor", "supervisor", pid
-        return "agent", to_id, project_id
+        return "session", to_id, project_id
     return None, None, None
 
 

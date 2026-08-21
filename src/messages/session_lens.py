@@ -11,12 +11,20 @@ That is what :class:`SessionManagerProto` codifies, and what
 spec builder. The lens is read-only over the ``sessions`` table (owned by
 :class:`~src.sessions.reconciler.SessionReconciler`) and only ever *starts*
 one kind of session: the supervisor, on demand, because the supervisor is
-wake-able by design. Task and agent sessions are launched by the
-orchestrator's task lifecycle; the messenger has no license to spawn one.
+wake-able by design. Task sessions are launched by the orchestrator's task
+lifecycle; the messenger has no license to spawn one.
+
+Recipient vocabulary (aligned with the spec's ``messages.to_kind`` set —
+``{session, task, profile, user}``): the lens speaks two kinds internally,
+``"task"`` (a task id) and ``"session"`` (a bare session **name**, e.g.
+``supervisor-<project_id>`` or ``s-<task-name>``). ``profile`` and ``user``
+recipients never touch a live session so the delivery engine handles them
+directly and never calls the lens for them.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import time
@@ -28,7 +36,7 @@ from src.sessions.provider import (
     NotSubmitted,
     SessionHandle,
 )
-from src.sessions.spec import named_session_name, task_session_name
+from src.sessions.spec import task_session_name
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +51,7 @@ __all__ = ["Activity", "SessionManagerProto", "SessionLens"]
 #:                  message at the next prompt boundary.
 #: * ``sleeping`` — a wake-able target (supervisor) with no live session.
 #: * ``absent``   — no live session and the messenger must not spawn one
-#:                  (task/agent sessions are launched by the task lifecycle).
+#:                  (task sessions are launched by the task lifecycle).
 Activity = Literal["idle", "busy", "sleeping", "absent"]
 
 
@@ -52,6 +60,11 @@ Activity = Literal["idle", "busy", "sleeping", "absent"]
 #: including a small tool call. The delivery engine deliberately errs on
 #: the side of "wait one cycle" over "interrupt mid-turn".
 _BUSY_WINDOW_SECONDS: float = 30.0
+
+
+#: Prefix that identifies a supervisor named-session by convention; the
+#: only session name the lens is licensed to cold-start (spec §6).
+_SUPERVISOR_NAME_PREFIX: str = "supervisor-"
 
 
 @runtime_checkable
@@ -71,7 +84,7 @@ class SessionManagerProto(Protocol):
     async def ensure_started(
         self, *, kind: str, target_id: str, project_id: str | None
     ) -> bool:
-        """Wake the supervisor on demand. No-op (False) for other kinds."""
+        """Wake a supervisor-named session on demand. No-op (False) otherwise."""
         ...
 
     async def nudge(
@@ -104,9 +117,9 @@ class SessionLens:
     :mod:`src.orchestrator.core`); the delivery engine holds a reference.
 
     Read-only over the ``sessions`` table: rows are owned by the
-    reconciler. The one write path is :meth:`ensure_started` for the
-    supervisor, which delegates to the provider registry — the same code
-    path the reconciler uses.
+    reconciler. The one write path is :meth:`ensure_started` for a
+    supervisor-named session, which delegates to the provider registry —
+    the same code path the reconciler uses.
     """
 
     def __init__(
@@ -135,7 +148,7 @@ class SessionLens:
     ) -> Activity:
         row, handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
         if row is None or handle is None:
-            return "sleeping" if kind == "supervisor" else "absent"
+            return self._absent_signal(kind=kind, target_id=target_id)
 
         provider = self._providers.create(row.provider)
         try:
@@ -144,7 +157,7 @@ class SessionLens:
             logger.debug("is_running failed for %s", row.name, exc_info=True)
             running = False
         if not running:
-            return "sleeping" if kind == "supervisor" else "absent"
+            return self._absent_signal(kind=kind, target_id=target_id)
 
         try:
             last = await provider.last_activity(handle)
@@ -158,10 +171,10 @@ class SessionLens:
     async def ensure_started(
         self, *, kind: str, target_id: str, project_id: str | None
     ) -> bool:
-        # Only the supervisor is wake-on-demand. Task and agent sessions
-        # are launched by the task lifecycle; spawning one from the
-        # message path would race the orchestrator and violate ownership.
-        if kind != "supervisor":
+        # Only supervisor-named sessions are wake-on-demand. Task sessions
+        # are launched by the task lifecycle; spawning one from the message
+        # path would race the orchestrator and violate ownership.
+        if kind != "session" or not target_id.startswith(_SUPERVISOR_NAME_PREFIX):
             return False
 
         row, handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
@@ -174,13 +187,15 @@ class SessionLens:
                 logger.debug("is_running failed for %s", row.name, exc_info=True)
 
         # Cold start.
+        derived_project = target_id[len(_SUPERVISOR_NAME_PREFIX) :] or project_id
+
         profile = await self._profiles_loader("supervisor")
         if profile is None:
             logger.warning("supervisor profile not found; cannot start session")
             return False
 
         harness_name = getattr(profile, "harness", None) or "claude"
-        harness = self._harnesses.get(harness_name, project_id=project_id)
+        harness = self._harnesses.get(harness_name, project_id=derived_project)
         if harness is None:
             logger.warning("harness %r not registered; cannot start supervisor", harness_name)
             return False
@@ -200,7 +215,7 @@ class SessionLens:
             )
             return False
 
-        work_dir = self._supervisor_work_dir(project_id)
+        work_dir = self._supervisor_work_dir(derived_project)
         if not work_dir:
             # No vault_root configured and no project_id → nowhere sensible
             # to run the supervisor. Better to skip than to pass an empty
@@ -208,7 +223,7 @@ class SessionLens:
             logger.debug(
                 "supervisor work_dir is empty (vault_root unset, project_id=%r); "
                 "refusing to start",
-                project_id,
+                derived_project,
             )
             return False
         # `claude --session-id` rejects bare hex — must be dashed.
@@ -218,7 +233,7 @@ class SessionLens:
         spec = self._spec_builder.build_named_spec(
             profile=profile,
             harness=harness,
-            project_id=project_id,
+            project_id=derived_project,
             work_dir=work_dir,
             session_id=session_id,
             instance_token=instance_token,
@@ -226,10 +241,20 @@ class SessionLens:
             # it adopts. Passing empty is safe (see spec builder).
             epoch="",
         )
+        # The spec builder derives the provider session name from the
+        # profile+project convention (``n-supervisor--<pid>``), but the
+        # messaging system's supervisor recipient convention (spec §5) is
+        # ``supervisor-<pid>``: keep the two in sync so a follow-up
+        # ``get_session_by_name(target_id)`` finds the row we just spawned.
+        spec = dataclasses.replace(spec, session_name=target_id)
         try:
             await provider.start(spec)
         except Exception:
-            logger.exception("failed to start supervisor session for project=%s", project_id)
+            logger.exception(
+                "failed to start supervisor session %s (project=%s)",
+                target_id,
+                derived_project,
+            )
             return False
         return True
 
@@ -296,6 +321,14 @@ class SessionLens:
 
     # -- internals ----------------------------------------------------------
 
+    @staticmethod
+    def _absent_signal(*, kind: str, target_id: str) -> Activity:
+        """"absent" for tasks and plain session names; "sleeping" only for
+        supervisor-named sessions (wake-able by design)."""
+        if kind == "session" and target_id.startswith(_SUPERVISOR_NAME_PREFIX):
+            return "sleeping"
+        return "absent"
+
     async def _resolve(
         self, *, kind: str, target_id: str, project_id: str | None
     ) -> tuple[object | None, SessionHandle | None]:
@@ -306,19 +339,11 @@ class SessionLens:
         row = None
         if kind == "task":
             row = await self._db.get_session_by_name(task_session_name(target_id))
-        elif kind == "agent":
-            # Message `to_kind='agent'` carries an agent id. Sessions
-            # aren't indexed by agent, but the agents table tracks
-            # `current_task_id`; resolve via that. Unknown agent or one
-            # with no current task → no session (caller reports "absent").
-            agent = await self._db.get_agent(target_id)
-            if agent is None or not agent.current_task_id:
-                return None, None
-            row = await self._db.get_session_for_task(agent.current_task_id)
-        elif kind == "supervisor":
-            row = await self._db.get_session_by_name(
-                named_session_name("supervisor", project_id)
-            )
+        elif kind == "session":
+            # ``target_id`` is a bare session name — resolve via the
+            # by-name index directly. Callers (delivery engine) never
+            # invent this; it comes off ``messages.to_id``.
+            row = await self._db.get_session_by_name(target_id)
         else:
             return None, None
 
