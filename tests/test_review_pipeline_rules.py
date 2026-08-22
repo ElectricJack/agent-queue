@@ -23,6 +23,7 @@ from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.models import AgentProfile, Project
 from src.orchestrator import Orchestrator
+from src.orchestrator.core import _eval_pipeline_when
 from src.playbooks.pipeline_compiler import compile_pipeline
 from src.playbooks.pipeline_runner import PipelineRunner
 
@@ -166,17 +167,8 @@ class PipelineEngine:
                 rule_when = rule_meta.get("when")
 
             # Evaluate ``when`` guard.
-            if rule_when:
-                field_path = rule_when.get("field", "")
-                val: object = hydrated
-                for part in field_path.split("."):
-                    if part == "event":
-                        continue
-                    val = val.get(part) if isinstance(val, dict) else None
-                if rule_when.get("truthy") and not bool(val):
-                    continue
-                if rule_when.get("not_null") and (val is None or val == ""):
-                    continue
+            if rule_when and not _eval_pipeline_when(rule_when, hydrated):
+                continue
 
             # Clone graph, set the rule's entry node.
             run_graph = copy.deepcopy(graph)
@@ -204,6 +196,36 @@ def pipeline_engine_factory():
 # ---------------------------------------------------------------------------
 # T1: parse test
 # ---------------------------------------------------------------------------
+
+
+def test_eval_pipeline_when_all_clause_requires_every_field():
+    """The ``all`` clause (used by per-branch-final-review) requires every
+    nested field to be truthy — branch_name alone is not enough once pr_url
+    is also required, but back-compat single-field ``when`` still works.
+    """
+    when = {
+        "all": [
+            {"field": "event.task.branch_name", "truthy": True},
+            {"field": "event.task.pr_url", "truthy": True},
+        ]
+    }
+
+    both_truthy = {"task": {"branch_name": "feature/x", "pr_url": "https://x/pr/1"}}
+    assert _eval_pipeline_when(when, both_truthy) is True
+
+    missing_pr = {"task": {"branch_name": "feature/x", "pr_url": ""}}
+    assert _eval_pipeline_when(when, missing_pr) is False
+
+    missing_pr_key = {"task": {"branch_name": "feature/x"}}
+    assert _eval_pipeline_when(when, missing_pr_key) is False
+
+    missing_branch = {"task": {"branch_name": "", "pr_url": "https://x/pr/1"}}
+    assert _eval_pipeline_when(when, missing_branch) is False
+
+    # Back-compat: a plain single-field ``when`` (no all/any) still works.
+    single = {"field": "event.task.branch_name", "truthy": True}
+    assert _eval_pipeline_when(single, both_truthy) is True
+    assert _eval_pipeline_when(single, {"task": {"branch_name": ""}}) is False
 
 
 def test_per_task_review_rule_parses():
@@ -368,8 +390,12 @@ async def test_per_branch_review_ensures_one_task_per_branch(
             "create_task", {"project_id": "p", "title": "B", "profile_id": "worker"}
         )
     )["created"]
-    await db.update_task(ta, branch_name="feature/shared")
-    await db.update_task(tb, branch_name="feature/shared")
+    await db.update_task(
+        ta, branch_name="feature/shared", pr_url="https://github.com/o/r/pull/1"
+    )
+    await db.update_task(
+        tb, branch_name="feature/shared", pr_url="https://github.com/o/r/pull/1"
+    )
 
     await engine.dispatch(
         "task.completed", {"task_id": ta, "project_id": "p", "title": "A"}, event_id="e-a"

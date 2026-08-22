@@ -130,11 +130,30 @@ def _eval_pipeline_when(when: dict, event: dict) -> bool:
         {"field": "event.task.branch_name", "not_null": true}
             — pass when the dot-path resolves to a non-None / non-empty value.
 
+        {"all": [<clause>, <clause>, ...]}
+            — pass when every nested clause passes (AND).
+
+        {"any": [<clause>, <clause>, ...]}
+            — pass when at least one nested clause passes (OR).
+
     Unrecognised shapes default to *True* (permissive: unknown conditions do
     not silently drop events).
     """
     if not isinstance(when, dict):
         return True
+
+    if "all" in when:
+        clauses = when.get("all") or []
+        if not isinstance(clauses, list):
+            return True
+        return all(_eval_pipeline_when(clause, event) for clause in clauses)
+
+    if "any" in when:
+        clauses = when.get("any") or []
+        if not isinstance(clauses, list):
+            return True
+        return any(_eval_pipeline_when(clause, event) for clause in clauses)
+
     field_path = when.get("field", "")
     if not field_path:
         return True

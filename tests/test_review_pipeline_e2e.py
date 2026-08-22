@@ -31,6 +31,7 @@ from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.models import AgentProfile, Project, TaskStatus
 from src.orchestrator import Orchestrator
+from src.orchestrator.core import _eval_pipeline_when
 from src.playbooks.pipeline_compiler import compile_pipeline
 from src.playbooks.pipeline_runner import PipelineRunner
 
@@ -145,17 +146,8 @@ class PipelineEngine:
                 rule_entry = rule_meta.get("entry", "")
                 rule_when = rule_meta.get("when")
 
-            if rule_when:
-                field_path = rule_when.get("field", "")
-                val: object = hydrated
-                for part in field_path.split("."):
-                    if part == "event":
-                        continue
-                    val = val.get(part) if isinstance(val, dict) else None
-                if rule_when.get("truthy") and not bool(val):
-                    continue
-                if rule_when.get("not_null") and (val is None or val == ""):
-                    continue
+            if rule_when and not _eval_pipeline_when(rule_when, hydrated):
+                continue
 
             run_graph = copy.deepcopy(graph)
             for nid, node in run_graph["nodes"].items():

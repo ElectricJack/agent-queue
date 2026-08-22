@@ -118,7 +118,12 @@ Ships three rules:
     {
       "id": "per-branch-final-review",
       "on": "task.completed",
-      "when": {"field": "event.task.branch_name", "truthy": true},
+      "when": {
+        "all": [
+          {"field": "event.task.branch_name", "truthy": true},
+          {"field": "event.task.pr_url", "truthy": true}
+        ]
+      },
       "entry": "ensure-final",
       "nodes": {
         "ensure-final": {
