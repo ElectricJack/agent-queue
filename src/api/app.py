@@ -20,6 +20,7 @@ from src.api import dependencies as deps
 from src.api.execute import router as execute_router
 from src.api.health import router as health_router
 from src.api.graph import router as graph_router
+from src.api.routers.proposals import router as proposals_router
 from src.api.messages import router as messages_router
 from src.api.sessions import router as sessions_router
 from src.api.task_files import router as task_files_router
@@ -114,6 +115,9 @@ def create_app(
 
     # Aggregate project-graph endpoint (Phase 4): GET /api/projects/{id}/graph
     app.include_router(graph_router)
+
+    # Task proposal read (Phase 6): GET /api/proposals/{id}
+    app.include_router(proposals_router)
 
     # Auto-generated typed command routes (POST /api/{category}/{command})
     from src.api.routers import register_all_routers
