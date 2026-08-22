@@ -67,6 +67,8 @@ class TaskQueryMixin:
                     affinity_agent_id=task.affinity_agent_id,
                     affinity_reason=task.affinity_reason,
                     workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
+                    dedup_key=task.dedup_key,
+                    intelligence_class=task.intelligence_class,
                     # A brand-new row has no edges yet, so it starts
                     # unblocked; the edges that follow recompute it
                     # (work-graph implementation spec §4.1).
@@ -575,6 +577,36 @@ class TaskQueryMixin:
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
             return [self._row_to_task(r) for r in result.mappings().fetchall()]
+
+    async def find_task_by_dedup_key(
+        self, project_id: str, dedup_key: str
+    ) -> "Task | None":
+        """Return the non-terminal task with (project_id, dedup_key), or None.
+
+        Terminal statuses (COMPLETED / FAILED / CANCELLED) are ignored so a
+        completed dedup key does not perpetually squat.
+        """
+        terminal = (
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+        )
+        stmt = (
+            select(tasks)
+            .where(
+                and_(
+                    tasks.c.project_id == project_id,
+                    tasks.c.dedup_key == dedup_key,
+                    tasks.c.status.notin_(terminal),
+                )
+            )
+            .order_by(tasks.c.created_at.asc())
+            .limit(1)
+        )
+        async with self._engine.begin() as conn:
+            row = (await conn.execute(stmt)).mappings().fetchone()
+        if row is None:
+            return None
+        return self._row_to_task(row)
 
     @staticmethod
     def _row_to_task(row) -> Task:

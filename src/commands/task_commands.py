@@ -1065,6 +1065,8 @@ class TaskCommandsMixin:
             affinity_reason=affinity_reason,
             workspace_mode=workspace_mode,
             parent_task_id=(parent_id if (parent_id and not depth_cap_fallback) else None),
+            dedup_key=args.get("dedup_key"),
+            intelligence_class=args.get("intelligence_class"),
         )
         await self.db.create_task(task)
 
@@ -3199,3 +3201,36 @@ class TaskCommandsMixin:
                     withheld.append({"task_id": task.id, "reasons": res["reasons"]})
 
         return {"success": True, "ready": ready, "withheld": withheld}
+
+    async def _cmd_ensure_task(self, args: dict) -> dict:
+        """Find-or-create a task by (project_id, dedup_key).
+
+        Returns ``{success, task_id, created}``. Non-terminal existing tasks
+        with the same key are returned as-is; terminal tasks (COMPLETED,
+        FAILED, CANCELLED) are ignored so the key can be reused.
+        """
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"success": False, "error": "project_id is required"}
+        dedup_key = args.get("dedup_key")
+        if not dedup_key:
+            return {"success": False, "error": "dedup_key is required"}
+        title = args.get("title")
+        if not title:
+            return {"success": False, "error": "title is required"}
+
+        existing = await self.db.find_task_by_dedup_key(str(project_id), str(dedup_key))
+        if existing is not None:
+            return {"success": True, "task_id": existing.id, "created": False}
+
+        create_args = {
+            "project_id": project_id,
+            "title": title,
+            "description": args.get("description", title),
+            "priority": args.get("priority", 100),
+            "dedup_key": dedup_key,
+        }
+        result = await self._cmd_create_task(create_args)
+        if "error" in result:
+            return {"success": False, "error": result["error"]}
+        return {"success": True, "task_id": result["created"], "created": True}
