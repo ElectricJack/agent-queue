@@ -3207,7 +3207,7 @@ class TaskCommandsMixin:
 
         Returns ``{success, task_id, created}``. Non-terminal existing tasks
         with the same key are returned as-is; terminal tasks (COMPLETED,
-        FAILED, CANCELLED) are ignored so the key can be reused.
+        FAILED) are ignored so the key can be reused.
         """
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
@@ -3226,7 +3226,7 @@ class TaskCommandsMixin:
         create_args = {
             "project_id": project_id,
             "title": title,
-            "description": args.get("description", title),
+            "description": args.get("description", ""),
             "priority": args.get("priority", 100),
             "dedup_key": dedup_key,
         }

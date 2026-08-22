@@ -82,3 +82,17 @@ async def test_ensure_task_requires_dedup_key(handler):
         "ensure_task", {"project_id": PROJECT_ID, "title": "x"}
     )
     assert res.get("success") is False or "error" in res
+
+
+async def test_ensure_task_reuses_in_progress_task(handler, db):
+    r1 = await handler.execute(
+        "ensure_task",
+        {"project_id": PROJECT_ID, "dedup_key": "triage-open", "title": "Triage"},
+    )
+    await db.transition_task(r1["task_id"], TaskStatus.IN_PROGRESS, force=True)
+    r2 = await handler.execute(
+        "ensure_task",
+        {"project_id": PROJECT_ID, "dedup_key": "triage-open", "title": "Triage"},
+    )
+    assert r2["created"] is False
+    assert r2["task_id"] == r1["task_id"]

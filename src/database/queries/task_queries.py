@@ -583,7 +583,7 @@ class TaskQueryMixin:
     ) -> "Task | None":
         """Return the non-terminal task with (project_id, dedup_key), or None.
 
-        Terminal statuses (COMPLETED / FAILED / CANCELLED) are ignored so a
+        Terminal statuses (COMPLETED / FAILED) are ignored so a
         completed dedup key does not perpetually squat.
         """
         terminal = (
