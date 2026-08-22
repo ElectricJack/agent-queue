@@ -4,9 +4,7 @@ import Layout from "./components/Layout";
 
 const ChatLanding = lazy(() => import("./pages/chat/ChatLanding"));
 const ChatConversation = lazy(() => import("./pages/chat/ChatConversation"));
-const CommandCenterPlaceholder = lazy(
-  () => import("./pages/command-center/CommandCenterPlaceholder"),
-);
+const CommandCenter = lazy(() => import("./pages/CommandCenter"));
 
 const WorkIndex = lazy(() => import("./pages/work/WorkIndex"));
 
@@ -51,7 +49,7 @@ export default function App() {
           {/* Top-level IA — Phase 3 */}
           <Route index element={<ChatLanding />} />
           <Route path="chat/:projectId" element={<ChatConversation />} />
-          <Route path="command-center" element={<CommandCenterPlaceholder />} />
+          <Route path="command-center" element={<CommandCenter />} />
           <Route path="work" element={<WorkIndex />} />
 
           {/* Settings hub — playbooks / profiles / intelligence-classes / config */}
