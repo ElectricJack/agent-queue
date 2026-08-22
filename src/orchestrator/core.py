@@ -146,12 +146,27 @@ def _eval_pipeline_when(when: dict, event: dict) -> bool:
         clauses = when.get("all") or []
         if not isinstance(clauses, list):
             return True
+        if not clauses:
+            # Vacuous ``all: []`` returns True and silently fires on every
+            # event — almost certainly an author bug. Compile-time
+            # validation rejects this shape; log if it slips through.
+            logger.warning(
+                "pipeline when.all is empty — vacuous True; reject at compile time"
+            )
+            return True
         return all(_eval_pipeline_when(clause, event) for clause in clauses)
 
     if "any" in when:
         clauses = when.get("any") or []
         if not isinstance(clauses, list):
             return True
+        if not clauses:
+            # Empty ``any: []`` returns False and silently disables the
+            # rule. Compile-time validation rejects this shape.
+            logger.warning(
+                "pipeline when.any is empty — silently False; reject at compile time"
+            )
+            return False
         return any(_eval_pipeline_when(clause, event) for clause in clauses)
 
     field_path = when.get("field", "")

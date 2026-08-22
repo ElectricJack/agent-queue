@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import Layout from "./components/Layout";
 
 const ChatLanding = lazy(() => import("./pages/chat/ChatLanding"));
@@ -26,12 +26,19 @@ const ProjectProfiles = lazy(() => import("./pages/project/Profiles"));
 const ProjectPlaybooks = lazy(() => import("./pages/project/Playbooks"));
 const ProjectConfig = lazy(() => import("./pages/project/Config"));
 const ProjectSessions = lazy(() => import("./pages/project/Sessions"));
-const ProjectChat = lazy(() => import("./pages/project/Chat"));
 
 const TaskDetail = lazy(() => import("./pages/TaskDetail"));
 const PlaybookDetail = lazy(() => import("./pages/PlaybookDetail"));
 const SessionDetail = lazy(() => import("./pages/SessionDetail"));
 const TaskFiles = lazy(() => import("./pages/TaskFiles"));
+
+/** `/chat/:projectId` (Phase 3, matches the top-level IA) is the canonical
+ *  project-chat surface — redirect this older project-scoped alias there
+ *  rather than maintaining two chat UIs. */
+function ProjectChatRedirect() {
+  const { projectId = "" } = useParams();
+  return <Navigate to={`/chat/${projectId}`} replace />;
+}
 
 function RouteFallback() {
   return (

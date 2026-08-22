@@ -756,6 +756,31 @@ _SPEC_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Command events (Phase 5 follow-up — command.invoked WS visibility)
+#
+# Emitted by ``CommandHandler.execute`` after every dispatch (success or
+# failure) with a redacted args summary + duration + ok/error.  Gated on
+# ``config.events.command_invoked_enabled`` (default True).  Powers the
+# dashboard "supervisor is thinking…" bubble's live tool-call chips and any
+# future observability surface (session detail, per-task activity feed).
+# ---------------------------------------------------------------------------
+
+_COMMAND_SCHEMAS: dict[str, EventSchema] = {
+    "command.invoked": {
+        "required": ["command", "ok"],
+        "optional": [
+            "session_id",
+            "task_id",
+            "project_id",
+            "duration_ms",
+            "error",
+            "args_summary",
+        ],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Combined registry
 # ---------------------------------------------------------------------------
 
@@ -778,6 +803,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_TIMER_SCHEMAS,
     **_CRON_SCHEMAS,
     **_SPEC_SCHEMAS,
+    **_COMMAND_SCHEMAS,
 }
 """Master registry of all event schemas.
 

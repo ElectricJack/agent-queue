@@ -98,6 +98,65 @@ def test_eval_pipeline_when_all_clause_requires_every_field():
     assert _eval_pipeline_when(single, {"task": {"branch_name": ""}}) is False
 
 
+def test_compile_rejects_empty_all_clause():
+    """{'all': []} evaluates vacuously True — must be rejected at compile."""
+    from src.playbooks.pipeline_compiler import compile_pipeline
+
+    md = """---
+id: bad-empty-all
+kind: pipeline
+scope: system
+role: pipeline
+triggers: [task.completed]
+---
+```json
+{
+  "rules": [
+    {
+      "id": "r1",
+      "on": "task.completed",
+      "when": {"all": []},
+      "entry": "n1",
+      "nodes": {"n1": {"command": "list_tasks", "on_success": "done"}, "done": {"terminal": true}}
+    }
+  ]
+}
+```
+"""
+    result = compile_pipeline(md)
+    assert result.errors, "expected compile error for empty when.all"
+    assert any("when.all" in str(e) for e in result.errors)
+
+
+def test_compile_rejects_empty_any_clause():
+    from src.playbooks.pipeline_compiler import compile_pipeline
+
+    md = """---
+id: bad-empty-any
+kind: pipeline
+scope: system
+role: pipeline
+triggers: [task.completed]
+---
+```json
+{
+  "rules": [
+    {
+      "id": "r1",
+      "on": "task.completed",
+      "when": {"any": []},
+      "entry": "n1",
+      "nodes": {"n1": {"command": "list_tasks", "on_success": "done"}, "done": {"terminal": true}}
+    }
+  ]
+}
+```
+"""
+    result = compile_pipeline(md)
+    assert result.errors, "expected compile error for empty when.any"
+    assert any("when.any" in str(e) for e in result.errors)
+
+
 def test_per_task_review_rule_parses():
     """default-pipeline.md must compile with no errors and contain the review rule."""
     from src.playbooks.compiler import compile_playbook

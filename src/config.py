@@ -1072,6 +1072,26 @@ class SupervisorAgentConfig:
 
 
 @dataclass
+class EventsConfig:
+    """Event-bus emission toggles.
+
+    Controls whether cross-cutting bus events are emitted.  Turning a flag off
+    silences the corresponding stream on high-throughput deployments where
+    the extra frames would swamp downstream consumers.
+    """
+
+    #: When True (default), ``CommandHandler.execute`` emits a
+    #: ``command.invoked`` event on the bus after every dispatch (success or
+    #: failure) with a redacted args summary + duration + ok/error.  See
+    #: docs/superpowers/plans/2026-08-21-dv2-phase5-observability.md
+    #: ("Phase 5 Follow-up") for the motivation.
+    command_invoked_enabled: bool = True
+
+    def validate(self) -> list[ConfigError]:
+        return []
+
+
+@dataclass
 class PlannerConfig:
     """Plan-discovery rollout switch.
 
@@ -1217,6 +1237,7 @@ class AppConfig:
     security: SecurityConfig = field(default_factory=SecurityConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
     messages: MessagesConfig = field(default_factory=MessagesConfig)
+    events: EventsConfig = field(default_factory=EventsConfig)
     supervisor_agent: SupervisorAgentConfig = field(default_factory=SupervisorAgentConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     api_auth: ApiAuthConfig = field(default_factory=ApiAuthConfig)
@@ -2208,6 +2229,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             reply_timeout=float(ms_cfg.get("reply_timeout", 120.0)),
             transcript_tail_fallback=bool(ms_cfg.get("transcript_tail_fallback", True)),
             max_inject_per_prompt=int(ms_cfg.get("max_inject_per_prompt", 10)),
+        )
+
+    if "events" in raw and isinstance(raw["events"], dict):
+        ev = raw["events"]
+        config.events = EventsConfig(
+            command_invoked_enabled=bool(ev.get("command_invoked_enabled", True)),
         )
 
     if "supervisor_agent" in raw and isinstance(raw["supervisor_agent"], dict):

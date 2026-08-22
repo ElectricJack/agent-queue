@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextvars
 import os
+import time
 from collections.abc import Callable
 
 import logging
@@ -168,6 +169,102 @@ PAUSED_PLAYBOOK_COMMANDS: frozenset[str] = frozenset(
 #: owned by the external aq-memory plugin, so the prefix rule is primary and
 #: this set is the escape hatch for outliers.
 PAUSED_MEMORY_COMMAND_EXTRAS: frozenset[str] = frozenset({"memory", "compact_memory"})
+
+
+#: Keys that pass through ``_summarize_args`` verbatim (short identifiers we
+#: always want visible on the wire) alongside a shortened rendering.
+_ARGS_SUMMARY_PASSTHROUGH: frozenset[str] = frozenset(
+    {"task_id", "project_id", "session_id", "gate_id", "proposal_id"}
+)
+
+#: Keys whose value is always redacted regardless of length.  Match is
+#: case-insensitive and substring-based so ``api_key`` / ``API_KEY`` /
+#: ``x-api-key`` all get caught.
+_ARGS_SUMMARY_REDACT_KEYS: tuple[str, ...] = (
+    "body",
+    "content",
+    "text",
+    "token",
+    "password",
+    "api_key",
+)
+
+#: Max total length of the rendered args summary string.
+_ARGS_SUMMARY_MAX_LEN: int = 200
+
+
+def _summarize_args(command: str, args: dict | None) -> str:  # noqa: ARG001 -- command reserved for per-cmd redaction
+    """Short, redacted rendering of *args* for the ``command.invoked`` event.
+
+    Never dumps raw values on the bus.  Rules:
+
+    - Passthrough keys (``task_id``/``project_id``/``session_id``/``gate_id``/
+      ``proposal_id``) render as ``key=value`` when present.
+    - Keys matching :data:`_ARGS_SUMMARY_REDACT_KEYS` render as
+      ``key=<redacted len=N>``.
+    - String values >80 chars render as ``key=<...len=N>``.
+    - Everything else renders as ``key=<type>`` (small ints/bools verbatim).
+
+    Total output is truncated to :data:`_ARGS_SUMMARY_MAX_LEN` characters
+    with a trailing ``…`` marker so downstream UIs get a stable ceiling.
+    """
+    if not args:
+        return ""
+    parts: list[str] = []
+    for key, value in args.items():
+        if key == "_scope":
+            # Server-injected trust envelope — never on the wire.
+            continue
+        key_lower = key.lower()
+        if any(needle in key_lower for needle in _ARGS_SUMMARY_REDACT_KEYS):
+            n = len(value) if isinstance(value, (str, bytes, list, dict)) else 0
+            parts.append(f"{key}=<redacted len={n}>")
+            continue
+        if key in _ARGS_SUMMARY_PASSTHROUGH and isinstance(value, str):
+            parts.append(f"{key}={value}")
+            continue
+        if isinstance(value, str):
+            if len(value) > 80:
+                parts.append(f"{key}=<...len={len(value)}>")
+            else:
+                parts.append(f"{key}={value}")
+        elif isinstance(value, bool):
+            parts.append(f"{key}={value}")
+        elif isinstance(value, (int, float)):
+            parts.append(f"{key}={value}")
+        elif value is None:
+            parts.append(f"{key}=None")
+        elif isinstance(value, (list, tuple)):
+            parts.append(f"{key}=<list len={len(value)}>")
+        elif isinstance(value, dict):
+            parts.append(f"{key}=<dict len={len(value)}>")
+        else:
+            parts.append(f"{key}=<{type(value).__name__}>")
+    rendered = ", ".join(parts)
+    if len(rendered) > _ARGS_SUMMARY_MAX_LEN:
+        rendered = rendered[: _ARGS_SUMMARY_MAX_LEN - 1] + "…"
+    return rendered
+
+
+def _classify_result(result: object) -> tuple[bool, str | None]:
+    """Return ``(ok, error_summary)`` for a command result dict.
+
+    A command reports failure via one of two shapes:
+    ``{"error": "..."}`` (top-level exception path) or
+    ``{"success": False, "error": "..."}`` (structured refusal, e.g. a paused
+    subsystem gate).  Any other shape counts as success.  The returned error
+    string is truncated to ~200 chars so bus payloads stay bounded.
+    """
+    if not isinstance(result, dict):
+        return True, None
+    err = result.get("error")
+    if err is not None:
+        return False, str(err)[:200]
+    if result.get("success") is False:
+        # Structured refusal without an ``error`` key — fall back to a stable
+        # marker so the frontend can still discriminate the outcome.
+        return False, "success=False"
+    return True, None
 
 
 def _is_memory_command(name: str) -> bool:
@@ -519,6 +616,14 @@ class CommandHandler(
                 logger.info("cmd %s args=%s", name, self._preview(args))
             else:
                 logger.debug("cmd %s args=%s", name, self._preview(args))
+            # Snapshot for command.invoked emission — args may be mutated by
+            # ``_resolve_project_id_in_args`` and by handler bodies (e.g. an
+            # embedded body/plan being popped for storage), and the raw values
+            # never appear on the bus regardless.
+            _emit_started_at = time.monotonic()
+            _emit_args_snapshot = dict(args) if isinstance(args, dict) else {}
+            _emit_ok: bool = False
+            _emit_error: str | None = None
             try:
                 # Normalise project_id in args before dispatching.
                 # LLMs frequently guess wrong (channel names, underscores,
@@ -533,13 +638,17 @@ class CommandHandler(
                 paused_error = self._paused_command_error(name)
                 if paused_error:
                     logger.debug("cmd %s refused: %s", name, paused_error)
-                    return {"success": False, "error": paused_error}
+                    result = {"success": False, "error": paused_error}
+                    _emit_ok = False
+                    _emit_error = paused_error
+                    return result
 
                 handler = getattr(self, f"_cmd_{name}", None)
                 if handler:
                     result = await handler(args)
                     if mutating:
                         logger.info("cmd %s result=%s", name, self._preview(result))
+                    _emit_ok, _emit_error = _classify_result(result)
                     return result
 
                 # Fallback to plugin registry
@@ -561,6 +670,7 @@ class CommandHandler(
                                     plugin_name,
                                     self._preview(result),
                                 )
+                            _emit_ok, _emit_error = _classify_result(result)
                             return result
                         except Exception as e:
                             await self.orchestrator.plugin_registry.record_failure(
@@ -573,9 +683,13 @@ class CommandHandler(
                                 e,
                                 exc_info=True,
                             )
+                            _emit_ok = False
+                            _emit_error = f"Plugin command failed: {e.__class__.__name__}"
                             return {"error": f"Plugin command failed: {e}"}
 
                 logger.warning("Unknown command requested: %s args=%s", name, self._preview(args))
+                _emit_ok = False
+                _emit_error = f"Unknown command: {name}"
                 return {"error": f"Unknown command: {name}"}
             except Exception as e:
                 logger.error(
@@ -585,7 +699,43 @@ class CommandHandler(
                     e,
                     exc_info=True,
                 )
+                _emit_ok = False
+                _emit_error = f"{e.__class__.__name__}: {e}"[:200]
                 return {"error": str(e)}
             finally:
                 # Ensure scope does not leak across commands.
                 self._current_scope = None
+                # Emit ``command.invoked`` for dashboard live-activity chips
+                # and future observability surfaces. Gated on the config flag;
+                # any failure is swallowed so a broken bus never breaks
+                # command execution (spec constraint).
+                try:
+                    if getattr(self.config, "events", None) and (
+                        self.config.events.command_invoked_enabled
+                    ):
+                        bus = getattr(self.orchestrator, "bus", None)
+                        if bus is not None:
+                            duration_ms = int(
+                                (time.monotonic() - _emit_started_at) * 1000
+                            )
+                            payload = {
+                                "command": name,
+                                "ok": _emit_ok,
+                                "duration_ms": duration_ms,
+                                "session_id": (scope or {}).get("session_id")
+                                if isinstance(scope, dict)
+                                else None,
+                                "task_id": (scope or {}).get("task_id")
+                                if isinstance(scope, dict)
+                                else None,
+                                "project_id": (scope or {}).get("project_id")
+                                if isinstance(scope, dict)
+                                else None,
+                                "args_summary": _summarize_args(name, _emit_args_snapshot),
+                                "error": _emit_error,
+                            }
+                            await bus.emit("command.invoked", payload)
+                except Exception:  # pragma: no cover -- defensive
+                    logger.debug(
+                        "command.invoked emit failed for %s", name, exc_info=True
+                    )

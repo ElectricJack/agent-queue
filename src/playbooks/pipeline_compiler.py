@@ -377,6 +377,46 @@ def compile_pipeline(markdown: str, *, existing_version: int = 0) -> Compilation
     )
 
 
+def _validate_when(when: Any, rule_id: str) -> list[dict[str, Any]]:
+    """Reject vacuous ``when`` shapes at compile time.
+
+    ``{"all": []}`` silently evaluates True → the rule fires on every
+    event. ``{"any": []}`` silently evaluates False → the rule never
+    fires. Both are almost certainly author bugs. Nested clauses are
+    validated recursively.
+    """
+    if not isinstance(when, dict):
+        return []
+    errs: list[dict[str, Any]] = []
+    if "all" in when:
+        clauses = when.get("all")
+        if isinstance(clauses, list) and not clauses:
+            errs.append(
+                _err(
+                    rule_id,
+                    "when.all",
+                    "'when.all' must not be empty — vacuous True fires the rule on every event",
+                )
+            )
+        elif isinstance(clauses, list):
+            for c in clauses:
+                errs.extend(_validate_when(c, rule_id))
+    if "any" in when:
+        clauses = when.get("any")
+        if isinstance(clauses, list) and not clauses:
+            errs.append(
+                _err(
+                    rule_id,
+                    "when.any",
+                    "'when.any' must not be empty — silently False disables the rule",
+                )
+            )
+        elif isinstance(clauses, list):
+            for c in clauses:
+                errs.extend(_validate_when(c, rule_id))
+    return errs
+
+
 def _compile_multi_rule(
     rules: list,
     fm: dict,
@@ -435,6 +475,10 @@ def _compile_multi_rule(
         rule_meta: dict[str, Any] = {"entry": prefixed_entry}
         # Preserve optional ``when`` condition for orchestrator-level guard.
         if "when" in rule:
+            when_errs = _validate_when(rule["when"], rule_id)
+            if when_errs:
+                errs.extend(when_errs)
+                continue
             rule_meta["when"] = rule["when"]
         pipeline_rules.setdefault(on_event, []).append(rule_meta)
         collected_triggers.append(on_event)
