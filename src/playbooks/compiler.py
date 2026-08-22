@@ -38,7 +38,6 @@ from typing import Any
 
 import yaml
 
-from src.aq_uri import AqUriError, rewrite_aq_uris
 from src.playbooks.models import CompiledPlaybook
 
 logger = logging.getLogger(__name__)
@@ -388,15 +387,9 @@ class PlaybookCompiler:
         return result
 
 
-# ``rewrite_aq_uris`` is re-exported so callers that historically imported
-# both symbols from this module (rare — mostly the compiler itself) keep
-# working; the deterministic path does not use it, but the merge helper
-# above is available to external agents that do.
 __all__ = [
     "CompilationResult",
     "DEFAULT_MAX_TOKENS",
     "PlaybookCompiler",
     "compile_playbook",
-    "AqUriError",
-    "rewrite_aq_uris",
 ]
