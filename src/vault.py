@@ -1614,9 +1614,10 @@ def ensure_default_aq_skills(data_dir: str) -> dict:
     * ``~/.gemini/skills/<name>/SKILL.md`` — Gemini CLI, npm-installed.
     * ``~/snap/gemini-cli/common/.gemini/skills/<name>/SKILL.md`` —
       Gemini CLI, snap-installed (target of ``gemini skills link``).
-    * ``~/.codex/skills/<name>/SKILL.md`` — Codex CLI. Codex has no
-      native skill discovery yet; the file is future-proof and readable
-      via Codex's ``Read`` tool.
+    * ``~/.codex/skills/<name>/SKILL.md`` — Codex CLI. Codex discovers
+      skills from this path at session start (no dedicated ``codex
+      skills`` subcommand today, but the runtime scans the directory —
+      see ``codex features list`` for the ``skill_*`` flags).
 
     **Idempotent per-path**: an existing SKILL.md at a given path is
     never overwritten. Editing a shipped skill (in any of the four
