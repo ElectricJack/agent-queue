@@ -51,8 +51,7 @@ the shell store and as `open_pane.view` in the agent-push message frame.
 // dashboard/src/panes/<view-id>/manifest.ts
 
 import { z } from "zod";
-import type { ComponentType } from "react";
-import type { LucideIcon } from "lucide-react";  // or a heroicons wrapper
+import type { ComponentType, SVGProps } from "react";
 
 export interface PaneManifest<TArgs = unknown> {
   /** Stable id — matches the directory name; used everywhere. */
@@ -64,8 +63,19 @@ export interface PaneManifest<TArgs = unknown> {
   /** Short description used in palette + cheat sheet. */
   description: string;
 
-  /** Icon shown in header + palette. */
-  icon: LucideIcon;  // (or the heroicons type used across the dashboard)
+  /**
+   * Icon shown in header + palette. This dashboard is standardized on
+   * heroicons — the type is the outline-icon component type used
+   * everywhere else in `dashboard/src/`. LucideIcon must NOT be
+   * introduced. Concretely:
+   *
+   *     import type { ComponentType, SVGProps } from "react";
+   *     type HeroIcon = ComponentType<SVGProps<SVGSVGElement>>;
+   *
+   * Every per-view manifest imports icons from
+   * `@heroicons/react/24/outline`.
+   */
+  icon: ComponentType<SVGProps<SVGSVGElement>>;
 
   /**
    * zod schema for the args object. Runtime-validated on every open
@@ -78,6 +88,11 @@ export interface PaneManifest<TArgs = unknown> {
    * Optional keyboard shortcut that OPENS this view.
    * Registered globally via `useShortcuts`.
    * Example: "$mod-shift-D" for the diff view.
+   *
+   * Omit the field entirely (or set to `undefined`) when a view has no
+   * open shortcut. Do NOT use literal `null` — the shell reads this as
+   * `field present && != undefined`, and a null literal violates the
+   * `string?` type.
    */
   open_shortcut?: string;
 

@@ -346,8 +346,18 @@ Two tabs at the top of the drawer:
 
 - `]` toggle. Bell click toggles.
 - `↑↓` moves focus within the current tab list.
-- On focused gate row: `a` approve, `r` reject, `Enter` open the
-  associated task in the pane (task-detail view).
+- On focused gate row: `a` approve, `r` reject, `Enter` opens the pane
+  view most useful for THIS gate's type. Dispatch by `gate_type`:
+  - `human` (routing / approval on a task) → `task-detail` view for
+    the associated task
+  - `routing` (spec-ingest proposal awaiting approval) →
+    `proposal-preview` view for the associated proposal id
+  - anything else → falls back to `task-detail` when a task id is
+    present, otherwise no-op with a small toast
+  The drawer's row model carries `gate_type` (from
+  `aq gate list --json`), so the dispatch is a switch statement.
+  Per-view spec authors: don't assume Enter always opens task-detail —
+  the drawer is dispatch-aware.
 - On focused event row: `Enter` opens the associated entity in the pane
   (task-detail if a task event, session-peek if a session event, etc.).
 - `1` / `2` switch between Gates / Events tabs.
@@ -529,9 +539,14 @@ The shell renders a small hint footer showing which are live.
 - Task row / task-detail pane:
   - `o` — open (task-detail pane, or full-page detail if held with
     `Shift`)
-  - `c` — close task (opens close-task modal)
   - `r` — reopen with feedback (opens modal)
-  - `d` — duplicate
+  - `d` — delete (opens confirm modal — this is the destructive action
+    `TaskActions` already exposes; there is no separate "close" action
+    on a task, and a completed task auto-transitions via `task_close`
+    from the agent side, not by a UI button on this row)
+  - `y` — duplicate (`d` was originally proposed for duplicate but
+    conflicts with delete; delete wins because it's more common and
+    keeps the same key across agent/gate rows)
   - `.` — more (opens dropdown of every registered action for the entity)
 - Agent row:
   - `o` — open session peek
