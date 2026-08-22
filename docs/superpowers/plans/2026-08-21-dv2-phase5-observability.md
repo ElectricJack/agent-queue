@@ -1126,3 +1126,43 @@ Verification is passive; nothing to add. If any step failed, return to the ownin
 - **Traversal safety:** Task 2's implementation uses `Path.resolve(strict=True)` on both root and candidate, then `relative_to` for containment — this correctly rejects `..`, absolute paths, and symlink escapes as demonstrated by the six negative tests.
 - **Base ref choice:** Grounded in `src/orchestrator/workspace.py:253` (`GitManager.make_branch_name(task.id, task.title)` — tasks branch off default), so diffing against `origin/<default_branch>` merge-base matches how branches are created. Falls back to local `<default>` when no `origin` remote (LINK workspaces).
 - **Peek content:** Grounded in `src/sessions/tmux.py:445` — plain rendered text from `capture-pane -p`; no ANSI renderer needed.
+
+---
+
+## Phase 5 Follow-up: `command.invoked` WS events for live tool-call visibility
+
+**Status:** open, deferred out of Phase 5 first pass.
+
+**Motivation:** the dashboard's "supervisor is thinking…" bubble (chat/ThinkingBubble.tsx) can already surface side-effect events (task started/completed, gate open/resolve, playbook runs) fired by whatever the supervisor triggers while working, but it has NO signal for the tool calls themselves — the supervisor can spend 20 seconds reading a spec + grepping the codebase and the UI just shows a spinning dot until the reply lands. Adding a first-class command-invoked event closes that gap and gives the same live insight to any future dashboard surface (session detail, per-task activity feed, agent avatars in the Command Center).
+
+**Scope:**
+
+1. **Backend event emission.** In `src/commands/handler.py::CommandHandler.execute`, wrap the dispatch to `_cmd_<name>` and emit a `command.invoked` bus event with `{command, args_summary, session_id, task_id, project_id, duration_ms, ok}`. `args_summary` is a short redacted rendering of the args (drop long strings, redact bodies/paths that look sensitive) — never dump raw args. Fire on both success and failure so the dashboard can distinguish "ran ok in 320ms" from "ran and failed in 15s". Gated on a config flag (`events.command_invoked_enabled: bool = True` by default) — turning it off silences the stream for high-throughput deployments where the extra frames would swamp the bus.
+
+2. **Event schema.** Register the new type in `src/event_schemas.py` alongside the other `command.*` schemas (currently none exist — this establishes the family). Required: `command`, `ok`. Optional: `session_id`, `task_id`, `project_id`, `duration_ms`, `error` (short summary only, never a full traceback), `args_summary`.
+
+3. **Frontend type.** Add `CommandInvokedEvent` to `dashboard/src/ws/types.ts` in the same style as `MessageSentEvent`. Include in the `NotifyEvent` union.
+
+4. **Chat bubble integration.** Extend `useChatTranscript.ACTIVITY_EVENT_TYPES` and `summarizeActivity()` to render `command.invoked` frames as chips: `"invoked read_file (foo.md, 12 KB)"` — using the args_summary the backend built. Filter to the supervisor's session_id so the bubble only shows the current thread's activity.
+
+5. **Command Center integration** (optional stretch): show a fading badge on a TaskNode when a `command.invoked` event fires with `task_id` matching that node — gives a live "this agent is doing something" pulse even between the coarser task lifecycle transitions.
+
+6. **Session detail integration** (optional stretch): the SessionDetail page's Pane view can render a rolling `command.invoked` sidebar tied to the session_id — a real-time tool-call trace next to the tmux peek frames.
+
+**Non-goals:**
+- Do NOT log full args or command outputs to the bus. `args_summary` is a redacted short string; full content already lives in the audit log via `db.log_event`.
+- Do NOT emit for LLM tool calls the supervisor makes to Claude — those flow inside the tmux and are not visible to the daemon.
+- Do NOT emit for internal engine calls (recompute_blocked, sweep loops). Only for calls that entered through `CommandHandler.execute` — the public seam.
+
+**Test plan:**
+- Backend: `tests/test_command_invoked_event.py` — call `ch.execute("task_show", ...)` with the bus subscribed, assert one `command.invoked` frame with `ok=True` and non-null `duration_ms`; call a failing command, assert `ok=False` and short `error`.
+- Backend: assert the config flag off suppresses emission (no frames).
+- Frontend: no test infra; verify via live chat that chips appear for supervisor tool calls.
+
+**Files touched (est. ~150 LoC net):**
+- `src/commands/handler.py` — wrap dispatch, emit event.
+- `src/event_schemas.py` — schema entry.
+- `src/config.py` — add `events.command_invoked_enabled` flag.
+- `dashboard/src/ws/types.ts` — CommandInvokedEvent + union.
+- `dashboard/src/pages/chat/useChatTranscript.ts` — extend ACTIVITY_EVENT_TYPES + summarizer.
+- `tests/test_command_invoked_event.py` — new file.
