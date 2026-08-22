@@ -258,7 +258,6 @@ class TestTriggerMapOnCompile:
         provider = _make_mock_provider()
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(tmp_path),
         )
 
@@ -283,7 +282,6 @@ class TestTriggerMapOnCompile:
 
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(tmp_path),
         )
 
@@ -330,7 +328,6 @@ class TestTriggerMapOnCompile:
 
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(tmp_path),
         )
 
@@ -716,7 +713,6 @@ class TestTriggerMapConsistency:
         provider = _make_mock_provider()
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(tmp_path),
         )
 
@@ -742,7 +738,6 @@ class TestTriggerMapConsistency:
         provider = _make_mock_provider()
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(tmp_path),
         )
 

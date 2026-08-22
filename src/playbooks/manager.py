@@ -80,7 +80,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import yaml
 
-from src.playbooks.compiler import DEFAULT_MAX_TOKENS, CompilationResult, PlaybookCompiler
+from src.playbooks.compiler import CompilationResult, PlaybookCompiler
 from src.playbooks.models import CompiledPlaybook, PlaybookScope, PlaybookTrigger
 from src.playbooks.pipeline_compiler import compile_pipeline as _compile_pipeline
 
@@ -99,7 +99,6 @@ def _is_pipeline_markdown(md: str) -> bool:
     return fm.get("kind") == "pipeline"
 
 if TYPE_CHECKING:
-    from src.chat_providers.base import ChatProvider
     from src.event_bus import EventBus
     from src.playbooks.store import CompiledPlaybookStore
 
@@ -168,9 +167,6 @@ class PlaybookManager:
 
     Parameters
     ----------
-    chat_provider:
-        The :class:`~src.chat_providers.base.ChatProvider` used for LLM
-        compilation calls.  When ``None``, compilation is skipped (log-only).
     event_bus:
         Optional :class:`~src.event_bus.EventBus` for emitting notifications.
     data_dir:
@@ -197,17 +193,14 @@ class PlaybookManager:
     def __init__(
         self,
         *,
-        chat_provider: ChatProvider | None = None,
         config,  # required; _ConfigLike from aq_uri — provides data_dir and vault_root
         event_bus: EventBus | None = None,
         data_dir: str | None = None,
         store: CompiledPlaybookStore | None = None,
         max_concurrent_runs: int = 2,
         on_trigger: TriggerCallback | None = None,
-        playbook_max_tokens: int = DEFAULT_MAX_TOKENS,
         command_handler: Any = None,
     ) -> None:
-        self._chat_provider = chat_provider
         self._config = config
         self._event_bus = event_bus
         self._data_dir = data_dir
@@ -269,10 +262,8 @@ class PlaybookManager:
         self.system_notification_channel_id: str | None = None
 
         # Compiler instance — post Phase 6 the compiler is deterministic
-        # (pipeline-only). ``chat_provider`` and ``playbook_max_tokens``
-        # are retained on the constructor for backward compat with
-        # existing wiring but no longer influence compilation.
-        self._playbook_max_tokens = playbook_max_tokens
+        # (pipeline-only); the LLM compile path (and its ``chat_provider``
+        # / ``playbook_max_tokens`` inputs) have been removed.
         self._compiler: PlaybookCompiler = PlaybookCompiler(config=config)
 
     # -- public API ----------------------------------------------------------

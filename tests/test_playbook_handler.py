@@ -550,7 +550,6 @@ class TestEndToEndCompilation:
         provider = _make_mock_provider()
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
 
@@ -600,7 +599,6 @@ class TestEndToEndCompilation:
 
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
 
@@ -649,7 +647,6 @@ class TestEndToEndCompilation:
         provider = _make_mock_provider()
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
 
@@ -694,7 +691,6 @@ class TestEndToEndCompilation:
         provider = _make_mock_provider()
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
 
@@ -734,7 +730,6 @@ class TestEndToEndCompilation:
         provider = _make_mock_provider()
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(data_dir),
         )
 
@@ -783,7 +778,6 @@ class TestEndToEndCompilation:
 
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
 
@@ -832,7 +826,6 @@ class TestEndToEndCompilation:
 
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
 
@@ -879,7 +872,6 @@ class TestEndToEndCompilation:
         provider1 = _make_mock_provider()
         manager1 = PlaybookManager(
             config=None,
-            chat_provider=provider1,
             data_dir=str(data_dir),
         )
         watcher1 = VaultWatcher(
@@ -905,7 +897,6 @@ class TestEndToEndCompilation:
         provider2 = _make_mock_provider()
         manager2 = PlaybookManager(
             config=None,
-            chat_provider=provider2,
             data_dir=str(data_dir),
         )
         loaded = await manager2.load_from_disk()
@@ -944,7 +935,6 @@ class TestEndToEndCompilation:
         provider = _make_mock_provider()
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             data_dir=str(tmp_path / "data"),
         )
 

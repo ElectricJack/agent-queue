@@ -818,7 +818,6 @@ class TestSubscriptionLifecycle:
         provider = _make_mock_provider()
         manager = PlaybookManager(
             config=None,
-            chat_provider=provider,
             event_bus=bus,
             on_trigger=on_trigger,
             data_dir=str(tmp_path),

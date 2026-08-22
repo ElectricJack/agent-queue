@@ -1387,24 +1387,13 @@ class Orchestrator(
             from src.playbooks.handler import register_playbook_handlers
             from src.playbooks.manager import PlaybookManager
 
-            # Ensure a chat provider is available for playbook compilation.
-            # self._chat_provider is only set when use_llm_parser is enabled,
-            # so create one from the config if needed.
-            playbook_provider = self._chat_provider
-            if playbook_provider is None:
-                try:
-                    from src.chat_providers import create_chat_provider
-
-                    playbook_provider = create_chat_provider(self.config.chat_provider)
-                except Exception:
-                    logger.warning("No chat provider for playbook compilation")
-
+            # Post Phase 6 the compiler is deterministic (pipeline-only) and
+            # ordinary playbooks compile via the compiler-as-agent task, so
+            # PlaybookManager no longer needs a chat provider or a token cap.
             self.playbook_manager = PlaybookManager(
-                chat_provider=playbook_provider,
                 config=self.config,
                 event_bus=self.bus,
                 data_dir=self.config.data_dir,
-                playbook_max_tokens=self.config.chat_provider.playbook_max_tokens,
                 command_handler=self._command_handler,
             )
             # Restore previously compiled playbooks from disk so version numbers
