@@ -151,35 +151,40 @@ class PipelineEngine:
         if event_type not in pipeline_rules:
             return  # No rule for this trigger
 
-        rule_meta = pipeline_rules[event_type]
-        if isinstance(rule_meta, str):
-            rule_entry = rule_meta
-            rule_when = None
-        else:
-            rule_entry = rule_meta.get("entry", "")
-            rule_when = rule_meta.get("when")
+        rule_metas = pipeline_rules[event_type]
+        # pipeline_rules[trigger] may be a single meta (legacy) or a list.
+        if isinstance(rule_metas, (str, dict)):
+            rule_metas = [rule_metas]
 
-        # Evaluate ``when`` guard.
-        if rule_when:
-            field_path = rule_when.get("field", "")
-            val: object = hydrated
-            for part in field_path.split("."):
-                if part == "event":
-                    continue
-                val = val.get(part) if isinstance(val, dict) else None
-            if rule_when.get("truthy") and not bool(val):
-                return
-            if rule_when.get("not_null") and (val is None or val == ""):
-                return
-
-        # Clone graph, set the rule's entry node.
         import copy
-        run_graph = copy.deepcopy(graph)
-        for nid, node in run_graph["nodes"].items():
-            node["entry"] = nid == rule_entry
+        for rule_meta in rule_metas:
+            if isinstance(rule_meta, str):
+                rule_entry = rule_meta
+                rule_when = None
+            else:
+                rule_entry = rule_meta.get("entry", "")
+                rule_when = rule_meta.get("when")
 
-        runner = PipelineRunner(graph=run_graph, event=hydrated, handler=self._handler)
-        await runner.run()
+            # Evaluate ``when`` guard.
+            if rule_when:
+                field_path = rule_when.get("field", "")
+                val: object = hydrated
+                for part in field_path.split("."):
+                    if part == "event":
+                        continue
+                    val = val.get(part) if isinstance(val, dict) else None
+                if rule_when.get("truthy") and not bool(val):
+                    continue
+                if rule_when.get("not_null") and (val is None or val == ""):
+                    continue
+
+            # Clone graph, set the rule's entry node.
+            run_graph = copy.deepcopy(graph)
+            for nid, node in run_graph["nodes"].items():
+                node["entry"] = nid == rule_entry
+
+            runner = PipelineRunner(graph=run_graph, event=hydrated, handler=self._handler)
+            await runner.run()
 
 
 @pytest.fixture
@@ -331,3 +336,106 @@ async def test_per_task_review_is_idempotent(
     assert len(reviews) == 1, (
         f"Expected exactly 1 reviewer task after idempotent dispatch, got {len(reviews)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# T5: per-branch final review coalesces via ensure_task
+# ---------------------------------------------------------------------------
+
+
+async def test_per_branch_review_ensures_one_task_per_branch(
+    command_handler_factory, pipeline_engine_factory
+):
+    """Two per-branch dispatches on the same branch produce exactly one
+    final-review task, and each per-task review is wired ``blocks`` → final.
+    """
+    h = await command_handler_factory()
+    engine = pipeline_engine_factory(handler=h)
+    db = h.db
+
+    await db.create_project(Project(id="p", name="P"))
+    await db.upsert_profile(AgentProfile(id="worker", name="Worker"))
+    await db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer"))
+    await db.upsert_profile(AgentProfile(id="final-reviewer", name="Final"))
+
+    ta = (
+        await h.execute(
+            "create_task", {"project_id": "p", "title": "A", "profile_id": "worker"}
+        )
+    )["created"]
+    tb = (
+        await h.execute(
+            "create_task", {"project_id": "p", "title": "B", "profile_id": "worker"}
+        )
+    )["created"]
+    await db.update_task(ta, branch_name="feature/shared")
+    await db.update_task(tb, branch_name="feature/shared")
+
+    await engine.dispatch(
+        "task.completed", {"task_id": ta, "project_id": "p", "title": "A"}, event_id="e-a"
+    )
+    await engine.dispatch(
+        "task.completed", {"task_id": tb, "project_id": "p", "title": "B"}, event_id="e-b"
+    )
+
+    tasks = await db.list_tasks(project_id="p")
+    finals = [t for t in tasks if t.profile_id == "final-reviewer"]
+    assert len(finals) == 1, (
+        f"expected one final-review task coalesced by ensure_task; got {len(finals)}: "
+        f"{[(t.id, t.title) for t in finals]}"
+    )
+    reviews = [t for t in tasks if t.profile_id == "reviewer"]
+    assert len(reviews) == 2, f"expected 2 per-task reviews, got {len(reviews)}"
+
+    # Each per-task review blocks the final review.
+    final_deps = await db.get_typed_dependencies(finals[0].id)
+    review_ids = {r.id for r in reviews}
+    blocking = {dep_id for dep_id, dep_type in final_deps if dep_type == "blocks"}
+    assert review_ids <= blocking, (
+        f"final review {finals[0].id} must be blocked by every per-task review; "
+        f"got deps={final_deps}, expected all of {review_ids}"
+    )
+
+
+async def test_per_branch_review_gates_downstream_with_pr_merged(
+    command_handler_factory, pipeline_engine_factory
+):
+    """When the reviewed task has a pr_url, every downstream dependent gains
+    a ``pr-merged`` gate whose ``await_id`` is that PR URL.
+    """
+    h = await command_handler_factory()
+    engine = pipeline_engine_factory(handler=h)
+    db = h.db
+
+    await db.create_project(Project(id="p", name="P"))
+    await db.upsert_profile(AgentProfile(id="worker", name="Worker"))
+    await db.upsert_profile(AgentProfile(id="reviewer", name="Reviewer"))
+    await db.upsert_profile(AgentProfile(id="final-reviewer", name="Final"))
+
+    t = (
+        await h.execute(
+            "create_task", {"project_id": "p", "title": "T", "profile_id": "worker"}
+        )
+    )["created"]
+    dep = (
+        await h.execute(
+            "create_task", {"project_id": "p", "title": "Dep", "profile_id": "worker"}
+        )
+    )["created"]
+    await h.execute(
+        "add_dependency", {"task_id": dep, "depends_on": t, "dep_type": "blocks"}
+    )
+    await db.update_task(
+        t, branch_name="feature/x", pr_url="https://github.com/o/r/pull/9"
+    )
+
+    await engine.dispatch(
+        "task.completed", {"task_id": t, "project_id": "p", "title": "T"}
+    )
+
+    gates = await db.get_gates_for_task(dep)
+    assert any(
+        g["gate_type"] == "pr-merged"
+        and g.get("await_id") == "https://github.com/o/r/pull/9"
+        for g in gates
+    ), f"expected pr-merged gate on {dep} awaiting PR URL; got: {gates}"

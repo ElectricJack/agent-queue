@@ -427,7 +427,10 @@ class CompiledPlaybook:
     # When non-empty, the orchestrator uses the firing trigger's event type to
     # select the correct subgraph entry point instead of the single entry node.
     # Empty dict means single-graph pipeline (legacy/simple format).
-    pipeline_rules: dict[str, str] = field(default_factory=dict)
+    # Value is a list of rule metas ({entry, when?}) — a single trigger may
+    # dispatch multiple rules sequentially. Legacy string / single-dict forms
+    # are also accepted at runtime for back-compat.
+    pipeline_rules: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Normalize trigger entries to :class:`PlaybookTrigger` objects.

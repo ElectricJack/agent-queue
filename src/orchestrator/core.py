@@ -776,43 +776,55 @@ class Orchestrator(
                             exc_info=True,
                         )
 
-                # Multi-rule pipelines store a trigger → rule-meta mapping in
-                # ``pipeline_rules``.  When present, override the entry node
-                # in the graph so the runner walks the correct subgraph.
-                pipeline_run_graph = graph
+                # Multi-rule pipelines store a trigger → list of rule metas
+                # mapping in ``pipeline_rules``.  When present, we dispatch
+                # every rule whose ``when`` guard passes, sequentially, each
+                # against a graph clone that pins the rule's entry node.
+                #
+                # ``pipeline_run_graphs`` holds the (graph, rule_id) pairs to
+                # walk.  Single-graph pipelines produce a single (graph, None)
+                # pair matching the legacy behaviour.
+                pipeline_run_graphs: list[tuple[dict, str | None]] = []
                 pipeline_rules = graph.get("pipeline_rules") or {}
                 if pipeline_rules:
-                    # Determine the firing event type from the event metadata.
-                    # The EventBus stamps ``_event_type`` before dispatch.
                     firing_trigger = (
                         hydrated_event.get("_event_type")
                         or hydrated_event.get("event_type")
                         or hydrated_event.get("type")
                     )
                     if firing_trigger and firing_trigger in pipeline_rules:
-                        rule_meta = pipeline_rules[firing_trigger]
-                        # Support both legacy string form and new dict form.
-                        if isinstance(rule_meta, str):
-                            rule_entry = rule_meta
-                            rule_when = None
-                        else:
-                            rule_entry = rule_meta.get("entry", "")
-                            rule_when = rule_meta.get("when")
-
-                        # Evaluate optional ``when`` guard before dispatch.
-                        if rule_when and not _eval_pipeline_when(rule_when, hydrated_event):
-                            logger.debug(
-                                "Pipeline '%s' rule '%s': when-guard skipped dispatch",
-                                playbook.id,
-                                firing_trigger,
-                            )
-                            return
-
-                        # Clone the graph and mark only the rule's entry node.
+                        rule_metas = pipeline_rules[firing_trigger]
+                        # Normalize legacy scalar/dict shapes to a list.
+                        if isinstance(rule_metas, (str, dict)):
+                            rule_metas = [rule_metas]
                         import copy
-                        pipeline_run_graph = copy.deepcopy(graph)
-                        for nid, node in pipeline_run_graph["nodes"].items():
-                            node["entry"] = nid == rule_entry
+                        for rm_idx, rule_meta in enumerate(rule_metas):
+                            if isinstance(rule_meta, str):
+                                rule_entry = rule_meta
+                                rule_when = None
+                            else:
+                                rule_entry = rule_meta.get("entry", "")
+                                rule_when = rule_meta.get("when")
+
+                            if rule_when and not _eval_pipeline_when(
+                                rule_when, hydrated_event
+                            ):
+                                logger.debug(
+                                    "Pipeline '%s' rule[%d] on '%s': "
+                                    "when-guard skipped dispatch",
+                                    playbook.id,
+                                    rm_idx,
+                                    firing_trigger,
+                                )
+                                continue
+
+                            g_copy = copy.deepcopy(graph)
+                            for nid, node in g_copy["nodes"].items():
+                                node["entry"] = nid == rule_entry
+                            pipeline_run_graphs.append((g_copy, rule_entry))
+                        if not pipeline_run_graphs:
+                            # Every rule's when-guard rejected — nothing to do.
+                            return
                     else:
                         logger.warning(
                             "Pipeline '%s': multi-rule graph received trigger '%s' "
@@ -822,20 +834,30 @@ class Orchestrator(
                             sorted(pipeline_rules.keys()),
                         )
                         return
+                else:
+                    pipeline_run_graphs.append((graph, None))
 
-                runner = PipelineRunner(
-                    graph=pipeline_run_graph,
-                    event=hydrated_event,
-                    handler=handler,
-                    db=self.db,
-                )
+                # Build a runner per matching rule (single-graph pipelines
+                # yield exactly one runner). Idempotency remains (playbook,
+                # event) — one run row covers all rules dispatched by the
+                # event; failure of any rule fails the whole run.
+                runners = [
+                    PipelineRunner(
+                        graph=g,
+                        event=hydrated_event,
+                        handler=handler,
+                        db=self.db,
+                    )
+                    for g, _entry in pipeline_run_graphs
+                ]
+                primary_runner = runners[0]
 
                 # Create a run row now so the UNIQUE constraint provides
                 # idempotency for pipeline runs (Task 9 deferred this).
                 if self.db:
                     import json as _json
                     pipeline_db_run = PlaybookRunModel(
-                        run_id=runner.run_id,
+                        run_id=primary_runner.run_id,
                         playbook_id=playbook.id,
                         playbook_version=getattr(playbook, "version", 1),
                         trigger_event=_json.dumps(event_data),
@@ -856,18 +878,22 @@ class Orchestrator(
                         logger.exception(
                             "Pipeline playbook '%s': failed to create run row (run=%s) — skipping dispatch",
                             playbook.id,
-                            runner.run_id,
+                            primary_runner.run_id,
                         )
                         return
 
                 async def _run_pipeline() -> None:
-                    with CorrelationContext(run_id=runner.run_id):
-                        status, error = "failed", None
+                    with CorrelationContext(run_id=primary_runner.run_id):
+                        status, error = "completed", None
                         try:
-                            result = await runner.run()
-                            status, error = result.status, result.error
+                            for r in runners:
+                                result = await r.run()
+                                if result.status != "completed":
+                                    status = result.status
+                                    error = result.error
+                                    break
                         except Exception as exc:
-                            error = str(exc)
+                            status, error = "failed", str(exc)
                             logger.exception(
                                 "Pipeline playbook '%s' run failed (trigger event=%s)",
                                 playbook.id,
@@ -876,7 +902,7 @@ class Orchestrator(
                         if self.db:
                             try:
                                 await self.db.update_playbook_run(
-                                    runner.run_id,
+                                    primary_runner.run_id,
                                     status=status,
                                     completed_at=time.time(),
                                     error=error,
@@ -884,7 +910,7 @@ class Orchestrator(
                             except Exception:
                                 logger.exception(
                                     "Failed to record pipeline run outcome (run=%s)",
-                                    runner.run_id,
+                                    primary_runner.run_id,
                                 )
 
                 asyncio.create_task(

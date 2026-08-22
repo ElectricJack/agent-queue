@@ -390,7 +390,9 @@ def _compile_multi_rule(
 
     errs: list[dict[str, Any]] = []
     all_nodes: dict[str, PlaybookNode] = {}
-    pipeline_rules: dict[str, str] = {}  # event_type → prefixed entry node ID
+    # event_type → list of rule metas ({entry, when?}) — multiple rules
+    # may share a trigger and are dispatched sequentially in author order.
+    pipeline_rules: dict[str, list[dict[str, Any]]] = {}
     collected_triggers: list[str] = []
 
     for i, rule in enumerate(rules):
@@ -434,7 +436,7 @@ def _compile_multi_rule(
         # Preserve optional ``when`` condition for orchestrator-level guard.
         if "when" in rule:
             rule_meta["when"] = rule["when"]
-        pipeline_rules[on_event] = rule_meta  # type: ignore[assignment]
+        pipeline_rules.setdefault(on_event, []).append(rule_meta)
         collected_triggers.append(on_event)
 
     if errs:
