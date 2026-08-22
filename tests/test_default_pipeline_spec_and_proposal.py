@@ -12,12 +12,10 @@ Verifies:
 4. Dispatching ``proposal.ready`` raises an open ``human`` gate whose
    ``await_id`` is the proposal id.
 
-Note: the ``gate.resolved`` -> ``task_batch_commit`` fan-in rule is compiled
-and included in the pipeline, but ``task_batch_commit`` (Group A, Task 3) is
-not yet implemented in this checkout, and the ``gate.resolved`` bus payload
-does not currently carry ``await_id`` (see ``Orchestrator._resolve_gate_and_emit``).
-Wiring the full commit leg end-to-end is left to Group A; this file only
-proves the rule compiles and is reachable from the gate.resolved trigger.
+The ``gate.resolved`` -> ``task_batch_commit`` fan-in rule is wired
+end-to-end: ``_resolve_gate_and_emit`` now propagates the gate's
+``await_id`` onto the bus payload, and the rule pipes it into
+``task_batch_commit(proposal_id=…)``.  Test 5 exercises the full leg.
 """
 from __future__ import annotations
 
@@ -143,6 +141,51 @@ async def test_proposal_ready_raises_human_gate(
         if g["gate_type"] == "human" and g.get("await_id") == "prop-123"
     ]
     assert len(human_gates) == 1, f"Expected 1 open human gate, got: {gates}"
+
+
+async def test_gate_resolved_commits_proposal_end_to_end(
+    command_handler_factory, pipeline_engine_factory
+):
+    """gate.resolved carrying await_id -> task_batch_commit fires with
+    proposal_id resolved by Jinja. Full leg wired now that
+    _resolve_gate_and_emit propagates await_id."""
+    h = await command_handler_factory()
+    engine = pipeline_engine_factory(handler=h)
+    db = h.db
+
+    await db.create_project(Project(id="p1", name="p1"))
+
+    # Propose a batch so we have a real proposal to commit.
+    prop = await h.execute(
+        "task_batch_propose",
+        {
+            "project_id": "p1",
+            "source": "spec:foo",
+            "tasks": [{"tempId": "a", "title": "A", "description": ""}],
+            "edges": [],
+        },
+    )
+    assert prop["success"]
+    proposal_id = prop["proposal_id"]
+
+    # Simulate the human-approve leg: gate.resolved with await_id=proposal_id.
+    await engine.dispatch(
+        "gate.resolved",
+        {
+            "project_id": "p1",
+            "gate_id": "g-1",
+            "gate_type": "human",
+            "resolved_by": "test",
+            "await_id": proposal_id,
+        },
+    )
+
+    # Proposal should now be committed and the task materialised.
+    from src.database.queries.proposal_queries import get_proposal
+    row = await get_proposal(db, proposal_id)
+    assert row is not None and row["status"] == "committed"
+    tasks = await db.list_tasks(project_id="p1")
+    assert any(t.title == "A" for t in tasks)
 
 
 if __name__ == "__main__":

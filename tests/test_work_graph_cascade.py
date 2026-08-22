@@ -363,6 +363,25 @@ class TestGateSweepBehavior:
         assert (await orch.db.get_gate(gid))["status"] == "resolved"
         assert (await orch.db.get_task("t")).is_blocked is False
 
+    async def test_resolve_emits_await_id_on_bus(self, orch):
+        """gate.resolved payload must include the gate's await_id so
+        pipelines can fan-in on it (e.g. commit-on-gate-resolve)."""
+        captured: list[dict] = []
+
+        def _cap(data):
+            captured.append(data)
+
+        orch.bus.subscribe("gate.resolved", _cap)
+
+        await mktask(orch, "t")
+        gid, _ = await orch.db.create_gate(
+            "p-1", "human", "approve", await_id="prop-abc123", waiter_task_ids=["t"]
+        )
+        await orch._resolve_gate_and_emit(gid, resolved_by="tester", resolution="ok")
+
+        assert captured, "no gate.resolved emitted"
+        assert captured[-1].get("await_id") == "prop-abc123"
+
     async def test_task_gate_stays_open_while_dep_not_completed(self, orch):
         await mktask(orch, "dep", status=TaskStatus.IN_PROGRESS)
         await mktask(orch, "t")

@@ -192,7 +192,7 @@ _WORK_GRAPH_SCHEMAS: dict[str, EventSchema] = {
     },
     "gate.resolved": {
         "required": ["gate_id", "project_id", "resolved_by"],
-        "optional": ["resolution", "unblocked_task_ids", "gate_type"],
+        "optional": ["resolution", "unblocked_task_ids", "gate_type", "await_id"],
     },
     "gate.expired": {
         "required": ["gate_id", "project_id"],

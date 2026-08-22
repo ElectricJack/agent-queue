@@ -2559,6 +2559,7 @@ class Orchestrator(
             "resolution": resolution,
             "unblocked_task_ids": sorted(flipped),
             "gate_type": gate["gate_type"],
+            "await_id": gate.get("await_id"),
         }
         try:
             await self.bus.emit("gate.resolved", payload)
