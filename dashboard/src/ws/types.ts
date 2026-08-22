@@ -272,6 +272,7 @@ export interface MessageSentEvent extends BaseEvent {
   to_id: string;
   thread_id?: string;
   reply_to_id?: string | null;
+  pane_open?: { view: string; args: unknown } | null;
 }
 
 export interface MessageDeliveredEvent extends BaseEvent {

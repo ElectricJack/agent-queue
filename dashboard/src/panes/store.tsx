@@ -46,6 +46,7 @@ interface StoreShape {
   close: () => void;
   setArgs: (next: unknown) => void;
   setWidth: (n: number) => void;
+  registry: Record<string, PaneEntry>;
 }
 
 const Ctx = createContext<StoreShape | null>(null);
@@ -135,8 +136,8 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
   }, []);
 
   const value = useMemo<StoreShape>(
-    () => ({ state, open, close, setArgs, setWidth }),
-    [state, open, close, setArgs, setWidth],
+    () => ({ state, open, close, setArgs, setWidth, registry }),
+    [state, open, close, setArgs, setWidth, registry],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
