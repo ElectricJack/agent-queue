@@ -41,7 +41,7 @@ Not a terminal, not a REPL, not a way to send input to the process.
 ```ts
 // dashboard/src/panes/console-stream/manifest.ts
 import { z } from "zod";
-import { TerminalSquare } from "lucide-react";
+import { CommandLineIcon } from "@heroicons/react/24/outline";
 import type { PaneManifest } from "../types";
 
 export const consoleStreamArgsSchema = z.object({
@@ -55,9 +55,9 @@ export const manifest: PaneManifest<ConsoleStreamArgs> = {
   id: "console-stream",
   name: "Console",
   description: "Live stdout/stderr for a running command.",
-  icon: TerminalSquare,
+  icon: CommandLineIcon,
   args_schema: consoleStreamArgsSchema,
-  open_shortcut: null,          // agent-push is the primary opener
+  // open_shortcut omitted per interface spec (agent-push is the primary opener)
   route_scope: "cross-route",   // a running stream survives navigation
   agent_pushable: true,
   palette_label: null,          // ephemeral, per-command — not searchable

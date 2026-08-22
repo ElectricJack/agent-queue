@@ -63,7 +63,7 @@ export const manifest: PaneManifest<SessionPeekArgs> = {
   description: "Live tmux peek stream for one session.",
   icon: CommandLineIcon,
   args_schema: sessionPeekArgsSchema,
-  open_shortcut: null,
+  // open_shortcut omitted per interface spec (no literal null; undefined = no shortcut)
   route_scope: "cross-route",
   agent_pushable: true,
   palette_label: "Peek session",

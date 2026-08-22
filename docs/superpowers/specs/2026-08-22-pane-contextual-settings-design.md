@@ -70,7 +70,7 @@ export const manifest: PaneManifest<ContextualSettingsArgs> = {
   description: "Edit a project, profile, playbook, or intelligence class inline.",
   icon: Cog6ToothIcon,
   args_schema: contextualSettingsArgsSchema,
-  open_shortcut: null,
+  // open_shortcut omitted per interface spec (no literal null; undefined = no shortcut)
   route_scope: "cross-route",
   agent_pushable: true,
   palette_label: "Open settings for…",

@@ -52,7 +52,7 @@ export const manifest: PaneManifest<PlaybookRunInspectorArgs> = {
   description: "Live node states, outputs, and HITL gates for one playbook run.",
   icon: PlayIcon,
   args_schema: argsSchema,
-  open_shortcut: null,
+  // open_shortcut omitted per interface spec (no literal null; undefined = no shortcut)
   route_scope: "cross-route",
   agent_pushable: true,
   palette_label: "Inspect playbook run",

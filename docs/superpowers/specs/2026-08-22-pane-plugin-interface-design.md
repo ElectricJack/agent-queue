@@ -210,7 +210,7 @@ interface PaneViewProps<TArgs = unknown> {
 interface PaneToolbarAction {
   id: string;
   label: string;
-  icon?: LucideIcon;
+  icon?: ComponentType<SVGProps<SVGSVGElement>>;  // heroicons only
   onClick: () => void;
   disabled?: boolean;
 }

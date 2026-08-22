@@ -65,7 +65,7 @@ export const manifest: PaneManifest<ProposalPreviewArgs> = {
   description: "Preview a staged task-batch proposal before approving it.",
   icon: DocumentMagnifyingGlassIcon,
   args_schema: argsSchema,
-  open_shortcut: null,
+  // open_shortcut omitted per interface spec (no literal null; undefined = no shortcut)
   route_scope: "cross-route",
   agent_pushable: true,
   palette_label: "Preview proposal",

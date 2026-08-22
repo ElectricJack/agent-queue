@@ -40,7 +40,7 @@ a tree of files.
 // dashboard/src/panes/spec-doc-reader/manifest.ts
 
 import { z } from "zod";
-import { BookOpenText } from "lucide-react";
+import { BookOpenIcon } from "@heroicons/react/24/outline";
 import type { PaneManifest } from "../types";
 
 const argsSchema = z
@@ -75,9 +75,9 @@ export const manifest: PaneManifest<SpecDocReaderArgs> = {
   id: "spec-doc-reader",
   name: "Spec Reader",
   description: "Read a spec or design doc with table of contents and frontmatter summary.",
-  icon: BookOpenText,
+  icon: BookOpenIcon,
   args_schema: argsSchema,
-  open_shortcut: null,
+  // open_shortcut omitted per interface spec (no literal null; undefined = no shortcut)
   route_scope: "cross-route",
   agent_pushable: true,
   palette_label: "Read spec",

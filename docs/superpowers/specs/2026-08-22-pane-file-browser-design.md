@@ -31,7 +31,7 @@ workspace-scoped and shows the tree as it stands, at any path.
 ```ts
 // dashboard/src/panes/file-browser/manifest.ts
 import { z } from "zod";
-import { FolderTree } from "lucide-react";
+import { FolderOpenIcon } from "@heroicons/react/24/outline";
 import type { PaneManifest } from "@/shell/paneTypes";
 
 export const fileBrowserArgsSchema = z.object({
@@ -44,7 +44,7 @@ export const manifest: PaneManifest<FileBrowserArgs> = {
   id: "file-browser",
   name: "File Browser",
   description: "Browse files in a workspace and preview their contents.",
-  icon: FolderTree,
+  icon: FolderOpenIcon,
   args_schema: fileBrowserArgsSchema,
   open_shortcut: "$mod-shift-f",
   route_scope: "cross-route",
