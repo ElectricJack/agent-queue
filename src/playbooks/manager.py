@@ -955,33 +955,35 @@ class PlaybookManager:
         list
             Subset of *candidates* with shadowed system pipelines removed.
         """
-        # Collect roles claimed by project-scoped pipeline playbooks.
+        # Collect roles claimed by project-scoped pipeline playbooks that belong
+        # to the *same project as the event*.  Cross-project pipelines must not
+        # suppress the system default for unrelated projects.
+        event_project_id = event.get("project_id")
         shadowed_roles: set[str] = set()
         for pb in candidates:
-            kind = getattr(pb, "kind", None) or pb.to_dict().get("kind")
-            if kind != "pipeline":
+            if pb.kind != "pipeline":
                 continue
-            if getattr(pb, "scope", "") == "project":
-                role = getattr(pb, "role", None) or pb.to_dict().get("role")
-                if role:
-                    shadowed_roles.add(role)
+            if pb.scope == "project":
+                # Only count this pipeline if it belongs to the event's project.
+                if self._scope_identifiers.get(pb.id) != event_project_id:
+                    continue
+                if pb.role:
+                    shadowed_roles.add(pb.role)
 
         if not shadowed_roles:
             return list(candidates)
 
         kept = []
         for pb in candidates:
-            kind = getattr(pb, "kind", None) or pb.to_dict().get("kind")
-            role = getattr(pb, "role", None) or pb.to_dict().get("role")
             if (
-                kind == "pipeline"
-                and getattr(pb, "scope", "") == "system"
-                and role in shadowed_roles
+                pb.kind == "pipeline"
+                and pb.scope == "system"
+                and pb.role in shadowed_roles
             ):
                 logger.debug(
                     "Shadowing system pipeline '%s' (role=%r) — project pipeline takes precedence",
                     pb.id,
-                    role,
+                    pb.role,
                 )
                 continue
             kept.append(pb)
