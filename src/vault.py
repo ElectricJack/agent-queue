@@ -1365,16 +1365,14 @@ def ensure_vault_layout(data_dir: str) -> None:
     # spec §4/§9 profiles the SessionLens and planner flow expect.
     # Write-if-absent: operator edits survive reseed.
     ensure_default_profiles(data_dir)
-    # Two bundled Claude Code profiles — same CLI, different models + a
-    # shared ``claude`` memory scope (see ``memory_scope_id`` in each
-    # profile's frontmatter).  Tasks pick the model per-task via
-    # ``aq task create --profile {claude-opus|claude-sonnet}``.  The
-    # older model-agnostic ``claude-code`` profile (CLAUDE_CODE_PROFILE
-    # constant) is kept as an opt-in template but no longer
-    # auto-installed.
-    ensure_claude_opus_profile(data_dir)
-    ensure_claude_sonnet_profile(data_dir)
-    ensure_shared_claude_memory_dir(data_dir)
+    # Legacy hardcoded ``claude-opus`` / ``claude-sonnet`` seed calls
+    # removed in favor of the 3-tier × 4-thinking intelligence-class
+    # matrix — pick capability via ``intelligence_class``/``default_class``
+    # on the shipped ``worker-{fast,standard,deep}`` profiles instead.
+    # The old profiles are legacy-only; ``ensure_claude_*_profile`` and
+    # ``ensure_shared_claude_memory_dir`` and the ``CLAUDE_*_PROFILE``
+    # constants remain in this module for one release as an opt-in
+    # migration seam — callers that still need them can invoke directly.
 
     # Generate vault hub files for Obsidian graph tree structure
     try:

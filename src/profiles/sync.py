@@ -732,10 +732,44 @@ async def scan_and_sync_existing_profiles(
 
     synced = sum(1 for r in results if r.success)
     failed = len(results) - synced
+
+    # Prune orphan DB rows — profile_id present in the DB but no matching
+    # ``agent-types/<id>/profile.md`` (or project-scoped equivalent) on
+    # disk. Without this, removing a shipped default from
+    # ``src/profiles/defaults/`` or an operator's own profile from the
+    # vault leaves the row visible forever; the "profiles list still shows
+    # the old ones" gotcha. Guard: if the scan found zero profile files at
+    # all we skip the prune — that state usually means the scan raced
+    # daemon startup (empty vault dir being created), and we would nuke
+    # every row for nothing.
+    pruned = 0
+    if profile_files:
+        current_ids = {
+            (r.profile_id or "") for r in results if r.success and r.profile_id
+        }
+        try:
+            existing = await db.list_profiles()
+        except Exception:
+            logger.debug("profile prune: list_profiles failed", exc_info=True)
+            existing = []
+        for row in existing:
+            row_id = getattr(row, "id", None)
+            if not row_id or row_id in current_ids:
+                continue
+            try:
+                await db.delete_profile(row_id)
+                pruned += 1
+                logger.info("Pruned orphan profile row: %s", row_id)
+            except Exception:
+                logger.warning(
+                    "Failed to prune orphan profile row %s", row_id, exc_info=True,
+                )
+
     logger.info(
-        "Startup profile scan complete: %d file(s) found, %d synced, %d failed",
+        "Startup profile scan complete: %d file(s) found, %d synced, %d failed, %d pruned",
         len(results),
         synced,
         failed,
+        pruned,
     )
     return results
