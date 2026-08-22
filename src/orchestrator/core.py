@@ -2603,9 +2603,15 @@ class Orchestrator(
             dep = await self.db.get_task(await_id)
             if dep is None:
                 continue
-            if getattr(dep.status, "value", dep.status) == "COMPLETED":
+            status_val = getattr(dep.status, "value", dep.status)
+            # FAILED is terminal — treat as satisfying the ``task`` gate so
+            # waiters aren't stalled forever when e.g. a review is cancelled
+            # via the reopen-cascade path (Dv2 Phase 2 Task 6).
+            if status_val in ("COMPLETED", "FAILED"):
                 await self._resolve_gate_and_emit(
-                    gate["id"], resolved_by="sweep:task", resolution=await_id
+                    gate["id"],
+                    resolved_by="sweep:task",
+                    resolution=f"{await_id}:{status_val}",
                 )
 
     async def _sweep_resolve_pr_ci_gates(self) -> None:
