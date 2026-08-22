@@ -62,6 +62,18 @@ async def wired(tmp_path):
             needs_workspace=False,
         )
     )
+    # Mirrors production profile sync, which seeds the shipped triage
+    # profile into the DB — the default pipeline pins it on the triage task.
+    await db.upsert_profile(
+        AgentProfile(
+            id="triage",
+            name="Triage",
+            model="claude-haiku-4-5",
+            harness="claude",
+            default_class="fast",
+            needs_workspace=False,
+        )
+    )
 
     config = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
@@ -124,6 +136,9 @@ async def test_e2e_routing(wired):
 
     triage = await db.find_task_by_dedup_key(PID, "triage-open")
     assert triage is not None
+    # Pre-routed by the pipeline: the triage task runs under the shipped
+    # triage profile, never through triage itself.
+    assert triage.profile_id == "triage", triage.profile_id
 
     # 4) The task cannot be scheduled while its routing gate is open — the
     #    gate's ``waiter_task_ids`` projection sets ``is_blocked=1``.  A task

@@ -780,6 +780,14 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Priority (lower = higher priority, default 100)",
                     "default": 100,
                 },
+                "profile_id": {
+                    "type": "string",
+                    "description": (
+                        "Pre-route the task to this agent profile on create. "
+                        "Tasks created via ensure_task skip triage, so the "
+                        "ensuring pipeline pins the executing profile directly."
+                    ),
+                },
             },
             "required": ["project_id", "dedup_key", "title"],
         },

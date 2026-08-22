@@ -3279,6 +3279,11 @@ class TaskCommandsMixin:
             # ensure_task is the ensuring pipeline's responsibility.
             "_suppress_created_event": True,
         }
+        # Optional pre-routing: control-plane tasks skip triage, so the
+        # ensuring pipeline may pin the executing profile directly (e.g.
+        # the default pipeline pins 'triage' on the triage task).
+        if args.get("profile_id"):
+            create_args["profile_id"] = args["profile_id"]
         result = await self._cmd_create_task(create_args)
         if "error" in result:
             return {"success": False, "error": result["error"]}

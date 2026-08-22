@@ -36,7 +36,8 @@ via `task_route`.
         "project_id": "{{event.project_id}}",
         "dedup_key": "triage-open",
         "title": "Triage unrouted tasks",
-        "description": "Route every unrouted task in this project via `task_route`. Close this task when the queue is empty."
+        "description": "Route every unrouted task in this project via `task_route`. Close this task when the queue is empty.",
+        "profile_id": "triage"
       },
       "on_success": "done",
       "on_failure": "done"
