@@ -1121,6 +1121,7 @@ class PlaybookRun:
     waiting_for_event: str | None = (
         None  # Event type the run is waiting for (event-triggered pause)
     )
+    event_id: str | None = None  # Stable dedup key from the triggering event
 
 
 @dataclass

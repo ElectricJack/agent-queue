@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import uuid
 from collections import defaultdict
 from typing import Any, Callable
 
@@ -122,6 +123,7 @@ class EventBus:
 
     async def emit(self, event_type: str, data: dict[str, Any] | None = None) -> None:
         data = data or {}
+        data.setdefault("event_id", uuid.uuid4().hex[:12])
         self._seen_event_types.add(event_type)
 
         # --- Payload validation (Phase 0.2.3) ---

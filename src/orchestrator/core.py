@@ -675,8 +675,27 @@ class Orchestrator(
         try:
             from src.runtimes.supervisor import Supervisor
             from src.playbooks.runner import PlaybookRunner
+            from src.models import PlaybookRun as PlaybookRunModel
 
             graph = playbook.to_dict()
+
+            # -- Event-level dedup via event_id (dv2-p1 Task 10) --
+            # The EventBus stamps every event with a stable event_id before
+            # dispatch.  If we have already started a run for this
+            # (playbook_id, event_id) pair the UNIQUE partial index would
+            # reject a duplicate insert anyway, but checking first lets us
+            # log a clear INFO message and skip the whole dispatch path.
+            event_id = event_data.get("event_id") if isinstance(event_data, dict) else None
+            if event_id and self.db:
+                existing = await self.db.get_playbook_run_by_event(playbook.id, event_id)
+                if existing is not None:
+                    logger.info(
+                        "Playbook '%s' event_id=%s already recorded (run=%s) — skipping",
+                        playbook.id,
+                        event_id,
+                        existing.run_id,
+                    )
+                    return
 
             # Pipeline playbooks route to the deterministic PipelineRunner
             # — no supervisor/LLM needed, action nodes dispatch directly
@@ -698,6 +717,28 @@ class Orchestrator(
                     handler=handler,
                     db=self.db,
                 )
+
+                # Create a run row now so the UNIQUE constraint provides
+                # idempotency for pipeline runs (Task 9 deferred this).
+                if self.db:
+                    import json as _json
+                    pipeline_db_run = PlaybookRunModel(
+                        run_id=runner.run_id,
+                        playbook_id=playbook.id,
+                        playbook_version=getattr(playbook, "version", 1),
+                        trigger_event=_json.dumps(event_data),
+                        status="running",
+                        started_at=time.time(),
+                        event_id=event_id,
+                    )
+                    try:
+                        await self.db.create_playbook_run(pipeline_db_run)
+                    except Exception:
+                        logger.exception(
+                            "Pipeline playbook '%s': failed to create run row (run=%s)",
+                            playbook.id,
+                            runner.run_id,
+                        )
 
                 async def _run_pipeline() -> None:
                     with CorrelationContext(run_id=runner.run_id):

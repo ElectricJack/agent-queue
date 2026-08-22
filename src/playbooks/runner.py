@@ -435,6 +435,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             status="running",
             started_at=started_at,
             pinned_graph=json.dumps(self.graph),
+            event_id=self.event.get("event_id") if isinstance(self.event, dict) else None,
         )
         if self.db:
             await self.db.create_playbook_run(db_run)
