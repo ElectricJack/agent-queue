@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from "react";
 import { useReactFlow, useStore } from "@xyflow/react";
-import type { GraphAgent } from "./types";
+import { NODE_WIDTH, type GraphAgent } from "./types";
 
 interface Props {
   agents: GraphAgent[];
@@ -11,17 +10,10 @@ interface Props {
  *  projected coordinate — CSS handles the motion. */
 export default function AgentAvatarLayer({ agents }: Props) {
   const rf = useReactFlow();
-  // Re-render on viewport (pan/zoom) changes so avatars follow their node.
-  const viewport = useStore((s) => s.transform);
-  const [, force] = useState(0);
-  const raf = useRef<number | null>(null);
-  useEffect(() => {
-    // Also re-project after node position updates (layout changes).
-    raf.current = requestAnimationFrame(() => force((x) => x + 1));
-    return () => {
-      if (raf.current) cancelAnimationFrame(raf.current);
-    };
-  }, [viewport, agents]);
+  // Subscribing to the store's transform already triggers a rerender on
+  // every pan/zoom, which recomputes screen coords below from the fresh
+  // transform — no separate RAF/force-render mechanism needed.
+  useStore((s) => s.transform);
 
   return (
     <div className="pointer-events-none absolute inset-0 z-30">
@@ -30,7 +22,7 @@ export default function AgentAvatarLayer({ agents }: Props) {
         const node = rf.getNode(a.current_task_id);
         if (!node) return null;
         const screen = rf.flowToScreenPosition({
-          x: node.position.x + 220 - 8, // NODE_WIDTH - inset
+          x: node.position.x + NODE_WIDTH - 8, // NODE_WIDTH - inset
           y: node.position.y - 8,
         });
         return (

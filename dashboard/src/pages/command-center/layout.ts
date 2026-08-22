@@ -1,10 +1,7 @@
 import type { CSSProperties } from "react";
 import dagre from "@dagrejs/dagre";
 import type { Edge, Node } from "@xyflow/react";
-import type { GraphTaskNode, MergedGraph } from "./types";
-
-const NODE_WIDTH = 220;
-const NODE_HEIGHT = 88;
+import { NODE_WIDTH, NODE_HEIGHT, type GraphTaskNode, type MergedGraph } from "./types";
 
 /**
  * Rank ordering for statuses — lower = higher up in the canvas.
