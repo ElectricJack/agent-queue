@@ -1489,6 +1489,102 @@ class PlaybookManager:
 
         return result
 
+    async def install_compiled(self, compiled: CompiledPlaybook) -> None:
+        """Install a pre-compiled playbook artifact into the active registry.
+
+        Used by the ``playbook_install`` command (Phase 6 compiler-as-agent).
+        Mirrors the successful branch of :meth:`compile_playbook`: swaps the
+        active version, refreshes the trigger map, persists via the store or
+        legacy data-dir fallback, and refreshes event subscriptions.
+
+        The caller (``playbook_install``) is responsible for validating the
+        artifact before calling this — no re-validation happens here.
+        """
+        old = self._active.get(compiled.id)
+        if old is not None:
+            self._unindex_triggers(old)
+        self._active[compiled.id] = compiled
+        self._index_triggers(compiled)
+        if compiled.id not in self._scope_identifiers:
+            _, type_id = compiled.parse_scope()
+            self._scope_identifiers[compiled.id] = type_id
+        # Persist via the store when available, otherwise via legacy data_dir.
+        if self._store is not None:
+            scope_enum, type_id = compiled.parse_scope()
+            scope_str: str
+            if scope_enum == PlaybookScope.SYSTEM:
+                scope_str = "system"
+                identifier = None
+            elif scope_enum == PlaybookScope.PROJECT:
+                scope_str = "project"
+                identifier = self._scope_identifiers.get(compiled.id)
+            else:
+                scope_str = "agent_type"
+                identifier = type_id or self._scope_identifiers.get(compiled.id)
+            try:
+                self._store.save(compiled, scope_str, identifier)  # type: ignore[arg-type]
+            except Exception:
+                logger.warning(
+                    "install_compiled: store.save failed for %s", compiled.id, exc_info=True
+                )
+        else:
+            self._persist_compiled(compiled)
+        self._refresh_subscriptions()
+        logger.info(
+            "Playbook '%s' v%d installed via install_compiled (nodes=%d)",
+            compiled.id,
+            compiled.version,
+            len(compiled.nodes),
+        )
+
+    async def compile_task_project_id(
+        self, scope: str, identifier: str | None
+    ) -> str | None:
+        """Pick the project to attach a playbook-compile task to.
+
+        - ``project`` scope → the project id itself.
+        - ``system`` / ``agent_type`` / ``supervisor`` scope → the first
+          available project (the compile task needs *some* project row to
+          satisfy the FK).  Returns ``None`` when no projects exist yet.
+        """
+        if scope == "project" and identifier:
+            return identifier
+        handler = self._handler
+        if handler is None:
+            return None
+        db = getattr(handler, "db", None)
+        if db is None:
+            return None
+        try:
+            projects = await db.list_projects()
+        except Exception:
+            return None
+        if projects:
+            return projects[0].id
+        return None
+
+    async def compile_playbook_pipeline(
+        self,
+        markdown: str,
+        *,
+        source_path: str = "",
+        rel_path: str = "",
+        scope_identifier: str | None = None,
+    ) -> CompilationResult:
+        """Deterministic pipeline compile — thin adapter over
+        :meth:`compile_playbook` for the ``kind: pipeline`` branch."""
+        return await self.compile_playbook(
+            markdown,
+            source_path=source_path,
+            rel_path=rel_path,
+            scope_identifier=scope_identifier,
+        )
+
+    @property
+    def command_handler(self):
+        """Return the CommandHandler wired in at construction (or None)."""
+        return self._handler
+
     async def remove_playbook(self, playbook_id: str) -> bool:
         """Remove a playbook from the active registry and disk.
 

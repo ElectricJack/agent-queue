@@ -78,6 +78,7 @@ from src.commands.surface_commands import SurfaceCommandsMixin
 from src.commands.ops_commands import OpsCommandsMixin
 from src.commands.worktree_commands import WorktreeCommandsMixin
 from src.commands.git_commands import GitCommandsMixin
+from src.playbooks.validator_command import PlaybookValidateInstallMixin
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +201,8 @@ class CommandHandler(
     WorktreeCommandsMixin,
     # -- dv2 phase 2 mixins -----------------------------------------------
     GitCommandsMixin,
+    # -- dv2 phase 6 mixins -----------------------------------------------
+    PlaybookValidateInstallMixin,
 ):
     """Unified command execution layer for AgentQueue (Command Pattern).
 
