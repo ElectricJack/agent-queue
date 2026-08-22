@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -53,7 +52,8 @@ def _substitute(value: Any, event: dict, outputs: dict) -> Any:
         if m:
             return _resolve_ref(m.group(1), event, outputs)
         return _TMPL_RE.sub(
-            lambda mm: str(_resolve_ref(mm.group(1), event, outputs) or ""), value
+            lambda mm: ("" if (v := _resolve_ref(mm.group(1), event, outputs)) is None else str(v)),
+            value,
         )
     if isinstance(value, dict):
         return {k: _substitute(v, event, outputs) for k, v in value.items()}
@@ -78,7 +78,6 @@ class PipelineRunner:
         return None
 
     async def run(self) -> RunResult:
-        started = time.time()
         current = self._entry()
         if current is None:
             return RunResult(self.run_id, "failed", "No entry node")
@@ -109,7 +108,9 @@ class PipelineRunner:
                 logger.exception("pipeline node %s raised", current)
                 return RunResult(self.run_id, "failed", str(exc))
 
-            success = bool(result.get("success"))
+            # Commands normally return {"success": bool}; absent key defaults to success
+            # unless "error" is present.
+            success = not (result.get("success") is False or "error" in result)
             if success:
                 out_spec = node.get("output")
                 if out_spec:
