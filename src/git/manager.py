@@ -1970,6 +1970,60 @@ class GitManager:
             return False
         return None
 
+    async def amerge_pr(
+        self,
+        checkout_path: str,
+        pr_url: str,
+        method: str = "squash",
+    ) -> dict:
+        """Merge a PR via ``gh pr merge``.
+
+        Parameters
+        ----------
+        checkout_path:
+            Any valid checkout of the repo (gh reads the remote from here).
+        pr_url:
+            Full PR URL, e.g. ``https://github.com/org/repo/pull/42``.
+        method:
+            One of ``"squash"``, ``"merge"``, ``"rebase"``.  Defaults to
+            ``"squash"`` — matches the project convention documented in
+            the shipped final-reviewer profile.
+
+        Returns
+        -------
+        dict
+            ``{"success": bool, "sha": str | None, "error": str | None}``.
+            ``sha`` is best-effort — gh only prints it in some flows;
+            callers who need the merged sha should query the branch head
+            after this returns.
+        """
+        if method not in ("squash", "merge", "rebase"):
+            return {"success": False, "sha": None, "error": f"invalid method: {method}"}
+        flag = f"--{method}"
+        try:
+            result = await self._arun_subprocess(
+                ["gh", "pr", "merge", pr_url, flag, "--delete-branch"],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return {"success": False, "sha": None, "error": "gh pr merge timed out"}
+        if result.returncode != 0:
+            return {
+                "success": False,
+                "sha": None,
+                "error": (result.stderr or result.stdout or "gh pr merge failed").strip(),
+            }
+        # gh prints "Merged pull request #N (<sha>)" in some flows; best-effort parse.
+        # Strip surrounding punctuation before checking for a 40-char hex token.
+        sha: str | None = None
+        for tok in (result.stdout or "").split():
+            tok = tok.strip("().,;:")
+            if len(tok) == 40 and all(c in "0123456789abcdef" for c in tok):
+                sha = tok
+                break
+        return {"success": True, "sha": sha, "error": None}
+
     async def aget_status(self, checkout_path: str) -> str:
         try:
             return await self._arun(["status"], cwd=checkout_path)

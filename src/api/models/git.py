@@ -143,6 +143,15 @@ class GitRemoteUrlResponse(BaseModel):
     message: str | None = None
 
 
+class PrMergeResponse(BaseModel):
+    """Response model for the ``pr_merge`` command."""
+
+    success: bool = False
+    pr_url: str = ""
+    sha: str | None = None
+    error: str | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "checkout_branch": CheckoutBranchResponse,
     "commit_changes": CommitChangesResponse,
@@ -164,4 +173,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "merge_branch": MergeBranchResponse,
     "push_branch": PushBranchResponse,
     "git_remote_url": GitRemoteUrlResponse,
+    "pr_merge": PrMergeResponse,
 }
