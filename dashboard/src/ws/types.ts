@@ -270,6 +270,8 @@ export interface MessageSentEvent extends BaseEvent {
   message_id: string;
   to_kind: string;
   to_id: string;
+  thread_id?: string;
+  reply_to_id?: string | null;
 }
 
 export interface MessageDeliveredEvent extends BaseEvent {

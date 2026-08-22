@@ -18,7 +18,12 @@ const EVENT_TYPES_IN_CHAT = new Set<string>([
   "notify.playbook_run_failed",
 ]);
 
-export type PendingMessage = MessageModel & { pending?: boolean; failed?: boolean };
+export type PendingMessage = MessageModel & {
+  pending?: boolean;
+  failed?: boolean;
+  /** Server-assigned id for this message, once known (from the send response). */
+  serverId?: string;
+};
 
 export type TranscriptItem =
   | { kind: "message"; ts: number; msg: PendingMessage }
@@ -56,9 +61,8 @@ export function useChatTranscript(projectId: string) {
         if (evProjectId && evProjectId !== projectId) return;
 
         if (event.event_type === "message.sent") {
-          const evThread = (event as { thread_id?: string }).thread_id;
-          if (evThread !== thread) return;
-          const msgId = (event as { message_id: string }).message_id;
+          if (event.thread_id !== thread) return;
+          const msgId = event.message_id;
           if (seenIds.current.has(msgId)) return;
           seenIds.current.add(msgId);
           // Re-fetch to pull the full row (message.sent event doesn't carry body).
@@ -74,13 +78,21 @@ export function useChatTranscript(projectId: string) {
     ),
   });
 
-  // Hydrated messages drive live; drop pending rows whose body matches a hydrated row.
+  // Hydrated messages drive live; drop pending rows once their server-assigned id
+  // (captured from the sendChatMessage response) shows up in a hydrated row. Fall
+  // back to a body match for pending rows that haven't resolved a serverId yet
+  // (e.g. the send is still in flight when hydration races ahead).
   useEffect(() => {
     const rows = hydrate.data?.messages ?? [];
     setLive(rows);
     for (const r of rows) seenIds.current.add(r.id);
     setPending((prev) =>
-      prev.filter((p) => !rows.some((r) => r.body === p.body && r.from_kind === "user")),
+      prev.filter(
+        (p) =>
+          !rows.some((r) =>
+            p.serverId ? r.id === p.serverId : r.body === p.body && r.from_kind === "user",
+          ),
+      ),
     );
   }, [hydrate.data]);
 
@@ -115,7 +127,10 @@ export function useChatTranscript(projectId: string) {
       setIsSending(true);
       setSendError(null);
       try {
-        await sendChatMessage(projectId, trimmed, { threadId: thread });
+        const res = await sendChatMessage(projectId, trimmed, { threadId: thread });
+        setPending((prev) =>
+          prev.map((p) => (p.id === optimistic.id ? { ...p, serverId: res.message_id } : p)),
+        );
         qc.invalidateQueries({ queryKey: ["chat", "thread", projectId, thread] });
       } catch (err) {
         setSendError(err);
