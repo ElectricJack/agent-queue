@@ -288,6 +288,19 @@ class SessionLens:
             if is_global
             else self._supervisor_work_dir(derived_project)
         )
+        if is_global:
+            # Read the configured idle-timeout for observability. The
+            # actual idle-teardown loop is a follow-up (there is no
+            # ``idle_timeout`` field on ``SessionSpec`` yet); logging
+            # here proves the config value is threaded through and
+            # gives operators a single grep target when the loop lands.
+            supervisor_cfg = getattr(self._config, "supervisor", None)
+            global_cfg = getattr(supervisor_cfg, "global_", None)
+            idle_timeout = getattr(global_cfg, "idle_timeout_seconds", 2700)
+            logger.info(
+                "cold-starting global supervisor (idle_timeout_seconds=%s)",
+                idle_timeout,
+            )
         # ``sessions.project_id`` is a NOT NULL FK to ``projects.id`` —
         # so persisting the global-supervisor row requires a stub
         # ``projects`` row named "global". Auto-create idempotently; the

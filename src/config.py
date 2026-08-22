@@ -535,16 +535,50 @@ class ChatAnalyzerConfig:
 
 
 @dataclass
+class GlobalSupervisorConfig:
+    """Configuration for the *global* supervisor session (``supervisor-global``).
+
+    The global supervisor is the always-available Agent Q brain the
+    dashboard talks to at ``/`` — distinct from per-project
+    supervisors. It runs with an admin-scope, loopback-restricted
+    bearer token and its own memory scope (``supervisor:global``).
+    Idle-timeout drives how long the on-demand session stays warm
+    between conversations. See ``docs/superpowers/specs/
+    2026-08-22-dashboard-shell-v2-design.md`` §4.
+    """
+
+    #: Seconds of inactivity before the on-demand global-supervisor
+    #: session is torn down. Default: 45 min.
+    idle_timeout_seconds: int = 2700
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.idle_timeout_seconds < 0:
+            errors.append(
+                ConfigError(
+                    "supervisor.global",
+                    "idle_timeout_seconds",
+                    "must be >= 0",
+                )
+            )
+        return errors
+
+
+@dataclass
 class SupervisorConfig:
     """Top-level Supervisor configuration."""
 
     reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
+    #: The trailing underscore in the attribute name avoids the Python
+    #: keyword ``global``. In YAML the section is written as ``global``.
+    global_: GlobalSupervisorConfig = field(default_factory=GlobalSupervisorConfig)
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         errors.extend(self.reflection.validate())
         errors.extend(self.observation.validate())
+        errors.extend(self.global_.validate())
         return errors
 
 
@@ -2037,6 +2071,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         s = raw["supervisor"]
         reflection = s.get("reflection", {})
         observation = s.get("observation", {})
+        global_section = s.get("global", {}) or {}
         config.supervisor = SupervisorConfig(
             reflection=ReflectionConfig(
                 level=reflection.get("level", "full"),
@@ -2050,6 +2085,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 batch_window_seconds=observation.get("batch_window_seconds", 60),
                 max_buffer_size=observation.get("max_buffer_size", 20),
                 stage1_keywords=observation.get("stage1_keywords", []),
+            ),
+            global_=GlobalSupervisorConfig(
+                idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
             ),
         )
 

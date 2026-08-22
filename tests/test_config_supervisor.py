@@ -53,6 +53,38 @@ def test_supervisor_config_in_app_config(tmp_path):
     assert isinstance(app.supervisor, SupervisorConfig)
 
 
+def test_supervisor_global_idle_timeout_default():
+    from src.config import GlobalSupervisorConfig, SupervisorConfig
+
+    cfg = SupervisorConfig()
+    assert isinstance(cfg.global_, GlobalSupervisorConfig)
+    # 45 min — see dashboard-shell-v2 design §4.
+    assert cfg.global_.idle_timeout_seconds == 2700
+
+
+def test_supervisor_global_idle_timeout_from_yaml(tmp_path):
+    import yaml
+
+    from src.config import load_config
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump(
+            {
+                "data_dir": str(tmp_path / "data"),
+                "database_path": str(tmp_path / "test.db"),
+                "discord": {
+                    "bot_token": "test-token-for-validation",
+                    "guild_id": "123456789",
+                },
+                "supervisor": {"global": {"idle_timeout_seconds": 1800}},
+            }
+        )
+    )
+    cfg = load_config(str(cfg_path))
+    assert cfg.supervisor.global_.idle_timeout_seconds == 1800
+
+
 def test_reflection_config_off_disables():
     from src.config import ReflectionConfig
 
