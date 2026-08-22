@@ -850,6 +850,21 @@ class PlaybookManager:
         if not self._matches_scope(playbook, data):
             return
 
+        # -- Role shadowing (spec §4.5, dv2-p1 Task 11) --
+        # For pipeline playbooks: if a project-scoped pipeline shares this
+        # playbook's role, the system copy is suppressed.  We resolve the
+        # full candidate set for this trigger and apply the filter; if this
+        # playbook does not survive, skip it silently.
+        all_candidates = self.get_playbooks_by_trigger(trigger.event_type)
+        surviving = self._select_after_shadowing(all_candidates, data)
+        if playbook not in surviving:
+            logger.debug(
+                "Trigger '%s' for playbook '%s' skipped — shadowed by project pipeline",
+                trigger.event_type,
+                playbook_id,
+            )
+            return
+
         # Build cooldown scope key from the playbook's own scope rather than
         # from event data.  For project-scoped playbooks include the identifier
         # so different projects have independent cooldowns.
@@ -915,6 +930,62 @@ class PlaybookManager:
                 trigger.event_type,
                 playbook_id,
             )
+
+    def _select_after_shadowing(self, candidates, event: dict) -> list:
+        """Drop system pipeline playbooks shadowed by a project pipeline of the same role.
+
+        Rule (spec §4.5): only ``kind: pipeline`` participates. A project-scoped
+        pipeline with the same ``role`` as a system-scoped one suppresses the
+        system one *for events scoped to that project*. Non-pipeline playbooks
+        are always kept.
+
+        Parameters
+        ----------
+        candidates:
+            Iterable of playbook-like objects exposing ``id``, ``scope``,
+            ``kind``, and ``role`` attributes (or equivalent ``to_dict()``
+            fallback).  In production these are :class:`CompiledPlaybook`
+            instances; in tests they may be ``SimpleNamespace`` fakes.
+        event:
+            The trigger event payload dict.  Only the ``project_id`` key is
+            consulted to decide whether shadowing applies.
+
+        Returns
+        -------
+        list
+            Subset of *candidates* with shadowed system pipelines removed.
+        """
+        # Collect roles claimed by project-scoped pipeline playbooks.
+        shadowed_roles: set[str] = set()
+        for pb in candidates:
+            kind = getattr(pb, "kind", None) or pb.to_dict().get("kind")
+            if kind != "pipeline":
+                continue
+            if getattr(pb, "scope", "") == "project":
+                role = getattr(pb, "role", None) or pb.to_dict().get("role")
+                if role:
+                    shadowed_roles.add(role)
+
+        if not shadowed_roles:
+            return list(candidates)
+
+        kept = []
+        for pb in candidates:
+            kind = getattr(pb, "kind", None) or pb.to_dict().get("kind")
+            role = getattr(pb, "role", None) or pb.to_dict().get("role")
+            if (
+                kind == "pipeline"
+                and getattr(pb, "scope", "") == "system"
+                and role in shadowed_roles
+            ):
+                logger.debug(
+                    "Shadowing system pipeline '%s' (role=%r) — project pipeline takes precedence",
+                    pb.id,
+                    role,
+                )
+                continue
+            kept.append(pb)
+        return kept
 
     def _matches_scope(
         self,
