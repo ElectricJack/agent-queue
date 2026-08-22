@@ -561,6 +561,8 @@ messages = Table(
     Column("archived_at", Float, nullable=True),
     Column("reply_to_id", Text, ForeignKey("messages.id"), nullable=True),
     Column("via", Text, nullable=True),  # null | "transcript_tail"
+    Column("body_kind", Text, nullable=True),
+    Column("pane_open", Text, nullable=True),  # JSON blob {view, args}
     CheckConstraint(
         "from_kind IN ('session','user','system')",
         name="ck_messages_from_kind",
