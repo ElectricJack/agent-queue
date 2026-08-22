@@ -117,6 +117,20 @@ class GateCommandsMixin:
         if gate is None:
             return {"success": False, "error": f"gate '{gate_id}' not found"}
 
+        # dv2 phase 1: ``routing`` gates carry a pinned cross-phase
+        # contract — ONLY ``task_route`` writes the profile/class/workspace
+        # fields on the task and then resolves the gate.  Refuse the
+        # generic path so operators can't half-resolve a routing gate and
+        # leave the task un-routed for the runner.
+        if gate["gate_type"] == "routing":
+            return {
+                "success": False,
+                "error": (
+                    "routing gates can only be resolved via task_route; "
+                    "call task_route(task_id, profile_id, ...) instead"
+                ),
+            }
+
         # Shared helper on the orchestrator: resolves the gate, emits
         # ``gate.resolved`` + audit row, and — critically — calls
         # ``_emit_blocked_flips`` so ``task.unblocked`` fires on the bus.

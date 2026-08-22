@@ -3263,3 +3263,106 @@ class TaskCommandsMixin:
                 continue
             out.append({"id": t.id, "title": t.title, "status": t.status.value})
         return {"success": True, "tasks": out}
+
+    async def _cmd_task_route(self, args: dict) -> dict:
+        """Route a task: assign profile + intelligence class (+ workspace).
+
+        dv2 phase 1 — the ONLY resolver for ``routing`` gates.  Writes
+        ``profile_id``, optional ``intelligence_class`` and optional
+        ``preferred_workspace_id`` onto the task, then resolves every open
+        ``routing`` gate attached to the task via the orchestrator helper
+        (so ``gate.resolved`` + blocked-flip bus events fire the same way
+        the sweep path emits them).
+
+        Args:
+            task_id: Target task id (required).
+            profile_id: AgentProfile id (required).
+            intelligence_class: Optional vault class id.  Falls back to
+                ``profile.default_class`` when omitted; ``None``/empty
+                skips class validation entirely.
+            workspace_id: Optional workspace id.  When supplied, must belong
+                to the task's project (deadlock-safe & scope-safe).
+
+        Returns:
+            ``{"success": True, "task_id", "resolved_gate_ids": [str]}`` or
+            ``{"success": False, "error": str}`` on validation failure
+            (unknown task/profile/class/workspace, wrong project, or a
+            class with no mapping for the profile's harness provider).
+        """
+        task_id = args.get("task_id")
+        profile_id = args.get("profile_id")
+        if not task_id or not profile_id:
+            return {"success": False, "error": "task_id and profile_id are required"}
+        task = await self.db.get_task(str(task_id))
+        if task is None:
+            return {"success": False, "error": f"task '{task_id}' not found"}
+        profile = await self.db.get_profile(str(profile_id))
+        if profile is None:
+            return {"success": False, "error": f"profile '{profile_id}' not found"}
+
+        cls_id = args.get("intelligence_class") or (profile.default_class or None)
+        if cls_id:
+            from src.intelligence_classes import load_intelligence_classes, resolve_class
+            classes = load_intelligence_classes(self.config.data_dir)
+            cls = classes.get(cls_id)
+            if cls is None:
+                return {
+                    "success": False,
+                    "error": f"intelligence class '{cls_id}' not found in vault",
+                }
+            provider = _harness_provider(profile.harness)
+            if provider and not resolve_class(cls, provider):
+                return {
+                    "success": False,
+                    "error": (
+                        f"intelligence class '{cls_id}' has no mapping for "
+                        f"provider '{provider}' (required by profile "
+                        f"'{profile.id}' harness '{profile.harness}')"
+                    ),
+                }
+
+        workspace_id = args.get("workspace_id")
+        if workspace_id:
+            ws = await self.db.get_workspace(str(workspace_id))
+            if ws is None:
+                return {
+                    "success": False,
+                    "error": f"workspace '{workspace_id}' not found",
+                }
+            if ws.project_id != task.project_id:
+                return {
+                    "success": False,
+                    "error": (
+                        f"workspace '{workspace_id}' belongs to project "
+                        f"'{ws.project_id}', not '{task.project_id}'"
+                    ),
+                }
+
+        await self.db.update_task_routing(
+            str(task_id),
+            profile_id=str(profile_id),
+            intelligence_class=cls_id,
+            preferred_workspace_id=str(workspace_id) if workspace_id else None,
+        )
+
+        resolved: list[str] = []
+        for gate in await self.db.get_gates_for_task(str(task_id)):
+            if gate["gate_type"] == "routing" and gate["status"] == "open":
+                await self.orchestrator._resolve_gate_and_emit(
+                    gate["id"],
+                    resolved_by="task_route",
+                    resolution=f"routed to {profile_id}",
+                )
+                resolved.append(gate["id"])
+        return {
+            "success": True,
+            "task_id": str(task_id),
+            "resolved_gate_ids": resolved,
+        }
+
+
+def _harness_provider(harness: str | None) -> str:
+    """Map a profile harness id to the intelligence-class provider key."""
+    return {"claude": "anthropic", "codex": "openai", "gemini": "google"}.get(
+        (harness or "").strip(), ""
+    )

@@ -648,3 +648,29 @@ class TaskQueryMixin:
             dedup_key=row.get("dedup_key"),
             intelligence_class=row.get("intelligence_class"),
         )
+
+    async def update_task_routing(
+        self,
+        task_id: str,
+        *,
+        profile_id: str,
+        intelligence_class: str | None,
+        preferred_workspace_id: str | None,
+    ) -> None:
+        """Set profile + intelligence class + optional preferred workspace.
+
+        Used by ``_cmd_task_route`` (dv2 phase 1) to commit routing
+        decisions before resolving the ``routing`` gate on the task.
+        Nullable fields are only touched when the caller passes a value;
+        this keeps ``task_route`` narrow — it never accidentally clears
+        an already-set ``intelligence_class`` or ``preferred_workspace_id``.
+        """
+        vals: dict = {"profile_id": profile_id}
+        if intelligence_class is not None:
+            vals["intelligence_class"] = intelligence_class
+        if preferred_workspace_id is not None:
+            vals["preferred_workspace_id"] = preferred_workspace_id
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                update(tasks).where(tasks.c.id == task_id).values(**vals)
+            )
