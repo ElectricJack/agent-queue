@@ -1111,7 +1111,8 @@ export function useChatMessages(projectId: string, limit = 200) {
 export function useSendChatMessage(projectId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: string) => sendChatMessage(projectId, body),
+    mutationFn: (body: string) =>
+      sendChatMessage(projectId, body, { threadId: `dashboard:${projectId}` }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["chat", projectId] });
     },
