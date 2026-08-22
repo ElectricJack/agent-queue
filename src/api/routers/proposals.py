@@ -36,8 +36,10 @@ def build_proposals_router(*, db) -> APIRouter:
 def _build_default_router() -> APIRouter:
     """Registered in :func:`src.api.app.create_app` — uses the shared db.
 
-    Closes over ``deps._orchestrator.db`` at request time, so it plays
-    correctly with the test doubles that also mount this router.
+    Closes directly over ``deps._orchestrator.db`` at request time
+    instead of rebuilding a fresh inner ``APIRouter`` per call. The prior
+    per-request build was fine functionally but did unnecessary work on
+    every hit and mirrored a shape ``graph.py`` had already moved off.
     """
     from src.api import dependencies as deps
 
@@ -48,13 +50,17 @@ def _build_default_router() -> APIRouter:
         orch = deps._orchestrator
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
-        inner = build_proposals_router(db=orch.db)
-        for route in inner.routes:
-            if getattr(route, "path", None) == "/api/proposals/{proposal_id}":
-                return await route.endpoint(proposal_id=proposal_id)
-        raise HTTPException(
-            status_code=500, detail="proposals router misconfigured"
-        )
+        row = await proposal_queries.get_proposal(orch.db, proposal_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        return {
+            "proposal_id": row["id"],
+            "project_id": row["project_id"],
+            "source": row["source"],
+            "tasks": row["payload"].get("tasks", []),
+            "edges": row["payload"].get("edges", []),
+            "status": row["status"],
+        }
 
     return router
 
