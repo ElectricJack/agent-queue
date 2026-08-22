@@ -1,6 +1,9 @@
 import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import Layout from "./components/Layout";
+import { useIsV2 } from "./shell/useIsV2";
+
+const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 
 const ChatLanding = lazy(() => import("./pages/chat/ChatLanding"));
 const ChatConversation = lazy(() => import("./pages/chat/ChatConversation"));
@@ -48,7 +51,7 @@ function RouteFallback() {
   );
 }
 
-export default function App() {
+function AppV1() {
   return (
     <Suspense fallback={<RouteFallback />}>
       <Routes>
@@ -114,4 +117,22 @@ export default function App() {
       </Routes>
     </Suspense>
   );
+}
+
+function AppV2() {
+  return (
+    <Suspense fallback={<RouteFallback />}>
+      <Routes>
+        <Route element={<AppShellV2 />}>
+          <Route index element={<div className="text-xs text-gray-600">v2 outlet</div>} />
+          <Route path="*" element={<div className="text-xs text-gray-600">v2 outlet</div>} />
+        </Route>
+      </Routes>
+    </Suspense>
+  );
+}
+
+export default function App() {
+  const v2 = useIsV2();
+  return v2 ? <AppV2 /> : <AppV1 />;
 }
