@@ -78,7 +78,7 @@ export default function App() {
             <Route index element={<ProjectOverview />} />
             <Route path="tasks" element={<ProjectTasks />} />
             <Route path="sessions" element={<ProjectSessions />} />
-            <Route path="chat" element={<ProjectChat />} />
+            <Route path="chat" element={<ProjectChatRedirect />} />
             <Route path="workspaces" element={<ProjectWorkspaces />} />
             <Route path="profiles" element={<ProjectProfiles />} />
             <Route path="playbooks" element={<ProjectPlaybooks />} />
