@@ -494,6 +494,11 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "run_id": "run-001",
         "node_id": "review-step",
     },
+    # Command events (Phase 5 follow-up)
+    "command.invoked": {
+        "command": "list_projects",
+        "ok": True,
+    },
 }
 
 # Timer schemas are dynamically generated; add common intervals
