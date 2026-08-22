@@ -64,14 +64,65 @@ def create_sqlite_engine(path: str) -> AsyncEngine:
     return engine
 
 
+def _preflight_check_alembic_version(sync_connection) -> None:
+    """Fail loudly if ``alembic_version`` names a revision the code lacks.
+
+    The symptom this catches: ``aq restart`` bombs deep inside Alembic
+    with ``Can't locate revision identified by 'X'`` — a phantom
+    revision that was never in this branch's ``migrations/versions/``
+    directory. Two common causes:
+
+    * The DB was previously stamped/migrated by a different branch
+      whose migration was later dropped or renamed.
+    * The operator's real DB is at one URL but a startup path pointed
+      alembic at a different one whose ``alembic_version`` row is stale.
+
+    Rather than let Alembic's opaque KeyError propagate, we look up
+    the current revision the DB claims, compare it against the
+    codebase's ScriptDirectory, and raise a clear diagnostic message
+    that names the resolved URL and a concrete fix (either restore
+    the missing revision file or ``alembic stamp head`` after
+    reconciling the schema).
+
+    NOTE: never auto-repair — clobbering the row loses history and
+    can silently skip data migrations. A clearer error is the fix.
+    """
+    from alembic.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+    from alembic.config import Config
+
+    alembic_cfg = Config(str(_ALEMBIC_INI))
+    alembic_cfg.attributes["connection"] = sync_connection
+    script = ScriptDirectory.from_config(alembic_cfg)
+    ctx = MigrationContext.configure(sync_connection)
+    db_revs = ctx.get_current_heads()  # ()  if unmarked, or (rev,) / (rev, rev)
+    known = {s.revision for s in script.walk_revisions()}
+    unknown = [r for r in db_revs if r and r not in known]
+    if unknown:
+        engine_url = str(sync_connection.engine.url)
+        raise RuntimeError(
+            "Alembic preflight failed: this database's alembic_version "
+            f"references unknown revision(s) {unknown!r}. "
+            f"Resolved DB URL: {engine_url}. "
+            "Fix options: (a) restore the migration file(s) for those "
+            "revision ids, or (b) if the schema is correct but the row "
+            "is stale, reconcile by running `alembic stamp head` against "
+            "this same URL (destructive to history — confirm the schema "
+            "matches head first)."
+        )
+
+
 def _run_alembic_upgrade(sync_connection) -> None:
     """Run Alembic migrations up to head using a sync connection.
 
-    Called via ``conn.run_sync()`` from an async context.
+    Called via ``conn.run_sync()`` from an async context. Preflights
+    the ``alembic_version`` row so an unknown revision surfaces as a
+    clear diagnostic instead of Alembic's raw KeyError.
     """
     from alembic import command
     from alembic.config import Config
 
+    _preflight_check_alembic_version(sync_connection)
     alembic_cfg = Config(str(_ALEMBIC_INI))
     alembic_cfg.attributes["connection"] = sync_connection
     command.upgrade(alembic_cfg, "head")

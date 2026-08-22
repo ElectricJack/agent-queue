@@ -95,8 +95,23 @@ def run_migrations_online() -> None:
         _do_run_migrations(connectable)
         return
 
-    # Otherwise (CLI usage: `alembic upgrade head`), create our own engine
-    asyncio.run(run_async_migrations())
+    # Otherwise (CLI usage: `alembic upgrade head`), create our own engine.
+    # Print the resolved URL up front so ``Can't locate revision …``
+    # failures are obviously attributable to a specific database.
+    resolved = _get_url()
+    print(f"[alembic] target DB: {resolved}")
+    try:
+        asyncio.run(run_async_migrations())
+    except Exception:
+        print(
+            f"[alembic] migration FAILED against: {resolved}\n"
+            "  If you see 'Can't locate revision identified by X', the\n"
+            "  alembic_version row on this DB names a revision this\n"
+            "  branch's migrations/versions/ does not contain. Confirm\n"
+            "  AGENT_QUEUE_DB_URL points at the DB you meant, and check\n"
+            "  the alembic_version row before running any repair."
+        )
+        raise
 
 
 if context.is_offline_mode():
