@@ -14,6 +14,7 @@ import {
   useSessionKill,
 } from "../api/hooks";
 import { useTranscriptStream } from "../ws/useTranscriptStream";
+import PaneView from "../components/PaneView";
 
 export default function SessionDetail() {
   const { sessionId = "" } = useParams();
@@ -23,6 +24,7 @@ export default function SessionDetail() {
   const kill = useSessionKill();
   const [text, setText] = useState("");
   const [streamOn, setStreamOn] = useState(true);
+  const [viewMode, setViewMode] = useState<"transcript" | "pane">("transcript");
   const { entries, status, error, clear } = useTranscriptStream(sessionId, {
     enabled: streamOn,
   });
@@ -110,10 +112,36 @@ export default function SessionDetail() {
 
       <section className="rounded border border-gray-800 bg-gray-950">
         <div className="flex items-center justify-between border-b border-gray-800 px-3 py-2">
-          <h2 className="text-sm font-semibold text-gray-300">
-            Transcript stream
-            <span className="ml-2 text-xs text-gray-500">({status})</span>
-          </h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-sm font-semibold text-gray-300">
+              {viewMode === "transcript" ? "Transcript stream" : "Pane view"}
+              <span className="ml-2 text-xs text-gray-500">({status})</span>
+            </h2>
+            <div className="inline-flex rounded border border-gray-800 text-xs">
+              <button
+                onClick={() => setViewMode("transcript")}
+                className={
+                  "px-2 py-0.5 " +
+                  (viewMode === "transcript"
+                    ? "bg-indigo-600 text-white"
+                    : "text-gray-300 hover:bg-gray-900")
+                }
+              >
+                Transcript
+              </button>
+              <button
+                onClick={() => setViewMode("pane")}
+                className={
+                  "px-2 py-0.5 " +
+                  (viewMode === "pane"
+                    ? "bg-indigo-600 text-white"
+                    : "text-gray-300 hover:bg-gray-900")
+                }
+              >
+                Pane
+              </button>
+            </div>
+          </div>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setStreamOn((v) => !v)}
@@ -138,20 +166,24 @@ export default function SessionDetail() {
           </div>
         </div>
         {error && <p className="px-3 py-1 text-xs text-amber-400">{error}</p>}
-        <div className="max-h-[60vh] overflow-y-auto p-3 font-mono text-xs">
-          {entries.length === 0 ? (
-            <p className="text-gray-500">Waiting for output…</p>
-          ) : (
-            entries.map((e) => (
-              <div key={e._idx} className="mb-2 whitespace-pre-wrap">
-                <span className="mr-2 text-gray-600">
-                  {e.source === "peek" ? "[peek]" : `[${e.type ?? "?"}]`}
-                </span>
-                <span className="text-gray-200">{e.text}</span>
-              </div>
-            ))
-          )}
-        </div>
+        {viewMode === "pane" ? (
+          <PaneView entries={entries} />
+        ) : (
+          <div className="max-h-[60vh] overflow-y-auto p-3 font-mono text-xs">
+            {entries.length === 0 ? (
+              <p className="text-gray-500">Waiting for output…</p>
+            ) : (
+              entries.map((e) => (
+                <div key={e._idx} className="mb-2 whitespace-pre-wrap">
+                  <span className="mr-2 text-gray-600">
+                    {e.source === "peek" ? "[peek]" : `[${e.type ?? "?"}]`}
+                  </span>
+                  <span className="text-gray-200">{e.text}</span>
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </section>
     </div>
   );
