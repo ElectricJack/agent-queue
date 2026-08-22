@@ -134,7 +134,19 @@ class WorkspaceMixin:
         resolved_profile = await self._resolve_profile(task)
         read_only = bool(resolved_profile and getattr(resolved_profile, "read_only", False))
         if read_only:
-            logger.info(
+            # Read-only acquisition trades safety guarantees for concurrency:
+            # * no write lock is taken on the mutable project-repo kind, so
+            #   two read-only agents can share a workspace another agent is
+            #   *simultaneously mutating* — the reader may observe torn state
+            #   (half-written files, index mid-rebase);
+            # * the acquired workspace may not be the one whose contents the
+            #   caller expected — reads reflect whatever state the writer
+            #   happens to be in at read time.
+            # Read-only tasks must therefore treat their workspace as a
+            # best-effort snapshot, never as an authoritative source.
+            # Emitted at DEBUG so it doesn't flood daemon logs on every
+            # normal dispatch (previously INFO on every acquisition).
+            logger.debug(
                 "Task %s: profile '%s' is read_only — workspace acquired "
                 "without a write lock",
                 task.id,
