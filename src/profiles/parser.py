@@ -63,6 +63,7 @@ CONFIG_KNOWN_KEYS = frozenset(
         "workspaces",
         "default_class",
         "needs_workspace",
+        "read_only",
     }
 )
 
@@ -566,6 +567,13 @@ def _validate_config(config: dict) -> list[str]:
         if not isinstance(v, bool):
             errors.append(
                 f"Config 'needs_workspace' must be a boolean, got {type(v).__name__}"
+            )
+
+    if "read_only" in config:
+        v = config["read_only"]
+        if not isinstance(v, bool):
+            errors.append(
+                f"Config 'read_only' must be a boolean, got {type(v).__name__}"
             )
 
     errors.extend(_validate_session_config(config))
