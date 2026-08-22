@@ -119,19 +119,17 @@ def build_task_files_router() -> APIRouter:
         # changes from unrelated commits landed on default since the branch
         # was cut.  Fall through to the raw ref when merge-base fails.
         try:
-            mb = (await git._arun(
-                ["merge-base", base_ref, branch], cwd=workspace
-            )).strip()
+            mb = await git.amerge_base(workspace, base_ref, branch)
             diff_from = mb or base_ref
         except Exception:
             diff_from = base_ref
 
         try:
-            numstat = await git._arun(
-                ["diff", "--numstat", f"{diff_from}..{branch}"], cwd=workspace
+            numstat = await git.aget_diff(
+                workspace, diff_from, to_ref=branch, numstat=True
             )
-            name_status = await git._arun(
-                ["diff", "--name-status", f"{diff_from}..{branch}"], cwd=workspace
+            name_status = await git.aget_diff(
+                workspace, diff_from, to_ref=branch, name_status=True
             )
         except Exception as e:
             logger.warning("task-files diff failed for %s: %s", task_id, e)

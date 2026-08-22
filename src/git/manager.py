@@ -1273,6 +1273,16 @@ class GitManager:
         except GitError:
             return None
 
+    async def amerge_base(self, cwd: str, ref_a: str, ref_b: str) -> str:
+        """Return the merge-base SHA of two refs (empty string on failure)."""
+        _validate_rev(ref_a)
+        _validate_rev(ref_b)
+        try:
+            out = await self._arun(["merge-base", ref_a, ref_b], cwd=cwd)
+            return out.strip()
+        except GitError:
+            return ""
+
     async def acreate_branch(self, checkout_path: str, branch_name: str) -> None:
         _validate_ref(branch_name)
         try:
@@ -1787,13 +1797,52 @@ class GitManager:
         await self._arun(["init"], cwd=path)
         await self._arun(["commit", "--allow-empty", "-m", "Initial commit"], cwd=path)
 
-    async def aget_diff(self, checkout_path: str, base_branch: str = "main") -> str:
-        # Read-only: revision expressions (HEAD~1, HEAD^, main@{1}) allowed.
+    async def aget_diff(
+        self,
+        checkout_path: str,
+        base_branch: str = "main",
+        to_ref: str | None = None,
+        *,
+        name_status: bool = False,
+        numstat: bool = False,
+    ) -> str:
+        """Return diff output.
+
+        Two-arg form (legacy) ``aget_diff(cwd, base)`` diffs the
+        working-tree against ``base_branch`` — used by plugins to
+        preview local edits.
+
+        Three-arg form ``aget_diff(cwd, from_ref, to_ref)`` diffs
+        ``from_ref..to_ref`` — used by task-files sidebar. ``name_status``
+        toggles ``--name-status``; ``numstat`` toggles ``--numstat``.
+        Both can be set but the two formats interleave awkwardly;
+        callers pick one.
+
+        Refs are validated with :func:`_validate_rev` so revision
+        expressions (``HEAD~1``, ``origin/main``) pass while shell
+        injection shapes are rejected.
+        """
         _validate_rev(base_branch, field="base branch")
+        if to_ref is not None:
+            _validate_rev(to_ref, field="to ref")
+        args = ["diff"]
+        if name_status:
+            args.append("--name-status")
+        if numstat:
+            args.append("--numstat")
+        if to_ref is not None:
+            args.append(f"{base_branch}..{to_ref}")
+        else:
+            args.extend([base_branch, "--"])
         try:
-            return await self._arun(["diff", base_branch, "--"], cwd=checkout_path)
+            return await self._arun(args, cwd=checkout_path)
         except GitError:
-            return ""
+            # Legacy two-arg form swallowed errors as empty string;
+            # preserve that. The three-arg form re-raises because
+            # callers (task_files) need to distinguish diff failure.
+            if to_ref is None:
+                return ""
+            raise
 
     async def aget_changed_files(
         self,

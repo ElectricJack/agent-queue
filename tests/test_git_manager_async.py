@@ -834,3 +834,44 @@ class TestUntrustedTextStillFlowsAsFlagValues:
         assert committed is True
         log = _git(["log", "-1", "--pretty=%s"], cwd=clone)
         assert log == "--not-a-flag: hostile message"
+
+
+class TestDiffAndMergeBase:
+    """Public async wrappers for merge-base + diff (used by task_files.py)."""
+
+    @pytest.mark.asyncio
+    async def test_amerge_base_and_aget_diff(self, clone, mgr):
+        # Baseline commit is main. Add a branch with two more commits.
+        _git(["checkout", "-b", "feature"], cwd=clone)
+        pathlib.Path(clone, "a.txt").write_text("a")
+        _git(["add", "."], cwd=clone)
+        _git(["commit", "-m", "add a"], cwd=clone)
+        pathlib.Path(clone, "b.txt").write_text("b")
+        _git(["add", "."], cwd=clone)
+        _git(["commit", "-m", "add b"], cwd=clone)
+
+        mb = await mgr.amerge_base(clone, "main", "feature")
+        assert mb, "merge-base should be non-empty"
+        # Merge-base should match main's HEAD.
+        main_head = _git(["rev-parse", "main"], cwd=clone)
+        assert mb == main_head
+
+        name_status = await mgr.aget_diff(
+            clone, "main", to_ref="feature", name_status=True
+        )
+        assert "a.txt" in name_status and "b.txt" in name_status
+
+        numstat = await mgr.aget_diff(
+            clone, "main", to_ref="feature", numstat=True
+        )
+        # numstat lines look like "1\t0\ta.txt"
+        assert "a.txt" in numstat and "b.txt" in numstat
+
+    @pytest.mark.asyncio
+    async def test_amerge_base_returns_empty_on_unknown_ref(self, clone, mgr):
+        assert await mgr.amerge_base(clone, "main", "no-such-branch") == ""
+
+    @pytest.mark.asyncio
+    async def test_ahas_remote(self, clone, mgr):
+        assert await mgr.ahas_remote(clone) is True
+        assert await mgr.ahas_remote(clone, "no-such-remote") is False
