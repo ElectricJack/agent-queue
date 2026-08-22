@@ -42,7 +42,7 @@ When the routing queue is empty, close this task with a short summary:
   "harness": "claude",
   "runtime": "claude_sdk",
   "model": "claude-sonnet-4-6",
-  "default_class": "fast",
+  "default_class": "fast-low",
   "needs_workspace": false
 }
 ```

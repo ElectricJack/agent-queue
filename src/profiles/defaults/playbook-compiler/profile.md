@@ -29,7 +29,7 @@ Do:
 {
   "runtime": "claude_sdk",
   "needs_workspace": false,
-  "default_class": "mechanical"
+  "default_class": "fast-low"
 }
 ```
 

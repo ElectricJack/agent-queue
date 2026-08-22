@@ -11,7 +11,7 @@ tags: [system, review, merge-authority, dv2-phase2]
   "runtime": "claude_sdk",
   "needs_workspace": true,
   "read_only": false,
-  "default_class": "focused",
+  "default_class": "standard-medium",
   "description": "Runs once per branch after all per-task reviews complete. Reads the aggregate PR, verifies CI is green, and merges the PR (this is the only profile with merge authority)."
 }
 ```

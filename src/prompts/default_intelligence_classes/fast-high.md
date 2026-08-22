@@ -1,0 +1,15 @@
+---
+id: fast-high
+name: "Fast · High"
+description: "Cheap small model — mechanical edits, single-file changes, well-known recipes. Thinking: extended reasoning."
+tier: fast
+thinking: high
+---
+
+```json
+{
+  "anthropic": {"model": "claude-haiku-4-5", "thinking": "high"},
+  "openai":    {"model": "gpt-5-mini",    "reasoning_effort": "high"},
+  "google":    {"model": "gemini-2.5-flash",    "thinking_budget": 24576}
+}
+```

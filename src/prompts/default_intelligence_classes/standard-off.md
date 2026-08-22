@@ -1,0 +1,15 @@
+---
+id: standard-off
+name: "Standard · Off"
+description: "Balanced mid-tier — most implementation, multi-file refactors, clear-spec work. Thinking: no extended reasoning."
+tier: standard
+thinking: off
+---
+
+```json
+{
+  "anthropic": {"model": "claude-sonnet-5", "thinking": "off"},
+  "openai":    {"model": "gpt-5",    "reasoning_effort": "minimal"},
+  "google":    {"model": "gemini-2.5-pro",    "thinking_budget": 0}
+}
+```

@@ -33,7 +33,7 @@ Do:
 {
   "runtime": "claude_sdk",
   "needs_workspace": false,
-  "default_class": "planning"
+  "default_class": "deep-high"
 }
 ```
 
