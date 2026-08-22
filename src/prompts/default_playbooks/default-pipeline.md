@@ -6,6 +6,11 @@ scope: system
 triggers:
   - task.created
   - task.completed
+  - spec.approved
+  - proposal.ready
+  - event_type: gate.resolved
+    filter:
+      gate_type: human
 ---
 
 # Default Pipeline
@@ -27,6 +32,15 @@ Ships three rules:
   reviewer only runs once all per-task reviews have completed. Downstream
   dependents on the reviewed task additionally get a `pr-merged` gate awaiting
   the branch's PR URL.
+- **Spec ingest** (`spec.approved`) — ensures exactly one `spec-ingest` task
+  per approved spec file, keyed `spec-ingest:<spec_path>` via `ensure_task`.
+  The spec-ingest agent reads the spec and calls `task_batch_propose` with
+  the derived task graph.
+- **Proposal gate** (`proposal.ready`) — raises a `human` gate asking a person
+  to approve the proposed task batch, `await_id` pinned to the proposal id.
+- **Proposal commit** (`gate.resolved`, filtered to `gate_type: human`) —
+  once the gate is resolved, calls `task_batch_commit` for the awaited
+  proposal so the approved batch is written into the task graph.
 
 ```json
 {
@@ -178,6 +192,62 @@ Ships three rules:
             "title": "Awaiting merge of {{event.task.branch_name}}",
             "await_id": "{{event.task.pr_url}}",
             "waiter_task_ids": ["{{outputs.dep.id}}"]
+          },
+          "on_success": "done",
+          "on_failure": "done"
+        },
+        "done": {"terminal": true}
+      }
+    },
+    {
+      "id": "spec-ingest-on-approve",
+      "on": "spec.approved",
+      "entry": "spec_ingest_gate",
+      "nodes": {
+        "spec_ingest_gate": {
+          "command": "ensure_task",
+          "args": {
+            "project_id": "{{event.project_id}}",
+            "dedup_key": "spec-ingest:{{event.spec_path}}",
+            "title": "Ingest spec {{event.spec_path}}",
+            "description": "Read this spec, list existing tasks in the project, and emit task_batch_propose with the derived task graph. Iterate on validation errors.",
+            "profile_id": "spec-ingest"
+          },
+          "on_success": "done",
+          "on_failure": "done"
+        },
+        "done": {"terminal": true}
+      }
+    },
+    {
+      "id": "proposal-ready-gate",
+      "on": "proposal.ready",
+      "entry": "proposal_ready_gate",
+      "nodes": {
+        "proposal_ready_gate": {
+          "command": "gate_create",
+          "args": {
+            "project_id": "{{event.project_id}}",
+            "gate_type": "human",
+            "title": "Approve task batch?",
+            "question": "Approve proposal {{event.proposal_id}}?",
+            "await_id": "{{event.proposal_id}}"
+          },
+          "on_success": "done",
+          "on_failure": "done"
+        },
+        "done": {"terminal": true}
+      }
+    },
+    {
+      "id": "commit-on-gate-resolve",
+      "on": "gate.resolved",
+      "entry": "commit_proposal",
+      "nodes": {
+        "commit_proposal": {
+          "command": "task_batch_commit",
+          "args": {
+            "proposal_id": "{{event.await_id}}"
           },
           "on_success": "done",
           "on_failure": "done"
