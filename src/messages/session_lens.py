@@ -77,6 +77,16 @@ _SUPERVISOR_NAME_PREFIX: str = "supervisor-"
 #: from a ``supervisor-<pid>`` messaging address.
 _SUPERVISOR_PROFILE_ID: str = "supervisor"
 
+#: The suffix used by the *global* supervisor's messaging address
+#: (``supervisor-global``) and, correspondingly, the second half of its
+#: runtime session name (``n-supervisor--global``). The global supervisor
+#: is a first-class, always-available operator that talks to Agent Q at
+#: ``/`` in the dashboard — distinct from any per-project supervisor. It
+#: runs with an admin scope (elevated + project_id=None), lives at the
+#: system vault root, and its bearer token is loopback-restricted (see
+#: :class:`~src.api.middleware.TokenAuthMiddleware`).
+_GLOBAL_SUPERVISOR_SUFFIX: str = "global"
+
 
 def _resolve_runtime_session_name(kind: str, target_id: str) -> str:
     """Translate a messaging ``target_id`` to the runtime session name.
@@ -220,6 +230,15 @@ class SessionLens:
 
         # Cold start.
         derived_project = target_id[len(_SUPERVISOR_NAME_PREFIX) :] or project_id
+        # The messaging address ``supervisor-global`` addresses the *global*
+        # supervisor, not a per-project supervisor for a project literally
+        # named "global". Fold it onto the global cold-start path so the
+        # token is minted with project_id=None (admin scope) and the
+        # session runs at the system vault root, not a phantom
+        # ``projects/global`` directory. Runtime session name is still
+        # ``n-supervisor--global`` (via ``named_session_name`` below), so
+        # the reconciler adopts it on restart.
+        is_global = derived_project == _GLOBAL_SUPERVISOR_SUFFIX
         if not derived_project:
             # A supervisor address always encodes a project
             # (``supervisor-<pid>``); an empty derivation means the caller
@@ -238,7 +257,11 @@ class SessionLens:
             return False
 
         harness_name = getattr(profile, "harness", None) or "claude"
-        harness = self._harnesses.get(harness_name, project_id=derived_project)
+        # For the global supervisor there is no per-project harness
+        # registration to consult — resolve against the system-scoped
+        # registry (project_id=None).
+        harness_project = None if is_global else derived_project
+        harness = self._harnesses.get(harness_name, project_id=harness_project)
         if harness is None:
             logger.warning("harness %r not registered; cannot start supervisor", harness_name)
             return False
@@ -258,7 +281,36 @@ class SessionLens:
             )
             return False
 
-        work_dir = self._supervisor_work_dir(derived_project)
+        # Global supervisor runs at the system vault root; it has no
+        # per-project directory.
+        work_dir = (
+            self._supervisor_work_dir(None)
+            if is_global
+            else self._supervisor_work_dir(derived_project)
+        )
+        # ``sessions.project_id`` is a NOT NULL FK to ``projects.id`` —
+        # so persisting the global-supervisor row requires a stub
+        # ``projects`` row named "global". Auto-create idempotently; the
+        # token itself was minted with project_id=None (admin scope), so
+        # this stub only exists to satisfy the FK and is never used to
+        # narrow scope. If a real project happens to be named "global",
+        # ``create_project`` is idempotent enough (INSERT OR IGNORE-style)
+        # for it to be a no-op — see ``Database.create_project``.
+        if is_global:
+            try:
+                from src.models import Project as _Project
+
+                await self._db.create_project(
+                    _Project(id=_GLOBAL_SUPERVISOR_SUFFIX, name="Global")
+                )
+            except IntegrityError:
+                # Already exists — expected on every warm start.
+                pass
+            except Exception:
+                logger.debug(
+                    "failed to ensure 'global' project stub for global supervisor",
+                    exc_info=True,
+                )
         if not work_dir:
             # No vault_root configured and no project_id → nowhere sensible
             # to run the supervisor. Better to skip than to pass an empty
@@ -279,16 +331,21 @@ class SessionLens:
         api_token = ""
         if self._token_store is not None:
             try:
+                # Global supervisor gets an admin-scope token
+                # (elevated + project_id=None); per-project supervisors
+                # get an elevated token narrowed to their project.
+                mint_project = None if is_global else derived_project
                 api_token = await self._token_store.mint(
                     session_id=session_id,
                     task_id=None,
-                    project_id=derived_project,
-                    # Supervisor is the per-project trusted operator —
-                    # elevate so it can run every ``aq`` command (e.g.
+                    project_id=mint_project,
+                    # Supervisor is the trusted operator — elevate so it
+                    # can run every ``aq`` command (e.g.
                     # ``project_create``, ``task_create``, ``session_*``)
-                    # on behalf of the user. Still project-scoped: the
-                    # elevated path in ``check_command_scope`` enforces
-                    # ``project_id`` match.
+                    # on behalf of the user. Per-project scope is still
+                    # enforced by ``check_command_scope`` when
+                    # ``project_id`` is set; global admin (project_id=
+                    # None) is loopback-restricted in the middleware.
                     elevated=True,
                 )
             except Exception:
