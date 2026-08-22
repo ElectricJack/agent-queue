@@ -247,3 +247,28 @@ async def test_happy_path_dispatches_pipeline():
 
     assert len(dispatched) == 1, "Pipeline task must be dispatched on the happy path"
     db_mock.create_playbook_run.assert_awaited_once()
+
+
+async def test_pipeline_run_row_marked_completed():
+    """The run row must leave 'running' once the pipeline finishes."""
+    db_mock = MagicMock()
+    db_mock.get_playbook_run_by_event = AsyncMock(return_value=None)
+    db_mock.create_playbook_run = AsyncMock(return_value=None)
+    db_mock.update_playbook_run = AsyncMock(return_value=None)
+
+    orch = _make_orchestrator_stub(db_mock)
+    playbook = _make_pipeline_playbook()
+    event_data = {"type": "task.completed", "event_id": "evt-done", "project_id": "P"}
+
+    dispatched: list[object] = []
+    with patch("asyncio.create_task", side_effect=lambda coro, **kw: dispatched.append(coro)):
+        await orch._on_playbook_trigger(playbook, event_data)
+
+    assert len(dispatched) == 1
+    await dispatched[0]  # run the pipeline to completion
+
+    db_mock.update_playbook_run.assert_awaited_once()
+    kwargs = db_mock.update_playbook_run.await_args.kwargs
+    assert kwargs["status"] == "completed"
+    assert kwargs["error"] is None
+    assert kwargs["completed_at"] > 0

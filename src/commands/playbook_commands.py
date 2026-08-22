@@ -819,6 +819,11 @@ class PlaybookCommandsMixin:
 
         graph = playbook.to_dict()
 
+        # Pipeline playbooks execute deterministically via PipelineRunner —
+        # never through the Supervisor LLM (dv2-p1 invariant).
+        if graph.get("kind") == "pipeline":
+            return await self._run_pipeline_playbook(playbook, graph, event)
+
         # Create a Supervisor for LLM calls
         from src.runtimes.supervisor import Supervisor
 
@@ -874,6 +879,61 @@ class PlaybookCommandsMixin:
             resp["error"] = result.error
         if result.final_response:
             resp["final_response"] = result.final_response
+        return resp
+
+    async def _run_pipeline_playbook(self, playbook, graph: dict, event: dict) -> dict:
+        """Execute a ``kind: pipeline`` playbook via the deterministic runner."""
+        from src.models import PlaybookRun as PlaybookRunModel
+        from src.playbooks.pipeline_runner import PipelineRunner
+
+        runner = PipelineRunner(graph=graph, event=event, handler=self, db=self.db)
+
+        run_row_saved = False
+        if self.db:
+            db_run = PlaybookRunModel(
+                run_id=runner.run_id,
+                playbook_id=playbook.id,
+                playbook_version=getattr(playbook, "version", 1),
+                trigger_event=json.dumps(event),
+                status="running",
+                started_at=time.time(),
+                event_id=event.get("event_id"),
+            )
+            try:
+                await self.db.create_playbook_run(db_run)
+                run_row_saved = True
+            except Exception as exc:
+                # Duplicate (playbook_id, event_id) or DB failure — refuse to
+                # run without a persisted row, mirroring the trigger path.
+                return {"error": f"Could not record pipeline run: {exc}"}
+
+        status, error = "failed", None
+        try:
+            with CorrelationContext(run_id=runner.run_id):
+                result = await runner.run()
+            status, error = result.status, result.error
+        except Exception as exc:
+            error = str(exc)
+            logger.error(
+                "Manual pipeline run failed for '%s': %s", playbook.id, exc, exc_info=True
+            )
+        if run_row_saved:
+            try:
+                await self.db.update_playbook_run(
+                    runner.run_id, status=status, completed_at=time.time(), error=error
+                )
+            except Exception:
+                logger.exception("Failed to record pipeline run outcome (run=%s)", runner.run_id)
+
+        resp = {
+            "run_id": runner.run_id,
+            "playbook_id": playbook.id,
+            "version": playbook.version,
+            "status": status,
+            "kind": "pipeline",
+        }
+        if error:
+            resp["error"] = error
         return resp
 
     async def _cmd_dry_run_playbook(self, args: dict) -> dict:

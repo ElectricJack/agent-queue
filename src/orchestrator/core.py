@@ -752,14 +752,30 @@ class Orchestrator(
 
                 async def _run_pipeline() -> None:
                     with CorrelationContext(run_id=runner.run_id):
+                        status, error = "failed", None
                         try:
-                            await runner.run()
-                        except Exception:
+                            result = await runner.run()
+                            status, error = result.status, result.error
+                        except Exception as exc:
+                            error = str(exc)
                             logger.exception(
                                 "Pipeline playbook '%s' run failed (trigger event=%s)",
                                 playbook.id,
                                 event_data.get("type") or event_data.get("_event_type"),
                             )
+                        if self.db:
+                            try:
+                                await self.db.update_playbook_run(
+                                    runner.run_id,
+                                    status=status,
+                                    completed_at=time.time(),
+                                    error=error,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Failed to record pipeline run outcome (run=%s)",
+                                    runner.run_id,
+                                )
 
                 asyncio.create_task(
                     _run_pipeline(),
