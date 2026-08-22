@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -111,3 +112,75 @@ def test_files_unknown_task_is_404(wired):
     client, _, _, _ = wired
     r = client.get("/api/tasks/does-not-exist/files")
     assert r.status_code == 404
+
+
+# ── Task 2: /file endpoint ────────────────────────────────────────────
+
+
+def test_file_returns_content(wired):
+    client, _, _, _ = wired
+    r = client.get("/api/tasks/task1/file", params={"path": "new_file.py"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    assert r.text == "print('hello')\n"
+
+
+def test_file_rejects_parent_traversal(wired):
+    client, _, _, _ = wired
+    r = client.get("/api/tasks/task1/file", params={"path": "../secret"})
+    assert r.status_code == 403
+
+
+def test_file_rejects_absolute_path(wired):
+    client, _, _, _ = wired
+    r = client.get("/api/tasks/task1/file", params={"path": "/etc/passwd"})
+    assert r.status_code == 403
+
+
+def test_file_rejects_symlink_escape(wired, tmp_path):
+    client, _, repo, _ = wired
+    secret = tmp_path / "secret.txt"
+    secret.write_text("shh")
+    link = repo / "escape"
+    os.symlink(secret, link)
+    r = client.get("/api/tasks/task1/file", params={"path": "escape"})
+    assert r.status_code == 403
+
+
+def test_file_size_cap(wired):
+    client, _, repo, _ = wired
+    big = repo / "big.bin"
+    big.write_bytes(b"x" * (512 * 1024 + 1))
+    r = client.get("/api/tasks/task1/file", params={"path": "big.bin"})
+    assert r.status_code == 413
+
+
+def test_file_missing_is_404(wired):
+    client, _, _, _ = wired
+    r = client.get("/api/tasks/task1/file", params={"path": "nope.txt"})
+    assert r.status_code == 404
+
+
+def test_file_rejects_nested_parent_traversal(wired):
+    """Even nested traversal like ``sub/../../etc`` must be caught."""
+    client, _, repo, _ = wired
+    (repo / "sub").mkdir(exist_ok=True)
+    r = client.get(
+        "/api/tasks/task1/file", params={"path": "sub/../../outside"}
+    )
+    # Either 404 (resolved path doesn't exist) or 403 (escapes) is safe;
+    # what MUST NOT happen is a 200 leaking data outside the workspace.
+    assert r.status_code in (403, 404)
+
+
+def test_file_rejects_symlink_to_directory_escape(wired, tmp_path):
+    """A symlinked subdir whose target lies outside must not leak files."""
+    client, _, repo, _ = wired
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+    (outside / "leak.txt").write_text("leak")
+    os.symlink(outside, repo / "linkdir")
+    r = client.get(
+        "/api/tasks/task1/file", params={"path": "linkdir/leak.txt"}
+    )
+    assert r.status_code == 403

@@ -1,8 +1,13 @@
 """Task-scoped worktree file preview endpoints.
 
+Two endpoints:
+
 * ``GET /api/tasks/{task_id}/files`` — list of files changed on the task's
   branch vs its merge base with the project's default branch, with per-file
   additions/deletions/status.
+* ``GET /api/tasks/{task_id}/file?path=<rel>`` — raw file bytes as
+  ``text/plain``, path-restricted to the task's acquired workspace,
+  size-capped at 512 KB.
 
 The workspace-for-task mapping is the DB row
 :func:`Database.get_workspace_for_task` returns — the workspace currently
@@ -13,8 +18,10 @@ rather than 404; the sidebar renders "no worktree attached" in that case.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 
 from src.api import dependencies as deps
 
@@ -143,7 +150,80 @@ def build_task_files_router() -> APIRouter:
             "workspace_path": workspace,
         }
 
-    # /file endpoint added in Task 2.
+    @router.get("/api/tasks/{task_id}/file")
+    async def get_file(task_id: str, path: str = Query(...)):
+        orch = deps._orchestrator
+        if orch is None:
+            raise HTTPException(status_code=503, detail="orchestrator not ready")
+
+        task = await orch.db.get_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"No task '{task_id}'")
+
+        ws = await orch.db.get_workspace_for_task(task_id)
+        if ws is None or not ws.workspace_path:
+            raise HTTPException(status_code=404, detail="task has no workspace")
+
+        # ── Path safety ────────────────────────────────────────────────
+        # Reject absolute paths outright — an absolute ``path`` would
+        # cause ``root / path`` to discard ``root`` and jump anywhere.
+        if Path(path).is_absolute():
+            raise HTTPException(status_code=403, detail="absolute path not allowed")
+
+        # Resolve BOTH sides, then verify containment.  We must resolve
+        # before comparing so that symlink escapes and ``..`` segments
+        # both collapse to their real target.  ``strict=True`` on the
+        # file path turns a missing file into a FileNotFoundError we can
+        # map to 404.
+        root = Path(ws.workspace_path).resolve()
+
+        # First pass: non-strict resolve of the *lexical* path so ``..``
+        # segments collapse without touching the filesystem.  This
+        # catches traversal even when the target doesn't exist, so a
+        # missing ``../secret`` is a 403 (escape attempt) not a 404.
+        lexical = (root / path).resolve()
+        try:
+            lexical.relative_to(root)
+        except ValueError:
+            raise HTTPException(status_code=403, detail="path escapes workspace")
+
+        # Second pass: strict resolve to follow symlinks and error on
+        # missing files.  A symlink whose real target lies outside the
+        # workspace is a 403.
+        try:
+            candidate = (root / path).resolve(strict=True)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="file not found")
+        except (OSError, RuntimeError):
+            # RuntimeError: symlink loop.  OSError: permission etc.
+            raise HTTPException(status_code=403, detail="path not accessible")
+
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            raise HTTPException(status_code=403, detail="path escapes workspace")
+
+        if not candidate.is_file():
+            raise HTTPException(status_code=404, detail="not a regular file")
+
+        try:
+            size = candidate.stat().st_size
+        except OSError:
+            raise HTTPException(status_code=404, detail="file not stat-able")
+        if size > MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"file exceeds {MAX_FILE_BYTES} byte cap",
+            )
+
+        try:
+            data = candidate.read_bytes()
+        except OSError as e:
+            raise HTTPException(status_code=404, detail=f"read failed: {e}")
+
+        text = data.decode("utf-8", errors="replace")
+        return PlainTextResponse(content=text, media_type="text/plain; charset=utf-8")
+
     return router
 
 
