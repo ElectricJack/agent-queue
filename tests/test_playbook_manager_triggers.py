@@ -243,6 +243,12 @@ class TestTriggerMapBasic:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skip(
+    reason=(
+        "LLM compile path removed in dv2 Phase 6 T10 — "
+        "manager.compile_playbook no longer accepts non-pipeline markdown."
+    )
+)
 class TestTriggerMapOnCompile:
     """Test trigger mapping updates during compilation."""
 
@@ -695,6 +701,12 @@ class TestLoadFromStore:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skip(
+    reason=(
+        "LLM compile path removed in dv2 Phase 6 T10 — the two tests here "
+        "exercise the removed compile_playbook LLM branch."
+    )
+)
 class TestTriggerMapConsistency:
     """Test that the trigger map stays consistent through mixed operations."""
 

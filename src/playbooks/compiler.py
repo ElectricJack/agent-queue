@@ -1,28 +1,30 @@
-"""LLM-powered compiler that turns playbook markdown into executable JSON graphs.
+"""Playbook compiler — deterministic path only.
 
-Reads a playbook ``.md`` file (natural language body + YAML frontmatter),
-invokes an LLM with the content and the target JSON Schema, validates the
-LLM's output, and returns a :class:`~src.playbooks.models.CompiledPlaybook`.
+Historical: this module also housed an LLM-driven compiler that turned
+natural-language playbook markdown into a compiled JSON graph.  Phase 6
+(compiler-as-agent) removed that path — non-pipeline compilations are
+now enqueued as tasks against the ``playbook-compiler`` agent-type
+profile, which iterates against ``playbook_validate`` / ``playbook_install``
+until the artifact is accepted.
 
-The compiler is a *one-shot translation* — it runs once per markdown edit,
-not per playbook execution.  The resulting JSON graph is what the runtime
-executor operates on.
+What remains here:
 
-See ``docs/specs/design/playbooks.md`` Section 4 for the specification.
+- :class:`CompilationResult` — the shared result type used by both the
+  pipeline compiler (see ``src/playbooks/pipeline_compiler.py``) and the
+  ``playbook_validate`` command.
+- :func:`compile_playbook` — a synchronous dispatch helper that accepts a
+  markdown file and routes ``kind: pipeline`` files to the deterministic
+  pipeline compiler.  Non-pipeline files return a failure result telling
+  callers to route the compile through the agent instead.
+- :class:`PlaybookCompiler` — a thin holder for the surviving static
+  helpers (``_parse_frontmatter``, ``_validate_frontmatter``,
+  ``_compute_source_hash``, ``_normalize_content``, ``_merge_frontmatter``,
+  ``_extract_json``) plus a :meth:`compile_pipeline` method that mirrors
+  :func:`compile_playbook` for the pipeline case.
 
-Typical usage::
-
-    from src.playbooks.compiler import PlaybookCompiler
-    from src.chat_providers import create_chat_provider
-
-    provider = create_chat_provider(config)
-    compiler = PlaybookCompiler(provider, config=config)
-
-    result = await compiler.compile(markdown_content)
-    if result.success:
-        compiled = result.playbook  # CompiledPlaybook instance
-    else:
-        print(result.errors)
+There is no async ``compile()`` method, no chat-provider import, and no
+provider parameter — the framework does not call any LLM from this
+module.  See ``docs/specs/design/playbooks.md`` §4.6.
 """
 
 from __future__ import annotations
@@ -32,24 +34,18 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import yaml
 
 from src.aq_uri import AqUriError, rewrite_aq_uris
-from src.playbooks.models import CompiledPlaybook, generate_json_schema
-
-if TYPE_CHECKING:
-    from src.chat_providers.base import ChatProvider
+from src.playbooks.models import CompiledPlaybook
 
 logger = logging.getLogger(__name__)
 
-# Maximum number of LLM retry attempts when the first response fails
-# validation.  Each retry includes the validation errors as feedback.
-MAX_RETRIES = 2
-
-# Fallback max_tokens when no config is available (e.g. standalone usage).
-# The runtime default comes from config.chat_provider.playbook_max_tokens.
+# Fallback max_tokens kept as a module constant for callers (e.g. the
+# manager) that plumb a token budget through unchanged config.  The value
+# is inert here — no LLM call happens in this module.
 DEFAULT_MAX_TOKENS = 4096
 
 
@@ -67,12 +63,14 @@ class CompilationResult:
         playbook: The compiled playbook, or ``None`` on failure.
         errors: Human-readable error strings (empty on success).
         source_hash: SHA-256 hash (16 hex chars) of the source markdown.
-        raw_json: The raw JSON dict extracted from the LLM response,
+        raw_json: The raw JSON dict extracted from the compiler output,
             before dataclass conversion.  Useful for debugging.
-        retries_used: How many retry rounds were needed (0 = first attempt).
+        retries_used: Kept for backward compatibility with pre-Phase-6
+            callers (always 0 for the deterministic path).
         skipped: ``True`` if compilation was skipped because the source
-            markdown has not changed since the last successful compilation
-            (source hash matches the active compiled version).
+            markdown has not changed since the last successful compilation.
+        structured_errors: ``[{node, field, message}, ...]`` records
+            matching the Phase 6 ``playbook_validate`` contract.
     """
 
     success: bool
@@ -82,52 +80,44 @@ class CompilationResult:
     raw_json: dict[str, Any] | None = None
     retries_used: int = 0
     skipped: bool = False
-    # Structured error records matching the Phase 6 ``playbook_validate``
-    # contract: ``{node: str|None, field: str|None, message: str}``.
-    # Populated in parallel with ``errors`` (which stays a list of strings
-    # for existing callers that concatenate/log them).
     structured_errors: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
-# Thin dispatch helper
+# Dispatch helper
 # ---------------------------------------------------------------------------
 
 
 def compile_playbook(markdown: str, *, existing_version: int = 0) -> "CompilationResult":
-    """Compile a playbook markdown file, dispatching on its ``kind`` frontmatter field.
+    """Compile a playbook markdown file, dispatching on ``kind`` frontmatter.
 
-    For ``kind: pipeline`` files this delegates to
-    :func:`~src.playbooks.pipeline_compiler.compile_pipeline` (deterministic,
-    no LLM).  All other files return a failure result with a clear error message
-    (LLM compilation requires an instantiated :class:`PlaybookCompiler`).
-
-    This function exists as a synchronous convenience entry point for tests and
-    CLI tools that need to validate pipeline files without setting up the full
-    async/LLM stack.
+    - ``kind: pipeline`` → :func:`src.playbooks.pipeline_compiler.compile_pipeline`
+      (deterministic, no LLM).
+    - anything else → failure result directing the caller to enqueue a
+      compile task against the ``playbook-compiler`` profile.
     """
-    import yaml as _yaml
-
-    # Peek at frontmatter to dispatch
     kind = ""
     if markdown.startswith("---"):
         parts = markdown.split("---", 2)
         if len(parts) >= 3:
             try:
-                fm = _yaml.safe_load(parts[1]) or {}
+                fm = yaml.safe_load(parts[1]) or {}
                 kind = fm.get("kind", "")
-            except _yaml.YAMLError:
+            except yaml.YAMLError:
                 pass
 
     if kind == "pipeline":
-        from src.playbooks.pipeline_compiler import compile_pipeline
-        return compile_pipeline(markdown, existing_version=existing_version)
+        from src.playbooks.pipeline_compiler import compile_pipeline as _cp
+
+        return _cp(markdown, existing_version=existing_version)
 
     return CompilationResult(
         success=False,
         errors=[
-            f"compile_playbook: kind '{kind}' requires async LLM compilation "
-            "via PlaybookCompiler.compile(); only 'kind: pipeline' is supported here."
+            f"compile_playbook: kind '{kind}' is compiled by the "
+            "playbook-compiler agent (Phase 6). The framework no longer "
+            "runs an in-process LLM for ordinary playbooks — enqueue a "
+            "task with dedup_key='playbook-compile:<id>' instead."
         ],
     )
 
@@ -138,200 +128,31 @@ def compile_playbook(markdown: str, *, existing_version: int = 0) -> "Compilatio
 
 
 class PlaybookCompiler:
-    """Compiles playbook markdown into a validated :class:`CompiledPlaybook`.
+    """Deterministic-only compiler shell.
 
-    The compiler follows the pipeline described in the spec §4:
+    Post-Phase-6 this class is a thin holder for the shared static helpers
+    (``_parse_frontmatter``, ``_compute_source_hash``, …) that other
+    modules still import, plus a :meth:`compile_pipeline` method that runs
+    the deterministic pipeline path.
 
-    1. Parse YAML frontmatter (``id``, ``triggers``, ``scope``, etc.)
-    2. Compute a content hash for change detection
-    3. Invoke an LLM with the markdown body + JSON Schema
-    4. Extract JSON from the LLM response
-    5. Merge frontmatter fields into the JSON (frontmatter is authoritative)
-    6. Validate the result structurally
-    7. Return :class:`CompilationResult`
-
-    Parameters
-    ----------
-    provider:
-        The :class:`~src.chat_providers.base.ChatProvider` used for LLM calls.
-    max_retries:
-        Maximum number of retry attempts when the LLM produces invalid
-        output.  Each retry feeds the validation errors back to the LLM.
-    max_tokens:
-        Token budget for each LLM compilation call.
+    No chat provider is accepted, no LLM call is made.
     """
 
-    def __init__(
-        self,
-        provider: ChatProvider,
-        *,
-        config,  # _ConfigLike from aq_uri — provides data_dir and vault_root
-        max_retries: int = MAX_RETRIES,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-    ) -> None:
-        self._provider = provider
+    def __init__(self, *, config: Any = None) -> None:
+        # ``config`` is retained for ``aq://`` URI rewriting inside future
+        # deterministic transforms; the pipeline path does not currently
+        # consume it, but call sites already plumb it.
         self._config = config
-        self._max_retries = max_retries
-        self._max_tokens = max_tokens
-        self._schema = generate_json_schema()
 
     # -- public API ----------------------------------------------------------
 
-    async def compile(
-        self,
-        markdown: str,
-        *,
-        existing_version: int = 0,
+    def compile_pipeline(
+        self, markdown: str, *, existing_version: int = 0
     ) -> CompilationResult:
-        """Compile a playbook markdown file into a :class:`CompiledPlaybook`.
+        """Deterministic pipeline compile — thin instance-method wrapper."""
+        from src.playbooks.pipeline_compiler import compile_pipeline as _cp
 
-        Parameters
-        ----------
-        markdown:
-            Raw content of the playbook ``.md`` file, including YAML
-            frontmatter.
-        existing_version:
-            The version number of the currently compiled playbook (if any).
-            The new version will be ``existing_version + 1``.
-
-        Returns
-        -------
-        CompilationResult
-            Contains either a valid ``playbook`` or a list of ``errors``.
-        """
-        # 1. Parse frontmatter
-        frontmatter, body = self._parse_frontmatter(markdown)
-
-        # Validate required frontmatter fields
-        fm_errors = self._validate_frontmatter(frontmatter)
-        if fm_errors:
-            return CompilationResult(success=False, errors=fm_errors)
-
-        # Rewrite aq:// URIs in the body so the LLM (and every downstream
-        # consumer) sees only absolute filesystem paths.
-        try:
-            body = rewrite_aq_uris(body, config=self._config)
-        except AqUriError as exc:
-            return CompilationResult(
-                success=False,
-                errors=[f"aq:// rewrite failed: {exc}"],
-            )
-
-        # 2. Compute source hash
-        source_hash = self._compute_source_hash(markdown)
-
-        # 3. Build version
-        version = existing_version + 1
-
-        # 4. Invoke LLM (with retries)
-        system_prompt = self._build_system_prompt()
-        user_message = self._build_user_message(frontmatter, body)
-        messages: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
-
-        last_errors: list[str] = []
-        raw_json: dict[str, Any] | None = None
-        raw_response_text: str = ""
-        retries_used = 0
-
-        for attempt in range(1 + self._max_retries):
-            if attempt > 0:
-                retries_used = attempt
-                # Feed validation errors back as a follow-up message
-                feedback = self._build_retry_message(last_errors)
-                messages.append({"role": "assistant", "content": raw_response_text})
-                messages.append({"role": "user", "content": feedback})
-
-            try:
-                response = await self._provider.create_message(
-                    messages=messages,
-                    system=system_prompt,
-                    max_tokens=self._max_tokens,
-                )
-            except Exception as exc:
-                logger.error(
-                    "LLM call failed during playbook compilation (attempt %d): %s",
-                    attempt + 1,
-                    exc,
-                )
-                return CompilationResult(
-                    success=False,
-                    errors=[f"LLM call failed: {exc}"],
-                    source_hash=source_hash,
-                )
-
-            # 5. Extract JSON from LLM response
-            raw_response_text = "\n".join(response.text_parts)
-            raw_json = self._extract_json(raw_response_text)
-
-            if raw_json is None:
-                last_errors = [
-                    "Could not extract valid JSON from LLM response. "
-                    "Expected a JSON object in a fenced code block or as bare JSON."
-                ]
-                logger.warning(
-                    "Playbook compilation attempt %d: no JSON extracted from response",
-                    attempt + 1,
-                )
-                continue
-
-            # 6. Merge authoritative frontmatter fields
-            raw_json = self._merge_frontmatter(raw_json, frontmatter, source_hash, version)
-
-            # 7. Deserialize into CompiledPlaybook
-            try:
-                playbook = CompiledPlaybook.from_dict(raw_json)
-            except Exception as exc:
-                last_errors = [f"Failed to deserialize compiled JSON: {exc}"]
-                logger.warning(
-                    "Playbook compilation attempt %d: deserialization failed: %s",
-                    attempt + 1,
-                    exc,
-                )
-                continue
-
-            # 8. Validate structure
-            validation_errors = playbook.validate()
-            if validation_errors:
-                last_errors = validation_errors
-                logger.warning(
-                    "Playbook compilation attempt %d: %d validation error(s): %s",
-                    attempt + 1,
-                    len(validation_errors),
-                    "; ".join(validation_errors),
-                )
-                continue
-
-            # Success!
-            logger.info(
-                "Playbook '%s' compiled successfully (version=%d, hash=%s, nodes=%d, retries=%d)",
-                playbook.id,
-                playbook.version,
-                source_hash,
-                len(playbook.nodes),
-                retries_used,
-            )
-            return CompilationResult(
-                success=True,
-                playbook=playbook,
-                source_hash=source_hash,
-                raw_json=raw_json,
-                retries_used=retries_used,
-            )
-
-        # All attempts exhausted
-        logger.error(
-            "Playbook compilation failed after %d attempt(s) for '%s': %s",
-            1 + self._max_retries,
-            frontmatter.get("id", "<unknown>"),
-            "; ".join(last_errors),
-        )
-        return CompilationResult(
-            success=False,
-            errors=last_errors,
-            source_hash=source_hash,
-            raw_json=raw_json,
-            retries_used=retries_used,
-        )
+        return _cp(markdown, existing_version=existing_version)
 
     # -- frontmatter ---------------------------------------------------------
 
@@ -380,8 +201,6 @@ class PlaybookCompiler:
                             f"Frontmatter 'triggers[{i}]': string trigger must be non-empty"
                         )
                 elif isinstance(t, dict):
-                    # Structured trigger: {"type": "...", "filter": {...}}
-                    # YAML uses "type" key, compiled JSON uses "event_type"
                     event_type = t.get("type") or t.get("event_type")
                     if not event_type or not isinstance(event_type, str):
                         errors.append(
@@ -406,15 +225,11 @@ class PlaybookCompiler:
                     f"'agent-type:{{type}}', got: '{scope}'"
                 )
 
-        # 'enabled' is optional, default True
         if "enabled" in frontmatter:
             enabled = frontmatter["enabled"]
             if not isinstance(enabled, bool):
                 errors.append("Frontmatter 'enabled' must be a boolean")
 
-        # 'profile_id' is optional — when set, the playbook runs sandboxed
-        # under the named capability profile.  See
-        # docs/specs/design/sandboxed-playbooks.md.
         if "profile_id" in frontmatter:
             pid = frontmatter["profile_id"]
             if pid is not None and not isinstance(pid, str):
@@ -431,29 +246,19 @@ class PlaybookCompiler:
         """Normalize playbook markdown for stable hashing.
 
         Strips cosmetic differences that don't affect the compiled output:
-
-        - **YAML frontmatter comments** (``# ...`` lines) — removed by parsing
-          the YAML and re-serializing with sorted keys.
-        - **HTML/Markdown comments** (``<!-- ... -->``) — stripped from the body.
-        - **Trailing whitespace** on each line.
-        - **Multiple consecutive blank lines** collapsed to one.
-        - **Leading/trailing blank lines** trimmed.
-
-        The result is a canonical string used only for hashing — it is never
-        displayed or persisted.
+        YAML frontmatter comments (removed by parse + re-serialize with
+        sorted keys); HTML/Markdown comments (``<!-- ... -->``); trailing
+        whitespace; runs of blank lines; leading/trailing blank lines.
         """
         frontmatter, body = PlaybookCompiler._parse_frontmatter(content)
 
-        # Canonical frontmatter: sorted keys, no comments
         if frontmatter:
             fm_str = yaml.dump(frontmatter, default_flow_style=False, sort_keys=True).strip()
         else:
             fm_str = ""
 
-        # Strip HTML comments from body
         body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
 
-        # Normalize whitespace
         lines = [line.rstrip() for line in body.splitlines()]
         normalized: list[str] = []
         prev_blank = False
@@ -471,154 +276,26 @@ class PlaybookCompiler:
 
     @staticmethod
     def _compute_source_hash(content: str) -> str:
-        """Compute a stable SHA-256 hash (16 hex chars) of normalized markdown.
-
-        The hash covers frontmatter values (parsed, sorted, comment-free) and
-        the body with HTML comments stripped and whitespace normalized.  This
-        ensures cosmetic-only edits (extra blank lines, trailing spaces, YAML
-        or HTML comments) do **not** change the hash.
-        """
+        """Compute a stable SHA-256 hash (16 hex chars) of normalized markdown."""
         normalized = PlaybookCompiler._normalize_content(content)
         return hashlib.sha256(normalized.encode()).hexdigest()[:16]
-
-    # -- prompt construction -------------------------------------------------
-
-    def _build_system_prompt(self) -> str:
-        """Build the system prompt for the compilation LLM call."""
-        schema_json = json.dumps(self._schema, indent=2)
-        return (
-            "You are a playbook compiler. Your task is to read a playbook "
-            "written in natural language markdown and compile it into a "
-            "structured JSON workflow graph.\n\n"
-            "The output must be a single JSON object conforming EXACTLY to "
-            "the following JSON Schema:\n\n"
-            f"```json\n{schema_json}\n```\n\n"
-            "## Rules\n\n"
-            "1. Output ONLY a single JSON object inside a fenced code block "
-            "(```json ... ```). No other text, explanation, or commentary.\n"
-            "2. The JSON must conform to the schema above. Do not add extra "
-            "fields.\n"
-            '3. Every playbook must have exactly ONE node with `"entry": true`.\n'
-            "4. Every playbook must have at least ONE node with "
-            '`"terminal": true`.\n'
-            '5. Non-terminal nodes MUST have a `"prompt"` field — a focused '
-            "instruction describing what the LLM should do at that step.\n"
-            '6. Each non-terminal node must have either `"transitions"` (a list '
-            'of conditional edges) OR `"goto"` (an unconditional next node), '
-            "but NOT both.\n"
-            '7. Every transition must have either `"when"` (a natural language '
-            'condition) or `"otherwise": true` (the fallback), plus a `"goto"` '
-            "target.\n"
-            "8. Node IDs should be short, descriptive, snake_case identifiers.\n"
-            "9. Prompts in nodes should be clear, actionable instructions — "
-            "they will be executed by an LLM at runtime.\n"
-            "10. Do NOT include the `id`, `version`, `source_hash`, `triggers`, "
-            "or `scope` fields in your output — those are injected from the "
-            "playbook's YAML frontmatter automatically.\n"
-            "11. **Storage model — read this carefully, it is the #1 source "
-            "of compile errors.** Every node's result is stored under ONE "
-            "top-level key in `node_outputs`. The key is determined by:\n"
-            "    - `output.as` (if set) — stored at that name.\n"
-            "    - `for_each.collect` (if set) — the collected array is "
-            "stored at that name.\n"
-            "    - Otherwise — stored at the node_id.\n"
-            "    **`for_each.source` MUST be a BARE top-level key that some "
-            "node produces. NEVER use `<node_id>.<inner_key>` unless the "
-            "upstream node has no `as`/`collect` AND its output value is "
-            "a dict.**\n"
-            "    ✅ CORRECT:\n"
-            '       `enum`: `{"output": {"extract": "projects", "as": '
-            '"projects"}}`\n'
-            '       `iter`: `{"for_each": {"source": "projects", "as": "p"}}`\n'
-            "    ❌ WRONG (the validator will reject this):\n"
-            '       `iter`: `{"for_each": {"source": "enum.projects", "as": '
-            '"p"}}` — because `enum` doesn\'t exist as a key when `as` is set\n'
-            "    If the upstream node uses `for_each.collect`, the source of "
-            "the NEXT iterator is that bare collect name, not "
-            "`<upstream_id>.<collect>`.\n"
-            "12. Use `output` on nodes whose tool results should be available "
-            "to downstream nodes as structured data. Set `extract` to the "
-            "JSON key to pull from the tool result (e.g. `projects`, "
-            "`findings`), and `as` to name the stored value. The `as` name "
-            "is what downstream `for_each.source` and `{{template}}` "
-            "variables must reference.\n"
-            "13. Prefer `for_each` + `output` over asking the LLM to iterate "
-            "in a single prompt. One LLM call per item is more reliable than "
-            "asking the LLM to loop.\n"
-            "14. Terminal nodes CAN have prompts — they execute before the "
-            "playbook ends. Use this for summary/reporting steps.\n"
-            "15. Template variables: `{{name}}` resolves the same way as "
-            "`for_each.source` — `name` must be a top-level key that some "
-            "upstream node produces, OR a `for_each.as` variable from the "
-            "enclosing for_each node. Dot-paths like `{{p.id}}` are only "
-            "valid when the resolved value is a dict.\n"
-        )
-
-    @staticmethod
-    def _build_user_message(frontmatter: dict[str, Any], body: str) -> str:
-        """Build the user message containing the playbook markdown to compile.
-
-        Includes both the frontmatter metadata (for context) and the markdown
-        body (the natural language process description).
-        """
-        fm_summary_parts = [
-            f"- **id:** {frontmatter.get('id', 'unknown')}",
-            f"- **triggers:** {frontmatter.get('triggers', [])}",
-            f"- **scope:** {frontmatter.get('scope', 'system')}",
-        ]
-        if frontmatter.get("cooldown"):
-            fm_summary_parts.append(f"- **cooldown:** {frontmatter['cooldown']} seconds")
-
-        fm_summary = "\n".join(fm_summary_parts)
-
-        return (
-            "Compile the following playbook into a JSON workflow graph.\n\n"
-            "## Playbook Metadata (from frontmatter)\n\n"
-            f"{fm_summary}\n\n"
-            "## Playbook Content\n\n"
-            f"{body.strip()}\n\n"
-            "Remember: output ONLY the JSON object inside a ```json code block. "
-            "Do NOT include id, version, source_hash, triggers, or scope — "
-            "those are injected automatically from the frontmatter."
-        )
-
-    @staticmethod
-    def _build_retry_message(errors: list[str]) -> str:
-        """Build a follow-up message requesting fixes for validation errors."""
-        error_list = "\n".join(f"- {e}" for e in errors)
-        hints: list[str] = []
-        if any("for_each.source" in e for e in errors):
-            hints.append(
-                "**for_each.source hint:** the `source` field must be a BARE "
-                "top-level key that matches either an upstream node's "
-                "`output.as` value, an upstream `for_each.collect` value, or "
-                "an upstream node_id (only if that node has no `output.as`). "
-                "Do NOT write `<node_id>.<inner>` when the upstream node "
-                "declares `output.as` — drop the node_id prefix and use just "
-                "the `as` name."
-            )
-        hint_block = ("\n\n" + "\n\n".join(hints)) if hints else ""
-        return (
-            "The JSON you produced has validation errors:\n\n"
-            f"{error_list}{hint_block}\n\n"
-            "Please fix these errors and output the corrected JSON inside "
-            "a ```json code block. Remember the rules from the system prompt."
-        )
 
     # -- JSON extraction -----------------------------------------------------
 
     @staticmethod
     def _extract_json(text: str) -> dict[str, Any] | None:
-        """Extract a JSON object from the LLM response text.
+        """Extract a JSON object from a body of text.
 
         Tries three strategies in order:
+
         1. Fenced ``json`` code block (```json ... ```)
         2. Any fenced code block (``` ... ```)
         3. Bare JSON object (first ``{`` to last ``}``)
 
-        Returns ``None`` if no valid JSON object can be extracted.
+        Returns ``None`` if no valid JSON object can be extracted.  Kept
+        as a static helper for callers (e.g. dashboard save flow) that
+        need to peel JSON out of markdown fragments.
         """
-        # Strategy 1: fenced json code block
         match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
         if match:
             try:
@@ -626,7 +303,6 @@ class PlaybookCompiler:
             except json.JSONDecodeError:
                 pass
 
-        # Strategy 2: any fenced code block
         match = re.search(r"```\s*(\{.*?\})\s*```", text, re.DOTALL)
         if match:
             try:
@@ -634,7 +310,6 @@ class PlaybookCompiler:
             except json.JSONDecodeError:
                 pass
 
-        # Strategy 3: bare JSON — find outermost { ... }
         first_brace = text.find("{")
         last_brace = text.rfind("}")
         if first_brace != -1 and last_brace > first_brace:
@@ -654,22 +329,23 @@ class PlaybookCompiler:
         source_hash: str,
         version: int,
     ) -> dict[str, Any]:
-        """Merge authoritative frontmatter fields into the compiled JSON.
+        """Merge authoritative frontmatter fields into a compiled JSON dict.
 
-        Frontmatter values always win — the LLM is told not to include them,
-        but if it does, they are overwritten.  This ensures the ``id``,
-        ``triggers``, ``scope``, etc. always match the source file's YAML.
+        Frontmatter values always win — the ``id``, ``triggers``, ``scope``,
+        etc. always match the source file's YAML.  Also injects
+        ``source_hash``, ``version``, and ``compiled_at`` which are
+        computed by the compiler.
 
-        Also injects ``source_hash``, ``version``, and ``compiled_at`` which
-        are computed by the compiler, not authored.
+        Retained here so the ``playbook-compiler`` agent (or any external
+        deterministic tool) can reuse the exact merge behaviour the
+        Phase 5 compiler used to apply.  Body-rewrite of ``aq://`` URIs
+        is preserved via :func:`~src.aq_uri.rewrite_aq_uris`.
         """
         from datetime import datetime, timezone
 
         result = dict(compiled)
 
-        # Authoritative fields from frontmatter
         result["id"] = frontmatter["id"]
-        # Normalize triggers: YAML uses "type" key, compiled JSON uses "event_type"
         raw_triggers = frontmatter["triggers"]
         normalized_triggers: list[str | dict] = []
         for t in raw_triggers:
@@ -689,12 +365,9 @@ class PlaybookCompiler:
         result["version"] = version
         result["compiled_at"] = datetime.now(timezone.utc).isoformat()
 
-        # Optional frontmatter fields
         if "cooldown" in frontmatter:
             result["cooldown_seconds"] = int(frontmatter["cooldown"])
 
-        # LLM config overrides from frontmatter (authoritative — playbook
-        # author controls which model/provider is used, not the LLM compiler).
         if "llm_config" in frontmatter and isinstance(frontmatter["llm_config"], dict):
             result["llm_config"] = frontmatter["llm_config"]
         if "transition_llm_config" in frontmatter and isinstance(
@@ -704,21 +377,26 @@ class PlaybookCompiler:
         if "max_tokens" in frontmatter:
             result["max_tokens"] = int(frontmatter["max_tokens"])
 
-        # Capability-scoped profile: locks the playbook's LLM nodes to
-        # ``profile.allowed_tools`` so prompt injection in untrusted input
-        # cannot escape the tool whitelist.  See
-        # ``docs/specs/design/sandboxed-playbooks.md``.  Strict: only the
-        # frontmatter author can declare this — drop any LLM-supplied
-        # value so attacker-influenced markdown body cannot inject a
-        # broader capability scope into the compiled JSON.
         result.pop("profile_id", None)
         if "profile_id" in frontmatter and frontmatter["profile_id"]:
             result["profile_id"] = str(frontmatter["profile_id"]).strip()
 
-        # ``enabled`` defaults to True; only the frontmatter author can set
-        # it. Drop any LLM-supplied value for the same reason as profile_id.
         result.pop("enabled", None)
         if "enabled" in frontmatter:
             result["enabled"] = bool(frontmatter["enabled"])
 
         return result
+
+
+# ``rewrite_aq_uris`` is re-exported so callers that historically imported
+# both symbols from this module (rare — mostly the compiler itself) keep
+# working; the deterministic path does not use it, but the merge helper
+# above is available to external agents that do.
+__all__ = [
+    "CompilationResult",
+    "DEFAULT_MAX_TOKENS",
+    "PlaybookCompiler",
+    "compile_playbook",
+    "AqUriError",
+    "rewrite_aq_uris",
+]

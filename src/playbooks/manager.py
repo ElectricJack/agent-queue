@@ -268,13 +268,12 @@ class PlaybookManager:
         # trigger-initiated playbook runs know where to post summaries.
         self.system_notification_channel_id: str | None = None
 
-        # Compiler instance (created lazily when provider is available)
+        # Compiler instance — post Phase 6 the compiler is deterministic
+        # (pipeline-only). ``chat_provider`` and ``playbook_max_tokens``
+        # are retained on the constructor for backward compat with
+        # existing wiring but no longer influence compilation.
         self._playbook_max_tokens = playbook_max_tokens
-        self._compiler: PlaybookCompiler | None = None
-        if chat_provider is not None:
-            self._compiler = PlaybookCompiler(
-                chat_provider, config=config, max_tokens=playbook_max_tokens
-            )
+        self._compiler: PlaybookCompiler = PlaybookCompiler(config=config)
 
     # -- public API ----------------------------------------------------------
 
@@ -1384,14 +1383,25 @@ class PlaybookManager:
         """
         is_pipeline = _is_pipeline_markdown(markdown)
 
-        if self._compiler is None and not is_pipeline:
+        if not is_pipeline:
+            # Phase 6: non-pipeline playbooks are compiled by the
+            # playbook-compiler agent-type (see
+            # ``docs/specs/design/playbooks.md`` §4.6).  The framework
+            # never invokes an LLM directly — the vault watcher
+            # enqueues an ``ensure_task`` call with the compile
+            # instructions and this method is a no-op for those files.
             logger.info(
-                "Playbook compilation skipped (no chat provider): %s",
+                "Non-pipeline compile requested via manager for %s — "
+                "the compiler agent handles this (Phase 6).",
                 rel_path or source_path,
             )
             return CompilationResult(
                 success=False,
-                errors=["No chat provider configured for playbook compilation"],
+                errors=[
+                    "non-pipeline playbook compilation is handled by the "
+                    "playbook-compiler agent (Phase 6); framework LLM path "
+                    "removed"
+                ],
             )
 
         # Determine playbook ID from frontmatter for version lookup
@@ -1422,14 +1432,8 @@ class PlaybookManager:
                     skipped=True,
                 )
 
-        # Compile — deterministic path for pipelines, LLM path otherwise.
-        if is_pipeline:
-            result = _compile_pipeline(markdown, existing_version=existing_version)
-        else:
-            result = await self._compiler.compile(
-                markdown,
-                existing_version=existing_version,
-            )
+        # Compile — deterministic path for pipelines (only path left).
+        result = _compile_pipeline(markdown, existing_version=existing_version)
 
         if result.success and result.playbook is not None:
             # Success — update active version, trigger map, and persist

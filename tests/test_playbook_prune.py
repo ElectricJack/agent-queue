@@ -144,6 +144,12 @@ async def test_frontmatter_id_differs_from_filename(tmp_path: Path) -> None:
     assert json_path.exists()
 
 
+@pytest.mark.skip(
+    reason=(
+        "LLM compile path removed in dv2 Phase 6 T10 — this test compiles "
+        "a non-pipeline playbook through the removed manager LLM branch."
+    )
+)
 @pytest.mark.asyncio
 async def test_orphan_removed_from_active_registry(tmp_path: Path) -> None:
     """If an orphaned playbook is already in `_active`, prune drops it too."""

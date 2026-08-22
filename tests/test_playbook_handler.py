@@ -527,6 +527,13 @@ def _make_mock_provider(responses: list[str] | None = None) -> AsyncMock:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skip(
+    reason=(
+        "LLM compile path removed in dv2 Phase 6 T10 — non-pipeline "
+        "playbooks are compiled by the playbook-compiler agent. "
+        "See tests/test_playbook_compile_task_enqueue.py for the new flow."
+    )
+)
 class TestEndToEndCompilation:
     """Full-pipeline tests: file change → VaultWatcher → PlaybookHandler →
     PlaybookManager → PlaybookCompiler → compiled result persisted & active.

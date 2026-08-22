@@ -799,6 +799,13 @@ class TestSubscriptionLifecycle:
         await bus.emit("git.commit", {})
         assert len(triggered) == 1
 
+    @pytest.mark.skip(
+        reason=(
+            "LLM compile path removed in dv2 Phase 6 T10 — "
+            "manager.compile_playbook no longer accepts non-pipeline "
+            "markdown. Subscription refresh is now covered by add/remove."
+        )
+    )
     @pytest.mark.asyncio
     async def test_compile_refreshes(self, tmp_path: Path) -> None:
         """Successful compilation refreshes subscriptions."""

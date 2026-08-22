@@ -66,6 +66,12 @@ def _write_playbook_md(
     return path
 
 
+@pytest.mark.skip(
+    reason=(
+        "LLM compile path removed in dv2 Phase 6 T10 — reconcile no longer "
+        "compiles non-pipeline playbooks inline; the compiler agent does."
+    )
+)
 @pytest.mark.asyncio
 async def test_compiles_uncompiled_playbook(tmp_path: Path) -> None:
     """A .md file in the vault with no matching compiled entry gets compiled."""
@@ -87,6 +93,12 @@ async def test_compiles_uncompiled_playbook(tmp_path: Path) -> None:
     assert manager.get_playbook("new-playbook") is not None
 
 
+@pytest.mark.skip(
+    reason=(
+        "LLM compile path removed in dv2 Phase 6 T10 — see the note on "
+        "test_compiles_uncompiled_playbook above."
+    )
+)
 @pytest.mark.asyncio
 async def test_skips_already_active_playbook(tmp_path: Path) -> None:
     """Playbooks already in the active registry are skipped."""
@@ -114,6 +126,12 @@ async def test_skips_already_active_playbook(tmp_path: Path) -> None:
     assert provider.create_message.await_count == 1
 
 
+@pytest.mark.skip(
+    reason=(
+        "LLM compile path removed in dv2 Phase 6 T10 — see the note on "
+        "test_compiles_uncompiled_playbook above."
+    )
+)
 @pytest.mark.asyncio
 async def test_multiple_scopes(tmp_path: Path) -> None:
     """Reconcile handles system, agent-types, and project scopes."""
