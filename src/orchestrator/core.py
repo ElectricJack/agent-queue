@@ -77,6 +77,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import sqlalchemy.exc
+
 from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
 from src.logging_config import CorrelationContext
@@ -733,12 +735,20 @@ class Orchestrator(
                     )
                     try:
                         await self.db.create_playbook_run(pipeline_db_run)
+                    except sqlalchemy.exc.IntegrityError:
+                        logger.info(
+                            "Pipeline playbook '%s' event_id=%s already recorded — skipping",
+                            playbook.id,
+                            event_id,
+                        )
+                        return
                     except Exception:
                         logger.exception(
-                            "Pipeline playbook '%s': failed to create run row (run=%s)",
+                            "Pipeline playbook '%s': failed to create run row (run=%s) — skipping dispatch",
                             playbook.id,
                             runner.run_id,
                         )
+                        return
 
                 async def _run_pipeline() -> None:
                     with CorrelationContext(run_id=runner.run_id):

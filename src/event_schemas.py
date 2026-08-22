@@ -50,7 +50,7 @@ class EventSchema(TypedDict):
 # Meta-fields injected by infrastructure (e.g. ``_plugin`` added by
 # ``PluginContext.emit_event``).  Validators should ignore these when
 # checking for unexpected extra fields — they are always allowed.
-META_FIELDS: frozenset[str] = frozenset({"_plugin"})
+META_FIELDS: frozenset[str] = frozenset({"_plugin", "event_id"})
 
 
 # ---------------------------------------------------------------------------
