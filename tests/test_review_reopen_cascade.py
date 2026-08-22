@@ -165,6 +165,57 @@ async def test_reopen_ignores_non_discovered_from_edges(command_handler_factory)
 
 
 @pytest.mark.asyncio
+async def test_reopen_cascade_only_cancels_reviewer_profiles(command_handler_factory):
+    """Only candidates with profile_id in {reviewer, final-reviewer} are
+    cascade-cancelled. A non-reviewer task with a stray ``discovered-from``
+    edge to the reopened task must survive untouched.
+    """
+    h = await command_handler_factory()
+    await h.db.create_project(Project(id="p", name="P"))
+    await h.db.upsert_profile(AgentProfile(id="worker", name="W"))
+    await h.db.upsert_profile(AgentProfile(id="reviewer", name="R"))
+
+    from src.models import TaskStatus
+
+    t = (await h.execute(
+        "create_task", {"project_id": "p", "title": "T", "profile_id": "worker"}
+    ))["created"]
+    await h.db.update_task(t, branch_name="feature/t")
+    await h.db.transition_task(t, TaskStatus.COMPLETED, context="test")
+
+    reviewer_task = (await h.execute(
+        "create_task", {"project_id": "p", "title": "Review: T", "profile_id": "reviewer"}
+    ))["created"]
+    await h.execute(
+        "add_dependency",
+        {"task_id": reviewer_task, "depends_on": t, "dep_type": "discovered-from"},
+    )
+
+    # A non-reviewer task that (hypothetically) also carries a
+    # discovered-from edge to the reopened task — must not be cascaded.
+    non_reviewer_task = (await h.execute(
+        "create_task", {"project_id": "p", "title": "Non-review byproduct", "profile_id": "worker"}
+    ))["created"]
+    await h.execute(
+        "add_dependency",
+        {"task_id": non_reviewer_task, "depends_on": t, "dep_type": "discovered-from"},
+    )
+
+    result = await h.execute("reopen_with_feedback", {"task_id": t, "feedback": "please fix X"})
+    assert result.get("reopened") == t
+    assert reviewer_task in result.get("cancelled_reviews", [])
+    assert non_reviewer_task not in result.get("cancelled_reviews", [])
+
+    reviewer_after = await h.db.get_task(reviewer_task)
+    assert reviewer_after.status.value == "FAILED"
+
+    non_reviewer_after = await h.db.get_task(non_reviewer_task)
+    assert non_reviewer_after.status.value != "FAILED", (
+        "non-reviewer profile task must not be cascade-cancelled on reopen"
+    )
+
+
+@pytest.mark.asyncio
 async def test_task_gate_sweep_resolves_on_failed_review(orchestrator_factory):
     orch = await orchestrator_factory()
     h = orch.command_handler

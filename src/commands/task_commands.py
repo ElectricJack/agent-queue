@@ -1828,10 +1828,16 @@ class TaskCommandsMixin:
         except Exception:
             candidates = []
         terminal = {"COMPLETED", "FAILED", "BLOCKED"}
+        review_profile_ids = {"reviewer", "final-reviewer"}
         cancelled_reviews: list[str] = []
         for cand in candidates:
             status_val = getattr(cand.status, "value", cand.status)
             if status_val in terminal:
+                continue
+            if cand.profile_id not in review_profile_ids:
+                # Defense-in-depth: only cascade-cancel review producers.
+                # Non-review tasks that happen to carry a discovered-from
+                # edge to the reopened task must not be cancelled.
                 continue
             try:
                 edges = await self.db.get_typed_dependencies(cand.id)
