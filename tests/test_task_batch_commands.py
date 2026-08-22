@@ -243,6 +243,19 @@ async def test_commit_partial_failure_rolls_back(handler, monkeypatch):
         ).all()
     assert rows == [], f"leaked edges pointing at pre-existing task: {rows}"
 
+    # Public-API lock-in: get_typed_dependencies must show no leaked
+    # edges after rollback. Pre-existing task had no outgoing deps
+    # before the batch, and the batch's only outgoing edge (a -> pre_id)
+    # must be fully cleaned up — asserting via the public API catches
+    # future regressions where cleanup skips one of the two directions.
+    assert await handler._db.get_typed_dependencies(pre_id) == []
+    # And for every remaining task (post-rollback), no edge should
+    # dangle. Only pre_id remains, but assert generically so a future
+    # test author extending this fixture stays honest.
+    for t in listing.get("tasks", []):
+        deps = await handler._db.get_typed_dependencies(t["id"])
+        assert deps == [], f"task {t['id']!r} has leaked deps after rollback: {deps}"
+
     # Proposal must be released back to 'ready' so a retry is possible.
     from src.database.queries.proposal_queries import get_proposal
     row = await get_proposal(handler._db, prop["proposal_id"])
