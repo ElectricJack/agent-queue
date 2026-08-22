@@ -78,8 +78,25 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+import yaml
+
 from src.playbooks.compiler import DEFAULT_MAX_TOKENS, CompilationResult, PlaybookCompiler
 from src.playbooks.models import CompiledPlaybook, PlaybookScope, PlaybookTrigger
+from src.playbooks.pipeline_compiler import compile_pipeline as _compile_pipeline
+
+
+def _is_pipeline_markdown(md: str) -> bool:
+    """Peek at frontmatter to detect ``kind: pipeline`` playbooks."""
+    if not md.startswith("---"):
+        return False
+    parts = md.split("---", 2)
+    if len(parts) < 3:
+        return False
+    try:
+        fm = yaml.safe_load(parts[1]) or {}
+    except Exception:
+        return False
+    return fm.get("kind") == "pipeline"
 
 if TYPE_CHECKING:
     from src.chat_providers.base import ChatProvider
@@ -1290,7 +1307,9 @@ class PlaybookManager:
             compilation is skipped, ``result.skipped`` is ``True`` and
             ``result.playbook`` is the existing active version.
         """
-        if self._compiler is None:
+        is_pipeline = _is_pipeline_markdown(markdown)
+
+        if self._compiler is None and not is_pipeline:
             logger.info(
                 "Playbook compilation skipped (no chat provider): %s",
                 rel_path or source_path,
@@ -1328,11 +1347,14 @@ class PlaybookManager:
                     skipped=True,
                 )
 
-        # Compile
-        result = await self._compiler.compile(
-            markdown,
-            existing_version=existing_version,
-        )
+        # Compile — deterministic path for pipelines, LLM path otherwise.
+        if is_pipeline:
+            result = _compile_pipeline(markdown, existing_version=existing_version)
+        else:
+            result = await self._compiler.compile(
+                markdown,
+                existing_version=existing_version,
+            )
 
         if result.success and result.playbook is not None:
             # Success — update active version, trigger map, and persist
