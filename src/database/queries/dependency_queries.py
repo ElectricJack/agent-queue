@@ -8,7 +8,9 @@ the projection can never lag the graph.
 
 from __future__ import annotations
 
-from sqlalchemy import and_, delete, insert, or_, select
+from sqlalchemy import and_, delete, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import task_dependencies, tasks
 from src.models import BLOCKING_DEP_TYPES, DepType, Task, TaskStatus
@@ -32,14 +34,21 @@ class DependencyQueryMixin:
         """Add a typed dependency edge between two tasks.
 
         Insert + blocked-state recompute in one transaction (design §4.2).
+        Idempotent: adding an edge that already exists (same
+        ``(task_id, depends_on_task_id, dep_type)`` — the composite PK on
+        ``task_dependencies``) is a no-op that does not raise.  Callers
+        can safely retry (e.g. pipeline reruns) without workarounds.
         """
+        _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
         async with self._engine.begin() as conn:
             await conn.execute(
-                insert(task_dependencies).values(
+                _insert(task_dependencies)
+                .values(
                     task_id=task_id,
                     depends_on_task_id=depends_on,
                     dep_type=dep_type,
                 )
+                .on_conflict_do_nothing()
             )
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
         await self.log_blocked_flips(flipped)
