@@ -931,15 +931,15 @@ def test_starter_knowledge_covers_expected_types():
 def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     """A clean install creates the minimal default playbook set.
 
-    Only `memory-consolidation.md` is globally useful enough to ship
-    installed by default.  Other playbooks that used to auto-install have
-    been moved to ``src/prompts/example_playbooks/`` as opt-in reference
-    material.
+    `memory-consolidation.md` and the control-plane `default-pipeline.md`
+    ship installed by default.  Other playbooks that used to auto-install
+    have been moved to ``src/prompts/example_playbooks/`` as opt-in
+    reference material.
     """
     result = ensure_default_playbooks(str(tmp_path))
 
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
-    expected_files = ["memory-consolidation.md"]
+    expected_files = ["default-pipeline.md", "memory-consolidation.md"]
 
     # All expected files must exist on disk
     for filename in expected_files:

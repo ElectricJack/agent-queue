@@ -301,6 +301,29 @@ class ProjectReadyResponse(BaseModel):
     withheld: list[WithheldTask] = []
 
 
+class EnsureTaskResponse(BaseModel):
+    success: bool = True
+    task_id: str
+    created: bool
+
+
+class DownstreamTask(BaseModel):
+    id: str
+    title: str = ""
+    status: str = ""
+
+
+class GetDownstreamTasksResponse(BaseModel):
+    success: bool = True
+    tasks: list[DownstreamTask] = []
+
+
+class TaskRouteResponse(BaseModel):
+    success: bool = True
+    task_id: str
+    resolved_gate_ids: list[str] = []
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -338,4 +361,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "process_task_completion": ProcessTaskCompletionResponse,
     "explain_task": ExplainTaskResponse,
     "project_ready": ProjectReadyResponse,
+    "ensure_task": EnsureTaskResponse,
+    "get_downstream_tasks": GetDownstreamTasksResponse,
+    "task_route": TaskRouteResponse,
 }
