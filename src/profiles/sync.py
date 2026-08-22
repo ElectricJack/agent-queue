@@ -303,6 +303,7 @@ async def sync_profile_to_db(
         max_session_age=profile_dict.get("max_session_age"),
         default_class=profile_dict.get("default_class", ""),
         needs_workspace=profile_dict.get("needs_workspace", True),
+        read_only=profile_dict.get("read_only", False),
     )
 
     # 5. Soft-validate tool names (warnings, not errors -- per spec).

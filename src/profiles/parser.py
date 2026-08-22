@@ -982,6 +982,8 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
         result["default_class"] = parsed.config["default_class"]
     if "needs_workspace" in parsed.config:
         result["needs_workspace"] = bool(parsed.config["needs_workspace"])
+    if "read_only" in parsed.config:
+        result["read_only"] = bool(parsed.config["read_only"])
 
     # Config → named-session fields (supervisor-agent §7).  Pass-through
     # storage; validated above, interpreted by the session runtime.

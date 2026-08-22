@@ -38,6 +38,7 @@ class ProfileQueryMixin:
                     wake_mode=profile.wake_mode,
                     idle_timeout=profile.idle_timeout,
                     needs_workspace=profile.needs_workspace,
+                    read_only=profile.read_only,
                     max_session_age=profile.max_session_age,
                     created_at=now,
                     updated_at=now,
@@ -109,6 +110,7 @@ class ProfileQueryMixin:
                 wake_mode=profile.wake_mode,
                 idle_timeout=profile.idle_timeout,
                 needs_workspace=profile.needs_workspace,
+                read_only=profile.read_only,
                 max_session_age=profile.max_session_age,
             )
             return "updated"
@@ -165,5 +167,6 @@ class ProfileQueryMixin:
             idle_timeout=row.get("idle_timeout"),
             default_class=row.get("default_class") or "",
             needs_workspace=bool(row.get("needs_workspace", 1)),
+            read_only=bool(row.get("read_only", 0)),
             max_session_age=row.get("max_session_age"),
         )

@@ -755,6 +755,14 @@ class AgentProfile:
     idle_timeout: int | None = None
     default_class: str = ""
     needs_workspace: bool = True
+    # When True, this profile MUST NOT mutate its acquired workspace.  The
+    # orchestrator enforces this at workspace-acquisition time: an exclusive
+    # lock on the mutable ``project-repo`` kind is refused, so a read-only
+    # profile can never accidentally hold a write lock (T3 reviewer
+    # follow-up).  Declaratively, profiles with ``read_only: true`` should
+    # not list write/edit/commit/push tools either — the acquisition guard
+    # is the belt-and-braces defense.
+    read_only: bool = False
     max_session_age: int | None = None
 
 

@@ -449,6 +449,16 @@ agent_profiles = Table(
     Column("max_session_age", Integer, nullable=True),
     Column("default_class", Text, nullable=False, server_default="''"),
     Column("needs_workspace", Boolean, nullable=False, server_default=true()),
+    # T3 reviewer follow-up: when True, workspace acquisition refuses to
+    # take an exclusive lock on a mutable ``project-repo`` kind so a
+    # read-only profile cannot silently mutate a repo it was never meant
+    # to write to.
+    Column(
+        "read_only",
+        Boolean,
+        nullable=False,
+        server_default=text("0"),
+    ),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )

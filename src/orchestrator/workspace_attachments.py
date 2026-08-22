@@ -106,6 +106,7 @@ async def acquire_for_task(
     *,
     worktrees_enabled: bool = False,
     worktree_slot_cap: int | None = None,
+    read_only: bool = False,
 ) -> WorkspaceAttachmentSet:
     """Acquire all required workspaces for a task.
 
@@ -150,7 +151,7 @@ async def acquire_for_task(
             if kind is None:
                 raise AcquisitionFailed(req.kind_id)
 
-            if kind.lockable:
+            if kind.lockable and not read_only:
                 effective_mode = task_mode_override or kind.default_lock_mode
                 ws = await db.acquire_one_unlocked(
                     project_id=task.project_id,
@@ -165,6 +166,21 @@ async def acquire_for_task(
                         else None
                     ),
                     worktree_slot_cap=worktree_slot_cap,
+                )
+                if ws is None:
+                    raise AcquisitionFailed(req.kind_id)
+            elif kind.lockable and read_only:
+                # T3 reviewer follow-up: a ``read_only`` profile must NEVER
+                # hold a write lock on a mutable kind — that lock is the
+                # only mechanism preventing concurrent writers from being
+                # invisibly overwritten.  Attach the workspace WITHOUT
+                # acquiring a lock so the reviewer can read (git_log /
+                # git_diff / git_show) without silently owning the repo.
+                # The reviewer profile's declared tool list has no write
+                # tools, so no mutation can actually occur; this guard is
+                # the belt-and-braces defense at the acquisition layer.
+                ws = await db.first_workspace_of_kind(
+                    project_id=task.project_id, kind_id=kind.id
                 )
                 if ws is None:
                     raise AcquisitionFailed(req.kind_id)

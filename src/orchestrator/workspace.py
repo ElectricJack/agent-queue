@@ -128,6 +128,18 @@ class WorkspaceMixin:
             pool_warming = await self._ensure_worktree_slots_for_task(task, project)
 
         self._workspace_wait_reasons.pop(task.id, None)
+        # T3 reviewer follow-up: resolve the profile so ``read_only`` can be
+        # honored at acquisition time.  A read-only profile MUST NOT hold a
+        # write lock on any mutable kind.
+        resolved_profile = await self._resolve_profile(task)
+        read_only = bool(resolved_profile and getattr(resolved_profile, "read_only", False))
+        if read_only:
+            logger.info(
+                "Task %s: profile '%s' is read_only — workspace acquired "
+                "without a write lock",
+                task.id,
+                resolved_profile.id if resolved_profile else "?",
+            )
         try:
             attachment_set = await acquire_for_task(
                 self.db,
@@ -137,6 +149,7 @@ class WorkspaceMixin:
                 worktree_slot_cap=(
                     self._project_slot_cap(project) if worktrees_enabled else None
                 ),
+                read_only=read_only,
             )
         except AcquisitionFailed:
             if pool_warming:
