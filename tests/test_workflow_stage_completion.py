@@ -76,10 +76,21 @@ async def orch(tmp_path):
     # frozen code and the re-enable path, so opt in explicitly.
     # See docs/specs/design/feature-pauses.md §8.
     config.playbooks.enabled = True
-    o = Orchestrator(config)
-    await o.initialize()
-    yield o
-    await o.shutdown()
+    # The background vault reconcile compiles seeded playbooks via LLM calls
+    # whose DB writes share the SQLite StaticPool connection with the test
+    # body — a failure-path rollback can wipe the test's in-flight inserts.
+    # These tests don't use compiled playbooks, so skip the reconcile.
+    from unittest.mock import patch
+
+    from src.playbooks.manager import PlaybookManager
+
+    with patch.object(
+        PlaybookManager, "reconcile_compilations", AsyncMock(return_value={})
+    ):
+        o = Orchestrator(config)
+        await o.initialize()
+        yield o
+        await o.shutdown()
 
 
 async def _setup_project(db, project_id: str = "p-1"):

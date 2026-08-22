@@ -1281,7 +1281,10 @@ class Orchestrator(
                 except Exception:
                     logger.warning("Playbook compilation reconcile failed", exc_info=True)
 
-            asyncio.create_task(_reconcile_in_background())
+            # Keep a handle: a bare create_task can be garbage-collected
+            # mid-flight, and shutdown must be able to cancel the compile
+            # (LLM calls + DB writes) so it can't race the DB close.
+            self._playbook_reconcile_task = asyncio.create_task(_reconcile_in_background())
 
             # Wire trigger dispatch: when a playbook's trigger event fires on
             # the bus, create a PlaybookRunner and execute the graph.  Without
@@ -2070,6 +2073,13 @@ class Orchestrator(
         to finish before closing it.
         """
         await self.wait_for_running_tasks(timeout=10)
+        reconcile_task = getattr(self, "_playbook_reconcile_task", None)
+        if reconcile_task is not None and not reconcile_task.done():
+            reconcile_task.cancel()
+            try:
+                await reconcile_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if self.vault_watcher:
             try:
                 await self.vault_watcher.stop()
