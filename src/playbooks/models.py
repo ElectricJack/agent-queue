@@ -300,6 +300,11 @@ class PlaybookNode:
     transition_llm_config: LlmConfig | None = None
     for_each: dict[str, Any] | None = None
     output: dict[str, Any] | None = None
+    # Pipeline action payload (populated only for ``kind: pipeline`` playbooks).
+    # Carries: command, args, on_success, on_failure, output, for_each.
+    # When set, the node is an action node — validation skips the
+    # prompt/transitions/goto rules that apply to LLM nodes.
+    action: dict[str, Any] | None = None
 
     # -- serialization -------------------------------------------------------
 
@@ -331,6 +336,8 @@ class PlaybookNode:
             d["for_each"] = self.for_each
         if self.output is not None:
             d["output"] = self.output
+        if self.action is not None:
+            d["action"] = self.action
         return d
 
     @classmethod
@@ -356,6 +363,7 @@ class PlaybookNode:
             transition_llm_config=trans_cfg,
             for_each=data.get("for_each"),
             output=data.get("output"),
+            action=data.get("action"),
         )
 
 
@@ -406,6 +414,13 @@ class CompiledPlaybook:
     # disabling is "stop new starts", not "cancel existing". Authored in
     # frontmatter as ``enabled: false``; flipped via ``set_playbook_enabled``.
     enabled: bool = True
+    # Playbook kind — "" (default; LLM playbook) or "pipeline" (deterministic
+    # action-graph). Governs whether nodes carry ``prompt`` (LLM) or
+    # ``action`` (pipeline). Persisted so store round-trip preserves the
+    # execution model.
+    kind: str = ""
+    # Optional role name for pipeline playbooks (from frontmatter).
+    role: str = ""
 
     def __post_init__(self) -> None:
         """Normalize trigger entries to :class:`PlaybookTrigger` objects.
@@ -487,6 +502,13 @@ class CompiledPlaybook:
                     queue.append(t.goto)
             if node.goto is not None and node.goto not in visited:
                 queue.append(node.goto)
+            # Pipeline (action) nodes use action.on_success / on_failure as
+            # their outgoing edges — walk those too for reachability.
+            if node.action is not None:
+                for hop in ("on_success", "on_failure"):
+                    tgt = node.action.get(hop)
+                    if tgt and tgt not in visited:
+                        queue.append(tgt)
         return visited
 
     def nodes_reaching_terminal(self) -> set[str]:
@@ -512,6 +534,12 @@ class CompiledPlaybook:
                     reverse_adj[t.goto].add(nid)
             if node.goto is not None and node.goto in reverse_adj:
                 reverse_adj[node.goto].add(nid)
+            # Pipeline action edges.
+            if node.action is not None:
+                for hop in ("on_success", "on_failure"):
+                    tgt = node.action.get(hop)
+                    if tgt and tgt in reverse_adj:
+                        reverse_adj[tgt].add(nid)
 
         # BFS backwards from all terminal nodes
         visited: set[str] = set()
@@ -609,7 +637,20 @@ class CompiledPlaybook:
             errors.append("No terminal node found (at least one node must have terminal=true)")
 
         # 4-6. Per-node validation
+        is_pipeline = self.kind == "pipeline"
         for nid, node in self.nodes.items():
+            # Pipeline (action) nodes bypass LLM-specific structure rules —
+            # the pipeline compiler validates command/args/on_success itself.
+            if is_pipeline or node.action is not None:
+                # A pipeline node must not carry a prompt (deterministic path).
+                if node.prompt:
+                    errors.append(
+                        f"Node '{nid}': pipeline nodes must not have a 'prompt'"
+                    )
+                # Reachability edges use action.on_success/on_failure — no
+                # transitions/goto checks apply here.
+                continue
+
             # 4. Non-terminal nodes need a prompt
             if not node.terminal and not node.prompt:
                 errors.append(f"Node '{nid}': non-terminal node must have a prompt")
@@ -726,6 +767,10 @@ class CompiledPlaybook:
             d["compiled_at"] = self.compiled_at
         if self.profile_id is not None:
             d["profile_id"] = self.profile_id
+        if self.kind:
+            d["kind"] = self.kind
+        if self.role:
+            d["role"] = self.role
         return d
 
     @classmethod
@@ -752,6 +797,8 @@ class CompiledPlaybook:
             transition_llm_config=trans_cfg,
             compiled_at=data.get("compiled_at"),
             profile_id=data.get("profile_id"),
+            kind=data.get("kind", ""),
+            role=data.get("role", ""),
         )
 
     @classmethod

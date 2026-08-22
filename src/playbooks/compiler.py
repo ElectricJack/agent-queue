@@ -82,6 +82,11 @@ class CompilationResult:
     raw_json: dict[str, Any] | None = None
     retries_used: int = 0
     skipped: bool = False
+    # Structured error records matching the Phase 6 ``playbook_validate``
+    # contract: ``{node: str|None, field: str|None, message: str}``.
+    # Populated in parallel with ``errors`` (which stays a list of strings
+    # for existing callers that concatenate/log them).
+    structured_errors: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

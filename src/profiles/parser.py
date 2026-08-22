@@ -61,6 +61,8 @@ CONFIG_KNOWN_KEYS = frozenset(
         "idle_timeout",
         "max_session_age",
         "workspaces",
+        "default_class",
+        "needs_workspace",
     }
 )
 
@@ -552,6 +554,20 @@ def _validate_config(config: dict) -> list[str]:
             "'codex', 'gemini', etc.)"
         )
 
+    if "default_class" in config:
+        v = config["default_class"]
+        if not isinstance(v, str):
+            errors.append(
+                f"Config 'default_class' must be a string, got {type(v).__name__}"
+            )
+
+    if "needs_workspace" in config:
+        v = config["needs_workspace"]
+        if not isinstance(v, bool):
+            errors.append(
+                f"Config 'needs_workspace' must be a boolean, got {type(v).__name__}"
+            )
+
     errors.extend(_validate_session_config(config))
 
     return errors
@@ -953,6 +969,11 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
         result["runtime"] = parsed.config["runtime"]
     if parsed.config.get("agent_name"):
         result["agent_name"] = parsed.config["agent_name"]
+
+    if "default_class" in parsed.config:
+        result["default_class"] = parsed.config["default_class"]
+    if "needs_workspace" in parsed.config:
+        result["needs_workspace"] = bool(parsed.config["needs_workspace"])
 
     # Config → named-session fields (supervisor-agent §7).  Pass-through
     # storage; validated above, interpreted by the session runtime.

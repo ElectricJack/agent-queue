@@ -77,6 +77,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import sqlalchemy.exc
+
 from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
 from src.logging_config import CorrelationContext
@@ -353,7 +355,13 @@ class Orchestrator(
 
         self.harness_registry = HarnessRegistry()
         self.session_providers = default_session_registry(config)
-        self.session_spec_builder = SessionSpecBuilder(config, self.harness_registry)
+        from src.intelligence_classes import load_intelligence_classes
+
+        self.session_spec_builder = SessionSpecBuilder(
+            config,
+            self.harness_registry,
+            intelligence_classes=load_intelligence_classes(config.data_dir),
+        )
         # AQ_DAEMON_EPOCH: identifies this daemon *run*.  Provenance for
         # adoption, never a validity test — an older-epoch session is still
         # adoptable, and the instance token is what fences kills.
@@ -669,8 +677,117 @@ class Orchestrator(
         try:
             from src.runtimes.supervisor import Supervisor
             from src.playbooks.runner import PlaybookRunner
+            from src.models import PlaybookRun as PlaybookRunModel
 
             graph = playbook.to_dict()
+
+            # -- Event-level dedup via event_id (dv2-p1 Task 10) --
+            # The EventBus stamps every event with a stable event_id before
+            # dispatch.  If we have already started a run for this
+            # (playbook_id, event_id) pair the UNIQUE partial index would
+            # reject a duplicate insert anyway, but checking first lets us
+            # log a clear INFO message and skip the whole dispatch path.
+            event_id = event_data.get("event_id") if isinstance(event_data, dict) else None
+            if event_id and self.db:
+                existing = await self.db.get_playbook_run_by_event(playbook.id, event_id)
+                if existing is not None:
+                    logger.info(
+                        "Playbook '%s' event_id=%s already recorded (run=%s) — skipping",
+                        playbook.id,
+                        event_id,
+                        existing.run_id,
+                    )
+                    return
+
+            # Pipeline playbooks route to the deterministic PipelineRunner
+            # — no supervisor/LLM needed, action nodes dispatch directly
+            # via CommandHandler.execute().
+            if graph.get("kind") == "pipeline":
+                from src.playbooks.pipeline_runner import PipelineRunner
+
+                handler = self._command_handler
+                if handler is None:
+                    logger.error(
+                        "Pipeline playbook '%s' cannot run — no command handler wired",
+                        playbook.id,
+                    )
+                    return
+                project_id = event_data.get("project_id")
+                runner = PipelineRunner(
+                    graph=graph,
+                    event=event_data,
+                    handler=handler,
+                    db=self.db,
+                )
+
+                # Create a run row now so the UNIQUE constraint provides
+                # idempotency for pipeline runs (Task 9 deferred this).
+                if self.db:
+                    import json as _json
+                    pipeline_db_run = PlaybookRunModel(
+                        run_id=runner.run_id,
+                        playbook_id=playbook.id,
+                        playbook_version=getattr(playbook, "version", 1),
+                        trigger_event=_json.dumps(event_data),
+                        status="running",
+                        started_at=time.time(),
+                        event_id=event_id,
+                    )
+                    try:
+                        await self.db.create_playbook_run(pipeline_db_run)
+                    except sqlalchemy.exc.IntegrityError:
+                        logger.info(
+                            "Pipeline playbook '%s' event_id=%s already recorded — skipping",
+                            playbook.id,
+                            event_id,
+                        )
+                        return
+                    except Exception:
+                        logger.exception(
+                            "Pipeline playbook '%s': failed to create run row (run=%s) — skipping dispatch",
+                            playbook.id,
+                            runner.run_id,
+                        )
+                        return
+
+                async def _run_pipeline() -> None:
+                    with CorrelationContext(run_id=runner.run_id):
+                        status, error = "failed", None
+                        try:
+                            result = await runner.run()
+                            status, error = result.status, result.error
+                        except Exception as exc:
+                            error = str(exc)
+                            logger.exception(
+                                "Pipeline playbook '%s' run failed (trigger event=%s)",
+                                playbook.id,
+                                event_data.get("type") or event_data.get("_event_type"),
+                            )
+                        if self.db:
+                            try:
+                                await self.db.update_playbook_run(
+                                    runner.run_id,
+                                    status=status,
+                                    completed_at=time.time(),
+                                    error=error,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Failed to record pipeline run outcome (run=%s)",
+                                    runner.run_id,
+                                )
+
+                asyncio.create_task(
+                    _run_pipeline(),
+                    name=f"pipeline:{playbook.id}:{event_data.get('type', 'trigger')}",
+                )
+                logger.info(
+                    "Dispatched pipeline playbook '%s' for trigger event (project=%s)",
+                    playbook.id,
+                    project_id or "(none)",
+                )
+                return
+
             supervisor = Supervisor(self, self.config, llm_logger=self.llm_logger)
             if not supervisor.initialize():
                 logger.error(
@@ -1133,6 +1250,7 @@ class Orchestrator(
                 event_bus=self.bus,
                 data_dir=self.config.data_dir,
                 playbook_max_tokens=self.config.chat_provider.playbook_max_tokens,
+                command_handler=self._command_handler,
             )
             # Restore previously compiled playbooks from disk so version numbers
             # continue from where they left off and source-hash change detection
@@ -1163,7 +1281,10 @@ class Orchestrator(
                 except Exception:
                     logger.warning("Playbook compilation reconcile failed", exc_info=True)
 
-            asyncio.create_task(_reconcile_in_background())
+            # Keep a handle: a bare create_task can be garbage-collected
+            # mid-flight, and shutdown must be able to cancel the compile
+            # (LLM calls + DB writes) so it can't race the DB close.
+            self._playbook_reconcile_task = asyncio.create_task(_reconcile_in_background())
 
             # Wire trigger dispatch: when a playbook's trigger event fires on
             # the bus, create a PlaybookRunner and execute the graph.  Without
@@ -1807,6 +1928,14 @@ class Orchestrator(
         # directory skeleton exists.
         self.vault_manager.ensure_layout()
 
+        # Vault layout now exists — (re)load intelligence classes so a fresh
+        # install picks up the seeded defaults on its very first run.
+        from src.intelligence_classes import load_intelligence_classes
+
+        self.session_spec_builder._intelligence_classes = load_intelligence_classes(
+            self.config.data_dir
+        )
+
         # Per-profile directories need DB access (not discoverable from FS),
         # so we handle them here.  Per-project dirs and all migrations are
         # handled by run_vault_migration using filesystem discovery.
@@ -1944,6 +2073,13 @@ class Orchestrator(
         to finish before closing it.
         """
         await self.wait_for_running_tasks(timeout=10)
+        reconcile_task = getattr(self, "_playbook_reconcile_task", None)
+        if reconcile_task is not None and not reconcile_task.done():
+            reconcile_task.cancel()
+            try:
+                await reconcile_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if self.vault_watcher:
             try:
                 await self.vault_watcher.stop()

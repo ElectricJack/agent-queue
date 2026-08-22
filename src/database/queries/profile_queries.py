@@ -161,5 +161,7 @@ class ProfileQueryMixin:
             mode=row.get("mode"),
             wake_mode=row.get("wake_mode"),
             idle_timeout=row.get("idle_timeout"),
+            default_class=row.get("default_class") or "",
+            needs_workspace=bool(row.get("needs_workspace", 1)),
             max_session_age=row.get("max_session_age"),
         )

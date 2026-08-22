@@ -383,6 +383,8 @@ class Task:
     affinity_agent_id: str | None = None  # preferred agent ID for context continuity
     affinity_reason: str | None = None  # why: "context", "workspace", "type"
     workspace_mode: WorkspaceMode | None = None  # lock mode for workspace access
+    dedup_key: str | None = None
+    intelligence_class: str | None = None
     # Persisted blocked-state projection (work-graph design §4).  Pure
     # derived data: 1 iff some blocking edge is unsatisfied or an attached
     # gate is unresolved.  Recomputed in-transaction by the query layer —
@@ -751,6 +753,8 @@ class AgentProfile:
     mode: str | None = None
     wake_mode: str | None = None
     idle_timeout: int | None = None
+    default_class: str = ""
+    needs_workspace: bool = True
     max_session_age: int | None = None
 
 
@@ -1117,6 +1121,7 @@ class PlaybookRun:
     waiting_for_event: str | None = (
         None  # Event type the run is waiting for (event-triggered pause)
     )
+    event_id: str | None = None  # Stable dedup key from the triggering event
 
 
 @dataclass

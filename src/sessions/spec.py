@@ -116,6 +116,20 @@ NAMED_BOOTSTRAP_PROMPT = (
 _PROMPT_FILE_SCRIPT = '__aq_prompt=$(cat "$1"); shift; exec "$@" "$__aq_prompt"'
 
 
+def _infer_provider_from_harness(harness) -> str:
+    """Infer a provider name from a harness's id/command.
+
+    The provider name keys :attr:`IntelligenceClass.mapping`; when a harness
+    file does not declare its provider explicitly, the CLI's identifier is a
+    stable-enough proxy (design §2 — one harness = one CLI = one vendor).
+    An unknown harness returns ``""``, which resolution treats as "no
+    class-driven override" and falls back to ``profile.model`` unchanged.
+    """
+    mapping = {"claude": "anthropic", "codex": "openai", "gemini": "google"}
+    key = getattr(harness, "id", "") or getattr(harness, "command", "")
+    return mapping.get(key, "")
+
+
 def sanitize_name(raw: str) -> str:
     """Fold *raw* into ``^[a-zA-Z0-9_-]+$``."""
     cleaned = _UNSAFE.sub("-", str(raw)).strip("-")
@@ -143,9 +157,13 @@ def named_session_name(profile_id: str, project_id: str | None = None) -> str:
 class SessionSpecBuilder:
     """Builds :class:`SessionSpec` objects.  Stateless apart from config."""
 
-    def __init__(self, config, harnesses=None):
+    def __init__(self, config, harnesses=None, *, intelligence_classes=None):
         self.config = config
         self.harnesses = harnesses
+        # ``{class_id: IntelligenceClass}`` — empty by default so callers that
+        # do not care about class-driven model overrides work unchanged.
+        # Populated by the orchestrator from ``load_intelligence_classes``.
+        self._intelligence_classes = intelligence_classes or {}
 
     # -- public API --------------------------------------------------------
 
@@ -193,6 +211,7 @@ class SessionSpecBuilder:
             bootstrap=bootstrap,
             lifecycle="task",
             allow_skip_permissions=skip_permissions_allowed(profile, workspace_source_type),
+            task_intelligence_class=getattr(task, "intelligence_class", None),
         )
 
     def build_named_spec(
@@ -266,6 +285,7 @@ class SessionSpecBuilder:
         bootstrap: str,
         lifecycle: str,
         allow_skip_permissions: bool = False,
+        task_intelligence_class: str | None = None,
     ) -> SessionSpec:
         files: list[tuple[str, str]] = []
 
@@ -281,6 +301,7 @@ class SessionSpecBuilder:
             files=files,
             allow_skip_permissions=allow_skip_permissions,
             hook_files=hook_files,
+            task_intelligence_class=task_intelligence_class,
         )
 
         files.extend(hook_files)
@@ -329,6 +350,7 @@ class SessionSpecBuilder:
         files: list[tuple[str, str]],
         allow_skip_permissions: bool = False,
         hook_files: list[tuple[str, str]] | None = None,
+        task_intelligence_class: str | None = None,
     ) -> list[str]:
         argv: list[str] = [harness.command]
 
@@ -341,7 +363,11 @@ class SessionSpecBuilder:
 
         argv.extend(harness.args)
 
-        model = (getattr(profile, "model", "") or "").strip()
+        # Resolve the model: intelligence class (task-scoped, then profile
+        # default) wins over ``profile.model`` when it maps a slice for this
+        # harness's provider.  Unknown class or missing mapping falls back
+        # silently to the profile — a class typo must never break launch.
+        model = self._resolve_model(profile, harness, task_intelligence_class)
         if model and harness.model_flag:
             argv.extend([harness.model_flag, model])
 
@@ -402,6 +428,62 @@ class SessionSpecBuilder:
             rel,
         )
         return ["sh", "-c", _PROMPT_FILE_SCRIPT, "sh", rel, *argv]
+
+    def _resolve_model(
+        self,
+        profile,
+        harness,
+        task_intelligence_class: str | None,
+    ) -> str:
+        """Pick the model for this launch.
+
+        Precedence: ``task.intelligence_class`` > ``profile.default_class`` >
+        no class (``profile.model`` unchanged).  Provider is taken from
+        ``harness.provider`` if declared, else inferred from the harness id
+        / command (:func:`_infer_provider_from_harness`).  Any failure to
+        resolve (unknown class id, no mapping for the provider, missing
+        ``model`` key) is logged at warning and yields ``profile.model`` —
+        session launch never fails because of a class typo.
+        """
+        fallback = (getattr(profile, "model", "") or "").strip()
+        class_id = (
+            task_intelligence_class
+            or getattr(profile, "default_class", "")
+            or ""
+        )
+        if not class_id:
+            return fallback
+        cls = self._intelligence_classes.get(class_id)
+        if cls is None:
+            logger.warning(
+                "intelligence-class '%s' not found; falling back to profile.model",
+                class_id,
+            )
+            return fallback
+        provider = (
+            getattr(harness, "provider", "") or _infer_provider_from_harness(harness)
+        )
+        if not provider:
+            logger.warning(
+                "intelligence-class '%s': could not infer provider for harness %r; "
+                "falling back to profile.model",
+                class_id,
+                getattr(harness, "id", "") or getattr(harness, "command", ""),
+            )
+            return fallback
+        from src.intelligence_classes import resolve_class
+
+        slice_ = resolve_class(cls, provider)
+        model = str(slice_.get("model") or "").strip()
+        if not model:
+            logger.warning(
+                "intelligence-class '%s' has no model for provider %r; "
+                "falling back to profile.model",
+                class_id,
+                provider,
+            )
+            return fallback
+        return model
 
     def _hook_files(self, harness: Harness) -> list[tuple[str, str]]:
         """Render the harness's declared hook templates.

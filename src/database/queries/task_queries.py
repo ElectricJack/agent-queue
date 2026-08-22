@@ -67,6 +67,8 @@ class TaskQueryMixin:
                     affinity_agent_id=task.affinity_agent_id,
                     affinity_reason=task.affinity_reason,
                     workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
+                    dedup_key=task.dedup_key,
+                    intelligence_class=task.intelligence_class,
                     # A brand-new row has no edges yet, so it starts
                     # unblocked; the edges that follow recompute it
                     # (work-graph implementation spec §4.1).
@@ -576,6 +578,36 @@ class TaskQueryMixin:
             result = await conn.execute(stmt)
             return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
+    async def find_task_by_dedup_key(
+        self, project_id: str, dedup_key: str
+    ) -> "Task | None":
+        """Return the non-terminal task with (project_id, dedup_key), or None.
+
+        Terminal statuses (COMPLETED / FAILED) are ignored so a
+        completed dedup key does not perpetually squat.
+        """
+        terminal = (
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+        )
+        stmt = (
+            select(tasks)
+            .where(
+                and_(
+                    tasks.c.project_id == project_id,
+                    tasks.c.dedup_key == dedup_key,
+                    tasks.c.status.notin_(terminal),
+                )
+            )
+            .order_by(tasks.c.created_at.asc())
+            .limit(1)
+        )
+        async with self._engine.begin() as conn:
+            row = (await conn.execute(stmt)).mappings().fetchone()
+        if row is None:
+            return None
+        return self._row_to_task(row)
+
     @staticmethod
     def _row_to_task(row) -> Task:
         """Convert a database row to a Task model."""
@@ -613,4 +645,32 @@ class TaskQueryMixin:
             is_blocked=bool(row.get("is_blocked", 0)),
             created_at=row.get("created_at", 0.0),
             updated_at=row.get("updated_at", 0.0),
+            dedup_key=row.get("dedup_key"),
+            intelligence_class=row.get("intelligence_class"),
         )
+
+    async def update_task_routing(
+        self,
+        task_id: str,
+        *,
+        profile_id: str,
+        intelligence_class: str | None,
+        preferred_workspace_id: str | None,
+    ) -> None:
+        """Set profile + intelligence class + optional preferred workspace.
+
+        Used by ``_cmd_task_route`` (dv2 phase 1) to commit routing
+        decisions before resolving the ``routing`` gate on the task.
+        Nullable fields are only touched when the caller passes a value;
+        this keeps ``task_route`` narrow — it never accidentally clears
+        an already-set ``intelligence_class`` or ``preferred_workspace_id``.
+        """
+        vals: dict = {"profile_id": profile_id}
+        if intelligence_class is not None:
+            vals["intelligence_class"] = intelligence_class
+        if preferred_workspace_id is not None:
+            vals["preferred_workspace_id"] = preferred_workspace_id
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                update(tasks).where(tasks.c.id == task_id).values(**vals)
+            )

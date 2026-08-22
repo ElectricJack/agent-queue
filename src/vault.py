@@ -1358,6 +1358,7 @@ def ensure_vault_layout(data_dir: str) -> None:
     ensure_default_templates(data_dir)
     ensure_default_harnesses(data_dir)
     ensure_default_playbooks(data_dir)
+    ensure_default_intelligence_classes(data_dir)
     ensure_default_agent_type_playbooks(data_dir)
     # Ship the supervisor/planner/reviewer profiles into vault before
     # legacy per-profile writers run, so a fresh install boots with the
@@ -1516,6 +1517,38 @@ def ensure_default_playbooks(data_dir: str) -> dict:
             ", ".join(result["created"]),
         )
 
+    return result
+
+
+def ensure_default_intelligence_classes(data_dir: str) -> dict:
+    """Install bundled intelligence classes into ``vault/intelligence-classes/``.
+
+    Idempotent — an existing file is never overwritten.
+    """
+    defaults_dir = os.path.join(
+        os.path.dirname(__file__), "prompts", "default_intelligence_classes"
+    )
+    dst_root = os.path.join(data_dir, "vault", "intelligence-classes")
+    os.makedirs(dst_root, exist_ok=True)
+
+    result: dict = {"created": [], "skipped": []}
+    if not os.path.isdir(defaults_dir):
+        return result
+
+    for filename in sorted(os.listdir(defaults_dir)):
+        if not filename.endswith(".md"):
+            continue
+        dst = os.path.join(dst_root, filename)
+        if os.path.exists(dst):
+            result["skipped"].append(filename)
+            continue
+        shutil.copy2(os.path.join(defaults_dir, filename), dst)
+        result["created"].append(filename)
+    if result["created"]:
+        logger.info(
+            "Installed %d default intelligence class(es) to %s: %s",
+            len(result["created"]), dst_root, ", ".join(result["created"]),
+        )
     return result
 
 

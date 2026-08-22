@@ -78,8 +78,25 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+import yaml
+
 from src.playbooks.compiler import DEFAULT_MAX_TOKENS, CompilationResult, PlaybookCompiler
 from src.playbooks.models import CompiledPlaybook, PlaybookScope, PlaybookTrigger
+from src.playbooks.pipeline_compiler import compile_pipeline as _compile_pipeline
+
+
+def _is_pipeline_markdown(md: str) -> bool:
+    """Peek at frontmatter to detect ``kind: pipeline`` playbooks."""
+    if not md.startswith("---"):
+        return False
+    parts = md.split("---", 2)
+    if len(parts) < 3:
+        return False
+    try:
+        fm = yaml.safe_load(parts[1]) or {}
+    except Exception:
+        return False
+    return fm.get("kind") == "pipeline"
 
 if TYPE_CHECKING:
     from src.chat_providers.base import ChatProvider
@@ -188,12 +205,14 @@ class PlaybookManager:
         max_concurrent_runs: int = 2,
         on_trigger: TriggerCallback | None = None,
         playbook_max_tokens: int = DEFAULT_MAX_TOKENS,
+        command_handler: Any = None,
     ) -> None:
         self._chat_provider = chat_provider
         self._config = config
         self._event_bus = event_bus
         self._data_dir = data_dir
         self._store = store
+        self._handler = command_handler
 
         # In-memory registry: playbook_id → active CompiledPlaybook
         self._active: dict[str, CompiledPlaybook] = {}
@@ -831,6 +850,21 @@ class PlaybookManager:
         if not self._matches_scope(playbook, data):
             return
 
+        # -- Role shadowing (spec §4.5, dv2-p1 Task 11) --
+        # For pipeline playbooks: if a project-scoped pipeline shares this
+        # playbook's role, the system copy is suppressed.  We resolve the
+        # full candidate set for this trigger and apply the filter; if this
+        # playbook does not survive, skip it silently.
+        all_candidates = self.get_playbooks_by_trigger(trigger.event_type)
+        surviving = self._select_after_shadowing(all_candidates, data)
+        if playbook not in surviving:
+            logger.debug(
+                "Trigger '%s' for playbook '%s' skipped — shadowed by project pipeline",
+                trigger.event_type,
+                playbook_id,
+            )
+            return
+
         # Build cooldown scope key from the playbook's own scope rather than
         # from event data.  For project-scoped playbooks include the identifier
         # so different projects have independent cooldowns.
@@ -896,6 +930,64 @@ class PlaybookManager:
                 trigger.event_type,
                 playbook_id,
             )
+
+    def _select_after_shadowing(self, candidates, event: dict) -> list:
+        """Drop system pipeline playbooks shadowed by a project pipeline of the same role.
+
+        Rule (spec §4.5): only ``kind: pipeline`` participates. A project-scoped
+        pipeline with the same ``role`` as a system-scoped one suppresses the
+        system one *for events scoped to that project*. Non-pipeline playbooks
+        are always kept.
+
+        Parameters
+        ----------
+        candidates:
+            Iterable of playbook-like objects exposing ``id``, ``scope``,
+            ``kind``, and ``role`` attributes (or equivalent ``to_dict()``
+            fallback).  In production these are :class:`CompiledPlaybook`
+            instances; in tests they may be ``SimpleNamespace`` fakes.
+        event:
+            The trigger event payload dict.  Only the ``project_id`` key is
+            consulted to decide whether shadowing applies.
+
+        Returns
+        -------
+        list
+            Subset of *candidates* with shadowed system pipelines removed.
+        """
+        # Collect roles claimed by project-scoped pipeline playbooks that belong
+        # to the *same project as the event*.  Cross-project pipelines must not
+        # suppress the system default for unrelated projects.
+        event_project_id = event.get("project_id")
+        shadowed_roles: set[str] = set()
+        for pb in candidates:
+            if pb.kind != "pipeline":
+                continue
+            if pb.scope == "project":
+                # Only count this pipeline if it belongs to the event's project.
+                if self._scope_identifiers.get(pb.id) != event_project_id:
+                    continue
+                if pb.role:
+                    shadowed_roles.add(pb.role)
+
+        if not shadowed_roles:
+            return list(candidates)
+
+        kept = []
+        for pb in candidates:
+            if (
+                pb.kind == "pipeline"
+                and pb.scope == "system"
+                and pb.role in shadowed_roles
+            ):
+                logger.debug(
+                    "Shadowing system pipeline '%s' (role=%r) — project pipeline takes precedence",
+                    pb.id,
+                    pb.role,
+                )
+                continue
+            kept.append(pb)
+        return kept
 
     def _matches_scope(
         self,
@@ -1290,7 +1382,9 @@ class PlaybookManager:
             compilation is skipped, ``result.skipped`` is ``True`` and
             ``result.playbook`` is the existing active version.
         """
-        if self._compiler is None:
+        is_pipeline = _is_pipeline_markdown(markdown)
+
+        if self._compiler is None and not is_pipeline:
             logger.info(
                 "Playbook compilation skipped (no chat provider): %s",
                 rel_path or source_path,
@@ -1328,11 +1422,14 @@ class PlaybookManager:
                     skipped=True,
                 )
 
-        # Compile
-        result = await self._compiler.compile(
-            markdown,
-            existing_version=existing_version,
-        )
+        # Compile — deterministic path for pipelines, LLM path otherwise.
+        if is_pipeline:
+            result = _compile_pipeline(markdown, existing_version=existing_version)
+        else:
+            result = await self._compiler.compile(
+                markdown,
+                existing_version=existing_version,
+            )
 
         if result.success and result.playbook is not None:
             # Success — update active version, trigger map, and persist

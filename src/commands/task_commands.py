@@ -1065,6 +1065,8 @@ class TaskCommandsMixin:
             affinity_reason=affinity_reason,
             workspace_mode=workspace_mode,
             parent_task_id=(parent_id if (parent_id and not depth_cap_fallback) else None),
+            dedup_key=args.get("dedup_key"),
+            intelligence_class=args.get("intelligence_class"),
         )
         await self.db.create_task(task)
 
@@ -1102,6 +1104,49 @@ class TaskCommandsMixin:
                 label="Conversation Thread Context",
                 content=self._current_conversation_context,
             )
+
+        # dv2 phase 1 — emit ``task.created`` on the EventBus so the default
+        # pipeline playbook (and any other subscribers) can fire the routing
+        # gate + triage flow.  Uses the shared ``_emit_task_event`` helper so
+        # the base triple (task_id, project_id, title) is populated and
+        # matches the registered schema.
+        #
+        # NON-OBVIOUS INVARIANT: ``ensure_task`` passes ``_suppress_created_event``
+        # so control-plane bookkeeping tasks (e.g. the triage task the default
+        # pipeline creates) do NOT re-fire the pipeline against themselves.
+        # Emitting there would attach a routing gate to the triage task —
+        # and routing gates are only resolved BY the triage agent, so the
+        # triage task would deadlock blocked on its own gate.
+        if not args.get("_suppress_created_event"):
+            try:
+                extras: dict[str, str] = {}
+                if profile_id:
+                    extras["profile_id"] = profile_id
+                if task_type:
+                    extras["task_type"] = task_type.value
+                await self.orchestrator._emit_task_event(
+                    "task.created", task, **extras
+                )
+            except AttributeError as e:  # orchestrator missing hook (test doubles)
+                logger.warning(
+                    "create_task: failed to emit task.created (missing hook): %s", e
+                )
+            except Exception as e:
+                # Narrow-log the emission failure loudly — this is the wire that
+                # kicks off the default pipeline (routing gate + triage).  Losing
+                # it silently means every new task will just sit in READY unrouted.
+                logger.error(
+                    "create_task: task.created emission failed (task=%s project=%s): %s",
+                    task_id,
+                    project_id,
+                    e,
+                    exc_info=True,
+                )
+                # Opt-in re-raise for dev/CI: config value must be
+                # explicitly truthy AND a real bool (guards against
+                # MagicMock configs in tests where every attr is truthy).
+                if getattr(self.config, "dev_strict", False) is True:
+                    raise
 
         # Emit notify.task_added so the Discord layer (and other transports)
         # can post a "Task Added" notification to the project's channel — or
@@ -3199,3 +3244,179 @@ class TaskCommandsMixin:
                     withheld.append({"task_id": task.id, "reasons": res["reasons"]})
 
         return {"success": True, "ready": ready, "withheld": withheld}
+
+    async def _cmd_ensure_task(self, args: dict) -> dict:
+        """Find-or-create a task by (project_id, dedup_key).
+
+        Returns ``{success, task_id, created}``. Non-terminal existing tasks
+        with the same key are returned as-is; terminal tasks (COMPLETED,
+        FAILED) are ignored so the key can be reused.
+        """
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"success": False, "error": "project_id is required"}
+        dedup_key = args.get("dedup_key")
+        if not dedup_key:
+            return {"success": False, "error": "dedup_key is required"}
+        title = args.get("title")
+        if not title:
+            return {"success": False, "error": "title is required"}
+
+        existing = await self.db.find_task_by_dedup_key(str(project_id), str(dedup_key))
+        if existing is not None:
+            return {"success": True, "task_id": existing.id, "created": False}
+
+        create_args = {
+            "project_id": project_id,
+            "title": title,
+            "description": args.get("description", ""),
+            "priority": args.get("priority", 100),
+            "dedup_key": dedup_key,
+            # Control-plane bookkeeping: suppress task.created emission so the
+            # default pipeline is not re-triggered against this task itself
+            # (would attach a routing gate to a task only the triage agent
+            # can resolve — self-deadlock).  Routing of tasks created via
+            # ensure_task is the ensuring pipeline's responsibility.
+            "_suppress_created_event": True,
+        }
+        # Optional pre-routing: control-plane tasks skip triage, so the
+        # ensuring pipeline may pin the executing profile directly (e.g.
+        # the default pipeline pins 'triage' on the triage task).
+        if args.get("profile_id"):
+            create_args["profile_id"] = args["profile_id"]
+        result = await self._cmd_create_task(create_args)
+        if "error" in result:
+            return {"success": False, "error": result["error"]}
+        return {"success": True, "task_id": result["created"], "created": True}
+
+    async def _cmd_get_downstream_tasks(self, args: dict) -> dict:
+        """Return transitive dependents over blocking edge types.
+
+        Follows ``blocks``, ``waits-for``, ``conditional-blocks``, and
+        ``parent-child`` edges — the set that gates readiness (see
+        ``src/database/queries/blocked_state.py``). Returns ``[]`` if the
+        task has no dependents.
+        """
+        task_id = args.get("task_id")
+        if not task_id:
+            return {"success": False, "error": "task_id is required"}
+        seed = await self.db.get_task(str(task_id))
+        if seed is None:
+            return {"success": False, "error": f"task '{task_id}' not found"}
+        edge_types = (
+            DepType.BLOCKS.value,
+            DepType.WAITS_FOR.value,
+            DepType.CONDITIONAL_BLOCKS.value,
+            DepType.PARENT_CHILD.value,
+        )
+        ids = await self.db.get_transitive_dependents(str(task_id), edge_types)
+        out = []
+        for tid in ids:
+            t = await self.db.get_task(tid)
+            if t is None:
+                continue
+            out.append({"id": t.id, "title": t.title, "status": t.status.value})
+        return {"success": True, "tasks": out}
+
+    async def _cmd_task_route(self, args: dict) -> dict:
+        """Route a task: assign profile + intelligence class (+ workspace).
+
+        dv2 phase 1 — the ONLY resolver for ``routing`` gates.  Writes
+        ``profile_id``, optional ``intelligence_class`` and optional
+        ``preferred_workspace_id`` onto the task, then resolves every open
+        ``routing`` gate attached to the task via the orchestrator helper
+        (so ``gate.resolved`` + blocked-flip bus events fire the same way
+        the sweep path emits them).
+
+        Args:
+            task_id: Target task id (required).
+            profile_id: AgentProfile id (required).
+            intelligence_class: Optional vault class id.  Falls back to
+                ``profile.default_class`` when omitted; ``None``/empty
+                skips class validation entirely.
+            workspace_id: Optional workspace id.  When supplied, must belong
+                to the task's project (deadlock-safe & scope-safe).
+
+        Returns:
+            ``{"success": True, "task_id", "resolved_gate_ids": [str]}`` or
+            ``{"success": False, "error": str}`` on validation failure
+            (unknown task/profile/class/workspace, wrong project, or a
+            class with no mapping for the profile's harness provider).
+        """
+        task_id = args.get("task_id")
+        profile_id = args.get("profile_id")
+        if not task_id or not profile_id:
+            return {"success": False, "error": "task_id and profile_id are required"}
+        task = await self.db.get_task(str(task_id))
+        if task is None:
+            return {"success": False, "error": f"task '{task_id}' not found"}
+        profile = await self.db.get_profile(str(profile_id))
+        if profile is None:
+            return {"success": False, "error": f"profile '{profile_id}' not found"}
+
+        cls_id = args.get("intelligence_class") or (profile.default_class or None)
+        if cls_id:
+            from src.intelligence_classes import load_intelligence_classes, resolve_class
+            classes = load_intelligence_classes(self.config.data_dir)
+            cls = classes.get(cls_id)
+            if cls is None:
+                return {
+                    "success": False,
+                    "error": f"intelligence class '{cls_id}' not found in vault",
+                }
+            provider = _harness_provider(profile.harness)
+            if provider and not resolve_class(cls, provider):
+                return {
+                    "success": False,
+                    "error": (
+                        f"intelligence class '{cls_id}' has no mapping for "
+                        f"provider '{provider}' (required by profile "
+                        f"'{profile.id}' harness '{profile.harness}')"
+                    ),
+                }
+
+        workspace_id = args.get("workspace_id")
+        if workspace_id:
+            ws = await self.db.get_workspace(str(workspace_id))
+            if ws is None:
+                return {
+                    "success": False,
+                    "error": f"workspace '{workspace_id}' not found",
+                }
+            if ws.project_id != task.project_id:
+                return {
+                    "success": False,
+                    "error": (
+                        f"workspace '{workspace_id}' belongs to project "
+                        f"'{ws.project_id}', not '{task.project_id}'"
+                    ),
+                }
+
+        await self.db.update_task_routing(
+            str(task_id),
+            profile_id=str(profile_id),
+            intelligence_class=cls_id,
+            preferred_workspace_id=str(workspace_id) if workspace_id else None,
+        )
+
+        resolved: list[str] = []
+        for gate in await self.db.get_gates_for_task(str(task_id)):
+            if gate["gate_type"] == "routing" and gate["status"] == "open":
+                await self.orchestrator._resolve_gate_and_emit(
+                    gate["id"],
+                    resolved_by="task_route",
+                    resolution=f"routed to {profile_id}",
+                )
+                resolved.append(gate["id"])
+        return {
+            "success": True,
+            "task_id": str(task_id),
+            "resolved_gate_ids": resolved,
+        }
+
+
+def _harness_provider(harness: str | None) -> str:
+    """Map a profile harness id to the intelligence-class provider key."""
+    return {"claude": "anthropic", "codex": "openai", "gemini": "google"}.get(
+        (harness or "").strip(), ""
+    )

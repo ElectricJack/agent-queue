@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import and_, delete, func, insert, select, update
 
 from src.database.tables import playbook_runs
 from src.models import PlaybookRun
@@ -42,6 +42,7 @@ class PlaybookQueryMixin:
                     pinned_graph=run.pinned_graph,
                     paused_at=run.paused_at,
                     waiting_for_event=run.waiting_for_event,
+                    event_id=run.event_id,
                 )
             )
 
@@ -109,6 +110,30 @@ class PlaybookQueryMixin:
             )
             return int(result.scalar())
 
+    async def get_playbook_run_by_event(
+        self, playbook_id: str, event_id: str
+    ) -> "PlaybookRun | None":
+        """Return the existing run for a (playbook_id, event_id) pair, or None.
+
+        Used by the manager's dedup gate before creating a new run.  The
+        UNIQUE partial index on ``(playbook_id, event_id) WHERE event_id IS NOT NULL``
+        guarantees at most one row per pair; this query just surfaces it.
+        """
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    select(playbook_runs)
+                    .where(
+                        and_(
+                            playbook_runs.c.playbook_id == playbook_id,
+                            playbook_runs.c.event_id == event_id,
+                        )
+                    )
+                    .limit(1)
+                )
+            ).mappings().fetchone()
+        return self._row_to_playbook_run(row) if row else None
+
     async def delete_playbook_run(self, run_id: str) -> None:
         """Delete a playbook run record."""
         async with self._engine.begin() as conn:
@@ -133,4 +158,5 @@ class PlaybookQueryMixin:
             pinned_graph=row["pinned_graph"],
             paused_at=row["paused_at"],
             waiting_for_event=row.get("waiting_for_event"),
+            event_id=row.get("event_id"),
         )

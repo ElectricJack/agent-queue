@@ -97,6 +97,9 @@ tasks = Table(
     # 0/1 matches the table's existing flag style (e.g. requires_approval).
     # Recomputed by the query layer; never written directly.
     Column("is_blocked", Integer, nullable=False, server_default="0"),
+    Column("dedup_key", Text, nullable=True),
+    Column("intelligence_class", Text, nullable=True),
+    Index("idx_tasks_project_dedup", "project_id", "dedup_key"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     # Serves _check_defined_tasks, the scheduler filter, and `aq project ready`.
@@ -176,7 +179,7 @@ task_metadata = Table(
 # Substrate only — no query layer or command surface reads these yet.
 # ---------------------------------------------------------------------------
 
-GATE_TYPES = ("human", "timer", "pr-merged", "ci-run", "event", "task")
+GATE_TYPES = ("human", "timer", "pr-merged", "ci-run", "event", "task", "routing")
 GATE_STATUSES = ("open", "resolved", "expired")
 
 gates = Table(
@@ -444,6 +447,8 @@ agent_profiles = Table(
     Column("wake_mode", Text, nullable=True),
     Column("idle_timeout", Integer, nullable=True),
     Column("max_session_age", Integer, nullable=True),
+    Column("default_class", Text, nullable=False, server_default="''"),
+    Column("needs_workspace", Boolean, nullable=False, server_default=true()),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
@@ -597,6 +602,8 @@ archived_tasks = Table(
     Column("workspace_mode", Text, nullable=True),
     # Mirrors tasks.is_blocked so archiving stays lossless (work-graph §2.2).
     Column("is_blocked", Integer, nullable=False, server_default="0"),
+    Column("dedup_key", Text, nullable=True),
+    Column("intelligence_class", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("archived_at", Float, nullable=False),
@@ -663,6 +670,15 @@ playbook_runs = Table(
     Column("pinned_graph", Text, nullable=True),
     Column("paused_at", Float, nullable=True),
     Column("waiting_for_event", Text, nullable=True),
+    Column("event_id", Text, nullable=True),
+    Index(
+        "uq_playbook_runs_pb_event",
+        "playbook_id",
+        "event_id",
+        unique=True,
+        sqlite_where=text("event_id IS NOT NULL"),
+        postgresql_where=text("event_id IS NOT NULL"),
+    ),
     CheckConstraint(
         "status IN ('running', 'paused', 'completed', 'failed', 'timed_out')",
         name="ck_playbook_runs_status",
