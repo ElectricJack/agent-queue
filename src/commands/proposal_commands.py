@@ -12,12 +12,13 @@ Registers four CommandHandler commands:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, select, update
 
 from src.database.queries import proposal_queries
-from src.database.tables import TASK_DEP_TYPES, tasks
+from src.database.tables import TASK_DEP_TYPES, task_proposals, tasks
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,22 @@ class TaskProposalCommandsMixin:
         return {"success": True}
 
     async def _cmd_task_batch_commit(self, args: dict) -> dict:
+        """Atomically materialise a proposal into the live work graph.
+
+        Concurrency: the "claim" is a single conditional UPDATE that
+        flips ``ready`` → ``committed`` and returns rowcount.  Only one
+        caller can win; the loser sees rowcount==0 and aborts BEFORE
+        creating any tasks — this closes the double-commit race the
+        prior check-then-write pattern had.
+
+        Failure atomicity: created task ids AND created dep edges are
+        tracked and unwound in reverse order on any exception, so no
+        orphan tasks or leaked edges survive a partial failure.  A
+        single DB transaction across create_task / add_dependency
+        would be nicer but those helpers open their own sessions.  On
+        rollback the proposal row is flipped back to ``ready`` so the
+        caller can retry after fixing the underlying issue.
+        """
         proposal_id = args.get("proposal_id")
         if not proposal_id:
             return {"success": False, "error": "proposal_id is required"}
@@ -233,10 +250,31 @@ class TaskProposalCommandsMixin:
         if cycles:
             return {"success": False, "error": f"cycle(s): {cycles}"}
 
-        # Atomic commit — collect ids as we go; on any failure roll back
-        # via reverse-order delete_task.  A single DB tx would be nicer but
-        # create_task has its own sessions and side-effects.
+        # Claim: single conditional flip. Only one concurrent caller
+        # wins this UPDATE; the loser sees rowcount==0 and aborts.
+        now = time.time()
+        async with self.db._engine.begin() as conn:
+            claim = await conn.execute(
+                update(task_proposals)
+                .where(
+                    and_(
+                        task_proposals.c.id == proposal_id,
+                        task_proposals.c.status == "ready",
+                    )
+                )
+                .values(status="committed", updated_at=now)
+            )
+        if claim.rowcount == 0:
+            return {
+                "success": False,
+                "error": (
+                    "proposal not in 'ready' state or already claimed by "
+                    "another commit"
+                ),
+            }
+
         created_ids: list[str] = []
+        created_edges: list[tuple[str, str, str]] = []  # (from, to, dep_type)
         temp_to_real: dict[str, str] = {}
         try:
             for t in tasks_in:
@@ -259,8 +297,18 @@ class TaskProposalCommandsMixin:
                 )
                 if not dep_res.get("success", True) and "error" in dep_res:
                     raise RuntimeError(dep_res["error"])
+                created_edges.append((frm, to, e["dep_type"]))
         except Exception as exc:
             logger.exception("task_batch_commit failed, rolling back: %s", exc)
+            # Roll back edges first (may reference tasks about to be deleted).
+            for frm, to, dep_type in reversed(created_edges):
+                try:
+                    await self.db.remove_dependency(frm, to, dep_type)
+                except Exception:
+                    logger.exception(
+                        "rollback: remove_dependency failed %s->%s (%s)",
+                        frm, to, dep_type,
+                    )
             for tid in reversed(created_ids):
                 try:
                     await self.execute("delete_task", {"task_id": tid})
@@ -268,11 +316,18 @@ class TaskProposalCommandsMixin:
                     logger.exception(
                         "rollback: delete_task failed for %s", tid
                     )
+            # Release the claim so the caller can retry.
+            try:
+                await proposal_queries.update_proposal(
+                    self.db, proposal_id, status="ready"
+                )
+            except Exception:
+                logger.exception(
+                    "rollback: could not release proposal %s claim",
+                    proposal_id,
+                )
             return {"success": False, "error": f"commit failed: {exc}"}
 
-        await proposal_queries.update_proposal(
-            self.db, proposal_id, status="committed"
-        )
         return {"success": True, "task_ids": created_ids}
 
 
