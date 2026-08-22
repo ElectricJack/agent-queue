@@ -150,3 +150,62 @@ def test_reviewer_profile_lacks_merge_authority_after_seeding(tmp_path):
     parsed = parse_profile(text)
     tools = parsed.tools.get("allowed", [])
     assert "pr_merge" not in tools, "reviewer must not have merge authority after seeding"
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 Group C: spec-ingest and playbook-compiler profiles
+# ---------------------------------------------------------------------------
+
+PHASE6_PROFILE_IDS = ("spec-ingest", "playbook-compiler")
+
+
+def test_phase6_profiles_are_auto_discovered_and_seeded(tmp_path):
+    """ensure_default_profiles discovers every src/profiles/defaults/<id>/
+    directory — spec-ingest and playbook-compiler included — with no code
+    changes required."""
+    result = ensure_default_profiles(str(tmp_path))
+    created = set(result["created"])
+    assert set(PHASE6_PROFILE_IDS).issubset(created), (
+        f"expected spec-ingest + playbook-compiler seeded, got {created}"
+    )
+    for pid in PHASE6_PROFILE_IDS:
+        path = _vault_profile_path(tmp_path, pid)
+        assert path.is_file(), f"missing seeded profile: {path}"
+        parsed = parse_profile(path.read_text(encoding="utf-8"))
+        assert parsed.is_valid, f"{pid} parse errors: {parsed.errors}"
+        assert parsed.warnings == [], f"{pid} parse warnings: {parsed.warnings}"
+        assert parsed.frontmatter.id == pid
+
+
+def test_spec_ingest_profile_shape():
+    """spec-ingest is a workspace-free planning profile whitelisting the
+    task_batch_propose flow, never create_task directly."""
+    from pathlib import Path
+
+    src = Path("src/profiles/defaults/spec-ingest/profile.md").read_text()
+    parsed = parse_profile(src)
+    assert parsed.is_valid, parsed.errors
+    assert parsed.frontmatter.id == "spec-ingest"
+    assert parsed.config.get("runtime") == "claude_sdk"
+    assert parsed.config.get("needs_workspace") is False
+    tools = parsed.tools.get("allowed", [])
+    assert "task_batch_propose" in tools
+    assert "list_tasks" in tools
+    assert "get_downstream_tasks" in tools
+    assert "create_task" not in tools, "spec-ingest must not create tasks directly"
+
+
+def test_playbook_compiler_profile_shape():
+    """playbook-compiler is a workspace-free mechanical profile whitelisting
+    the playbook_validate/playbook_install loop."""
+    from pathlib import Path
+
+    src = Path("src/profiles/defaults/playbook-compiler/profile.md").read_text()
+    parsed = parse_profile(src)
+    assert parsed.is_valid, parsed.errors
+    assert parsed.frontmatter.id == "playbook-compiler"
+    assert parsed.config.get("runtime") == "claude_sdk"
+    assert parsed.config.get("needs_workspace") is False
+    tools = parsed.tools.get("allowed", [])
+    assert "playbook_validate" in tools
+    assert "playbook_install" in tools
