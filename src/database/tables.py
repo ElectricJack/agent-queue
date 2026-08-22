@@ -207,6 +207,19 @@ gates = Table(
     Index("idx_gates_project_status", "project_id", "status"),
     # The sweep scans open gates by type.
     Index("idx_gates_status_type", "status", "gate_type"),
+    # Partial unique index prevents concurrent create_gate calls from
+    # racing past the SELECT-then-INSERT dedup on Postgres (READ COMMITTED
+    # can let two txs both see zero matches). Only ``open`` gates are
+    # constrained; resolved/expired gates may accumulate freely.
+    Index(
+        "uq_gates_open_dedup",
+        "project_id",
+        "gate_type",
+        "await_id",
+        unique=True,
+        sqlite_where=text("status = 'open'"),
+        postgresql_where=text("status = 'open'"),
+    ),
 )
 
 task_gates = Table(

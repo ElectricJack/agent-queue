@@ -14,6 +14,7 @@ import uuid
 from typing import Iterable
 
 from sqlalchemy import and_, insert, select, update
+from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import gates, task_gates
 
@@ -106,19 +107,32 @@ class GateQueriesMixin:
                     return cand_id, False
 
             gate_id = "gate-" + uuid.uuid4().hex[:12]
-            await conn.execute(
-                insert(gates).values(
-                    id=gate_id,
+            try:
+                await conn.execute(
+                    insert(gates).values(
+                        id=gate_id,
+                        project_id=project_id,
+                        gate_type=gate_type,
+                        title=title,
+                        question=question,
+                        await_id=await_id,
+                        timeout_at=timeout_at,
+                        status="open",
+                        created_at=now,
+                    )
+                )
+            except IntegrityError:
+                # Partial unique index (uq_gates_open_dedup) fired — a
+                # concurrent tx inserted an open gate with the same
+                # (project_id, gate_type, await_id) between our SELECT and
+                # INSERT (Postgres READ COMMITTED). Return the winner.
+                # SQLite serializes writers so this arm is normally cold
+                # on SQLite (Postgres exercises the real race).
+                return await self._resolve_open_gate_winner(
                     project_id=project_id,
                     gate_type=gate_type,
-                    title=title,
-                    question=question,
                     await_id=await_id,
-                    timeout_at=timeout_at,
-                    status="open",
-                    created_at=now,
                 )
-            )
             for tid in waiters:
                 await conn.execute(insert(task_gates).values(task_id=tid, gate_id=gate_id))
             flipped: set[str] = set()
@@ -126,6 +140,37 @@ class GateQueriesMixin:
                 flipped = await self.recompute_blocked(set(waiters), conn=conn)
         await self.log_blocked_flips(flipped)
         return gate_id, True
+
+    async def _resolve_open_gate_winner(
+        self,
+        *,
+        project_id: str,
+        gate_type: str,
+        await_id: str | None,
+    ) -> tuple[str, bool]:
+        """Re-SELECT the winning open gate after an IntegrityError on insert."""
+        match_conds = [
+            gates.c.project_id == project_id,
+            gates.c.gate_type == gate_type,
+            gates.c.status == "open",
+        ]
+        if await_id is None:
+            match_conds.append(gates.c.await_id.is_(None))
+        else:
+            match_conds.append(gates.c.await_id == await_id)
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(select(gates.c.id).where(and_(*match_conds)))
+            ).fetchone()
+        if row is None:
+            # Extremely unlikely — the winner resolved before we could
+            # look it up. Bubble up as the same IntegrityError shape.
+            raise IntegrityError(
+                "create_gate: unique-index conflict but no open winner",
+                params=None,
+                orig=None,
+            )
+        return row[0], False
 
     async def resolve_gate(
         self,

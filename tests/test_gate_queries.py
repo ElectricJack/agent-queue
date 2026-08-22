@@ -89,7 +89,11 @@ class TestCreateGate:
         rows = await db.list_gates(project_id=PROJECT)
         assert len([g for g in rows if g["id"] == gid1]) == 1
 
-    async def test_dedup_different_waiter_set_creates_new(self, db):
+    async def test_dedup_different_waiter_set_returns_existing(self, db):
+        # With the partial unique index (uq_gates_open_dedup) any two
+        # open gates matching (project_id, gate_type, await_id) collapse
+        # to one, regardless of waiter set. The second create returns
+        # the existing gate rather than inserting a rival.
         await mktask(db, "t1")
         await mktask(db, "t2")
         gid1, _ = await db.create_gate(
@@ -98,8 +102,42 @@ class TestCreateGate:
         gid2, created2 = await db.create_gate(
             PROJECT, "human", "r", await_id="a-1", waiter_task_ids=["t1", "t2"]
         )
-        assert gid1 != gid2
-        assert created2 is True
+        assert gid1 == gid2
+        assert created2 is False
+
+    async def test_integrity_error_reselect_returns_winner(self, db):
+        # Simulate the Postgres race: two txs both find zero candidates
+        # in their SELECT-first phase (SQLite serializes writers so we
+        # force it by monkey-patching the dedup SELECT to return empty),
+        # then race the INSERT. The partial unique index rejects the
+        # loser, whose IntegrityError branch re-SELECTs and returns the
+        # winner's id with was_created=False.
+        from src.database.queries import gate_queries as gq
+
+        gid1, _ = await db.create_gate(PROJECT, "human", "r", await_id="race-1")
+
+        # Bypass the pre-INSERT dedup by patching create_gate's
+        # candidate_rows path to always be empty for this call.
+        called = {"n": 0}
+        real_and = gq.and_
+
+        def fake_and(*conds):
+            called["n"] += 1
+            # First call from candidate lookup — return an always-false
+            # predicate so the SELECT yields no rows.
+            if called["n"] == 1:
+                return real_and(*conds, gq.gates.c.id == "__no_such_gate__")
+            return real_and(*conds)
+
+        gq.and_ = fake_and
+        try:
+            gid2, created2 = await db.create_gate(
+                PROJECT, "human", "r", await_id="race-1"
+            )
+        finally:
+            gq.and_ = real_and
+        assert gid2 == gid1
+        assert created2 is False
 
     async def test_dedup_null_await_id_matches(self, db):
         # Both gates have await_id=None — should still dedup.
