@@ -112,6 +112,37 @@ class TestMessageSend:
         assert result.exit_code != 0
         assert "a recipient is required" in result.output
 
+    def test_pane_open_flag_parsed_into_args(self, runner):
+        client = _mock_client({"message_send": {"message_id": "msg-1", "state": "queued"}})
+        result = _invoke(
+            runner,
+            [
+                "message", "send",
+                "--to", "user:dashboard",
+                "--body", "opened",
+                "--pane-open", '{"view":"task-detail","args":{"taskId":"t1"}}',
+            ],
+            client,
+        )
+        assert result.exit_code == 0, result.output
+        args = client.execute.await_args.args[1]
+        assert args["pane_open"] == {"view": "task-detail", "args": {"taskId": "t1"}}
+
+    def test_pane_open_invalid_json_errors(self, runner):
+        client = _mock_client({"message_send": {"message_id": "msg-1", "state": "queued"}})
+        result = _invoke(
+            runner,
+            [
+                "message", "send",
+                "--to", "user:dashboard",
+                "--body", "opened",
+                "--pane-open", "{not-json",
+            ],
+            client,
+        )
+        assert result.exit_code != 0
+        assert "invalid json" in result.output.lower()
+
     def test_command_error_exits_nonzero(self, runner):
         from src.cli.exceptions import CommandError
 

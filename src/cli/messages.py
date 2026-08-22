@@ -132,6 +132,15 @@ def message() -> None:
     default=False,
     help="Archive the row once it is injected into a prompt",
 )
+@click.option(
+    "--pane-open",
+    "pane_open_json",
+    default=None,
+    help=(
+        "Attach a pane_open frame: JSON like "
+        "'{\"view\": \"task-detail\", \"args\": {\"taskId\": \"t1\"}}'"
+    ),
+)
 @click.pass_context
 @_handle_errors
 def message_send(
@@ -147,6 +156,7 @@ def message_send(
     thread_id: str | None,
     priority: int,
     archive_after_inject: bool,
+    pane_open_json: str | None,
 ) -> None:
     """Queue a message to a session, task, profile, or user."""
     kind, ident = _split_recipient(to, to_kind, to_id)
@@ -167,6 +177,14 @@ def message_send(
         params["subject"] = subject
     if thread_id:
         params["thread_id"] = thread_id
+    if pane_open_json:
+        import json as _json
+
+        try:
+            params["pane_open"] = _json.loads(pane_open_json)
+        except _json.JSONDecodeError as exc:
+            click.echo(f"--pane-open: invalid JSON: {exc}", err=True)
+            raise click.Abort() from exc
 
     async def _send():
         async with _get_client(api_url) as client:
