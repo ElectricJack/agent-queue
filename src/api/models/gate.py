@@ -45,6 +45,7 @@ class GateCreateResponse(BaseModel):
     success: bool = True
     gate_id: str
     gate: GateCreatePayload
+    was_created: bool = True
 
 
 class GateListResponse(BaseModel):

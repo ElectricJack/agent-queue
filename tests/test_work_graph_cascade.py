@@ -325,7 +325,7 @@ class TestGateSweepGating:
         # Overdue gate that a real sweep would expire.
         import time as _t
 
-        gid = await orch.db.create_gate(
+        gid, _ = await orch.db.create_gate(
             "p-1", "human", "past", timeout_at=_t.time() - 10
         )
         await orch._sweep_gates()
@@ -344,7 +344,7 @@ class TestGateSweepBehavior:
         import time as _t
 
         await mktask(orch, "t")
-        gid = await orch.db.create_gate(
+        gid, _ = await orch.db.create_gate(
             "p-1", "timer", "fire", timeout_at=_t.time() - 1, waiter_task_ids=["t"]
         )
         assert (await orch.db.get_task("t")).is_blocked is True
@@ -355,7 +355,7 @@ class TestGateSweepBehavior:
     async def test_task_gate_resolves_on_dep_completion(self, orch):
         await mktask(orch, "dep", status=TaskStatus.COMPLETED)
         await mktask(orch, "t")
-        gid = await orch.db.create_gate(
+        gid, _ = await orch.db.create_gate(
             "p-1", "task", "wait dep", await_id="dep", waiter_task_ids=["t"]
         )
         assert (await orch.db.get_task("t")).is_blocked is True
@@ -366,7 +366,7 @@ class TestGateSweepBehavior:
     async def test_task_gate_stays_open_while_dep_not_completed(self, orch):
         await mktask(orch, "dep", status=TaskStatus.IN_PROGRESS)
         await mktask(orch, "t")
-        gid = await orch.db.create_gate(
+        gid, _ = await orch.db.create_gate(
             "p-1", "task", "wait dep", await_id="dep", waiter_task_ids=["t"]
         )
         await orch._sweep_gates()
@@ -376,7 +376,7 @@ class TestGateSweepBehavior:
         import time as _t
 
         await mktask(orch, "t")
-        gid = await orch.db.create_gate(
+        gid, _ = await orch.db.create_gate(
             "p-1", "human", "past", timeout_at=_t.time() - 1, waiter_task_ids=["t"]
         )
         await orch._sweep_gates()
@@ -386,7 +386,7 @@ class TestGateSweepBehavior:
 
     async def test_pr_merged_gate_resolves_via_stub_poller(self, orch, monkeypatch):
         await mktask(orch, "t")
-        gid = await orch.db.create_gate(
+        gid, _ = await orch.db.create_gate(
             "p-1", "pr-merged", "PR", await_id="https://gh/pr/1", waiter_task_ids=["t"]
         )
 
@@ -448,7 +448,7 @@ class TestGateSweepBehavior:
 
     async def test_pr_merged_gate_stays_open_while_pr_open(self, orch, monkeypatch):
         await mktask(orch, "t")
-        gid = await orch.db.create_gate(
+        gid, _ = await orch.db.create_gate(
             "p-1", "pr-merged", "PR", await_id="https://gh/pr/1", waiter_task_ids=["t"]
         )
 
@@ -463,7 +463,7 @@ class TestGateSweepBehavior:
         """A persisted matching event *after* gate creation resolves the gate
         even when the live bus subscription is not active."""
         await mktask(orch, "t")
-        gid = await orch.db.create_gate(
+        gid, _ = await orch.db.create_gate(
             "p-1", "event", "await-deploy", await_id="deploy.completed",
             waiter_task_ids=["t"],
         )
@@ -477,7 +477,7 @@ class TestGateSweepBehavior:
         immediately, without waiting for the sweep."""
         await orch._subscribe_event_gates()
         await mktask(orch, "t")
-        gid = await orch.db.create_gate(
+        gid, _ = await orch.db.create_gate(
             "p-1", "event", "await-x", await_id="my.custom", waiter_task_ids=["t"]
         )
         await orch.bus.emit("my.custom", {"project_id": "p-1"})

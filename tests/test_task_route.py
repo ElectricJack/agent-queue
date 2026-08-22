@@ -62,7 +62,7 @@ async def handler(db, config):
 
 
 async def test_task_route_happy_path(handler, db):
-    gate_id = await db.create_gate(
+    gate_id, _ = await db.create_gate(
         project_id=PID, gate_type="routing", title="Route",
         waiter_task_ids=["t1"],
     )
@@ -114,7 +114,7 @@ async def test_workspace_must_belong_to_project(handler, db):
 
 
 async def test_gate_resolve_refuses_routing(handler, db):
-    gate_id = await db.create_gate(
+    gate_id, _ = await db.create_gate(
         project_id=PID, gate_type="routing", title="Route",
         waiter_task_ids=["t1"],
     )

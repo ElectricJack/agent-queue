@@ -38,7 +38,7 @@ class GateCommandsMixin:
         if isinstance(waiters, str):
             waiters = [waiters]
         try:
-            gate_id = await self.db.create_gate(
+            gate_id, was_created = await self.db.create_gate(
                 project_id=str(project_id),
                 gate_type=str(gate_type),
                 title=str(title),
@@ -62,20 +62,29 @@ class GateCommandsMixin:
             "timeout_at": args.get("timeout_at"),
             "waiter_task_ids": list(waiters),
         }
-        try:
-            await self.orchestrator.bus.emit("gate.created", payload)
-        except Exception:
-            logger.debug("gate_create: bus emit failed", exc_info=True)
-        try:
-            await self.db.log_event(
-                "gate.created",
-                project_id=str(project_id),
-                payload=gate_id,
-            )
-        except Exception:
-            logger.debug("gate_create: log_event failed", exc_info=True)
+        # Only emit ``gate.created`` when a NEW gate was inserted; if
+        # dedup returned an existing open gate, downstream subscribers
+        # already saw the original create event.
+        if was_created:
+            try:
+                await self.orchestrator.bus.emit("gate.created", payload)
+            except Exception:
+                logger.debug("gate_create: bus emit failed", exc_info=True)
+            try:
+                await self.db.log_event(
+                    "gate.created",
+                    project_id=str(project_id),
+                    payload=gate_id,
+                )
+            except Exception:
+                logger.debug("gate_create: log_event failed", exc_info=True)
 
-        return {"success": True, "gate_id": gate_id, "gate": payload}
+        return {
+            "success": True,
+            "gate_id": gate_id,
+            "gate": payload,
+            "was_created": was_created,
+        }
 
     async def _cmd_gate_list(self, args: dict) -> dict:
         """List gates, optionally filtered by project/status/type."""

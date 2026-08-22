@@ -12,61 +12,13 @@ FAILED must not stall its downstream waiters forever.
 """
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
-from src.commands.handler import CommandHandler
-from src.config import AppConfig, DiscordConfig
-from src.database import Database
 from src.models import AgentProfile, Project
-from src.orchestrator import Orchestrator
 
-
-@pytest.fixture
-def command_handler_factory(tmp_path):
-    async def _make():
-        db = Database(str(tmp_path / "cascade.db"))
-        await db.initialize()
-        cfg = AppConfig(
-            discord=DiscordConfig(bot_token="t", guild_id="1"),
-            workspace_dir=str(tmp_path / "w"),
-            database_path=str(tmp_path / "cascade.db"),
-            data_dir=str(tmp_path / "d"),
-        )
-        o = Orchestrator(cfg)
-        o.db = db
-        o.git = MagicMock()
-        o.bus = MagicMock()
-        o.bus.emit = AsyncMock()
-        h = CommandHandler(o, cfg)
-        h._db = db
-        return h
-
-    return _make
-
-
-@pytest.fixture
-def orchestrator_factory(tmp_path):
-    async def _make():
-        db = Database(str(tmp_path / "orch.db"))
-        await db.initialize()
-        cfg = AppConfig(
-            discord=DiscordConfig(bot_token="t", guild_id="1"),
-            workspace_dir=str(tmp_path / "w"),
-            database_path=str(tmp_path / "orch.db"),
-            data_dir=str(tmp_path / "d"),
-        )
-        o = Orchestrator(cfg)
-        o.db = db
-        o.git = MagicMock()
-        o.bus = MagicMock()
-        o.bus.emit = AsyncMock()
-        o.command_handler = CommandHandler(o, cfg)
-        return o
-
-    return _make
+# ``command_handler_factory`` and ``orchestrator_factory`` fixtures live in
+# tests/conftest.py — shared with test_review_pipeline_rules.py and
+# test_review_pipeline_e2e.py.
 
 
 @pytest.mark.asyncio
@@ -229,7 +181,7 @@ async def test_task_gate_sweep_resolves_on_failed_review(orchestrator_factory):
     review = (await h.execute(
         "create_task", {"project_id": "p", "title": "R", "profile_id": "worker"}
     ))["created"]
-    gate_id = await h.db.create_gate(
+    gate_id, _ = await h.db.create_gate(
         project_id="p",
         gate_type="task",
         title="Awaiting review",
@@ -255,7 +207,7 @@ async def test_pr_merged_sweep_unblocks_downstream(orchestrator_factory, monkeyp
         "create_task", {"project_id": "p", "title": "D", "profile_id": "worker"}
     ))["created"]
     pr = "https://github.com/o/r/pull/17"
-    gate_id = await h.db.create_gate(
+    gate_id, _ = await h.db.create_gate(
         project_id="p",
         gate_type="pr-merged",
         title="Awaiting merge",

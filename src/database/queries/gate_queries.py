@@ -60,17 +60,52 @@ class GateQueriesMixin:
         await_id: str | None = None,
         timeout_at: float | None = None,
         waiter_task_ids: Iterable[str] = (),
-    ) -> str:
+    ) -> tuple[str, bool]:
         """Insert a gate + its ``task_gates`` rows and recompute waiters.
 
-        Returns the generated gate id (``gate-<uuid[:12]>``).  All writes
-        happen in one transaction so a reader can never see the gate rows
-        without the waiters' refreshed projection.
+        Returns ``(gate_id, was_created)``. If an ``open`` gate already
+        exists with the same ``(project_id, gate_type, await_id)`` *and*
+        an identical waiter set, its id is returned with
+        ``was_created=False`` — pipeline reruns can no longer stack
+        duplicate gates. Otherwise a fresh gate is inserted and
+        ``was_created=True``.  All writes happen in one transaction so a
+        reader can never see the gate rows without the waiters' refreshed
+        projection.
         """
-        gate_id = "gate-" + uuid.uuid4().hex[:12]
         waiters = sorted(set(waiter_task_ids))
+        waiter_set = set(waiters)
         now = time.time()
         async with self._engine.begin() as conn:
+            # Dedup: match on (project_id, gate_type, await_id) among
+            # open gates, then compare waiter sets. NULL await_id
+            # requires an explicit IS NULL predicate (SQL NULL != NULL).
+            match_conds = [
+                gates.c.project_id == project_id,
+                gates.c.gate_type == gate_type,
+                gates.c.status == "open",
+            ]
+            if await_id is None:
+                match_conds.append(gates.c.await_id.is_(None))
+            else:
+                match_conds.append(gates.c.await_id == await_id)
+            candidate_rows = (
+                await conn.execute(select(gates.c.id).where(and_(*match_conds)))
+            ).fetchall()
+            for (cand_id,) in candidate_rows:
+                existing_waiters = {
+                    r[0]
+                    for r in (
+                        await conn.execute(
+                            select(task_gates.c.task_id).where(
+                                task_gates.c.gate_id == cand_id
+                            )
+                        )
+                    ).fetchall()
+                }
+                if existing_waiters == waiter_set:
+                    return cand_id, False
+
+            gate_id = "gate-" + uuid.uuid4().hex[:12]
             await conn.execute(
                 insert(gates).values(
                     id=gate_id,
@@ -90,7 +125,7 @@ class GateQueriesMixin:
             if waiters:
                 flipped = await self.recompute_blocked(set(waiters), conn=conn)
         await self.log_blocked_flips(flipped)
-        return gate_id
+        return gate_id, True
 
     async def resolve_gate(
         self,

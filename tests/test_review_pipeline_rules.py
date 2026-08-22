@@ -12,8 +12,6 @@ Verifies:
 """
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -24,20 +22,12 @@ from src.database import Database
 from src.models import AgentProfile, Project
 from src.orchestrator import Orchestrator
 from src.orchestrator.core import _eval_pipeline_when
-from src.playbooks.pipeline_compiler import compile_pipeline
-from src.playbooks.pipeline_runner import PipelineRunner
 
-# ---------------------------------------------------------------------------
-# Path constant
-# ---------------------------------------------------------------------------
+from tests.conftest import DEFAULT_PIPELINE_PATH as _DEFAULT_PIPELINE
 
-_DEFAULT_PIPELINE = (
-    Path(__file__).parent.parent
-    / "src"
-    / "prompts"
-    / "default_playbooks"
-    / "default-pipeline.md"
-)
+# ``command_handler_factory`` and ``pipeline_engine_factory`` fixtures, plus
+# the ``PipelineEngine`` test helper, live in tests/conftest.py — shared with
+# test_review_pipeline_e2e.py and test_review_reopen_cascade.py.
 
 
 # ---------------------------------------------------------------------------
@@ -71,126 +61,6 @@ async def handler(db, config):
     o.bus = MagicMock()
     o.bus.emit = AsyncMock()
     return CommandHandler(o, config)
-
-
-@pytest.fixture
-def command_handler_factory(tmp_path):
-    """Factory that creates a fresh CommandHandler backed by a real DB."""
-
-    async def _make():
-        db = Database(str(tmp_path / "rv2.db"))
-        await db.initialize()
-        cfg = AppConfig(
-            discord=DiscordConfig(bot_token="t", guild_id="1"),
-            workspace_dir=str(tmp_path / "w"),
-            database_path=str(tmp_path / "rv2.db"),
-            data_dir=str(tmp_path / "d"),
-        )
-        o = Orchestrator(cfg)
-        o.db = db
-        o.git = MagicMock()
-        o.bus = MagicMock()
-        o.bus.emit = AsyncMock()
-        h = CommandHandler(o, cfg)
-        h._db = db  # stash for teardown
-        return h
-
-    return _make
-
-
-class PipelineEngine:
-    """Minimal test helper that loads the default pipeline and dispatches events.
-
-    Dispatches the compiled rule subgraph that matches the given event type,
-    injecting ``event.task`` from the DB when ``task_id`` is present (mirrors
-    the orchestrator hydration path).
-    """
-
-    def __init__(self, compiled, handler, db=None):
-        self._compiled = compiled
-        self._handler = handler
-        self._db = db
-        self._dispatched: set[str] = set()  # (event_type, event_id) for idempotency
-
-    async def dispatch(
-        self,
-        event_type: str,
-        payload: dict[str, Any],
-        *,
-        event_id: str | None = None,
-    ) -> None:
-        # Idempotency: same event_id dispatched twice is a no-op.
-        key = (event_type, event_id) if event_id else None
-        if key and key in self._dispatched:
-            return
-        if key:
-            self._dispatched.add(key)
-
-        # Hydrate event.task if task_id is present.
-        hydrated = dict(payload)
-        hydrated["_event_type"] = event_type
-        if self._db and hydrated.get("task_id") and "task" not in hydrated:
-            task_row = await self._db.get_task(str(hydrated["task_id"]))
-            if task_row is not None:
-                from dataclasses import asdict
-                try:
-                    hydrated["task"] = asdict(task_row)
-                except Exception:
-                    hydrated["task"] = (
-                        vars(task_row) if hasattr(task_row, "__dict__") else {}
-                    )
-
-        # Select rule for this event type.
-        graph = self._compiled.to_dict()
-        pipeline_rules = graph.get("pipeline_rules") or {}
-        if not pipeline_rules:
-            # Single-graph pipeline — run directly.
-            runner = PipelineRunner(graph=graph, event=hydrated, handler=self._handler)
-            await runner.run()
-            return
-
-        if event_type not in pipeline_rules:
-            return  # No rule for this trigger
-
-        rule_metas = pipeline_rules[event_type]
-        # pipeline_rules[trigger] may be a single meta (legacy) or a list.
-        if isinstance(rule_metas, (str, dict)):
-            rule_metas = [rule_metas]
-
-        import copy
-        for rule_meta in rule_metas:
-            if isinstance(rule_meta, str):
-                rule_entry = rule_meta
-                rule_when = None
-            else:
-                rule_entry = rule_meta.get("entry", "")
-                rule_when = rule_meta.get("when")
-
-            # Evaluate ``when`` guard.
-            if rule_when and not _eval_pipeline_when(rule_when, hydrated):
-                continue
-
-            # Clone graph, set the rule's entry node.
-            run_graph = copy.deepcopy(graph)
-            for nid, node in run_graph["nodes"].items():
-                node["entry"] = nid == rule_entry
-
-            runner = PipelineRunner(graph=run_graph, event=hydrated, handler=self._handler)
-            await runner.run()
-
-
-@pytest.fixture
-def pipeline_engine_factory():
-    """Factory that creates a PipelineEngine from the compiled default pipeline."""
-
-    def _make(*, handler):
-        md = _DEFAULT_PIPELINE.read_text(encoding="utf-8")
-        result = compile_pipeline(md)
-        assert result.success, f"default-pipeline.md did not compile: {result.errors}"
-        db = getattr(handler, "_db", getattr(handler.db, "_engine", None) and handler.db)
-        return PipelineEngine(result.playbook, handler, db=db)
-
-    return _make
 
 
 # ---------------------------------------------------------------------------

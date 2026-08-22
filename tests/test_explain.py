@@ -102,7 +102,7 @@ class TestExplainCommand:
 
     async def test_blocked_gate_reason(self, handler, db):
         await mktask(db, "t")
-        gid = await db.create_gate(
+        gid, _ = await db.create_gate(
             PROJECT_ID, "human", "review", waiter_task_ids=["t"]
         )
         res = await handler._cmd_explain_task({"task_id": "t"})

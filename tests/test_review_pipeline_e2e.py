@@ -20,8 +20,6 @@ Second test covers the rework leg (T6):
 """
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -31,18 +29,12 @@ from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.models import AgentProfile, Project, TaskStatus
 from src.orchestrator import Orchestrator
-from src.orchestrator.core import _eval_pipeline_when
-from src.playbooks.pipeline_compiler import compile_pipeline
-from src.playbooks.pipeline_runner import PipelineRunner
 
-
-_DEFAULT_PIPELINE = (
-    Path(__file__).parent.parent
-    / "src"
-    / "prompts"
-    / "default_playbooks"
-    / "default-pipeline.md"
-)
+# ``pipeline_engine_factory`` fixture and the ``PipelineEngine`` test helper
+# live in tests/conftest.py — shared with test_review_pipeline_rules.py and
+# test_review_reopen_cascade.py. ``orchestrator_factory`` below is a
+# specialized local override (patches completion-pipeline internals the
+# generic conftest fixture doesn't need).
 
 
 # ---------------------------------------------------------------------------
@@ -82,87 +74,6 @@ def orchestrator_factory(tmp_path):
         o.release_session_task_resources = _noop_release
         return o
 
-    return _make
-
-
-class PipelineEngine:
-    """Minimal helper: dispatches the compiled default pipeline for an event.
-
-    Copy of the fixture used by T4/T5 tests — kept local so this file has
-    zero cross-test dependencies.
-    """
-
-    def __init__(self, compiled, handler, db=None):
-        self._compiled = compiled
-        self._handler = handler
-        self._db = db
-        self._dispatched: set[tuple[str, str]] = set()
-
-    async def dispatch(
-        self,
-        event_type: str,
-        payload: dict[str, Any],
-        *,
-        event_id: str | None = None,
-    ) -> None:
-        key = (event_type, event_id) if event_id else None
-        if key and key in self._dispatched:
-            return
-        if key:
-            self._dispatched.add(key)
-
-        hydrated = dict(payload)
-        hydrated["_event_type"] = event_type
-        if self._db and hydrated.get("task_id") and "task" not in hydrated:
-            task_row = await self._db.get_task(str(hydrated["task_id"]))
-            if task_row is not None:
-                from dataclasses import asdict
-                try:
-                    hydrated["task"] = asdict(task_row)
-                except Exception:
-                    hydrated["task"] = (
-                        vars(task_row) if hasattr(task_row, "__dict__") else {}
-                    )
-
-        graph = self._compiled.to_dict()
-        pipeline_rules = graph.get("pipeline_rules") or {}
-        if not pipeline_rules:
-            runner = PipelineRunner(graph=graph, event=hydrated, handler=self._handler)
-            await runner.run()
-            return
-
-        if event_type not in pipeline_rules:
-            return
-        rule_metas = pipeline_rules[event_type]
-        if isinstance(rule_metas, (str, dict)):
-            rule_metas = [rule_metas]
-
-        import copy
-        for rule_meta in rule_metas:
-            if isinstance(rule_meta, str):
-                rule_entry = rule_meta
-                rule_when = None
-            else:
-                rule_entry = rule_meta.get("entry", "")
-                rule_when = rule_meta.get("when")
-
-            if rule_when and not _eval_pipeline_when(rule_when, hydrated):
-                continue
-
-            run_graph = copy.deepcopy(graph)
-            for nid, node in run_graph["nodes"].items():
-                node["entry"] = nid == rule_entry
-            runner = PipelineRunner(graph=run_graph, event=hydrated, handler=self._handler)
-            await runner.run()
-
-
-@pytest.fixture
-def pipeline_engine_factory():
-    def _make(*, handler):
-        md = _DEFAULT_PIPELINE.read_text(encoding="utf-8")
-        result = compile_pipeline(md)
-        assert result.success, f"default-pipeline.md did not compile: {result.errors}"
-        return PipelineEngine(result.playbook, handler, db=handler.db)
     return _make
 
 
