@@ -37,6 +37,7 @@ class ProfileCommandsMixin:
                     "name": p.name,
                     "description": p.description,
                     "model": p.model or "(default)",
+                    "default_class": p.default_class or "",
                     "allowed_tools": p.allowed_tools,
                     "mcp_servers": list(p.mcp_servers) if p.mcp_servers else [],
                     "has_system_prompt": bool(p.system_prompt_suffix),
@@ -136,6 +137,7 @@ class ProfileCommandsMixin:
             "mcp_servers": profile.mcp_servers,
             "system_prompt_suffix": profile.system_prompt_suffix or "(none)",
             "install": profile.install,
+            "default_class": profile.default_class or "",
         }
 
     async def _cmd_edit_profile(self, args: dict) -> dict:
@@ -163,6 +165,7 @@ class ProfileCommandsMixin:
             "mcp_servers",
             "system_prompt_suffix",
             "install",
+            "default_class",
         ):
             if fld in args:
                 updates[fld] = args[fld]
@@ -171,7 +174,7 @@ class ProfileCommandsMixin:
                 "error": (
                     "No fields to update. Provide name, description, model, "
                     "permission_mode, allowed_tools, mcp_servers, "
-                    "system_prompt_suffix, or install."
+                    "system_prompt_suffix, default_class, or install."
                 )
             }
 
@@ -204,6 +207,7 @@ class ProfileCommandsMixin:
                 "mcp_servers": profile.mcp_servers,
                 "system_prompt_suffix": profile.system_prompt_suffix,
                 "install": profile.install,
+                "default_class": profile.default_class or "",
             }
 
         # Apply updates on top of the current state.
@@ -230,6 +234,7 @@ class ProfileCommandsMixin:
             mcp_servers=merged.get("mcp_servers", {}),
             system_prompt_suffix=merged.get("system_prompt_suffix", ""),
             install=merged.get("install", {}),
+            default_class=merged.get("default_class", "") or "",
             role=role,
             rules=rules,
             reflection=reflection,

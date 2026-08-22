@@ -1113,6 +1113,7 @@ def agent_profile_to_markdown(
     tags: list[str] | None = None,
     runtime: str = "",
     agent_name: str = "",
+    default_class: str = "",
 ) -> str:
     """Render profile fields into the hybrid markdown format.
 
@@ -1192,6 +1193,8 @@ def agent_profile_to_markdown(
         config["model"] = model
     if permission_mode:
         config["permission_mode"] = permission_mode
+    if default_class:
+        config["default_class"] = default_class
     # Only emit runtime when it differs from the default — keeps existing
     # claude_sdk-runtime profile files unchanged when round-tripped.
     if runtime and runtime != "claude_sdk":

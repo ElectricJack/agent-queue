@@ -5,6 +5,7 @@ import {
   useGetProfile,
   type ProfileDetail,
 } from "../../api/hooks";
+import IntelligenceClassPicker from "./IntelligenceClassPicker";
 import McpServerSelector from "./McpServerSelector";
 import ToolPicker from "./ToolPicker";
 
@@ -17,7 +18,7 @@ interface Props {
 interface FormState {
   name: string;
   description: string;
-  model: string;
+  default_class: string;
   permission_mode: string;
   system_prompt_suffix: string;
   allowed_tools: string[];
@@ -25,11 +26,13 @@ interface FormState {
 }
 
 function profileToForm(p: ProfileDetail | null | undefined): FormState {
+  const dc = (p as { default_class?: string } | null | undefined)?.default_class;
+  const rawPerm = p?.permission_mode ?? "";
   return {
     name: p?.name ?? "",
     description: p?.description ?? "",
-    model: p?.model ?? "",
-    permission_mode: p?.permission_mode ?? "",
+    default_class: dc ?? "",
+    permission_mode: rawPerm === "(default)" ? "" : rawPerm,
     system_prompt_suffix: p?.system_prompt_suffix ?? "",
     allowed_tools: [...(p?.allowed_tools ?? [])],
     mcp_servers: [...(p?.mcp_servers ?? [])],
@@ -78,16 +81,18 @@ export default function SystemProfileEditDrawer({ open, onClose, profileId }: Pr
       // a list[str] of registry names (matches edit_project_profile).
       // Cast to bypass the stale OpenAPI shape until the backend model is
       // tightened.
+      // default_class isn't on the generated request type yet; the
+      // backend accepts it (see _cmd_edit_profile). Cast to loosen shape.
       await edit.mutateAsync({
         profile_id: profileId,
         name: form.name || null,
         description: form.description || null,
-        model: form.model || null,
+        default_class: form.default_class || "",
         permission_mode: form.permission_mode || null,
         system_prompt_suffix: form.system_prompt_suffix || null,
         allowed_tools: form.allowed_tools,
         mcp_servers: form.mcp_servers as unknown as Record<string, unknown>,
-      });
+      } as unknown as Parameters<typeof edit.mutateAsync>[0]);
       onClose();
     } catch (err) {
       setFatal(err instanceof Error ? err.message : String(err));
@@ -140,13 +145,14 @@ export default function SystemProfileEditDrawer({ open, onClose, profileId }: Pr
             </Field>
           </Section>
 
-          <Section title="Model & permissions">
-            <Field label="Model">
-              <input
-                value={form.model}
-                onChange={(e) => set("model", e.target.value)}
-                placeholder="claude-sonnet-4-6"
-                className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-1.5 font-mono text-xs text-gray-200 focus:border-indigo-500 focus:outline-none"
+          <Section
+            title="Intelligence class & permissions"
+            hint="Picks the model + reasoning tier per provider. See Settings → Intelligence Classes for the matrix."
+          >
+            <Field label="Intelligence class">
+              <IntelligenceClassPicker
+                value={form.default_class}
+                onChange={(v) => set("default_class", v)}
               />
             </Field>
             <Field label="Permission mode">
@@ -183,7 +189,7 @@ export default function SystemProfileEditDrawer({ open, onClose, profileId }: Pr
               value={form.allowed_tools}
               onChange={(t) => set("allowed_tools", t)}
               enabledServers={form.mcp_servers}
-              model={form.model}
+              model=""
             />
           </Section>
         </div>

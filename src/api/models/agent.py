@@ -21,6 +21,7 @@ class ProfileSummary(BaseModel):
     name: str
     description: str = ""
     model: str = ""
+    default_class: str = ""
     allowed_tools: list[str] = []
     mcp_servers: list[str] = []
     has_system_prompt: bool = False
@@ -60,6 +61,7 @@ class ProfileDetail(BaseModel):
     name: str
     description: str = ""
     model: str = ""
+    default_class: str = ""
     permission_mode: str = ""
     allowed_tools: list[str] = []
     mcp_servers: list[str] = []
