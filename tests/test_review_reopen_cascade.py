@@ -189,3 +189,47 @@ async def test_task_gate_sweep_resolves_on_failed_review(orchestrator_factory):
     await orch._sweep_resolve_task_gates()
     gate = await h.db.get_gate(gate_id)
     assert gate["status"] == "resolved", "task gate must resolve on FAILED await target"
+
+
+@pytest.mark.asyncio
+async def test_pr_merged_sweep_unblocks_downstream(orchestrator_factory, monkeypatch):
+    """After a final-reviewer merges a PR, `_sweep_resolve_pr_ci_gates` resolves
+    the downstream task's `pr-merged` gate so it can be worked on."""
+    orch = await orchestrator_factory()
+    h = orch.command_handler
+    await h.db.create_project(Project(id="p", name="P"))
+    await h.db.upsert_profile(AgentProfile(id="worker", name="W"))
+
+    downstream = (await h.execute(
+        "create_task", {"project_id": "p", "title": "D", "profile_id": "worker"}
+    ))["created"]
+    pr = "https://github.com/o/r/pull/17"
+    gate_id = await h.db.create_gate(
+        project_id="p",
+        gate_type="pr-merged",
+        title="Awaiting merge",
+        await_id=pr,
+        waiter_task_ids=[downstream],
+    )
+
+    # Downstream is blocked before the merge.
+    dt = await h.db.get_task(downstream)
+    assert dt.is_blocked
+
+    # Monkeypatch `_poll_pr_merged` directly so the sweep finds the PR merged
+    # without needing a real workspace or gh CLI.
+    async def fake_poll_pr_merged(pr_url: str, *, project_id: str | None = None) -> bool:
+        assert pr_url == pr
+        return True
+
+    monkeypatch.setattr(orch, "_poll_pr_merged", fake_poll_pr_merged)
+
+    # Force the sweep interval so the throttle doesn't skip execution.
+    orch._last_gate_sweep = 0.0
+    orch.config.work_graph.gate_sweep_interval_seconds = 1
+    await orch._sweep_gates()
+
+    gate = await h.db.get_gate(gate_id)
+    assert gate["status"] == "resolved", "pr-merged gate must resolve after sweep"
+    dt2 = await h.db.get_task(downstream)
+    assert not dt2.is_blocked, "downstream task must be unblocked after gate resolves"
