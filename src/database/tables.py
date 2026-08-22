@@ -226,6 +226,36 @@ task_labels = Table(
     Index("idx_task_labels_label", "label"),
 )
 
+# ---------------------------------------------------------------------------
+# Task proposals (design spec §8, Phase 6 — spec ingestion).
+#
+# Staged batch of tasks + edges awaiting human approval before being
+# committed into the live work graph.  ``payload`` is a JSON blob of
+# ``{"tasks": [...], "edges": [...]}`` — see the plan's Interfaces block.
+# ---------------------------------------------------------------------------
+
+TASK_PROPOSAL_STATUSES = ("draft", "ready", "committed", "discarded")
+_TASK_PROPOSAL_STATUS_CHECK = (
+    "status IN (" + ", ".join(f"'{s}'" for s in TASK_PROPOSAL_STATUSES) + ")"
+)
+
+task_proposals = Table(
+    "task_proposals",
+    metadata,
+    Column("id", Text, primary_key=True),  # "prop-" + uuid4[:12]
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    # Provenance — free-form; e.g. "spec:projects/foo/specs/2026-08-21-thing.md".
+    Column("source", Text, nullable=False),
+    # JSON blob: {"tasks":[{tempId,title,description,priority?},...],
+    #             "edges":[{from,to,dep_type},...]}
+    Column("payload", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default="draft"),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(_TASK_PROPOSAL_STATUS_CHECK, name="ck_task_proposals_status"),
+    Index("idx_task_proposals_project_status", "project_id", "status"),
+)
+
 task_tools = Table(
     "task_tools",
     metadata,
