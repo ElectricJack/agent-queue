@@ -741,6 +741,21 @@ _CRON_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Spec + proposal events (Phase 6 — spec ingestion §8)
+# ---------------------------------------------------------------------------
+
+_SPEC_SCHEMAS: dict[str, EventSchema] = {
+    "spec.approved": {
+        "required": ["project_id", "spec_path"],
+        "optional": [],
+    },
+    "proposal.ready": {
+        "required": ["project_id", "proposal_id"],
+        "optional": [],
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Combined registry
 # ---------------------------------------------------------------------------
 
@@ -762,6 +777,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_SESSION_SCHEMAS,
     **_TIMER_SCHEMAS,
     **_CRON_SCHEMAS,
+    **_SPEC_SCHEMAS,
 }
 """Master registry of all event schemas.
 
