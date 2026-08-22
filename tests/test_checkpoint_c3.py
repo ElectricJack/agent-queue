@@ -514,6 +514,7 @@ class TestCheckpointC3:
                     "outcome": "pass",
                     "work_outcome": "shipped",
                     "notes": "A done",
+                    "summary": "Task A completed.",
                 },
             )
             assert close_a["success"] is True, close_a
@@ -553,6 +554,7 @@ class TestCheckpointC3:
                     "outcome": "pass",
                     "work_outcome": "shipped",
                     "notes": "B done",
+                    "summary": "Task B completed.",
                 },
             )
             assert close_b["success"] is True, close_b

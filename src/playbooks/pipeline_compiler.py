@@ -211,33 +211,41 @@ def _reaches_terminal(nodes: dict[str, dict]) -> set[str]:
     return visited
 
 
-def compile_pipeline(markdown: str, *, existing_version: int = 0) -> CompilationResult:
-    """Parse + validate a pipeline playbook markdown file.
+def _normalize_nodes(nodes: dict, entry_id: str, prefix: str = "") -> dict[str, PlaybookNode]:
+    """Compile a flat node dict into normalized PlaybookNode objects.
 
-    Success → :class:`CompilationResult` with ``playbook`` populated (a
-    :class:`CompiledPlaybook` whose ``kind`` is ``"pipeline"`` and whose
-    nodes each carry an ``action`` payload dict).
+    When *prefix* is non-empty, node IDs are rewritten to ``{prefix}-{nid}``
+    and internal ``on_success``/``on_failure`` references are updated to match.
+    This allows multiple rules to coexist in a single CompiledPlaybook without
+    ID collisions.
     """
-    fm, body = _parse_frontmatter(markdown)
-    fm_errs = _validate_frontmatter(fm)
-    if fm_errs:
-        return _errors_result(fm_errs)
+    def _remap(val: Any) -> Any:
+        """Prefix a node reference if a prefix is active."""
+        if prefix and isinstance(val, str):
+            return f"{prefix}-{val}"
+        return val
 
-    raw, err = _extract_json(body)
-    if err:
-        return _errors_result([err])
+    normalized: dict[str, PlaybookNode] = {}
+    for nid, node in nodes.items():
+        out_nid = f"{prefix}-{nid}" if prefix else nid
+        n = PlaybookNode()
+        n.entry = nid == entry_id
+        n.terminal = bool(node.get("terminal"))
+        if not n.terminal:
+            n.action = {
+                "command": node.get("command"),
+                "args": node.get("args") or {},
+                "on_success": _remap(node.get("on_success")),
+                "on_failure": _remap(node.get("on_failure")),
+                "output": node.get("output"),
+                "for_each": node.get("for_each"),
+            }
+        normalized[out_nid] = n
+    return normalized
 
-    nodes = raw.get("nodes")
-    if not isinstance(nodes, dict) or not nodes:
-        return _errors_result(
-            [_err(None, "nodes", "Pipeline JSON must have a non-empty 'nodes' object")]
-        )
-    entry_id = raw.get("entry")
-    if not entry_id or entry_id not in nodes:
-        return _errors_result(
-            [_err(None, "entry", "Pipeline JSON 'entry' must reference an existing node id")]
-        )
 
+def _validate_and_check_graph(nodes: dict, entry_id: str) -> list[dict[str, Any]]:
+    """Validate nodes dict and perform graph-level reachability checks."""
     errs: list[dict[str, Any]] = []
     has_terminal = False
     for nid, node in nodes.items():
@@ -256,9 +264,8 @@ def compile_pipeline(markdown: str, *, existing_version: int = 0) -> Compilation
         errs.append(_err(None, "nodes", "Pipeline must have at least one terminal node"))
 
     if errs:
-        return _errors_result(errs)
+        return errs
 
-    # --- Graph-level checks (single entry, unreachable nodes, terminal reachability) ---
     reachable = _reachable(nodes, entry_id)
     unreachable = set(nodes.keys()) - reachable
     if unreachable:
@@ -282,27 +289,70 @@ def compile_pipeline(markdown: str, *, existing_version: int = 0) -> Compilation
             )
         )
 
-    if errs:
-        return _errors_result(errs)
+    return errs
+
+
+def compile_pipeline(markdown: str, *, existing_version: int = 0) -> CompilationResult:
+    """Parse + validate a pipeline playbook markdown file.
+
+    Supports two JSON formats:
+
+    **Single-graph** (legacy)::
+
+        {"entry": "node-id", "nodes": {...}}
+
+    **Multi-rule** (new — multiple triggers in one file)::
+
+        {
+          "rules": [
+            {"id": "rule-id", "on": "event.type", "entry": "node-id", "nodes": {...}},
+            ...
+          ]
+        }
+
+    Multi-rule pipelines compile all rules into a single merged node graph
+    with rule-prefixed node IDs (``{rule-id}-{node-id}``).  A
+    ``pipeline_rules`` dict maps each ``on`` event type to its prefixed entry
+    node ID so the orchestrator can select the correct subgraph at dispatch
+    time.
+
+    Success → :class:`CompilationResult` with ``playbook`` populated (a
+    :class:`CompiledPlaybook` whose ``kind`` is ``"pipeline"`` and whose
+    nodes each carry an ``action`` payload dict).
+    """
+    fm, body = _parse_frontmatter(markdown)
+    fm_errs = _validate_frontmatter(fm)
+    if fm_errs:
+        return _errors_result(fm_errs)
+
+    raw, err = _extract_json(body)
+    if err:
+        return _errors_result([err])
 
     src_hash = hashlib.sha256(markdown.encode()).hexdigest()[:16]
     version = existing_version + 1
 
-    normalized_nodes: dict[str, PlaybookNode] = {}
-    for nid, node in nodes.items():
-        n = PlaybookNode()
-        n.entry = nid == entry_id
-        n.terminal = bool(node.get("terminal"))
-        if not n.terminal:
-            n.action = {
-                "command": node.get("command"),
-                "args": node.get("args") or {},
-                "on_success": node.get("on_success"),
-                "on_failure": node.get("on_failure"),
-                "output": node.get("output"),
-                "for_each": node.get("for_each"),
-            }
-        normalized_nodes[nid] = n
+    # --- Multi-rule format ---
+    if "rules" in raw and isinstance(raw.get("rules"), list):
+        return _compile_multi_rule(raw["rules"], fm, src_hash, version, markdown)
+
+    # --- Single-graph format (legacy) ---
+    nodes = raw.get("nodes")
+    if not isinstance(nodes, dict) or not nodes:
+        return _errors_result(
+            [_err(None, "nodes", "Pipeline JSON must have a non-empty 'nodes' object")]
+        )
+    entry_id = raw.get("entry")
+    if not entry_id or entry_id not in nodes:
+        return _errors_result(
+            [_err(None, "entry", "Pipeline JSON 'entry' must reference an existing node id")]
+        )
+
+    errs = _validate_and_check_graph(nodes, entry_id)
+    if errs:
+        return _errors_result(errs)
+
+    normalized_nodes = _normalize_nodes(nodes, entry_id)
 
     try:
         pb = CompiledPlaybook(
@@ -315,6 +365,117 @@ def compile_pipeline(markdown: str, *, existing_version: int = 0) -> Compilation
             compiled_at=datetime.now(timezone.utc).isoformat(),
             kind="pipeline",
             role=fm["role"],
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        return _errors_result([_err(None, None, f"Deserialization failed: {exc}")])
+
+    return CompilationResult(
+        success=True,
+        playbook=pb,
+        source_hash=src_hash,
+        raw_json=pb.to_dict(),
+    )
+
+
+def _compile_multi_rule(
+    rules: list,
+    fm: dict,
+    src_hash: str,
+    version: int,
+    markdown: str,
+) -> CompilationResult:
+    """Compile a multi-rule pipeline into a single merged CompiledPlaybook."""
+    if not rules:
+        return _errors_result([_err(None, "rules", "Pipeline 'rules' array must not be empty")])
+
+    errs: list[dict[str, Any]] = []
+    all_nodes: dict[str, PlaybookNode] = {}
+    # event_type → list of rule metas ({entry, when?}) — multiple rules
+    # may share a trigger and are dispatched sequentially in author order.
+    pipeline_rules: dict[str, list[dict[str, Any]]] = {}
+    collected_triggers: list[str] = []
+
+    for i, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            errs.append(_err(None, f"rules[{i}]", "each rule must be an object"))
+            continue
+
+        rule_id = rule.get("id")
+        if not rule_id:
+            errs.append(_err(None, f"rules[{i}].id", "rule must have an 'id' field"))
+            continue
+
+        on_event = rule.get("on")
+        if not on_event:
+            errs.append(_err(rule_id, "on", "rule must have an 'on' event type"))
+            continue
+
+        nodes = rule.get("nodes")
+        if not isinstance(nodes, dict) or not nodes:
+            errs.append(_err(rule_id, "nodes", "rule must have a non-empty 'nodes' object"))
+            continue
+
+        entry_id = rule.get("entry")
+        if not entry_id or entry_id not in nodes:
+            errs.append(_err(rule_id, "entry", "'entry' must reference an existing node id"))
+            continue
+
+        rule_errs = _validate_and_check_graph(nodes, entry_id)
+        if rule_errs:
+            # Prefix error node refs with rule_id for clarity
+            for e in rule_errs:
+                e["node"] = f"{rule_id}/{e['node']}" if e.get("node") else rule_id
+            errs.extend(rule_errs)
+            continue
+
+        # Compile and merge with prefixed IDs
+        normalized = _normalize_nodes(nodes, entry_id, prefix=rule_id)
+        all_nodes.update(normalized)
+        prefixed_entry = f"{rule_id}-{entry_id}"
+        rule_meta: dict[str, Any] = {"entry": prefixed_entry}
+        # Preserve optional ``when`` condition for orchestrator-level guard.
+        if "when" in rule:
+            rule_meta["when"] = rule["when"]
+        pipeline_rules.setdefault(on_event, []).append(rule_meta)
+        collected_triggers.append(on_event)
+
+    if errs:
+        return _errors_result(errs)
+
+    if not all_nodes:
+        return _errors_result([_err(None, "rules", "No valid rules were compiled")])
+
+    # The frontmatter triggers must include all rule event types.
+    # If not specified per-rule, we auto-derive from the rules.
+    fm_triggers = fm.get("triggers") or []
+    all_trigger_types = set(collected_triggers)
+    fm_trigger_types = set(
+        t if isinstance(t, str) else t.get("event_type", "") for t in fm_triggers
+    )
+    missing = all_trigger_types - fm_trigger_types
+    if missing:
+        errs.append(
+            _err(
+                None,
+                "triggers",
+                f"Frontmatter 'triggers' must include all rule 'on' values; "
+                f"missing: {sorted(missing)}",
+            )
+        )
+        return _errors_result(errs)
+
+    try:
+        pb = CompiledPlaybook(
+            id=fm["id"],
+            version=version,
+            source_hash=src_hash,
+            triggers=fm_triggers,
+            scope=fm["scope"],
+            nodes=all_nodes,
+            compiled_at=datetime.now(timezone.utc).isoformat(),
+            kind="pipeline",
+            role=fm["role"],
+            pipeline_rules=pipeline_rules,
         )
     except Exception as exc:  # pragma: no cover - defensive
         return _errors_result([_err(None, None, f"Deserialization failed: {exc}")])

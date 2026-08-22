@@ -276,6 +276,7 @@ class TestCheckpointC2:
                 "outcome": "pass",
                 "work_outcome": "shipped",
                 "notes": "Done: C2 wired end to end",
+                "summary": "C2 checkpoint complete.",
             },
         )
         assert close["success"] is True, close

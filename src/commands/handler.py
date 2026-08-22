@@ -77,6 +77,7 @@ from src.commands.session_commands import SessionCommandsMixin
 from src.commands.surface_commands import SurfaceCommandsMixin
 from src.commands.ops_commands import OpsCommandsMixin
 from src.commands.worktree_commands import WorktreeCommandsMixin
+from src.commands.git_commands import GitCommandsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,8 @@ class CommandHandler(
     SurfaceCommandsMixin,
     OpsCommandsMixin,
     WorktreeCommandsMixin,
+    # -- dv2 phase 2 mixins -----------------------------------------------
+    GitCommandsMixin,
 ):
     """Unified command execution layer for AgentQueue (Command Pattern).
 

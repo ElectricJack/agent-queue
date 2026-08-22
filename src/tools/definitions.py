@@ -195,6 +195,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "ensure_task": "task",
     "get_downstream_tasks": "task",
     "task_route": "task",
+    # review policy — dv2 phase 2
+    "pr_merge": "git",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
     # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
@@ -3584,6 +3586,41 @@ _ALL_TOOL_DEFINITIONS = [
                     "default": False,
                 },
             },
+        },
+    },
+    # dv2 phase 2 — review-policy commands
+    {
+        "name": "pr_merge",
+        "description": (
+            "Merge a GitHub pull request via ``gh pr merge``.  "
+            "Only callable by profiles that whitelist ``pr_merge`` in "
+            "``allowed_tools`` (final-reviewer only in the dv2-phase2 "
+            "configuration).  Returns the merged SHA on success (best-effort "
+            "— callers who need the authoritative SHA should query the branch "
+            "head after this command returns)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "ID of the project whose workspace checkout will be used.",
+                },
+                "pr_url": {
+                    "type": "string",
+                    "description": (
+                        "Full GitHub PR URL, e.g. "
+                        "``https://github.com/org/repo/pull/42``."
+                    ),
+                },
+                "method": {
+                    "type": "string",
+                    "enum": ["squash", "merge", "rebase"],
+                    "description": "Merge strategy (default: squash).",
+                    "default": "squash",
+                },
+            },
+            "required": ["project_id", "pr_url"],
         },
     },
 ]

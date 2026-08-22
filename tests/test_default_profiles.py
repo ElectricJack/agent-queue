@@ -14,7 +14,7 @@ from src.profiles.parser import parse_profile
 from src.vault import ensure_default_profiles, ensure_vault_layout
 
 
-SHIPPED_PROFILE_IDS = ("supervisor", "planner", "reviewer")
+SHIPPED_PROFILE_IDS = ("supervisor", "planner", "reviewer", "final-reviewer")
 
 
 def _vault_profile_path(root: Path, profile_id: str) -> Path:
@@ -82,12 +82,13 @@ def test_seeded_planner_profile_is_task_lifecycle(tmp_path):
 
 
 def test_seeded_reviewer_profile_is_task_lifecycle(tmp_path):
-    """Reviewer ships as a task-lifecycle profile."""
+    """Reviewer ships with claude_sdk runtime and read-only workspace."""
     ensure_default_profiles(str(tmp_path))
     text = _vault_profile_path(tmp_path, "reviewer").read_text(encoding="utf-8")
     parsed = parse_profile(text)
-    assert parsed.config.get("lifecycle") == "task"
-    assert parsed.config.get("harness") == "claude"
+    assert parsed.config.get("runtime") == "claude_sdk"
+    assert parsed.config.get("needs_workspace") is True
+    assert parsed.config.get("read_only") is True
 
 
 def test_ensure_vault_layout_seeds_default_profiles(tmp_path):
@@ -97,3 +98,55 @@ def test_ensure_vault_layout_seeds_default_profiles(tmp_path):
         assert _vault_profile_path(tmp_path, pid).is_file(), (
             f"ensure_vault_layout missed seeding {pid}"
         )
+
+
+# ---------------------------------------------------------------------------
+# T3: reviewer and final-reviewer dv2-phase2 profiles
+# ---------------------------------------------------------------------------
+
+
+def test_reviewer_profile_parses_and_lacks_merge_authority():
+    """Reviewer profile parses cleanly and must not have pr_merge in allowed tools."""
+    from pathlib import Path
+
+    src = Path("src/profiles/defaults/reviewer/profile.md").read_text()
+    parsed = parse_profile(src)
+    assert parsed.is_valid, parsed.errors
+    assert parsed.frontmatter.id == "reviewer"
+    tools = parsed.tools.get("allowed", [])
+    assert "pr_merge" not in tools, "reviewer must not have merge authority"
+    assert "reopen_with_feedback" in tools
+    assert parsed.config.get("needs_workspace") is True
+    assert parsed.config.get("read_only") is True
+
+
+def test_final_reviewer_profile_has_merge_authority():
+    """Final-reviewer profile parses cleanly and must have pr_merge in allowed tools."""
+    from pathlib import Path
+
+    src = Path("src/profiles/defaults/final-reviewer/profile.md").read_text()
+    parsed = parse_profile(src)
+    assert parsed.is_valid, parsed.errors
+    assert parsed.frontmatter.id == "final-reviewer"
+    tools = parsed.tools.get("allowed", [])
+    assert "pr_merge" in tools, "final-reviewer must have merge authority"
+    assert parsed.config.get("needs_workspace") is True
+    assert parsed.config.get("read_only") is False
+
+
+def test_seeded_final_reviewer_profile_parses_without_errors(tmp_path):
+    """Final-reviewer profile seeds and parses cleanly through the vault seeder."""
+    ensure_default_profiles(str(tmp_path))
+    text = _vault_profile_path(tmp_path, "final-reviewer").read_text(encoding="utf-8")
+    parsed = parse_profile(text)
+    assert parsed.is_valid, f"final-reviewer parse errors: {parsed.errors}"
+    assert parsed.frontmatter.id == "final-reviewer"
+
+
+def test_reviewer_profile_lacks_merge_authority_after_seeding(tmp_path):
+    """Seeded reviewer profile must not have pr_merge (worker profiles must not merge)."""
+    ensure_default_profiles(str(tmp_path))
+    text = _vault_profile_path(tmp_path, "reviewer").read_text(encoding="utf-8")
+    parsed = parse_profile(text)
+    tools = parsed.tools.get("allowed", [])
+    assert "pr_merge" not in tools, "reviewer must not have merge authority after seeding"

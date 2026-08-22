@@ -37,6 +37,7 @@ class ProfileQueryMixin:
                     mode=profile.mode,
                     wake_mode=profile.wake_mode,
                     idle_timeout=profile.idle_timeout,
+                    needs_workspace=profile.needs_workspace,
                     max_session_age=profile.max_session_age,
                     created_at=now,
                     updated_at=now,
@@ -107,6 +108,7 @@ class ProfileQueryMixin:
                 mode=profile.mode,
                 wake_mode=profile.wake_mode,
                 idle_timeout=profile.idle_timeout,
+                needs_workspace=profile.needs_workspace,
                 max_session_age=profile.max_session_age,
             )
             return "updated"

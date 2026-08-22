@@ -1816,6 +1816,51 @@ class TaskCommandsMixin:
             task_id=task_id,
             payload=feedback[:500],
         )
+
+        # Cancel stale open reviews of this task (Dv2 Phase 2 rework loop).
+        # A review with a ``discovered-from`` edge pointing at the reopened
+        # task is by construction gating downstream on THIS task's now-stale
+        # completion.  Transition every such review that is not already
+        # terminal to FAILED with a distinct context — the sweep resolves
+        # any ``task`` gates awaiting it (see _sweep_resolve_task_gates).
+        try:
+            candidates = await self.db.list_tasks(project_id=task.project_id)
+        except Exception:
+            candidates = []
+        terminal = {"COMPLETED", "FAILED", "BLOCKED"}
+        cancelled_reviews: list[str] = []
+        for cand in candidates:
+            status_val = getattr(cand.status, "value", cand.status)
+            if status_val in terminal:
+                continue
+            try:
+                edges = await self.db.get_typed_dependencies(cand.id)
+            except Exception:
+                edges = []
+            if any(
+                dep_id == task_id and dep_type == "discovered-from"
+                for dep_id, dep_type in edges
+            ):
+                try:
+                    await self.db.transition_task(
+                        cand.id,
+                        TaskStatus.FAILED,
+                        context="reopen_cascade:stale_review",
+                    )
+                    await self.db.log_event(
+                        "task.transition",
+                        project_id=task.project_id,
+                        task_id=cand.id,
+                        payload="reopen_cascade:stale_review",
+                    )
+                    cancelled_reviews.append(cand.id)
+                except Exception:
+                    logger.warning(
+                        "reopen_cascade: failed to cancel stale review %s",
+                        cand.id,
+                        exc_info=True,
+                    )
+
         return {
             "reopened": task_id,
             "title": task.title,
@@ -1823,6 +1868,7 @@ class TaskCommandsMixin:
             "status": "READY",
             "feedback_added": True,
             "requires_approval": task.requires_approval,
+            "cancelled_reviews": cancelled_reviews,
         }
 
     async def _cmd_delete_task(self, args: dict) -> dict:

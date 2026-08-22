@@ -435,6 +435,26 @@ class SessionCommandsMixin:
         if session is None:
             session = await self.db.get_session_for_task(str(task_id))
 
+        # --- close-with-summary enforcement (Dv2 Phase 2 §7) --------------
+        # Tasks executed by workspace-needing profiles must carry a
+        # summary at close time.  This is what feeds the reviewer, the
+        # dashboard completion card, and the task-summary note in the
+        # vault.  Supervisor / chat-only profiles skip the requirement
+        # because they never touch a repo.
+        summary = str(args.get("summary") or "").strip()
+        profile = None
+        if task.profile_id:
+            profile = await self.db.get_profile(task.profile_id)
+        needs_ws = profile.needs_workspace if profile else False
+        if needs_ws and not summary:
+            return {
+                "success": False,
+                "error": (
+                    "summary is required for tasks whose profile has "
+                    "needs_workspace: true (Dv2 Phase 2 §7 close contract)"
+                ),
+            }
+
         # Outcome metadata is written first: it must survive even if the
         # pipeline explodes, because it is the record of what the agent
         # claimed happened.
@@ -455,6 +475,19 @@ class SessionCommandsMixin:
             await self.db.set_task_meta(task_id, "verification", str(args["verification"]))
         if session is not None:
             await self.db.set_task_meta(task_id, "close_session_id", session.id)
+        if summary:
+            await self.db.set_task_meta(task_id, "summary", summary)
+
+        # Capture commit hash from branch when the agent did not supply
+        # ``commit`` explicitly.  Best-effort — a missing branch, a
+        # missing checkout, or a git error all leave ``work_commit_auto``
+        # unset (rather than failing the close).
+        if needs_ws and not args.get("commit") and task.branch_name:
+            checkout = await self.db.get_project_workspace_path(task.project_id)
+            if checkout:
+                sha = await self.orchestrator.git.arev_parse(checkout, task.branch_name)
+                if sha:
+                    await self.db.set_task_meta(task_id, "work_commit_auto", sha)
 
         # aq-surface Phase S2: revoke any session-scoped API bearer tokens
         # tied to the closed session.  Single choke point for terminal
