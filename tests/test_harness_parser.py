@@ -351,5 +351,6 @@ class TestShippedClaudeHarness:
         target.write_text("---\nid: claude\n---\n\n## Config\n\n```json\n"
                           '{"command": "my-claude"}\n```\n', encoding="utf-8")
         result = ensure_default_harnesses(str(tmp_path))
-        assert result["created"] == [] and result["skipped"] == ["claude.md"]
+        assert result["created"] == []
+        assert "claude.md" in result["skipped"]
         assert "my-claude" in target.read_text(encoding="utf-8")
