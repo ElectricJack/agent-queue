@@ -33,6 +33,7 @@ const ProjectChat = lazy(() => import("./pages/project/Chat"));
 const TaskDetail = lazy(() => import("./pages/TaskDetail"));
 const PlaybookDetail = lazy(() => import("./pages/PlaybookDetail"));
 const SessionDetail = lazy(() => import("./pages/SessionDetail"));
+const TaskFiles = lazy(() => import("./pages/TaskFiles"));
 
 function RouteFallback() {
   return (
@@ -81,6 +82,7 @@ export default function App() {
 
           {/* Detail routes unchanged */}
           <Route path="tasks/:taskId" element={<TaskDetail />} />
+          <Route path="tasks/:taskId/files" element={<TaskFiles />} />
           <Route path="sessions/:sessionId" element={<SessionDetail />} />
           <Route path="playbooks/:playbookId" element={<PlaybookDetail />} />
 
