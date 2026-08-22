@@ -353,7 +353,13 @@ class Orchestrator(
 
         self.harness_registry = HarnessRegistry()
         self.session_providers = default_session_registry(config)
-        self.session_spec_builder = SessionSpecBuilder(config, self.harness_registry)
+        from src.intelligence_classes import load_intelligence_classes
+
+        self.session_spec_builder = SessionSpecBuilder(
+            config,
+            self.harness_registry,
+            intelligence_classes=load_intelligence_classes(config.data_dir),
+        )
         # AQ_DAEMON_EPOCH: identifies this daemon *run*.  Provenance for
         # adoption, never a validity test — an older-epoch session is still
         # adoptable, and the instance token is what fences kills.
@@ -1806,6 +1812,14 @@ class Orchestrator(
         # This must happen before checking vault_has_content so the
         # directory skeleton exists.
         self.vault_manager.ensure_layout()
+
+        # Vault layout now exists — (re)load intelligence classes so a fresh
+        # install picks up the seeded defaults on its very first run.
+        from src.intelligence_classes import load_intelligence_classes
+
+        self.session_spec_builder._intelligence_classes = load_intelligence_classes(
+            self.config.data_dir
+        )
 
         # Per-profile directories need DB access (not discoverable from FS),
         # so we handle them here.  Per-project dirs and all migrations are
