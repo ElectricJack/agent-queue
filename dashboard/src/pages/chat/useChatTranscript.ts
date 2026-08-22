@@ -99,6 +99,14 @@ export function useChatTranscript(projectId: string) {
   const [sendError, setSendError] = useState<unknown>(null);
   const [isSending, setIsSending] = useState(false);
 
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const send = useCallback(
     async (body: string) => {
       const trimmed = body.trim();
@@ -128,17 +136,19 @@ export function useChatTranscript(projectId: string) {
       setSendError(null);
       try {
         const res = await sendChatMessage(projectId, trimmed, { threadId: thread });
+        if (!mountedRef.current) return;
         setPending((prev) =>
           prev.map((p) => (p.id === optimistic.id ? { ...p, serverId: res.message_id } : p)),
         );
         qc.invalidateQueries({ queryKey: ["chat", "thread", projectId, thread] });
       } catch (err) {
+        if (!mountedRef.current) return;
         setSendError(err);
         setPending((prev) =>
           prev.map((p) => (p.id === optimistic.id ? { ...p, failed: true, pending: false } : p)),
         );
       } finally {
-        setIsSending(false);
+        if (mountedRef.current) setIsSending(false);
       }
     },
     [projectId, thread, qc],
