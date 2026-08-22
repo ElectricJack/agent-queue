@@ -136,33 +136,54 @@ def detect_cycles(
     sccs: list[list[str]] = []
     counter = [0]
 
-    def strongconnect(v: str) -> None:
-        index_of[v] = counter[0]
-        lowlink[v] = counter[0]
+    # Iterative Tarjan: an explicit work-stack walks the DFS so deep
+    # dependency chains never blow past Python's recursion limit.
+    # Each frame is (node, neighbor_iterator).
+    def strongconnect_iter(root: str) -> None:
+        work: list[tuple[str, object]] = []
+        # Initialise root frame.
+        index_of[root] = counter[0]
+        lowlink[root] = counter[0]
         counter[0] += 1
-        stack.append(v)
-        on_stack.add(v)
-        for w in graph.get(v, ()):
+        stack.append(root)
+        on_stack.add(root)
+        work.append((root, iter(graph.get(root, ()))))
+        while work:
+            v, it = work[-1]
+            try:
+                w = next(it)  # type: ignore[arg-type]
+            except StopIteration:
+                # Finished exploring v's successors — pop frame and
+                # update parent's lowlink if there is one.
+                work.pop()
+                if lowlink[v] == index_of[v]:
+                    comp: list[str] = []
+                    while True:
+                        x = stack.pop()
+                        on_stack.discard(x)
+                        comp.append(x)
+                        if x == v:
+                            break
+                    if len(comp) > 1 or (
+                        len(comp) == 1 and comp[0] in graph.get(comp[0], ())
+                    ):
+                        sccs.append(comp)
+                if work:
+                    parent = work[-1][0]
+                    lowlink[parent] = min(lowlink[parent], lowlink[v])
+                continue
             if w not in index_of:
-                strongconnect(w)
-                lowlink[v] = min(lowlink[v], lowlink[w])
+                index_of[w] = counter[0]
+                lowlink[w] = counter[0]
+                counter[0] += 1
+                stack.append(w)
+                on_stack.add(w)
+                work.append((w, iter(graph.get(w, ()))))
             elif w in on_stack:
                 lowlink[v] = min(lowlink[v], index_of[w])
-        if lowlink[v] == index_of[v]:
-            comp: list[str] = []
-            while True:
-                w = stack.pop()
-                on_stack.discard(w)
-                comp.append(w)
-                if w == v:
-                    break
-            if len(comp) > 1 or (
-                len(comp) == 1 and comp[0] in graph.get(comp[0], ())
-            ):
-                sccs.append(comp)
 
     for v in list(nodes):
         if v not in index_of:
-            strongconnect(v)
+            strongconnect_iter(v)
 
     return sccs

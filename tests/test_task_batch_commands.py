@@ -31,6 +31,26 @@ def test_detect_cycles_within_proposal():
     assert set(cycles[0]) == {"t1", "t2"}
 
 
+def test_detect_cycles_deep_chain_no_recursion_error():
+    """A 5000-node A→B→...→Z→A chain must not recurse past Python's limit."""
+    import sys
+
+    n = 5000
+    ids = [f"n{i}" for i in range(n)]
+    tasks_in = [{"tempId": i} for i in ids]
+    edges = [{"from": ids[i], "to": ids[i + 1], "dep_type": "blocks"} for i in range(n - 1)]
+    edges.append({"from": ids[-1], "to": ids[0], "dep_type": "blocks"})  # close cycle
+    # Guard against a resurrection of the recursive form.
+    old_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(500)
+    try:
+        cycles = detect_cycles([], tasks_in, edges)
+    finally:
+        sys.setrecursionlimit(old_limit)
+    assert len(cycles) == 1
+    assert len(cycles[0]) == n
+
+
 def test_detect_cycles_across_existing_and_proposal():
     # existing graph: A depends-on B (task_dependencies row (A, B, 'blocks'))
     existing = [("A", "B", "blocks")]
