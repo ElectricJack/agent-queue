@@ -326,6 +326,29 @@ export interface TaskUnblockedEvent extends BaseEvent {
   reason?: string;
 }
 
+// --- Command dispatch (Phase 5 follow-up) ---
+
+/**
+ * Emitted by the daemon's CommandHandler.execute after every dispatch
+ * (success or failure). Powers the chat "supervisor is thinking…" bubble's
+ * live tool-call chips and future observability surfaces.
+ *
+ * ``session_id`` / ``task_id`` / ``project_id`` come from the request's
+ * server-derived scope; all three are null when the call arrived over the
+ * trusted local (unauthenticated) path.
+ */
+export interface CommandInvokedEvent extends BaseEvent {
+  event_type: "command.invoked";
+  command: string;
+  ok: boolean;
+  duration_ms?: number;
+  session_id?: string | null;
+  task_id?: string | null;
+  project_id?: string | null;
+  args_summary?: string;
+  error?: string | null;
+}
+
 // --- Union type ---
 
 export type NotifyEvent =
@@ -365,4 +388,5 @@ export type NotifyEvent =
   | SessionExitedEvent
   | SessionAdoptedEvent
   | TaskBlockedGraphEvent
-  | TaskUnblockedEvent;
+  | TaskUnblockedEvent
+  | CommandInvokedEvent;

@@ -37,6 +37,7 @@ const ACTIVITY_EVENT_TYPES = new Set<string>([
   "session.started",
   "session.exited",
   "session.adopted",
+  "command.invoked",
 ]);
 
 export type PendingMessage = MessageModel & {
@@ -98,6 +99,17 @@ function summarizeActivity(event: NotifyEvent): string | null {
       return `Session exited`;
     case "session.adopted":
       return `Session adopted`;
+    case "command.invoked": {
+      const cmd = short(e.command ?? "", 40) || "command";
+      if (e.ok === false) {
+        const err = short(e.error ?? "", 60);
+        return err ? `invoked ${cmd} — failed: ${err}` : `invoked ${cmd} — failed`;
+      }
+      const summary = short(e.args_summary ?? "", 80);
+      const dur = typeof e.duration_ms === "number" ? `${e.duration_ms}ms` : null;
+      const detail = [summary, dur].filter(Boolean).join(", ");
+      return detail ? `invoked ${cmd} (${detail})` : `invoked ${cmd}`;
+    }
     default:
       return null;
   }
@@ -161,6 +173,16 @@ export function useChatTranscript(projectId: string) {
 
         // Live activity hints while a reply is awaited.
         if (thinkingRef.current && ACTIVITY_EVENT_TYPES.has(event.event_type)) {
+          // Filter command.invoked chips to the supervisor's own tool calls.
+          // The supervisor session is project-scoped and NOT bound to a task
+          // (see SessionLens: elevated project-scoped tokens are minted with
+          // task_id=None), whereas a task-agent session's command.invoked
+          // frames carry the task_id. Skipping the task-scoped ones keeps
+          // the bubble focused on what the supervisor is doing right now.
+          if (event.event_type === "command.invoked") {
+            const taskId = (event as { task_id?: string | null }).task_id;
+            if (taskId) return;
+          }
           const label = summarizeActivity(event);
           if (!label) return;
           setThinking((prev) =>
