@@ -64,7 +64,7 @@ export interface SendChatMessageResponse {
 export async function sendChatMessage(
   projectId: string,
   body: string,
-  from: string = "dashboard",
+  opts: { from?: string; threadId?: string } = {},
 ): Promise<SendChatMessageResponse> {
   const url = `${baseUrl()}/api/sessions/${encodeURIComponent(
     supervisorName(projectId),
@@ -73,7 +73,12 @@ export async function sendChatMessage(
     await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ body, from, from_kind: "user" }),
+      body: JSON.stringify({
+        body,
+        from: opts.from ?? "dashboard",
+        from_kind: "user",
+        thread_id: opts.threadId,
+      }),
     }),
   );
   return (await resp.json()) as SendChatMessageResponse;
