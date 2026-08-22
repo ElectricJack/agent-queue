@@ -27,13 +27,34 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+import yaml
 
 if TYPE_CHECKING:
     from src.playbooks.manager import PlaybookManager
     from src.vault_watcher import VaultChange, VaultWatcher
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
+    """Best-effort YAML-frontmatter split (mirrors PlaybookCompiler helper).
+
+    Kept local to this module so the vault watcher can peek at ``kind`` /
+    ``id`` without importing the compiler (Phase 6 removes the LLM
+    compiler code path entirely).
+    """
+    if not content.startswith("---"):
+        return {}, content
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return {}, content
+    try:
+        meta = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        return {}, content
+    return meta, parts[2]
 
 # Glob patterns for playbook files (relative to vault root).
 #
@@ -186,7 +207,7 @@ async def on_playbook_changed(
                 )
             continue
 
-        # created or modified — read and compile
+        # created or modified — inspect frontmatter to route
         try:
             markdown = Path(change.path).read_text(encoding="utf-8")
         except OSError:
@@ -197,32 +218,99 @@ async def on_playbook_changed(
             )
             continue
 
-        logger.info(
-            "Compiling playbook %s in scope %s: %s",
-            change.operation,
-            scope_label,
-            change.rel_path,
-        )
+        fm, _body = _parse_frontmatter(markdown)
+        playbook_id = fm.get("id") or _derive_playbook_id_from_path(change.rel_path)
 
-        result = await playbook_manager.compile_playbook(
-            markdown,
-            source_path=change.path,
-            rel_path=change.rel_path,
-            scope_identifier=identifier,
-        )
-
-        if result.success:
+        # Deterministic-parse route for kind: pipeline (Phase 1).
+        if fm.get("kind") == "pipeline":
             logger.info(
-                "Playbook compilation succeeded for %s (scope=%s)",
+                "Compiling pipeline playbook %s (scope=%s, deterministic parse)",
                 change.rel_path,
                 scope_label,
             )
-        else:
+            result = await playbook_manager.compile_playbook_pipeline(
+                markdown,
+                source_path=change.path,
+                rel_path=change.rel_path,
+                scope_identifier=identifier,
+            )
+            if result.success:
+                logger.info(
+                    "Pipeline playbook compiled: %s (scope=%s)",
+                    change.rel_path,
+                    scope_label,
+                )
+            else:
+                logger.warning(
+                    "Pipeline compile failed for %s (scope=%s): %s",
+                    change.rel_path,
+                    scope_label,
+                    "; ".join(result.errors),
+                )
+            continue
+
+        # Ordinary playbook: enqueue a compile task (Phase 6, compiler-as-agent).
+        if playbook_id is None:
             logger.warning(
-                "Playbook compilation failed for %s (scope=%s): %s",
+                "Cannot enqueue compile task — no id derivable from %s",
                 change.rel_path,
+            )
+            continue
+
+        handler = getattr(playbook_manager, "command_handler", None)
+        if handler is None:
+            logger.warning(
+                "No command_handler wired on PlaybookManager — cannot enqueue "
+                "compile task for %s",
+                change.rel_path,
+            )
+            continue
+
+        project_id = await playbook_manager.compile_task_project_id(scope, identifier)
+        if project_id is None:
+            logger.warning(
+                "No project_id available to attach compile task for %s",
+                change.rel_path,
+            )
+            continue
+
+        dedup_key = f"playbook-compile:{playbook_id}"
+        # ensure_task is the framework's find-or-create by dedup_key;
+        # non-terminal existing tasks with the same key are returned as-is,
+        # so touching the source markdown repeatedly does not spawn duplicates.
+        description = (
+            f"Compile the markdown playbook at {change.path} into JSON.\n\n"
+            "Steps:\n"
+            "1. Read the markdown.\n"
+            "2. Produce a compiled JSON artifact matching the schema.\n"
+            "3. Call `playbook_validate(path=<your.json>)` and iterate on errors.\n"
+            "4. When it validates, call "
+            f"`playbook_install(playbook_id={playbook_id!r}, "
+            "compiled_path=<your.json>)`.\n"
+        )
+        result = await handler.execute(
+            "ensure_task",
+            {
+                "project_id": project_id,
+                "title": f"Compile playbook {playbook_id}",
+                "description": description,
+                "dedup_key": dedup_key,
+                "profile_id": "playbook-compiler",
+            },
+        )
+        if not result.get("success"):
+            logger.warning(
+                "Failed to enqueue compile task for %s: %s",
+                change.rel_path,
+                result.get("error"),
+            )
+        else:
+            logger.info(
+                "Enqueued compile task for playbook %s (scope=%s, dedup=%s, created=%s)",
+                playbook_id,
                 scope_label,
-                "; ".join(result.errors),
+                dedup_key,
+                result.get("created"),
             )
 
 
