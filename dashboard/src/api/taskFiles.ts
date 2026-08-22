@@ -42,5 +42,19 @@ export async function fetchTaskFileText(
   if (res.status === 403) return { text: "(forbidden path)", status: 403 };
   if (res.status === 404) return { text: "(file not found)", status: 404 };
   if (!res.ok) throw new Error(`file ${res.status}`);
+  // A binary file returns JSON {reason: "binary", size, path} instead of
+  // scrambled text/plain. Detect by content-type and surface a clear message.
+  const ct = res.headers.get("content-type") || "";
+  if (ct.includes("application/json")) {
+    try {
+      const body = (await res.json()) as { reason?: string; size?: number };
+      if (body.reason === "binary") {
+        const kb = body.size ? ` (${Math.round(body.size / 1024)} KB)` : "";
+        return { text: `(binary file omitted${kb})`, status: 200 };
+      }
+    } catch {
+      // fall through to text
+    }
+  }
   return { text: await res.text(), status: 200 };
 }

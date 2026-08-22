@@ -21,7 +21,7 @@ import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from src.api import dependencies as deps
 
@@ -218,6 +218,25 @@ def build_task_files_router() -> APIRouter:
             data = candidate.read_bytes()
         except OSError as e:
             raise HTTPException(status_code=404, detail=f"read failed: {e}")
+
+        # Binary heuristic: any NUL byte in the first 8 KiB → treat as
+        # binary. Prior behavior (utf-8 decode with errors="replace")
+        # rendered binary content as scrambled control chars in the
+        # sidebar; the JSON shape lets the client show
+        # "(binary file omitted)" instead.
+        if b"\0" in data[:8192]:
+            try:
+                relative = str(candidate.relative_to(root))
+            except ValueError:
+                relative = path
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "reason": "binary",
+                    "size": len(data),
+                    "path": relative,
+                }
+            )
 
         text = data.decode("utf-8", errors="replace")
         return PlainTextResponse(content=text, media_type="text/plain; charset=utf-8")

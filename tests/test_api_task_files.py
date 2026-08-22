@@ -184,3 +184,17 @@ def test_file_rejects_symlink_to_directory_escape(wired, tmp_path):
         "/api/tasks/task1/file", params={"path": "linkdir/leak.txt"}
     )
     assert r.status_code == 403
+
+
+def test_file_binary_returns_json_reason(wired):
+    """A file with NUL bytes must return JSON {reason:'binary'}, not scrambled text."""
+    client, _, repo, _ = wired
+    (repo / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRfoo")
+    r = client.get("/api/tasks/task1/file", params={"path": "logo.png"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    body = r.json()
+    assert body["success"] is True
+    assert body["reason"] == "binary"
+    assert body["size"] > 0
+    assert body["path"] == "logo.png"
