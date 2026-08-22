@@ -613,4 +613,6 @@ class TaskQueryMixin:
             is_blocked=bool(row.get("is_blocked", 0)),
             created_at=row.get("created_at", 0.0),
             updated_at=row.get("updated_at", 0.0),
+            dedup_key=row.get("dedup_key"),
+            intelligence_class=row.get("intelligence_class"),
         )
