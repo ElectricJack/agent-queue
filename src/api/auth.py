@@ -40,6 +40,11 @@ class RequestScope:
     session_id: str | None = None
     task_id: str | None = None
     project_id: str | None = None
+    #: Trusted-scope flag. When True (currently only per-project
+    #: supervisor sessions), :func:`check_command_scope` allows any
+    #: command instead of restricting to :data:`AGENT_COMMAND_SET`.
+    #: ``project_id`` is still enforced when set.
+    elevated: bool = False
 
 
 LOCAL_SCOPE = RequestScope(kind="local")
@@ -64,6 +69,7 @@ class SessionTokenStore:
         session_id: str,
         task_id: str | None,
         project_id: str | None,
+        elevated: bool = False,
     ) -> str:
         plaintext = TOKEN_PREFIX + secrets.token_urlsafe(32)
         now = time.time()
@@ -76,6 +82,7 @@ class SessionTokenStore:
             project_id=project_id,
             created_at=now,
             expires_at=expires_at,
+            elevated=elevated,
         )
         self._cache[h] = (
             RequestScope(
@@ -83,6 +90,7 @@ class SessionTokenStore:
                 session_id=session_id,
                 task_id=task_id,
                 project_id=project_id,
+                elevated=elevated,
             ),
             expires_at,
         )
@@ -112,6 +120,7 @@ class SessionTokenStore:
             session_id=row["session_id"],
             task_id=row.get("task_id"),
             project_id=row.get("project_id"),
+            elevated=bool(row.get("elevated") or False),
         )
         self._cache[h] = (scope, expires_at)
         return scope

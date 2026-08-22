@@ -25,6 +25,7 @@ class ApiSessionTokenQueriesMixin:
         project_id: str | None,
         created_at: float,
         expires_at: float,
+        elevated: bool = False,
     ) -> None:
         async with self._engine.begin() as conn:
             await conn.execute(
@@ -36,6 +37,7 @@ class ApiSessionTokenQueriesMixin:
                     created_at=created_at,
                     expires_at=expires_at,
                     revoked_at=None,
+                    elevated=bool(elevated),
                 )
             )
 

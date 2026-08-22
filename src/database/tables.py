@@ -544,6 +544,12 @@ api_session_tokens = Table(
     Column("created_at", Float, nullable=False),
     Column("expires_at", Float, nullable=False),
     Column("revoked_at", Float, nullable=True),
+    # Trusted-scope flag. When True, ``check_command_scope`` allows any
+    # command (still enforces project_id match). Currently set by
+    # per-project supervisor sessions so the supervisor can run every
+    # ``aq`` command on behalf of the operator; task sessions and other
+    # workers stay on the narrow AGENT_COMMAND_SET.
+    Column("elevated", Boolean, nullable=False, server_default=text("0")),
     Index("idx_api_session_tokens_session", "session_id"),
     Index("idx_api_session_tokens_expires", "expires_at"),
 )

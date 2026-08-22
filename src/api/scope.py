@@ -45,6 +45,19 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     """
     if scope.kind == "local":
         return None
+    # Elevated session (currently: per-project supervisor). Skip the
+    # AGENT_COMMAND_SET gate — the supervisor is a trusted operator that
+    # runs every ``aq`` command on behalf of the user — but still enforce
+    # ``project_id`` so a supervisor for project A cannot mutate B.
+    if scope.elevated:
+        expected_pid = scope.project_id
+        if expected_pid is not None:
+            value = args.get("project_id")
+            if value is None:
+                args["project_id"] = expected_pid
+            elif value != expected_pid:
+                return "out of scope: project_id mismatch"
+        return None
     if command not in AGENT_COMMAND_SET:
         return f"out of scope: {command}"
     for key, expected in (

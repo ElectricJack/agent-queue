@@ -283,6 +283,13 @@ class SessionLens:
                     session_id=session_id,
                     task_id=None,
                     project_id=derived_project,
+                    # Supervisor is the per-project trusted operator —
+                    # elevate so it can run every ``aq`` command (e.g.
+                    # ``project_create``, ``task_create``, ``session_*``)
+                    # on behalf of the user. Still project-scoped: the
+                    # elevated path in ``check_command_scope`` enforces
+                    # ``project_id`` match.
+                    elevated=True,
                 )
             except Exception:
                 # Non-fatal: starting the session with an empty api_token
