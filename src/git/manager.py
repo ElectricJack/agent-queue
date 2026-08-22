@@ -2024,6 +2024,25 @@ class GitManager:
                 break
         return {"success": True, "sha": sha, "error": None}
 
+    async def arev_parse(self, checkout_path: str, ref: str) -> str | None:
+        """Return the SHA for ``ref`` in ``checkout_path``, or None.
+
+        Best-effort: returns None on any failure (missing checkout,
+        unknown ref, gh/git error).  Callers must not raise on None.
+        """
+        try:
+            result = await self._arun_subprocess(
+                ["git", "rev-parse", "--verify", ref],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        sha = (result.stdout or "").strip()
+        return sha if len(sha) == 40 else None
+
     async def aget_status(self, checkout_path: str) -> str:
         try:
             return await self._arun(["status"], cwd=checkout_path)

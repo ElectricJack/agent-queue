@@ -699,6 +699,7 @@ class TestEndToEndOnFakeProvider:
                 "outcome": "pass",
                 "work_outcome": "shipped",
                 "notes": "Done: the thing is wired",
+                "summary": "Wired the thing end-to-end.",
             },
         )
         assert close["success"] is True, close
@@ -767,6 +768,7 @@ class TestEndToEndOnFakeProvider:
                 "session_id": session.id,
                 "outcome": "pass",
                 "work_outcome": "shipped",
+                "summary": "Work completed; pipeline blocked on verification.",
             },
         )
         assert close["success"] is True and close["status"] == "BLOCKED"
@@ -799,6 +801,7 @@ class TestEndToEndOnFakeProvider:
                 "outcome": "fail",
                 "failure_class": "transient",
                 "notes": "flaky network",
+                "summary": "Failed due to transient network issue.",
             },
         )
         assert close["status"] == "READY"
@@ -823,6 +826,7 @@ class TestEndToEndOnFakeProvider:
                 "session_id": session.id,
                 "outcome": "fail",
                 "failure_class": "hard",
+                "summary": "Hard failure; manual intervention required.",
             },
         )
         assert close["status"] == "BLOCKED"
@@ -839,7 +843,12 @@ class TestEndToEndOnFakeProvider:
 
         close = await real_handler.execute(
             "task_close",
-            {"task_id": "t1", "session_id": session.id, "outcome": "fail"},
+            {
+                "task_id": "t1",
+                "session_id": session.id,
+                "outcome": "fail",
+                "summary": "Retries exhausted; task blocked.",
+            },
         )
         assert close["status"] == "BLOCKED"
         assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
