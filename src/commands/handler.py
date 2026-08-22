@@ -81,6 +81,7 @@ from src.commands.git_commands import GitCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
+from src.commands.spec_commands import SpecCommandsMixin
 from src.playbooks.validator_command import PlaybookValidateInstallMixin
 
 logger = logging.getLogger(__name__)
@@ -207,6 +208,7 @@ class CommandHandler(
     # -- dv2 phase 6 mixins -----------------------------------------------
     PlaybookValidateInstallMixin,
     TaskProposalCommandsMixin,
+    SpecCommandsMixin,
 ):
     """Unified command execution layer for AgentQueue (Command Pattern).
 
