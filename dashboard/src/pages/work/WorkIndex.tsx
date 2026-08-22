@@ -1,44 +1,95 @@
-import { Link } from "react-router-dom";
+import { useState } from "react";
+import { useProjects } from "../../api/hooks";
+import WorkTasks from "./WorkTasks";
+import WorkAgents from "./WorkAgents";
 
-// Placeholder — replaced in Phase 3 Task 4.
+const STATUSES = [
+  "PENDING",
+  "READY",
+  "IN_PROGRESS",
+  "AWAITING_APPROVAL",
+  "AWAITING_PLAN_APPROVAL",
+  "WAITING_INPUT",
+  "COMPLETED",
+  "FAILED",
+  "BLOCKED",
+  "CANCELED",
+];
+
 export default function WorkIndex() {
+  const { data: projects } = useProjects();
+  const [projectId, setProjectId] = useState<string>("");
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
+  const [showCompleted, setShowCompleted] = useState(false);
+
+  const toggleStatus = (s: string) => {
+    setStatusFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(s)) next.delete(s);
+      else next.add(s);
+      return next;
+    });
+  };
+
   return (
     <div className="space-y-6">
       <header>
         <h1 className="text-2xl font-bold">Work</h1>
         <p className="text-sm text-gray-500">
-          Tasks, sessions, gates, and events across all projects.
+          Everything the system is doing or waiting on. Filter to focus.
         </p>
       </header>
-      <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <li>
-          <Link
-            to="/work/events"
-            className="block rounded border border-gray-800 bg-gray-900 p-4 hover:border-indigo-500/50 hover:bg-gray-800"
+
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-xs text-gray-500" htmlFor="proj">
+            Project:
+          </label>
+          <select
+            id="proj"
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+            className="rounded border border-gray-800 bg-gray-900 px-2 py-1 text-sm text-gray-200"
           >
-            <p className="font-medium text-gray-200">Events</p>
-            <p className="text-xs text-gray-500">Live daemon event stream.</p>
-          </Link>
-        </li>
-        <li>
-          <Link
-            to="/work/sessions"
-            className="block rounded border border-gray-800 bg-gray-900 p-4 hover:border-indigo-500/50 hover:bg-gray-800"
-          >
-            <p className="font-medium text-gray-200">Sessions</p>
-            <p className="text-xs text-gray-500">Active and recent agent sessions.</p>
-          </Link>
-        </li>
-        <li>
-          <Link
-            to="/work/gates"
-            className="block rounded border border-gray-800 bg-gray-900 p-4 hover:border-indigo-500/50 hover:bg-gray-800"
-          >
-            <p className="font-medium text-gray-200">Gates</p>
-            <p className="text-xs text-gray-500">Pending human gates and approvals.</p>
-          </Link>
-        </li>
-      </ul>
+            <option value="">All</option>
+            {(projects ?? []).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name || p.id}
+              </option>
+            ))}
+          </select>
+          <label className="ml-4 flex items-center gap-1 text-xs text-gray-500">
+            <input
+              type="checkbox"
+              checked={showCompleted}
+              onChange={(e) => setShowCompleted(e.target.checked)}
+            />
+            Show completed
+          </label>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {STATUSES.map((s) => (
+            <button
+              key={s}
+              onClick={() => toggleStatus(s)}
+              className={`rounded-full px-2 py-0.5 text-xs ${
+                statusFilter.has(s)
+                  ? "bg-indigo-500/20 text-indigo-300"
+                  : "bg-gray-800 text-gray-400 hover:bg-gray-700"
+              }`}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <WorkTasks
+        projectId={projectId || undefined}
+        statusFilter={statusFilter}
+        showCompleted={showCompleted}
+      />
+      <WorkAgents projectId={projectId || undefined} />
     </div>
   );
 }
