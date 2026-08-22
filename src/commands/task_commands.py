@@ -3234,3 +3234,32 @@ class TaskCommandsMixin:
         if "error" in result:
             return {"success": False, "error": result["error"]}
         return {"success": True, "task_id": result["created"], "created": True}
+
+    async def _cmd_get_downstream_tasks(self, args: dict) -> dict:
+        """Return transitive dependents over blocking edge types.
+
+        Follows ``blocks``, ``waits-for``, ``conditional-blocks``, and
+        ``parent-child`` edges — the set that gates readiness (see
+        ``src/database/queries/blocked_state.py``). Returns ``[]`` if the
+        task has no dependents.
+        """
+        task_id = args.get("task_id")
+        if not task_id:
+            return {"success": False, "error": "task_id is required"}
+        seed = await self.db.get_task(str(task_id))
+        if seed is None:
+            return {"success": False, "error": f"task '{task_id}' not found"}
+        edge_types = (
+            DepType.BLOCKS.value,
+            DepType.WAITS_FOR.value,
+            DepType.CONDITIONAL_BLOCKS.value,
+            DepType.PARENT_CHILD.value,
+        )
+        ids = await self.db.get_transitive_dependents(str(task_id), edge_types)
+        out = []
+        for tid in ids:
+            t = await self.db.get_task(tid)
+            if t is None:
+                continue
+            out.append({"id": t.id, "title": t.title, "status": t.status.value})
+        return {"success": True, "tasks": out}

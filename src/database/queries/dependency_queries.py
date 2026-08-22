@@ -349,6 +349,37 @@ class DependencyQueryMixin:
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
         await self.log_blocked_flips(flipped)
 
+    async def get_transitive_dependents(
+        self, task_id: str, edge_types: tuple[str, ...]
+    ) -> list[str]:
+        """Return all task ids reachable by walking dependents over ``edge_types``.
+
+        BFS. Every hop follows edges where ``depends_on_task_id == cursor`` and
+        ``dep_type`` is in the whitelist. The seed itself is *not* in the
+        result. Terminates on cycles because visited ids are tracked.
+        """
+        from sqlalchemy import and_, select
+        from src.database.tables import task_dependencies
+
+        found: set[str] = set()
+        frontier: list[str] = [task_id]
+        while frontier:
+            async with self._engine.begin() as conn:
+                rows = (
+                    await conn.execute(
+                        select(task_dependencies.c.task_id).where(
+                            and_(
+                                task_dependencies.c.depends_on_task_id.in_(frontier),
+                                task_dependencies.c.dep_type.in_(edge_types),
+                            )
+                        )
+                    )
+                ).fetchall()
+            next_frontier = [r[0] for r in rows if r[0] not in found and r[0] != task_id]
+            found.update(next_frontier)
+            frontier = next_frontier
+        return sorted(found)
+
     async def remove_all_dependencies_on(self, depends_on_task_id: str) -> None:
         """Remove all dependency edges pointing to a given task."""
         async with self._engine.begin() as conn:
