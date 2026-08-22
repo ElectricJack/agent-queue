@@ -191,6 +191,10 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # explain + ready frontier — work-graph WG-4
     "explain_task": "task",
     "project_ready": "task",
+    # control plane — dv2 phase 1
+    "ensure_task": "task",
+    "get_downstream_tasks": "task",
+    "task_route": "task",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
     # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
@@ -743,6 +747,90 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["title"],
+        },
+    },
+    {
+        "name": "ensure_task",
+        "description": (
+            "Find-or-create a task by (project_id, dedup_key). If an open task "
+            "(not COMPLETED/FAILED) with the same dedup_key exists in the project, "
+            "it is returned instead of creating a duplicate. Used by pipeline "
+            "playbooks to coalesce recurring control-plane work (e.g. one open "
+            "triage task per project). Returns {task_id, created}."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID"},
+                "dedup_key": {
+                    "type": "string",
+                    "description": (
+                        "Stable dedup key scoped to the project (e.g. 'triage-open'). "
+                        "Only one open task per (project_id, dedup_key) exists at a time."
+                    ),
+                },
+                "title": {"type": "string", "description": "Task title (used on create)"},
+                "description": {
+                    "type": "string",
+                    "description": "Task description (used on create)",
+                    "default": "",
+                },
+                "priority": {
+                    "type": "integer",
+                    "description": "Priority (lower = higher priority, default 100)",
+                    "default": 100,
+                },
+            },
+            "required": ["project_id", "dedup_key", "title"],
+        },
+    },
+    {
+        "name": "get_downstream_tasks",
+        "description": (
+            "List tasks transitively downstream of a task via dependency edges "
+            "(blocks, waits-for, conditional-blocks, parent-child). Use to see "
+            "what work unblocks when a task completes, or what a routing "
+            "decision gates."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Upstream task ID"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "task_route",
+        "description": (
+            "Route a task: assign its agent profile, optional intelligence "
+            "class, and optional workspace, then resolve any open 'routing' "
+            "gates on the task. This is the ONLY way to resolve routing gates "
+            "— generic gate_resolve refuses them. Used by the triage agent to "
+            "release work into the scheduler."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to route"},
+                "profile_id": {
+                    "type": "string",
+                    "description": "Agent profile ID that should execute the task",
+                },
+                "intelligence_class": {
+                    "type": "string",
+                    "description": (
+                        "Intelligence class id (e.g. 'fast', 'standard', 'deep') "
+                        "from vault/intelligence-classes/. Overrides the profile's "
+                        "model at session launch. Optional."
+                    ),
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace to prefer for execution (optional)",
+                },
+            },
+            "required": ["task_id", "profile_id"],
         },
     },
     {
