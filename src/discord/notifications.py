@@ -47,7 +47,7 @@ from src.models import Task, Agent, AgentOutput, TaskStatus, Workspace
 def format_server_started() -> str:
     """Plain-text message indicating the server is back online."""
     return (
-        "✅ **AgentQueue is back online** — the server has started and is ready to process tasks."
+        "✅ **Agent Q is back online** — the server has started and is ready to process tasks."
     )
 
 
@@ -60,7 +60,7 @@ def format_server_started_embed() -> discord.Embed:
     return success_embed(
         "Server Online",
         description=(
-            "AgentQueue has started and is ready to process tasks.\n\n"
+            "Agent Q has started and is ready to process tasks.\n\n"
             "All systems are operational — commands, notifications, and "
             "task orchestration are now available."
         ),

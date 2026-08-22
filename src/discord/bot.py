@@ -193,9 +193,9 @@ class AgentQueueBot(commands.Bot):
             new_channel = await guild.create_text_channel(
                 name=channel_name,
                 category=target_category,
-                topic=f"Agent Queue channel for project: {project_id}",
+                topic=f"Agent Q channel for project: {project_id}",
                 overwrites=overwrites,
-                reason=f"AgentQueue: channel for project {project_id}",
+                reason=f"Agent Q: channel for project {project_id}",
             )
 
             # Link channel to project in the database
@@ -1056,7 +1056,7 @@ class AgentQueueBot(commands.Bot):
             ):
                 resolved = message.reference.resolved
                 ref_author = (
-                    "AgentQueue"
+                    "Agent Q"
                     if resolved.author == self.user
                     else resolved.author.display_name
                 )

@@ -331,7 +331,7 @@ def format_status_overview(
 
     return Panel(
         Group(*lines),
-        title="[bold bright_white]AgentQueue Status[/]",
+        title="[bold bright_white]Agent Q Status[/]",
         border_style="bright_blue",
         padding=(1, 2),
     )

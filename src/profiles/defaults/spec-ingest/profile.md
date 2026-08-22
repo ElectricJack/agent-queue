@@ -42,12 +42,13 @@ Do:
 ```json
 {
   "allowed": [
-    "task_batch_propose",
-    "list_tasks",
-    "get_downstream_tasks",
-    "get_task"
-  ],
-  "denied": []
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep"
+  ]
 }
 ```
 

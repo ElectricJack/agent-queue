@@ -38,27 +38,16 @@ any of the three by switching harness.
 ```json
 {
   "allowed": [
-    "get_task",
-    "get_task_meta",
-    "list_tasks",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "git_log",
-    "git_diff",
-    "git_show",
-    "git_status",
-    "git_commit",
-    "git_push",
-    "gh_pr_create",
-    "gh_pr_view",
-    "task_close",
-    "task_heartbeat",
-    "message_send",
-    "message_reply",
-    "message_inbox"
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep"
   ],
-  "denied": ["pr_merge"]
+  "denied": [
+    "pr_merge"
+  ]
 }
 ```
 

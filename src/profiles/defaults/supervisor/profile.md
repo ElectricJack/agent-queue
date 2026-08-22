@@ -49,13 +49,13 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
 ```json
 {
   "allowed": [
-    "task_list", "task_explain", "task_show", "task_create", "task_update",
-    "task_reopen", "dep_add", "label_set", "priority_set",
-    "gate_list", "gate_resolve", "project_ready", "project_status",
-    "message_send", "message_reply", "message_inbox", "session_list",
-    "session_nudge", "vault_read", "vault_write"
-  ],
-  "denied": []
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep"
+  ]
 }
 ```
 

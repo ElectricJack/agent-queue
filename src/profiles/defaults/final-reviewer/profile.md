@@ -21,20 +21,10 @@ tags: [system, review, merge-authority, dv2-phase2]
 ```json
 {
   "allowed": [
-    "list_tasks",
-    "get_task",
-    "get_task_meta",
-    "read_file",
-    "git_log",
-    "git_diff",
-    "git_show",
-    "gh_pr_view",
-    "gh_pr_diff",
-    "gh_run_view",
-    "pr_merge",
-    "reopen_with_feedback",
-    "task_close",
-    "task_heartbeat"
+    "Bash",
+    "Read",
+    "Glob",
+    "Grep"
   ]
 }
 ```

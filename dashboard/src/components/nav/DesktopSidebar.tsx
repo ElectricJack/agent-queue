@@ -24,7 +24,7 @@ export default function DesktopSidebar() {
     <aside className="hidden w-60 shrink-0 flex-col border-r border-gray-800 bg-gray-900 md:flex">
       <div className="flex h-14 items-center gap-2 border-b border-gray-800 px-4">
         <CpuChipIcon className="h-6 w-6 text-indigo-400" />
-        <span className="text-lg font-semibold tracking-tight">Agent Queue</span>
+        <span className="text-lg font-semibold tracking-tight">Agent Q</span>
         {paused && (
           <span title="Orchestrator paused" className="ml-auto h-2 w-2 rounded-full bg-amber-400" />
         )}

@@ -46,11 +46,13 @@ For each planning task you:
 ```json
 {
   "allowed": [
-    "task_list", "task_explain", "task_show", "task_create",
-    "vault_read", "vault_write",
-    "message_send", "message_reply", "message_inbox"
-  ],
-  "denied": []
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep"
+  ]
 }
 ```
 

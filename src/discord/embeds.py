@@ -108,7 +108,7 @@ STATUS_EMOJIS: dict[str, str] = {
     TaskStatus.BLOCKED.value: "\u26d4",  # no entry
 }
 
-_DEFAULT_FOOTER = "AgentQueue"
+_DEFAULT_FOOTER = "Agent Q"
 _ELLIPSIS = "\u2026"
 
 # ---------------------------------------------------------------------------

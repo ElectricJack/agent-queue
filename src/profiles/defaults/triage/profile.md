@@ -52,15 +52,10 @@ When the routing queue is empty, close this task with a short summary:
 ```json
 {
   "allowed": [
-    "task_route",
-    "list_tasks",
-    "get_task",
-    "list_profiles",
-    "gate_list",
-    "gate_show",
-    "get_downstream_tasks",
-    "create_task",
-    "edit_task"
+    "Bash",
+    "Read",
+    "Glob",
+    "Grep"
   ]
 }
 ```

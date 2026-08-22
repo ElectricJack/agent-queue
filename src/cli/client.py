@@ -375,7 +375,7 @@ class PluginClient:
             if not os.path.exists(self._db_url):
                 raise FileNotFoundError(
                     f"Database not found at {self._db_url}. "
-                    "Is AgentQueue running? Set AGENT_QUEUE_DB to override."
+                    "Is Agent Q running? Set AGENT_QUEUE_DB to override."
                 )
             self._db = Database(self._db_url)
         await self._db.initialize()

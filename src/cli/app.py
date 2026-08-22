@@ -225,7 +225,7 @@ def cli(
     output_json: bool,
     brief: bool,
 ) -> None:
-    """AgentQueue CLI — Modern terminal interface for task management.
+    """Agent Q CLI — Modern terminal interface for task management.
 
     Connects to the agent-queue daemon via its REST API.
     """

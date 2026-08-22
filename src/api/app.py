@@ -52,7 +52,7 @@ def create_app(
     from src.commands.handler import CommandHandler
 
     app = FastAPI(
-        title="AgentQueue API",
+        title="Agent Q API",
         description="REST API for the agent-queue daemon.",
         version="0.1.0",
         docs_url="/docs",

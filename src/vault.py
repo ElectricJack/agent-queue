@@ -1365,6 +1365,7 @@ def ensure_vault_layout(data_dir: str) -> None:
     # spec §4/§9 profiles the SessionLens and planner flow expect.
     # Write-if-absent: operator edits survive reseed.
     ensure_default_profiles(data_dir)
+    ensure_default_aq_skills(data_dir)
     # Legacy hardcoded ``claude-opus`` / ``claude-sonnet`` seed calls
     # removed in favor of the 3-tier × 4-thinking intelligence-class
     # matrix — pick capability via ``intelligence_class``/``default_class``
@@ -1595,6 +1596,92 @@ def ensure_default_harnesses(data_dir: str) -> dict:
             harness_dir,
             ", ".join(result["created"]),
         )
+    return result
+
+
+def ensure_default_aq_skills(data_dir: str) -> dict:
+    """Install shipped aq-* skills into every supported harness' skill dir.
+
+    aq is CLI-first for internal agents; the ~215 MCP tools the daemon
+    auto-exposes are for EXTERNAL agents. Internal worker/reviewer/
+    supervisor sessions get a small set of skills that explain aq CLI
+    usage instead, and rely on Bash + the shipped ``aq`` binary.
+
+    Each skill lives in-tree at ``src/skills/<name>/SKILL.md`` and gets
+    seeded to every discovery path we know about:
+
+    * ``~/.claude/skills/<name>/SKILL.md`` — Claude Code (native).
+    * ``~/.gemini/skills/<name>/SKILL.md`` — Gemini CLI, npm-installed.
+    * ``~/snap/gemini-cli/common/.gemini/skills/<name>/SKILL.md`` —
+      Gemini CLI, snap-installed (target of ``gemini skills link``).
+    * ``~/.codex/skills/<name>/SKILL.md`` — Codex CLI. Codex has no
+      native skill discovery yet; the file is future-proof and readable
+      via Codex's ``Read`` tool.
+
+    **Idempotent per-path**: an existing SKILL.md at a given path is
+    never overwritten. Editing a shipped skill (in any of the four
+    locations) survives daemon restarts. To pick the shipped version
+    back up in one place, delete that copy and restart.
+
+    Args:
+        data_dir: Ignored — skills ship into per-user harness dirs so
+            cross-session discovery works.
+
+    Returns:
+        Dict with per-target ``created`` and ``skipped`` skill-name lists.
+    """
+    defaults_root = os.path.join(os.path.dirname(__file__), "skills")
+    if not os.path.isdir(defaults_root):
+        logger.debug("No default aq skills directory found at %s", defaults_root)
+        return {}
+
+    skill_names = sorted(
+        n for n in os.listdir(defaults_root)
+        if os.path.isfile(os.path.join(defaults_root, n, "SKILL.md"))
+    )
+
+    # Discovery paths for each harness. Only seed to paths whose parent
+    # exists — no point creating ~/.gemini/skills/ on a host that never
+    # touches Gemini.
+    home = os.path.expanduser("~")
+    targets = [
+        ("claude",       os.path.join(home, ".claude", "skills"),
+         True),  # always seed (Claude is the default harness)
+        ("gemini-npm",   os.path.join(home, ".gemini", "skills"),
+         os.path.isdir(os.path.join(home, ".gemini"))),
+        ("gemini-snap",  os.path.join(home, "snap", "gemini-cli", "common", ".gemini", "skills"),
+         os.path.isdir(os.path.join(home, "snap", "gemini-cli"))),
+        ("codex",        os.path.join(home, ".codex", "skills"),
+         os.path.isdir(os.path.join(home, ".codex"))),
+    ]
+
+    result: dict = {}
+    for tag, dst_root, seed_it in targets:
+        target_result = {"created": [], "skipped": [], "root": dst_root}
+        if not seed_it:
+            target_result["skipped"] = ["(target home not present)"]
+            result[tag] = target_result
+            continue
+        os.makedirs(dst_root, exist_ok=True)
+        for skill_name in skill_names:
+            src_path = os.path.join(defaults_root, skill_name, "SKILL.md")
+            dst_dir = os.path.join(dst_root, skill_name)
+            dst_path = os.path.join(dst_dir, "SKILL.md")
+            if os.path.exists(dst_path):
+                target_result["skipped"].append(skill_name)
+                continue
+            os.makedirs(dst_dir, exist_ok=True)
+            shutil.copy2(src_path, dst_path)
+            target_result["created"].append(skill_name)
+        if target_result["created"]:
+            logger.info(
+                "Installed %d default aq skill(s) into %s (%s): %s",
+                len(target_result["created"]),
+                dst_root,
+                tag,
+                ", ".join(target_result["created"]),
+            )
+        result[tag] = target_result
     return result
 
 

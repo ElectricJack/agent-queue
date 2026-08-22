@@ -38,12 +38,13 @@ Do:
 ```json
 {
   "allowed": [
-    "playbook_validate",
-    "playbook_install",
-    "list_playbooks",
-    "get_playbook"
-  ],
-  "denied": []
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep"
+  ]
 }
 ```
 

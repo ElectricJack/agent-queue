@@ -86,7 +86,7 @@ async def run_mcp_server(
     mcp = FastMCP(
         name="agent-queue",
         instructions=(
-            "Agent Queue MCP server (embedded in daemon). Provides access to "
+            "Agent Q MCP server (embedded in daemon). Provides access to "
             "all CommandHandler operations for the agent-queue orchestrator."
         ),
         host=mcp_config.host,

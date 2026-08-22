@@ -104,7 +104,7 @@ TOOLS = _ToolRegistry().get_all_tools()
 # SYSTEM_PROMPT_TEMPLATE below is a deprecated backward-compat stub.
 # The actual prompt is loaded via PromptBuilder in _build_system_prompt().
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT_TEMPLATE = """You are AgentQueue, a Discord bot that manages an AI agent task queue.
+SYSTEM_PROMPT_TEMPLATE = """You are Agent Q, a Discord bot that manages an AI agent task queue.
 Workspaces root: {workspace_dir}
 Use browse_tools/load_tools to discover and load tool categories on demand."""
 

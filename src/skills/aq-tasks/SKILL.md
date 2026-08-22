@@ -1,0 +1,114 @@
+---
+name: aq-tasks
+description: Task lifecycle in the aq daemon — get / list / show / close / reopen / edit tasks, work with dependencies, results, and archives. Use whenever you need to inspect the queue, understand your assigned task, close work with a summary, or manage a task graph. Also covers `aq task explain` for "why isn't X running".
+allowed-tools:
+  - Bash
+---
+
+# aq tasks — Working with tasks from the CLI
+
+Every task operation runs through `aq task <subcommand>`. Run
+`aq task --help` for the current subcommand list; `aq task <cmd> --help`
+for arguments.
+
+## Read paths (safe, no side effects)
+
+```bash
+aq task list                        # active tasks, current project scope
+aq task list --status IN_PROGRESS   # filter by status
+aq task list --json --brief         # scriptable projection
+aq task show <task_id>              # full detail for one task
+aq task get <task_id>               # single-row summary
+aq task explain <task_id>           # "why isn't this running?" — blockers,
+                                    # gates, budget, cooldown, lease info.
+                                    # Quote the actual reason it returns,
+                                    # don't theorize.
+aq task deps <task_id>              # dependency graph for one task
+aq task tree <task_id>              # subtask tree, expanded
+aq task result <task_id>            # result payload from a completed task
+```
+
+## The close-a-task loop
+
+Every assigned task ends with `aq task close`. Two common shapes:
+
+```bash
+# Success — commit + push happened, PR opened, summary explains what changed.
+aq task close --task-id <id> \
+  --outcome success \
+  --summary "Refactored X to use Y. Tests: 42/42. Commits: abc123, def456."
+
+# Blocked — you couldn't complete because of missing context.
+aq task close --task-id <id> \
+  --outcome needs_context \
+  --summary "Task references spec §7 but the spec file is not in the vault."
+
+# Failed — you tried, it broke, and the failure needs human eyes.
+aq task close --task-id <id> \
+  --outcome failure \
+  --summary "Test suite deadlocks under xdist. Reproducer in tests/xxx."
+```
+
+Rules the daemon enforces:
+- If the profile has `needs_workspace: true` (all worker profiles), the
+  summary is required — the daemon rejects empty summaries with
+  `summary is required`.
+- Every terminal close also captures the git commit HEAD of the
+  workspace automatically. Don't try to pass a `--commit-sha` flag.
+
+## Reopen + provide input (rejection loop)
+
+If a reviewer or human rejects the work, they call `reopen_with_feedback`
+on your task. That transitions it back to `READY` with feedback attached.
+When you pick it up, `aq task get <id>` shows the feedback in the
+description.
+
+If a task is `WAITING_INPUT`, respond with:
+
+```bash
+aq task input-response --task-id <id> --response "<the answer>"
+```
+
+## Creating tasks (elevated / supervisor only)
+
+Non-elevated worker sessions cannot create tasks — the daemon returns
+`out of scope: create_task`. If you're the supervisor, or you're running
+a task whose profile is elevated:
+
+```bash
+# Ad-hoc task creation
+aq task create --project <pid> --title "..." --description "..." \
+  --profile worker-standard --priority 50
+
+# From a spec (preferred for multi-task graphs)
+aq task create --from-spec vault/projects/<pid>/specs/<slug>.md
+aq task create --from-spec <path> --dry-run   # validate first, always
+```
+
+## Dependencies
+
+```bash
+aq task dep add <task_id> --depends-on <upstream_id> --type blocks
+aq task dep remove <task_id> --depends-on <upstream_id>
+```
+
+Dependency types: `blocks`, `parent-child`, `waits-for`,
+`conditional-blocks`, `discovered-from`, `related`, `duplicates`,
+`supersedes`. Only the first four gate readiness.
+
+## Archives
+
+Completed / failed tasks eventually archive. Query and restore:
+
+```bash
+aq task list-archived --project <pid>
+aq task restore <task_id>
+```
+
+## Rules of thumb
+
+- Read before writing. `aq task get` / `aq task show` before any mutation.
+- Explain non-obvious moves. When you close a task with `success`, the
+  summary is your one chance to tell the reviewer what you did and why.
+- Don't create tasks from a worker session. That's the supervisor's
+  job — message the supervisor if you notice missing work.
