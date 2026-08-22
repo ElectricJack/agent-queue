@@ -302,7 +302,7 @@ class TestVaultInstallation:
         """
         result = ensure_default_playbooks(str(tmp_path))
 
-        expected = {"memory-consolidation.md"}
+        expected = {"default-pipeline.md", "memory-consolidation.md"}
         installed = set(result["created"])
         assert expected == installed, (
             f"Missing playbooks: {expected - installed}, "
