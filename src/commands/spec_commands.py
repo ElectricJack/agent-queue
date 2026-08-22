@@ -6,12 +6,22 @@ default pipeline picks that event up and enqueues a spec-ingest task.
 """
 from __future__ import annotations
 
+import io
 import logging
 from pathlib import Path
 
 import yaml
+from ruamel.yaml import YAML
 
 logger = logging.getLogger(__name__)
+
+
+def _make_ruamel() -> YAML:
+    """Round-trip YAML that preserves comments and key order."""
+    y = YAML(typ="rt")
+    y.preserve_quotes = True
+    y.width = 4096  # avoid line wrapping surprises
+    return y
 
 
 class SpecCommandsMixin:
@@ -24,6 +34,8 @@ class SpecCommandsMixin:
             return {"success": False, "error": "project_id is required"}
         if not spec_path_raw:
             return {"success": False, "error": "spec_path is required"}
+        if not str(spec_path_raw).endswith(".md"):
+            return {"success": False, "error": "spec path must end in .md"}
 
         vault_root = Path(self.config.vault_root).resolve()
         allowed_root = (vault_root / "projects" / project_id / "specs").resolve()
@@ -47,8 +59,11 @@ class SpecCommandsMixin:
         parts = raw.split("---", 2)
         if len(parts) < 3:
             return {"success": False, "error": "spec frontmatter is malformed"}
+        # Round-trip via ruamel so comments and key order in the
+        # frontmatter survive the status flip.
+        rt = _make_ruamel()
         try:
-            fm = yaml.safe_load(parts[1]) or {}
+            fm = rt.load(parts[1]) or {}
         except yaml.YAMLError as exc:
             return {
                 "success": False,
@@ -56,7 +71,9 @@ class SpecCommandsMixin:
             }
 
         fm["status"] = "approved"
-        new_fm = yaml.safe_dump(fm, sort_keys=True).strip()
+        buf = io.StringIO()
+        rt.dump(fm, buf)
+        new_fm = buf.getvalue().rstrip("\n")
         spec_path.write_text(f"---\n{new_fm}\n---{parts[2]}", encoding="utf-8")
 
         bus = getattr(self.orchestrator, "bus", None)

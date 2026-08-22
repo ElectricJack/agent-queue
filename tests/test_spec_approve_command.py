@@ -85,3 +85,54 @@ async def test_spec_approve_requires_frontmatter(handler, tmp_path):
     )
     assert r["success"] is False
     assert "frontmatter" in r["error"].lower()
+
+
+async def test_spec_approve_rejects_non_markdown_path(handler):
+    await handler.execute("create_project", {"id": "p1", "name": "p1"})
+    vault_root = Path(handler.config.vault_root)
+    spec_dir = vault_root / "projects" / "p1" / "specs"
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    spec_path = spec_dir / "not-a-spec.txt"
+    spec_path.write_text("---\nstatus: draft\n---\n")
+    r = await handler.execute(
+        "spec_approve",
+        {"project_id": "p1", "spec_path": str(spec_path)},
+    )
+    assert r["success"] is False
+    assert ".md" in r["error"]
+
+
+async def test_spec_approve_preserves_comments_and_order(handler):
+    await handler.execute("create_project", {"id": "p1", "name": "p1"})
+    vault_root = Path(handler.config.vault_root)
+    spec_dir = vault_root / "projects" / "p1" / "specs"
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    spec_path = spec_dir / "2026-08-22-commented.md"
+    original = textwrap.dedent("""\
+        ---
+        # Spec identity — chosen at draft time
+        id: my-spec
+        title: My Spec  # human-friendly
+        status: draft
+        # Owner should never change
+        owner: jack
+        ---
+        # body
+        """)
+    spec_path.write_text(original)
+
+    r = await handler.execute(
+        "spec_approve",
+        {"project_id": "p1", "spec_path": str(spec_path)},
+    )
+    assert r["success"] is True, r
+    text = spec_path.read_text()
+    assert "# Spec identity — chosen at draft time" in text
+    assert "# human-friendly" in text
+    assert "# Owner should never change" in text
+    # Key order preserved (id before title before status before owner).
+    fm_body = text.split("---", 2)[1]
+    assert fm_body.index("id:") < fm_body.index("title:")
+    assert fm_body.index("title:") < fm_body.index("status:")
+    assert fm_body.index("status:") < fm_body.index("owner:")
+    assert "status: approved" in text
