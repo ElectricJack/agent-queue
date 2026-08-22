@@ -65,7 +65,7 @@ export default function TaskNode({ data, selected }: NodeProps<TaskNodeType>) {
     >
       {completedFlash}
       {spinner}
-      <Handle type="target" position={Position.Left} />
+      <Handle type="target" position={Position.Top} />
       <div className="mb-1 flex items-center justify-between">
         <span className="font-mono text-[10px] opacity-70">{task.id.slice(0, 8)}</span>
         <span className="uppercase tracking-wide text-[9px]">{task.status}</span>
@@ -80,7 +80,7 @@ export default function TaskNode({ data, selected }: NodeProps<TaskNodeType>) {
         )}
         {gates.map(gateBadge)}
       </div>
-      <Handle type="source" position={Position.Right} />
+      <Handle type="source" position={Position.Bottom} />
     </div>
   );
 }
