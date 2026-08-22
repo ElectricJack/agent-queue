@@ -677,6 +677,50 @@ class Orchestrator(
             from src.playbooks.runner import PlaybookRunner
 
             graph = playbook.to_dict()
+
+            # Pipeline playbooks route to the deterministic PipelineRunner
+            # — no supervisor/LLM needed, action nodes dispatch directly
+            # via CommandHandler.execute().
+            if graph.get("kind") == "pipeline":
+                from src.playbooks.pipeline_runner import PipelineRunner
+
+                handler = self._command_handler
+                if handler is None:
+                    logger.error(
+                        "Pipeline playbook '%s' cannot run — no command handler wired",
+                        playbook.id,
+                    )
+                    return
+                project_id = event_data.get("project_id")
+                runner = PipelineRunner(
+                    graph=graph,
+                    event=event_data,
+                    handler=handler,
+                    db=self.db,
+                )
+
+                async def _run_pipeline() -> None:
+                    with CorrelationContext(run_id=runner.run_id):
+                        try:
+                            await runner.run()
+                        except Exception:
+                            logger.exception(
+                                "Pipeline playbook '%s' run failed (trigger event=%s)",
+                                playbook.id,
+                                event_data.get("type") or event_data.get("_event_type"),
+                            )
+
+                asyncio.create_task(
+                    _run_pipeline(),
+                    name=f"pipeline:{playbook.id}:{event_data.get('type', 'trigger')}",
+                )
+                logger.info(
+                    "Dispatched pipeline playbook '%s' for trigger event (project=%s)",
+                    playbook.id,
+                    project_id or "(none)",
+                )
+                return
+
             supervisor = Supervisor(self, self.config, llm_logger=self.llm_logger)
             if not supervisor.initialize():
                 logger.error(
@@ -1139,6 +1183,7 @@ class Orchestrator(
                 event_bus=self.bus,
                 data_dir=self.config.data_dir,
                 playbook_max_tokens=self.config.chat_provider.playbook_max_tokens,
+                command_handler=self._command_handler,
             )
             # Restore previously compiled playbooks from disk so version numbers
             # continue from where they left off and source-hash change detection

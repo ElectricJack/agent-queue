@@ -205,12 +205,14 @@ class PlaybookManager:
         max_concurrent_runs: int = 2,
         on_trigger: TriggerCallback | None = None,
         playbook_max_tokens: int = DEFAULT_MAX_TOKENS,
+        command_handler: Any = None,
     ) -> None:
         self._chat_provider = chat_provider
         self._config = config
         self._event_bus = event_bus
         self._data_dir = data_dir
         self._store = store
+        self._handler = command_handler
 
         # In-memory registry: playbook_id → active CompiledPlaybook
         self._active: dict[str, CompiledPlaybook] = {}
