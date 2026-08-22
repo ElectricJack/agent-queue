@@ -47,6 +47,26 @@ def _structure_errors(raw: list[str]) -> list[dict]:
     return out
 
 
+def _vault_bounded(self, path_arg: str) -> tuple[Path | None, str | None]:
+    """Resolve *path_arg* and require that it live under the vault root.
+
+    Mirrors the ``spec_approve`` guard: symlink escapes are caught because
+    ``resolve()`` dereferences symlinks BEFORE the ``relative_to`` check.
+    Returns ``(resolved_path, None)`` on success, or ``(None, error)`` on
+    an out-of-vault path.
+    """
+    vault_root = Path(self.config.vault_root).resolve()
+    try:
+        resolved = Path(path_arg).resolve()
+    except OSError as exc:
+        return None, f"could not resolve path: {exc}"
+    try:
+        resolved.relative_to(vault_root)
+    except ValueError:
+        return None, f"path is outside vault root {vault_root}: {resolved}"
+    return resolved, None
+
+
 class PlaybookValidateInstallMixin:
     """Mixin adding ``playbook_validate`` and ``playbook_install`` commands."""
 
@@ -59,7 +79,15 @@ class PlaybookValidateInstallMixin:
                     {"node": None, "field": "path", "message": "path is required"}
                 ],
             }
-        path = Path(path_arg)
+        resolved, err = _vault_bounded(self, str(path_arg))
+        if err is not None:
+            return {
+                "success": False,
+                "errors": [
+                    {"node": None, "field": "path", "message": err}
+                ],
+            }
+        path = resolved
         if not path.is_file():
             return {
                 "success": False,
@@ -168,6 +196,15 @@ class PlaybookValidateInstallMixin:
                     }
                 ],
             }
+        resolved, err = _vault_bounded(self, str(compiled_path))
+        if err is not None:
+            return {
+                "success": False,
+                "errors": [
+                    {"node": None, "field": "compiled_path", "message": err}
+                ],
+            }
+        compiled_path = str(resolved)
         # Server-side re-validation.
         v = await self._cmd_playbook_validate({"path": compiled_path})
         if not v["success"]:

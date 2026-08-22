@@ -2,8 +2,16 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
+
+
+def _vault_dir(handler) -> Path:
+    """Return the handler's vault root, creating it if missing."""
+    root = Path(handler.config.vault_root)
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 VALID_COMPILED = {
@@ -39,9 +47,9 @@ def _attach_stub_manager(handler) -> _StubPlaybookManager:
 
 
 @pytest.mark.asyncio
-async def test_validate_valid_compiled(tmp_path, command_handler_factory):
+async def test_validate_valid_compiled(command_handler_factory):
     handler = await command_handler_factory()
-    p = tmp_path / "demo.json"
+    p = _vault_dir(handler) / "demo.json"
     p.write_text(json.dumps(VALID_COMPILED))
     r = await handler.execute("playbook_validate", {"path": str(p)})
     assert r["success"] is True
@@ -49,38 +57,34 @@ async def test_validate_valid_compiled(tmp_path, command_handler_factory):
 
 
 @pytest.mark.asyncio
-async def test_validate_missing_entry_node(tmp_path, command_handler_factory):
+async def test_validate_missing_entry_node(command_handler_factory):
     bad = dict(VALID_COMPILED)
     bad["nodes"] = {"end": {"terminal": True}}
-    p = tmp_path / "bad.json"
-    p.write_text(json.dumps(bad))
     handler = await command_handler_factory()
+    p = _vault_dir(handler) / "bad.json"
+    p.write_text(json.dumps(bad))
     r = await handler.execute("playbook_validate", {"path": str(p)})
     assert r["success"] is False
     assert any("entry" in (e["message"] or "").lower() for e in r["errors"])
 
 
 @pytest.mark.asyncio
-async def test_validate_source_markdown_frontmatter_only(
-    tmp_path, command_handler_factory
-):
-    md = tmp_path / "demo.md"
+async def test_validate_source_markdown_frontmatter_only(command_handler_factory):
+    handler = await command_handler_factory()
+    md = _vault_dir(handler) / "demo.md"
     md.write_text(
         "---\nid: demo\ntriggers: [task.completed]\nscope: system\n---\n# hi\n"
     )
-    handler = await command_handler_factory()
     r = await handler.execute("playbook_validate", {"path": str(md)})
     assert r["success"] is True
     assert r.get("requires_compile") is True
 
 
 @pytest.mark.asyncio
-async def test_validate_missing_frontmatter_field(
-    tmp_path, command_handler_factory
-):
-    md = tmp_path / "bad.md"
-    md.write_text("---\nid: demo\n---\n# hi\n")
+async def test_validate_missing_frontmatter_field(command_handler_factory):
     handler = await command_handler_factory()
+    md = _vault_dir(handler) / "bad.md"
+    md.write_text("---\nid: demo\n---\n# hi\n")
     r = await handler.execute("playbook_validate", {"path": str(md)})
     assert r["success"] is False
     fields = {e.get("field") for e in r["errors"]}
@@ -88,10 +92,10 @@ async def test_validate_missing_frontmatter_field(
 
 
 @pytest.mark.asyncio
-async def test_install_round_trips(tmp_path, command_handler_factory):
+async def test_install_round_trips(command_handler_factory):
     handler = await command_handler_factory()
     pm = _attach_stub_manager(handler)
-    p = tmp_path / "demo.json"
+    p = _vault_dir(handler) / "demo.json"
     p.write_text(json.dumps(VALID_COMPILED))
     r = await handler.execute(
         "playbook_install", {"playbook_id": "demo", "compiled_path": str(p)}
@@ -103,12 +107,12 @@ async def test_install_round_trips(tmp_path, command_handler_factory):
 
 
 @pytest.mark.asyncio
-async def test_install_rejects_invalid(tmp_path, command_handler_factory):
+async def test_install_rejects_invalid(command_handler_factory):
     handler = await command_handler_factory()
     _attach_stub_manager(handler)
     bad = dict(VALID_COMPILED)
     bad["nodes"] = {}
-    p = tmp_path / "bad.json"
+    p = _vault_dir(handler) / "bad.json"
     p.write_text(json.dumps(bad))
     r = await handler.execute(
         "playbook_install", {"playbook_id": "bad", "compiled_path": str(p)}
@@ -118,10 +122,10 @@ async def test_install_rejects_invalid(tmp_path, command_handler_factory):
 
 
 @pytest.mark.asyncio
-async def test_install_rejects_id_mismatch(tmp_path, command_handler_factory):
+async def test_install_rejects_id_mismatch(command_handler_factory):
     handler = await command_handler_factory()
     _attach_stub_manager(handler)
-    p = tmp_path / "demo.json"
+    p = _vault_dir(handler) / "demo.json"
     p.write_text(json.dumps(VALID_COMPILED))
     r = await handler.execute(
         "playbook_install",
@@ -136,3 +140,79 @@ async def test_validate_missing_path(command_handler_factory):
     r = await handler.execute("playbook_validate", {})
     assert r["success"] is False
     assert r["errors"]
+
+
+# ---------------------------------------------------------------------------
+# Vault-boundary guard: any file outside vault_root is rejected.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_path_outside_vault(
+    tmp_path, command_handler_factory
+):
+    handler = await command_handler_factory()
+    outside = tmp_path / "escape.json"
+    outside.write_text(json.dumps(VALID_COMPILED))
+    r = await handler.execute("playbook_validate", {"path": str(outside)})
+    assert r["success"] is False
+    assert any("outside vault" in (e["message"] or "") for e in r["errors"])
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_dotdot_escape(
+    tmp_path, command_handler_factory
+):
+    handler = await command_handler_factory()
+    vault = _vault_dir(handler)
+    # ../../../etc/passwd-like traversal from inside the vault path.
+    escape = vault / ".." / ".." / "escape.json"
+    escape.parent.mkdir(parents=True, exist_ok=True)
+    escape.write_text(json.dumps(VALID_COMPILED))
+    r = await handler.execute("playbook_validate", {"path": str(escape)})
+    assert r["success"] is False
+    assert any("outside vault" in (e["message"] or "") for e in r["errors"])
+
+
+@pytest.mark.asyncio
+async def test_install_rejects_symlink_escape(
+    tmp_path, command_handler_factory
+):
+    """A symlink inside the vault pointing OUT of the vault must be
+    rejected — ``resolve()`` dereferences the link so relative_to catches it."""
+    handler = await command_handler_factory()
+    _attach_stub_manager(handler)
+    vault = _vault_dir(handler)
+    real = tmp_path / "real.json"
+    real.write_text(json.dumps(VALID_COMPILED))
+    link = vault / "sneak.json"
+    try:
+        link.symlink_to(real)
+    except (OSError, NotImplementedError):
+        pytest.skip("filesystem does not support symlinks")
+    r = await handler.execute(
+        "playbook_install",
+        {"playbook_id": "demo", "compiled_path": str(link)},
+    )
+    assert r["success"] is False
+    assert any(
+        "outside vault" in (e["message"] or "") for e in r["errors"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_install_rejects_absolute_path_outside_vault(
+    tmp_path, command_handler_factory
+):
+    handler = await command_handler_factory()
+    _attach_stub_manager(handler)
+    outside = tmp_path / "abs.json"
+    outside.write_text(json.dumps(VALID_COMPILED))
+    r = await handler.execute(
+        "playbook_install",
+        {"playbook_id": "demo", "compiled_path": str(outside)},
+    )
+    assert r["success"] is False
+    assert any(
+        "outside vault" in (e["message"] or "") for e in r["errors"]
+    )
