@@ -15,7 +15,7 @@ const tabs = [
 
 export default function MobileBottomNav() {
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 flex border-t border-gray-800 bg-gray-900 md:hidden">
+    <nav className="fixed inset-x-0 bottom-0 z-40 flex border-t border-gray-800 bg-gray-900 pb-[env(safe-area-inset-bottom)] md:hidden">
       {tabs.map(({ to, label, icon: Icon, end }) => (
         <NavLink
           key={to}
