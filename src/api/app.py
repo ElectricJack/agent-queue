@@ -19,8 +19,10 @@ from fastapi import FastAPI, WebSocket
 from src.api import dependencies as deps
 from src.api.execute import router as execute_router
 from src.api.health import router as health_router
+from src.api.graph import router as graph_router
 from src.api.messages import router as messages_router
 from src.api.sessions import router as sessions_router
+from src.api.task_files import router as task_files_router
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware
 from src.api.websocket import WebSocketManager
 
@@ -106,6 +108,12 @@ def create_app(
     # Session SSE stream (S3): GET /api/sessions/{id}/stream — transcript
     # replay + live tail with peek-diff fallback.
     app.include_router(sessions_router)
+
+    # Task file preview (Phase 5): GET /api/tasks/{id}/files + /file
+    app.include_router(task_files_router)
+
+    # Aggregate project-graph endpoint (Phase 4): GET /api/projects/{id}/graph
+    app.include_router(graph_router)
 
     # Auto-generated typed command routes (POST /api/{category}/{command})
     from src.api.routers import register_all_routers
