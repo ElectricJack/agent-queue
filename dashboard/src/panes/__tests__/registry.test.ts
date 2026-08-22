@@ -25,3 +25,8 @@ test("no manifest uses literal null for open_shortcut", () => {
     expect(entry.manifest.open_shortcut).not.toBeNull();
   }
 });
+
+test("useAgentPushBridge is a named export from agentPush", async () => {
+  const mod = await import("../agentPush");
+  expect(typeof mod.useAgentPushBridge).toBe("function");
+});
