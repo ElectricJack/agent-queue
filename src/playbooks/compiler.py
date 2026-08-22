@@ -90,6 +90,49 @@ class CompilationResult:
 
 
 # ---------------------------------------------------------------------------
+# Thin dispatch helper
+# ---------------------------------------------------------------------------
+
+
+def compile_playbook(markdown: str, *, existing_version: int = 0) -> "CompilationResult":
+    """Compile a playbook markdown file, dispatching on its ``kind`` frontmatter field.
+
+    For ``kind: pipeline`` files this delegates to
+    :func:`~src.playbooks.pipeline_compiler.compile_pipeline` (deterministic,
+    no LLM).  All other files return a failure result with a clear error message
+    (LLM compilation requires an instantiated :class:`PlaybookCompiler`).
+
+    This function exists as a synchronous convenience entry point for tests and
+    CLI tools that need to validate pipeline files without setting up the full
+    async/LLM stack.
+    """
+    import yaml as _yaml
+
+    # Peek at frontmatter to dispatch
+    kind = ""
+    if markdown.startswith("---"):
+        parts = markdown.split("---", 2)
+        if len(parts) >= 3:
+            try:
+                fm = _yaml.safe_load(parts[1]) or {}
+                kind = fm.get("kind", "")
+            except _yaml.YAMLError:
+                pass
+
+    if kind == "pipeline":
+        from src.playbooks.pipeline_compiler import compile_pipeline
+        return compile_pipeline(markdown, existing_version=existing_version)
+
+    return CompilationResult(
+        success=False,
+        errors=[
+            f"compile_playbook: kind '{kind}' requires async LLM compilation "
+            "via PlaybookCompiler.compile(); only 'kind: pipeline' is supported here."
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Compiler
 # ---------------------------------------------------------------------------
 

@@ -421,6 +421,13 @@ class CompiledPlaybook:
     kind: str = ""
     # Optional role name for pipeline playbooks (from frontmatter).
     role: str = ""
+    # Multi-rule pipeline support: maps trigger event type → entry node ID.
+    # Populated by the pipeline compiler when the JSON block contains a
+    # ``rules: [...]`` array (each rule has its own ``on`` event and ``entry``).
+    # When non-empty, the orchestrator uses the firing trigger's event type to
+    # select the correct subgraph entry point instead of the single entry node.
+    # Empty dict means single-graph pipeline (legacy/simple format).
+    pipeline_rules: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Normalize trigger entries to :class:`PlaybookTrigger` objects.
@@ -624,11 +631,14 @@ class CompiledPlaybook:
             errors.append("Playbook has no nodes")
             return errors  # Can't validate further without nodes
 
-        # 2. Exactly one entry node
+        # 2. Exactly one entry node.
+        # Exception: multi-rule pipelines (pipeline_rules non-empty) have one
+        # entry node per rule — each rule's subgraph is walked independently.
         entry_nodes = [nid for nid, n in self.nodes.items() if n.entry]
+        is_multi_rule = bool(self.pipeline_rules)
         if len(entry_nodes) == 0:
             errors.append("No entry node found (exactly one node must have entry=true)")
-        elif len(entry_nodes) > 1:
+        elif len(entry_nodes) > 1 and not is_multi_rule:
             errors.append(f"Multiple entry nodes found: {entry_nodes}")
 
         # 3. At least one terminal node
@@ -695,8 +705,15 @@ class CompiledPlaybook:
                 errors.append(f"Node '{nid}': goto target '{node.goto}' does not exist")
 
         # 9. Reachability from entry
+        # Multi-rule pipelines have one entry per rule; compute reachability
+        # from ALL entries so all rule subgraphs are included.
         if entry_nodes:
-            reachable = self.reachable_node_ids(entry_nodes[0])
+            if is_multi_rule:
+                reachable: set[str] = set()
+                for en in entry_nodes:
+                    reachable |= self.reachable_node_ids(en)
+            else:
+                reachable = self.reachable_node_ids(entry_nodes[0])
             unreachable = set(self.nodes.keys()) - reachable
             if unreachable:
                 errors.append(
@@ -708,7 +725,12 @@ class CompiledPlaybook:
         #     but cannot reach any terminal are trapped in cycles.
         if entry_nodes and terminal_nodes:
             can_reach_terminal = self.nodes_reaching_terminal()
-            reachable = self.reachable_node_ids(entry_nodes[0])
+            if is_multi_rule:
+                reachable = set()
+                for en in entry_nodes:
+                    reachable |= self.reachable_node_ids(en)
+            else:
+                reachable = self.reachable_node_ids(entry_nodes[0])
             trapped: set[str] = set()
             for nid in reachable - can_reach_terminal:
                 node = self.nodes.get(nid)
@@ -771,6 +793,8 @@ class CompiledPlaybook:
             d["kind"] = self.kind
         if self.role:
             d["role"] = self.role
+        if self.pipeline_rules:
+            d["pipeline_rules"] = self.pipeline_rules
         return d
 
     @classmethod
@@ -799,6 +823,7 @@ class CompiledPlaybook:
             profile_id=data.get("profile_id"),
             kind=data.get("kind", ""),
             role=data.get("role", ""),
+            pipeline_rules=data.get("pipeline_rules", {}),
         )
 
     @classmethod

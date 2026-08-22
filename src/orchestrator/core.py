@@ -119,6 +119,45 @@ from src.orchestrator.sync_workflow import SyncWorkflowMixin
 logger = logging.getLogger(__name__)
 
 
+def _eval_pipeline_when(when: dict, event: dict) -> bool:
+    """Evaluate a simple pipeline rule ``when`` condition against the event.
+
+    Supported shapes::
+
+        {"field": "event.task.branch_name", "truthy": true}
+            — pass when the dot-path resolves to a non-empty truthy value.
+
+        {"field": "event.task.branch_name", "not_null": true}
+            — pass when the dot-path resolves to a non-None / non-empty value.
+
+    Unrecognised shapes default to *True* (permissive: unknown conditions do
+    not silently drop events).
+    """
+    if not isinstance(when, dict):
+        return True
+    field_path = when.get("field", "")
+    if not field_path:
+        return True
+
+    # Walk the dot-path into the event dict
+    val: object = event
+    for part in field_path.split("."):
+        if part == "event":
+            # "event.foo" means the event itself as root — skip the prefix
+            continue
+        if isinstance(val, dict):
+            val = val.get(part)
+        else:
+            val = None
+            break
+
+    if when.get("truthy") or when.get("not_null"):
+        return bool(val) if when.get("truthy") else val is not None and val != ""
+
+    # Unknown condition shape — permissive default
+    return True
+
+
 def _parse_reset_time(error_msg: str) -> float | None:
     """Extract a session-limit reset timestamp from an error message.
 
@@ -713,9 +752,80 @@ class Orchestrator(
                     )
                     return
                 project_id = event_data.get("project_id")
+
+                # Hydrate event.task for pipeline rules that reference task
+                # fields (e.g. ``{{event.task.branch_name}}``).  Pipelines
+                # receive the slim bus payload; fetch the full task row once
+                # so all nodes can reference any task attribute without an
+                # extra DB call inside the graph.
+                hydrated_event = dict(event_data)
+                if self.db and hydrated_event.get("task_id") and "task" not in hydrated_event:
+                    try:
+                        task_row = await self.db.get_task(str(hydrated_event["task_id"]))
+                        if task_row is not None:
+                            from dataclasses import asdict
+                            try:
+                                hydrated_event["task"] = asdict(task_row)
+                            except Exception:
+                                hydrated_event["task"] = vars(task_row) if hasattr(task_row, "__dict__") else {}
+                    except Exception:
+                        logger.debug(
+                            "Pipeline '%s': could not hydrate event.task for task_id=%s",
+                            playbook.id,
+                            hydrated_event.get("task_id"),
+                            exc_info=True,
+                        )
+
+                # Multi-rule pipelines store a trigger → rule-meta mapping in
+                # ``pipeline_rules``.  When present, override the entry node
+                # in the graph so the runner walks the correct subgraph.
+                pipeline_run_graph = graph
+                pipeline_rules = graph.get("pipeline_rules") or {}
+                if pipeline_rules:
+                    # Determine the firing event type from the event metadata.
+                    # The EventBus stamps ``_event_type`` before dispatch.
+                    firing_trigger = (
+                        hydrated_event.get("_event_type")
+                        or hydrated_event.get("event_type")
+                        or hydrated_event.get("type")
+                    )
+                    if firing_trigger and firing_trigger in pipeline_rules:
+                        rule_meta = pipeline_rules[firing_trigger]
+                        # Support both legacy string form and new dict form.
+                        if isinstance(rule_meta, str):
+                            rule_entry = rule_meta
+                            rule_when = None
+                        else:
+                            rule_entry = rule_meta.get("entry", "")
+                            rule_when = rule_meta.get("when")
+
+                        # Evaluate optional ``when`` guard before dispatch.
+                        if rule_when and not _eval_pipeline_when(rule_when, hydrated_event):
+                            logger.debug(
+                                "Pipeline '%s' rule '%s': when-guard skipped dispatch",
+                                playbook.id,
+                                firing_trigger,
+                            )
+                            return
+
+                        # Clone the graph and mark only the rule's entry node.
+                        import copy
+                        pipeline_run_graph = copy.deepcopy(graph)
+                        for nid, node in pipeline_run_graph["nodes"].items():
+                            node["entry"] = nid == rule_entry
+                    else:
+                        logger.warning(
+                            "Pipeline '%s': multi-rule graph received trigger '%s' "
+                            "with no matching rule (available: %s) — skipping",
+                            playbook.id,
+                            firing_trigger,
+                            sorted(pipeline_rules.keys()),
+                        )
+                        return
+
                 runner = PipelineRunner(
-                    graph=graph,
-                    event=event_data,
+                    graph=pipeline_run_graph,
+                    event=hydrated_event,
                     handler=handler,
                     db=self.db,
                 )
