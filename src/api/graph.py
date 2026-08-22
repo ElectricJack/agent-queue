@@ -105,18 +105,27 @@ def build_graph_router(*, db) -> APIRouter:
 
 
 def _build_default_router() -> APIRouter:
-    """Registered in :func:`src.api.app.create_app` — uses the shared db."""
-    from fastapi import Request
+    """Registered in :func:`src.api.app.create_app` — uses the shared db.
 
+    Closes directly over ``deps._orchestrator.db`` at request time. The
+    original wrapper re-built a fresh ``APIRouter`` per request and used a
+    ``Request`` parameter, which broke OpenAPI schema generation because
+    Pydantic could not resolve the ``ForwardRef``. This shape mirrors
+    ``src/api/task_files.py`` and has no such introspection footprint.
+    """
     from src.api import dependencies as deps
 
     router = APIRouter()
 
-    @router.get("/api/projects/{project_id}/graph")
-    async def get_project_graph(project_id: str, request: Request):
+    @router.get(
+        "/api/projects/{project_id}/graph",
+        response_model=ProjectGraphResponse,
+    )
+    async def get_project_graph(project_id: str) -> ProjectGraphResponse:
         orch = deps._orchestrator
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
+        # Delegate to the router-factory implementation for behaviour parity.
         inner = build_graph_router(db=orch.db)
         for route in inner.routes:
             if getattr(route, "path", None) == "/api/projects/{project_id}/graph":
