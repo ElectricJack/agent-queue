@@ -68,6 +68,21 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
                         status_code=401,
                     )
                 scope = resolved
+                # Global-admin tokens (elevated + project_id=None) are
+                # loopback-only.  A stolen token cannot be replayed from
+                # any remote host, so its blast radius is bounded to
+                # processes on this machine.
+                if (
+                    scope.kind == "session"
+                    and scope.elevated
+                    and scope.project_id is None
+                ):
+                    client_host = request.client.host if request.client else None
+                    if client_host not in ("127.0.0.1", "::1", "localhost"):
+                        return JSONResponse(
+                            {"ok": False, "error": "token restricted to loopback"},
+                            status_code=403,
+                        )
         else:
             if require and request.url.path not in _EXEMPT_PATHS:
                 return JSONResponse(
