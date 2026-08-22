@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { CpuChipIcon } from "@heroicons/react/24/outline";
-import { apiGet } from "../../api/legacy-fetch";
+import { legacyFetch } from "../../api/legacy-fetch";
 
 type ProviderSlice = {
   model?: string;
@@ -56,7 +56,18 @@ function providerBadge(name: string, slice: ProviderSlice): string {
 export default function IntelligenceClassesStub() {
   const { data, isLoading, error } = useQuery<ListResponse>({
     queryKey: ["intelligence-classes"],
-    queryFn: () => apiGet<ListResponse>("/api/system/list-intelligence-classes"),
+    queryFn: async () => {
+      // Auto-generated command routes are POST — call with an empty body.
+      const res = await legacyFetch("/api/system/list-intelligence-classes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!res.ok) {
+        throw new Error(`API ${res.status}: ${await res.text()}`);
+      }
+      return (await res.json()) as ListResponse;
+    },
     staleTime: 30_000,
   });
 

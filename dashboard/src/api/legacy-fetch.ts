@@ -16,6 +16,9 @@ export async function apiGet<T = unknown>(path: string): Promise<T> {
 // Raw fetch, non-throwing on non-2xx — for callers that need to branch on
 // status codes themselves (e.g. the task file endpoint's 403/404/413
 // responses) rather than treating every non-2xx as a generic error.
-export async function legacyFetch(path: string): Promise<Response> {
-  return fetch(`${BASE_URL}${path}`);
+export async function legacyFetch(
+  path: string,
+  init?: RequestInit,
+): Promise<Response> {
+  return fetch(`${BASE_URL}${path}`, init);
 }
