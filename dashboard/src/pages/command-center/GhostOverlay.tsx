@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { legacyFetch } from "../../api/legacy-fetch";
 
 interface ProposalResponse {
   proposal_id: string;
@@ -21,10 +22,11 @@ export default function GhostOverlay({ proposalId }: Props) {
     retry: false,
     queryFn: async () => {
       if (!proposalId) return null;
-      // Exception to the "no direct fetch" rule: Phase 6 hasn't landed the
-      // endpoint yet, so the generated SDK doesn't include it. Swap to the
-      // generated call when Phase 6 ships and regenerates the client.
-      const r = await fetch(`/api/proposals/${proposalId}`);
+      // Phase 6 hasn't landed the endpoint yet, so the generated SDK doesn't
+      // include it — use legacyFetch (respects VITE_API_URL) instead of a
+      // bare fetch. Swap to the generated call when Phase 6 ships and
+      // regenerates the client.
+      const r = await legacyFetch(`/api/proposals/${proposalId}`);
       if (r.status === 404) {
         console.debug("[GhostOverlay] Phase 6 proposal endpoint 404 — no-op.");
         return null;
