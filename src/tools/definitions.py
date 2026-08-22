@@ -149,6 +149,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "update_and_restart": "system",
     "run_command": "system",
     "get_stuck_tasks": "system",
+    "list_intelligence_classes": "system",
     "doctor": "system",
     "get_costs": "system",
     "get_schema": "system",

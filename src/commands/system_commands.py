@@ -23,6 +23,27 @@ class SystemCommandsMixin:
     # System commands — config reload, status, diagnostics
     # -----------------------------------------------------------------------
 
+    async def _cmd_list_intelligence_classes(self, args: dict) -> dict:
+        """List the intelligence classes seeded under vault/intelligence-classes.
+
+        Reads every ``*.md`` under the vault directory and returns id, name,
+        description, and the provider→config mapping. Purely read-only.
+        """
+        from src.intelligence_classes import load_intelligence_classes
+
+        classes = load_intelligence_classes(self.config.data_dir)
+        rows = [
+            {
+                "id": cls.id,
+                "name": cls.name,
+                "description": cls.description,
+                "mapping": cls.mapping,
+            }
+            for cls in classes.values()
+        ]
+        rows.sort(key=lambda r: r["id"])
+        return {"success": True, "classes": rows}
+
     async def _cmd_get_stuck_tasks(self, args: dict) -> dict:
         """Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their
         per-status threshold.

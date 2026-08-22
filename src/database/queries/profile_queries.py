@@ -40,6 +40,7 @@ class ProfileQueryMixin:
                     needs_workspace=profile.needs_workspace,
                     read_only=profile.read_only,
                     max_session_age=profile.max_session_age,
+                    default_class=profile.default_class or "",
                     created_at=now,
                     updated_at=now,
                 )
@@ -112,6 +113,7 @@ class ProfileQueryMixin:
                 needs_workspace=profile.needs_workspace,
                 read_only=profile.read_only,
                 max_session_age=profile.max_session_age,
+                default_class=profile.default_class or "",
             )
             return "updated"
         else:
