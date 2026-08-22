@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { PaperAirplaneIcon } from "@heroicons/react/24/outline";
 import { useChatTranscript } from "./useChatTranscript";
 import InlineEventCard from "./InlineEventCard";
+import ThinkingBubble from "./ThinkingBubble";
 import type { PendingMessage } from "./useChatTranscript";
 
 function fmt(ts: number | null | undefined): string {
@@ -37,13 +38,14 @@ function Bubble({ msg }: { msg: PendingMessage }) {
 
 export default function ChatConversation() {
   const { projectId = "" } = useParams();
-  const { items, isLoading, error, send, isSending, sendError } = useChatTranscript(projectId);
+  const { items, isLoading, error, send, isSending, sendError, thinking } =
+    useChatTranscript(projectId);
   const [body, setBody] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [items]);
+  }, [items, thinking]);
 
   const submit = () => {
     if (!body.trim() || isSending) return;
@@ -80,6 +82,7 @@ export default function ChatConversation() {
             <InlineEventCard key={`e-${idx}`} event={it.event} ts={it.ts} />
           ),
         )}
+        {thinking && <ThinkingBubble thinking={thinking} />}
       </div>
 
       <form
