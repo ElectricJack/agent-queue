@@ -198,6 +198,64 @@ async def test_ordinary_md_double_write_is_deduped(
 
 
 @pytest.mark.asyncio
+async def test_failed_compile_task_is_cleared_on_re_edit(
+    tmp_path, command_handler_factory
+):
+    """Editing a playbook after a FAILED compile clears the FAILED task
+    and enqueues a fresh one.  Prevents both "one FAILED forever blocks
+    retries" AND "each editor save duplicates the task"."""
+    from src.models import TaskStatus
+
+    handler = await command_handler_factory()
+    project_id = await _make_project(handler)
+    pm = _StubManager(handler, project_id)
+
+    src = tmp_path / "brokenpb.md"
+    src.write_text(ORDINARY_MD.replace("my-quality-gate", "brokenpb"))
+    change = VaultChange(
+        path=str(src),
+        rel_path="system/playbooks/brokenpb.md",
+        operation="created",
+    )
+    await on_playbook_changed([change], playbook_manager=pm)
+
+    first = await handler.db.find_task_by_dedup_key(
+        project_id, "playbook-compile:brokenpb"
+    )
+    assert first is not None
+    # Simulate compiler agent failing.
+    await handler.db.update_task(first.id, status=TaskStatus.FAILED)
+
+    # Editor saves again — should clear the FAILED row and create fresh.
+    src.write_text(src.read_text() + "\n<!-- fix attempt -->\n")
+    change2 = VaultChange(
+        path=str(src),
+        rel_path="system/playbooks/brokenpb.md",
+        operation="modified",
+    )
+    await on_playbook_changed([change2], playbook_manager=pm)
+
+    # Old FAILED task should be gone (deleted).
+    from src.database.tables import tasks as _tt
+    from sqlalchemy import select as _select
+    async with handler.db._engine.begin() as conn:
+        rows = (
+            await conn.execute(
+                _select(_tt).where(_tt.c.id == first.id)
+            )
+        ).all()
+    assert rows == [], "FAILED compile task should have been deleted"
+
+    # Exactly one live compile task should exist.
+    fresh = await handler.db.find_task_by_dedup_key(
+        project_id, "playbook-compile:brokenpb"
+    )
+    assert fresh is not None
+    assert fresh.id != first.id
+    assert fresh.status != TaskStatus.FAILED
+
+
+@pytest.mark.asyncio
 async def test_missing_project_skips_enqueue(
     tmp_path, command_handler_factory, caplog
 ):

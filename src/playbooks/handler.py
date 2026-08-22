@@ -275,6 +275,37 @@ async def on_playbook_changed(
             continue
 
         dedup_key = f"playbook-compile:{playbook_id}"
+        # ``find_task_by_dedup_key`` deliberately ignores terminal statuses,
+        # so a prior FAILED compile does NOT block ``ensure_task`` from
+        # spawning a new row — but without intervention that would create
+        # a fresh compile task on every editor save after a failure.  For
+        # a broken playbook, the natural repair loop is "edit → re-compile
+        # → repeat".  Sweep the terminal FAILED rows away first so the
+        # editor gets exactly one live compile task per attempt.
+        try:
+            from src.models import TaskStatus
+            prior = await handler.db.list_tasks(
+                project_id=project_id, status=TaskStatus.FAILED
+            )
+            stale = [t for t in prior if t.dedup_key == dedup_key]
+            for t in stale:
+                res = await handler.execute("delete_task", {"task_id": t.id})
+                if res.get("success") or res.get("ok"):
+                    logger.info(
+                        "Cleared FAILED compile task %s for playbook %s "
+                        "(dedup=%s) so this edit can re-run compile",
+                        t.id, playbook_id, dedup_key,
+                    )
+                else:
+                    logger.warning(
+                        "Could not clear FAILED compile task %s: %s",
+                        t.id, res.get("error"),
+                    )
+        except Exception:
+            logger.exception(
+                "Failed to sweep prior FAILED compile tasks for %s",
+                dedup_key,
+            )
         # ensure_task is the framework's find-or-create by dedup_key;
         # non-terminal existing tasks with the same key are returned as-is,
         # so touching the source markdown repeatedly does not spawn duplicates.
