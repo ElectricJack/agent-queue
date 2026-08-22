@@ -1110,17 +1110,43 @@ class TaskCommandsMixin:
         # gate + triage flow.  Uses the shared ``_emit_task_event`` helper so
         # the base triple (task_id, project_id, title) is populated and
         # matches the registered schema.
-        try:
-            extras: dict[str, str] = {}
-            if profile_id:
-                extras["profile_id"] = profile_id
-            if task_type:
-                extras["task_type"] = task_type.value
-            await self.orchestrator._emit_task_event(
-                "task.created", task, **extras
-            )
-        except Exception as e:  # pragma: no cover — defensive
-            logger.warning("create_task: failed to emit task.created: %s", e)
+        #
+        # NON-OBVIOUS INVARIANT: ``ensure_task`` passes ``_suppress_created_event``
+        # so control-plane bookkeeping tasks (e.g. the triage task the default
+        # pipeline creates) do NOT re-fire the pipeline against themselves.
+        # Emitting there would attach a routing gate to the triage task —
+        # and routing gates are only resolved BY the triage agent, so the
+        # triage task would deadlock blocked on its own gate.
+        if not args.get("_suppress_created_event"):
+            try:
+                extras: dict[str, str] = {}
+                if profile_id:
+                    extras["profile_id"] = profile_id
+                if task_type:
+                    extras["task_type"] = task_type.value
+                await self.orchestrator._emit_task_event(
+                    "task.created", task, **extras
+                )
+            except AttributeError as e:  # orchestrator missing hook (test doubles)
+                logger.warning(
+                    "create_task: failed to emit task.created (missing hook): %s", e
+                )
+            except Exception as e:
+                # Narrow-log the emission failure loudly — this is the wire that
+                # kicks off the default pipeline (routing gate + triage).  Losing
+                # it silently means every new task will just sit in READY unrouted.
+                logger.error(
+                    "create_task: task.created emission failed (task=%s project=%s): %s",
+                    task_id,
+                    project_id,
+                    e,
+                    exc_info=True,
+                )
+                # Opt-in re-raise for dev/CI: config value must be
+                # explicitly truthy AND a real bool (guards against
+                # MagicMock configs in tests where every attr is truthy).
+                if getattr(self.config, "dev_strict", False) is True:
+                    raise
 
         # Emit notify.task_added so the Discord layer (and other transports)
         # can post a "Task Added" notification to the project's channel — or
@@ -3246,6 +3272,12 @@ class TaskCommandsMixin:
             "description": args.get("description", ""),
             "priority": args.get("priority", 100),
             "dedup_key": dedup_key,
+            # Control-plane bookkeeping: suppress task.created emission so the
+            # default pipeline is not re-triggered against this task itself
+            # (would attach a routing gate to a task only the triage agent
+            # can resolve — self-deadlock).  Routing of tasks created via
+            # ensure_task is the ensuring pipeline's responsibility.
+            "_suppress_created_event": True,
         }
         result = await self._cmd_create_task(create_args)
         if "error" in result:
