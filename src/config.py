@@ -1062,7 +1062,6 @@ class SupervisorAgentConfig:
     """
 
     enabled: bool = False  # route project chat to supervisor sessions
-    legacy_chat: bool = True  # keep Supervisor.chat() wiring until cutover
     idle_timeout: int = 900  # default for the shipped profile
 
     def validate(self) -> list[ConfigError]:
@@ -2215,7 +2214,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         sa = raw["supervisor_agent"]
         config.supervisor_agent = SupervisorAgentConfig(
             enabled=bool(sa.get("enabled", False)),
-            legacy_chat=bool(sa.get("legacy_chat", True)),
             idle_timeout=int(sa.get("idle_timeout", 900)),
         )
 

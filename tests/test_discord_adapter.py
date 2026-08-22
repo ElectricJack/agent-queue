@@ -66,8 +66,10 @@ class TestDiscordAdapterDelegation:
             adapter._bot.close = AsyncMock()
             adapter._bot._send_message = AsyncMock(return_value=MagicMock())
             adapter._bot._create_task_thread = AsyncMock(return_value=("send_cb", "notify_cb"))
-            adapter._bot.agent = MagicMock()
-            adapter._bot.agent.handler = MagicMock()
+            # After the supervisor cutover, get_command_handler() reads
+            # bot.handler (a property that delegates to the daemon-wide
+            # CommandHandler via bot.orchestrator._command_handler).
+            adapter._bot.handler = MagicMock()
             yield adapter
 
     @pytest.mark.asyncio
@@ -115,11 +117,16 @@ class TestDiscordAdapterDelegation:
 
     def test_get_command_handler_delegates(self, adapter):
         result = adapter.get_command_handler()
-        assert result is adapter._bot.agent.handler
+        assert result is adapter._bot.handler
 
-    def test_get_supervisor_delegates(self, adapter):
+    def test_get_supervisor_returns_none_after_cutover(self, adapter):
+        """After the supervisor cutover, the adapter no longer owns a
+        Supervisor to override — main.py wires the daemon-wide singleton
+        directly.  ``get_supervisor()`` must return None so
+        ``orch.set_supervisor(None)`` is a no-op in main.py.
+        """
         result = adapter.get_supervisor()
-        assert result is adapter._bot.agent
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

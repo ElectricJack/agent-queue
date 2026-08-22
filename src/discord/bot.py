@@ -1,8 +1,10 @@
 """Discord integration layer -- connects the orchestrator to Discord via discord.py.
 
 AgentQueueBot extends ``commands.Bot`` with:
-- LLM-powered chat (via Supervisor) that lets users interact with the orchestrator
-  through natural language
+- Chat routing: user messages in a project-bound channel are enqueued on
+  the message bus for the project's tmux supervisor session (via
+  ``message_send``); replies flow back through the ``message.sent`` event.
+  The bot itself holds no chat brain and never calls ``Supervisor.chat``.
 - Per-project channel routing so each project's notifications land in the right place
 - Thread-based task output streaming (one Discord thread per agent execution)
 
@@ -11,11 +13,8 @@ docs/specs/design/messaging-rework.md §4.6 / implementation plan §3.2).  It
 keeps channel routing, task-thread streaming, gate/approval views (see
 ``notification_handler.py`` / ``notifications.py``), project-channel chat,
 and a minimal set of read-only slash commands (``slash_commands.py``).
-Notes threads, channel summarization, the local message-history buffer, and
-the chat-observer/suggestion wiring were removed — replies are stateless
-per-message (no multi-turn history is threaded through ``Supervisor.chat()``
-from here).  This whole module is superseded by the out-of-process
-``aq-discord`` package at M2-M4.
+This whole module is superseded by the out-of-process ``aq-discord``
+package at M2-M4.
 
 Key design decision: the bot maintains in-memory channel caches
 (``_project_channels``, ``_channel_to_project``) for O(1) message routing.
@@ -24,19 +23,16 @@ and kept in sync at runtime when channels are created, reassigned, or deleted.
 
 Message flow::
 
-    Discord message -> on_message routing -> Supervisor.chat()
-    -> tool-use loop -> _send_long_message -> Discord reply
+    Discord message -> on_message routing -> message_send (session:supervisor-<pid>)
+    ...supervisor writes reply -> message.sent event -> DiscordNotificationHandler
+    -> _send_long_message -> Discord reply
 
-Scope decision (Wave 4, docs/superpowers/plans/2026-08-21-wave4-discord-e2e.md):
-the ``on_message`` handler routes to the supervisor session
-(``message_send`` with ``to_id=f"supervisor-{project_id}"``) ONLY when the
-message arrives in a per-project channel AND
-``supervisor_session_routing_enabled(config)`` is True.  The global bot
-channel intentionally continues to call ``Supervisor.chat()`` in-process
-— it is not tied to any single project's supervisor session, and the
-cross-project routing helper needs the legacy tool-call loop.  Do not
-try to migrate the global channel to the message-queue path without
-first designing a "system-wide" supervisor session or a router.
+Scope decision (supervisor cutover): the ``on_message`` handler routes to
+the supervisor session (``message_send`` with ``to_id=f"supervisor-{project_id}"``)
+whenever ``supervisor_session_routing_enabled(config)`` is True.  Messages in
+channels not bound to a project get an "isn't bound" hint; when routing is
+disabled the user gets a "chat is disabled" hint.  There is no in-process
+chat brain to fall back on.
 
 See specs/discord/discord.md for the full specification.
 """
@@ -54,7 +50,6 @@ import structlog
 from discord import app_commands
 from discord.ext import commands
 
-from src.runtimes.supervisor import Supervisor
 from src.config import AppConfig
 from src.discord.notifications import format_server_started, format_server_started_embed
 from src.models import TaskStatus
@@ -64,19 +59,9 @@ logger = logging.getLogger(__name__)
 
 
 def supervisor_session_routing_enabled(config: Any) -> bool:
-    """Return True when project chat should ride the message queue.
-
-    Phase 4 cutover (supervisor-agent.md §9 row 2, §10):  when
-    ``supervisor_agent.enabled`` is set and ``legacy_chat`` is false, the
-    Discord chat path enqueues a ``message.send`` for ``session:supervisor-<pid>``
-    instead of invoking :meth:`Supervisor.chat` in-process.  Both flags must
-    agree — flipping ``enabled`` on while ``legacy_chat`` is still true keeps
-    the legacy behaviour so the rollout can be staged safely.
-    """
+    """Chat routes to supervisor sessions when the supervisor agent is enabled."""
     sa = getattr(config, "supervisor_agent", None)
-    if sa is None:
-        return False
-    return bool(getattr(sa, "enabled", False)) and not bool(getattr(sa, "legacy_chat", True))
+    return bool(getattr(sa, "enabled", False))
 
 
 class AgentQueueBot(commands.Bot):
@@ -86,8 +71,9 @@ class AgentQueueBot(commands.Bot):
     - Registers slash commands and an authorization guard on startup
     - Resolves per-project Discord channels from the database for fast routing
     - Sets orchestrator callbacks for notifications and thread creation
-    - Handles incoming messages: routes them through Supervisor for LLM responses,
-      serializing concurrent requests per channel to avoid duplicate processing
+    - Handles incoming messages: enqueues them to the project supervisor session
+      via message_send, serializing concurrent requests per channel to avoid duplicate
+      processing
     """
 
     def __init__(self, config: AppConfig, orchestrator: Orchestrator):
@@ -96,13 +82,6 @@ class AgentQueueBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.config = config
         self.orchestrator = orchestrator
-        self.agent = Supervisor(orchestrator, config, llm_logger=orchestrator.llm_logger)
-        # Register a callback so that project deletions (from any caller)
-        # automatically purge the bot's in-memory channel caches.
-        self.agent.handler._on_project_deleted = self.clear_project_channels
-        # Register a callback so that project creations (from any caller —
-        # supervisor, CLI, API) auto-create a dedicated Discord channel.
-        self.agent.handler._on_project_created = self._on_project_created
         # HookEngine removed (playbooks spec §13 Phase 3).
         # Discord invalid-request rate guard — tracks 401/403/429 responses
         # in a 10-minute sliding window to prevent Cloudflare IP bans.
@@ -127,10 +106,6 @@ class AgentQueueBot(commands.Bot):
         # Task thread tracking — maps thread_id ↔ task_id so the bot can
         # detect when a user types into a task thread and route the message
         # appropriately (reopen completed tasks, acknowledge in-progress ones).
-        # IDs of transient "thinking" indicator messages that should not
-        # appear in conversation history.  Populated when the thinking msg
-        # is sent, cleared when it is deleted or replaced by the final reply.
-        self._thinking_msg_ids: set[int] = set()
         self._task_threads: dict[int, str] = {}  # thread_id -> task_id
         self._task_thread_objects: dict[str, discord.Thread] = {}  # task_id -> Thread
         self._task_root_messages: dict[str, discord.Message] = {}  # task_id -> root msg
@@ -138,6 +113,11 @@ class AgentQueueBot(commands.Bot):
         # Notes threads, chat-observer/suggestion wiring, and the local
         # message-history buffer + summarization were removed in the M0
         # messaging strip (docs/specs/design/messaging-rework.md §4.6).
+
+    @property
+    def handler(self):
+        """Daemon-wide CommandHandler (wired by main.py before transports start)."""
+        return self.orchestrator._command_handler
 
     def update_project_channel(self, project_id: str, channel: discord.TextChannel) -> None:
         """Update the cached channel for a project at runtime.
@@ -219,7 +199,7 @@ class AgentQueueBot(commands.Bot):
             )
 
             # Link channel to project in the database
-            await self.agent.handler.execute(
+            await self.handler.execute(
                 "set_project_channel",
                 {"project_id": project_id, "channel_id": str(new_channel.id)},
             )
@@ -365,25 +345,11 @@ class AgentQueueBot(commands.Bot):
                 # Resolve per-project channels from database
                 await self._resolve_project_channels()
 
-                # Wire orchestrator references for command handling and
-                # supervisor delegation.  Notification delivery is handled
-                # by DiscordNotificationHandler (subscribes to EventBus
-                # notify.* events) — no callback wiring needed here.
-                if self._channel or self._project_channels:
-                    if not self.orchestrator._command_handler:
-                        self.orchestrator.set_command_handler(self.agent.handler)
-                        self.orchestrator.set_supervisor(self.agent)
-
-        # Initialize LLM client via Supervisor
-        try:
-            if self.agent.initialize():
-                logger.info("Chat agent ready (model: %s)", self.agent.model)
-            else:
-                logger.warning(
-                    "No LLM credentials found — set ANTHROPIC_API_KEY or run `claude login`"
-                )
-        except Exception as e:
-            logger.error("Could not initialize LLM client: %s", e)
+                # main.py wires the daemon-wide CommandHandler/Supervisor
+                # before transports start; register bot callbacks on it.
+                if self.handler is not None:
+                    self.handler._on_project_deleted = self.clear_project_channels
+                    self.handler._on_project_created = self._on_project_created
 
         # RuleManager removed (playbooks spec §13 Phase 3).
         # Playbook compilation is handled by the VaultWatcher.
@@ -405,71 +371,6 @@ class AgentQueueBot(commands.Bot):
                 format_server_started(),
                 embed=format_server_started_embed(),
             )
-
-    class ThinkingView(discord.ui.View):
-        """Attached to the thinking indicator message with a Cancel button.
-
-        When clicked, calls ``Supervisor.cancel()`` to immediately terminate
-        the response loop.  The view disables itself after use.
-        """
-
-        def __init__(self, supervisor: Supervisor):
-            super().__init__(timeout=300)  # 5-minute timeout
-            self._supervisor = supervisor
-            self._cancelled = False
-
-        @discord.ui.button(
-            label="Cancel",
-            style=discord.ButtonStyle.danger,
-            emoji="✖️",
-        )
-        async def cancel_button(
-            self,
-            interaction: discord.Interaction,
-            button: discord.ui.Button,
-        ) -> None:
-            if self._cancelled:
-                await interaction.response.send_message(
-                    "Already cancelled.",
-                    ephemeral=True,
-                )
-                return
-            self._cancelled = True
-            self._supervisor.cancel()
-            button.disabled = True
-            button.label = "Cancelled"
-            try:
-                await interaction.response.edit_message(
-                    content="🚫 Cancelling...",
-                    view=self,
-                )
-            except Exception:
-                try:
-                    await interaction.response.send_message(
-                        "Cancelling...",
-                        ephemeral=True,
-                    )
-                except Exception:
-                    pass
-
-    async def _delete_thinking_msg(self, msg: discord.Message | None) -> None:
-        """Silently delete a thinking indicator message.
-
-        Also removes the message from ``_thinking_msg_ids``.
-
-        Fail-open: if the message was already deleted or any Discord error
-        occurs, we swallow the exception so the main response flow is never
-        interrupted.
-        """
-        if msg is None:
-            return
-        self._thinking_msg_ids.discard(msg.id)
-        try:
-            await msg.delete()
-        except discord.NotFound:
-            pass  # Already deleted externally
-        except Exception:
-            pass  # Fail-open on cleanup
 
     async def _safe_api_call(
         self,
@@ -929,7 +830,7 @@ class AgentQueueBot(commands.Bot):
         if task.status in terminal_statuses:
             # Reopen the task with the user's feedback
             try:
-                result = await self.agent.handler.execute(
+                result = await self.handler.execute(
                     "reopen_with_feedback",
                     {"task_id": task_id, "feedback": feedback},
                 )
@@ -1044,24 +945,20 @@ class AgentQueueBot(commands.Bot):
         return paths
 
     async def on_message(self, message: discord.Message) -> None:
-        """Route incoming Discord messages to the Supervisor for LLM processing.
+        """Route incoming Discord messages to the project's supervisor session.
 
         Routing logic (a message is handled if ANY of these match):
         1. Posted in the global bot channel (configured in config.yaml)
         2. Posted in a per-project channel (O(1) reverse lookup via _channel_to_project)
         3. The bot is @mentioned anywhere in the guild
 
-        For project channels, implicit project context is injected into the
-        prompt so the LLM defaults to the right project without requiring
-        the user to specify it every time.
+        Messages in project-bound channels are enqueued on the message bus
+        via ``message_send`` (target: ``session:supervisor-<project_id>``);
+        the bot acknowledges with a 📬 reaction and the actual reply arrives
+        asynchronously via ``message.sent`` → ``DiscordNotificationHandler``.
 
-        Each message is handled statelessly — no local conversation-history
-        buffer is kept (removed in the M0 messaging strip; see the module
-        docstring). ``Supervisor.chat()`` is called with ``history=None``.
-
-        Concurrency: a per-channel asyncio.Lock serializes LLM calls to
-        prevent duplicate or interleaved responses when messages arrive faster
-        than the LLM can respond.
+        Concurrency: a per-channel asyncio.Lock serializes enqueues to
+        prevent duplicate processing when messages arrive rapidly.
         """
         # Ignore own messages
         if message.author == self.user:
@@ -1138,7 +1035,7 @@ class AgentQueueBot(commands.Bot):
                 await message.reply("How can I help? Ask me about status, projects, or tasks.")
                 return
 
-        # Serialize LLM processing per channel to avoid duplicate/concurrent responses
+        # Serialize routing per channel to avoid duplicate/concurrent enqueues
         lock = self._channel_locks.setdefault(message.channel.id, asyncio.Lock())
         async with lock:
             structlog.contextvars.bind_contextvars(
@@ -1146,255 +1043,76 @@ class AgentQueueBot(commands.Bot):
                 discord_user=message.author.display_name,
                 channel_id=str(message.channel.id),
             )
-            # Notify on cold model loads (Ollama first-call latency)
+
+            user_text = text
+
+            # Include the replied-to message in the user request when
+            # Discord has pre-resolved the reference.  The quoted text
+            # still helps the session supervisor understand context.
+            if (
+                message.reference
+                and message.reference.resolved
+                and isinstance(message.reference.resolved, discord.Message)
+            ):
+                resolved = message.reference.resolved
+                ref_author = (
+                    "AgentQueue"
+                    if resolved.author == self.user
+                    else resolved.author.display_name
+                )
+                user_text = (
+                    f'[Replying to {ref_author}: '
+                    f'"{resolved.content}"]\n{user_text}'
+                )
+
+            if not supervisor_session_routing_enabled(self.config):
+                await message.reply(
+                    "Chat is disabled — enable `supervisor_agent` in config.yaml "
+                    "to talk to the project supervisor."
+                )
+                return
+
+            if project_channel_id is None:
+                known = ", ".join(f"`#{ch.name}`" for ch in self._project_channels.values())
+                hint = (
+                    f" Project channels: {known}."
+                    if known
+                    else (
+                        " No project channels are bound yet — create a project or use "
+                        "`set_project_channel` to bind one."
+                    )
+                )
+                await message.reply(
+                    "This channel isn't bound to a project, so there's no supervisor "
+                    f"session to route to.{hint}"
+                )
+                return
+
+            send_result = await self.handler.execute(
+                "message_send",
+                {
+                    "project_id": project_channel_id,
+                    "to_kind": "session",
+                    "to_id": f"supervisor-{project_channel_id}",
+                    "from_kind": "user",
+                    "from_id": f"discord:{message.author.id}",
+                    "body": user_text,
+                    "thread_id": f"discord:{message.channel.id}",
+                },
+            )
+            if isinstance(send_result, dict) and "error" in send_result:
+                await self._send_long_message(
+                    message.channel,
+                    f"**Message queue error:** {send_result['error']}",
+                    reply_to=message,
+                )
+                return
             try:
-                if not await self.agent.is_model_loaded():
-                    await message.channel.send("\u23f3 Loading model, this may take a moment...")
+                await self._safe_api_call(
+                    message.add_reaction("\U0001f4ec"),
+                    critical=False,
+                    context="on_message ack reaction",
+                )
             except Exception:
-                pass  # fail-open — skip notification silently
-
-            thinking_msg: discord.Message | None = None
-            thinking_view: AgentQueueBot.ThinkingView | None = None
-            tool_names_used: list[str] = []
-            response: str = ""
-            async with message.channel.typing():
-                try:
-                    if not self.agent.is_ready:
-                        await message.reply(
-                            "LLM not configured — I can only respond to slash commands. "
-                            "Set `ANTHROPIC_API_KEY` or run `claude login`."
-                        )
-                        return
-
-                    # Build context dict for system prompt injection (not prepended to user message)
-                    user_text = text
-                    llm_context: dict[str, str] = {}
-                    if project_channel_id and not is_bot_channel:
-                        other_projects = [
-                            pid for pid in self._project_channels if pid != project_channel_id
-                        ]
-                        cross_project_hint = ""
-                        if other_projects:
-                            names = ", ".join(f"`{p}`" for p in sorted(other_projects))
-                            cross_project_hint = (
-                                f" Other known projects: {names}. "
-                                f"If the user's request is clearly about a "
-                                f"different project, set project_id explicitly."
-                            )
-                        llm_context["channel_context"] = (
-                            f"This is the channel for project "
-                            f"`{project_channel_id}`. Default to using "
-                            f"project_id='{project_channel_id}' for all project-scoped "
-                            f"commands.{cross_project_hint}"
-                        )
-
-                    # Include the replied-to message in the user request when
-                    # Discord has pre-resolved the reference.  There is no
-                    # local history buffer to fall back on (removed in the
-                    # M0 messaging strip), so replies to messages outside
-                    # Discord's resolution window are not quoted.
-                    if (
-                        message.reference
-                        and message.reference.resolved
-                        and isinstance(message.reference.resolved, discord.Message)
-                    ):
-                        resolved = message.reference.resolved
-                        ref_author = (
-                            "AgentQueue"
-                            if resolved.author == self.user
-                            else resolved.author.display_name
-                        )
-                        user_text = (
-                            f'[Replying to {ref_author}: '
-                            f'"{resolved.content}"]\n{user_text}'
-                        )
-
-                    # Set active project from channel context so that git
-                    # commands (and other project-scoped tools) automatically
-                    # infer the correct repository without the LLM needing to
-                    # explicitly pass project_id in every tool call.
-                    prev_active = self.agent._active_project_id
-                    if project_channel_id and not is_bot_channel:
-                        self.agent.set_active_project(project_channel_id)
-
-                    # No local conversation-history buffer (removed in the
-                    # M0 messaging strip) — each message is a stateless
-                    # single-turn call into the Supervisor.
-                    history = None
-
-                    use_supervisor_session = (
-                        supervisor_session_routing_enabled(self.config)
-                        and project_channel_id is not None
-                    )
-
-                    if use_supervisor_session:
-                        # Supervisor-session path: no ThinkingView (its Cancel
-                        # button routes to the in-process Supervisor, wrong on
-                        # this path).  Acknowledge the enqueue with a 📬 reaction
-                        # once message_send succeeds; on error, post a visible
-                        # error reply.  The real answer arrives asynchronously
-                        # via ``message.sent`` → notification handler.
-                        send_result = await self.agent.handler.execute(
-                            "message_send",
-                            {
-                                "project_id": project_channel_id,
-                                "to_kind": "session",
-                                "to_id": f"supervisor-{project_channel_id}",
-                                "from_kind": "user",
-                                "from_id": f"discord:{message.author.id}",
-                                "body": user_text,
-                                "thread_id": f"discord:{message.channel.id}",
-                            },
-                        )
-                        if isinstance(send_result, dict) and "error" in send_result:
-                            await self._send_long_message(
-                                message.channel,
-                                f"**Message queue error:** {send_result['error']}",
-                                reply_to=message,
-                            )
-                        else:
-                            try:
-                                await self._safe_api_call(
-                                    message.add_reaction("\U0001f4ec"),
-                                    critical=False,
-                                    context="on_message ack reaction",
-                                )
-                            except Exception:
-                                pass  # fail-open
-                        response = ""  # nothing more to render on this path
-                        # Skip legacy branch entirely.
-                        return
-
-                    # Legacy Supervisor.chat() path — keep ThinkingView + progress UI.
-                    # Send a thinking indicator that updates as the agent works.
-                    # This gives users real-time feedback on what the agent is
-                    # doing: thinking, calling tools, or composing a reply.
-                    # Includes a Cancel button to abort the supervisor mid-thought.
-                    thinking_view = self.ThinkingView(self.agent)
-                    thinking_msg = await message.reply(
-                        "💭 Thinking...",
-                        view=thinking_view,
-                    )
-                    self._thinking_msg_ids.add(thinking_msg.id)
-
-                    async def _on_progress(event: str, detail: str | None) -> None:
-                        """Update the thinking indicator as the agent progresses.
-
-                        Events:
-                        - "thinking" (detail=None): initial LLM call
-                        - "thinking" (detail="round N"): subsequent LLM round
-                        - "tool_use" (detail=tool_name): a tool is being called
-                        - "responding": LLM is producing final text response
-                        - "cancelled": supervisor was cancelled via button
-                        """
-                        nonlocal thinking_msg
-                        if thinking_msg is None:
-                            return
-                        try:
-                            if event == "cancelled":
-                                thinking_view.stop()
-                                await thinking_msg.edit(
-                                    content="🚫 Cancelled.",
-                                    view=None,
-                                )
-                                return
-                            elif event == "thinking" and not detail:
-                                # Initial thinking — already showing "Thinking..."
-                                pass
-                            elif event == "thinking" and detail:
-                                # Subsequent LLM round after tool use
-                                steps = " → ".join(f"`{t}`" for t in tool_names_used)
-                                await thinking_msg.edit(content=f"💭 Thinking... {steps} → 💭")
-                            elif event == "tool_use" and detail:
-                                tool_names_used.append(detail)
-                                steps = " → ".join(f"`{t}`" for t in tool_names_used)
-                                await thinking_msg.edit(content=f"🔧 Working... {steps}")
-                            elif event == "responding":
-                                steps = " → ".join(f"`{t}`" for t in tool_names_used)
-                                if steps:
-                                    await thinking_msg.edit(
-                                        content=f"✅ {steps} → composing reply..."
-                                    )
-                                else:
-                                    await thinking_msg.edit(content="✍️ Composing reply...")
-                        except discord.NotFound:
-                            thinking_msg = None  # Deleted externally; stop updating
-                        except Exception:
-                            pass  # Fail-open — don't break the chat flow
-
-                    try:
-                        response = await self.agent.chat(
-                            user_text,
-                            message.author.display_name,
-                            history=history,
-                            on_progress=_on_progress,
-                            context=llm_context or None,
-                        )
-                    except Exception as e:
-                        _is_auth_error = False
-                        try:
-                            import anthropic
-
-                            _is_auth_error = isinstance(e, anthropic.AuthenticationError)
-                        except ModuleNotFoundError:
-                            pass
-
-                        if _is_auth_error:
-                            # Token may have been refreshed — reload and retry once
-                            logger.warning("Auth error, reloading credentials: %s", e)
-                            if self.agent.reload_credentials():
-                                response = await self.agent.chat(
-                                    user_text,
-                                    message.author.display_name,
-                                    history=history,
-                                    on_progress=_on_progress,
-                                    context=llm_context or None,
-                                )
-                            else:
-                                response = (
-                                    "Authentication failed. Run `claude login` "
-                                    "or set `ANTHROPIC_API_KEY`."
-                                )
-                        else:
-                            raise
-
-                    # Post-response cleanup — only meaningful on the legacy path
-                    # (the supervisor-session branch returns before reaching here).
-                    if thinking_view is not None:
-                        thinking_view.stop()
-
-                    if response == "Cancelled.":
-                        if thinking_msg:
-                            try:
-                                await thinking_msg.edit(
-                                    content="🚫 Cancelled.",
-                                    view=None,
-                                )
-                            except Exception:
-                                await self._delete_thinking_msg(thinking_msg)
-                        thinking_msg = None
-                    else:
-                        await self._delete_thinking_msg(thinking_msg)
-                        thinking_msg = None
-
-                        if response:
-                            await self._send_long_message(
-                                message.channel, response, reply_to=message
-                            )
-                        else:
-                            try:
-                                await message.add_reaction("\U0001f4ec")  # 📬
-                            except Exception:
-                                pass  # fail-open
-                except Exception as e:
-                    if thinking_view is not None:
-                        thinking_view.stop()
-                    await self._delete_thinking_msg(thinking_msg)
-                    thinking_msg = None
-                    logger.error("LLM error", exc_info=True)
-                    await message.reply(f"**LLM error:** {e}")
-                finally:
-                    # Restore previous active project to avoid leaking
-                    # channel-specific context across concurrent requests.
-                    self.agent.set_active_project(prev_active)
+                pass  # fail-open
 

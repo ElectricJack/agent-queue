@@ -191,7 +191,7 @@ class DiscordNotificationHandler:
     def _get_handler(self) -> Any:
         """Get the command handler from the bot for interactive views."""
         try:
-            return self.bot.agent.handler
+            return self.bot.handler
         except AttributeError:
             return None
 

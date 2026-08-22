@@ -314,22 +314,30 @@ as today's attachments). Rollback on any failure — no partial graphs.
 
 ## 9. Integration points (verified against source)
 
-| Point | File:line | Change |
+**Status:** Phase 4 cutover is **complete** as of 2026-08-21. `supervisor_agent.legacy_chat`
+has been deleted; Discord chat routes exclusively to supervisor sessions via `message_send`.
+
+| Point | File:line | Status |
 |---|---|---|
-| Shared Supervisor construction + `default_registry(supervisor=...)` + `initialize()` | `src/main.py:84–97` | Gate behind `supervisor_agent.legacy_chat`; when false, skip `shared_supervisor.initialize()` (no LLM provider) and keep registry registration only while `runtime: supervisor` profiles exist |
-| `orch.set_supervisor(adapter.get_supervisor())` | `src/main.py:193` | Unchanged while legacy flag on; removed at cutover |
-| Discord chat → `self.agent.chat(...)` (+ auth-retry twin) inside `on_message` | `src/discord/bot.py:2107`, `:2127` (handler at `:1764`, project routing via `_channel_to_project` at `:1898`) | When `supervisor_agent.enabled`: replace the chat call with `_cmd_message_send(to_kind="session", to_id=f"supervisor-{pid}")`; the ThinkingView/progress UI is replaced by `message.delivered`/`message.replied` renderers in the notification handler |
+| Shared Supervisor construction + `default_registry(supervisor=...)` + `initialize()` | `src/main.py` | `initialize()` is always called; hardened to return False (not raise) on provider errors. `supervisor_agent.legacy_chat` gate removed. |
+| `orch.set_supervisor(adapter.get_supervisor())` | `src/main.py` | Removed at cutover — no longer wired |
+| Discord chat → `message_send` to supervisor session | `src/discord/bot.py` (project routing via `_channel_to_project`) | **Done** — `on_message` enqueues `_cmd_message_send(to_kind="session", to_id=f"supervisor-{pid}")`; ThinkingView deleted; `message.delivered`/`message.replied` renderers in the notification handler |
 | Telegram `self._supervisor.chat(history)` | `src/telegram/bot.py:327` | Removed with `src/telegram/` (Workstream F) — no migration needed |
-| Plugin `invoke_llm` fallback → `supervisor.chat` | `src/orchestrator/core.py:412` | Behind `legacy_chat`; error message directs plugins to judgment tasks |
+| Plugin `invoke_llm` fallback → `supervisor.chat` | `src/orchestrator/core.py:412` | Still routes through `supervisor.chat` — unchanged in this phase |
 | Plan-approval region: `AWAITING_PLAN_APPROVAL` transition, `break_plan_into_tasks` call, auto-approve | `src/orchestrator/execution.py:977–1160` (call at `:1038`) | Behind `planner.legacy_plan_discovery` (default true until Phase 5, then false) |
 | Pipeline phase `_phase_plan_discover` / `_phase_plan_generate` | `src/orchestrator/approval.py:224`, `:282`; invoked from `src/orchestrator/git_ops.py:487–508`; scanner `_discover_and_store_plan` at `git_ops.py:336` | Same flag: phase returns `CONTINUE` immediately when disabled |
 | `Supervisor.chat()` / `break_plan_into_tasks()` / `on_task_completed()` | `src/runtimes/supervisor.py:755`, `:1484`, `:1678` | Frozen dormant (decided) — no edits beyond the callers above |
-| Cascade | orchestrator cycle (`run_one_cycle`) | Add `MessageDeliveryEngine.run_delivery_pass()` + `check_reply_timeouts()` as a step, ordering after approvals/promotions |
-| Event registry | `src/event_schemas.py:340` `_CHAT_SCHEMAS` | Add `message.*` schemas (§5) |
+| Cascade | orchestrator cycle (`run_one_cycle`) | `MessageDeliveryEngine.run_delivery_pass()` + `check_reply_timeouts()` run each cycle, after approvals/promotions |
+| Event registry | `src/event_schemas.py` `_CHAT_SCHEMAS` | `message.*` schemas added |
 
 ---
 
 ## 10. Rollout flags (`src/config.py`)
+
+**Note:** `supervisor_agent.legacy_chat` was removed at Phase 4 cutover (2026-08-21).
+The `chat_provider` config key remains as the utility-LLM config used by playbook
+compilation, vault summaries, and `runtime: supervisor` tasks — it is no longer the
+Discord chat model.
 
 ```python
 @dataclass
@@ -343,8 +351,8 @@ class MessagesConfig:
 @dataclass
 class SupervisorAgentConfig:
     enabled: bool = False              # route project chat to supervisor sessions
-    legacy_chat: bool = True           # keep Supervisor.chat() wiring until cutover
     idle_timeout: int = 900            # default for the shipped profile
+    # legacy_chat removed 2026-08-21: Discord chat routes only via message_send
 
 @dataclass
 class PlannerConfig:
@@ -352,10 +360,10 @@ class PlannerConfig:
 ```
 
 Mounted on `AppConfig` (`config.py:804`) as `messages`, `supervisor_agent`, `planner`.
-Editable via the existing `config_editor` round-trip. Valid states: everything false =
-today's behavior; `messages.enabled` alone = queue/inbox/prime mode (no sessions needed);
-`supervisor_agent.enabled` requires `messages.enabled` and session-runtime named sessions
-(validated in `AppConfig.validate()`).
+Editable via the existing `config_editor` round-trip. Valid states: `messages.enabled`
+alone = queue/inbox/prime mode (no sessions needed); `supervisor_agent.enabled` requires
+`messages.enabled` and session-runtime named sessions (validated in `AppConfig.validate()`).
+Old YAML carrying `legacy_chat` is silently ignored by the config loader.
 
 ---
 
@@ -380,13 +388,12 @@ today's behavior; `messages.enabled` alone = queue/inbox/prime mode (no sessions
       `MessageDeliveryEngine` cascade step; wake-on-message; nudge envelope +
       `NotSubmitted` retry; `aq inbox --inject` hook path; prime injection +
       `archive_after_inject`; transcript-tail fallback; `aq chat` live via `/ws/events`.
-- [x] **Phase 4 — routing cutover** (partial): shipped profiles seeded; Discord `on_message`
-      chat path → `messages` rows behind `supervisor_agent.enabled`; `main.py` supervisor
-      init hardened (catches provider errors, returns False; skipped when
-      `supervisor_agent.enabled && !legacy_chat`). Dashboard chat page (F.2) deferred to
-      post-live-test. **Default flips deferred**: `legacy_chat` remains `True`,
-      `supervisor_agent.enabled` remains `False` — flipping is an ops decision after a
-      live end-to-end test, not an in-branch change.
+- [x] **Phase 4 — routing cutover** (complete 2026-08-21): `supervisor_agent.legacy_chat`
+      flag deleted; Discord `on_message` routes all project-channel chat exclusively to
+      supervisor sessions via `message_send` (no in-process `Supervisor.chat()` path for
+      Discord); `ThinkingView` deleted; `main.py` supervisor init hardened (catches provider
+      errors, returns False). `supervisor_agent.enabled` defaults `False` — enable via ops
+      after live end-to-end test. Dashboard chat page (F.2) deferred to post-live-test.
 - [x] **Phase 5 — planner cutover** (partial): `legacy_plan_discovery` flag gates the
       `AWAITING_PLAN_APPROVAL` region and `_phase_plan_discover`/`_phase_plan_generate`;
       drain via task-state-aware `_should_run_legacy_plan_region`; skip-and-log when

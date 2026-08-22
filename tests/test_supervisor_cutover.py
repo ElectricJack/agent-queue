@@ -3,13 +3,18 @@
 Covers:
 - ``Supervisor.initialize()`` returns False (never raises) when chat-provider
   construction fails — daemon boot must degrade gracefully.
-- Discord ``on_message`` chat routing:
-    * flags off (default): legacy ``self.agent.chat(...)`` is called.
-    * flags on (``supervisor_agent.enabled`` and not ``legacy_chat``): the
-      chat call is replaced by ``message.send`` with a supervisor session
-      recipient and ``self.agent.chat`` is NOT called.
+- Discord ``on_message`` chat routing (post-cutover):
+    * ``supervisor_agent.enabled=True`` in a bound project channel:
+      ``message.send`` is invoked with a supervisor session recipient.
+    * enabled but unbound channel: user gets an "isn't bound to a project"
+      hint and no ``message.send`` fires.
+    * disabled: user gets a "chat is disabled" hint.
 - ``invoke_llm`` plugin fallback: the legacy path still resolves to
   ``supervisor.chat`` (spec §9 row 3 — behaviour unchanged in this phase).
+- ``SupervisorAgentConfig`` no longer carries ``legacy_chat``; old YAML that
+  includes the key must load without error.
+- Bot module carries no in-process chat agent state: no ``self.agent``, and
+  the bot never calls ``Supervisor.chat``.
 """
 
 from __future__ import annotations
@@ -22,6 +27,40 @@ from src.commands.handler import CommandHandler
 from src.config import MessagesConfig, SupervisorAgentConfig
 from src.database import Database
 from src.models import Project
+
+
+# ---------------------------------------------------------------------------
+# legacy_chat field removal
+# ---------------------------------------------------------------------------
+
+
+def test_supervisor_agent_config_has_no_legacy_chat():
+    from src.config import SupervisorAgentConfig
+
+    cfg = SupervisorAgentConfig()
+    assert not hasattr(cfg, "legacy_chat")
+
+
+def test_config_loader_ignores_legacy_chat_key(tmp_path):
+    """A YAML file still carrying legacy_chat must load without error."""
+    import yaml
+
+    from src.config import load_config
+
+    cfg_path = tmp_path / "config.yaml"
+    # Include the minimum required fields so load_config doesn't raise on
+    # validation.  Use enabled=False to avoid the messages/sessions prereq.
+    cfg_path.write_text(
+        yaml.dump(
+            {
+                "discord": {"bot_token": "test-token", "guild_id": "123"},
+                "database_path": str(tmp_path / "test.db"),
+                "supervisor_agent": {"enabled": False, "legacy_chat": False},
+            }
+        )
+    )
+    cfg = load_config(str(cfg_path))
+    assert cfg.supervisor_agent.enabled is False
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +132,7 @@ def _make_handler_with_messages(db, enabled=True):
 
     config = MagicMock()
     config.messages = MessagesConfig(enabled=enabled)
-    config.supervisor_agent = SupervisorAgentConfig(enabled=True, legacy_chat=False)
+    config.supervisor_agent = SupervisorAgentConfig(enabled=True)
 
     handler = CommandHandler(orch, config)
     handler._active_project_id = None
@@ -122,23 +161,8 @@ class TestRoutingDecision:
         from src.discord.bot import supervisor_session_routing_enabled
 
         cfg = MagicMock()
-        cfg.supervisor_agent = SupervisorAgentConfig(enabled=False, legacy_chat=True)
+        cfg.supervisor_agent = SupervisorAgentConfig(enabled=False)
         assert supervisor_session_routing_enabled(cfg) is False
-
-    def test_legacy_when_only_enabled(self):
-        from src.discord.bot import supervisor_session_routing_enabled
-
-        cfg = MagicMock()
-        cfg.supervisor_agent = SupervisorAgentConfig(enabled=True, legacy_chat=True)
-        # legacy_chat still true → keep legacy behaviour
-        assert supervisor_session_routing_enabled(cfg) is False
-
-    def test_new_path_when_enabled_and_not_legacy(self):
-        from src.discord.bot import supervisor_session_routing_enabled
-
-        cfg = MagicMock()
-        cfg.supervisor_agent = SupervisorAgentConfig(enabled=True, legacy_chat=False)
-        assert supervisor_session_routing_enabled(cfg) is True
 
     def test_missing_config_defaults_to_legacy(self):
         from src.discord.bot import supervisor_session_routing_enabled
@@ -184,35 +208,28 @@ class TestMessageSendPath:
 
     async def test_new_path_skips_thinking_view_and_reacts_on_success(self, db):
         """On the supervisor-session path, on_message must not post the
-        legacy ThinkingView; it must acknowledge the enqueue with a 📬
-        reaction on the user's message and not call self.agent.chat.
+        legacy ThinkingView (which has been deleted); it must acknowledge
+        the enqueue with a 📬 reaction on the user's message and NEVER
+        touch a chat brain.
         """
         from src.discord.bot import AgentQueueBot
 
         handler, bus = _make_handler_with_messages(db)
         bot = AgentQueueBot.__new__(AgentQueueBot)
         bot.config = MagicMock()
-        bot.config.supervisor_agent = SupervisorAgentConfig(enabled=True, legacy_chat=False)
+        bot.config.supervisor_agent = SupervisorAgentConfig(enabled=True)
         bot.config.messages = MessagesConfig(enabled=True)
-        bot.agent = MagicMock()
-        bot.agent.handler = handler
-        bot.agent.chat = AsyncMock()  # must NOT be called
-        bot.agent.is_ready = True
-        bot.agent.is_model_loaded = AsyncMock(return_value=True)
-        bot.agent._active_project_id = None
-        bot.agent.set_active_project = MagicMock()
+        bot.orchestrator = MagicMock()
+        bot.orchestrator._command_handler = handler
         bot._channel_locks = {}
         bot._processed_messages = set()
         bot._task_threads = {}
-        bot._thinking_msg_ids = set()
         bot._channel = None
         bot._channel_to_project = {123: "p1"}
         bot._project_channels = {"p1": MagicMock(id=123)}
         bot._boot_time = 0.0
         bot._is_authorized = MagicMock(return_value=True)
         bot._download_attachments = AsyncMock(return_value=[])
-        bot._delete_thinking_msg = AsyncMock()
-        bot._safe_api_call = AsyncMock(return_value=None)
 
         async def _safe_api_call(coro, **_):
             try:
@@ -221,6 +238,7 @@ class TestMessageSendPath:
                 return None
 
         bot._safe_api_call = AsyncMock(side_effect=_safe_api_call)
+        bot._send_long_message = AsyncMock()
 
         message = MagicMock()
         message.author = MagicMock()
@@ -229,9 +247,6 @@ class TestMessageSendPath:
         message.author.bot = False
         message.channel = MagicMock()
         message.channel.id = 123
-        message.channel.typing = MagicMock()
-        message.channel.typing.return_value.__aenter__ = AsyncMock()
-        message.channel.typing.return_value.__aexit__ = AsyncMock()
         message.attachments = []
         message.content = "hi supervisor"
         message.reference = None
@@ -245,16 +260,10 @@ class TestMessageSendPath:
         type(bot).user = _bot_user
         message.mentions = [_bot_user]
 
-        with patch.object(
-            AgentQueueBot,
-            "ThinkingView",
-            side_effect=AssertionError("thinking view constructed"),
-        ):
-            await AgentQueueBot.on_message(bot, message)
+        await AgentQueueBot.on_message(bot, message)
 
         message.add_reaction.assert_awaited_once_with("\U0001f4ec")
-        bot.agent.chat.assert_not_awaited()
-        bot._delete_thinking_msg.assert_not_called()
+        bot._send_long_message.assert_not_called()
 
     async def test_new_path_surfaces_message_send_error(self, db):
         """A message_send error result must produce a visible error reply
@@ -272,34 +281,25 @@ class TestMessageSendPath:
 
         bot = AgentQueueBot.__new__(AgentQueueBot)
         bot.config = MagicMock()
-        bot.config.supervisor_agent = SupervisorAgentConfig(enabled=True, legacy_chat=False)
+        bot.config.supervisor_agent = SupervisorAgentConfig(enabled=True)
         bot.config.messages = MessagesConfig(enabled=True)
-        bot.agent = MagicMock()
-        bot.agent.handler = handler
-        bot.agent.chat = AsyncMock()
-        bot.agent.is_ready = True
-        bot.agent.is_model_loaded = AsyncMock(return_value=True)
-        bot.agent._active_project_id = None
-        bot.agent.set_active_project = MagicMock()
+        bot.orchestrator = MagicMock()
+        bot.orchestrator._command_handler = handler
         bot._channel_locks = {}
         bot._processed_messages = set()
         bot._task_threads = {}
-        bot._thinking_msg_ids = set()
         bot._channel = None
         bot._channel_to_project = {123: "p1"}
         bot._project_channels = {"p1": MagicMock(id=123)}
         bot._boot_time = 0.0
         bot._is_authorized = MagicMock(return_value=True)
         bot._download_attachments = AsyncMock(return_value=[])
-        bot._delete_thinking_msg = AsyncMock()
         bot._send_long_message = AsyncMock()
+        bot._safe_api_call = AsyncMock(return_value=None)
 
         message = MagicMock()
         message.author = MagicMock(id=42, display_name="alice", bot=False)
         message.channel = MagicMock(id=123)
-        message.channel.typing = MagicMock()
-        message.channel.typing.return_value.__aenter__ = AsyncMock()
-        message.channel.typing.return_value.__aexit__ = AsyncMock()
         message.attachments = []
         message.content = "hi"
         message.reference = None
@@ -319,6 +319,147 @@ class TestMessageSendPath:
         assert "Message queue error" in posted
         assert "queue full" in posted
         message.add_reaction.assert_not_awaited()
+
+    async def test_unbound_channel_hints_and_skips_send(self, db):
+        """A message in an unbound channel (project_channel_id None) with
+        routing enabled must reply with an 'isn't bound to a project' hint
+        and NOT invoke message_send.
+        """
+        from src.discord.bot import AgentQueueBot
+
+        handler, _ = _make_handler_with_messages(db)
+        called: list[tuple[str, dict]] = []
+
+        async def _fake_execute(cmd, args):
+            called.append((cmd, args))
+            return {"success": True}
+
+        handler.execute = _fake_execute  # type: ignore[assignment]
+
+        # Simulate a global bot channel — not bound to a project.
+        global_channel = MagicMock(id=555)
+        bot = AgentQueueBot.__new__(AgentQueueBot)
+        bot.config = MagicMock()
+        bot.config.supervisor_agent = SupervisorAgentConfig(enabled=True)
+        bot.config.messages = MessagesConfig(enabled=True)
+        bot.orchestrator = MagicMock()
+        bot.orchestrator._command_handler = handler
+        bot._channel_locks = {}
+        bot._processed_messages = set()
+        bot._task_threads = {}
+        bot._channel = global_channel
+        bot._channel_to_project = {}
+        bot._project_channels = {}
+        bot._boot_time = 0.0
+        bot._is_authorized = MagicMock(return_value=True)
+        bot._download_attachments = AsyncMock(return_value=[])
+        bot._send_long_message = AsyncMock()
+        bot._safe_api_call = AsyncMock(return_value=None)
+
+        message = MagicMock()
+        message.author = MagicMock(id=42, display_name="alice", bot=False)
+        message.channel = global_channel
+        message.attachments = []
+        message.content = "hello"
+        message.reference = None
+        message.id = 2001
+        message.created_at = MagicMock()
+        message.created_at.timestamp = MagicMock(return_value=1.0)
+        message.add_reaction = AsyncMock()
+        message.reply = AsyncMock()
+        _bot_user = MagicMock(id=1)
+        type(bot).user = _bot_user
+        message.mentions = []  # not mentioned; hits the bot channel path
+
+        await AgentQueueBot.on_message(bot, message)
+
+        # message_send must NOT have been invoked.
+        assert not any(cmd == "message_send" for cmd, _ in called)
+        # A reply hint was posted mentioning the unbound state.
+        message.reply.assert_awaited()
+        posted = message.reply.await_args.args[0]
+        assert "isn't bound to a project" in posted
+
+    async def test_routing_disabled_replies_hint(self, db):
+        """With supervisor_agent.enabled=False, a message in a bound channel
+        gets a "chat is disabled" hint and no message_send is invoked.
+        """
+        from src.discord.bot import AgentQueueBot
+
+        handler, _ = _make_handler_with_messages(db, enabled=False)
+        called: list[tuple[str, dict]] = []
+
+        async def _fake_execute(cmd, args):
+            called.append((cmd, args))
+            return {"success": True}
+
+        handler.execute = _fake_execute  # type: ignore[assignment]
+
+        bot = AgentQueueBot.__new__(AgentQueueBot)
+        bot.config = MagicMock()
+        bot.config.supervisor_agent = SupervisorAgentConfig(enabled=False)
+        bot.config.messages = MessagesConfig(enabled=False)
+        bot.orchestrator = MagicMock()
+        bot.orchestrator._command_handler = handler
+        bot._channel_locks = {}
+        bot._processed_messages = set()
+        bot._task_threads = {}
+        bot._channel = None
+        bot._channel_to_project = {123: "p1"}
+        bot._project_channels = {"p1": MagicMock(id=123)}
+        bot._boot_time = 0.0
+        bot._is_authorized = MagicMock(return_value=True)
+        bot._download_attachments = AsyncMock(return_value=[])
+        bot._send_long_message = AsyncMock()
+        bot._safe_api_call = AsyncMock(return_value=None)
+
+        message = MagicMock()
+        message.author = MagicMock(id=42, display_name="alice", bot=False)
+        message.channel = MagicMock(id=123)
+        message.attachments = []
+        message.content = "hi"
+        message.reference = None
+        message.id = 3001
+        message.created_at = MagicMock()
+        message.created_at.timestamp = MagicMock(return_value=1.0)
+        message.add_reaction = AsyncMock()
+        message.reply = AsyncMock()
+        _bot_user = MagicMock(id=1)
+        type(bot).user = _bot_user
+        message.mentions = [_bot_user]
+
+        await AgentQueueBot.on_message(bot, message)
+
+        assert not any(cmd == "message_send" for cmd, _ in called)
+        message.reply.assert_awaited()
+        posted = message.reply.await_args.args[0]
+        assert "disabled" in posted.lower()
+
+
+# ---------------------------------------------------------------------------
+# Bot module invariants — no in-process chat agent
+# ---------------------------------------------------------------------------
+
+
+def test_bot_has_no_inprocess_chat_agent():
+    import inspect
+
+    import src.discord.bot as botmod
+
+    src_text = inspect.getsource(botmod)
+    assert "self.agent" not in src_text
+    assert ".chat(" not in src_text  # bot never calls Supervisor.chat
+
+
+def test_routing_enabled_depends_only_on_enabled_flag():
+    from types import SimpleNamespace
+
+    from src.discord.bot import supervisor_session_routing_enabled
+
+    cfg = SimpleNamespace(supervisor_agent=SimpleNamespace(enabled=True))
+    assert supervisor_session_routing_enabled(cfg) is True
+    cfg2 = SimpleNamespace(supervisor_agent=SimpleNamespace(enabled=False))
+    assert supervisor_session_routing_enabled(cfg2) is False
 
 
 # ---------------------------------------------------------------------------
