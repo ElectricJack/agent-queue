@@ -61,6 +61,14 @@ META_FIELDS: frozenset[str] = frozenset({"_plugin", "event_id"})
 # via _emit_task_event, plus event-specific extras.
 
 _TASK_SCHEMAS: dict[str, EventSchema] = {
+    # dv2 phase 1 — emitted by ``_cmd_create_task`` immediately after the
+    # task row is written.  Triggers the default routing pipeline (see
+    # ``src/prompts/default_playbooks/default-pipeline.md``) so every fresh
+    # task gets a routing gate + coalesced triage task.
+    "task.created": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["profile_id", "task_type"],
+    },
     "task.started": {
         "required": ["task_id", "project_id", "title"],
         "optional": ["agent_id"],

@@ -1105,6 +1105,23 @@ class TaskCommandsMixin:
                 content=self._current_conversation_context,
             )
 
+        # dv2 phase 1 — emit ``task.created`` on the EventBus so the default
+        # pipeline playbook (and any other subscribers) can fire the routing
+        # gate + triage flow.  Uses the shared ``_emit_task_event`` helper so
+        # the base triple (task_id, project_id, title) is populated and
+        # matches the registered schema.
+        try:
+            extras: dict[str, str] = {}
+            if profile_id:
+                extras["profile_id"] = profile_id
+            if task_type:
+                extras["task_type"] = task_type.value
+            await self.orchestrator._emit_task_event(
+                "task.created", task, **extras
+            )
+        except Exception as e:  # pragma: no cover — defensive
+            logger.warning("create_task: failed to emit task.created: %s", e)
+
         # Emit notify.task_added so the Discord layer (and other transports)
         # can post a "Task Added" notification to the project's channel — or
         # the system/global channel when the project has no dedicated one.

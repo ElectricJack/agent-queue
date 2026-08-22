@@ -74,6 +74,11 @@ def _register_typed_schemas(monkeypatch):
 # Maps event_type -> minimal valid payload (all required fields present)
 _CANONICAL_PAYLOADS: dict[str, dict] = {
     # Task lifecycle
+    "task.created": {
+        "task_id": "t-1",
+        "project_id": "proj-1",
+        "title": "Implement feature X",
+    },
     "task.started": {
         "task_id": "t-1",
         "project_id": "proj-1",
@@ -1174,6 +1179,7 @@ class TestAllEventTypesHaveSchemas:
 
     def test_all_task_events_registered(self):
         expected = [
+            "task.created",
             "task.started",
             "task.completed",
             "task.failed",
