@@ -1465,6 +1465,8 @@ class TestValidateConfig:
             "idle_timeout",
             "max_session_age",
             "workspaces",
+            "default_class",
+            "needs_workspace",
         }
 
     def test_valid_permission_modes_set(self):
