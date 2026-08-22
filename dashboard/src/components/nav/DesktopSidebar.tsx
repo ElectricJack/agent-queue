@@ -60,7 +60,7 @@ export default function DesktopSidebar() {
             {(projects ?? []).map((p) => (
               <NavLink
                 key={p.id}
-                to={`/chat/${p.id}`}
+                to={`/projects/${p.id}`}
                 className={({ isActive }) =>
                   `flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                     isActive
