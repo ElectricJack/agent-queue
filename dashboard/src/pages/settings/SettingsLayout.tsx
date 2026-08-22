@@ -1,12 +1,5 @@
-import { NavLink, Outlet } from "react-router-dom";
-
-// Placeholder — replaced/expanded in Phase 3 Task 5.
-const tabs = [
-  { to: "/settings/playbooks", label: "Playbooks" },
-  { to: "/settings/profiles", label: "Profiles" },
-  { to: "/settings/intelligence-classes", label: "Intelligence Classes" },
-  { to: "/settings/config", label: "Config" },
-];
+import { Outlet } from "react-router-dom";
+import SettingsSidebar from "../../components/nav/SettingsSidebar";
 
 export default function SettingsLayout() {
   return (
@@ -14,28 +7,14 @@ export default function SettingsLayout() {
       <header>
         <h1 className="text-2xl font-bold">Settings</h1>
         <p className="text-sm text-gray-500">
-          System-wide playbooks, profiles, intelligence classes, and config.
+          Curation surfaces — everything you tell the system how to behave.
         </p>
       </header>
-      <nav className="flex gap-2 border-b border-gray-800">
-        {tabs.map((t) => (
-          <NavLink
-            key={t.to}
-            to={t.to}
-            className={({ isActive }) =>
-              `px-3 py-2 text-sm ${
-                isActive
-                  ? "border-b-2 border-indigo-500 text-indigo-300"
-                  : "text-gray-400 hover:text-gray-200"
-              }`
-            }
-          >
-            {t.label}
-          </NavLink>
-        ))}
-      </nav>
-      <div>
-        <Outlet />
+      <div className="flex flex-col gap-6 md:flex-row">
+        <SettingsSidebar />
+        <div className="min-w-0 flex-1">
+          <Outlet />
+        </div>
       </div>
     </div>
   );
