@@ -56,8 +56,8 @@ When the routing queue is empty, close this task with a short summary:
     "list_tasks",
     "get_task",
     "list_profiles",
-    "get_gates_for_task",
-    "list_open_gates_by_type",
+    "gate_list",
+    "gate_show",
     "get_downstream_tasks",
     "create_task",
     "edit_task"
