@@ -488,7 +488,7 @@ _CHAT_SCHEMAS: dict[str, EventSchema] = {
             "to_kind",
             "to_id",
         ],
-        "optional": ["thread_id", "subject"],
+        "optional": ["thread_id", "subject", "pane_open"],
     },
     "message.delivered": {
         # ``method``: nudge | inject | prime

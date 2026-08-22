@@ -52,6 +52,8 @@ def _row_to_message(row) -> Message:
         archived_at=row["archived_at"],
         reply_to_id=row["reply_to_id"],
         via=row["via"],
+        body_kind=row["body_kind"],
+        pane_open=row["pane_open"],
     )
 
 
@@ -72,6 +74,8 @@ class MessageQueriesMixin:
         priority: int = 100,
         archive_after_inject: bool = False,
         reply_to_id: str | None = None,
+        body_kind: str | None = None,
+        pane_open: str | None = None,
     ) -> Message:
         """Insert one message row and return the materialised dataclass."""
         msg = Message(
@@ -88,6 +92,8 @@ class MessageQueriesMixin:
             created_at=time.time(),
             archive_after_inject=archive_after_inject,
             reply_to_id=reply_to_id,
+            body_kind=body_kind,
+            pane_open=pane_open,
         )
         async with self._engine.begin() as conn:
             await conn.execute(
@@ -109,6 +115,8 @@ class MessageQueriesMixin:
                     archived_at=None,
                     reply_to_id=msg.reply_to_id,
                     via=None,
+                    body_kind=msg.body_kind,
+                    pane_open=msg.pane_open,
                 )
             )
         return msg

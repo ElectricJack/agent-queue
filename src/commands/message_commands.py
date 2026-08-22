@@ -61,6 +61,10 @@ def message_to_dict(msg: Message) -> dict:
         "archived_at": msg.archived_at,
         "reply_to_id": msg.reply_to_id,
         "via": msg.via,
+        "body_kind": msg.body_kind,
+        "pane_open": (
+            __import__("json").loads(msg.pane_open) if isinstance(msg.pane_open, str) else None
+        ),
     }
 
 
@@ -136,6 +140,30 @@ class MessageCommandsMixin:
             if parent is None:
                 return {"error": f"Message '{reply_to_id}' not found (reply_to_id)"}
 
+        pane_open = args.get("pane_open")
+        body_kind: str | None = None
+        pane_open_json: str | None = None
+        if pane_open is not None:
+            if not isinstance(pane_open, dict):
+                return {"error": "pane_open must be an object"}
+            view_id = pane_open.get("view")
+            if not view_id or not isinstance(view_id, str):
+                return {"error": "pane_open.view is required"}
+            from src.panes.registry import SERVER_PANE_REGISTRY
+
+            entry = SERVER_PANE_REGISTRY.get(view_id)
+            if entry is None:
+                return {"error": f"unknown pane view '{view_id}'"}
+            if not entry.agent_pushable:
+                return {"error": f"pane view '{view_id}' is not agent-pushable"}
+            pane_args = pane_open.get("args", {})
+            if not isinstance(pane_args, dict):
+                return {"error": "pane_open.args must be an object"}
+            import json as _json
+
+            pane_open_json = _json.dumps({"view": view_id, "args": pane_args})
+            body_kind = "pane_open"
+
         msg = await self.db.create_message(
             project_id=project_id,
             from_kind=from_kind,
@@ -148,21 +176,25 @@ class MessageCommandsMixin:
             priority=priority,
             archive_after_inject=bool(args.get("archive_after_inject", False)),
             reply_to_id=reply_to_id,
+            body_kind=body_kind,
+            pane_open=pane_open_json,
         )
 
-        await self._emit_message_event(
-            "message.sent",
-            {
-                "message_id": msg.id,
-                "project_id": msg.project_id,
-                "from_kind": msg.from_kind,
-                "from_id": msg.from_id,
-                "to_kind": msg.to_kind,
-                "to_id": msg.to_id,
-                "thread_id": msg.thread_id,
-                "subject": msg.subject,
-            },
-        )
+        _sent_payload = {
+            "message_id": msg.id,
+            "project_id": msg.project_id,
+            "from_kind": msg.from_kind,
+            "from_id": msg.from_id,
+            "to_kind": msg.to_kind,
+            "to_id": msg.to_id,
+            "thread_id": msg.thread_id,
+            "subject": msg.subject,
+        }
+        if pane_open_json:
+            import json as _json
+
+            _sent_payload["pane_open"] = _json.loads(pane_open_json)
+        await self._emit_message_event("message.sent", _sent_payload)
 
         # "queued" is the only state Phase 1 can honestly report: nothing
         # delivers a message until the Phase 3 engine exists.

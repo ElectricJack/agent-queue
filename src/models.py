@@ -796,6 +796,8 @@ class Message:
     archived_at: float | None = None
     reply_to_id: str | None = None
     via: str | None = None
+    body_kind: str | None = None
+    pane_open: str | None = None  # JSON-encoded {view, args}
 
 
 #: Legal ``messages.from_kind`` values (mirrors ``ck_messages_from_kind``).

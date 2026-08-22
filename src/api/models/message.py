@@ -42,6 +42,8 @@ class MessageModel(BaseModel):
     archived_at: float | None = None
     reply_to_id: str | None = None
     via: str | None = None
+    body_kind: str | None = None
+    pane_open: dict | None = None
 
 
 class MessageReplyResponse(BaseModel):

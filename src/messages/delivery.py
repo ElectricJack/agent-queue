@@ -371,6 +371,17 @@ def _message_sent_payload(msg: Message) -> dict[str, Any]:
         payload["thread_id"] = msg.thread_id
     if msg.subject:
         payload["subject"] = msg.subject
+    pane_open = getattr(msg, "pane_open", None)
+    if pane_open:
+        if isinstance(pane_open, str):
+            import json as _json
+
+            try:
+                payload["pane_open"] = _json.loads(pane_open)
+            except Exception:
+                pass
+        else:
+            payload["pane_open"] = pane_open
     return payload
 
 
