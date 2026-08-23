@@ -13,8 +13,8 @@ describe("ansiToSpans", () => {
     const { container } = render(<>{ansiToSpans(text)}</>);
     expect(container.textContent).toBe("green plain");
     const spans = container.querySelectorAll("span");
-    expect(spans[0].style.color).not.toBe("");
-    expect(spans[1].style.color).toBe("");
+    expect(spans[0]!.style.color).not.toBe("");
+    expect(spans[1]!.style.color).toBe("");
   });
 
   it("applies bold from SGR code 1", () => {

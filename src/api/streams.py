@@ -172,6 +172,11 @@ class StreamStartResponse(BaseModel):
     status: str
 
 
+class StreamKillResponse(BaseModel):
+    stream_id: str
+    status: str
+
+
 class StreamMetadata(BaseModel):
     stream_id: str
     title: str
@@ -471,7 +476,7 @@ def build_streams_router(
             "exit_code": handle.exit_code,
         }
 
-    @router.post("/api/streams/{stream_id}/kill")
+    @router.post("/api/streams/{stream_id}/kill", response_model=StreamKillResponse)
     async def kill(stream_id: str, request: Request) -> dict:
         handle = reg.get(stream_id)
         if handle is None:
@@ -572,7 +577,7 @@ def _build_default_router() -> APIRouter:
                 return await route.endpoint(stream_id=stream_id, request=request, after_seq=after_seq)
         raise HTTPException(status_code=500, detail="streams router misconfigured")
 
-    @router.post("/api/streams/{stream_id}/kill")
+    @router.post("/api/streams/{stream_id}/kill", response_model=StreamKillResponse)
     async def kill(stream_id: str, request: Request) -> dict:
         orch = deps._orchestrator
         if orch is None:

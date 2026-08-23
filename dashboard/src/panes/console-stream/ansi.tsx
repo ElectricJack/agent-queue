@@ -32,7 +32,8 @@ export function ansiToSpans(text: string): ReactNode[] {
         </span>,
       );
     }
-    const codes = match[1].split(";").filter(Boolean).map(Number);
+    const codesText = match[1] ?? "";
+    const codes = codesText.split(";").filter(Boolean).map(Number);
     if (codes.length === 0) codes.push(0);
     for (const code of codes) {
       if (code === 0) {

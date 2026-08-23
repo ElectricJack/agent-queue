@@ -3,6 +3,17 @@ import { act, render, screen, fireEvent, waitFor } from "@testing-library/react"
 import ConsoleStreamPane from "../index";
 import type { ConsoleStreamArgs } from "../manifest";
 
+interface ToolbarAction {
+  id: string;
+  label: string;
+  onClick: () => void;
+}
+interface ShortcutBinding {
+  key: string;
+  label: string;
+  onFire: () => void;
+}
+
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
   url: string;
@@ -25,13 +36,31 @@ class FakeEventSource {
   }
 }
 
+function firstEs(): FakeEventSource {
+  const es = FakeEventSource.instances[0];
+  if (!es) throw new Error("no EventSource created");
+  return es;
+}
+
+function lastToolbar(mock: { mock: { calls: [ToolbarAction[]][] } }): ToolbarAction[] {
+  const last = mock.mock.calls[mock.mock.calls.length - 1];
+  if (!last) throw new Error("setToolbar not called");
+  return last[0];
+}
+
+function lastShortcuts(mock: { mock: { calls: [ShortcutBinding[]][] } }): ShortcutBinding[] {
+  const last = mock.mock.calls[mock.mock.calls.length - 1];
+  if (!last) throw new Error("setShortcuts not called");
+  return last[0];
+}
+
 function makeProps(overrides: Partial<ConsoleStreamArgs> = {}) {
   return {
     args: { streamId: "abc123", ...overrides } as ConsoleStreamArgs,
     close: vi.fn(),
     setArgs: vi.fn(),
-    setToolbar: vi.fn(),
-    setShortcuts: vi.fn(),
+    setToolbar: vi.fn<(actions: ToolbarAction[]) => void>(),
+    setShortcuts: vi.fn<(bindings: ShortcutBinding[]) => void>(),
   };
 }
 
@@ -58,8 +87,7 @@ describe("ConsoleStreamPane", () => {
     render(<ConsoleStreamPane {...props} />);
     expect(screen.getByText("connecting…")).toBeInTheDocument();
 
-    const es = FakeEventSource.instances[0];
-    es.emit({ type: "line", seq: 0, stream: "stdout", text: "hello", ts: Date.now() / 1000 });
+    firstEs().emit({ type: "line", seq: 0, stream: "stdout", text: "hello", ts: Date.now() / 1000 });
 
     await waitFor(() => expect(screen.getByText(/running/)).toBeInTheDocument());
     expect(screen.getByText("hello")).toBeInTheDocument();
@@ -68,7 +96,7 @@ describe("ConsoleStreamPane", () => {
   it("interleaves stdout/stderr with stderr getting a red left border", async () => {
     const props = makeProps();
     render(<ConsoleStreamPane {...props} />);
-    const es = FakeEventSource.instances[0];
+    const es = firstEs();
     es.emit({ type: "line", seq: 0, stream: "stdout", text: "out line", ts: 1 });
     es.emit({ type: "line", seq: 1, stream: "stderr", text: "err line", ts: 2 });
 
@@ -82,32 +110,28 @@ describe("ConsoleStreamPane", () => {
     render(<ConsoleStreamPane {...props} />);
     await waitFor(() => expect(props.setToolbar).toHaveBeenCalled());
 
-    const lastCall = props.setToolbar.mock.calls.at(-1)![0];
-    const pauseAction = lastCall.find((a: { id: string }) => a.id === "pause-tail");
-    expect(pauseAction.label).toBe("Pause tail");
+    const toolbar = lastToolbar(props.setToolbar);
+    const pauseAction = toolbar.find((a) => a.id === "pause-tail");
+    expect(pauseAction?.label).toBe("Pause tail");
 
-    const lastShortcuts = props.setShortcuts.mock.calls.at(-1)![0];
-    const spaceBinding = lastShortcuts.find((s: { key: string }) => s.key === "space");
-    spaceBinding.onFire();
+    const spaceBinding = lastShortcuts(props.setShortcuts).find((s) => s.key === "space");
+    spaceBinding?.onFire();
 
     await waitFor(() => {
-      const latest = props.setToolbar.mock.calls.at(-1)![0];
-      const action = latest.find((a: { id: string }) => a.id === "pause-tail");
-      expect(action.label).toBe("Resume tail");
+      const action = lastToolbar(props.setToolbar).find((a) => a.id === "pause-tail");
+      expect(action?.label).toBe("Resume tail");
     });
   });
 
   it("copy output copies plain-text (ANSI-stripped) scrollback", async () => {
     const props = makeProps();
     render(<ConsoleStreamPane {...props} />);
-    const es = FakeEventSource.instances[0];
-    es.emit({ type: "line", seq: 0, stream: "stdout", text: "\x1b[32mgreen\x1b[0m", ts: 1 });
+    firstEs().emit({ type: "line", seq: 0, stream: "stdout", text: "\x1b[32mgreen\x1b[0m", ts: 1 });
 
     await waitFor(() => expect(screen.getByText("green")).toBeInTheDocument());
 
-    const latestShortcuts = props.setShortcuts.mock.calls.at(-1)![0];
-    const copyBinding = latestShortcuts.find((s: { key: string }) => s.key === "c");
-    copyBinding.onFire();
+    const copyBinding = lastShortcuts(props.setShortcuts).find((s) => s.key === "c");
+    copyBinding?.onFire();
 
     await waitFor(() => {
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith("green");
@@ -117,39 +141,32 @@ describe("ConsoleStreamPane", () => {
   it("kill button is present while running and absent after a terminal frame", async () => {
     const props = makeProps();
     render(<ConsoleStreamPane {...props} />);
-    const es = FakeEventSource.instances[0];
+    const es = firstEs();
     es.emit({ type: "line", seq: 0, stream: "stdout", text: "hi", ts: 1 });
 
     await waitFor(() => {
-      const latest = props.setToolbar.mock.calls.at(-1)![0];
-      expect(latest.some((a: { id: string }) => a.id === "kill")).toBe(true);
+      expect(lastToolbar(props.setToolbar).some((a) => a.id === "kill")).toBe(true);
     });
 
     es.emit({ type: "exit", seq: 1, rc: 0, ts: 2 });
 
     await waitFor(() => {
-      const latest = props.setToolbar.mock.calls.at(-1)![0];
-      expect(latest.some((a: { id: string }) => a.id === "kill")).toBe(false);
+      expect(lastToolbar(props.setToolbar).some((a) => a.id === "kill")).toBe(false);
     });
   });
 
   it("k opens the kill confirm popover; confirm calls the kill endpoint", async () => {
     const props = makeProps();
     render(<ConsoleStreamPane {...props} />);
-    const es = FakeEventSource.instances[0];
-    es.emit({ type: "line", seq: 0, stream: "stdout", text: "hi", ts: 1 });
+    firstEs().emit({ type: "line", seq: 0, stream: "stdout", text: "hi", ts: 1 });
 
-    // Wait for the setShortcuts call captured while status === "running"
-    // (that binding activates the popover; the initial-render binding is
-    // captured when status is "connecting" and no-ops).
+    // Wait for the setShortcuts call captured while status === "running".
     await waitFor(() => {
-      const latest = props.setToolbar.mock.calls.at(-1)![0];
-      expect(latest.some((a: { id: string }) => a.id === "kill")).toBe(true);
+      expect(lastToolbar(props.setToolbar).some((a) => a.id === "kill")).toBe(true);
     });
-    const latestShortcuts = props.setShortcuts.mock.calls.at(-1)![0];
-    const killBinding = latestShortcuts.find((s: { key: string }) => s.key === "k");
+    const killBinding = lastShortcuts(props.setShortcuts).find((s) => s.key === "k");
     await act(async () => {
-      killBinding.onFire();
+      killBinding?.onFire();
     });
 
     expect(screen.getByRole("dialog", { name: "Kill this process?" })).toBeInTheDocument();
@@ -166,15 +183,13 @@ describe("ConsoleStreamPane", () => {
   it("cancel on the kill confirm popover does not call the kill endpoint", async () => {
     const props = makeProps();
     render(<ConsoleStreamPane {...props} />);
-    const es = FakeEventSource.instances[0];
-    es.emit({ type: "line", seq: 0, stream: "stdout", text: "hi", ts: 1 });
+    firstEs().emit({ type: "line", seq: 0, stream: "stdout", text: "hi", ts: 1 });
     await waitFor(() => {
-      const latest = props.setToolbar.mock.calls.at(-1)![0];
-      expect(latest.some((a: { id: string }) => a.id === "kill")).toBe(true);
+      expect(lastToolbar(props.setToolbar).some((a) => a.id === "kill")).toBe(true);
     });
-    const latestShortcuts = props.setShortcuts.mock.calls.at(-1)![0];
+    const killBinding = lastShortcuts(props.setShortcuts).find((s) => s.key === "k");
     await act(async () => {
-      latestShortcuts.find((s: { key: string }) => s.key === "k").onFire();
+      killBinding?.onFire();
     });
 
     fireEvent.click(screen.getByText("Cancel"));
@@ -185,7 +200,7 @@ describe("ConsoleStreamPane", () => {
   it("terminal frame freezes header, appends exit banner, force-disables follow-tail", async () => {
     const props = makeProps();
     render(<ConsoleStreamPane {...props} />);
-    const es = FakeEventSource.instances[0];
+    const es = firstEs();
     es.emit({ type: "line", seq: 0, stream: "stdout", text: "hi", ts: 1 });
     es.emit({ type: "exit", seq: 1, rc: 1, ts: 35 });
 
@@ -204,7 +219,7 @@ describe("ConsoleStreamPane", () => {
   it("unmount closes the EventSource (no leaked subscription)", () => {
     const props = makeProps();
     const { unmount } = render(<ConsoleStreamPane {...props} />);
-    const es = FakeEventSource.instances[0];
+    const es = firstEs();
     unmount();
     expect(es.closed).toBe(true);
   });
