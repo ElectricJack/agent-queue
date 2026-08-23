@@ -3,6 +3,7 @@ fixture shape."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -78,6 +79,89 @@ async def test_start_stream_rejects_non_list_command(db, tmp_path):
             json={"command": "echo hi", "cwd": str(tmp_path), "session_id": "s1"},
         )
     assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("bad_command", [None, 5, {}], ids=["null", "int", "object"])
+@pytest.mark.asyncio
+async def test_start_stream_rejects_non_list_command_shapes(db, tmp_path, bad_command):
+    """Finding 1 regression: ANY non-list command shape must 400, not 422
+    (Pydantic's default request-validation error for a shape it can't
+    coerce). Covers null / int / object in addition to the pre-existing
+    string case above."""
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/streams",
+            json={"command": bad_command, "cwd": str(tmp_path), "session_id": "s1"},
+        )
+    assert resp.status_code == 400
+
+
+class _FakeFailingPipe:
+    """Stdout pipe whose first ``readline`` raises, simulating a pump crash."""
+
+    def __init__(self, *, fail: bool) -> None:
+        self._fail = fail
+        self._raised = False
+
+    async def readline(self) -> bytes:
+        if self._fail and not self._raised:
+            self._raised = True
+            raise RuntimeError("simulated pump failure")
+        return b""
+
+
+class _FakeProc:
+    """Minimal stand-in for ``asyncio.subprocess.Process`` used to force a
+    pump failure deterministically (Finding 2 regression test)."""
+
+    def __init__(self) -> None:
+        self.stdout = _FakeFailingPipe(fail=True)
+        self.stderr = _FakeFailingPipe(fail=False)
+        self.returncode: int | None = None
+
+    async def wait(self) -> int:
+        self.returncode = 0
+        return 0
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+    def send_signal(self, sig) -> None:  # pragma: no cover - not exercised here
+        pass
+
+
+@pytest.mark.asyncio
+async def test_pump_failure_reaches_terminal_status_and_frees_concurrency_slot(
+    db, tmp_path, monkeypatch
+):
+    """Finding 2 regression: an exception inside ``_pump``/``asyncio.gather``
+    must not leave the stream stuck "running" nor leak the session's
+    concurrency slot."""
+    registry = StreamRegistry(buffer_max_lines=100)
+
+    async def _fake_create_subprocess_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/streams",
+            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
+        )
+    assert resp.status_code == 200
+    stream_id = resp.json()["stream_id"]
+
+    handle = registry.get(stream_id)
+    for _ in range(100):
+        if handle.status != "running":
+            break
+        await asyncio.sleep(0.01)
+
+    assert handle.status in ("exited", "killed")
+    assert registry.concurrent_count("s1") == 0
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -153,11 +153,13 @@ _HEARTBEAT_SECONDS = 15.0
 
 
 class StreamStartRequest(BaseModel):
-    # Deliberately not ``list[str]``: a non-list ``command`` (e.g. a raw
-    # shell string) must reach the handler so it can be rejected as a 400
-    # ("command must be a non-empty list of strings") rather than FastAPI's
-    # automatic 422 request-validation error.
-    command: list[str] | str
+    # Deliberately not ``list[str]``: ANY non-list ``command`` shape (a raw
+    # shell string, a number, null, an object, ...) must reach the handler
+    # so it can be rejected as a uniform 400 ("command must be a non-empty
+    # list of strings") rather than FastAPI's automatic 422
+    # request-validation error, which would fire before the handler runs
+    # for anything Pydantic can't coerce into a narrower type.
+    command: Any
     cwd: str
     title: str | None = None
     session_id: str
@@ -250,15 +252,38 @@ async def _spawn_and_pump(handle: StreamHandle, registry: StreamRegistry) -> Non
 
     stdout_task = asyncio.create_task(_pump("stdout", proc.stdout))
     stderr_task = asyncio.create_task(_pump("stderr", proc.stderr))
-    rc = await proc.wait()
-    await asyncio.gather(stdout_task, stderr_task)
+    try:
+        # A pump (or proc.wait) failure must never leak the stream as
+        # permanently "running" nor leak its concurrency slot — the
+        # ``finally`` below always marks a terminal status and always
+        # calls registry.finish, whether this succeeds or raises.
+        rc: int | None = None
+        exc: Exception | None = None
+        try:
+            rc = await proc.wait()
+            await asyncio.gather(stdout_task, stderr_task)
+        except Exception as e:  # noqa: BLE001 - must not leak the stream/slot
+            logger.warning("stream %s pump failed", handle.stream_id, exc_info=True)
+            exc = e
+            stdout_task.cancel()
+            stderr_task.cancel()
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+            rc = proc.returncode if proc.returncode is not None else -1
 
-    handle.ended_at = time.time()
-    if handle.status != "killed":
-        handle.status = "exited"
-        handle.exit_code = rc
-        handle.append(ConsoleFrame(seq=handle.next_seq(), type="exit", rc=rc))
-    registry.finish(handle)
+        handle.ended_at = time.time()
+        if handle.status != "killed":
+            handle.status = "exited"
+            handle.exit_code = rc
+            frame_kwargs = {"seq": handle.next_seq(), "type": "exit", "rc": rc}
+            if exc is not None:
+                frame_kwargs["text"] = f"stream pump failed: {exc}"
+            handle.append(ConsoleFrame(**frame_kwargs))
+    finally:
+        registry.finish(handle)
 
 
 async def _kill(handle: StreamHandle, *, grace_seconds: float) -> None:
