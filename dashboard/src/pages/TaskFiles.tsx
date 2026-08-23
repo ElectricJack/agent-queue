@@ -4,7 +4,7 @@ import TaskFilesPanel from "../components/TaskFilesPanel";
 export default function TaskFiles() {
   const { taskId = "" } = useParams();
   return (
-    <div className="space-y-4">
+    <div className="h-full overflow-y-auto p-6 space-y-4">
       <header className="space-y-1">
         <p className="text-xs uppercase tracking-wider text-gray-500">Task files</p>
         <h1 className="text-2xl font-bold">Worktree preview</h1>

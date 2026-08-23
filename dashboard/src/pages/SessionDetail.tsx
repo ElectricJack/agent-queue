@@ -33,7 +33,7 @@ export default function SessionDetail() {
   if (!session) return <div className="p-6 text-gray-400">Session not found</div>;
 
   return (
-    <div className="space-y-4">
+    <div className="h-full overflow-y-auto p-6 space-y-4">
       <header className="space-y-1">
         <p className="text-xs uppercase tracking-wider text-gray-500">Session</p>
         <h1 className="text-2xl font-bold">{session.name}</h1>

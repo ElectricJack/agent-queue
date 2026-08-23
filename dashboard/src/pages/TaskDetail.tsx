@@ -138,7 +138,7 @@ export default function TaskDetail() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="h-full overflow-y-auto p-6 space-y-6">
       <Link
         to={from}
         className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-gray-200"

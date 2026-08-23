@@ -54,7 +54,7 @@ export default function ProjectLayout() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="h-full overflow-y-auto p-6 space-y-6">
       <header className="space-y-1">
         <p className="text-xs uppercase tracking-wider text-gray-500">Project</p>
         <div className="flex items-center gap-3">

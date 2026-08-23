@@ -3,7 +3,7 @@ import SettingsSidebar from "../../components/nav/SettingsSidebar";
 
 export default function SettingsLayout() {
   return (
-    <div className="space-y-4">
+    <div className="h-full overflow-y-auto p-6 space-y-4">
       <header>
         <h1 className="text-2xl font-bold">Settings</h1>
         <p className="text-sm text-gray-500">
