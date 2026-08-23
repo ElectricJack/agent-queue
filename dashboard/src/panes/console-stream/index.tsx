@@ -122,6 +122,7 @@ export default function ConsoleStreamPane({
     const el = scrollRef.current;
     if (!el) return;
     setViewportHeight(el.clientHeight);
+    if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => setViewportHeight(el.clientHeight));
     ro.observe(el);
     return () => ro.disconnect();
