@@ -16,6 +16,11 @@ def _read_frontend_manifest_ids() -> set[str]:
     return ids
 
 
+def test_console_stream_is_agent_pushable():
+    entry = SERVER_PANE_REGISTRY["console-stream"]
+    assert entry.agent_pushable is True
+
+
 def test_frontend_and_backend_registries_match():
     frontend = _read_frontend_manifest_ids()
     backend = set(SERVER_PANE_REGISTRY.keys())

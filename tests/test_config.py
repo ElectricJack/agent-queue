@@ -93,3 +93,32 @@ def test_default_runtime_validation_rejects_unknown():
     errors = [e for e in cfg.validate() if e.field == "default_runtime"]
     assert len(errors) == 1
     assert "unknown runtime" in errors[0].message.lower()
+
+
+def test_streams_config_defaults():
+    from src.config import AppConfig
+
+    cfg = AppConfig()
+    assert cfg.streams.buffer_max_lines == 5000
+    assert cfg.streams.buffer_max_bytes == 2 * 1024 * 1024
+    assert cfg.streams.retention_seconds == 300
+    assert cfg.streams.kill_grace_seconds == 5.0
+    assert cfg.streams.max_concurrent_per_session == 3
+    assert cfg.streams.client_reconnect_attempts == 5
+
+
+def test_streams_config_validate_rejects_non_positive():
+    from src.config import StreamsConfig
+
+    cfg = StreamsConfig(buffer_max_lines=0, retention_seconds=-1, max_concurrent_per_session=0)
+    errors = cfg.validate()
+    fields = {e.field for e in errors}
+    assert "buffer_max_lines" in fields
+    assert "retention_seconds" in fields
+    assert "max_concurrent_per_session" in fields
+
+
+def test_streams_config_validate_accepts_defaults():
+    from src.config import StreamsConfig
+
+    assert StreamsConfig().validate() == []

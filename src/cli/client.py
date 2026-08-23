@@ -336,6 +336,62 @@ class CLIClient:
             raise CommandError("message_list", _relay_error(resp))
         return resp.json()
 
+    # -- Streams (console-stream pane view) --------------------------------
+    # Bespoke router, not /api/execute — mirrors send_session_message's
+    # direct-httpx pattern above.
+
+    async def start_stream(
+        self, command: list[str], cwd: str, *,
+        title: str | None = None, session_id: str, project_id: str | None = None,
+    ) -> dict:
+        assert self._http is not None, "CLIClient not connected"
+        payload: dict = {"command": command, "cwd": cwd, "session_id": session_id}
+        if title:
+            payload["title"] = title
+        if project_id:
+            payload["project_id"] = project_id
+        try:
+            resp = await self._http.post("/api/streams", json=payload)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("stream_start", _relay_error(resp))
+        if resp.status_code >= 400:
+            raise CommandError("stream_start", _relay_error(resp))
+        return resp.json()
+
+    async def get_stream(self, stream_id: str) -> dict:
+        assert self._http is not None, "CLIClient not connected"
+        try:
+            resp = await self._http.get(f"/api/streams/{stream_id}")
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code >= 400:
+            raise CommandError("stream_metadata", _relay_error(resp))
+        return resp.json()
+
+    async def tail_stream(self, stream_id: str, *, after_seq: int = -1) -> dict:
+        assert self._http is not None, "CLIClient not connected"
+        try:
+            resp = await self._http.get(
+                f"/api/streams/{stream_id}/tail", params={"after_seq": after_seq}
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code >= 400:
+            raise CommandError("stream_tail", _relay_error(resp))
+        return resp.json()
+
+    async def kill_stream(self, stream_id: str) -> dict:
+        assert self._http is not None, "CLIClient not connected"
+        try:
+            resp = await self._http.post(f"/api/streams/{stream_id}/kill")
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code >= 400:
+            raise CommandError("stream_kill", _relay_error(resp))
+        return resp.json()
+
     async def list_tool_definitions(self) -> list[dict]:
         """Fetch tool definitions from the daemon for CLI auto-generation."""
         assert self._http is not None, "CLIClient not connected"
