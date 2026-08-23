@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -123,69 +123,79 @@ export default function PlaybookRunInspectorPane({
 
   const selectedEntry = effectiveIndex !== null ? trace[effectiveIndex] : null;
 
-  // Toolbar + shortcuts register unconditionally on every render, per the
-  // plugin-interface contract — must run before any early return.
-  setToolbar([
-    { id: "refresh", label: "Refresh", icon: ArrowPathIcon, onClick: () => refetch() },
-    ...(run?.status === "paused"
-      ? [
-          {
-            id: "resume",
-            label: "Resume",
-            icon: PlayIcon,
-            onClick: () => {
-              const el = document.querySelector<HTMLInputElement>(
-                'input[placeholder="or reply…"]',
-              );
-              el?.focus();
+  // Must stay inside effects: `setToolbar`/`setShortcuts` are ShellPaneHost
+  // useState setters, so publishing during render re-renders the parent on
+  // every pass and loops forever. Effects still run before any early return,
+  // which is what the plugin-interface contract actually requires.
+  useEffect(() => {
+    setToolbar([
+      { id: "refresh", label: "Refresh", icon: ArrowPathIcon, onClick: () => refetch() },
+      ...(run?.status === "paused"
+        ? [
+            {
+              id: "resume",
+              label: "Resume",
+              icon: PlayIcon,
+              onClick: () => {
+                const el = document.querySelector<HTMLInputElement>(
+                  'input[placeholder="or reply…"]',
+                );
+                el?.focus();
+              },
             },
-          },
-        ]
-      : []),
-    {
-      id: "cancel",
-      label: "Cancel",
-      icon: XCircleIcon,
-      onClick: () => setCancelModalOpen(true),
-      disabled: !run || TERMINAL_STATUSES.has(run.status),
-    },
-    {
-      id: "open-playbook",
-      label: "Open playbook page",
-      icon: ArrowTopRightOnSquareIcon,
-      onClick: () => run && navigate(`/playbooks/${encodeURIComponent(run.playbook_id)}`),
-      disabled: !run,
-    },
-  ]);
+          ]
+        : []),
+      {
+        id: "cancel",
+        label: "Cancel",
+        icon: XCircleIcon,
+        onClick: () => setCancelModalOpen(true),
+        disabled: !run || TERMINAL_STATUSES.has(run.status),
+      },
+      {
+        id: "open-playbook",
+        label: "Open playbook page",
+        icon: ArrowTopRightOnSquareIcon,
+        onClick: () => run && navigate(`/playbooks/${encodeURIComponent(run.playbook_id)}`),
+        disabled: !run,
+      },
+    ]);
+    return () => setToolbar([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run?.status, run?.playbook_id]);
 
-  setShortcuts([
-    {
-      key: "ArrowUp",
-      label: "Previous node",
-      onFire: () => setSelectedIndex((i) => Math.max(0, (i ?? trace.length - 1) - 1)),
-    },
-    {
-      key: "ArrowDown",
-      label: "Next node",
-      onFire: () => setSelectedIndex((i) => Math.min(trace.length - 1, (i ?? 0) + 1)),
-    },
-    { key: "Enter", label: "Expand node detail", onFire: () => {} },
-    {
-      key: "r",
-      label: "Resume run",
-      onFire: () => {
-        if (run?.status !== "paused") return;
-        document.querySelector<HTMLInputElement>('input[placeholder="or reply…"]')?.focus();
+  useEffect(() => {
+    setShortcuts([
+      {
+        key: "ArrowUp",
+        label: "Previous node",
+        onFire: () => setSelectedIndex((i) => Math.max(0, (i ?? trace.length - 1) - 1)),
       },
-    },
-    {
-      key: "x",
-      label: "Cancel run",
-      onFire: () => {
-        if (run && !TERMINAL_STATUSES.has(run.status)) setCancelModalOpen(true);
+      {
+        key: "ArrowDown",
+        label: "Next node",
+        onFire: () => setSelectedIndex((i) => Math.min(trace.length - 1, (i ?? 0) + 1)),
       },
-    },
-  ]);
+      { key: "Enter", label: "Expand node detail", onFire: () => {} },
+      {
+        key: "r",
+        label: "Resume run",
+        onFire: () => {
+          if (run?.status !== "paused") return;
+          document.querySelector<HTMLInputElement>('input[placeholder="or reply…"]')?.focus();
+        },
+      },
+      {
+        key: "x",
+        label: "Cancel run",
+        onFire: () => {
+          if (run && !TERMINAL_STATUSES.has(run.status)) setCancelModalOpen(true);
+        },
+      },
+    ]);
+    return () => setShortcuts([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run?.status, trace.length]);
 
   useEventStream({
     onEvent: (event) => {

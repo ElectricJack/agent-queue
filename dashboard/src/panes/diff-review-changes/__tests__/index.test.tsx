@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
@@ -530,5 +531,47 @@ describe("DiffReviewChangesPane close prop", () => {
     );
     await screen.findByText("a.ts");
     expect(close).not.toHaveBeenCalled();
+  });
+});
+
+// Regression: these panes published toolbar/shortcuts from the render body.
+// `setToolbar`/`setShortcuts` are ShellPaneHost useState setters, so a
+// render-phase call with a fresh array literal re-rendered the parent, which
+// re-rendered the pane, which published again — an unbounded loop that froze
+// the browser tab. See task-detail for the original report.
+describe("diff-review-changes — publishing is effect-scoped", () => {
+  it("does not re-publish the toolbar when the pane re-renders", async () => {
+    const setToolbar = vi.fn();
+    const setShortcuts = vi.fn();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    function Harness() {
+      const [n, setN] = useState(0);
+      return (
+        <>
+          <button onClick={() => setN(n + 1)}>bump {n}</button>
+          <DiffReviewChangesPane
+            args={{ taskId: "t1" }}
+            close={noop}
+            setArgs={noop}
+            setToolbar={setToolbar}
+            setShortcuts={setShortcuts}
+          />
+        </>
+      );
+    }
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Harness />
+      </QueryClientProvider>,
+    );
+    const toolbarCalls = setToolbar.mock.calls.length;
+    const shortcutCalls = setShortcuts.mock.calls.length;
+
+    await userEvent.click(screen.getByRole("button", { name: /bump/i }));
+
+    expect(setToolbar.mock.calls.length).toBe(toolbarCalls);
+    expect(setShortcuts.mock.calls.length).toBe(shortcutCalls);
   });
 });

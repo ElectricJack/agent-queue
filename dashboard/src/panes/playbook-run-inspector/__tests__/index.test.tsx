@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { useState } from "react";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import PlaybookRunInspectorPane from "../index";
 import * as hooks from "../../../api/hooks";
@@ -489,5 +490,35 @@ describe("PlaybookRunInspectorPane", () => {
     capturedOnEvent?.({ event_type: "notify.task_started", run_id: "run-1" });
 
     expect(mockInvalidateQueries).not.toHaveBeenCalled();
+  });
+});
+
+// Regression: these panes published toolbar/shortcuts from the render body.
+// `setToolbar`/`setShortcuts` are ShellPaneHost useState setters, so a
+// render-phase call with a fresh array literal re-rendered the parent, which
+// re-rendered the pane, which published again — an unbounded loop that froze
+// the browser tab. See task-detail for the original report.
+describe("playbook-run-inspector — publishing is effect-scoped", () => {
+  it("does not re-publish the toolbar when the pane re-renders", () => {
+    const props = baseProps();
+
+    function Harness() {
+      const [n, setN] = useState(0);
+      return (
+        <>
+          <button onClick={() => setN(n + 1)}>bump {n}</button>
+          <PlaybookRunInspectorPane {...props} />
+        </>
+      );
+    }
+
+    render(<Harness />);
+    const toolbarCalls = (props.setToolbar as ReturnType<typeof vi.fn>).mock.calls.length;
+    const shortcutCalls = (props.setShortcuts as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: /bump/i }));
+
+    expect((props.setToolbar as ReturnType<typeof vi.fn>).mock.calls.length).toBe(toolbarCalls);
+    expect((props.setShortcuts as ReturnType<typeof vi.fn>).mock.calls.length).toBe(shortcutCalls);
   });
 });

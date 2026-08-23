@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as workspaceFilesApi from "../../../api/workspaceFiles";
@@ -308,5 +309,47 @@ describe("FileBrowserPane preview", () => {
     await waitFor(() =>
       expect(screen.getByText("README.md", { selector: "p" })).toBeInTheDocument(),
     );
+  });
+});
+
+// Regression: these panes published toolbar/shortcuts from the render body.
+// `setToolbar`/`setShortcuts` are ShellPaneHost useState setters, so a
+// render-phase call with a fresh array literal re-rendered the parent, which
+// re-rendered the pane, which published again — an unbounded loop that froze
+// the browser tab. See task-detail for the original report.
+describe("file-browser — publishing is effect-scoped", () => {
+  it("does not re-publish the toolbar when the pane re-renders", async () => {
+    const setToolbar = vi.fn();
+    const setShortcuts = vi.fn();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    function Harness() {
+      const [n, setN] = useState(0);
+      return (
+        <>
+          <button onClick={() => setN(n + 1)}>bump {n}</button>
+          <FileBrowserPane
+            args={{ workspaceId: "ws1", path: "" }}
+            close={noop}
+            setArgs={noop}
+            setToolbar={setToolbar}
+            setShortcuts={setShortcuts}
+          />
+        </>
+      );
+    }
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Harness />
+      </QueryClientProvider>,
+    );
+    const toolbarCalls = setToolbar.mock.calls.length;
+    const shortcutCalls = setShortcuts.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: /bump/i }));
+
+    expect(setToolbar.mock.calls.length).toBe(toolbarCalls);
+    expect(setShortcuts.mock.calls.length).toBe(shortcutCalls);
   });
 });

@@ -96,40 +96,53 @@ export default function DiffReviewChangesPane({
     if (f) selectFile(f);
   }
 
-  // Toolbar + shortcuts register unconditionally on every render, per the
-  // plugin-interface contract §5.1/§5.2 — must run before any early return.
-  setToolbar([
-    {
-      id: "refresh",
-      label: "Refresh",
-      icon: ArrowPathIcon,
-      onClick: () => {
-        filesQ.refetch();
-        if (selected) fileQ.refetch();
+  // Must stay inside effects: `setToolbar`/`setShortcuts` are ShellPaneHost
+  // useState setters, so publishing during render re-renders the parent on
+  // every pass and loops forever. Effects still run before any early return,
+  // which is what the plugin-interface contract actually requires.
+  useEffect(() => {
+    setToolbar([
+      {
+        id: "refresh",
+        label: "Refresh",
+        icon: ArrowPathIcon,
+        onClick: () => {
+          filesQ.refetch();
+          if (selected) fileQ.refetch();
+        },
       },
-    },
-    {
-      id: "copy-path",
-      label: "Copy file path",
-      icon: ClipboardIcon,
-      onClick: () => navigator.clipboard.writeText(selected ?? ""),
-      disabled: !selected,
-    },
-    {
-      id: "open-full-page",
-      label: "Open full-page view",
-      icon: ArrowTopRightOnSquareIcon,
-      onClick: () => navigate(`/tasks/${encodeURIComponent(args.taskId)}/files`),
-    },
-  ]);
+      {
+        id: "copy-path",
+        label: "Copy file path",
+        icon: ClipboardIcon,
+        onClick: () => navigator.clipboard.writeText(selected ?? ""),
+        disabled: !selected,
+      },
+      {
+        id: "open-full-page",
+        label: "Open full-page view",
+        icon: ArrowTopRightOnSquareIcon,
+        onClick: () => navigate(`/tasks/${encodeURIComponent(args.taskId)}/files`),
+      },
+    ]);
+    return () => setToolbar([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, args.taskId]);
 
-  setShortcuts([
-    { key: "ArrowUp", label: "Previous file", onFire: () => moveSelection(-1) },
-    { key: "ArrowDown", label: "Next file", onFire: () => moveSelection(1) },
-    { key: "Enter", label: "Open file", onFire: openFocusedFile },
-    { key: "/", label: "Filter files", onFire: () => filterInputRef.current?.focus() },
-    { key: "r", label: "Refresh", onFire: () => filesQ.refetch() },
-  ]);
+  useEffect(() => {
+    setShortcuts([
+      { key: "ArrowUp", label: "Previous file", onFire: () => moveSelection(-1) },
+      { key: "ArrowDown", label: "Next file", onFire: () => moveSelection(1) },
+      { key: "Enter", label: "Open file", onFire: openFocusedFile },
+      { key: "/", label: "Filter files", onFire: () => filterInputRef.current?.focus() },
+      { key: "r", label: "Refresh", onFire: () => filesQ.refetch() },
+    ]);
+    return () => setShortcuts([]);
+    // Deps are the inputs `filteredFiles`/`focusedIndex` derive from. Never
+    // depend on `filteredFiles` itself — it is a fresh array each render, so
+    // the effect would re-fire forever.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filesQ.data, filter, focusedIndex, args.taskId, args.filePath]);
 
   if (filesQ.isLoading) {
     return <div className="p-4 text-sm text-gray-500">Loading files…</div>;

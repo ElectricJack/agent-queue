@@ -159,26 +159,42 @@ export default function FileBrowserPane({
     void navigator.clipboard.writeText(target);
   }
 
-  // Toolbar + shortcuts register unconditionally on every render, per the
-  // plugin-interface contract — must run before any early return.
-  setToolbar([
-    { id: "refresh", label: "Refresh", icon: ArrowPathIcon, onClick: refresh },
-    { id: "copy-path", label: "Copy path", icon: ClipboardIcon, onClick: copyPath },
-    { id: "up", label: "Up one dir", icon: ArrowUpIcon, onClick: upOneDir, disabled: path === "" },
-    {
-      id: "root",
-      label: "Open workspace root",
-      icon: HomeIcon,
-      onClick: openRoot,
-      disabled: path === "",
-    },
-  ]);
+  // Must stay inside effects: `setToolbar`/`setShortcuts` are ShellPaneHost
+  // useState setters, so publishing during render re-renders the parent on
+  // every pass and loops forever. Effects still run before any early return,
+  // which is what the plugin-interface contract actually requires.
+  useEffect(() => {
+    setToolbar([
+      { id: "refresh", label: "Refresh", icon: ArrowPathIcon, onClick: refresh },
+      { id: "copy-path", label: "Copy path", icon: ClipboardIcon, onClick: copyPath },
+      {
+        id: "up",
+        label: "Up one dir",
+        icon: ArrowUpIcon,
+        onClick: upOneDir,
+        disabled: path === "",
+      },
+      {
+        id: "root",
+        label: "Open workspace root",
+        icon: HomeIcon,
+        onClick: openRoot,
+        disabled: path === "",
+      },
+    ]);
+    return () => setToolbar([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, path, previewPath]);
 
-  setShortcuts([
-    { key: "Backspace", label: "Up one dir", onFire: upOneDir },
-    { key: "/", label: "Focus filter", onFire: () => filterInputRef.current?.focus() },
-    { key: "r", label: "Refresh", onFire: refresh },
-  ]);
+  useEffect(() => {
+    setShortcuts([
+      { key: "Backspace", label: "Up one dir", onFire: upOneDir },
+      { key: "/", label: "Focus filter", onFire: () => filterInputRef.current?.focus() },
+      { key: "r", label: "Refresh", onFire: refresh },
+    ]);
+    return () => setShortcuts([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, path, previewPath]);
 
   const crumbs = breadcrumbSegments(path);
   const isMd = previewPath?.toLowerCase().endsWith(".md");
