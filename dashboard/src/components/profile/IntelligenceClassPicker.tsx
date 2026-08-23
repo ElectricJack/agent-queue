@@ -1,21 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
-import { legacyFetch } from "../../api/legacy-fetch";
-
-type ProviderSlice = {
-  model?: string;
-  thinking?: string;
-  reasoning_effort?: string;
-  thinking_budget?: number;
-};
-
-type ClassRow = {
-  id: string;
-  name: string;
-  description: string;
-  mapping: Record<string, ProviderSlice>;
-};
-
-type ListResponse = { success: boolean; classes: ClassRow[] };
+import { useIntelligenceClasses, type IntelligenceClassRow as ClassRow } from "../../api/hooks";
 
 const TIER_ORDER = ["fast", "standard", "deep"] as const;
 const THINK_ORDER = ["off", "low", "medium", "high"] as const;
@@ -39,30 +22,14 @@ function sortClasses(rows: ClassRow[]): ClassRow[] {
   });
 }
 
-async function fetchClasses(): Promise<ClassRow[]> {
-  const res = await legacyFetch("/api/system/list-intelligence-classes", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
-  });
-  if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
-  const body = (await res.json()) as ListResponse;
-  return body.classes ?? [];
-}
-
 interface Props {
   value: string;
   onChange: (next: string) => void;
 }
 
 export default function IntelligenceClassPicker({ value, onChange }: Props) {
-  const { data, isLoading, error } = useQuery<ClassRow[]>({
-    queryKey: ["intelligence-classes"],
-    queryFn: fetchClasses,
-    staleTime: 60_000,
-  });
-
-  const classes = sortClasses(data ?? []);
+  const { data, isLoading, error } = useIntelligenceClasses();
+  const classes = sortClasses(data?.classes ?? []);
   const grouped = TIER_ORDER.map((tier) => ({
     tier,
     rows: classes.filter((c) => tierOf(c.id) === tier),

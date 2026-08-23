@@ -1,6 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { CpuChipIcon } from "@heroicons/react/24/outline";
-import { legacyFetch } from "../../api/legacy-fetch";
+import { useIntelligenceClasses, type IntelligenceClassRow } from "../../api/hooks";
 
 type ProviderSlice = {
   model?: string;
@@ -8,18 +7,6 @@ type ProviderSlice = {
   reasoning_effort?: string;
   thinking_budget?: number;
   [k: string]: unknown;
-};
-
-type IntelligenceClassRow = {
-  id: string;
-  name: string;
-  description: string;
-  mapping: Record<string, ProviderSlice>;
-};
-
-type ListResponse = {
-  success: boolean;
-  classes: IntelligenceClassRow[];
 };
 
 const TIER_ORDER = ["fast", "standard", "deep"] as const;
@@ -54,23 +41,7 @@ function providerBadge(name: string, slice: ProviderSlice): string {
 }
 
 export default function IntelligenceClassesStub() {
-  const { data, isLoading, error } = useQuery<ListResponse>({
-    queryKey: ["intelligence-classes"],
-    queryFn: async () => {
-      // Auto-generated command routes are POST — call with an empty body.
-      const res = await legacyFetch("/api/system/list-intelligence-classes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      });
-      if (!res.ok) {
-        throw new Error(`API ${res.status}: ${await res.text()}`);
-      }
-      return (await res.json()) as ListResponse;
-    },
-    staleTime: 30_000,
-  });
-
+  const { data, isLoading, error } = useIntelligenceClasses();
   const classes = sortClasses(data?.classes ?? []);
   const grouped = TIER_ORDER.map((tier) => ({
     tier,

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiGet } from "./legacy-fetch";
+import { apiGet, legacyFetch } from "./legacy-fetch";
 import {
   addWorkspace,
   approvePlan,
@@ -52,6 +52,8 @@ import {
   reopenWithFeedback,
   restartTask,
   resumePlaybook,
+  inspectPlaybookRun,
+  cancelPlaybookRun,
   resumeProject,
   setPlaybookEnabled,
   showEffectiveProfile,
@@ -136,6 +138,8 @@ import type {
   GateShowResponse,
   GateResolveResponse,
   GateSummary,
+  InspectPlaybookRunResponse,
+  CancelPlaybookRunResponse,
 } from "./client";
 import {
   fetchChatMessages,
@@ -479,6 +483,47 @@ export function useDeleteProfile() {
   });
 }
 
+export type ProviderSlice = {
+  model?: string;
+  thinking?: string;
+  reasoning_effort?: string;
+  thinking_budget?: number;
+};
+
+export type IntelligenceClassRow = {
+  id: string;
+  name: string;
+  description: string;
+  mapping: Record<string, ProviderSlice>;
+};
+
+export type IntelligenceClassesResponse = {
+  success: boolean;
+  classes: IntelligenceClassRow[];
+};
+
+export function useIntelligenceClasses() {
+  return useQuery({
+    queryKey: ["intelligence-classes"],
+    queryFn: async () => {
+      // Auto-generated command routes are POST — call with an empty body.
+      // No generated-SDK type exists for this endpoint yet — legacyFetch is
+      // the documented exception, not a new violation of "never call fetch
+      // directly" (see dashboard/CLAUDE.md).
+      const res = await legacyFetch("/api/system/list-intelligence-classes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!res.ok) {
+        throw new Error(`API ${res.status}: ${await res.text()}`);
+      }
+      return (await res.json()) as IntelligenceClassesResponse;
+    },
+    staleTime: 30_000,
+  });
+}
+
 // --- Task Mutations ---
 
 function useTaskMutationCallbacks() {
@@ -720,8 +765,51 @@ export function useResumePlaybookRun() {
   return useMutation({
     mutationFn: async (input: { run_id: string; human_input: string }) =>
       (await resumePlaybook({ body: input, throwOnError: true })).data,
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["playbook-runs"] });
+      queryClient.invalidateQueries({ queryKey: ["playbook-run", variables.run_id] });
+    },
+  });
+}
+
+/**
+ * Inspect a single playbook run — full node trace, conversation history,
+ * and HITL/event-wait state. Powers the playbook-run-inspector pane.
+ *
+ * Polls every 4s while the run is `running`, since node-level bus events
+ * (`notify.playbook_run_node_started/_completed`) exist but the pane's WS
+ * subscription only invalidates on run-level transitions today — the poll
+ * is the fallback for node-level liveness (pane spec §7.4).
+ */
+export function useInspectPlaybookRun(runId: string | undefined) {
+  return useQuery({
+    queryKey: ["playbook-run", runId],
+    queryFn: async () => {
+      const { data } = await inspectPlaybookRun({
+        body: { run_id: runId! },
+        throwOnError: true,
+      });
+      return data as InspectPlaybookRunResponse;
+    },
+    enabled: !!runId,
+    refetchInterval: (query) => (query.state.data?.status === "running" ? 4_000 : false),
+  });
+}
+
+/**
+ * Cancel a playbook run that is running or paused. Distinct from
+ * useResumePlaybookRun (continues a paused run) and useSetPlaybookEnabled
+ * (toggles a playbook *definition*, not a run).
+ */
+export function useCancelPlaybookRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { run_id: string }) =>
+      (await cancelPlaybookRun({ body: input, throwOnError: true }))
+        .data as CancelPlaybookRunResponse,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["playbook-runs"] });
+      queryClient.invalidateQueries({ queryKey: ["playbook-run", variables.run_id] });
     },
   });
 }
