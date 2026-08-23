@@ -36,10 +36,21 @@ function Bubble({ msg }: { msg: PendingMessage }) {
   );
 }
 
-export default function ChatConversation() {
-  const { projectId = "" } = useParams();
+interface Props {
+  projectId?: string;
+  sessionAddress?: string;
+  threadIdOverride?: string;
+  headerText?: string;
+}
+
+export default function ChatConversation(props: Props = {}) {
+  const params = useParams();
+  const projectId = props.projectId ?? params.projectId ?? "";
   const { items, isLoading, error, send, isSending, sendError, thinking } =
-    useChatTranscript(projectId);
+    useChatTranscript(projectId, {
+      sessionAddress: props.sessionAddress,
+      threadIdOverride: props.threadIdOverride,
+    });
   const [body, setBody] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -55,9 +66,15 @@ export default function ChatConversation() {
   return (
     <div className="flex h-[calc(100vh-8rem)] flex-col space-y-3 md:h-[calc(100vh-4rem)]">
       <header className="hidden md:block">
-        <h2 className="text-lg font-semibold">Chat with supervisor</h2>
+        <h2 className="text-lg font-semibold">
+          {props.headerText ?? "Chat with supervisor"}
+        </h2>
         <p className="text-xs text-gray-500">
-          Talking to <span className="font-mono">supervisor-{projectId}</span>.
+          Talking to{" "}
+          <span className="font-mono">
+            {props.sessionAddress ?? `supervisor-${projectId}`}
+          </span>
+          .
         </p>
       </header>
 
@@ -96,13 +113,14 @@ export default function ChatConversation() {
           value={body}
           onChange={(e) => setBody(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            // Enter submits, Shift-Enter newline, $mod-Enter also submits.
+            if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               submit();
             }
           }}
           rows={2}
-          placeholder="Message the supervisor (Cmd/Ctrl+Enter to send)…"
+          placeholder="Message the supervisor (Enter to send, Shift-Enter for newline)…"
           className="flex-1 resize-none rounded border border-gray-800 bg-gray-900 px-2 py-1 text-sm text-gray-200"
         />
         <button

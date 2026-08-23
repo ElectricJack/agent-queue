@@ -42,14 +42,21 @@ export interface ChatMessagesResponse {
 
 export async function fetchChatMessages(
   projectId: string,
-  opts: { since?: number; limit?: number; threadId?: string } = {},
+  opts: {
+    since?: number;
+    limit?: number;
+    threadId?: string;
+    /** Full session address override; defaults to `supervisor-${projectId}`. */
+    sessionAddress?: string;
+  } = {},
 ): Promise<ChatMessagesResponse> {
   const params = new URLSearchParams();
   if (opts.since !== undefined) params.set("since", String(opts.since));
   if (opts.limit !== undefined) params.set("limit", String(opts.limit));
   if (opts.threadId) params.set("thread_id", opts.threadId);
+  const session = opts.sessionAddress ?? supervisorName(projectId);
   const url = `${baseUrl()}/api/sessions/${encodeURIComponent(
-    supervisorName(projectId),
+    session,
   )}/messages${params.toString() ? `?${params}` : ""}`;
   const resp = await throwing(await fetch(url));
   return (await resp.json()) as ChatMessagesResponse;
@@ -64,11 +71,10 @@ export interface SendChatMessageResponse {
 export async function sendChatMessage(
   projectId: string,
   body: string,
-  opts: { from?: string; threadId?: string } = {},
+  opts: { from?: string; threadId?: string; sessionAddress?: string } = {},
 ): Promise<SendChatMessageResponse> {
-  const url = `${baseUrl()}/api/sessions/${encodeURIComponent(
-    supervisorName(projectId),
-  )}/message`;
+  const session = opts.sessionAddress ?? supervisorName(projectId);
+  const url = `${baseUrl()}/api/sessions/${encodeURIComponent(session)}/message`;
   const resp = await throwing(
     await fetch(url, {
       method: "POST",

@@ -115,15 +115,30 @@ function summarizeActivity(event: NotifyEvent): string | null {
   }
 }
 
-export function useChatTranscript(projectId: string) {
+export interface ChatTranscriptOverrides {
+  /** Full messaging address to send TO. Default: `supervisor-${projectId}`. */
+  sessionAddress?: string;
+  /** Override the thread id. Default: `dashboard:${projectId}`. */
+  threadIdOverride?: string;
+}
+
+export function useChatTranscript(
+  projectId: string,
+  overrides: ChatTranscriptOverrides = {},
+) {
   const qc = useQueryClient();
-  const thread = threadIdFor(projectId);
+  const thread = overrides.threadIdOverride ?? threadIdFor(projectId);
+  const toId = overrides.sessionAddress ?? `supervisor-${projectId}`;
 
   const hydrate = useQuery({
-    queryKey: ["chat", "thread", projectId, thread],
+    queryKey: ["chat", "thread", projectId, thread, toId],
     queryFn: (): Promise<ChatMessagesResponse> =>
-      fetchChatMessages(projectId, { threadId: thread, limit: 200 }),
-    enabled: !!projectId,
+      fetchChatMessages(projectId, {
+        threadId: thread,
+        limit: 200,
+        sessionAddress: overrides.sessionAddress,
+      }),
+    enabled: !!projectId || !!overrides.sessionAddress,
     staleTime: 15_000,
   });
 
@@ -250,7 +265,7 @@ export function useChatTranscript(projectId: string) {
         from_kind: "user",
         from_id: "dashboard",
         to_kind: "session",
-        to_id: `supervisor-${projectId}`,
+        to_id: toId,
         thread_id: thread,
         body: trimmed,
         priority: 100,
@@ -269,7 +284,10 @@ export function useChatTranscript(projectId: string) {
       setSendError(null);
       setThinking({ since: now, activities: [] });
       try {
-        const res = await sendChatMessage(projectId, trimmed, { threadId: thread });
+        const res = await sendChatMessage(projectId, trimmed, {
+          threadId: thread,
+          sessionAddress: overrides.sessionAddress,
+        });
         if (!mountedRef.current) return;
         setPending((prev) =>
           prev.map((p) => (p.id === optimistic.id ? { ...p, serverId: res.message_id } : p)),
