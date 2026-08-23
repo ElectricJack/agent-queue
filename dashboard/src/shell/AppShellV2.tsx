@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Outlet, useSearchParams } from "react-router-dom";
 import LeftRail from "./LeftRail";
 import TopBar from "./TopBar";
@@ -146,8 +146,16 @@ function ShellBody() {
     <div className="grid h-screen w-screen grid-cols-[auto_1fr_auto] grid-rows-[auto_1fr] bg-gray-950 text-gray-100">
       <TopBar />
       <LeftRail />
-      <main className="row-start-2 overflow-auto">
-        <Outlet />
+      <main className="col-start-2 row-start-2 min-h-0 min-w-0 overflow-hidden">
+        <Suspense
+          fallback={
+            <div className="flex h-full items-center justify-center text-sm text-gray-500">
+              Loading…
+            </div>
+          }
+        >
+          <Outlet />
+        </Suspense>
       </main>
       <RightSurface />
       <Palette />
