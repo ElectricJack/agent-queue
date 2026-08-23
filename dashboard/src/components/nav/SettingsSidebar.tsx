@@ -5,6 +5,7 @@ import {
   CpuChipIcon,
   Cog6ToothIcon,
 } from "@heroicons/react/24/outline";
+import { useListNav } from "../../shell/hotkeys/useListNav";
 
 const links = [
   { to: "playbooks", label: "Playbooks", icon: BookOpenIcon },
@@ -14,13 +15,15 @@ const links = [
 ];
 
 export default function SettingsSidebar() {
+  const navRef = useListNav<HTMLElement>({ axis: "vertical" });
   return (
     <div className="relative shrink-0 md:w-56">
-      <aside className="flex gap-1 overflow-x-auto border-b border-gray-800 pb-2 md:flex-col md:border-b-0 md:border-r md:pr-4">
+      <aside ref={navRef} className="flex gap-1 overflow-x-auto border-b border-gray-800 pb-2 md:flex-col md:border-b-0 md:border-r md:pr-4">
         {links.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
+            data-listnav="1"
             className={({ isActive }) =>
               `flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium whitespace-nowrap ${
                 isActive

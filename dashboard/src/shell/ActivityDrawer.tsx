@@ -8,6 +8,7 @@ import {
 import { useEventStream } from "../ws/useEventStream";
 import type { NotifyEvent } from "../ws/types";
 import { useShellPaneStore } from "../panes/store";
+import { useListNav } from "./hotkeys/useListNav";
 
 type Tab = "gates" | "events";
 
@@ -21,6 +22,7 @@ function GatesList() {
   const { data: gates, isLoading } = useAllOpenGates();
   const resolveMut = useResolveGate();
   const pane = useShellPaneStore();
+  const listRef = useListNav<HTMLUListElement>({ axis: "vertical" });
 
   const openForGate = (g: GateSummary) => {
     const taskIds = (g as unknown as { task_ids?: string[] }).task_ids;
@@ -39,11 +41,19 @@ function GatesList() {
     return <p className="p-3 text-xs text-gray-500">No open gates.</p>;
 
   return (
-    <ul className="divide-y divide-gray-800">
+    <ul ref={listRef} className="divide-y divide-gray-800">
       {(gates ?? []).map((g) => (
         <li
           key={g.id}
-          className="cursor-pointer p-3 text-sm hover:bg-gray-900/40"
+          tabIndex={0}
+          data-listnav="1"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === "o") {
+              e.preventDefault();
+              openForGate(g);
+            }
+          }}
+          className="cursor-pointer p-3 text-sm hover:bg-gray-900/40 focus:bg-gray-900/40 focus:outline-none"
           onClick={() => openForGate(g)}
         >
           <div className="flex items-start justify-between gap-2">
