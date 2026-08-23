@@ -24,6 +24,7 @@ from src.api.routers.proposals import router as proposals_router
 from src.api.messages import router as messages_router
 from src.api.sessions import router as sessions_router
 from src.api.task_files import router as task_files_router
+from src.api.workspace_files import router as workspace_files_router
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware
 from src.api.websocket import WebSocketManager
 
@@ -112,6 +113,10 @@ def create_app(
 
     # Task file preview (Phase 5): GET /api/tasks/{id}/files + /file
     app.include_router(task_files_router)
+
+    # Workspace file browsing (pane view: file-browser): GET
+    # /api/workspaces/{id}/browse + /file
+    app.include_router(workspace_files_router)
 
     # Aggregate project-graph endpoint (Phase 4): GET /api/projects/{id}/graph
     app.include_router(graph_router)
