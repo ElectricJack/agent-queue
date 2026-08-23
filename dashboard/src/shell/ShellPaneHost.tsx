@@ -8,7 +8,7 @@ import type { PaneToolbarAction, ShortcutBinding } from "../panes/types";
  * mutate its args, publish a toolbar row, and publish local shortcuts.
  */
 export default function ShellPaneHost() {
-  const { state, close, setArgs } = useShellPaneStore();
+  const { state, close, setArgs, registry } = useShellPaneStore();
   const [toolbar, setToolbar] = useState<PaneToolbarAction[]>([]);
   // Pane-published shortcuts. Real wiring into `useShortcut` happens once
   // per-view plans land; the setter still needs to be a stable no-op so
@@ -20,7 +20,6 @@ export default function ShellPaneHost() {
       <div className="p-4 text-xs text-gray-500">No pane open.</div>
     );
   }
-  const { registry } = useShellPaneStore();
   const entry = registry[state.view];
   if (!entry) {
     return (
