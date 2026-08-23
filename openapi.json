@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "AgentQueue API",
+    "title": "Agent Q API",
     "description": "REST API for the agent-queue daemon.",
     "version": "0.1.0"
   },
@@ -348,6 +348,262 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/files": {
+      "get": {
+        "summary": "List Files",
+        "operationId": "list_files_api_tasks__task_id__files_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/file": {
+      "get": {
+        "summary": "Get File",
+        "operationId": "get_file_api_tasks__task_id__file_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{workspace_id}/browse": {
+      "get": {
+        "summary": "Browse",
+        "operationId": "browse_api_workspaces__workspace_id__browse_get",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{workspace_id}/file": {
+      "get": {
+        "summary": "Get File",
+        "operationId": "get_file_api_workspaces__workspace_id__file_get",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/graph": {
+      "get": {
+        "summary": "Get Project Graph",
+        "operationId": "get_project_graph_api_projects__project_id__graph_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectGraphResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/proposals/{proposal_id}": {
+      "get": {
+        "summary": "Get Proposal",
+        "operationId": "get_proposal_api_proposals__proposal_id__get",
+        "parameters": [
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Proposal Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Proposal Api Proposals  Proposal Id  Get"
+                }
               }
             }
           },
@@ -2526,6 +2782,53 @@
         }
       }
     },
+    "/api/git/pr-merge": {
+      "post": {
+        "tags": [
+          "git"
+        ],
+        "summary": "Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns the merged SHA on success (best-effort \u2014 callers who need the authoritative SHA should query the branch head after this command returns).",
+        "description": "Merge a GitHub pull request via ``gh pr merge``.  Only callable by profiles that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in the dv2-phase2 configuration).  Returns the merged SHA on success (best-effort \u2014 callers who need the authoritative SHA should query the branch head after this command returns).",
+        "operationId": "pr_merge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrMergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrMergeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/git/push-branch": {
       "post": {
         "tags": [
@@ -3442,6 +3745,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WriteNoteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/cancel-run": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at. Does not interrupt a node mid-execution \u2014 see the command's docstring for the current limitation. Fails if the run is already in a terminal state (completed, failed, timed_out, or already cancelled).",
+        "description": "Cancel a playbook run that is running or paused. Marks the run as cancelled and stamps completed_at. Does not interrupt a node mid-execution \u2014 see the command's docstring for the current limitation. Fails if the run is already in a terminal state (completed, failed, timed_out, or already cancelled).",
+        "operationId": "cancel_playbook_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelPlaybookRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelPlaybookRunResponse"
                 }
               }
             }
@@ -6411,6 +6761,51 @@
         }
       }
     },
+    "/api/system/list-intelligence-classes": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "List the intelligence classes seeded under vault/intelligence-classes.",
+        "description": "List the intelligence classes seeded under vault/intelligence-classes.",
+        "operationId": "list_intelligence_classes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListIntelligenceClassesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/list-prompts": {
       "post": {
         "tags": [
@@ -7864,6 +8259,53 @@
         }
       }
     },
+    "/api/task/ensure": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Find-or-create a task by (project_id, dedup_key). If an open task (not COMPLETED/FAILED) with the same dedup_key exists in the project, it is returned instead of creating a duplicate. Used by pipeline playbooks to coalesce recurring control-plane work (e.g. one open triage task per project). Returns {task_id, created}.",
+        "description": "Find-or-create a task by (project_id, dedup_key). If an open task (not COMPLETED/FAILED) with the same dedup_key exists in the project, it is returned instead of creating a duplicate. Used by pipeline playbooks to coalesce recurring control-plane work (e.g. one open triage task per project). Returns {task_id, created}.",
+        "operationId": "ensure_task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsureTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsureTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/explain": {
       "post": {
         "tags": [
@@ -8124,6 +8566,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GetChainHealthResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/get-downstream": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "List tasks transitively downstream of a task via dependency edges (blocks, waits-for, conditional-blocks, parent-child). Use to see what work unblocks when a task completes, or what a routing decision gates.",
+        "description": "List tasks transitively downstream of a task via dependency edges (blocks, waits-for, conditional-blocks, parent-child). Use to see what work unblocks when a task completes, or what a routing decision gates.",
+        "operationId": "get_downstream_tasks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetDownstreamTasksRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetDownstreamTasksResponse"
                 }
               }
             }
@@ -9082,6 +9571,53 @@
         }
       }
     },
+    "/api/task/route": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Route a task: assign its agent profile, optional intelligence class, and optional workspace, then resolve any open 'routing' gates on the task. This is the ONLY way to resolve routing gates \u2014 generic gate_resolve refuses them. Used by the triage agent to release work into the scheduler.",
+        "description": "Route a task: assign its agent profile, optional intelligence class, and optional workspace, then resolve any open 'routing' gates on the task. This is the ONLY way to resolve routing gates \u2014 generic gate_resolve refuses them. Used by the triage agent to release work into the scheduler.",
+        "operationId": "task_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskRouteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRouteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/set": {
       "post": {
         "tags": [
@@ -9165,45 +9701,6 @@
                     }
                   },
                   "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/projects/{project_id}/graph": {
-      "get": {
-        "summary": "Get Project Graph",
-        "operationId": "get_project_graph_api_projects__project_id__graph_get",
-        "parameters": [
-          {
-            "name": "project_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Project Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProjectGraphResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -9672,6 +10169,43 @@
           "question"
         ],
         "title": "AskHumanRequest"
+      },
+      "CancelPlaybookRunRequest": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id",
+            "description": "The playbook run ID to cancel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id"
+        ],
+        "title": "CancelPlaybookRunRequest"
+      },
+      "CancelPlaybookRunResponse": {
+        "properties": {
+          "cancelled": {
+            "type": "string",
+            "title": "Cancelled"
+          },
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cancelled",
+          "playbook_id",
+          "status"
+        ],
+        "title": "CancelPlaybookRunResponse"
       },
       "CatalogEntryModel": {
         "properties": {
@@ -11760,6 +12294,29 @@
         "type": "object",
         "title": "DoctorRequest"
       },
+      "DownstreamTask": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "DownstreamTask"
+      },
       "DryRunPlaybookRequest": {
         "properties": {
           "playbook_id": {
@@ -12779,6 +13336,79 @@
         ],
         "title": "EditWorkspaceResponse"
       },
+      "EnsureTaskRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project ID"
+          },
+          "dedup_key": {
+            "type": "string",
+            "title": "Dedup Key",
+            "description": "Stable dedup key scoped to the project (e.g. 'triage-open'). Only one open task per (project_id, dedup_key) exists at a time."
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Task title (used on create)"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "Task description (used on create)",
+            "default": ""
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "description": "Priority (lower = higher priority, default 100)",
+            "default": 100
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id",
+            "description": "Pre-route the task to this agent profile on create. Tasks created via ensure_task skip triage, so the ensuring pipeline pins the executing profile directly."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "dedup_key",
+          "title"
+        ],
+        "title": "EnsureTaskRequest"
+      },
+      "EnsureTaskResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "created"
+        ],
+        "title": "EnsureTaskResponse"
+      },
       "EnvVarReference": {
         "properties": {
           "path": {
@@ -13187,6 +13817,11 @@
           },
           "gate": {
             "$ref": "#/components/schemas/GateCreatePayload"
+          },
+          "was_created": {
+            "type": "boolean",
+            "title": "Was Created",
+            "default": true
           }
         },
         "type": "object",
@@ -13991,6 +14626,39 @@
         "type": "object",
         "title": "GetCostsRequest"
       },
+      "GetDownstreamTasksRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Upstream task ID"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "GetDownstreamTasksRequest"
+      },
+      "GetDownstreamTasksResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/DownstreamTask"
+            },
+            "type": "array",
+            "title": "Tasks",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "GetDownstreamTasksResponse"
+      },
       "GetGitStatusRequest": {
         "properties": {
           "project_id": {
@@ -14254,6 +14922,11 @@
           "model": {
             "type": "string",
             "title": "Model",
+            "default": ""
+          },
+          "default_class": {
+            "type": "string",
+            "title": "Default Class",
             "default": ""
           },
           "permission_mode": {
@@ -15983,6 +16656,199 @@
         "type": "object",
         "title": "GlobFilesResponse"
       },
+      "GraphAgent": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "current_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "GraphAgent"
+      },
+      "GraphEdge": {
+        "properties": {
+          "from": {
+            "type": "string",
+            "title": "From"
+          },
+          "to": {
+            "type": "string",
+            "title": "To"
+          },
+          "dep_type": {
+            "type": "string",
+            "title": "Dep Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "dep_type"
+        ],
+        "title": "GraphEdge"
+      },
+      "GraphGate": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "gate_type": {
+            "type": "string",
+            "title": "Gate Type"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Task Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "gate_type",
+          "status"
+        ],
+        "title": "GraphGate"
+      },
+      "GraphTaskNode": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 100
+          },
+          "is_blocked": {
+            "type": "boolean",
+            "title": "Is Blocked",
+            "default": false
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "assigned_agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigned Agent Id"
+          },
+          "branch_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Name"
+          },
+          "pr_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "status"
+        ],
+        "title": "GraphTaskNode"
+      },
       "GrepRequest": {
         "properties": {
           "pattern": {
@@ -16311,6 +17177,17 @@
               }
             ],
             "title": "Paused At"
+          },
+          "waiting_for_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting For Event"
           },
           "total_duration_seconds": {
             "anyOf": [
@@ -16685,6 +17562,11 @@
         "type": "object",
         "title": "ListEventTriggersResponse"
       },
+      "ListIntelligenceClassesRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "ListIntelligenceClassesRequest"
+      },
       "ListMcpServersRequest": {
         "properties": {
           "project_id": {
@@ -16831,7 +17713,7 @@
               }
             ],
             "title": "Status",
-            "description": "Filter by run status: running, paused, completed, failed, timed_out"
+            "description": "Filter by run status: running, paused, completed, failed, timed_out, cancelled"
           },
           "limit": {
             "type": "integer",
@@ -17980,6 +18862,29 @@
               }
             ],
             "title": "Via"
+          },
+          "body_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body Kind"
+          },
+          "pane_open": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pane Open"
           }
         },
         "additionalProperties": true,
@@ -19019,6 +19924,71 @@
         ],
         "title": "PluginUpdateResponse"
       },
+      "PrMergeRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "ID of the project whose workspace checkout will be used."
+          },
+          "pr_url": {
+            "type": "string",
+            "title": "Pr Url",
+            "description": "Full GitHub PR URL, e.g. ``https://github.com/org/repo/pull/42``."
+          },
+          "method": {
+            "type": "string",
+            "title": "Method",
+            "description": "Merge strategy (default: squash).",
+            "default": "squash"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "pr_url"
+        ],
+        "title": "PrMergeRequest"
+      },
+      "PrMergeResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": false
+          },
+          "pr_url": {
+            "type": "string",
+            "title": "Pr Url",
+            "default": ""
+          },
+          "sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "title": "PrMergeResponse",
+        "description": "Response model for the ``pr_merge`` command."
+      },
       "ProbeMcpServerRequest": {
         "properties": {
           "name": {
@@ -19312,6 +20282,11 @@
             "title": "Model",
             "default": ""
           },
+          "default_class": {
+            "type": "string",
+            "title": "Default Class",
+            "default": ""
+          },
           "permission_mode": {
             "type": "string",
             "title": "Permission Mode",
@@ -19372,6 +20347,11 @@
             "title": "Model",
             "default": ""
           },
+          "default_class": {
+            "type": "string",
+            "title": "Default Class",
+            "default": ""
+          },
           "allowed_tools": {
             "items": {
               "type": "string"
@@ -19400,6 +20380,44 @@
           "name"
         ],
         "title": "ProfileSummary"
+      },
+      "ProjectGraphResponse": {
+        "properties": {
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/GraphTaskNode"
+            },
+            "type": "array",
+            "title": "Tasks",
+            "default": []
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/GraphEdge"
+            },
+            "type": "array",
+            "title": "Edges",
+            "default": []
+          },
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/GraphGate"
+            },
+            "type": "array",
+            "title": "Gates",
+            "default": []
+          },
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/GraphAgent"
+            },
+            "type": "array",
+            "title": "Agents",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ProjectGraphResponse"
       },
       "ProjectProfileRow": {
         "properties": {
@@ -23368,6 +24386,76 @@
         "title": "TaskRef",
         "description": "Minimal task reference used in dependency lists, unblocked lists, etc."
       },
+      "TaskRouteRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task ID to route"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "description": "Agent profile ID that should execute the task"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class",
+            "description": "Intelligence class id (e.g. 'fast', 'standard', 'deep') from vault/intelligence-classes/. Overrides the profile's model at session launch. Optional."
+          },
+          "workspace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Id",
+            "description": "Workspace to prefer for execution (optional)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "profile_id"
+        ],
+        "title": "TaskRouteRequest"
+      },
+      "TaskRouteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "resolved_gate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Resolved Gate Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "TaskRouteResponse"
+      },
       "TaskSetRequest": {
         "properties": {
           "task_id": {
@@ -24265,237 +25353,6 @@
         },
         "type": "object",
         "title": "WriteNoteResponse"
-      },
-      "GraphAgent": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "name": {
-            "type": "string",
-            "title": "Name"
-          },
-          "profile_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Profile Id"
-          },
-          "current_task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Current Task Id"
-          },
-          "session_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Session Id"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "name"
-        ],
-        "title": "GraphAgent"
-      },
-      "GraphEdge": {
-        "properties": {
-          "from": {
-            "type": "string",
-            "title": "From"
-          },
-          "to": {
-            "type": "string",
-            "title": "To"
-          },
-          "dep_type": {
-            "type": "string",
-            "title": "Dep Type"
-          }
-        },
-        "type": "object",
-        "required": [
-          "from",
-          "to",
-          "dep_type"
-        ],
-        "title": "GraphEdge"
-      },
-      "GraphGate": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "gate_type": {
-            "type": "string",
-            "title": "Gate Type"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "task_ids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Task Ids",
-            "default": []
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "gate_type",
-          "status"
-        ],
-        "title": "GraphGate"
-      },
-      "GraphTaskNode": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "title": {
-            "type": "string",
-            "title": "Title"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "priority": {
-            "type": "integer",
-            "title": "Priority",
-            "default": 100
-          },
-          "is_blocked": {
-            "type": "boolean",
-            "title": "Is Blocked",
-            "default": false
-          },
-          "profile_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Profile Id"
-          },
-          "intelligence_class": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Intelligence Class"
-          },
-          "assigned_agent_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Assigned Agent Id"
-          },
-          "branch_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Branch Name"
-          },
-          "pr_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pr Url"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "title",
-          "status"
-        ],
-        "title": "GraphTaskNode"
-      },
-      "ProjectGraphResponse": {
-        "properties": {
-          "tasks": {
-            "items": {
-              "$ref": "#/components/schemas/GraphTaskNode"
-            },
-            "type": "array",
-            "title": "Tasks",
-            "default": []
-          },
-          "edges": {
-            "items": {
-              "$ref": "#/components/schemas/GraphEdge"
-            },
-            "type": "array",
-            "title": "Edges",
-            "default": []
-          },
-          "gates": {
-            "items": {
-              "$ref": "#/components/schemas/GraphGate"
-            },
-            "type": "array",
-            "title": "Gates",
-            "default": []
-          },
-          "agents": {
-            "items": {
-              "$ref": "#/components/schemas/GraphAgent"
-            },
-            "type": "array",
-            "title": "Agents",
-            "default": []
-          }
-        },
-        "type": "object",
-        "title": "ProjectGraphResponse"
       }
     }
   }
