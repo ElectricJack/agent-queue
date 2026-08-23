@@ -456,6 +456,21 @@ def build_streams_router(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @router.get("/api/streams/{stream_id}/tail")
+    async def tail(stream_id: str, request: Request, after_seq: int = -1) -> dict:
+        handle = reg.get(stream_id)
+        if handle is None:
+            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
+        scope = request.state.scope
+        if not _can_access(scope, handle):
+            raise HTTPException(status_code=403, detail="out of scope: stream ownership")
+        frames = handle.replay_from(after_seq)
+        return {
+            "frames": [f.to_dict() for f in frames],
+            "status": handle.status,
+            "exit_code": handle.exit_code,
+        }
+
     return router
 
 
@@ -516,6 +531,23 @@ def _build_default_router() -> APIRouter:
         )
         for route in inner.routes:
             if getattr(route, "path", None) == "/api/streams/{stream_id}/subscribe":
+                return await route.endpoint(stream_id=stream_id, request=request, after_seq=after_seq)
+        raise HTTPException(status_code=500, detail="streams router misconfigured")
+
+    @router.get("/api/streams/{stream_id}/tail")
+    async def tail(stream_id: str, request: Request, after_seq: int = -1) -> dict:
+        orch = deps._orchestrator
+        if orch is None:
+            raise HTTPException(status_code=503, detail="orchestrator not ready")
+        registry = getattr(orch, "stream_registry", None)
+        if registry is None:
+            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
+        inner = build_streams_router(
+            db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
+            registry=registry,
+        )
+        for route in inner.routes:
+            if getattr(route, "path", None) == "/api/streams/{stream_id}/tail":
                 return await route.endpoint(stream_id=stream_id, request=request, after_seq=after_seq)
         raise HTTPException(status_code=500, detail="streams router misconfigured")
 

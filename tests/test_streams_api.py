@@ -295,3 +295,22 @@ async def test_subscribe_replay_with_after_seq_skips_seen_frames(db, tmp_path):
                     break
 
     assert all(f["seq"] > 0 for f in frames)
+
+
+@pytest.mark.asyncio
+async def test_tail_returns_frames_since_after_seq(db, tmp_path):
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        start = await client.post(
+            "/api/streams",
+            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
+        )
+        stream_id = start.json()["stream_id"]
+
+        await asyncio.sleep(0.3)
+
+        resp = await client.get(f"/api/streams/{stream_id}/tail", params={"after_seq": -1})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "exited"
+    assert any(f["type"] == "line" for f in data["frames"])
