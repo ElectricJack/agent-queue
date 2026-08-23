@@ -40,7 +40,7 @@ def upgrade() -> None:
                 "read_only",
                 sa.Boolean(),
                 nullable=False,
-                server_default=sa.text("0"),
+                server_default=sa.false(),
             )
         )
 
