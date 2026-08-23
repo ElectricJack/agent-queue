@@ -984,6 +984,47 @@ class WorktreesConfig:
 
 
 @dataclass
+class StreamsConfig:
+    """Streamable-command registry backing the console-stream pane view.
+
+    See docs/superpowers/specs/2026-08-22-pane-console-stream-design.md §8.1/§8.4.
+    """
+
+    buffer_max_lines: int = 5000
+    buffer_max_bytes: int = 2 * 1024 * 1024
+    retention_seconds: int = 300
+    kill_grace_seconds: float = 5.0
+    max_concurrent_per_session: int = 3
+    client_reconnect_attempts: int = 5
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.buffer_max_lines <= 0:
+            errors.append(
+                ConfigError("streams", "buffer_max_lines", "must be positive")
+            )
+        if self.buffer_max_bytes <= 0:
+            errors.append(
+                ConfigError("streams", "buffer_max_bytes", "must be positive")
+            )
+        if self.retention_seconds <= 0:
+            errors.append(
+                ConfigError("streams", "retention_seconds", "must be positive")
+            )
+        if self.kill_grace_seconds <= 0:
+            errors.append(
+                ConfigError("streams", "kill_grace_seconds", "must be positive")
+            )
+        if self.max_concurrent_per_session <= 0:
+            errors.append(
+                ConfigError(
+                    "streams", "max_concurrent_per_session", "must be positive"
+                )
+            )
+        return errors
+
+
+@dataclass
 class ModelPricing:
     """One pricing row: an fnmatch-style model glob and its USD rates.
 
@@ -1268,6 +1309,7 @@ class AppConfig:
     # -- Framework-overhaul substrate sections (all flags default off) ------
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
     worktrees: WorktreesConfig = field(default_factory=WorktreesConfig)
+    streams: StreamsConfig = field(default_factory=StreamsConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
     messages: MessagesConfig = field(default_factory=MessagesConfig)
@@ -1443,6 +1485,7 @@ class AppConfig:
         errors.extend(self.playbooks.validate())
         errors.extend(self.sessions.validate())
         errors.extend(self.worktrees.validate())
+        errors.extend(self.streams.validate())
         errors.extend(self.security.validate())
         errors.extend(self.pricing.validate())
         errors.extend(self.messages.validate())
