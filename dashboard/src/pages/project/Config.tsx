@@ -16,7 +16,7 @@ import {
 } from "../../api/hooks";
 import DeleteProjectModal from "../../components/DeleteProjectModal";
 
-interface FormState {
+export interface FormState {
   name: string;
   repo_default_branch: string;
   default_profile_id: string;
@@ -56,9 +56,7 @@ export default function ProjectConfig() {
   if (isLoading) return <p className="text-sm text-gray-500">Loading...</p>;
   if (!project) return <p className="text-sm text-gray-500">Project not found.</p>;
 
-  const profileOptions = (profiles?.agent_types ?? [])
-    .flatMap((row) => [row.scoped, row.global].filter(Boolean) as { id: string; name: string }[])
-    .filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i);
+  const profileOptions = profileOptionsFromRows(profiles?.agent_types ?? []);
 
   const startEdit = () => {
     setForm(projectToForm(project));
@@ -363,7 +361,7 @@ function NumberInput({
   );
 }
 
-interface ProjectData {
+export interface ProjectData {
   name?: string | null;
   repo_default_branch?: string | null;
   default_profile_id?: string | null;
@@ -373,7 +371,15 @@ interface ProjectData {
   discord_channel_id?: string | null;
 }
 
-function projectToForm(p: ProjectData): FormState {
+export function profileOptionsFromRows(
+  rows: { scoped?: { id: string; name: string } | null; global?: { id: string; name: string } | null }[],
+): { id: string; name: string }[] {
+  return rows
+    .flatMap((row) => [row.scoped, row.global].filter(Boolean) as { id: string; name: string }[])
+    .filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i);
+}
+
+export function projectToForm(p: ProjectData): FormState {
   return {
     name: p.name ?? "",
     repo_default_branch: p.repo_default_branch ?? "",
@@ -386,14 +392,14 @@ function projectToForm(p: ProjectData): FormState {
   };
 }
 
-function parseOptionalInt(v: string): number | null {
+export function parseOptionalInt(v: string): number | null {
   const t = v.trim();
   if (!t) return null;
   const n = parseInt(t, 10);
   return Number.isFinite(n) ? n : null;
 }
 
-function parseOptionalFloat(v: string): number | null {
+export function parseOptionalFloat(v: string): number | null {
   const t = v.trim();
   if (!t) return null;
   const n = parseFloat(t);
