@@ -1043,7 +1043,7 @@ export function useSessionLogs(sessionId: string, limit = 200) {
 export type { GateSummary, GateListResponse };
 
 export function useGates(
-  opts: { projectId?: string; status?: string; gateType?: string } = {},
+  opts: { projectId?: string; status?: string; gateType?: string; enabled?: boolean } = {},
 ) {
   return useQuery({
     queryKey: [
@@ -1061,6 +1061,7 @@ export function useGates(
       return ((data as GateListResponse).gates ?? []) as GateSummary[];
     },
     refetchInterval: 20_000,
+    enabled: opts.enabled ?? true,
   });
 }
 
