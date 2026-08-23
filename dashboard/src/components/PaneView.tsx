@@ -1,14 +1,13 @@
 /**
- * PaneView — terminal-styled scrollback of session pane peek frames.
+ * PaneView — terminal-styled scrollback of session pane peek frames, sized
+ * for the SessionDetail full-page pane-view toggle.
  *
- * Renders every peek-source frame from useTranscriptStream as a single
- * monospace scrollback area with follow-tail (auto-scroll when the user
- * is at the bottom; do NOT snap when they've scrolled up to read).
- *
- * Peek frames come from ``tmux capture-pane -p`` (src/sessions/tmux.py:445)
- * which emits plain rendered text — no ANSI escapes to strip.
+ * Rendering lives in PeekFrameConsole (shared with panes/session-peek);
+ * this component owns SessionDetail's specific follow-tail ref and
+ * max-height wrapper.
  */
 import { useEffect, useRef } from "react";
+import PeekFrameConsole from "./PeekFrameConsole";
 import type { TranscriptFrame } from "../ws/useTranscriptStream";
 
 interface PaneViewProps {
@@ -40,30 +39,11 @@ export default function PaneView({ entries, className }: PaneViewProps) {
   };
 
   return (
-    <div
-      ref={boxRef}
+    <PeekFrameConsole
+      frames={peekFrames}
+      containerRef={boxRef}
       onScroll={onScroll}
-      className={
-        "max-h-[60vh] overflow-y-auto bg-black p-3 font-mono text-xs " +
-        "leading-tight text-green-200 " +
-        (className ?? "")
-      }
-    >
-      {peekFrames.length === 0 ? (
-        <p className="text-gray-500">
-          Waiting for pane snapshot… (peek frames arrive whenever the
-          harness has no readable transcript, or on fallback)
-        </p>
-      ) : (
-        peekFrames.map((f) => (
-          <pre
-            key={f._idx}
-            className="whitespace-pre-wrap border-b border-gray-900/40 py-1"
-          >
-            {f.text}
-          </pre>
-        ))
-      )}
-    </div>
+      className={"max-h-[60vh] " + (className ?? "")}
+    />
   );
 }
