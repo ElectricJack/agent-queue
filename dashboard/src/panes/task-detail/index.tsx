@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowTopRightOnSquareIcon,
@@ -51,27 +51,38 @@ export default function TaskDetailPane({
     (gates ?? []) as Array<GateSummary & { task_ids?: string[] }>
   ).filter((g) => (g.task_ids ?? []).includes(args.taskId));
 
-  setToolbar([
-    {
-      id: "open-full",
-      label: "Open full detail page",
-      icon: ArrowTopRightOnSquareIcon,
-      onClick: () => navigate(`/tasks/${args.taskId}`),
-    },
-    {
-      id: "copy-id",
-      label: "Copy id",
-      icon: ClipboardIcon,
-      onClick: () => navigator.clipboard.writeText(args.taskId),
-    },
-  ]);
+  // Must stay inside effects: `setToolbar`/`setShortcuts` are ShellPaneHost
+  // useState setters, so publishing during render re-renders the parent on
+  // every pass and loops forever.
+  useEffect(() => {
+    setToolbar([
+      {
+        id: "open-full",
+        label: "Open full detail page",
+        icon: ArrowTopRightOnSquareIcon,
+        onClick: () => navigate(`/tasks/${args.taskId}`),
+      },
+      {
+        id: "copy-id",
+        label: "Copy id",
+        icon: ClipboardIcon,
+        onClick: () => navigator.clipboard.writeText(args.taskId),
+      },
+    ]);
+    return () => setToolbar([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [args.taskId]);
 
-  setShortcuts([
-    { key: "o", label: "Open full detail page", onFire: () => navigate(`/tasks/${args.taskId}`) },
-    { key: "c", label: "Close task", onFire: () => setModal("close") },
-    { key: "r", label: "Reopen with feedback", onFire: () => setModal("reopen") },
-    { key: ".", label: "More actions", onFire: () => setMoreOpen(true) },
-  ]);
+  useEffect(() => {
+    setShortcuts([
+      { key: "o", label: "Open full detail page", onFire: () => navigate(`/tasks/${args.taskId}`) },
+      { key: "c", label: "Close task", onFire: () => setModal("close") },
+      { key: "r", label: "Reopen with feedback", onFire: () => setModal("reopen") },
+      { key: ".", label: "More actions", onFire: () => setMoreOpen(true) },
+    ]);
+    return () => setShortcuts([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [args.taskId]);
 
   if (isError) {
     return (

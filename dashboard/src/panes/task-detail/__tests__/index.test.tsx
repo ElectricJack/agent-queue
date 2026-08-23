@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { useState } from "react";
 import { act, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -308,5 +309,58 @@ describe("TaskDetailPane — close affordance", () => {
     renderWithRouter(<TaskDetailPane {...noopProps()} close={close} />);
     expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
     expect(close).not.toHaveBeenCalled();
+  });
+});
+
+describe("TaskDetailPane — toolbar/shortcut publishing is effect-scoped", () => {
+  // Regression: these were called in the render body with fresh array
+  // literals. `setToolbar`/`setShortcuts` are `useState` setters owned by
+  // ShellPaneHost, so a render-phase call with a never-equal value made the
+  // parent re-render, which re-rendered the pane, which called them again —
+  // an unbounded loop that locked up the browser tab whenever a task was
+  // opened from the list or the graph.
+  it("does not re-publish the toolbar when the pane re-renders", async () => {
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    const props = noopProps();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    // Stand-in for ShellPaneHost: owns state, so bumping it forces a genuine
+    // re-render of the pane (a referentially-identical element would let
+    // React bail out and hide the bug).
+    function Harness() {
+      const [n, setN] = useState(0);
+      return (
+        <>
+          <button onClick={() => setN(n + 1)}>bump {n}</button>
+          <TaskDetailPane {...props} />
+        </>
+      );
+    }
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <Harness />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(props.setToolbar).toHaveBeenCalledTimes(1);
+    expect(props.setShortcuts).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      screen.getByRole("button", { name: /bump/i }).click();
+    });
+
+    expect(props.setToolbar).toHaveBeenCalledTimes(1);
+    expect(props.setShortcuts).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the toolbar and shortcuts on unmount", () => {
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    const props = noopProps();
+    const { unmount } = renderWithRouter(<TaskDetailPane {...props} />);
+    unmount();
+    expect(props.setToolbar).toHaveBeenLastCalledWith([]);
+    expect(props.setShortcuts).toHaveBeenLastCalledWith([]);
   });
 });
