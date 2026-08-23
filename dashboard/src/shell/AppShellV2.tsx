@@ -6,7 +6,7 @@ import RightSurface from "./RightSurface";
 import { RightSurfaceProvider, useRightSurface } from "./useRightSurface";
 import { ShortcutsProvider, useShortcut } from "./hotkeys/useShortcuts";
 import CheatSheetModal from "./hotkeys/CheatSheetModal";
-import { ShellPaneProvider, useShellPaneStore } from "../panes/store";
+import { useShellPaneStore } from "../panes/store";
 import { ActionRegistryProvider } from "./palette/registerActions";
 import { PaletteStateProvider } from "./palette/paletteState";
 import { Palette } from "./palette/Palette";
@@ -163,15 +163,18 @@ function ShellBody() {
 }
 
 export default function AppShellV2() {
+  // ShellPaneProvider is hoisted to the top of App.tsx (both v1 and v2
+  // need it — v1's CommandCenter dispatches to the pane too). Don't
+  // wrap here again — a second provider would shadow the outer, and
+  // the outer subscribers (including v1 code paths reachable via
+  // navigation) would see stale state.
   return (
     <ShortcutsProvider>
       <PaletteStateProvider>
         <ActionRegistryProvider>
-          <ShellPaneProvider>
-            <RightSurfaceProvider>
-              <ShellBody />
-            </RightSurfaceProvider>
-          </ShellPaneProvider>
+          <RightSurfaceProvider>
+            <ShellBody />
+          </RightSurfaceProvider>
         </ActionRegistryProvider>
       </PaletteStateProvider>
     </ShortcutsProvider>

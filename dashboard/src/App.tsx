@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import Layout from "./components/Layout";
 import { useIsV2 } from "./shell/useIsV2";
+import { ShellPaneProvider } from "./panes/store";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 const GlobalChat = lazy(() => import("./pages/GlobalChat"));
@@ -210,5 +211,13 @@ function AppV2() {
 
 export default function App() {
   const v2 = useIsV2();
-  return v2 ? <AppV2 /> : <AppV1 />;
+  // ShellPaneProvider must wrap BOTH shells: v2 uses it for the pane
+  // primitive, and v1's CommandCenter/Graph now calls useShellPaneStore
+  // for click-through dispatch to the pane view (task-detail, session-
+  // peek, etc.). Without a provider here, v1 CC blank-screens.
+  return (
+    <ShellPaneProvider>
+      {v2 ? <AppV2 /> : <AppV1 />}
+    </ShellPaneProvider>
+  );
 }
