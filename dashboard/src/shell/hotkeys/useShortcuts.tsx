@@ -24,21 +24,22 @@ interface Registered {
   opts: ShortcutOpts;
 }
 
-interface Ctx {
-  registered: Registered[];
-  register: (r: Registered) => () => void;
-}
+type RegisterFn = (r: Registered) => () => void;
 
-const C = createContext<Ctx | null>(null);
+const RegisterC = createContext<RegisterFn | null>(null);
+const ListC = createContext<Registered[]>([]);
 
 export function ShortcutsProvider({ children }: { children: ReactNode }) {
   const [registered, setRegistered] = useState<Registered[]>([]);
-  const register = useCallback((r: Registered) => {
+  const register = useCallback<RegisterFn>((r) => {
     setRegistered((prev) => [...prev, r]);
     return () => setRegistered((prev) => prev.filter((x) => x.id !== r.id));
   }, []);
-  const value = useMemo<Ctx>(() => ({ registered, register }), [registered, register]);
-  return <C.Provider value={value}>{children}</C.Provider>;
+  return (
+    <RegisterC.Provider value={register}>
+      <ListC.Provider value={registered}>{children}</ListC.Provider>
+    </RegisterC.Provider>
+  );
 }
 
 let nextId = 0;
@@ -52,12 +53,9 @@ function makeId(): string {
  * Also feeds the cheat-sheet via the context registry.
  */
 export function useShortcut(key: string, opts: ShortcutOpts): void {
-  const ctx = useContext(C);
+  const register = useContext(RegisterC);
   const expanded = useMemo(() => expandMod(key), [key]);
   const id = useMemo(makeId, []);
-  // Keep opts fresh in a ref so we don't re-register on every render — new
-  // objects on every render otherwise thrash the context and cause
-  // useEffect to loop indefinitely.
   const optsRef = useRef(opts);
   optsRef.current = opts;
   const {
@@ -66,8 +64,8 @@ export function useShortcut(key: string, opts: ShortcutOpts): void {
   } = opts;
 
   useEffect(() => {
-    if (!ctx) return;
-    return ctx.register({
+    if (!register) return;
+    return register({
       id,
       key: expanded,
       opts: {
@@ -77,7 +75,7 @@ export function useShortcut(key: string, opts: ShortcutOpts): void {
         when: () => (optsRef.current.when ? optsRef.current.when() : true),
       },
     });
-  }, [ctx, id, expanded, labelDep, sectionDep]);
+  }, [register, id, expanded, labelDep, sectionDep]);
 
   useHotkeys(
     expanded,
@@ -91,6 +89,5 @@ export function useShortcut(key: string, opts: ShortcutOpts): void {
 }
 
 export function useCheatSheet(): Registered[] {
-  const ctx = useContext(C);
-  return ctx?.registered ?? [];
+  return useContext(ListC);
 }
