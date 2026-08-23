@@ -11,6 +11,7 @@
  */
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeSlug from "rehype-slug";
 
 export interface MarkdownPreviewProps {
   source: string;
@@ -25,7 +26,9 @@ export default function MarkdownPreview({ source, className }: MarkdownPreviewPr
         (className ?? "")
       }
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{source}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSlug]}>
+        {source}
+      </ReactMarkdown>
     </div>
   );
 }
