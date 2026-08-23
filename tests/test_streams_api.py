@@ -314,3 +314,62 @@ async def test_tail_returns_frames_since_after_seq(db, tmp_path):
     data = resp.json()
     assert data["status"] == "exited"
     assert any(f["type"] == "line" for f in data["frames"])
+
+
+@pytest.mark.asyncio
+async def test_kill_terminates_a_long_running_process(db, tmp_path):
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        start = await client.post(
+            "/api/streams",
+            json={"command": ["sleep", "30"], "cwd": str(tmp_path), "session_id": "s1"},
+        )
+        stream_id = start.json()["stream_id"]
+
+        await asyncio.sleep(0.2)
+
+        resp = await client.post(f"/api/streams/{stream_id}/kill")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "killed"
+
+        for _ in range(50):
+            meta = await client.get(f"/api/streams/{stream_id}")
+            if meta.json()["status"] == "killed":
+                break
+            await asyncio.sleep(0.1)
+        assert meta.json()["status"] == "killed"
+
+
+@pytest.mark.asyncio
+async def test_kill_is_idempotent_on_already_exited_stream(db, tmp_path):
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        start = await client.post(
+            "/api/streams",
+            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
+        )
+        stream_id = start.json()["stream_id"]
+
+        await asyncio.sleep(0.3)
+
+        resp = await client.post(f"/api/streams/{stream_id}/kill")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "exited"
+
+
+@pytest.mark.asyncio
+async def test_kill_403_for_wrong_session_ownership(db, tmp_path):
+    registry = StreamRegistry(buffer_max_lines=100)
+    owner_app = _app_with_scope(db, tmp_path, LOCAL_SCOPE, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=owner_app), base_url="http://test") as client:
+        start = await client.post(
+            "/api/streams",
+            json={"command": ["sleep", "5"], "cwd": str(tmp_path), "session_id": "owner-session"},
+        )
+        stream_id = start.json()["stream_id"]
+
+    other_scope = RequestScope(kind="session", session_id="other-session", elevated=False)
+    other_app = _app_with_scope(db, tmp_path, other_scope, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=other_app), base_url="http://test") as client:
+        resp = await client.post(f"/api/streams/{stream_id}/kill")
+    assert resp.status_code == 403

@@ -471,6 +471,27 @@ def build_streams_router(
             "exit_code": handle.exit_code,
         }
 
+    @router.post("/api/streams/{stream_id}/kill")
+    async def kill(stream_id: str, request: Request) -> dict:
+        handle = reg.get(stream_id)
+        if handle is None:
+            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
+        scope = request.state.scope
+        if not _can_access(scope, handle):
+            raise HTTPException(status_code=403, detail="out of scope: stream ownership")
+        if handle.status != "running":
+            return {"stream_id": stream_id, "status": handle.status}
+        grace = getattr(config.streams, "kill_grace_seconds", 5.0)
+        await _kill(handle, grace_seconds=grace)
+        try:
+            await db.log_event(
+                "stream.killed", project_id=handle.project_id,
+                payload=json.dumps({"stream_id": stream_id}),
+            )
+        except Exception:
+            logger.debug("stream.killed log_event failed", exc_info=True)
+        return {"stream_id": stream_id, "status": handle.status}
+
     return router
 
 
@@ -549,6 +570,23 @@ def _build_default_router() -> APIRouter:
         for route in inner.routes:
             if getattr(route, "path", None) == "/api/streams/{stream_id}/tail":
                 return await route.endpoint(stream_id=stream_id, request=request, after_seq=after_seq)
+        raise HTTPException(status_code=500, detail="streams router misconfigured")
+
+    @router.post("/api/streams/{stream_id}/kill")
+    async def kill(stream_id: str, request: Request) -> dict:
+        orch = deps._orchestrator
+        if orch is None:
+            raise HTTPException(status_code=503, detail="orchestrator not ready")
+        registry = getattr(orch, "stream_registry", None)
+        if registry is None:
+            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
+        inner = build_streams_router(
+            db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
+            registry=registry,
+        )
+        for route in inner.routes:
+            if getattr(route, "path", None) == "/api/streams/{stream_id}/kill":
+                return await route.endpoint(stream_id=stream_id, request=request)
         raise HTTPException(status_code=500, detail="streams router misconfigured")
 
     return router
