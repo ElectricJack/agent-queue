@@ -8,7 +8,7 @@
 
 import { useEffect, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { NotifyEvent, TaskMessageEvent } from "./types";
+import type { NotifyEvent, TaskMessageEvent, ProposalStatusChangedEvent } from "./types";
 
 const BASE_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 30_000;
@@ -26,6 +26,12 @@ let currentStatus: ConnectionStatus = "disconnected";
 
 const eventListeners = new Set<Listener>();
 const statusListeners = new Set<StatusListener>();
+
+/** Test-only: push a synthetic frame through the same listener set the
+ *  real WebSocket's onmessage handler uses. Not used by production code. */
+export function __dispatchEventForTests(event: NotifyEvent): void {
+  for (const fn of eventListeners) fn(event);
+}
 
 function setStatus(s: ConnectionStatus) {
   currentStatus = s;
@@ -207,6 +213,11 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
           queryClient.invalidateQueries({ queryKey: ["task", tid] });
           queryClient.invalidateQueries({ queryKey: ["explain", tid] });
         }
+        return;
+      }
+      if (type === "proposal.status_changed") {
+        const pid = (event as ProposalStatusChangedEvent).proposal_id;
+        queryClient.invalidateQueries({ queryKey: ["proposal", pid] });
         return;
       }
 

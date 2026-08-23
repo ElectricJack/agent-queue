@@ -195,6 +195,14 @@ class TaskProposalCommandsMixin:
         await proposal_queries.update_proposal(
             self.db, proposal_id, status="discarded"
         )
+        await self._emit_proposal_event(
+            "proposal.status_changed",
+            {
+                "project_id": row["project_id"],
+                "proposal_id": proposal_id,
+                "status": "discarded",
+            },
+        )
         return {"success": True}
 
     async def _cmd_task_batch_commit(self, args: dict) -> dict:
@@ -328,6 +336,14 @@ class TaskProposalCommandsMixin:
                 )
             return {"success": False, "error": f"commit failed: {exc}"}
 
+        await self._emit_proposal_event(
+            "proposal.status_changed",
+            {
+                "project_id": project_id,
+                "proposal_id": proposal_id,
+                "status": "committed",
+            },
+        )
         return {"success": True, "task_ids": created_ids}
 
 
