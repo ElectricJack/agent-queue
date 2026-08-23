@@ -18,18 +18,15 @@ rather than 404; the sidebar renders "no worktree attached" in that case.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse, PlainTextResponse
 
 from src.api import dependencies as deps
+from src.api.file_serving import serve_workspace_relative_file
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["build_task_files_router", "router"]
-
-MAX_FILE_BYTES = 512 * 1024  # 512 KB
 
 
 def _parse_numstat_and_status(numstat_out: str, name_status_out: str) -> list[dict]:
@@ -162,84 +159,7 @@ def build_task_files_router() -> APIRouter:
         if ws is None or not ws.workspace_path:
             raise HTTPException(status_code=404, detail="task has no workspace")
 
-        # ── Path safety ────────────────────────────────────────────────
-        # Reject absolute paths outright — an absolute ``path`` would
-        # cause ``root / path`` to discard ``root`` and jump anywhere.
-        if Path(path).is_absolute():
-            raise HTTPException(status_code=403, detail="absolute path not allowed")
-
-        # Resolve BOTH sides, then verify containment.  We must resolve
-        # before comparing so that symlink escapes and ``..`` segments
-        # both collapse to their real target.  ``strict=True`` on the
-        # file path turns a missing file into a FileNotFoundError we can
-        # map to 404.
-        root = Path(ws.workspace_path).resolve()
-
-        # First pass: non-strict resolve of the *lexical* path so ``..``
-        # segments collapse without touching the filesystem.  This
-        # catches traversal even when the target doesn't exist, so a
-        # missing ``../secret`` is a 403 (escape attempt) not a 404.
-        lexical = (root / path).resolve()
-        try:
-            lexical.relative_to(root)
-        except ValueError:
-            raise HTTPException(status_code=403, detail="path escapes workspace")
-
-        # Second pass: strict resolve to follow symlinks and error on
-        # missing files.  A symlink whose real target lies outside the
-        # workspace is a 403.
-        try:
-            candidate = (root / path).resolve(strict=True)
-        except FileNotFoundError:
-            raise HTTPException(status_code=404, detail="file not found")
-        except (OSError, RuntimeError):
-            # RuntimeError: symlink loop.  OSError: permission etc.
-            raise HTTPException(status_code=403, detail="path not accessible")
-
-        try:
-            candidate.relative_to(root)
-        except ValueError:
-            raise HTTPException(status_code=403, detail="path escapes workspace")
-
-        if not candidate.is_file():
-            raise HTTPException(status_code=404, detail="not a regular file")
-
-        try:
-            size = candidate.stat().st_size
-        except OSError:
-            raise HTTPException(status_code=404, detail="file not stat-able")
-        if size > MAX_FILE_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"file exceeds {MAX_FILE_BYTES} byte cap",
-            )
-
-        try:
-            data = candidate.read_bytes()
-        except OSError as e:
-            raise HTTPException(status_code=404, detail=f"read failed: {e}")
-
-        # Binary heuristic: any NUL byte in the first 8 KiB → treat as
-        # binary. Prior behavior (utf-8 decode with errors="replace")
-        # rendered binary content as scrambled control chars in the
-        # sidebar; the JSON shape lets the client show
-        # "(binary file omitted)" instead.
-        if b"\0" in data[:8192]:
-            try:
-                relative = str(candidate.relative_to(root))
-            except ValueError:
-                relative = path
-            return JSONResponse(
-                content={
-                    "success": True,
-                    "reason": "binary",
-                    "size": len(data),
-                    "path": relative,
-                }
-            )
-
-        text = data.decode("utf-8", errors="replace")
-        return PlainTextResponse(content=text, media_type="text/plain; charset=utf-8")
+        return await serve_workspace_relative_file(ws.workspace_path, path)
 
     return router
 
