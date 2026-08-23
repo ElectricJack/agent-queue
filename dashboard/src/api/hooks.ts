@@ -1064,6 +1064,35 @@ export function useGates(
   });
 }
 
+/**
+ * Every open gate across every project. Backs the shell TopBar badge and the
+ * Activity drawer Gates tab. Fans out one gateList per project because the
+ * daemon's list endpoint is project-scoped.
+ */
+export function useAllOpenGates() {
+  const { data: projects } = useProjects();
+  const ids = (projects ?? []).map((p) => p.id);
+  return useQuery({
+    queryKey: ["gates", "open", "all", ids],
+    queryFn: async () => {
+      if (ids.length === 0) return [] as GateSummary[];
+      const results = await Promise.all(
+        ids.map((pid) =>
+          gateList({
+            body: { project_id: pid, status: "open" },
+            throwOnError: true,
+          }),
+        ),
+      );
+      return results.flatMap(
+        (r) => ((r.data as GateListResponse).gates ?? []) as GateSummary[],
+      );
+    },
+    refetchInterval: 20_000,
+    enabled: ids.length > 0,
+  });
+}
+
 export function useGate(gateId: string) {
   return useQuery({
     queryKey: ["gate", gateId],
