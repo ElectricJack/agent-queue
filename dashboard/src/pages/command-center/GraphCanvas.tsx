@@ -1,8 +1,6 @@
 import { useMemo } from "react";
 import {
   Background,
-  Controls,
-  MiniMap,
   ReactFlow,
   ReactFlowProvider,
   type Node,
@@ -33,11 +31,10 @@ export default function GraphCanvas({ graph, onTaskClick }: Props) {
           fitView
           minZoom={0.15}
           maxZoom={2.5}
+          proOptions={{ hideAttribution: true }}
           onNodeClick={(_, n: Node) => onTaskClick(n.id)}
         >
           <Background gap={24} color="#1f2937" />
-          <MiniMap pannable zoomable className="!bg-gray-900" />
-          <Controls className="!bg-gray-900 !text-gray-200" />
           <AgentAvatarLayer agents={graph.agents} />
         </ReactFlow>
       </ReactFlowProvider>
