@@ -6,6 +6,7 @@ import {
   FolderIcon,
 } from "@heroicons/react/24/outline";
 import { useProjects } from "../api/hooks";
+import { useListNav } from "./hotkeys/useListNav";
 
 const sections = [
   { to: "/?v2=1", label: "Home", icon: ChatBubbleLeftRightIcon, end: true },
@@ -23,12 +24,13 @@ function linkClass(active: boolean): string {
 
 export default function LeftRail() {
   const { data: projects } = useProjects();
+  const navRef = useListNav<HTMLElement>({ axis: "vertical" });
   return (
-    <aside className="flex h-full w-60 shrink-0 flex-col border-r border-gray-800 bg-gray-900">
-      <nav className="flex-1 space-y-6 overflow-y-auto p-3">
+    <aside className="col-start-1 row-start-2 flex h-full w-60 shrink-0 flex-col overflow-hidden border-r border-gray-800 bg-gray-900">
+      <nav ref={navRef} className="flex-1 space-y-6 overflow-y-auto p-3">
         <div className="space-y-0.5">
           {sections.map(({ to, label, icon: Icon, end }) => (
-            <NavLink key={to} to={to} end={end} className={({ isActive }) => linkClass(isActive)}>
+            <NavLink key={to} to={to} end={end} data-listnav="1" className={({ isActive }) => linkClass(isActive)}>
               <Icon className="h-4 w-4" />
               <span>{label}</span>
             </NavLink>
@@ -41,6 +43,7 @@ export default function LeftRail() {
               <NavLink
                 key={p.id}
                 to={`/projects/${p.id}?v2=1`}
+                data-listnav="1"
                 className={({ isActive }) => linkClass(isActive)}
               >
                 <FolderIcon className="h-4 w-4" />

@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { useActiveTasksAllProjects, useProjects } from "../../api/hooks";
+import { useActiveTasksAllProjects, useProjects, useTasks } from "../../api/hooks";
 import { useShellPaneStore } from "../../panes/store";
+import { useListNav } from "../../shell/hotkeys/useListNav";
 
 const STATUSES = [
   "PENDING",
@@ -17,11 +18,14 @@ const STATUSES = [
 
 export default function CommandCenterTasks() {
   const { data: projects } = useProjects();
-  const { data: tasks = [], isLoading } = useActiveTasksAllProjects();
   const [projectId, setProjectId] = useState("");
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
   const [showCompleted, setShowCompleted] = useState(false);
+  const active = useActiveTasksAllProjects();
+  const full = useTasks(projectId || undefined, { showAll: true });
+  const { data: tasks = [], isLoading } = showCompleted ? full : active;
   const pane = useShellPaneStore();
+  const bodyRef = useListNav<HTMLTableSectionElement>({ axis: "vertical" });
 
   const toggleStatus = (s: string) => {
     setStatusFilter((prev) => {
@@ -92,7 +96,7 @@ export default function CommandCenterTasks() {
               <th className="px-3 py-2">Agent</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-800">
+          <tbody ref={bodyRef} className="divide-y divide-gray-800">
             {isLoading && (
               <tr>
                 <td colSpan={5} className="px-3 py-4 text-gray-500">
@@ -158,6 +162,7 @@ function TaskRow({
   return (
     <tr
       tabIndex={0}
+      data-listnav="1"
       onKeyDown={handleKeyDown}
       onClick={onOpen}
       className="cursor-pointer hover:bg-gray-900/50 focus:bg-gray-900/50 focus:outline-none"
