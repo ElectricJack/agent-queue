@@ -350,6 +350,15 @@ export interface CommandInvokedEvent extends BaseEvent {
   error?: string | null;
 }
 
+// --- Proposal lifecycle (Phase 6 spec-ingest follow-up) ---
+
+export interface ProposalStatusChangedEvent extends BaseEvent {
+  event_type: "proposal.status_changed";
+  project_id: string;
+  proposal_id: string;
+  status: "committed" | "discarded";
+}
+
 // --- Union type ---
 
 export type NotifyEvent =
@@ -390,4 +399,5 @@ export type NotifyEvent =
   | SessionAdoptedEvent
   | TaskBlockedGraphEvent
   | TaskUnblockedEvent
-  | CommandInvokedEvent;
+  | CommandInvokedEvent
+  | ProposalStatusChangedEvent;

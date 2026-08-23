@@ -313,6 +313,36 @@ class EventsMixin:
         )
         await self._emit_bus_event("notify.playbook_run_resumed", event.model_dump(mode="json"))
 
+    async def _emit_node_started_event(self, node_id: str) -> None:
+        """Emit ``notify.playbook_run_node_started`` for dashboard WS live-update.
+
+        See pane spec §7.4/§13.6.
+        """
+        from src.notifications.events import PlaybookRunNodeStartedEvent
+
+        event = PlaybookRunNodeStartedEvent(
+            playbook_id=self._playbook_id,
+            run_id=self.run_id,
+            node_id=node_id,
+        )
+        await self._emit_bus_event(
+            "notify.playbook_run_node_started", event.model_dump(mode="json")
+        )
+
+    async def _emit_node_completed_event(self, node_id: str, status: str) -> None:
+        """Emit ``notify.playbook_run_node_completed`` for dashboard WS live-update."""
+        from src.notifications.events import PlaybookRunNodeCompletedEvent
+
+        event = PlaybookRunNodeCompletedEvent(
+            playbook_id=self._playbook_id,
+            run_id=self.run_id,
+            node_id=node_id,
+            status=status,
+        )
+        await self._emit_bus_event(
+            "notify.playbook_run_node_completed", event.model_dump(mode="json")
+        )
+
     async def _emit_timed_out_event(
         self,
         *,
