@@ -14,7 +14,7 @@ interface Props {
   taskId: string;
 }
 
-function statusColor(status: string): string {
+export function statusColor(status: string): string {
   switch (status) {
     case "A": return "text-green-400";
     case "D": return "text-red-400";
