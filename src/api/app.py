@@ -23,6 +23,7 @@ from src.api.graph import router as graph_router
 from src.api.routers.proposals import router as proposals_router
 from src.api.messages import router as messages_router
 from src.api.sessions import router as sessions_router
+from src.api.streams import router as streams_router
 from src.api.task_files import router as task_files_router
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware
 from src.api.websocket import WebSocketManager
@@ -109,6 +110,10 @@ def create_app(
     # Session SSE stream (S3): GET /api/sessions/{id}/stream — transcript
     # replay + live tail with peek-diff fallback.
     app.include_router(sessions_router)
+
+    # Streamable-command registry (console-stream pane view): POST/GET
+    # /api/streams* — start/metadata/subscribe/tail/kill.
+    app.include_router(streams_router)
 
     # Task file preview (Phase 5): GET /api/tasks/{id}/files + /file
     app.include_router(task_files_router)

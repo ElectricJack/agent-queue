@@ -9,13 +9,31 @@ docs/superpowers/specs/2026-08-22-pane-console-stream-design.md §8.1.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import os
+import signal
 import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Literal
 
-__all__ = ["ConsoleFrame", "StreamHandle", "StreamRegistry"]
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "ConsoleFrame",
+    "StreamHandle",
+    "StreamRegistry",
+    "StreamStartRequest",
+    "StreamStartResponse",
+    "StreamMetadata",
+    "build_streams_router",
+    "router",
+]
 
 StreamStatus = Literal["running", "exited", "killed"]
 FrameStream = Literal["stdout", "stderr"]
@@ -129,3 +147,255 @@ class StreamRegistry:
             for sid, h in self._streams.items()
             if h.status != "running" and h.ended_at is not None and h.ended_at < cutoff
         ]
+
+
+_HEARTBEAT_SECONDS = 15.0
+
+
+class StreamStartRequest(BaseModel):
+    # Deliberately not ``list[str]``: a non-list ``command`` (e.g. a raw
+    # shell string) must reach the handler so it can be rejected as a 400
+    # ("command must be a non-empty list of strings") rather than FastAPI's
+    # automatic 422 request-validation error.
+    command: list[str] | str
+    cwd: str
+    title: str | None = None
+    session_id: str
+    project_id: str | None = None
+
+
+class StreamStartResponse(BaseModel):
+    stream_id: str
+    status: str
+
+
+class StreamMetadata(BaseModel):
+    stream_id: str
+    title: str
+    status: str
+    exit_code: int | None
+    started_at: float
+    ended_at: float | None
+    session_id: str
+    project_id: str | None
+
+
+async def _validate_cwd(cwd: str, *, db, workspace_dir: str) -> str | None:
+    """Mirrors ``CommandHandler._validate_path`` (src/commands/handler.py:526)
+    without depending on a live ``CommandHandler`` instance — this router
+    factory, like ``build_sessions_router``, takes ``db``/``config`` directly.
+    """
+    real = os.path.realpath(cwd)
+    workspace_real = os.path.realpath(workspace_dir)
+    if real.startswith(workspace_real + os.sep) or real == workspace_real:
+        return real
+    repos = await db.list_repos()
+    for repo in repos:
+        if repo.source_path:
+            repo_real = os.path.realpath(repo.source_path)
+            if real.startswith(repo_real + os.sep) or real == repo_real:
+                return real
+    workspaces = await db.list_workspaces()
+    for ws in workspaces:
+        ws_real = os.path.realpath(ws.workspace_path)
+        if real.startswith(ws_real + os.sep) or real == ws_real:
+            return real
+    return None
+
+
+def _can_start(scope) -> bool:
+    return scope.kind == "local" or scope.elevated
+
+
+def _can_access(scope, handle: StreamHandle) -> bool:
+    if scope.kind == "local":
+        return True
+    if scope.session_id == handle.session_id:
+        return True
+    if scope.elevated and scope.project_id in (None, handle.project_id):
+        return True
+    return False
+
+
+async def _spawn_and_pump(handle: StreamHandle, registry: StreamRegistry) -> None:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *handle.command,
+            cwd=handle.cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+        )
+    except (FileNotFoundError, PermissionError, OSError) as exc:
+        handle.status = "exited"
+        handle.exit_code = -1
+        handle.ended_at = time.time()
+        handle.append(
+            ConsoleFrame(seq=handle.next_seq(), type="exit", rc=-1, text=f"failed to start: {exc}")
+        )
+        registry.finish(handle)
+        return
+
+    handle.process = proc
+
+    async def _pump(stream_name: FrameStream, pipe) -> None:
+        if pipe is None:
+            return
+        while True:
+            line = await pipe.readline()
+            if not line:
+                return
+            text = line.decode(errors="replace").rstrip("\n")
+            handle.append(ConsoleFrame(seq=handle.next_seq(), type="line", stream=stream_name, text=text))
+
+    stdout_task = asyncio.create_task(_pump("stdout", proc.stdout))
+    stderr_task = asyncio.create_task(_pump("stderr", proc.stderr))
+    rc = await proc.wait()
+    await asyncio.gather(stdout_task, stderr_task)
+
+    handle.ended_at = time.time()
+    if handle.status != "killed":
+        handle.status = "exited"
+        handle.exit_code = rc
+        handle.append(ConsoleFrame(seq=handle.next_seq(), type="exit", rc=rc))
+    registry.finish(handle)
+
+
+async def _kill(handle: StreamHandle, *, grace_seconds: float) -> None:
+    if handle.status != "running" or handle.process is None:
+        return
+    handle.status = "killed"
+    proc = handle.process
+    stage_seconds = max(0.1, grace_seconds / 3)
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGKILL):
+        if proc.returncode is not None:
+            break
+        try:
+            proc.send_signal(sig)
+        except ProcessLookupError:
+            break
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=stage_seconds)
+            break
+        except asyncio.TimeoutError:
+            continue
+    handle.append(ConsoleFrame(seq=handle.next_seq(), type="killed"))
+
+
+_sweep_task: "asyncio.Task | None" = None
+
+
+def _start_retention_sweep(registry: StreamRegistry, retention_seconds: float) -> None:
+    global _sweep_task
+    if _sweep_task is not None and not _sweep_task.done():
+        return
+
+    async def _loop() -> None:
+        while True:
+            await asyncio.sleep(30.0)
+            cutoff = time.time() - retention_seconds
+            for stream_id in registry.all_finished_before(cutoff):
+                registry.evict(stream_id)
+
+    _sweep_task = asyncio.create_task(_loop())
+
+
+def build_streams_router(
+    *, db, config, workspace_dir: str, registry: StreamRegistry | None = None,
+) -> APIRouter:
+    """Router factory so tests can wire a lightweight db without the daemon."""
+
+    router = APIRouter()
+    reg = registry if registry is not None else StreamRegistry(
+        buffer_max_lines=getattr(config.streams, "buffer_max_lines", 5000)
+    )
+
+    @router.post("/api/streams", response_model=StreamStartResponse)
+    async def start(body: StreamStartRequest, request: Request) -> StreamStartResponse:
+        scope = request.state.scope
+        if not _can_start(scope):
+            raise HTTPException(
+                status_code=403,
+                detail="out of scope: stream start requires local or elevated scope",
+            )
+        if (
+            not isinstance(body.command, list)
+            or not body.command
+            or not all(isinstance(c, str) for c in body.command)
+        ):
+            raise HTTPException(status_code=400, detail="command must be a non-empty list of strings")
+
+        project_id = body.project_id
+        if scope.elevated and scope.project_id is not None:
+            if project_id is None:
+                project_id = scope.project_id
+            elif project_id != scope.project_id:
+                raise HTTPException(status_code=403, detail="out of scope: project_id mismatch")
+
+        real_cwd = await _validate_cwd(body.cwd, db=db, workspace_dir=workspace_dir)
+        if real_cwd is None:
+            raise HTTPException(status_code=403, detail="cwd is outside any accessible workspace")
+
+        cap = getattr(config.streams, "max_concurrent_per_session", 3)
+        if reg.concurrent_count(body.session_id) >= cap:
+            raise HTTPException(status_code=429, detail="too many concurrent streams")
+
+        handle = reg.create(
+            title=body.title or "Console", session_id=body.session_id,
+            project_id=project_id, command=list(body.command), cwd=real_cwd,
+        )
+        # Snapshot the just-created status ("running") rather than reading
+        # handle.status after the awaits below: the spawned task can race
+        # ahead and finish (e.g. a fast "echo") before this handler resumes,
+        # which would otherwise make the start response non-deterministic.
+        start_status = handle.status
+        asyncio.create_task(_spawn_and_pump(handle, reg))
+
+        try:
+            await db.log_event(
+                "stream.started", project_id=project_id,
+                payload=json.dumps({
+                    "stream_id": handle.stream_id, "command": handle.command,
+                    "scope": "global_admin" if (scope.elevated and scope.project_id is None) else "session",
+                }),
+            )
+        except Exception:
+            logger.debug("stream.started log_event failed", exc_info=True)
+
+        _start_retention_sweep(reg, getattr(config.streams, "retention_seconds", 300))
+        return StreamStartResponse(stream_id=handle.stream_id, status=start_status)
+
+    return router
+
+
+def _build_default_router() -> APIRouter:
+    """Registered in :func:`src.api.app.create_app` — uses the shared db/config."""
+    from src.api import dependencies as deps
+
+    router = APIRouter()
+
+    @router.post("/api/streams", response_model=StreamStartResponse)
+    async def start(body: StreamStartRequest, request: Request) -> StreamStartResponse:
+        orch = deps._orchestrator
+        if orch is None:
+            raise HTTPException(status_code=503, detail="orchestrator not ready")
+        registry = getattr(orch, "stream_registry", None)
+        if registry is None:
+            registry = StreamRegistry(
+                buffer_max_lines=getattr(orch.config.streams, "buffer_max_lines", 5000)
+            )
+            orch.stream_registry = registry
+        inner = build_streams_router(
+            db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
+            registry=registry,
+        )
+        for route in inner.routes:
+            if getattr(route, "path", None) == "/api/streams" and "POST" in route.methods:
+                return await route.endpoint(body=body, request=request)
+        raise HTTPException(status_code=500, detail="streams router misconfigured")
+
+    return router
+
+
+#: The router registered by :func:`src.api.app.create_app`.
+router = _build_default_router()
