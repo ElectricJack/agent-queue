@@ -5,10 +5,21 @@
 
 const BASE_URL = import.meta.env.VITE_API_URL || "";
 
+// Thrown by apiGet on a non-2xx response. Carries `status` so callers can
+// branch on it (e.g. 404 vs 403 vs generic error) instead of parsing the
+// message string.
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export async function apiGet<T = unknown>(path: string): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`);
   if (!res.ok) {
-    throw new Error(`API ${res.status}: ${await res.text()}`);
+    throw new ApiError(res.status, `API ${res.status}: ${await res.text()}`);
   }
   return res.json() as Promise<T>;
 }
