@@ -2,9 +2,9 @@ import { NavLink, Outlet } from "react-router-dom";
 import { useListNav } from "../shell/hotkeys/useListNav";
 
 const tabs = [
-  { to: "/command-center/graph?v2=1", label: "Graph" },
-  { to: "/command-center/tasks?v2=1", label: "Tasks" },
-  { to: "/command-center/agents?v2=1", label: "Agents" },
+  { to: "/command-center/graph", label: "Graph" },
+  { to: "/command-center/tasks", label: "Tasks" },
+  { to: "/command-center/agents", label: "Agents" },
 ];
 
 function tabClass(active: boolean): string {

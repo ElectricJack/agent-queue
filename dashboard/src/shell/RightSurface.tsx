@@ -16,7 +16,7 @@ export default function RightSurface() {
   return (
     <aside
       style={{ width }}
-      className="row-start-2 flex h-full shrink-0 flex-col border-l border-gray-800 bg-gray-950"
+      className="col-start-3 row-start-2 flex h-full shrink-0 flex-col overflow-hidden border-l border-gray-800 bg-gray-950"
     >
       <header className="flex items-center justify-between border-b border-gray-800 p-2">
         <span className="text-xs uppercase text-gray-500">{label}</span>

@@ -9,9 +9,9 @@ import { useProjects } from "../api/hooks";
 import { useListNav } from "./hotkeys/useListNav";
 
 const sections = [
-  { to: "/?v2=1", label: "Home", icon: ChatBubbleLeftRightIcon, end: true },
-  { to: "/command-center?v2=1", label: "Command Center", icon: Squares2X2Icon, end: false },
-  { to: "/settings?v2=1", label: "Settings", icon: Cog6ToothIcon, end: false },
+  { to: "/", label: "Home", icon: ChatBubbleLeftRightIcon, end: true },
+  { to: "/command-center", label: "Command Center", icon: Squares2X2Icon, end: false },
+  { to: "/settings", label: "Settings", icon: Cog6ToothIcon, end: false },
 ];
 
 function linkClass(active: boolean): string {
@@ -42,7 +42,7 @@ export default function LeftRail() {
             {(projects ?? []).map((p) => (
               <NavLink
                 key={p.id}
-                to={`/projects/${p.id}?v2=1`}
+                to={`/projects/${p.id}`}
                 data-listnav="1"
                 className={({ isActive }) => linkClass(isActive)}
               >

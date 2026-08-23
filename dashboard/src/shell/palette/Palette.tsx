@@ -92,7 +92,7 @@ export function Palette() {
                   key={t.id}
                   value={t.id}
                   onSelect={() => {
-                    navigate(`/tasks/${t.id}?v2=1`);
+                    navigate(`/tasks/${t.id}`);
                     setOpen(false);
                     setQ("");
                   }}
@@ -111,7 +111,7 @@ export function Palette() {
                   key={p.id}
                   value={p.id}
                   onSelect={() => {
-                    navigate(`/projects/${p.id}?v2=1`);
+                    navigate(`/projects/${p.id}`);
                     setOpen(false);
                     setQ("");
                   }}

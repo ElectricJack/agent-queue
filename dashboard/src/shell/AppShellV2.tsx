@@ -62,7 +62,7 @@ function useSectionJumps() {
     onFire: () => {
       if (!pending) return;
       setPending(false);
-      navigate("/?v2=1");
+      navigate("/");
     },
     when: () => pending,
   });
@@ -72,7 +72,7 @@ function useSectionJumps() {
     onFire: () => {
       if (!pending) return;
       setPending(false);
-      navigate("/command-center?v2=1");
+      navigate("/command-center");
     },
     when: () => pending,
   });
@@ -82,7 +82,7 @@ function useSectionJumps() {
     onFire: () => {
       if (!pending) return;
       setPending(false);
-      navigate("/settings?v2=1");
+      navigate("/settings");
     },
     when: () => pending,
   });
@@ -92,7 +92,7 @@ function useSectionJumps() {
     onFire: () => {
       if (!pending) return;
       setPending(false);
-      navigate("/command-center?v2=1");
+      navigate("/command-center");
     },
     when: () => pending,
   });
