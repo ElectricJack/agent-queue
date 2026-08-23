@@ -50,6 +50,19 @@ export default function CommandCenterGraph() {
       /* ignore */
     }
   }, [selected]);
+  // Drop persisted ids for projects that no longer exist. Without this a
+  // deleted project stays in localStorage forever, and every visit pays a
+  // failed graph fetch for it. Only prunes once the project list has actually
+  // loaded, so an empty list mid-fetch can't wipe a valid selection.
+  useEffect(() => {
+    if (projects.length === 0) return;
+    const live = new Set(projects.map((p) => p.id));
+    setSelected((prev) => {
+      const kept = prev.filter((id) => live.has(id));
+      return kept.length === prev.length ? prev : kept;
+    });
+  }, [projects]);
+
   useEffect(() => {
     if (selected.length === 0 && projects.length > 0 && projects[0]) {
       setSelected([projects[0].id]);
