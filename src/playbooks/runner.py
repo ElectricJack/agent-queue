@@ -82,6 +82,16 @@ class NodeTraceEntry:
     transition_to: str | None = None  # next node ID after evaluation
     transition_method: str | None = None  # "goto" | "llm" | "structured" | "otherwise"
     tokens_used: int = 0  # estimated tokens consumed by this node (roadmap 5.7.1)
+    # The following four fields support the playbook-run-inspector pane
+    # (docs/superpowers/specs/2026-08-22-pane-playbook-run-inspector-design.md
+    # §5.3.1). `command`/`args_summary` are reserved for a future per-node-type
+    # design pass (§13.3) and are NOT populated today — every node executed
+    # by this runner is an LLM-prompt node, which has no "command" concept.
+    # `output`/`error` ARE populated (see `_execute_node` / `_fail`).
+    command: str | None = None
+    args_summary: str | None = None
+    output: str | None = None
+    error: str | None = None
 
 
 @dataclass
@@ -1590,6 +1600,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
 
         if self.on_progress:
             await self.on_progress("node_started", node_id)
+        await self._emit_node_started_event(node_id)
 
         # Dry-run mode: skip real LLM calls and return a simulated response.
         if self._dry_run:
@@ -1602,9 +1613,11 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
 
             trace_entry.completed_at = time.time()
             trace_entry.status = "completed"
+            trace_entry.output = response
 
             if self.on_progress:
                 await self.on_progress("node_completed", node_id)
+            await self._emit_node_completed_event(node_id, "completed")
 
             return response
 
@@ -1635,6 +1648,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         # Update trace
         trace_entry.completed_at = time.time()
         trace_entry.status = "completed"
+        trace_entry.output = response
 
         # Persist intermediate state
         if self.db:
@@ -1649,6 +1663,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
 
         if self.on_progress:
             await self.on_progress("node_completed", node_id)
+        await self._emit_node_completed_event(node_id, "completed")
 
         return response
 
@@ -1936,6 +1951,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         if self.node_trace and self.node_trace[-1].status == "running":
             self.node_trace[-1].status = "failed"
             self.node_trace[-1].completed_at = time.time()
+            self.node_trace[-1].error = error
             trace_dicts = [self._trace_to_dict(t) for t in self.node_trace]
 
         if self.db:
@@ -2118,6 +2134,14 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             d["transition_method"] = entry.transition_method
         if entry.tokens_used:
             d["tokens_used"] = entry.tokens_used
+        if entry.command is not None:
+            d["command"] = entry.command
+        if entry.args_summary is not None:
+            d["args_summary"] = entry.args_summary
+        if entry.output is not None:
+            d["output"] = entry.output
+        if entry.error is not None:
+            d["error"] = entry.error
         return d
 
     # ------------------------------------------------------------------
