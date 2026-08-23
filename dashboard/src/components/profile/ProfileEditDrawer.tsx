@@ -1,43 +1,17 @@
 import { useEffect, useState } from "react";
 import { XMarkIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
-import {
-  useEditProjectProfile,
-  useProjectProfiles,
-  type ProfileDetail,
-} from "../../api/hooks";
+import { useEditProjectProfile, useProjectProfiles } from "../../api/hooks";
 import IntelligenceClassPicker from "./IntelligenceClassPicker";
 import McpServerSelector from "./McpServerSelector";
 import ToolPicker from "./ToolPicker";
+import { Section, Field } from "./FormSection";
+import { profileToForm, type ProfileFormState as FormState } from "./profileForm";
 
 interface Props {
   open: boolean;
   onClose: () => void;
   projectId: string;
   agentType: string;
-}
-
-interface FormState {
-  name: string;
-  description: string;
-  default_class: string;
-  permission_mode: string;
-  system_prompt_suffix: string;
-  allowed_tools: string[];
-  mcp_servers: string[];
-}
-
-function profileToForm(p: ProfileDetail | null | undefined): FormState {
-  const dc = (p as { default_class?: string } | null | undefined)?.default_class;
-  const rawPerm = p?.permission_mode ?? "";
-  return {
-    name: p?.name ?? "",
-    description: p?.description ?? "",
-    default_class: dc ?? "",
-    permission_mode: rawPerm === "(default)" ? "" : rawPerm,
-    system_prompt_suffix: p?.system_prompt_suffix ?? "",
-    allowed_tools: [...(p?.allowed_tools ?? [])],
-    mcp_servers: [...(p?.mcp_servers ?? [])],
-  };
 }
 
 export default function ProfileEditDrawer({ open, onClose, projectId, agentType }: Props) {
@@ -223,35 +197,6 @@ export default function ProfileEditDrawer({ open, onClose, projectId, agentType 
           </button>
         </footer>
       </aside>
-    </div>
-  );
-}
-
-function Section({
-  title,
-  hint,
-  children,
-}: {
-  title: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="space-y-2">
-      <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">{title}</h3>
-        {hint && <p className="mt-0.5 text-xs text-gray-600">{hint}</p>}
-      </div>
-      <div className="space-y-3">{children}</div>
-    </section>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <label className="mb-1 block text-xs font-medium uppercase text-gray-500">{label}</label>
-      {children}
     </div>
   );
 }
