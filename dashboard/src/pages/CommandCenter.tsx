@@ -1,116 +1,42 @@
-import { useEffect, useMemo, useState } from "react";
-import { useProjects } from "../api/hooks";
-import { useResolveGate } from "../api/hooks";
-import { useProjectGraphs } from "../api/graph";
-import GraphCanvas from "./command-center/GraphCanvas";
-import ProjectStrip from "./command-center/ProjectStrip";
-import TaskSidebar from "./command-center/TaskSidebar";
-import GhostOverlay from "./command-center/GhostOverlay";
-import MobileCardList from "./command-center/MobileCardList";
-import { useGraphLive } from "./command-center/useGraphLive";
+import { NavLink, Outlet } from "react-router-dom";
 
-const SELECTED_KEY = "aq:command-center:selected";
+const tabs = [
+  { to: "/command-center/graph?v2=1", label: "Graph" },
+  { to: "/command-center/tasks?v2=1", label: "Tasks" },
+  { to: "/command-center/agents?v2=1", label: "Agents" },
+];
 
-function useIsMobile() {
-  const [m, setM] = useState(() => window.matchMedia("(max-width: 768px)").matches);
-  useEffect(() => {
-    const mq = window.matchMedia("(max-width: 768px)");
-    const onC = (e: MediaQueryListEvent) => setM(e.matches);
-    mq.addEventListener("change", onC);
-    return () => mq.removeEventListener("change", onC);
-  }, []);
-  return m;
+function tabClass(active: boolean): string {
+  return `border-b-2 px-3 py-2 text-sm ${
+    active
+      ? "border-indigo-400 text-indigo-200"
+      : "border-transparent text-gray-400 hover:text-gray-200"
+  }`;
 }
 
-function useIsLandscape() {
-  const [l, setL] = useState(() =>
-    window.matchMedia("(orientation: landscape)").matches,
-  );
-  useEffect(() => {
-    const mq = window.matchMedia("(orientation: landscape)");
-    const onC = (e: MediaQueryListEvent) => setL(e.matches);
-    mq.addEventListener("change", onC);
-    return () => mq.removeEventListener("change", onC);
-  }, []);
-  return l;
-}
-
+/**
+ * Command Center hub — three tabs (Graph, Tasks, Agents) sharing the same
+ * project-strip context (persisted in localStorage by each tab that uses it).
+ * Route redirects and pane dispatches live in App.tsx.
+ */
 export default function CommandCenter() {
-  const { data: projects = [] } = useProjects();
-  const [selected, setSelected] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(SELECTED_KEY) ?? "[]");
-    } catch {
-      return [];
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(SELECTED_KEY, JSON.stringify(selected));
-    } catch {
-      /* ignore */
-    }
-  }, [selected]);
-
-  // Auto-select first project if none.
-  useEffect(() => {
-    if (selected.length === 0 && projects.length > 0 && projects[0]) {
-      setSelected([projects[0].id]);
-    }
-  }, [projects, selected.length]);
-
-  const { data: graph, isLoading } = useProjectGraphs(selected);
-  useGraphLive(selected);
-
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  const isMobile = useIsMobile();
-  const isLandscape = useIsLandscape();
-  const showCanvas = !isMobile || isLandscape;
-
-  const resolveMut = useResolveGate();
-
-  const toggle = (pid: string) =>
-    setSelected((prev) =>
-      prev.includes(pid) ? prev.filter((x) => x !== pid) : [...prev, pid],
-    );
-
-  const proposalId = useMemo(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get("proposal");
-  }, []);
-
   return (
-    <div className="flex h-[calc(100vh-4rem)] flex-col">
-      <ProjectStrip
-        projects={projects}
-        graph={graph}
-        selected={selected}
-        onToggle={toggle}
-      />
-      <div className="relative flex-1 overflow-hidden">
-        {isLoading ? (
-          <p className="p-4 text-sm text-gray-400">Loading graph…</p>
-        ) : showCanvas ? (
-          <>
-            <GraphCanvas graph={graph} onTaskClick={setSelectedTaskId} />
-            <GhostOverlay proposalId={proposalId} />
-          </>
-        ) : (
-          <MobileCardList graph={graph} onTaskClick={setSelectedTaskId} />
-        )}
+    <div className="flex h-full flex-col">
+      <div className="flex border-b border-gray-800 bg-gray-950 px-4">
+        {tabs.map((t) => (
+          <NavLink
+            key={t.to}
+            to={t.to}
+            end
+            className={({ isActive }) => tabClass(isActive)}
+          >
+            {t.label}
+          </NavLink>
+        ))}
       </div>
-      <TaskSidebar
-        taskId={selectedTaskId}
-        gates={graph.gates}
-        onResolveGate={(gid, dec) =>
-          resolveMut.mutate({
-            gate_id: gid,
-            resolved_by: "dashboard",
-            resolution: dec,
-          })
-        }
-        onClose={() => setSelectedTaskId(null)}
-      />
+      <div className="flex-1 overflow-hidden">
+        <Outlet />
+      </div>
     </div>
   );
 }
