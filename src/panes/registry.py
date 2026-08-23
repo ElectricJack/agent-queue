@@ -20,4 +20,5 @@ class PaneEntry:
 SERVER_PANE_REGISTRY: dict[str, PaneEntry] = {
     # Populated by per-view specs as they land.
     "__stub-smoke": PaneEntry(id="__stub-smoke", agent_pushable=True),
+    "console-stream": PaneEntry(id="console-stream", agent_pushable=True),
 }
