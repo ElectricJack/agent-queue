@@ -27,4 +27,5 @@ SERVER_PANE_REGISTRY: dict[str, PaneEntry] = {
     "proposal-preview": PaneEntry(id="proposal-preview", agent_pushable=True),
     "file-browser": PaneEntry(id="file-browser", agent_pushable=True),
     "contextual-settings": PaneEntry(id="contextual-settings", agent_pushable=True),
+    "playbook-run-inspector": PaneEntry(id="playbook-run-inspector", agent_pushable=True),
 }
