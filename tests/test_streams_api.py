@@ -235,3 +235,63 @@ async def test_metadata_403_for_wrong_session_ownership(db, tmp_path):
     async with AsyncClient(transport=ASGITransport(app=other_app), base_url="http://test") as client:
         resp = await client.get(f"/api/streams/{stream_id}")
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_subscribe_replays_then_closes_on_exit(db, tmp_path):
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        start = await client.post(
+            "/api/streams",
+            json={"command": ["echo", "line one"], "cwd": str(tmp_path), "session_id": "s1"},
+        )
+        stream_id = start.json()["stream_id"]
+
+        await asyncio.sleep(0.3)
+
+        frames = []
+        async with client.stream("GET", f"/api/streams/{stream_id}/subscribe") as resp:
+            assert resp.status_code == 200
+            async for line in resp.aiter_lines():
+                if line.startswith("data: "):
+                    frames.append(json.loads(line[len("data: "):]))
+                if frames and frames[-1]["type"] in ("exit", "killed"):
+                    break
+
+    types = [f["type"] for f in frames]
+    assert "line" in types
+    assert types[-1] == "exit"
+    assert frames[-1]["rc"] == 0
+
+
+@pytest.mark.asyncio
+async def test_subscribe_404_for_unknown_stream(db, tmp_path):
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/streams/does-not-exist/subscribe")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_subscribe_replay_with_after_seq_skips_seen_frames(db, tmp_path):
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        start = await client.post(
+            "/api/streams",
+            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
+        )
+        stream_id = start.json()["stream_id"]
+
+        await asyncio.sleep(0.3)
+
+        frames = []
+        async with client.stream(
+            "GET", f"/api/streams/{stream_id}/subscribe", params={"after_seq": 0}
+        ) as resp:
+            async for line in resp.aiter_lines():
+                if line.startswith("data: "):
+                    frames.append(json.loads(line[len("data: "):]))
+                if frames and frames[-1]["type"] in ("exit", "killed"):
+                    break
+
+    assert all(f["seq"] > 0 for f in frames)

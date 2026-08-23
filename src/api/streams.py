@@ -406,6 +406,56 @@ def build_streams_router(
             project_id=handle.project_id,
         )
 
+    @router.get("/api/streams/{stream_id}/subscribe")
+    async def subscribe(stream_id: str, request: Request, after_seq: int = -1) -> StreamingResponse:
+        handle = reg.get(stream_id)
+        if handle is None:
+            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
+        scope = request.state.scope
+        if not _can_access(scope, handle):
+            raise HTTPException(status_code=403, detail="out of scope: stream ownership")
+
+        async def gen():
+            replayed = handle.replay_from(after_seq)
+            first = True
+            for frame in replayed:
+                d = frame.to_dict()
+                if first and handle.truncated and after_seq < 0:
+                    d = {**d, "truncated": True}
+                first = False
+                yield f"data: {json.dumps(d)}\n\n".encode()
+                if frame.type in ("exit", "killed"):
+                    return
+
+            if handle.status != "running":
+                return
+
+            q = handle.subscribe()
+            last_heartbeat = time.monotonic()
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        frame = await asyncio.wait_for(q.get(), timeout=1.0)
+                        yield f"data: {json.dumps(frame.to_dict())}\n\n".encode()
+                        last_heartbeat = time.monotonic()
+                        if frame.type in ("exit", "killed"):
+                            return
+                    except asyncio.TimeoutError:
+                        pass
+                    now = time.monotonic()
+                    if now - last_heartbeat >= _HEARTBEAT_SECONDS:
+                        yield b": heartbeat\n\n"
+                        last_heartbeat = now
+            finally:
+                handle.unsubscribe(q)
+
+        return StreamingResponse(
+            gen(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     return router
 
 
@@ -450,6 +500,23 @@ def _build_default_router() -> APIRouter:
         for route in inner.routes:
             if getattr(route, "path", None) == "/api/streams/{stream_id}" and "GET" in route.methods:
                 return await route.endpoint(stream_id=stream_id, request=request)
+        raise HTTPException(status_code=500, detail="streams router misconfigured")
+
+    @router.get("/api/streams/{stream_id}/subscribe")
+    async def subscribe(stream_id: str, request: Request, after_seq: int = -1) -> StreamingResponse:
+        orch = deps._orchestrator
+        if orch is None:
+            raise HTTPException(status_code=503, detail="orchestrator not ready")
+        registry = getattr(orch, "stream_registry", None)
+        if registry is None:
+            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
+        inner = build_streams_router(
+            db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
+            registry=registry,
+        )
+        for route in inner.routes:
+            if getattr(route, "path", None) == "/api/streams/{stream_id}/subscribe":
+                return await route.endpoint(stream_id=stream_id, request=request, after_seq=after_seq)
         raise HTTPException(status_code=500, detail="streams router misconfigured")
 
     return router
