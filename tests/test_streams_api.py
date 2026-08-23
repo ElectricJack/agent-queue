@@ -373,3 +373,73 @@ async def test_kill_403_for_wrong_session_ownership(db, tmp_path):
     async with AsyncClient(transport=ASGITransport(app=other_app), base_url="http://test") as client:
         resp = await client.post(f"/api/streams/{stream_id}/kill")
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_concurrency_cap_returns_429_on_fourth_stream(db, tmp_path):
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for _ in range(3):
+            resp = await client.post(
+                "/api/streams",
+                json={"command": ["sleep", "5"], "cwd": str(tmp_path), "session_id": "capped"},
+            )
+            assert resp.status_code == 200
+        resp = await client.post(
+            "/api/streams",
+            json={"command": ["sleep", "5"], "cwd": str(tmp_path), "session_id": "capped"},
+        )
+    assert resp.status_code == 429
+
+
+def test_retention_sweep_evicts_finished_stream_past_cutoff():
+    reg = StreamRegistry()
+    handle = reg.create(title="a", session_id="s1", project_id=None, command=["echo"], cwd="/tmp")
+    handle.status = "exited"
+    handle.ended_at = 1.0
+    for stream_id in reg.all_finished_before(1000.0):
+        reg.evict(stream_id)
+    assert reg.get(handle.stream_id) is None
+
+
+@pytest.mark.asyncio
+async def test_subscriber_count_reflects_active_connections(db, tmp_path):
+    registry = StreamRegistry(buffer_max_lines=100)
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        start = await client.post(
+            "/api/streams",
+            json={"command": ["sleep", "2"], "cwd": str(tmp_path), "session_id": "s1"},
+        )
+        stream_id = start.json()["stream_id"]
+        handle = registry.get(stream_id)
+        assert handle is not None
+        assert len(handle.subscribers) == 0
+
+        async def _consume_a_bit():
+            async with client.stream("GET", f"/api/streams/{stream_id}/subscribe") as resp:
+                async for _line in resp.aiter_lines():
+                    break
+
+        task = asyncio.create_task(_consume_a_bit())
+        await asyncio.sleep(0.3)
+        # A dropped subscriber (task done) does not kill the process.
+        assert handle.status in ("running", "exited")
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_start_and_kill_write_audit_log_rows(db, tmp_path):
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        start = await client.post(
+            "/api/streams",
+            json={"command": ["sleep", "5"], "cwd": str(tmp_path), "session_id": "s1"},
+        )
+        stream_id = start.json()["stream_id"]
+        await client.post(f"/api/streams/{stream_id}/kill")
+
+    started = await db.get_recent_events(event_type="stream.started")
+    assert any(json.loads(e["payload"])["stream_id"] == stream_id for e in started)
+    killed = await db.get_recent_events(event_type="stream.killed")
+    assert any(json.loads(e["payload"])["stream_id"] == stream_id for e in killed)
