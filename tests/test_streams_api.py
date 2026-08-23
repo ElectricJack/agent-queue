@@ -188,3 +188,50 @@ async def test_start_stream_rejects_cwd_outside_workspace(db, tmp_path):
             json={"command": ["echo", "hi"], "cwd": str(outside), "session_id": "s1"},
         )
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_metadata_returns_running_status_then_exited(db, tmp_path):
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        start = await client.post(
+            "/api/streams",
+            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "s1"},
+        )
+        stream_id = start.json()["stream_id"]
+
+        for _ in range(50):
+            resp = await client.get(f"/api/streams/{stream_id}")
+            if resp.json()["status"] == "exited":
+                break
+            await asyncio.sleep(0.05)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "exited"
+        assert data["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_metadata_404_for_unknown_stream(db, tmp_path):
+    app = _app_with_scope(db, tmp_path, LOCAL_SCOPE)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/streams/does-not-exist")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_metadata_403_for_wrong_session_ownership(db, tmp_path):
+    registry = StreamRegistry(buffer_max_lines=100)
+    owner_app = _app_with_scope(db, tmp_path, LOCAL_SCOPE, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=owner_app), base_url="http://test") as client:
+        start = await client.post(
+            "/api/streams",
+            json={"command": ["echo", "hi"], "cwd": str(tmp_path), "session_id": "owner-session"},
+        )
+        stream_id = start.json()["stream_id"]
+
+    other_scope = RequestScope(kind="session", session_id="other-session", elevated=False)
+    other_app = _app_with_scope(db, tmp_path, other_scope, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=other_app), base_url="http://test") as client:
+        resp = await client.get(f"/api/streams/{stream_id}")
+    assert resp.status_code == 403

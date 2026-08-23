@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -390,6 +391,21 @@ def build_streams_router(
         _start_retention_sweep(reg, getattr(config.streams, "retention_seconds", 300))
         return StreamStartResponse(stream_id=handle.stream_id, status=start_status)
 
+    @router.get("/api/streams/{stream_id}", response_model=StreamMetadata)
+    async def metadata(stream_id: str, request: Request) -> StreamMetadata:
+        handle = reg.get(stream_id)
+        if handle is None:
+            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
+        scope = request.state.scope
+        if not _can_access(scope, handle):
+            raise HTTPException(status_code=403, detail="out of scope: stream ownership")
+        return StreamMetadata(
+            stream_id=handle.stream_id, title=handle.title, status=handle.status,
+            exit_code=handle.exit_code, started_at=handle.started_at,
+            ended_at=handle.ended_at, session_id=handle.session_id,
+            project_id=handle.project_id,
+        )
+
     return router
 
 
@@ -417,6 +433,23 @@ def _build_default_router() -> APIRouter:
         for route in inner.routes:
             if getattr(route, "path", None) == "/api/streams" and "POST" in route.methods:
                 return await route.endpoint(body=body, request=request)
+        raise HTTPException(status_code=500, detail="streams router misconfigured")
+
+    @router.get("/api/streams/{stream_id}", response_model=StreamMetadata)
+    async def metadata(stream_id: str, request: Request) -> StreamMetadata:
+        orch = deps._orchestrator
+        if orch is None:
+            raise HTTPException(status_code=503, detail="orchestrator not ready")
+        registry = getattr(orch, "stream_registry", None)
+        if registry is None:
+            raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
+        inner = build_streams_router(
+            db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
+            registry=registry,
+        )
+        for route in inner.routes:
+            if getattr(route, "path", None) == "/api/streams/{stream_id}" and "GET" in route.methods:
+                return await route.endpoint(stream_id=stream_id, request=request)
         raise HTTPException(status_code=500, detail="streams router misconfigured")
 
     return router
