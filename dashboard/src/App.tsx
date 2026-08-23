@@ -4,6 +4,10 @@ import Layout from "./components/Layout";
 import { useIsV2 } from "./shell/useIsV2";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
+const GlobalChat = lazy(() => import("./pages/GlobalChat"));
+const CommandCenterGraph = lazy(() => import("./pages/command-center/Graph"));
+const CommandCenterTasks = lazy(() => import("./pages/command-center/Tasks"));
+const CommandCenterAgents = lazy(() => import("./pages/command-center/Agents"));
 
 const ChatLanding = lazy(() => import("./pages/chat/ChatLanding"));
 const ChatConversation = lazy(() => import("./pages/chat/ChatConversation"));
@@ -59,7 +63,12 @@ function AppV1() {
           {/* Top-level IA — Phase 3 */}
           <Route index element={<ChatLanding />} />
           <Route path="chat/:projectId" element={<ChatConversation />} />
-          <Route path="command-center" element={<CommandCenter />} />
+          <Route path="command-center" element={<CommandCenter />}>
+            <Route index element={<Navigate to="graph" replace />} />
+            <Route path="graph" element={<CommandCenterGraph />} />
+            <Route path="tasks" element={<CommandCenterTasks />} />
+            <Route path="agents" element={<CommandCenterAgents />} />
+          </Route>
           <Route path="work" element={<WorkIndex />} />
 
           {/* Settings hub — playbooks / profiles / intelligence-classes / config */}
@@ -124,8 +133,75 @@ function AppV2() {
     <Suspense fallback={<RouteFallback />}>
       <Routes>
         <Route element={<AppShellV2 />}>
-          <Route index element={<div className="text-xs text-gray-600">v2 outlet</div>} />
-          <Route path="*" element={<div className="text-xs text-gray-600">v2 outlet</div>} />
+          {/* / is the global Agent Q supervisor chat. */}
+          <Route index element={<GlobalChat />} />
+          <Route path="chat/:projectId" element={<ChatConversation />} />
+
+          <Route path="command-center" element={<CommandCenter />}>
+            <Route index element={<Navigate to="graph?v2=1" replace />} />
+            <Route path="graph" element={<CommandCenterGraph />} />
+            <Route path="tasks" element={<CommandCenterTasks />} />
+            <Route path="agents" element={<CommandCenterAgents />} />
+          </Route>
+
+          {/* Legacy /work* — kept as redirects until v1 shell removal. */}
+          <Route
+            path="work"
+            element={<Navigate to="/command-center/tasks?v2=1" replace />}
+          />
+          <Route
+            path="work/tasks"
+            element={<Navigate to="/command-center/tasks?v2=1" replace />}
+          />
+          <Route
+            path="work/agents"
+            element={<Navigate to="/command-center/agents?v2=1" replace />}
+          />
+          <Route
+            path="work/sessions"
+            element={<Navigate to="/command-center/agents?v2=1" replace />}
+          />
+          <Route
+            path="work/events"
+            element={
+              <Navigate to="/command-center/tasks?v2=1&openDrawer=events" replace />
+            }
+          />
+          <Route
+            path="work/gates"
+            element={
+              <Navigate to="/command-center/tasks?v2=1&openDrawer=gates" replace />
+            }
+          />
+
+          <Route path="settings" element={<SettingsLayout />}>
+            <Route index element={<Navigate to="playbooks" replace />} />
+            <Route path="playbooks" element={<SystemPlaybooks />} />
+            <Route path="profiles" element={<SystemProfiles />} />
+            <Route
+              path="intelligence-classes"
+              element={<IntelligenceClassesStub />}
+            />
+            <Route path="config" element={<SystemConfig />} />
+          </Route>
+
+          <Route path="projects/:projectId" element={<ProjectLayout />}>
+            <Route index element={<ProjectOverview />} />
+            <Route path="tasks" element={<ProjectTasks />} />
+            <Route path="sessions" element={<ProjectSessions />} />
+            <Route path="chat" element={<ProjectChatRedirect />} />
+            <Route path="workspaces" element={<ProjectWorkspaces />} />
+            <Route path="profiles" element={<ProjectProfiles />} />
+            <Route path="playbooks" element={<ProjectPlaybooks />} />
+            <Route path="config" element={<ProjectConfig />} />
+          </Route>
+
+          <Route path="tasks/:taskId" element={<TaskDetail />} />
+          <Route path="tasks/:taskId/files" element={<TaskFiles />} />
+          <Route path="sessions/:sessionId" element={<SessionDetail />} />
+          <Route path="playbooks/:playbookId" element={<PlaybookDetail />} />
+
+          <Route path="*" element={<Navigate to="/?v2=1" replace />} />
         </Route>
       </Routes>
     </Suspense>
