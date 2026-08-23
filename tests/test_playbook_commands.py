@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.commands.handler import CommandHandler
+from src.models import PlaybookRun
 from src.playbooks.models import CompiledPlaybook, PlaybookNode, PlaybookTransition
 
 
@@ -119,6 +120,7 @@ class FakePlaybookRun:
     trigger_event: str = "{}"
     error: str | None = None
     paused_at: float | None = None
+    waiting_for_event: str | None = None
     pinned_graph: str | None = None
 
 
@@ -163,6 +165,7 @@ def _make_handler(
     mock_orch = MagicMock()
     mock_db = AsyncMock()
     mock_orch.db = mock_db
+    mock_orch.bus = AsyncMock()
     mock_config = MagicMock()
 
     if has_playbook_manager:
@@ -715,6 +718,39 @@ class TestResponseFormatConsistency:
         assert isinstance(result, dict)
         assert "error" in result
 
+    async def test_inspect_playbook_run_includes_waiting_for_event_when_set(self):
+        handler = _make_handler()
+        run = PlaybookRun(
+            run_id="evt-run",
+            playbook_id="pb",
+            playbook_version=1,
+            trigger_event="{}",
+            status="paused",
+            started_at=1.0,
+            waiting_for_event="task.completed",
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=run)
+
+        result = await handler._cmd_inspect_playbook_run({"run_id": "evt-run"})
+
+        assert result["waiting_for_event"] == "task.completed"
+
+    async def test_inspect_playbook_run_omits_waiting_for_event_when_unset(self):
+        handler = _make_handler()
+        run = PlaybookRun(
+            run_id="hitl-run",
+            playbook_id="pb",
+            playbook_version=1,
+            trigger_event="{}",
+            status="paused",
+            started_at=1.0,
+        )
+        handler.db.get_playbook_run = AsyncMock(return_value=run)
+
+        result = await handler._cmd_inspect_playbook_run({"run_id": "hitl-run"})
+
+        assert "waiting_for_event" not in result or result["waiting_for_event"] is None
+
     # -- All commands via execute() dispatcher ---------------------------
 
     async def test_all_commands_return_dicts_via_execute(self):
@@ -1107,6 +1143,7 @@ class TestAllPlaybookCommandsRegistered:
         "list_playbook_runs",
         "inspect_playbook_run",
         "resume_playbook",
+        "cancel_playbook_run",
         "recover_workflow",
         "playbook_health",
         "playbook_graph_view",

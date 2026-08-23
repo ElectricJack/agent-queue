@@ -106,6 +106,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_playbook_runs": "playbook",
     "inspect_playbook_run": "playbook",
     "resume_playbook": "playbook",
+    "cancel_playbook_run": "playbook",
     "recover_workflow": "playbook",
     "playbook_health": "playbook",
     "playbook_graph_view": "playbook",
@@ -2643,9 +2644,17 @@ _ALL_TOOL_DEFINITIONS = [
                 "status": {
                     "type": "string",
                     "description": (
-                        "Filter by run status: running, paused, completed, failed, timed_out"
+                        "Filter by run status: running, paused, completed, failed, "
+                        "timed_out, cancelled"
                     ),
-                    "enum": ["running", "paused", "completed", "failed", "timed_out"],
+                    "enum": [
+                        "running",
+                        "paused",
+                        "completed",
+                        "failed",
+                        "timed_out",
+                        "cancelled",
+                    ],
                 },
                 "limit": {
                     "type": "integer",
@@ -2699,6 +2708,26 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["run_id", "human_input"],
+        },
+    },
+    {
+        "name": "cancel_playbook_run",
+        "description": (
+            "Cancel a playbook run that is running or paused. Marks the run "
+            "as cancelled and stamps completed_at. Does not interrupt a "
+            "node mid-execution — see the command's docstring for the "
+            "current limitation. Fails if the run is already in a terminal "
+            "state (completed, failed, timed_out, or already cancelled)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "The playbook run ID to cancel",
+                },
+            },
+            "required": ["run_id"],
         },
     },
     {

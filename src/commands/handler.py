@@ -139,11 +139,12 @@ PLAYBOOKS_PAUSED_ERROR = "playbooks are paused (playbooks.enabled=false)"
 
 PAUSED_PLAYBOOK_COMMANDS: frozenset[str] = frozenset(
     {
-        # src/commands/playbook_commands.py (16)
+        # src/commands/playbook_commands.py (17)
         "list_playbooks",
         "list_playbook_runs",
         "inspect_playbook_run",
         "resume_playbook",
+        "cancel_playbook_run",
         "recover_workflow",
         "compile_playbook",
         "show_playbook_graph",

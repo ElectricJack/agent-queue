@@ -78,6 +78,7 @@ class InspectPlaybookRunResponse(BaseModel):
     trigger_event: dict[str, Any] = {}
     error: str | None = None
     paused_at: float | None = None
+    waiting_for_event: str | None = None
     total_duration_seconds: float | None = None
 
 
@@ -86,6 +87,12 @@ class ResumePlaybookResponse(BaseModel):
     playbook_id: str
     status: str
     tokens_used: int = 0
+
+
+class CancelPlaybookRunResponse(BaseModel):
+    cancelled: str
+    playbook_id: str
+    status: str
 
 
 class RecoverWorkflowResponse(BaseModel):
@@ -217,6 +224,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_playbook_runs": ListPlaybookRunsResponse,
     "inspect_playbook_run": InspectPlaybookRunResponse,
     "resume_playbook": ResumePlaybookResponse,
+    "cancel_playbook_run": CancelPlaybookRunResponse,
     "recover_workflow": RecoverWorkflowResponse,
     "compile_playbook": CompilePlaybookResponse,
     "show_playbook_graph": ShowPlaybookGraphResponse,

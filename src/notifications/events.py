@@ -475,6 +475,57 @@ class PlaybookRunTimedOutEvent(NotifyEvent):
     transitioned_to: str | None = None
 
 
+class PlaybookRunCancelledEvent(NotifyEvent):
+    """Emitted when a playbook run is cancelled via ``cancel_playbook_run``.
+
+    Distinct from ``PlaybookRunFailedEvent`` — cancellation is an
+    operator-initiated stop, not an execution error. ``node_id`` is the
+    run's ``current_node`` at cancellation time and may be ``None`` for a
+    run cancelled before its first node started.
+    """
+
+    event_type: str = "notify.playbook_run_cancelled"
+    category: str = "interaction"
+    playbook_id: str = ""
+    run_id: str = ""
+    node_id: str | None = None
+    tokens_used: int = 0
+
+
+class PlaybookRunNodeStartedEvent(NotifyEvent):
+    """Emitted when the runner begins executing one node in a run.
+
+    Fired from ``PlaybookRunner._execute_node`` immediately before the
+    node's prompt (or dry-run stub) executes. Dashboard WS consumers (the
+    playbook-run-inspector pane) use this to trigger a live re-fetch of
+    ``inspect_playbook_run`` instead of polling.
+    """
+
+    event_type: str = "notify.playbook_run_node_started"
+    category: str = "interaction"
+    playbook_id: str = ""
+    run_id: str = ""
+    node_id: str = ""
+
+
+class PlaybookRunNodeCompletedEvent(NotifyEvent):
+    """Emitted when the runner finishes executing one node in a run.
+
+    ``status`` is the node's terminal per-node status. In practice this
+    fires with ``status="completed"`` from both the dry-run and real
+    execution paths — a genuine node failure raises before reaching this
+    point and is instead covered by ``PlaybookRunFailedEvent`` (see
+    ``runner.py`` ``_fail``).
+    """
+
+    event_type: str = "notify.playbook_run_node_completed"
+    category: str = "interaction"
+    playbook_id: str = ""
+    run_id: str = ""
+    node_id: str = ""
+    status: str = "completed"
+
+
 # ---------------------------------------------------------------------------
 # Generic text notification (catch-all for simple messages)
 # ---------------------------------------------------------------------------

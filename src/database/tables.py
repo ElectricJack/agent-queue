@@ -741,7 +741,7 @@ playbook_runs = Table(
         postgresql_where=text("event_id IS NOT NULL"),
     ),
     CheckConstraint(
-        "status IN ('running', 'paused', 'completed', 'failed', 'timed_out')",
+        "status IN ('running', 'paused', 'completed', 'failed', 'timed_out', 'cancelled')",
         name="ck_playbook_runs_status",
     ),
     Index("idx_playbook_runs_playbook_id", "playbook_id"),

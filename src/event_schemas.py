@@ -456,6 +456,18 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
         "required": [*_NOTIFY_BASE_FIELDS, "playbook_id", "run_id", "node_id"],
         "optional": [*_NOTIFY_BASE_OPTIONAL, "decision"],
     },
+    "notify.playbook_run_cancelled": {
+        "required": [*_NOTIFY_BASE_FIELDS, "playbook_id", "run_id"],
+        "optional": [*_NOTIFY_BASE_OPTIONAL, "node_id", "tokens_used"],
+    },
+    "notify.playbook_run_node_started": {
+        "required": [*_NOTIFY_BASE_FIELDS, "playbook_id", "run_id", "node_id"],
+        "optional": [*_NOTIFY_BASE_OPTIONAL],
+    },
+    "notify.playbook_run_node_completed": {
+        "required": [*_NOTIFY_BASE_FIELDS, "playbook_id", "run_id", "node_id", "status"],
+        "optional": [*_NOTIFY_BASE_OPTIONAL],
+    },
     # -- Generic text notification --
     "notify.text": {
         "required": [*_NOTIFY_BASE_FIELDS],
@@ -751,6 +763,10 @@ _SPEC_SCHEMAS: dict[str, EventSchema] = {
     },
     "proposal.ready": {
         "required": ["project_id", "proposal_id"],
+        "optional": [],
+    },
+    "proposal.status_changed": {
+        "required": ["project_id", "proposal_id", "status"],
         "optional": [],
     },
 }

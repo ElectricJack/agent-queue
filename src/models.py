@@ -1068,6 +1068,7 @@ class PlaybookRunStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
 
 
 class PlaybookRunEvent(Enum):

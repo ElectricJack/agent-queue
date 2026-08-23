@@ -89,6 +89,7 @@ TERMINAL_STATUSES: frozenset[PlaybookRunStatus] = frozenset(
         PlaybookRunStatus.COMPLETED,
         PlaybookRunStatus.FAILED,
         PlaybookRunStatus.TIMED_OUT,
+        PlaybookRunStatus.CANCELLED,
     }
 )
 

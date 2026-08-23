@@ -10,6 +10,7 @@ import time
 import yaml
 
 from src.logging_config import CorrelationContext
+from src.models import PlaybookRunStatus
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,7 @@ class PlaybookCommandsMixin:
         status = args.get("status")
         limit = int(args.get("limit", 20))
 
-        valid_statuses = {"running", "paused", "completed", "failed", "timed_out"}
+        valid_statuses = {"running", "paused", "completed", "failed", "timed_out", "cancelled"}
         if status and status not in valid_statuses:
             return {
                 "error": f"Invalid status '{status}'. Valid: {', '.join(sorted(valid_statuses))}"
@@ -299,6 +300,8 @@ class PlaybookCommandsMixin:
             result["error"] = db_run.error
         if db_run.paused_at:
             result["paused_at"] = db_run.paused_at
+        if db_run.waiting_for_event:
+            result["waiting_for_event"] = db_run.waiting_for_event
 
         # Compute total run duration if completed
         if db_run.started_at and db_run.completed_at:
@@ -479,6 +482,79 @@ class PlaybookCommandsMixin:
         if result.error:
             resp["error"] = result.error
         return resp
+
+    async def _cmd_cancel_playbook_run(self, args: dict) -> dict:
+        """Cancel a playbook run that is running or paused.
+
+        Marks the run's status as ``cancelled`` and stamps ``completed_at``.
+        This is a DB-record-level cancellation only — it does not signal an
+        in-process ``PlaybookRunner`` currently executing a node to stop
+        mid-flight; the runner has no mechanism today to notice the row
+        changed underneath it. A live run that gets cancelled will finish
+        its current node and then, on its next persistence write, silently
+        overwrite the ``cancelled`` status back to ``running`` (or whatever
+        it transitions to next). Interrupting a live run is tracked as a
+        follow-up — see pane spec §7.3 / §13.2.
+
+        Emits ``notify.playbook_run_cancelled`` on the EventBus so dashboard
+        WS subscribers (and any other transport) see the cancellation
+        without polling.
+
+        Args:
+            run_id: The playbook run ID to cancel.
+        """
+        from src.playbooks.state_machine import TERMINAL_STATUSES
+
+        run_id = args.get("run_id")
+        if not run_id:
+            return {"error": "run_id is required"}
+
+        db_run = await self.db.get_playbook_run(run_id)
+        if not db_run:
+            return {"error": f"Playbook run '{run_id}' not found"}
+
+        try:
+            current_status = PlaybookRunStatus(db_run.status)
+        except ValueError:
+            current_status = None
+
+        if current_status in TERMINAL_STATUSES:
+            return {"error": f"Run '{run_id}' already {db_run.status}"}
+
+        completed_at = time.time()
+        await self.db.update_playbook_run(
+            run_id,
+            status="cancelled",
+            completed_at=completed_at,
+        )
+
+        try:
+            trigger_event = (
+                json.loads(db_run.trigger_event)
+                if isinstance(db_run.trigger_event, str)
+                else db_run.trigger_event or {}
+            )
+        except (json.JSONDecodeError, TypeError):
+            trigger_event = {}
+
+        event_bus = getattr(self.orchestrator, "bus", None)
+        if event_bus:
+            from src.notifications.events import PlaybookRunCancelledEvent
+
+            event = PlaybookRunCancelledEvent(
+                playbook_id=db_run.playbook_id,
+                run_id=run_id,
+                node_id=db_run.current_node,
+                tokens_used=db_run.tokens_used,
+                project_id=trigger_event.get("project_id"),
+            )
+            await event_bus.emit(event.event_type, event.model_dump(mode="json"))
+
+        return {
+            "cancelled": run_id,
+            "playbook_id": db_run.playbook_id,
+            "status": "cancelled",
+        }
 
     async def _cmd_recover_workflow(self, args: dict) -> dict:
         """Recover an orphaned coordination workflow (Roadmap 7.5.6).
@@ -1048,7 +1124,7 @@ class PlaybookCommandsMixin:
         status = args.get("status")
         limit = int(args.get("limit", 200))
 
-        valid_statuses = {"running", "paused", "completed", "failed", "timed_out"}
+        valid_statuses = {"running", "paused", "completed", "failed", "timed_out", "cancelled"}
         if status and status not in valid_statuses:
             return {
                 "error": f"Invalid status '{status}'. Valid: {', '.join(sorted(valid_statuses))}"
