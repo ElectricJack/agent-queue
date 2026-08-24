@@ -384,6 +384,7 @@ class Task:
     affinity_reason: str | None = None  # why: "context", "workspace", "type"
     workspace_mode: WorkspaceMode | None = None  # lock mode for workspace access
     dedup_key: str | None = None
+    discord_thread_id: str | None = None
     intelligence_class: str | None = None
     # Persisted blocked-state projection (work-graph design §4).  Pure
     # derived data: 1 iff some blocking edge is unsatisfied or an attached

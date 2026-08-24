@@ -597,6 +597,59 @@ class AgentQueueBot(commands.Bot):
                 return await self._send_long_message(channel, text)
         return None
 
+
+    async def _rehydrate_task_thread(self, task_id: str):
+        """Return the Discord thread persisted for *task_id*, or ``None``.
+
+        ``_task_thread_objects`` lives only in memory, so after a restart the
+        bot has no record of threads it opened before.  The id is persisted on
+        ``tasks.discord_thread_id``; resolve it back to a live Thread and
+        repopulate the in-memory maps.
+
+        Returns ``None`` for every failure mode — no id recorded, the thread
+        was deleted, the bot lost access, or the id is unparseable.  The
+        caller then creates a fresh thread, which is the correct fallback:
+        one extra thread is a far better outcome than raising inside
+        notification delivery.
+        """
+        try:
+            task = await self.orchestrator.db.get_task(task_id)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Could not load task %s for thread rehydrate: %s", task_id, e)
+            return None
+        raw = getattr(task, "discord_thread_id", None) if task else None
+        if not raw:
+            return None
+        try:
+            thread_id = int(raw)
+        except (TypeError, ValueError):
+            logger.warning("Task %s has unparseable thread id %r", task_id, raw)
+            return None
+
+        thread = self.get_channel(thread_id)
+        if thread is None:
+            try:
+                thread = await self.fetch_channel(thread_id)
+            except Exception as e:
+                logger.info(
+                    "Persisted thread %d for task %s is gone (%s); creating a new one",
+                    thread_id,
+                    task_id,
+                    e,
+                )
+                return None
+        if not isinstance(thread, discord.Thread):
+            return None
+        if getattr(thread, "archived", False):
+            # An archived thread accepts sends only after being unarchived;
+            # let the caller open a fresh one rather than fail mid-delivery.
+            return None
+
+        logger.info("Rehydrated thread %d for task %s from the database", thread_id, task_id)
+        self._task_threads[thread_id] = task_id
+        self._task_thread_objects[task_id] = thread
+        return thread
+
     async def _create_task_thread(
         self,
         thread_name: str,
@@ -629,8 +682,13 @@ class AgentQueueBot(commands.Bot):
             return None
 
         # Reuse an existing thread if one was already created for this task
-        # (e.g. reopened via thread feedback).
+        # (e.g. reopened via thread feedback).  The in-memory map is empty
+        # after a daemon restart, so fall back to the id persisted on the
+        # task before concluding that no thread exists — otherwise every
+        # restart opens a second thread for the same task.
         existing_thread = self._task_thread_objects.get(task_id) if task_id else None
+        if existing_thread is None and task_id:
+            existing_thread = await self._rehydrate_task_thread(task_id)
         if existing_thread:
             try:
                 # Verify the thread is still accessible
@@ -704,6 +762,18 @@ class AgentQueueBot(commands.Bot):
             self._task_threads[thread.id] = task_id
             self._task_thread_objects[task_id] = thread
             self._task_root_messages[task_id] = msg
+            # Persist so the mapping survives a restart (see
+            # _rehydrate_task_thread).  Best-effort: failing to record the id
+            # costs a duplicate thread later, which must not break the thread
+            # we just successfully opened.
+            try:
+                await self.orchestrator.db.update_task(
+                    task_id, discord_thread_id=str(thread.id)
+                )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    "Could not persist thread id for task %s: %s", task_id, e
+                )
 
         async def send_to_thread(text: str) -> None:
             try:

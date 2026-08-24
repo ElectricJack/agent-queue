@@ -99,6 +99,10 @@ tasks = Table(
     Column("is_blocked", Integer, nullable=False, server_default="0"),
     Column("dedup_key", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),
+    # Discord thread opened for this task.  Persisted because the bot's
+    # in-memory task->thread map is lost on every daemon restart, which used
+    # to make it open a *new* thread for a task it had already threaded.
+    Column("discord_thread_id", Text, nullable=True),
     Index("idx_tasks_project_dedup", "project_id", "dedup_key"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
