@@ -231,6 +231,18 @@ class PlaybookManager:
         # and failed runs record a completion time to prevent error loops.
         self._last_execution: dict[tuple[str, str], float] = {}
 
+        # Wall-clock mirror of ``_last_execution``, persisted to disk.  The
+        # monotonic values above are meaningless across a restart, and an
+        # in-memory-only cooldown is silently cleared by the very event most
+        # likely to re-trigger a playbook — a daemon restart.  See
+        # ``_load_cooldowns``.
+        self._wall_last_execution: dict[tuple[str, str], float] = {}
+        self._cooldown_path: str | None = None
+        _dd = data_dir or getattr(config, "data_dir", None)
+        if _dd:
+            self._cooldown_path = os.path.join(_dd, "playbook_cooldowns.json")
+        self._load_cooldowns()
+
         # -- Concurrency tracking (roadmap 5.3.5) --
         # In-flight playbook runs keyed by run_id.  Each value is the asyncio
         # Task executing that run.  Keyed by run_id (not playbook_id) because
@@ -426,6 +438,8 @@ class PlaybookManager:
         """
         key = (playbook_id, scope)
         self._last_execution[key] = _clock if _clock is not None else time.monotonic()
+        self._wall_last_execution[key] = time.time()
+        self._save_cooldowns()
         logger.debug(
             "Recorded execution for playbook '%s' (scope=%s) — cooldown started",
             playbook_id,
@@ -448,10 +462,77 @@ class PlaybookManager:
         """
         if scope is not None:
             self._last_execution.pop((playbook_id, scope), None)
+            self._wall_last_execution.pop((playbook_id, scope), None)
         else:
             keys_to_remove = [k for k in self._last_execution if k[0] == playbook_id]
             for k in keys_to_remove:
                 del self._last_execution[k]
+            for k in [k for k in self._wall_last_execution if k[0] == playbook_id]:
+                del self._wall_last_execution[k]
+        self._save_cooldowns()
+
+    def _load_cooldowns(self) -> None:
+        """Restore cooldown state from disk, translating wall-clock to monotonic.
+
+        Cooldown exists to stop a playbook re-running too soon.  Keeping that
+        state only in memory meant a restart cleared it, so two restarts a few
+        minutes apart could run a ``cooldown: 1800`` playbook twice — the exact
+        case it was meant to prevent.
+
+        Entries older than any plausible cooldown simply land far enough in the
+        past to be inert, so no pruning is needed.  Every failure mode starts
+        empty: a lost file costs at most one early re-run.
+        """
+        if not self._cooldown_path or not os.path.exists(self._cooldown_path):
+            return
+        try:
+            with open(self._cooldown_path, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Could not load playbook cooldowns from %s (%s); starting fresh",
+                self._cooldown_path,
+                exc,
+            )
+            return
+
+        wall_now = time.time()
+        mono_now = time.monotonic()
+        restored = 0
+        for entry in raw.get("cooldowns") or []:
+            try:
+                playbook_id, scope, wall = entry[0], entry[1], float(entry[2])
+            except (TypeError, ValueError, IndexError):
+                continue
+            key = (str(playbook_id), str(scope))
+            # Clamp a backwards clock step so a cooldown cannot be pushed into
+            # the future and block a playbook indefinitely.
+            age = max(0.0, wall_now - wall)
+            self._last_execution[key] = mono_now - age
+            self._wall_last_execution[key] = wall
+            restored += 1
+        if restored:
+            logger.info("Restored %d playbook cooldown(s) from %s", restored, self._cooldown_path)
+
+    def _save_cooldowns(self) -> None:
+        """Persist cooldown state.  Best-effort — never raises to the caller."""
+        if not self._cooldown_path:
+            return
+        payload = {
+            "cooldowns": [
+                [pid, scope, wall] for (pid, scope), wall in self._wall_last_execution.items()
+            ]
+        }
+        try:
+            os.makedirs(os.path.dirname(self._cooldown_path) or ".", exist_ok=True)
+            tmp = self._cooldown_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            os.replace(tmp, self._cooldown_path)
+        except OSError as exc:
+            logger.warning(
+                "Could not save playbook cooldowns to %s (%s)", self._cooldown_path, exc
+            )
 
     def get_triggerable_playbooks(
         self, trigger: str, scope: str = "system"

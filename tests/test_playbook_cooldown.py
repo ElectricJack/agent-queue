@@ -751,3 +751,67 @@ class TestCooldownLifecycle:
         for i in range(5):
             result = manager.get_triggerable_playbooks("git.commit", "system")
             assert result == [], f"Event {i + 1} during cooldown must be dropped"
+
+
+class TestCooldownPersistence:
+    """Cooldown must survive a daemon restart.
+
+    Cooldown exists to stop a playbook re-running too soon, but the state
+    lived only in ``PlaybookManager._last_execution``. A restart cleared it —
+    and a restart is exactly the event most likely to re-fire a playbook.
+    Two restarts minutes apart therefore ran a ``cooldown: 1800`` playbook
+    twice, which is the case the setting is meant to prevent.
+    """
+
+    def _mgr(self, data_dir, playbooks):
+        manager = PlaybookManager(config=None, data_dir=str(data_dir))
+        for pb in playbooks:
+            manager._active[pb.id] = pb
+            manager._index_triggers(pb)
+        return manager
+
+    def test_cooldown_survives_restart(self, tmp_path):
+        pb = _make_playbook(cooldown_seconds=1800)
+
+        first = self._mgr(tmp_path, [pb])
+        first.record_execution(pb.id, "system")
+        assert first.is_on_cooldown(pb.id, "system")
+
+        # A fresh manager over the same data_dir == a daemon restart.
+        second = self._mgr(tmp_path, [pb])
+        assert second.is_on_cooldown(pb.id, "system"), "restart cleared the cooldown"
+        assert second.get_cooldown_remaining(pb.id, "system") > 1700
+
+    def test_cooldown_expired_during_downtime_is_not_resurrected(self, tmp_path):
+        """Downtime counts toward the cooldown — it is not paused."""
+        import json
+
+        pb = _make_playbook(cooldown_seconds=60)
+        path = tmp_path / "playbook_cooldowns.json"
+        path.write_text(
+            json.dumps({"cooldowns": [[pb.id, "system", time.time() - 3600]]})
+        )
+
+        manager = self._mgr(tmp_path, [pb])
+        assert not manager.is_on_cooldown(pb.id, "system")
+
+    def test_clear_cooldown_is_persisted(self, tmp_path):
+        pb = _make_playbook(cooldown_seconds=1800)
+
+        first = self._mgr(tmp_path, [pb])
+        first.record_execution(pb.id, "system")
+        first.clear_cooldown(pb.id)
+
+        second = self._mgr(tmp_path, [pb])
+        assert not second.is_on_cooldown(pb.id, "system"), "cleared cooldown came back"
+
+    def test_missing_state_file_starts_clean(self, tmp_path):
+        pb = _make_playbook(cooldown_seconds=1800)
+        manager = self._mgr(tmp_path / "does-not-exist", [pb])
+        assert not manager.is_on_cooldown(pb.id, "system")
+
+    def test_corrupt_state_file_starts_clean(self, tmp_path):
+        pb = _make_playbook(cooldown_seconds=1800)
+        (tmp_path / "playbook_cooldowns.json").write_text("{not json")
+        manager = self._mgr(tmp_path, [pb])
+        assert not manager.is_on_cooldown(pb.id, "system")
