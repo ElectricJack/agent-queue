@@ -103,36 +103,49 @@ Push `main` to `origin` before enabling worktree mode. Not optional.
 
 ## 5. Open decisions
 
-### 5.1 `worktree_setup` is empty — it should not be
+### 5.1 `worktree_setup` — RESOLVED: no pip install needed
 
-```yaml
-worktree_setup: []
+**Verified empirically 2026-08-24. Slots need no Python install; `worktree_setup`
+can stay `[]` for Python purposes.**
+
+Only one checkout is pip-installed on this host:
+
+```
+agent-queue  0.1.0  /home/jkern/dev/agent-queue2     (editable)
 ```
 
-Each slot is a fresh checkout with no editable install. `CLAUDE.md` requires:
+`agent-queue3` and `agent-queue4` are **not** installed, yet pytest run inside
+them imports *their own* `src`:
 
-```bash
-pip install -e ".[dev,cli]"
-pip install -e packages/aq-client
+```
+$ cd /home/jkern/dev/agent-queue3 && pytest tests/test_which_src_tmp.py
+src.__file__ = /home/jkern/dev/agent-queue3/src/__init__.py   ✅
 ```
 
-Without these an agent in a slot cannot import `src.*` or run `pytest`. But
-`pip install -e` mutates the **shared interpreter**, so two slots installing
-concurrently race, and whichever ran last wins for both. Options:
+pytest's default `prepend` import mode puts rootdir at the front of `sys.path`,
+ahead of the editable finder in site-packages. Independently corroborated: the
+agent-authored test files (`test_costs.py`, `test_profile_default_selection.py`)
+exist only in `agent-queue4` and pass there — they could not run against
+`agent-queue2`'s tree.
 
-- **(a) per-slot venv** — `python3 -m venv .venv && .venv/bin/pip install -e ".[dev,cli]"`.
-  Correct isolation; costs a full install per slot (the `setup_hash` mechanism
-  means it runs once per slot, not once per task). Requires the session runtime
-  to activate the venv, which needs checking.
-- **(b) rely on the ambient install** — no setup commands; agents import the
-  editable install pointing at `agent-queue2`. Fast, but **every slot then tests
-  against this working directory's code, not its own checkout** — which silently
-  invalidates any test an agent runs. Not acceptable.
-- **(c) `pip install --no-deps -e .` per slot** — cheaper than (a), same shared
-  -interpreter race.
+The original worry — that `pip install -e` mutates the shared interpreter and two
+slots would race — is therefore moot: **nothing needs to install.** Third-party
+dependencies (pytest, sqlalchemy, …) resolve from the shared user site-packages,
+which is correct: they are the same versions for every slot.
 
-Recommend **(a)**, and verify how the session runtime resolves the interpreter
-before committing to it. This is the single largest unknown in the migration.
+Two residual limitations, both **pre-existing under clone mode** and therefore
+not regressions:
+
+1. **A branch that adds a dependency** won't have it in the ambient environment.
+   Handle it when it happens (`pip install` the new dep, or add a setup command
+   at that point) rather than paying a per-slot venv cost up front.
+2. **`packages/aq-client` is installed non-editable** into site-packages, so a
+   slot's edits to it are invisible to imports. Identical under clone mode today.
+   If agents start working on the generated client, that needs revisiting.
+
+The `aq` console script always resolves to `agent-queue2`'s code regardless of
+cwd. That is **correct** — `aq` is a thin HTTP client to the daemon, and the
+daemon runs from `agent-queue2`.
 
 ### 5.2 Slot count is 2
 
@@ -154,13 +167,12 @@ Each step is independently verifiable. Do not batch them.
 
 ### Step 0 — preconditions
 - [ ] Daemon stopped (currently is)
-- [ ] `git push origin main` (§4)
+- [x] `git push origin main` — done 2026-08-24 (`af3861b4..904fa68a`, 284 commits)
 - [ ] Tag rollback point: `git tag pre-worktree-migration`
 - [ ] Record current state: `aq workspace list --json > /tmp/ws-before.json`
 
-### Step 1 — decide and set `worktree_setup` (§5.1)
-- [ ] Confirm the interpreter/venv strategy against the session runtime
-- [ ] Write the chosen commands into `vault/workspace-kinds/project-repo.md`
+### Step 1 — `worktree_setup` (§5.1) — RESOLVED, no action
+- [x] Verified: slots need no pip install; leave `worktree_setup: []`
 
 ### Step 2 — flip the mode
 ```yaml
@@ -227,7 +239,7 @@ durable artifact regardless of mode.
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| `worktree_setup` empty → slots cannot run tests | **high** | §5.1; blocks Step 4 acceptance |
+| ~~`worktree_setup` empty → slots cannot run tests~~ | **resolved** | §5.1 — verified: pytest rootdir shadows the editable install; no install needed |
 | Slots branch from stale `origin/main` | **high** | §4 — push first |
 | vault→DB kind sync silently no-ops | medium | Step 2 explicit verification |
 | Slot loss across daemon restart | medium | Step 5 is a dedicated gate |
