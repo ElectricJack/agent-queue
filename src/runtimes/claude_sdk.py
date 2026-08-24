@@ -654,8 +654,24 @@ class ClaudeSDKRuntime(Runtime):
                                     summary_parts.append(str(message.result))
                             usage = getattr(message, "usage", None)
                             if usage and isinstance(usage, dict):
-                                tokens_used += usage.get("input_tokens", 0) + usage.get(
-                                    "output_tokens", 0
+                                # Count cache reads/writes too.  The CLI caches
+                                # the system prompt and tool schemas
+                                # aggressively, so on a warm session almost the
+                                # entire input arrives as
+                                # ``cache_read_input_tokens`` and plain
+                                # ``input_tokens`` collapses to a handful.
+                                # Summing only input+output therefore
+                                # under-reported real spend by an order of
+                                # magnitude — and made ``tokens_used == 0``
+                                # (which this method treats as "no output,
+                                # retry fresh") far more likely than it should
+                                # be.  These are billed tokens; the ledger is
+                                # an audit record of tokens actually consumed.
+                                tokens_used += (
+                                    usage.get("input_tokens", 0)
+                                    + usage.get("output_tokens", 0)
+                                    + usage.get("cache_read_input_tokens", 0)
+                                    + usage.get("cache_creation_input_tokens", 0)
                                 )
                         elif hasattr(message, "result") and message.result:
                             summary_parts.append(str(message.result))

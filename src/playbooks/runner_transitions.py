@@ -654,7 +654,9 @@ class TransitionMixin:
             )
 
         # Track tokens for the transition call
-        self.tokens_used += _estimate_tokens(transition_prompt, decision)
+        _transition_tokens = _estimate_tokens(transition_prompt, decision)
+        self.tokens_used += _transition_tokens
+        await self._record_token_ledger(_transition_tokens, node_id)
 
         return matched_target
 
