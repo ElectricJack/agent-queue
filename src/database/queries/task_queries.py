@@ -10,9 +10,11 @@ import uuid
 from sqlalchemy import delete, insert, select, update, func, and_
 
 from src.database.tables import (
+    gates,
     task_context,
     task_criteria,
     task_dependencies,
+    task_gates,
     task_labels,
     task_metadata,
     task_results,
@@ -68,6 +70,7 @@ class TaskQueryMixin:
                     affinity_reason=task.affinity_reason,
                     workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
                     dedup_key=task.dedup_key,
+                    discord_thread_id=task.discord_thread_id,
                     intelligence_class=task.intelligence_class,
                     # A brand-new row has no edges yet, so it starts
                     # unblocked; the edges that follow recompute it
@@ -297,6 +300,13 @@ class TaskQueryMixin:
         The former dependents (and any fan-in waiters that reach this task
         through a container) are snapshotted before the edges disappear and
         recomputed in the same transaction.
+
+        Gates the task was waiting on are unhooked here too, and any gate
+        left with no waiters at all is marked ``expired``. Without this the
+        ``task_gates`` FK (``NO ACTION``) simply refuses the delete, and
+        force-removing those rows instead strands the gate ``open`` forever
+        — which for a human gate means live Approve/Deny buttons in Discord
+        for a task that no longer exists.
         """
         async with self._engine.begin() as conn:
             # Snapshot everything whose projection this deletion can change,
@@ -317,6 +327,34 @@ class TaskQueryMixin:
             await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
             await conn.execute(delete(task_labels).where(task_labels.c.task_id == task_id))
             await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
+
+            # Gates: drop this task's waiter rows, then expire any gate that
+            # is left with nothing waiting on it.  Collect the candidates
+            # first — after the delete there is no way back to them.
+            gate_ids = {
+                r[0]
+                for r in (
+                    await conn.execute(
+                        select(task_gates.c.gate_id).where(task_gates.c.task_id == task_id)
+                    )
+                ).fetchall()
+            }
+            await conn.execute(delete(task_gates).where(task_gates.c.task_id == task_id))
+            for gate_id in gate_ids:
+                still_waiting = (
+                    await conn.execute(
+                        select(task_gates.c.task_id)
+                        .where(task_gates.c.gate_id == gate_id)
+                        .limit(1)
+                    )
+                ).fetchone()
+                if still_waiting is None:
+                    await conn.execute(
+                        update(gates)
+                        .where(and_(gates.c.id == gate_id, gates.c.status == "open"))
+                        .values(status="expired", resolution="last waiter task deleted")
+                    )
+
             await conn.execute(delete(tasks).where(tasks.c.id == task_id))
 
             flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
@@ -646,6 +684,7 @@ class TaskQueryMixin:
             created_at=row.get("created_at", 0.0),
             updated_at=row.get("updated_at", 0.0),
             dedup_key=row.get("dedup_key"),
+            discord_thread_id=row.get("discord_thread_id"),
             intelligence_class=row.get("intelligence_class"),
         )
 

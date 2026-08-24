@@ -2055,3 +2055,50 @@ class TestAdapterParity:
         lite = {m for m in dir(SQLiteDatabaseAdapter) if not m.startswith("_")}
         assert lite - pg == set(), f"on SQLite but missing from PostgreSQL: {sorted(lite - pg)}"
         assert pg - lite == set(), f"on PostgreSQL but missing from SQLite: {sorted(pg - lite)}"
+
+
+class TestDeleteTaskClosesGates:
+    """Deleting a task must not strand its gates open.
+
+    ``delete_task`` cleaned eight child tables but never touched gates, so the
+    ``task_gates`` FK (NO ACTION) refused the delete outright — and clearing
+    those rows by hand instead left the gate ``open`` with no waiters, which
+    for a human gate means live Approve/Deny buttons in Discord for a task
+    that no longer exists.
+    """
+
+    @pytest.mark.asyncio
+    async def test_gate_expires_when_its_last_waiter_is_deleted(self, tmp_path):
+        db = Database(str(tmp_path / "gates1.db"))
+        await db.initialize()
+        await db.create_project(Project(id="p1", name="P1"))
+        await db.create_task(Task(id="t1", project_id="p1", title="T1", description="d"))
+
+        gate_id, created = await db.create_gate(
+            project_id="p1", gate_type="human", title="Approve?", waiter_task_ids=["t1"]
+        )
+        assert created
+
+        await db.delete_task("t1")
+
+        gate = await db.get_gate(gate_id)
+        assert gate is not None, "the gate row itself should survive as history"
+        assert gate["status"] == "expired"
+        await db.close()
+
+    @pytest.mark.asyncio
+    async def test_gate_stays_open_while_another_waiter_remains(self, tmp_path):
+        db = Database(str(tmp_path / "gates2.db"))
+        await db.initialize()
+        await db.create_project(Project(id="p1", name="P1"))
+        await db.create_task(Task(id="t1", project_id="p1", title="T1", description="d"))
+        await db.create_task(Task(id="t2", project_id="p1", title="T2", description="d"))
+
+        gate_id, _ = await db.create_gate(
+            project_id="p1", gate_type="human", title="Approve?", waiter_task_ids=["t1", "t2"]
+        )
+        await db.delete_task("t1")
+
+        gate = await db.get_gate(gate_id)
+        assert gate["status"] == "open", "t2 is still waiting on this gate"
+        await db.close()
