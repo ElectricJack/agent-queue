@@ -209,7 +209,13 @@ class TranscriptWatcher:
                 task = None
             if task is not None and getattr(task, "assigned_agent_id", None):
                 return task.assigned_agent_id
-        return None
+        # Fall back to the session id, as documented above.  Previously this
+        # returned None, and the caller skips _record_usage entirely when the
+        # agent is unresolvable — so every session without an assigned agent
+        # (supervisor sessions, or any task whose agent had already been
+        # released) silently dropped its usage instead of recording it under
+        # a best-effort key.
+        return getattr(row, "id", None)
 
     async def _record_usage(
         self, row, entry: TranscriptEntry, *, agent_id: str

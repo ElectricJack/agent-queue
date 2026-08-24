@@ -18,7 +18,6 @@ from src.database.tables import (
     task_results,
     task_tools,
     tasks,
-    token_ledger,
 )
 from src.database.queries.blocked_state import (
     PROJECTION_INPUT_COLUMNS,
@@ -303,7 +302,10 @@ class TaskQueryMixin:
             affected.discard(task_id)
 
             await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
-            await conn.execute(delete(token_ledger).where(token_ledger.c.task_id == task_id))
+            # token_ledger rows survive task deletion: the tokens were really
+            # spent against the project's budget, so dropping them would
+            # understate cost.  `delete_project` remains the bulk escape hatch
+            # for actually purging a project's ledger.
             await conn.execute(
                 delete(task_dependencies).where(
                     (task_dependencies.c.task_id == task_id)

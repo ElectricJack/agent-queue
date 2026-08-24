@@ -254,8 +254,19 @@ token_ledger = Table(
     metadata,
     Column("id", Text, primary_key=True),
     Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
-    Column("agent_id", Text, ForeignKey("agents.id"), nullable=False),
-    Column("task_id", Text, ForeignKey("tasks.id"), nullable=False),
+    # ``agent_id`` and ``task_id`` are deliberately NOT foreign keys.  The
+    # ledger is an append-only *audit* record of money spent: it has to
+    # outlive the ephemeral rows it refers to.  Agents are reaped whenever
+    # their profile stops resolving or a project drops below its concurrency
+    # cap, and tasks are moved out of ``tasks`` into ``archived_tasks`` the
+    # moment they complete.  While these were real FKs, every one of those
+    # routine lifecycle events had to cascade-delete the matching ledger
+    # rows, so a 24h/7d ``token_audit`` could only ever see spend from tasks
+    # that had not been archived yet — in practice, zero.  Both columns are
+    # now best-effort attribution strings, which is what the readers already
+    # assumed (``get_cost_rollup`` outer-joins ``agents``).
+    Column("agent_id", Text, nullable=False),
+    Column("task_id", Text, nullable=False),
     Column("tokens_used", Integer, nullable=False),
     # Pricing split (trust-and-ops spec §6.1).  Nullable — rows written
     # before the split existed (and runtimes that don't report it)

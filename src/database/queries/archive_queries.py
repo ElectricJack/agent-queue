@@ -20,7 +20,6 @@ from src.database.tables import (
     task_results,
     task_tools,
     tasks,
-    token_ledger,
     workspaces,
 )
 from src.models import TaskStatus
@@ -103,7 +102,11 @@ class ArchiveQueryMixin:
 
             # Clean up child rows, then remove from active table
             await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
-            await conn.execute(delete(token_ledger).where(token_ledger.c.task_id == task_id))
+            # NOTE: token_ledger rows are deliberately NOT deleted here.
+            # Archiving is the normal end-of-life for a completed task, so
+            # cascading into the ledger erased the spend for every task that
+            # ever finished — which is why `token_audit` reported zero.  The
+            # ledger keeps the task_id as a best-effort attribution string.
             await conn.execute(
                 delete(task_dependencies).where(
                     (task_dependencies.c.task_id == task_id)

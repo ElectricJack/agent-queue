@@ -6,7 +6,7 @@ import time
 
 from sqlalchemy import delete, insert, select, update
 
-from src.database.tables import agents, task_results, tasks, token_ledger, workspaces
+from src.database.tables import agents, task_results, tasks, workspaces
 from src.models import Agent, AgentState
 
 
@@ -66,14 +66,20 @@ class AgentQueryMixin:
         """Delete an agent and all dependent records.
 
         Cascading order:
-        1. token_ledger rows
-        2. task_results rows
-        3. workspace locks (release, don't delete)
-        4. tasks.assigned_agent_id (NULLify)
-        5. agent record
+        1. task_results rows
+        2. workspace locks (release, don't delete)
+        3. tasks.assigned_agent_id (NULLify)
+        4. agent record
+
+        ``token_ledger`` rows are intentionally left behind.  Agents are
+        ephemeral — the startup reconciler reaps any whose profile no longer
+        resolves, plus any idle agents over a project's concurrency cap — and
+        cascading into the ledger meant each reap silently destroyed that
+        agent's entire spend history.  ``agent_id`` survives as a best-effort
+        attribution string; ``get_cost_rollup`` already outer-joins ``agents``
+        so unresolvable ids roll up under "(unknown)".
         """
         async with self._engine.begin() as conn:
-            await conn.execute(delete(token_ledger).where(token_ledger.c.agent_id == agent_id))
             await conn.execute(delete(task_results).where(task_results.c.agent_id == agent_id))
             await conn.execute(
                 update(workspaces)
