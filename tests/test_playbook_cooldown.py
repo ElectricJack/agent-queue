@@ -815,3 +815,46 @@ class TestCooldownPersistence:
         (tmp_path / "playbook_cooldowns.json").write_text("{not json")
         manager = self._mgr(tmp_path, [pb])
         assert not manager.is_on_cooldown(pb.id, "system")
+
+
+class TestCommandHandlerWiring:
+    """The manager must accept a handler wired after construction.
+
+    ``Orchestrator.initialize()`` builds the PlaybookManager, but ``main.py``
+    only calls ``orch.set_command_handler(...)`` *after* that returns, so
+    construction captured ``None``.  The vault watcher needs a handler to
+    enqueue a compile task, so with ``None`` it logged "No command_handler
+    wired on PlaybookManager" and skipped compilation — every playbook
+    markdown edit was silently ignored while the stale compiled JSON kept
+    running.
+    """
+
+    def test_handler_can_be_wired_after_construction(self):
+        manager = PlaybookManager(config=None)
+        assert manager.command_handler is None
+
+        sentinel = object()
+        manager.set_command_handler(sentinel)
+        assert manager.command_handler is sentinel
+
+    def test_orchestrator_forwards_handler_to_playbook_manager(self):
+        """The real wiring path: orchestrator setter -> manager."""
+        from src.orchestrator.core import Orchestrator
+
+        orch = Orchestrator.__new__(Orchestrator)
+        orch._command_handler = None
+        orch.playbook_manager = PlaybookManager(config=None)
+
+        sentinel = object()
+        Orchestrator.set_command_handler(orch, sentinel)
+        assert orch.playbook_manager.command_handler is sentinel
+
+    def test_orchestrator_setter_tolerates_no_playbook_manager(self):
+        """playbooks.enabled=false leaves playbook_manager as None."""
+        from src.orchestrator.core import Orchestrator
+
+        orch = Orchestrator.__new__(Orchestrator)
+        orch._command_handler = None
+        orch.playbook_manager = None
+
+        Orchestrator.set_command_handler(orch, object())  # must not raise

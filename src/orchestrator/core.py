@@ -554,8 +554,20 @@ class Orchestrator(
         return self._git_mutexes.get(key)
 
     def set_command_handler(self, handler: Any) -> None:
-        """Store a reference to the command handler for interactive views."""
+        """Store a reference to the command handler for interactive views.
+
+        Also forwards to ``playbook_manager``, which is constructed during
+        ``initialize()`` — before ``main.py`` sets the daemon-wide handler —
+        and would otherwise hold the ``None`` it captured there.  Without the
+        forward the vault watcher can never enqueue a compile task, so
+        playbook markdown edits never take effect.
+        """
         self._command_handler = handler
+        playbook_manager = getattr(self, "playbook_manager", None)
+        if playbook_manager is not None and hasattr(
+            playbook_manager, "set_command_handler"
+        ):
+            playbook_manager.set_command_handler(handler)
 
     def _get_handler(self) -> Any:
         """Return the command handler or None. Used by interactive views."""

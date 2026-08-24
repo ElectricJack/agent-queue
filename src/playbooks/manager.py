@@ -1658,8 +1658,25 @@ class PlaybookManager:
 
     @property
     def command_handler(self):
-        """Return the CommandHandler wired in at construction (or None)."""
+        """Return the wired CommandHandler, or None."""
         return self._handler
+
+    def set_command_handler(self, handler) -> None:
+        """Wire (or re-wire) the CommandHandler after construction.
+
+        The orchestrator builds this manager during ``initialize()``, but the
+        daemon-wide handler is not set on the orchestrator until *after* that
+        call returns (``src/main.py``).  Construction therefore captured
+        ``None``, and because the vault watcher needs a handler to enqueue a
+        compile task, **every playbook markdown edit was silently ignored** —
+        the watcher logged "No command_handler wired on PlaybookManager" and
+        the stale compiled JSON kept running.  Markdown is documented as the
+        source of truth for playbooks, so this made edits look applied when
+        they were not.
+
+        ``Orchestrator.set_command_handler`` now forwards here.
+        """
+        self._handler = handler
 
     async def remove_playbook(self, playbook_id: str) -> bool:
         """Remove a playbook from the active registry and disk.
