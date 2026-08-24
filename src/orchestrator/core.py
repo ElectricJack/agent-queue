@@ -1889,6 +1889,25 @@ class Orchestrator(
         # one written, even when other profiles (e.g. the bundled
         # supervisor / claude-* profiles created by ensure_vault_structure)
         # already exist.
+        # Self-heal the legacy colon-encoded layout first.  An older
+        # ``_vault_profile_path`` wrote project-scoped profiles to
+        # ``vault/agent-types/project:<pid>:<type>/`` — a path the profile
+        # scanner refuses to read, so the markdown stopped being the source
+        # of truth while the DB row stayed live.  Relocating before the
+        # migration below means the "vault file already exists" idempotency
+        # check sees the canonical path and skips correctly.
+        from src.profiles.migration import relocate_stray_scoped_profiles
+
+        try:
+            relocation = relocate_stray_scoped_profiles(data_dir)
+            if relocation["relocated"]:
+                logger.info(
+                    "Relocated %d stray scoped profile dir(s) into the project vault layout",
+                    relocation["relocated"],
+                )
+        except Exception:
+            logger.warning("Stray scoped profile relocation failed", exc_info=True)
+
         if all_profiles:
             from src.profiles.migration import migrate_db_profiles_to_vault
 

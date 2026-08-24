@@ -32,6 +32,7 @@ from src.models import (
     WorkspaceKind,
 )
 from src.profiles.workspace_kind_parser import parse_workspace_kind_file
+from src.vault_index import is_generated_hub_file
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,9 @@ class WorkspaceKindStore:
         sys_dir = self.vault_root / "workspace-kinds"
         if sys_dir.is_dir():
             for f in sorted(sys_dir.glob("*.md")):
+                if is_generated_hub_file(f):
+                    logger.debug("Skipping generated vault hub file %s", f)
+                    continue
                 try:
                     kind = parse_workspace_kind_file(f, project_id=SYSTEM_KIND_SCOPE)
                     await self.db.upsert_workspace_kind(kind)
@@ -97,6 +101,9 @@ class WorkspaceKindStore:
                 if not kinds_dir.is_dir():
                     continue
                 for f in sorted(kinds_dir.glob("*.md")):
+                    if is_generated_hub_file(f):
+                        logger.debug("Skipping generated vault hub file %s", f)
+                        continue
                     try:
                         kind = parse_workspace_kind_file(f, project_id=pid)
                         await self.db.upsert_workspace_kind(kind)

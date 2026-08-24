@@ -39,9 +39,51 @@ _DEFAULT_PROMPTS_DIR = Path(__file__).parent / "prompts"
 # Approximate token budgets for memory tiers (see memory-scoping.md §2).
 # 1 token ≈ 4 chars.  We warn when a tier significantly exceeds its budget.
 _CHARS_PER_TOKEN = 4
-_L0_TOKEN_BUDGET = 50  # ~200 chars
+# L0 is not a bare one-line role blurb: ``set_l0_role_from_markdown`` composes
+# ``## Role`` + ``## Rules`` + ``## Reflection`` into a single identity block,
+# which is the shape every shipped agent-type profile uses.  The old 50-token
+# figure described only the Role sentence and made the overflow warning fire on
+# every prompt build for every well-formed profile.  400 tokens (~1600 chars)
+# is what a complete Role+Rules+Reflection block actually costs, so the warning
+# (which trips at 2×) again means "this profile has genuinely run away".
+_L0_TOKEN_BUDGET = 400  # ~1600 chars — Role + Rules + Reflection
 _L1_TOKEN_BUDGET = 200  # ~800 chars
 _L2_TOKEN_BUDGET = 500  # ~2000 chars
+
+# Tier-overflow warnings are emitted from setters that run once per prompt
+# build — dozens of times per playbook run.  A single oversized profile would
+# otherwise bury every other warning in the log, so we key each warning on
+# (tier, text) and emit it only the first time that exact content is seen.
+_warned_tier_overflows: set[tuple[str, int]] = set()
+
+
+def _warn_tier_overflow(tier: str, text: str, estimated_tokens: int, budget: int) -> None:
+    """Log a tier-budget overflow warning at most once per distinct text.
+
+    Repeats are dropped to ``debug`` so the signal stays visible in the
+    warning log without a rebuild loop flooding it.
+    """
+    key = (tier, hash(text))
+    if key in _warned_tier_overflows:
+        logger.debug(
+            "%s text is ~%d tokens (budget ~%d); already warned",
+            tier,
+            estimated_tokens,
+            budget,
+        )
+        return
+    _warned_tier_overflows.add(key)
+    logger.warning(
+        "%s text is ~%d tokens (budget ~%d); consider trimming",
+        tier,
+        estimated_tokens,
+        budget,
+    )
+
+
+def reset_tier_overflow_warnings() -> None:
+    """Clear the overflow-warning dedupe cache (used by tests and reloads)."""
+    _warned_tier_overflows.clear()
 
 
 def extract_section(content: str, heading: str) -> str | None:
@@ -245,11 +287,12 @@ class PromptBuilder:
     # ------------------------------------------------------------------
 
     def set_l0_role(self, role_text: str) -> None:
-        """L0 Identity tier: Set the agent's role description (~50 tokens).
+        """L0 Identity tier: Set the agent's role block (~400 tokens).
 
         This is the highest-priority content in the prompt, injected before
-        all other layers.  Sourced from the ``## Role`` section of an
-        agent-type profile.md or from ``AgentProfile.system_prompt_suffix``.
+        all other layers.  Sourced from the ``## Role`` / ``## Rules`` /
+        ``## Reflection`` sections of an agent-type profile.md or from
+        ``AgentProfile.system_prompt_suffix``.
 
         See ``docs/specs/design/memory-scoping.md`` §2 (L0 tier).
         """
@@ -258,11 +301,7 @@ class PromptBuilder:
             return
         estimated_tokens = len(text) / _CHARS_PER_TOKEN
         if estimated_tokens > _L0_TOKEN_BUDGET * 2:
-            logger.warning(
-                "L0 role text is ~%d tokens (budget ~%d); consider trimming",
-                int(estimated_tokens),
-                _L0_TOKEN_BUDGET,
-            )
+            _warn_tier_overflow("L0 role", text, int(estimated_tokens), _L0_TOKEN_BUDGET)
         self._l0_role = text
 
     def set_l0_role_from_markdown(self, profile_md: str) -> bool:
@@ -330,11 +369,7 @@ class PromptBuilder:
             return
         estimated_tokens = len(text) / _CHARS_PER_TOKEN
         if estimated_tokens > _L1_TOKEN_BUDGET * 2:
-            logger.warning(
-                "L1 facts text is ~%d tokens (budget ~%d); consider trimming",
-                int(estimated_tokens),
-                _L1_TOKEN_BUDGET,
-            )
+            _warn_tier_overflow("L1 facts", text, int(estimated_tokens), _L1_TOKEN_BUDGET)
         self._l1_facts = text
 
     def set_l1_guidance(self, guidance_text: str) -> None:
@@ -363,11 +398,7 @@ class PromptBuilder:
             return
         estimated_tokens = len(text) / _CHARS_PER_TOKEN
         if estimated_tokens > _L2_TOKEN_BUDGET * 2:
-            logger.warning(
-                "L2 context text is ~%d tokens (budget ~%d); consider trimming",
-                int(estimated_tokens),
-                _L2_TOKEN_BUDGET,
-            )
+            _warn_tier_overflow("L2 context", text, int(estimated_tokens), _L2_TOKEN_BUDGET)
         self._l2_context = text
 
     def set_identity(self, name: str, variables: dict[str, str] | None = None) -> None:

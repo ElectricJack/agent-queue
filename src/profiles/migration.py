@@ -123,8 +123,38 @@ class MigrationReport:
         }
 
 
+def split_scoped_profile_id(profile_id: str) -> tuple[str, str] | None:
+    """Split a ``project:<project_id>:<agent_type>`` id into its parts.
+
+    Returns ``None`` for plain (system-scope) ids such as ``supervisor``.
+    """
+    parts = profile_id.split(":", 2)
+    if len(parts) == 3 and parts[0] == "project" and parts[1] and parts[2]:
+        return parts[1], parts[2]
+    return None
+
+
 def _vault_profile_path(data_dir: str, profile_id: str) -> str:
-    """Return the vault file path for a profile's markdown definition."""
+    """Return the vault file path for a profile's markdown definition.
+
+    System-scope profiles live at ``vault/agent-types/<id>/profile.md``.
+    Project-scoped profiles — whose DB id is the colon-encoded
+    ``project:<project_id>:<agent_type>`` form — belong under
+    ``vault/projects/<project_id>/agent-types/<agent_type>/profile.md``.
+
+    Using the raw id as a directory name for the scoped case (the old
+    behaviour) produced ``agent-types/project:<pid>:<type>/profile.md``
+    directories that :func:`src.profiles.sync.is_invalid_scoped_flat_path`
+    rejects, so the markdown silently stopped being the source of truth
+    for those profiles and the vault scan warned about them on every
+    startup.
+    """
+    scoped = split_scoped_profile_id(profile_id)
+    if scoped:
+        project_id, agent_type = scoped
+        return os.path.join(
+            data_dir, "vault", "projects", project_id, "agent-types", agent_type, "profile.md"
+        )
     return os.path.join(data_dir, "vault", "agent-types", profile_id, "profile.md")
 
 
@@ -505,3 +535,142 @@ async def migrate_db_profiles_to_vault(
     )
 
     return report
+
+
+# ----------------------------------------------------------------------
+# Legacy layout self-heal: colon-encoded dirs in the global agent-types folder
+# ----------------------------------------------------------------------
+
+
+def _relocate_stray_file(src_file: Path, dst_file: Path, details: list[str]) -> None:
+    """Move one file from a stray profile tree to its canonical location.
+
+    The canonical file always wins a conflict.  A differing stray copy is
+    preserved next to it as ``<name>.stray.bak`` so nothing is lost and an
+    operator can reconcile by hand.
+    """
+    if not dst_file.exists():
+        dst_file.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(src_file, dst_file)
+        details.append(f"  moved {src_file.name} → {dst_file}")
+        return
+
+    try:
+        same = src_file.read_bytes() == dst_file.read_bytes()
+    except OSError:
+        same = False
+
+    if same:
+        src_file.unlink()
+        details.append(f"  dropped duplicate {src_file.name} (identical to {dst_file})")
+        return
+
+    backup = dst_file.with_name(dst_file.name + ".stray.bak")
+    os.replace(src_file, backup)
+    details.append(f"  kept canonical {dst_file}; stray copy saved as {backup.name}")
+    logger.warning(
+        "Stray scoped profile file %s differed from the canonical %s — "
+        "saved the stray copy as %s for manual reconciliation",
+        src_file,
+        dst_file,
+        backup,
+    )
+
+
+def relocate_stray_scoped_profiles(data_dir: str) -> dict[str, Any]:
+    """Move colon-encoded scoped profile dirs into the project vault layout.
+
+    An older :func:`_vault_profile_path` used the raw profile id as the
+    directory name, so project-scoped profiles were written to
+    ``vault/agent-types/project:<pid>:<type>/`` instead of
+    ``vault/projects/<pid>/agent-types/<type>/``.  The profile scanner
+    (:func:`src.profiles.sync.is_invalid_scoped_flat_path`) correctly refuses
+    to read that layout, which left the DB row live while its markdown
+    source was inert — edits to those files silently did nothing — and
+    emitted a warning on every startup scan.
+
+    This migration relocates each such directory to the canonical path.  It
+    is idempotent: once no colon-named directories remain it is a no-op.
+
+    Returns
+    -------
+    dict
+        ``{"success", "relocated", "skipped", "details"}``.
+    """
+    agent_types_root = Path(data_dir) / "vault" / "agent-types"
+    details: list[str] = []
+    relocated = 0
+    skipped = 0
+
+    if not agent_types_root.is_dir():
+        return {"success": True, "relocated": 0, "skipped": 0, "details": details}
+
+    for entry in sorted(agent_types_root.iterdir()):
+        if not entry.is_dir() or ":" not in entry.name:
+            continue
+
+        scoped = split_scoped_profile_id(entry.name)
+        if not scoped:
+            skipped += 1
+            details.append(
+                f"  SKIP {entry.name}: colon-encoded directory does not parse as "
+                "project:<project_id>:<agent_type>"
+            )
+            logger.warning(
+                "Unrecognised colon-encoded directory in vault/agent-types: %s "
+                "(left in place for manual review)",
+                entry.name,
+            )
+            continue
+
+        project_id, agent_type = scoped
+        dst_dir = Path(data_dir) / "vault" / "projects" / project_id / "agent-types" / agent_type
+        details.append(f"{entry.name} → projects/{project_id}/agent-types/{agent_type}/")
+
+        try:
+            if not dst_dir.exists():
+                dst_dir.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(entry, dst_dir)
+                details.append(f"  moved whole directory → {dst_dir}")
+            else:
+                # Canonical tree already exists — merge file-by-file, then
+                # drop the now-empty stray tree.
+                for src_file in sorted(entry.rglob("*")):
+                    if not src_file.is_file():
+                        continue
+                    _relocate_stray_file(src_file, dst_dir / src_file.relative_to(entry), details)
+                # Remove leftover (now empty) directories, deepest first.
+                for leftover in sorted(entry.rglob("*"), reverse=True):
+                    if leftover.is_dir():
+                        leftover.rmdir()
+                entry.rmdir()
+                details.append(f"  removed stray directory {entry.name}")
+            relocated += 1
+            logger.info(
+                "Relocated stray scoped profile %s → %s",
+                entry.name,
+                dst_dir,
+            )
+        except OSError as exc:
+            skipped += 1
+            details.append(f"  ERROR {entry.name}: {exc}")
+            logger.warning(
+                "Failed to relocate stray scoped profile %s → %s: %s",
+                entry.name,
+                dst_dir,
+                exc,
+            )
+
+    if relocated:
+        logger.info(
+            "Stray scoped profile relocation: %d moved, %d skipped",
+            relocated,
+            skipped,
+        )
+
+    return {
+        "success": skipped == 0,
+        "relocated": relocated,
+        "skipped": skipped,
+        "details": details,
+    }
