@@ -610,9 +610,10 @@ the event catalog needs expansion.
 Periodic triggers are modeled as synthetic events so that all playbooks share a
 uniform event-driven model. Two families are supported:
 
-- **`timer.{N}m` / `timer.{N}h`** — elapsed-time interval from daemon start (e.g.
-  `timer.30m`, `timer.4h`, `timer.24h`). Not persisted; daemon restart resets
-  elapsed time and fires all intervals on the first tick.
+- **`timer.{N}m` / `timer.{N}h`** — elapsed-time interval measured from the last
+  fire (e.g. `timer.30m`, `timer.4h`, `timer.24h`). Last-fire times are persisted
+  to `{data_dir}/timer_state.json`, so a restart resumes the schedule rather than
+  restarting the clock. Timers do **not** fire on daemon start.
 - **`cron.HH:MM`** — daily wall-clock time in the system's local timezone (e.g.
   `cron.07:00`, `cron.17:30`). Fires once per local day at-or-after the target.
   Persisted to `{data_dir}/timer_state.json` so daemon restarts do not cause a
@@ -639,6 +640,19 @@ synthetic `timer.*` and `cron.*` events.
 4. Arbitrary intervals are supported (minimum 1 minute, no maximum)
 5. If a playbook is disabled or removed, its interval is dropped (unless another
    playbook also uses it)
+6. **Startup does not fire.** Each fire records a wall-clock timestamp in
+   `{data_dir}/timer_state.json`; on start those are restored and an interval
+   fires only once its full duration has elapsed *since that timestamp*. Downtime
+   counts toward the interval, so a `timer.30m` last fired 40 minutes ago fires on
+   the first tick, while one fired 5 minutes ago waits out the remaining 25. An
+   interval with no recorded fire time (new playbook, or a lost state file) waits
+   one full interval.
+
+   This reverses the original behavior, where startup marked every interval
+   overdue. That made a restart indistinguishable from an elapsed interval: two
+   restarts minutes apart ran every periodic playbook twice, and per-playbook
+   `cooldown` could not suppress it because cooldown state is in-memory and is
+   itself cleared by the restart.
 
 **Behavior — `cron.*` (daily wall-clock triggers):**
 1. Same discovery/rebuild flow: scans playbook triggers, keeps only those

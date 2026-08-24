@@ -17,6 +17,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import time
 
 from src.timer_service import (
     TimerService,
@@ -618,7 +619,10 @@ class TestRoadmap5310:
       (d) multiple intervals fire at independent cadences
       (e) timer continues firing (recurring) after each cycle
       (f) timer stops when playbook removed/disabled
-      (g) restart resumes from config — fires immediately if overdue
+      (g) restart resumes from config, and from persisted fire times —
+          a timer fires only once its interval has genuinely elapsed,
+          never merely because the daemon started (see
+          ``TestNoFireOnStartup``)
     """
 
     # -- (a) playbook with trigger timer.30m receives timer event every 30 min --
@@ -939,13 +943,15 @@ class TestRoadmap5310:
     # -- (g) system restart resumes timers from config, fires immediately --
 
     @pytest.mark.asyncio
-    async def test_restart_fires_immediately(self):
-        """After a restart (start()), all timers fire on the first tick.
+    async def test_restart_does_not_fire_immediately(self):
+        """After a restart, no timer fires until its interval has elapsed.
 
-        Per spec: 'system restart resumes timers from configuration
-        (not from last fire time — fires immediately if overdue).'
-        Since fire times are not persisted, all timers are treated as
-        overdue on startup.
+        This reverses the original 5.3.10(g) reading ("fires immediately if
+        overdue", implemented as *always* overdue on boot).  Treating every
+        restart as an elapsed interval meant two restarts minutes apart ran
+        every periodic playbook twice; per-playbook ``cooldown`` could not
+        suppress it because that state is in-memory as well.  "Overdue" now
+        means what it says, measured against the persisted last-fire time.
         """
         bus = _make_event_bus()
         manager = _make_playbook_manager(["timer.30m", "timer.4h"])
@@ -953,12 +959,9 @@ class TestRoadmap5310:
 
         service.start()
 
-        # First tick after start — both should fire immediately
         count = await service.tick()
-        assert count == 2
-
-        emitted_types = {call.args[0] for call in bus.emit.call_args_list}
-        assert emitted_types == {"timer.30m", "timer.4h"}
+        assert count == 0
+        bus.emit.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_restart_resumes_from_configuration(self):
@@ -986,53 +989,136 @@ class TestRoadmap5310:
         assert "timer.1h" not in service.active_intervals
 
     @pytest.mark.asyncio
-    async def test_restart_does_not_use_persisted_fire_times(self):
-        """Restart ignores previous fire times — always fires immediately."""
+    async def test_restart_uses_persisted_fire_times(self, tmp_path):
+        """Restart honours the previous fire time instead of resetting it."""
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.30m"])
+        state = str(tmp_path / "timer_state.json")
+        service = TimerService(
+            event_bus=bus, playbook_manager=manager, state_path=state
+        )
+
+        service.start()
+        # Force the interval to elapse so there is a fire time to persist.
+        service._last_fire["timer.30m"] = time.monotonic() - 1800
+        assert await service.tick() == 1
+
+        bus.reset_mock()
+
+        service.stop()
+        service.start()
+
+        # ~0s since the persisted fire — must not fire again.
+        assert await service.tick() == 0
+        bus.emit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_restart_does_not_reset_a_short_interval(self, tmp_path):
+        """A short interval is not handed a fresh window by restarting.
+
+        The inverse failure matters too: without persistence, restarting
+        more often than the interval means the timer never fires at all.
+        """
+        bus = _make_event_bus()
+        manager = _make_playbook_manager(["timer.1m"])
+        state = str(tmp_path / "timer_state.json")
+        service = TimerService(
+            event_bus=bus, playbook_manager=manager, state_path=state
+        )
+
+        service.start()
+        assert await service.tick() == 0  # nothing fires on boot
+
+        service._last_fire["timer.1m"] = time.monotonic() - 61
+        assert await service.tick() == 1
+        bus.reset_mock()
+
+        service.stop()
+        service.start()
+        assert await service.tick() == 0  # persisted fire was ~0s ago
+
+        # Once a full minute passes from the *persisted* fire, it fires again.
+        service._last_fire["timer.1m"] = time.monotonic() - 61
+        assert await service.tick() == 1
+
+
+class TestNoFireOnStartup:
+    """Timers fire after their duration elapses — never merely because the
+    daemon started.
+
+    Regression: ``start()`` used to force ``_last_fire = 0.0`` for every
+    interval, so each boot fired every periodic playbook on the first tick.
+    Restarting the daemon twice in three minutes therefore ran the 30-minute
+    playbooks twice, and per-playbook ``cooldown`` could not suppress it
+    because cooldown state is in-memory too.
+    """
+
+    @pytest.mark.asyncio
+    async def test_does_not_fire_on_first_tick_after_start(self):
         bus = _make_event_bus()
         manager = _make_playbook_manager(["timer.30m"])
         service = TimerService(event_bus=bus, playbook_manager=manager)
-
-        # First start + fire
-        service.start()
-        count = await service.tick()
-        assert count == 1  # fires immediately on startup
-
-        bus.reset_mock()
-
-        # Stop and restart
-        service.stop()
         service.start()
 
-        # Should fire immediately again — no memory of previous fire time
-        count = await service.tick()
-        assert count == 1
-        assert bus.emit.call_args[0][0] == "timer.30m"
+        assert await service.tick() == 0
+        bus.emit.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_restart_after_interval_wait_still_fires_immediately(self):
-        """Even a short-interval timer fires immediately on restart."""
+    async def test_still_fires_once_the_interval_elapses(self):
         bus = _make_event_bus()
         manager = _make_playbook_manager(["timer.1m"])
         service = TimerService(event_bus=bus, playbook_manager=manager)
-
         service.start()
 
-        # First tick fires immediately (startup behavior)
-        count = await service.tick()
-        assert count == 1
+        assert await service.tick() == 0
+        service._last_fire["timer.1m"] = time.monotonic() - 61
+        assert await service.tick() == 1
 
-        bus.reset_mock()
+    @pytest.mark.asyncio
+    async def test_restart_resumes_schedule_instead_of_resetting_it(self, tmp_path):
+        """A restart must not hand every timer a fresh full interval.
 
-        # Immediately tick again — should NOT fire (only ~0s since last fire)
-        count = await service.tick()
-        assert count == 0
+        Without persistence a restart every 20 minutes means a ``timer.30m``
+        never fires at all — the opposite failure from firing on every boot.
+        """
+        state = str(tmp_path / "timer_state.json")
 
-        bus.reset_mock()
+        first = TimerService(
+            event_bus=_make_event_bus(),
+            playbook_manager=_make_playbook_manager(["timer.1m"]),
+            state_path=state,
+        )
+        first.start()
+        first._last_fire["timer.1m"] = time.monotonic() - 61
+        assert await first.tick() == 1  # fires and persists
+        first.stop()
 
-        # Restart
-        service.stop()
+        # Restart. The fire was ~0s ago, so the interval has NOT elapsed.
+        bus2 = _make_event_bus()
+        second = TimerService(
+            event_bus=bus2,
+            playbook_manager=_make_playbook_manager(["timer.1m"]),
+            state_path=state,
+        )
+        second.start()
+        assert await second.tick() == 0
+        bus2.emit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_interval_elapsed_while_daemon_was_down_fires_on_start(self, tmp_path):
+        """Downtime counts toward the interval — it is not dead time."""
+        state = str(tmp_path / "timer_state.json")
+        import json as _json
+
+        # Last fired two hours ago, while the daemon was stopped.
+        with open(state, "w", encoding="utf-8") as fh:
+            _json.dump({"interval_last_fire": {"timer.30m": time.time() - 7200}}, fh)
+
+        bus = _make_event_bus()
+        service = TimerService(
+            event_bus=bus,
+            playbook_manager=_make_playbook_manager(["timer.30m"]),
+            state_path=state,
+        )
         service.start()
-
-        # Fires immediately again on restart
-        count = await service.tick()
-        assert count == 1
+        assert await service.tick() == 1

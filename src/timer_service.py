@@ -230,6 +230,11 @@ class TimerService:
         # persistence (used in tests).
         self._state_path: str | None = state_path
 
+        # Wall-clock (epoch) time of the last fire per interval trigger.
+        # ``_last_fire`` is monotonic and therefore meaningless across a
+        # restart; this is the persisted mirror used to rebuild it.
+        self._wall_last_fire: dict[str, float] = {}
+
         # Timestamp when the service was started (or intervals rebuilt).
         # Used as the initial "last fire" for newly added intervals so they
         # don't fire immediately on registration.
@@ -265,26 +270,32 @@ class TimerService:
         intervals.  Call this after the playbook manager has loaded its
         compiled playbooks.
 
-        On startup all timers are considered overdue and fire on the first
-        ``tick()`` call.  Since fire times are not persisted across restarts,
-        there is no way to know how much time has passed — so we fire
-        immediately rather than making everything wait a full interval.
+        Timers do **not** fire on startup.  An interval fires only once its
+        full duration has elapsed, and persisted fire times mean that
+        duration is measured across restarts rather than from boot: a
+        ``timer.30m`` whose last fire was 25 minutes before shutdown waits
+        the remaining 5 minutes, while one whose last fire was 40 minutes
+        ago is genuinely due and fires on the first tick.
+
+        This is deliberate.  Firing every timer on boot made a daemon
+        restart indistinguishable from an elapsed interval, so restarting
+        twice in a few minutes ran every periodic playbook twice — and
+        cooldown could not suppress it, because cooldown state is itself
+        in-memory.  An interval with no recorded fire time (a brand-new
+        playbook, or a lost state file) waits one full interval.
 
         .. note::
-            ``rebuild()`` called *during* runtime (when playbooks are
-            compiled/removed) uses a different strategy: new intervals wait
-            one full cycle before first firing, to avoid event storms when
-            adding playbooks.
+            ``rebuild()`` called *during* runtime uses the same rule: new
+            intervals wait one full cycle before first firing, to avoid
+            event storms when adding playbooks.
         """
         self._start_time = time.monotonic()
         self._running = True
-        self._load_cron_state()
+        self._load_state()
+        # rebuild() preserves any entry already in ``_last_fire`` (those just
+        # restored from disk) and gives genuinely-new intervals ``now``, so
+        # they wait a full interval.
         self.rebuild()
-        # Override _last_fire for all intervals so they fire immediately
-        # on the first tick.  rebuild() sets _last_fire = now (wait one
-        # cycle), but on startup we treat all timers as overdue.
-        for trigger in self._intervals:
-            self._last_fire[trigger] = 0.0
         logger.info(
             "Timer service started — tracking %d interval(s): %s; %d cron(s): %s",
             len(self._intervals),
@@ -410,6 +421,8 @@ class TimerService:
                     },
                 )
                 self._last_fire[trigger] = now
+                self._wall_last_fire[trigger] = time.time()
+                self._save_state()
                 emitted += 1
                 logger.debug(
                     "Emitted %s (elapsed=%.1fs, interval=%.0fs)",
@@ -438,7 +451,7 @@ class TimerService:
                         },
                     )
                     self._cron_last_fired_date[trigger] = today
-                    self._save_cron_state()
+                    self._save_state()
                     emitted += 1
                     logger.debug(
                         "Emitted %s (local=%02d:%02d, target=%02d:%02d)",
@@ -500,7 +513,7 @@ class TimerService:
     # Cron state persistence
     # ------------------------------------------------------------------
 
-    def _load_cron_state(self) -> None:
+    def _load_state(self) -> None:
         """Load ``_cron_last_fired_date`` from disk, if configured.
 
         Silently starts empty if the file is missing or malformed — a lost
@@ -529,6 +542,33 @@ class TimerService:
             except (TypeError, ValueError):
                 continue
         self._cron_last_fired_date = loaded
+
+        # Restore interval fire times.  Stored as wall-clock epochs; convert
+        # each into the monotonic frame so ``tick()`` can compare directly.
+        # An entry older than its interval simply lands far enough in the
+        # past that the first tick fires it, which is correct: the duration
+        # really did elapse, just while the daemon was down.
+        wall_now = time.time()
+        mono_now = time.monotonic()
+        restored: dict[str, float] = {}
+        for trigger, wall in (raw.get("interval_last_fire") or {}).items():
+            try:
+                wall = float(wall)
+            except (TypeError, ValueError):
+                continue
+            # Guard against a clock that moved backwards (NTP step, suspend):
+            # a negative age would push the fire time into the future and
+            # stall the timer, so clamp it to "fired now".
+            age = max(0.0, wall_now - wall)
+            restored[trigger] = mono_now - age
+            self._wall_last_fire[trigger] = wall
+        self._last_fire.update(restored)
+        if restored:
+            logger.info(
+                "Timer service: restored %d interval fire time(s) from %s",
+                len(restored),
+                self._state_path,
+            )
         if loaded:
             logger.info(
                 "Timer service: loaded %d cron last-fired date(s) from %s",
@@ -536,14 +576,15 @@ class TimerService:
                 self._state_path,
             )
 
-    def _save_cron_state(self) -> None:
+    def _save_state(self) -> None:
         """Persist ``_cron_last_fired_date`` to disk, if configured."""
         if not self._state_path:
             return
         payload = {
             "cron_last_fired_date": {
                 t: d.isoformat() for t, d in self._cron_last_fired_date.items()
-            }
+            },
+            "interval_last_fire": dict(self._wall_last_fire),
         }
         try:
             os.makedirs(os.path.dirname(self._state_path) or ".", exist_ok=True)
