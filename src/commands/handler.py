@@ -480,6 +480,26 @@ class CommandHandler(
             return MEMORY_PAUSED_ERROR
         return None
 
+    def has_command(self, name: str) -> bool:
+        """True when ``execute(name, ...)`` can actually dispatch *name*.
+
+        A tool having a JSON-Schema definition in ``src/tools/definitions.py``
+        does **not** imply it is executable: several names (the whole
+        ``memory`` category, for instance) are declared there so MCP and the
+        CLI get a tight, intentional schema, but their backing implementation
+        lives in an external plugin (``aq-memory``).  When that plugin is not
+        installed, ``execute()`` falls through to
+        ``{"error": "Unknown command: ..."}``.
+
+        ``load_tools`` uses this to avoid advertising tools that cannot run.
+        """
+        if getattr(self, f"_cmd_{name}", None):
+            return True
+        registry = getattr(self.orchestrator, "plugin_registry", None)
+        if registry and registry.get_command(name):
+            return True
+        return False
+
     async def execute(self, name: str, args: dict) -> dict:
         """Execute a command by name and return a structured result dict.
 

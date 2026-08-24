@@ -2,9 +2,40 @@
 
 from __future__ import annotations
 
+#: Human-readable hints explaining where an unimplemented tool's backing
+#: implementation is supposed to come from.  Keyed by tool-name prefix.
+_MISSING_BACKEND_HINTS: tuple[tuple[str, str], ...] = (
+    (
+        "memory_",
+        "the external 'aq-memory' plugin is not installed "
+        "(install it with `aq plugin install <aq-memory-url>`)",
+    ),
+)
+
+
+def _missing_backend_hint(name: str) -> str:
+    """Return a reason string for why *name* has no executable backing."""
+    for prefix, hint in _MISSING_BACKEND_HINTS:
+        if name.startswith(prefix):
+            return hint
+    return "no backing implementation is registered"
+
 
 class ToolCommandsMixin:
     """Tool navigation command methods mixed into CommandHandler."""
+
+    def _executable_tool_names(self, names: list[str]) -> tuple[list[str], list[str]]:
+        """Split *names* into (executable, unavailable) by dispatchability.
+
+        A tool definition without a backing ``_cmd_*`` method or plugin
+        command cannot be executed — advertising it from ``load_tools``
+        leads to a confusing "Unknown command" error on the next turn.
+        """
+        available: list[str] = []
+        unavailable: list[str] = []
+        for name in names:
+            (available if self.has_command(name) else unavailable).append(name)
+        return available, unavailable
 
     async def _cmd_load_tools(self, args: dict) -> dict:
         """Load tools by category or individual name.
@@ -30,6 +61,15 @@ class ToolCommandsMixin:
             cat = registry.get_tool_category(tool_name)
             if not cat:
                 return {"error": f"'{tool_name}' is a core tool (already loaded)."}
+            if not self.has_command(tool_name):
+                return {
+                    "error": (
+                        f"Tool '{tool_name}' is defined but not currently "
+                        f"executable: {_missing_backend_hint(tool_name)}. "
+                        "Do not call it — use another approach."
+                    ),
+                    "unavailable": [tool_name],
+                }
             return {
                 "loaded": cat,
                 "tools_added": [tool_name],
@@ -47,11 +87,29 @@ class ToolCommandsMixin:
             return {
                 "error": f"Unknown category: {category}. Available: {', '.join(available)}",
             }
-        return {
+        available, unavailable = self._executable_tool_names(names)
+        if not available:
+            reasons = ", ".join(sorted({_missing_backend_hint(n) for n in unavailable}))
+            return {
+                "error": (
+                    f"Category '{category}' has no executable tools right now: "
+                    f"{reasons}. Do not call {', '.join(sorted(unavailable))}."
+                ),
+                "unavailable": sorted(unavailable),
+            }
+
+        result = {
             "loaded": category,
-            "tools_added": names,
-            "message": f"{len(names)} {category} tools are now available.",
+            "tools_added": available,
+            "message": f"{len(available)} {category} tools are now available.",
         }
+        if unavailable:
+            reasons = ", ".join(sorted({_missing_backend_hint(n) for n in unavailable}))
+            result["unavailable"] = sorted(unavailable)
+            result["message"] += (
+                f" Not available (do not call): {', '.join(sorted(unavailable))} — {reasons}."
+            )
+        return result
 
     async def _cmd_find_applicable_tool(self, args: dict) -> dict:
         """Semantic search over all tool definitions.

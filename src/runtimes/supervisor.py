@@ -1272,14 +1272,22 @@ class Supervisor(Runtime):
                         if tool_def:
                             active_tools[tool_def["name"]] = tool_def
                     else:
-                        # Category mode — inject all tools from the category
+                        # Category mode — inject exactly the tools the
+                        # command reported in ``tools_added``.  That list is
+                        # already filtered to tools CommandHandler can
+                        # actually dispatch, so we never advertise a schema
+                        # whose call would come back "Unknown command".
                         category = result["loaded"]
-                        cat_tools = registry.get_category_tools(
-                            category,
-                            compressed=compressed,
+                        added = set(result.get("tools_added") or [])
+                        cat_tools = (
+                            registry.get_category_tools(
+                                category,
+                                compressed=compressed,
+                            )
+                            or []
                         )
-                        if cat_tools:
-                            for t in cat_tools:
+                        for t in cat_tools:
+                            if t["name"] in added:
                                 active_tools[t["name"]] = t
 
                 tool_results.append(

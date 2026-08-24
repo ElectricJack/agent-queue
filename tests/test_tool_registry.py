@@ -216,6 +216,57 @@ def test_cmd_load_tools_valid_category():
     assert "message" in result
 
 
+def _make_handler_without_plugin_commands():
+    """Handler whose plugin registry contributes no executable commands.
+
+    Mirrors a daemon where the external ``aq-memory`` plugin is not
+    installed: ``memory_search`` still has a JSON-Schema definition in
+    ``src/tools/definitions.py``, but nothing can execute it.
+    """
+    handler = _make_handler()
+    handler.orchestrator.plugin_registry.get_command.return_value = None
+    handler.orchestrator.plugin_registry.get_all_tool_definitions.return_value = []
+    return handler
+
+
+def test_has_command_false_for_unbacked_tool():
+    handler = _make_handler_without_plugin_commands()
+    assert handler.has_command("memory_search") is False
+    assert handler.has_command("list_tasks") is True
+
+
+def test_cmd_load_tools_omits_tools_without_backing_implementation():
+    """load_tools must not advertise tools execute() would reject."""
+    handler = _make_handler_without_plugin_commands()
+    result = asyncio.run(handler.execute("load_tools", {"category": "memory"}))
+
+    # Nothing in the memory category is executable -> hard error, not a
+    # success that lures the LLM into an "Unknown command" round-trip.
+    assert "error" in result
+    assert "memory_search" in result["unavailable"]
+    assert "aq-memory" in result["error"]
+
+
+def test_cmd_load_tools_single_tool_rejects_unbacked_tool():
+    handler = _make_handler_without_plugin_commands()
+    result = asyncio.run(handler.execute("load_tools", {"tool_name": "memory_search"}))
+    assert "error" in result
+    assert "tools_added" not in result
+
+
+def test_cmd_load_tools_partial_category_reports_unavailable():
+    """Executable tools still load; the broken ones are called out."""
+    handler = _make_handler_without_plugin_commands()
+    real_has_command = handler.has_command
+    handler.has_command = lambda name: name != "task_heartbeat" and real_has_command(name)
+
+    result = asyncio.run(handler.execute("load_tools", {"category": "task"}))
+    assert "task_heartbeat" not in result["tools_added"]
+    assert "task_show" in result["tools_added"]
+    assert "task_heartbeat" in result["unavailable"]
+    assert "task_heartbeat" in result["message"]
+
+
 def test_cmd_load_tools_invalid_category():
     handler = _make_handler()
     result = asyncio.run(handler.execute("load_tools", {"category": "nonexistent"}))
