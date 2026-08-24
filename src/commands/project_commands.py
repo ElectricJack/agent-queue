@@ -81,6 +81,22 @@ class ProjectCommandsMixin:
         if not name:
             return {"error": "'name' is required to create a project"}
         project_id = name.lower().replace(" ", "-")
+
+        # Stamp a default profile up front.  Without one, any task created
+        # without an explicit profile_id (playbook- and supervisor-created
+        # tasks, plan splits) goes READY and never gets an agent — the
+        # AgentReconciler refuses to build agents for an unresolvable
+        # profile_id.  An explicit arg wins; otherwise pick the system
+        # default.  None here is fine (no profiles synced yet) — the
+        # reconciler backfills it later.
+        default_profile_id = args.get("default_profile_id")
+        if not default_profile_id:
+            from src.profiles.default_selection import select_default_profile_id
+
+            default_profile_id = select_default_profile_id(
+                p.id for p in await self.db.list_profiles()
+            )
+
         project = Project(
             id=project_id,
             name=name,
@@ -88,6 +104,7 @@ class ProjectCommandsMixin:
             max_concurrent_agents=args.get("max_concurrent_agents", 2),
             repo_url=args.get("repo_url", ""),
             repo_default_branch=args.get("default_branch", "main"),
+            default_profile_id=default_profile_id,
         )
         await self.db.create_project(project)
 
@@ -123,6 +140,7 @@ class ProjectCommandsMixin:
             "created": project_id,
             "name": project.name,
             "auto_create_channels": should_auto_create,
+            "default_profile_id": default_profile_id,
         }
 
     async def _cmd_pause_project(self, args: dict) -> dict:

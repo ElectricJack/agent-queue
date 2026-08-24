@@ -903,7 +903,12 @@ class TestProfileEnforcement:
         assert factory.last_profile is not None
         assert factory.last_profile.id == "test-reviewer"
 
-    async def test_execute_task_no_profile_passes_none(self, setup):
+    async def test_execute_task_no_profile_uses_backfilled_project_default(self, setup):
+        """A task with no profile_id in a project with no default_profile_id
+        no longer falls through to the adapter's built-in defaults: the
+        AgentReconciler backfills a system default so the task is
+        dispatchable, and _resolve_profile then resolves to it.
+        """
         orch, factory = setup
         await _create_project_with_workspace(orch.db)
         await orch.db.create_agent(
@@ -924,6 +929,38 @@ class TestProfileEnforcement:
         )
         await orch.run_one_cycle()
         await orch.wait_for_running_tasks()
+        backfilled = (await orch.db.get_project("p-1")).default_profile_id
+        assert backfilled is not None
+        assert factory.last_profile is not None
+        assert factory.last_profile.id == backfilled
+
+    async def test_execute_task_passes_none_when_no_profiles_registered(self, setup):
+        """With an empty agent_profiles table there is nothing to backfill,
+        so the adapter still receives None and uses its built-in defaults.
+        """
+        orch, factory = setup
+        for p in await orch.db.list_profiles():
+            await orch.db.delete_profile(p.id)
+        await _create_project_with_workspace(orch.db)
+        await orch.db.create_agent(
+            Agent(
+                id="a-1",
+                name="claude-1",
+                profile_id="claude",
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="Do work",
+                description="Details",
+                status=TaskStatus.READY,
+            )
+        )
+        await orch.run_one_cycle()
+        await orch.wait_for_running_tasks()
+        assert (await orch.db.get_project("p-1")).default_profile_id is None
         assert factory.last_profile is None
 
     async def test_execute_task_project_default_profile_passed(self, setup):

@@ -17,6 +17,10 @@ class ReconcileReport:
     created: list[tuple[str, str]] = field(default_factory=list)  # [(project_id, profile_id)]
     reassigned: list[tuple[str, str, str]] = field(default_factory=list)  # [(agent_id, old, new)]
     skipped: list[tuple[str, str]] = field(default_factory=list)  # [(project_id, reason)]
+    # Projects whose NULL default_profile_id was backfilled this pass.
+    defaults_backfilled: list[tuple[str, str]] = field(  # [(project_id, profile_id)]
+        default_factory=list
+    )
 
 
 class AgentReconciler:
@@ -100,15 +104,36 @@ class AgentReconciler:
             ready = ready_by_project.get(project.id, [])
             if not ready:
                 continue
-            # Resolve unique profile_ids needed.
+            # Resolve unique profile_ids needed.  Cascade per task:
+            # task.profile_id → project.default_profile_id → system
+            # default.  The last rung is what keeps a project that was
+            # never given a default (the common case — playbook- and
+            # supervisor-created tasks carry no profile_id) from
+            # stalling with READY work and no agents.  It is persisted
+            # so Orchestrator._resolve_profile agrees with the profile
+            # the agent was actually built for.
+            default_pid = project.default_profile_id
+            if not default_pid and any(not t.profile_id for t in ready):
+                default_pid = await self._backfill_project_default(
+                    project, profiles, report
+                )
+
             needed_profiles: set[str] = set()
             for t in ready:
-                pid = t.profile_id or project.default_profile_id
+                pid = t.profile_id or default_pid
                 if pid:
                     needed_profiles.add(pid)
             if not needed_profiles:
-                self._warn_once(project.id, "no resolvable profile_id")
-                report.skipped.append((project.id, "no resolvable profile_id"))
+                # Only reachable when the agent_profiles table itself has
+                # nothing usable — the system default cannot be picked from
+                # an empty set.  Say so, because "set a default_profile_id"
+                # is not the fix here; syncing profiles from the vault is.
+                reason = (
+                    "no resolvable profile_id (no usable agent profiles are "
+                    "registered — check vault/agent-types sync)"
+                )
+                self._warn_once(project.id, reason)
+                report.skipped.append((project.id, reason))
                 continue
 
             project_agents = agents_by_project.get(project.id, [])
@@ -195,6 +220,49 @@ class AgentReconciler:
                 existing_profiles.add(needed)
 
         return report
+
+    async def _backfill_project_default(
+        self, project, profiles: dict, report: ReconcileReport
+    ) -> str | None:
+        """Pick and persist a ``default_profile_id`` for *project*.
+
+        Called only when the project has READY tasks that carry no
+        explicit ``profile_id`` and the project has no default of its
+        own.  Persisting (rather than resolving on the fly each tick)
+        matters for two reasons: the choice stays stable across daemon
+        restarts, and ``Orchestrator._resolve_profile`` reads the same
+        column — so the profile the task actually executes under matches
+        the one its agent row was created for.
+
+        Returns the chosen profile id, or ``None`` when no profile is
+        eligible (empty/unsynced ``agent_profiles`` table).
+        """
+        from src.profiles.default_selection import select_default_profile_id
+
+        chosen = select_default_profile_id(profiles)
+        if not chosen:
+            return None
+        try:
+            await self._db.update_project(project.id, default_profile_id=chosen)
+        except Exception:
+            # A failed write must not take down the tick; we simply retry
+            # next pass.  Returning the id anyway would desync the DB
+            # from the agent rows we are about to create.
+            logger.exception(
+                "reconciler: failed to backfill default_profile_id=%s for project=%s",
+                chosen,
+                project.id,
+            )
+            return None
+        project.default_profile_id = chosen
+        report.defaults_backfilled.append((project.id, chosen))
+        logger.info(
+            "reconciler: project=%s had READY tasks with no resolvable profile_id; "
+            "backfilled default_profile_id=%s",
+            project.id,
+            chosen,
+        )
+        return chosen
 
     def _runtime_requires_workspace(self, profile) -> bool:
         """Look up runtime.requires_workspace via the profile's runtime name.

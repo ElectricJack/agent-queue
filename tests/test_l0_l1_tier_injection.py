@@ -107,10 +107,21 @@ async def _setup_project_and_agent(
     """Create project, workspace, and agent. Optionally set a default profile.
 
     Profile is created first to satisfy FK constraints.
+
+    ``profile=None`` means "no profile anywhere in play".  That now
+    requires clearing the profiles the orchestrator syncs from the vault
+    at startup: with any profile registered, AgentReconciler backfills
+    the project's NULL ``default_profile_id`` with a system default so
+    READY tasks stay dispatchable, and the task would execute *with* a
+    profile.  Tests here that assert the no-profile degradation path
+    need the table genuinely empty.
     """
     # Profile must exist before project references it
     if profile:
         await db.create_profile(profile)
+    else:
+        for existing in await db.list_profiles():
+            await db.delete_profile(existing.id)
 
     project = Project(
         id=project_id,
