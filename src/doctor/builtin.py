@@ -369,19 +369,17 @@ async def _check_harness_binaries(ctx: DoctorContext) -> CheckResult:
     """Probe the binaries the shipped runtimes and git integration need.
 
     NARROWING (design §5.2 says "per configured harness"): the list is fixed,
-    not derived from the profiles in the vault.  Deriving it means resolving
-    every active profile's ``runtime`` / ``agent_name`` to a binary, and the
-    profile→binary mapping for the 14+ ACP agents lives in ``acpx``, not
-    here.  What is probed instead is the union the daemon can name on its own:
-    ``git`` (required — every workspace operation goes through it) plus the
-    two runtime front-ends and the forge CLI, each optional because an
-    install that uses one does not need the others.  Recorded in
+    not derived from the profiles in the vault.  Since every coding agent runs
+    as a tmux session the candidate set is now small and closed — the shipped
+    harnesses — so probing the union is both cheap and complete enough.
+    ``git`` is required (every workspace operation goes through it); the
+    harness CLIs and the forge CLI are optional because an install that uses
+    one does not need the others.  Recorded in
     ``docs/gates/wave1-1c-trust-ops.md`` rather than silently narrowed.
     """
     required = ["git"]
-    # ``claude`` backs the default claude_sdk runtime; ``acpx`` backs the
-    # fan-out runtime; ``gh`` is used for PR creation.
-    optional = ["gh", "claude", "acpx"]
+    # The three shipped session harnesses, plus ``gh`` for PR creation.
+    optional = ["gh", "claude", "codex", "gemini"]
     # ``tmux`` is deliberately absent — session-runtime contributes tmux.server.
     results = await asyncio.gather(
         *(_probe_binary(n) for n in required + optional)

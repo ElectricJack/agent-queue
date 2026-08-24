@@ -112,30 +112,33 @@ def default_registry(
 ) -> RuntimeRegistry:
     """Return a :class:`RuntimeRegistry` populated with all in-tree runtimes.
 
-    Imports of runtime modules are lazy so test code can construct a
-    bare registry without pulling in heavy SDK dependencies.
+    Since the tmux-harness migration there is exactly one: the in-process
+    :class:`Supervisor`.  Every *coding* agent runs as a session — a CLI
+    wrapped in tmux, selected by the profile's ``harness`` — so no Runtime
+    class spawns agents any more.  ``claude_sdk`` (Claude Agent SDK
+    subprocess) and ``acpx`` (ACP fan-out) were deleted: two parallel
+    execution paths alongside sessions meant the same profile could run
+    three different ways depending on flags, which is exactly the ambiguity
+    the migration set out to remove.
+
+    Supervisor stays because it is not a coding agent: it is tool-call-only,
+    holds no workspace, and runs in-process as the daemon-wide chat brain,
+    so there is no CLI to wrap.
 
     ``supervisor`` is the daemon-wide :class:`Supervisor` instance.  When
     provided it's registered as a singleton (one shared brain across all
     supervisor-runtime tasks).  When *None*, supervisor-runtime tasks
     fail with a clear "unknown runtime" error instead of misbehaving.
 
-    ``config`` is the daemon ``AppConfig``; it reaches every constructed
-    runtime so the env-scrub policy (``security.*``) is honoured at the real
-    subprocess launch site rather than only in tests.
+    ``config`` is the daemon ``AppConfig``; it is threaded through for
+    parity with the previous signature and for any future runtime.
     """
-    from src.runtimes.acpx import ACPXRuntime
-    from src.runtimes.claude_sdk import ClaudeSDKRuntime
-
     singletons: dict[str, Runtime] = {}
     if supervisor is not None:
         singletons[supervisor.name] = supervisor
 
     return RuntimeRegistry(
-        runtimes={
-            ACPXRuntime.name: ACPXRuntime,
-            ClaudeSDKRuntime.name: ClaudeSDKRuntime,
-        },
+        runtimes={},
         config=config,
         singletons=singletons,
     )

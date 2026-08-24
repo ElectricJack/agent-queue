@@ -12,11 +12,14 @@ that belongs in an agent's environment by default.
 Scope, honestly
 ---------------
 The scrub is applied where the daemon builds the child environment itself:
-``isolated_env`` (``ACPXRuntime``) and ``_cmd_run_command``.  It is **not**
-applied to the default ``claude_sdk`` runtime — the Claude Agent SDK always
-merges ``ClaudeAgentOptions.env`` over a full copy of ``os.environ`` and
-offers no way to *remove* an inherited key, so that subprocess still sees the
-daemon environment.  See design §2.5 for the recorded gap.
+``src.sessions.env`` (every tmux session — i.e. every coding agent) and
+``_cmd_run_command``.
+
+The gap recorded in design §2.5 is closed: it described the old
+``claude_sdk`` runtime, which merged ``ClaudeAgentOptions.env`` over a full
+copy of ``os.environ`` with no way to *remove* an inherited key, so that
+subprocess always saw the daemon environment.  That runtime was deleted in the
+tmux-harness migration and the session path builds its environment explicitly.
 
 Policy
 ------
@@ -125,7 +128,7 @@ BUILTIN_EXEMPT: tuple[str, ...] = (
 # embedding keys, the operator's unrelated exports — is where the value is, and
 # that survives intact.  Entries are fnmatch globs, matched case-insensitively.
 #
-# Vendor-prefix globs rather than a per-key list: ACPX fans out to 14+ agents
+# Vendor-prefix globs rather than a per-key list: agents reach many vendors
 # and a new one's key name must not silently break it.  An operator who wants
 # a harder lockdown turns the defaults off (``harness_credentials=False``) and
 # names the exact keys in ``security.env_allowlist``.

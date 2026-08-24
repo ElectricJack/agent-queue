@@ -8,11 +8,12 @@ tags: [system, review, dv2-phase2]
 
 ```json
 {
-  "runtime": "claude_sdk",
   "needs_workspace": true,
   "read_only": true,
   "default_class": "standard-low",
-  "description": "Reads the diff/PR of a completed task and either approves (closes its own review task with a summary) or rejects (calls reopen_with_feedback on the reviewed task)."
+  "description": "Reads the diff/PR of a completed task and either approves (closes its own review task with a summary) or rejects (calls reopen_with_feedback on the reviewed task).",
+  "harness": "claude",
+  "lifecycle": "task"
 }
 ```
 

@@ -385,7 +385,7 @@ class TestAgentReconcilerWiring:
         """
         # Profile must exist before project references it.
         await orch.db.create_profile(
-            AgentProfile(id="claude", name="claude", runtime="claude_sdk")
+            AgentProfile(id="claude", name="claude", harness="claude")
         )
         # Project with default_profile_id and a workspace.
         await orch.db.create_project(

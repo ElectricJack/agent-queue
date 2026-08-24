@@ -798,7 +798,7 @@ class ExecutionMixin:
             # Stream agent output via event — the notification handler
             # routes to the task's thread if one exists, otherwise to the
             # main channel.  ``stream_id``/``stream_done`` are passthrough
-            # kwargs from streaming runtimes (e.g. ACPX) — when set, the
+            # kwargs from streaming sources — when set, the
             # Discord receiver edits a single message in place instead of
             # posting a new one per call.
             await self._emit_notify(

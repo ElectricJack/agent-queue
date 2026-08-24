@@ -27,9 +27,10 @@ Do:
 
 ```json
 {
-  "runtime": "claude_sdk",
   "needs_workspace": false,
-  "default_class": "fast-low"
+  "default_class": "fast-low",
+  "harness": "claude",
+  "lifecycle": "task"
 }
 ```
 

@@ -10,8 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.runtimes.claude_sdk import ClaudeSDKRuntime
-from src.models import TaskContext
+from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
 
 
 @pytest.fixture(scope="session")
@@ -24,47 +23,34 @@ def claude_cli_path() -> str:
 
 
 @pytest.fixture(scope="session")
-def claude_cli_authenticated(claude_cli_path: str, tmp_path_factory) -> str:
-    """Verify the Claude Agent SDK can authenticate and complete a trivial prompt.
+def claude_cli_authenticated(claude_cli_path: str) -> str:
+    """Verify the ``claude`` CLI is installed *and* authenticated.
 
-    Uses the same code path as the real application (ClaudeSDKRuntime + SDK),
-    not subprocess. Runs once per session; skips all functional tests if
-    authentication fails.
+    Exercises the path production actually uses: agents run as tmux sessions
+    wrapping this CLI.  The previous version drove a ``ClaudeSDKRuntime``
+    round-trip, but that runtime was deleted in the tmux-harness migration —
+    and testing auth through a code path nobody runs was misleading even
+    before it stopped compiling.
+
+    Skips (never fails) when the CLI is missing, unauthenticated, or slow:
+    this gates optional functional tests, and an unauthenticated dev machine
+    is a normal state, not a broken build.
     """
-    workspace = str(tmp_path_factory.mktemp("auth_check"))
-    from src.models import AgentProfile
-
-    _profile = AgentProfile(
-        id="auth-check",
-        name="auth-check",
-        model="claude-haiku-4-5-20251001",
-        permission_mode="bypassPermissions",
-        allowed_tools=[],
-    )
-    adapter = ClaudeSDKRuntime(profile=_profile)
-    ctx = TaskContext(
-        description="respond with only: ok",
-        task_id="auth-check",
-        checkout_path=workspace,
-    )
-
-    async def _check():
-        await adapter.start(ctx)
-        return await adapter.wait()
+    import subprocess
 
     try:
-        result = asyncio.get_event_loop().run_until_complete(_check())
-    except RuntimeError:
-        # No running loop — create one
-        result = asyncio.run(_check())
-    except Exception as exc:
-        pytest.skip(f"Claude SDK auth check failed: {exc}")
-        return claude_cli_path  # unreachable, keeps type checker happy
+        proc = subprocess.run(
+            [claude_cli_path, "-p", "respond with only: ok"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        pytest.skip(f"claude CLI auth check could not run: {exc}")
 
-    from src.models import AgentResult
-
-    if result.result == AgentResult.FAILED:
-        pytest.skip(f"Claude SDK auth check failed: {result.error_message or result.summary}")
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[:300]
+        pytest.skip(f"claude CLI not authenticated (rc={proc.returncode}): {detail}")
 
     return claude_cli_path
 

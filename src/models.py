@@ -724,20 +724,17 @@ class AgentProfile:
     # multiple profiles share one memory scope (e.g. claude-opus and
     # claude-sonnet both set ``memory_scope_id='claude'``).  None = use id.
     memory_scope_id: str | None = None
-    # Which runtime executes tasks for this profile.  ``"claude_sdk"`` (the
-    # default, matching ``config.default_runtime``) spawns a Claude Code
-    # subprocess; ``"supervisor"`` runs in-process via the daemon-wide
-    # Supervisor (tool-call-only, no workspace).  Other values must match a
-    # name in the RuntimeRegistry.  Sourced from the ``## Config`` JSON
-    # block of the profile markdown.
-    runtime: str = "claude_sdk"
-    # ACP agent identifier — only meaningful when ``runtime == "acpx"``.
-    # Selects which underlying coding agent ACPX dispatches to (``"claude"``,
-    # ``"codex"``, ``"gemini"``, ``"opencode"``, ``"cursor"``, ...).
-    # The parser rejects ``runtime: "acpx"`` profiles with empty
-    # ``agent_name`` at sync-time; for every other runtime this field is
-    # unused / empty.
-    agent_name: str = ""
+    # Which runtime executes tasks for this profile.  Empty (the default)
+    # means the profile runs as a **session**: a CLI wrapped in tmux,
+    # selected by ``harness``.  That is the path for every coding agent.
+    #
+    # The only non-empty value is ``"supervisor"`` — the in-process,
+    # tool-call-only daemon brain, which has no CLI to wrap and therefore no
+    # harness.  ``claude_sdk`` and ``acpx`` were removed in the tmux-harness
+    # migration; a profile still naming them is rejected at parse time
+    # rather than silently falling back.  Sourced from the ``## Config``
+    # JSON block of the profile markdown.
+    runtime: str = ""
     # -- Named-session pass-through storage (supervisor-agent spec §3.2/§7) --
     # Validated at profile parse time; the harness *schema* (what "claude"
     # means) is owned by the session-runtime spec, so as far as this layer

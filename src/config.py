@@ -1345,7 +1345,10 @@ class AppConfig:
     )
     # Phase-1 stub: which platform to spawn for tasks. Replaced by
     # profile.platform in phase 2 of the platforms refactor.
-    default_runtime: str = "claude_sdk"
+    # Fallback runtime for a profile that names none.  Empty means "run as a
+    # session", which is the path for every coding agent since the
+    # tmux-harness migration; the profile's ``harness`` selects the CLI.
+    default_runtime: str = ""
     _config_path: str = field(default="", repr=False)
 
     # -- Vault path properties (derived from data_dir) -----------------------
@@ -1533,14 +1536,16 @@ class AppConfig:
                     )
                 )
 
-        # default_runtime must be a known runtime name.
+        # ``default_runtime`` must name a known runtime, or be empty.
+        # Empty is the normal case since the tmux-harness migration: it means
+        # "run as a session", and the profile's ``harness`` picks the CLI.
         from src.runtimes import default_registry
 
         try:
             available = default_registry().names()
         except Exception:  # pragma: no cover - registry import fail = bigger problem
-            available = ["claude_sdk", "acpx"]
-        if self.default_runtime not in available:
+            available = ["supervisor"]
+        if self.default_runtime and self.default_runtime not in available:
             errors.append(
                 ConfigError(
                     section="app",

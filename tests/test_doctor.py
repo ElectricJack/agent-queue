@@ -539,7 +539,7 @@ class TestHarnessBinariesCheck:
     async def test_probes_the_runtime_front_ends_too(self, ctx):
         """Narrowed from "per configured harness", but not down to git+gh."""
         result = await _run_single("harness.binaries", ctx)
-        assert {"git", "gh", "claude", "acpx"} <= set(result.data["binaries"])
+        assert {"git", "gh", "claude", "codex", "gemini"} <= set(result.data["binaries"])
 
     async def test_timed_out_probe_kills_the_child(self, monkeypatch):
         """A cancelled ``communicate()`` abandons the process; it must be reaped."""

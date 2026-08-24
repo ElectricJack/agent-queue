@@ -280,19 +280,14 @@ class AgentReconciler:
         if profile is None:
             return True
         try:
-            from src.runtimes.acpx import ACPXRuntime
-            from src.runtimes.claude_sdk import ClaudeSDKRuntime
             from src.runtimes.supervisor import Supervisor
 
-            runtime_classes = {
-                ACPXRuntime.name: ACPXRuntime,
-                ClaudeSDKRuntime.name: ClaudeSDKRuntime,
-                Supervisor.name: Supervisor,
-            }
-            cls = runtime_classes.get(profile.runtime)
-            if cls is None:
-                return True
-            return cls.requires_workspace
+            # Supervisor is the only remaining Runtime; every other profile
+            # runs as a tmux session and its workspace need comes from the
+            # profile's own ``needs_workspace``, not from a runtime class.
+            if profile.runtime == Supervisor.name:
+                return Supervisor.requires_workspace
+            return True
         except Exception:
             return True
 

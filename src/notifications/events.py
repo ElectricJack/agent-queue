@@ -209,7 +209,7 @@ class TaskMessageEvent(NotifyEvent):
     When ``stream_id`` is set, the Discord receiver treats the
     message as a *live update* and edits a single message in place
     instead of posting a new one per call.  Used by streaming runtimes
-    (e.g. ACPX) so per-token chunks appear as one growing message rather
+    (streaming harnesses) so per-token chunks appear as one growing message rather
     than dozens of one-line spam messages.
 
     ``stream_done=True`` signals the final update for that ``stream_id``;
@@ -217,7 +217,7 @@ class TaskMessageEvent(NotifyEvent):
     subsequent calls (with the same or a new id) start fresh.
 
     When ``stream_id`` is unset, behaviour is unchanged: every call posts
-    a new message (the legacy path used by ``claude_sdk`` and others).
+    a new message (the non-streaming path).
     """
 
     event_type: str = "notify.task_message"

@@ -14,7 +14,6 @@ dependencies = [
     # (via discord.ext.commands.flags) which breaks on 3.12/3.13. Pin to
     # the last 2.5.x until we raise requires-python to >=3.14.
     "discord.py>=2.5.2,<2.6",
-    "claude_agent_sdk>=0.1.55",
     "PyYAML>=6.0",
     # Used by src/config_editor for round-trip YAML editing that preserves
     # comments, key order, and quoting style. Read path still uses PyYAML.

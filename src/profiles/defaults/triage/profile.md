@@ -40,10 +40,10 @@ When the routing queue is empty, close this task with a short summary:
 ```json
 {
   "harness": "claude",
-  "runtime": "claude_sdk",
   "model": "claude-sonnet-4-6",
   "default_class": "fast-low",
-  "needs_workspace": false
+  "needs_workspace": false,
+  "lifecycle": "task"
 }
 ```
 

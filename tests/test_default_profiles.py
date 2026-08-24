@@ -82,11 +82,11 @@ def test_seeded_planner_profile_is_task_lifecycle(tmp_path):
 
 
 def test_seeded_reviewer_profile_is_task_lifecycle(tmp_path):
-    """Reviewer ships with claude_sdk runtime and read-only workspace."""
+    """Reviewer ships with the claude harness and a read-only workspace."""
     ensure_default_profiles(str(tmp_path))
     text = _vault_profile_path(tmp_path, "reviewer").read_text(encoding="utf-8")
     parsed = parse_profile(text)
-    assert parsed.config.get("runtime") == "claude_sdk"
+    assert parsed.config.get("harness") == "claude"
     assert parsed.config.get("needs_workspace") is True
     assert parsed.config.get("read_only") is True
 
@@ -186,7 +186,7 @@ def test_spec_ingest_profile_shape():
     parsed = parse_profile(src)
     assert parsed.is_valid, parsed.errors
     assert parsed.frontmatter.id == "spec-ingest"
-    assert parsed.config.get("runtime") == "claude_sdk"
+    assert parsed.config.get("harness") == "claude"
     assert parsed.config.get("needs_workspace") is False
     tools = parsed.tools.get("allowed", [])
     assert "task_batch_propose" in tools
@@ -204,7 +204,7 @@ def test_playbook_compiler_profile_shape():
     parsed = parse_profile(src)
     assert parsed.is_valid, parsed.errors
     assert parsed.frontmatter.id == "playbook-compiler"
-    assert parsed.config.get("runtime") == "claude_sdk"
+    assert parsed.config.get("harness") == "claude"
     assert parsed.config.get("needs_workspace") is False
     tools = parsed.tools.get("allowed", [])
     assert "playbook_validate" in tools

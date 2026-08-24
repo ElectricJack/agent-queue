@@ -18,7 +18,6 @@ import pytest
 from unittest.mock import AsyncMock
 
 from src.runtimes.base import Runtime
-from src.runtimes.claude_sdk import ClaudeSDKRuntime
 from src.config import AppConfig
 from src.models import (
     Agent,
@@ -59,6 +58,43 @@ L1_FACTS_REALISTIC = (
 
 
 # -- Test helpers --------------------------------------------------------
+
+
+def _build_prompt_from(task: TaskContext) -> str:
+    """Assemble a prompt from *task* the way the dispatcher does.
+
+    This mirrors the tier wiring that used to live in
+    ``ClaudeSDKRuntime._build_prompt``.  That runtime was deleted in the
+    tmux-harness migration, but the thing under test here was never the
+    runtime — it is :class:`~src.prompt_builder.PromptBuilder` and the tier
+    ordering contract (L0 -> override -> L1 -> L2 -> description).  Driving
+    the builder directly tests that contract without routing through a
+    dispatch path, and keeps the tests meaningful for session-run agents.
+    """
+    from src.prompt_builder import PromptBuilder
+
+    builder = PromptBuilder()
+    if task.l0_role:
+        builder.set_l0_role(task.l0_role)
+    if task.project_override_role:
+        builder.set_override_content(task.project_override_role)
+    if task.l1_facts:
+        builder.set_l1_facts(task.l1_facts)
+    if task.l1_guidance:
+        builder.set_l1_guidance(task.l1_guidance)
+    if task.l2_context:
+        builder.set_l2_context(task.l2_context)
+    if task.description:
+        builder.add_context("description", task.description)
+    if task.acceptance_criteria:
+        criteria = "\n".join(f"- {c}" for c in task.acceptance_criteria)
+        builder.add_context("acceptance_criteria", f"## Acceptance Criteria\n{criteria}")
+    if task.test_commands:
+        cmds = "\n".join(f"- `{c}`" for c in task.test_commands)
+        builder.add_context("test_commands", f"## Test Commands\n{cmds}")
+    # ``build()`` returns (system_prompt, tools); task execution wants the
+    # flat string, which is what the deleted adapter returned.
+    return builder.build_task_prompt()
 
 
 class CapturingMockAdapter(Runtime):
@@ -577,14 +613,13 @@ class TestL0L1InSystemPrompt:
     """(f) L0+L1 content appears in the system prompt section (not user message)."""
 
     def test_l0_l1_present_in_adapter_system_prompt(self):
-        """L0 and L1 appear in ClaudeSDKRuntime._build_prompt() output."""
-        adapter = ClaudeSDKRuntime()
-        adapter._task = TaskContext(
+        """L0 and L1 appear in the assembled prompt."""
+        task = TaskContext(
             description="## Task\nImplement the feature.",
             l0_role=L0_ROLE_REALISTIC,
             l1_facts=L1_FACTS_REALISTIC,
         )
-        prompt = adapter._build_prompt()
+        prompt = _build_prompt_from(task)
 
         assert L0_ROLE_REALISTIC in prompt
         assert "Critical Facts" in prompt
@@ -592,13 +627,12 @@ class TestL0L1InSystemPrompt:
 
     def test_l0_before_l1_before_description_in_prompt(self):
         """System prompt ordering: L0 → L1 → description."""
-        adapter = ClaudeSDKRuntime()
-        adapter._task = TaskContext(
+        task = TaskContext(
             description="## Task\nImplement the feature.",
             l0_role="You are a QA agent.",
             l1_facts="## Critical Facts\n- lang: Python",
         )
-        prompt = adapter._build_prompt()
+        prompt = _build_prompt_from(task)
 
         role_pos = prompt.index("You are a QA agent.")
         facts_pos = prompt.index("Critical Facts")
@@ -629,15 +663,14 @@ class TestL0L1InSystemPrompt:
 
     def test_l0_l1_with_all_task_context_extras(self):
         """L0+L1 coexist with acceptance criteria and test commands in prompt."""
-        adapter = ClaudeSDKRuntime()
-        adapter._task = TaskContext(
+        task = TaskContext(
             description="## Task\nBuild the API.",
             l0_role="You are an API developer.",
             l1_facts="## Critical Facts\n- framework: FastAPI",
             acceptance_criteria=["Endpoint returns 200", "Tests pass"],
             test_commands=["pytest tests/test_api.py"],
         )
-        prompt = adapter._build_prompt()
+        prompt = _build_prompt_from(task)
 
         # All sections present
         assert "You are an API developer." in prompt
@@ -805,10 +838,8 @@ class TestL0L1ProfileWithoutProjectFacts:
         assert ctx.l0_role == "You are a senior engineer."
         assert ctx.l1_facts == facts
 
-        # Verify both would appear in the adapter's built prompt
-        adapter = ClaudeSDKRuntime()
-        adapter._task = ctx
-        prompt = adapter._build_prompt()
+        # Verify both survive prompt assembly
+        prompt = _build_prompt_from(ctx)
 
         assert "You are a senior engineer." in prompt
         assert "Critical Facts" in prompt

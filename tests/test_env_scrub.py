@@ -334,145 +334,74 @@ class TestConfigWrapper:
         assert result.env["PATH"] == "/bin"
 
 
-class TestIsolatedEnvDelegates:
-    """``isolated_env`` must be a thin wrapper, not a second policy."""
+class TestSessionEnvHonoursTheConfig:
+    """The **real** call site: ``build_session_env`` → ``scrub_env_from_config``.
 
-    def test_scrubs_by_default(self):
-        from src.runtimes._subprocess import isolated_env
+    Regression pin for the defect this replaces: the config-aware scrub was
+    once only ever reached from a test.  Production called the config-less
+    variant, so ``security.env_scrub_enabled`` and ``security.env_allowlist``
+    were unreachable — a green test over a non-functional feature.
 
-        with patch.dict(
-            os.environ, {"DISCORD_TOKEN": "t", "PATH": "/usr/bin"}, clear=True
-        ):
-            env = isolated_env()
-        assert "DISCORD_TOKEN" not in env
-        assert env["PATH"] == "/usr/bin"
-
-    def test_extra_still_wins(self):
-        from src.runtimes._subprocess import isolated_env
-
-        with patch.dict(os.environ, {"FOO": "from-os"}, clear=True):
-            env = isolated_env(extra={"FOO": "from-arg", "MY_TOKEN": "explicit"})
-        assert env["FOO"] == "from-arg"
-        assert env["MY_TOKEN"] == "explicit"
-
-    def test_config_kill_switch_respected(self):
-        from src.config import AppConfig
-        from src.runtimes._subprocess import isolated_env
-
-        config = AppConfig()
-        config.security.env_scrub_enabled = False
-        with patch.dict(os.environ, {"DISCORD_TOKEN": "t"}, clear=True):
-            env = isolated_env(config=config)
-        assert env["DISCORD_TOKEN"] == "t"
-
-
-class TestAcpxRuntimeHonoursTheConfig:
-    """The **real** call site: ``ACPXRuntime.wait`` → ``isolated_env``.
-
-    Regression pin for the defect this replaces: ``isolated_env(config=...)``
-    was only ever reached from a test.  Production called ``isolated_env()``
-    with no config, so ``security.env_scrub_enabled`` and
-    ``security.env_allowlist`` were unreachable — a green test over a
-    non-functional feature.  Every assertion here goes through
-    ``RuntimeRegistry.create``, the way ``src/main.py`` builds the runtime.
+    The call site moved when the tmux-harness migration deleted the ACPX
+    runtime and its ``isolated_env`` helper.  Every coding agent now launches
+    through ``build_session_env``, so that is what these assertions go
+    through.  The pin matters more than where it points.
     """
 
     @staticmethod
-    def _profile():
-        from src.models import AgentProfile
+    def _build(config=None, base=None, harness_env=None):
+        from src.sessions.env import build_session_env
 
-        return AgentProfile(
-            id="acpx-claude", name="ACPX Claude", runtime="acpx", agent_name="claude"
+        return build_session_env(
+            session_id="s-1",
+            task_id="t-1",
+            project_id="p-1",
+            profile_id="prof-1",
+            epoch="2026-08-24T00:00:00Z",
+            instance_token="tok",
+            work_dir="/tmp/ws",
+            api_url="http://127.0.0.1:8081",
+            api_token="api-tok",
+            harness_env=harness_env,
+            config=config,
+            base=base,
         )
 
-    @staticmethod
-    def _registry(config):
-        from src.runtimes import default_registry
-
-        return default_registry(config=config)
-
-    async def _capture_env(self, config) -> dict[str, str]:
-        """Run ``wait()`` against a stubbed subprocess and return its env."""
-        from src.models import TaskContext
-
-        captured: dict = {}
-
-        async def fake_run(cmd, env, cwd, on_line, cancel_event, **kw):  # noqa: ARG001
-            captured["env"] = env
-            on_line(b'{"stopReason": "completed", "result": "done"}\n')
-            return 0
-
-        runtime = self._registry(config).create("acpx", profile=self._profile())
-        await runtime.start(
-            TaskContext(description="d", task_id="t-1", checkout_path="/tmp/ws")
-        )
-        with patch("src.runtimes.acpx.shutil.which", return_value="/usr/bin/acpx"), patch(
-            "src.runtimes.acpx.run_streaming_subprocess", side_effect=fake_run
-        ):
-            await runtime.wait()
-        return captured["env"]
-
-    async def test_daemon_secrets_are_withheld_from_the_agent(self):
-        from src.config import AppConfig
-
-        with patch.dict(
-            os.environ,
-            {"DISCORD_TOKEN": "leak-me", "PATH": "/usr/bin", "CLAUDECODE": "1"},
-            clear=True,
-        ):
-            env = await self._capture_env(AppConfig())
-
-        assert "DISCORD_TOKEN" not in env
-        assert "CLAUDECODE" not in env
+    def test_daemon_secrets_are_withheld_from_the_agent(self):
+        env = self._build(base={"DISCORD_BOT_TOKEN": "secret", "PATH": "/usr/bin"})
+        assert "DISCORD_BOT_TOKEN" not in env
         assert env["PATH"] == "/usr/bin"
 
-    async def test_kill_switch_reaches_the_real_call_site(self):
+    def test_agent_keeps_its_provider_credentials(self):
+        env = self._build(base={"ANTHROPIC_API_KEY": "k", "PATH": "/usr/bin"})
+        assert env["ANTHROPIC_API_KEY"] == "k"
+
+    def test_kill_switch_reaches_the_real_call_site(self):
         from src.config import AppConfig
 
-        config = AppConfig()
-        config.security.env_scrub_enabled = False
-        with patch.dict(os.environ, {"DISCORD_TOKEN": "t"}, clear=True):
-            env = await self._capture_env(config)
-
-        assert env["DISCORD_TOKEN"] == "t", (
-            "security.env_scrub_enabled=False did not reach ACPXRuntime — the "
-            "kill switch is inert again"
+        cfg = AppConfig()
+        cfg.security.env_scrub_enabled = False
+        env = self._build(config=cfg, base={"DISCORD_BOT_TOKEN": "secret"})
+        assert env["DISCORD_BOT_TOKEN"] == "secret", (
+            "security.env_scrub_enabled=False must disable scrubbing at the "
+            "real launch site, not only in a unit test"
         )
 
-    async def test_operator_allowlist_reaches_the_real_call_site(self):
+    def test_operator_allowlist_reaches_the_real_call_site(self):
         from src.config import AppConfig
 
-        config = AppConfig()
-        config.security.env_allowlist = ["VOYAGE_*"]
-        with patch.dict(
-            os.environ, {"VOYAGE_API_KEY": "v", "DISCORD_TOKEN": "d"}, clear=True
-        ):
-            env = await self._capture_env(config)
+        cfg = AppConfig()
+        cfg.security.env_allowlist = ["DISCORD_BOT_TOKEN"]
+        env = self._build(config=cfg, base={"DISCORD_BOT_TOKEN": "secret"})
+        assert env["DISCORD_BOT_TOKEN"] == "secret"
 
-        assert env["VOYAGE_API_KEY"] == "v"
-        assert "DISCORD_TOKEN" not in env
-
-    async def test_agent_keeps_its_provider_credentials(self):
-        """A fresh install authenticating by API key must still work."""
-        from src.config import AppConfig
-
-        with patch.dict(
-            os.environ,
-            {"ANTHROPIC_API_KEY": "sk-ant", "GH_TOKEN": "ghp", "DISCORD_TOKEN": "d"},
-            clear=True,
-        ):
-            env = await self._capture_env(AppConfig())
-
-        assert env["ANTHROPIC_API_KEY"] == "sk-ant"
-        assert env["GH_TOKEN"] == "ghp"
-        assert "DISCORD_TOKEN" not in env
-
-    def test_registry_passes_config_to_constructed_runtimes(self):
-        from src.config import AppConfig
-
-        config = AppConfig()
-        runtime = self._registry(config).create("acpx", profile=self._profile())
-        assert runtime._config is config
+    def test_harness_env_is_explicit_and_survives_the_scrub(self):
+        """A key named in a harness file is meant, so it outranks the scrub."""
+        env = self._build(
+            base={"PATH": "/usr/bin"},
+            harness_env={"DISCORD_BOT_TOKEN": "named-on-purpose"},
+        )
+        assert env["DISCORD_BOT_TOKEN"] == "named-on-purpose"
 
 
 class TestRunCommandGetsScrubbedEnv:

@@ -488,14 +488,12 @@ agent_profiles = Table(
     # (e.g. claude-opus + claude-sonnet both set ``memory_scope_id='claude'``
     # so insights accumulate in a single pool).
     Column("memory_scope_id", Text, nullable=True),
-    # Which runtime executes tasks for this profile.  Default
-    # ``"claude_sdk"`` matches ``config.default_runtime``; ``"supervisor"``
-    # routes to the in-process Supervisor singleton (tool-call-only, no
-    # workspace).  Other values must match a name in the RuntimeRegistry.
-    Column("runtime", Text, nullable=False, server_default="'claude_sdk'"),
-    # ACP agent identifier — only meaningful when ``runtime == "acpx"``.
-    # Empty string for every other runtime.  Validated at parse time.
-    Column("agent_name", Text, nullable=False, server_default="''"),
+    # Which runtime executes tasks for this profile.  Empty (the default)
+    # means the profile runs as a tmux **session**, selected by ``harness`` —
+    # the path for every coding agent.  ``"supervisor"`` routes to the
+    # in-process Supervisor singleton (tool-call-only, no workspace) and is
+    # the only non-empty value.
+    Column("runtime", Text, nullable=False, server_default="''"),
     # -- Named-session pass-through storage (supervisor-agent spec §3.2) --
     # Values are validated at profile parse time; the harness *schema*
     # (what "claude" means) is owned by the session-runtime spec.

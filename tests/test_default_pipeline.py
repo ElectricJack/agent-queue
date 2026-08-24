@@ -59,7 +59,7 @@ def test_triage_profile_parseable():
     md = src.read_text(encoding="utf-8")
     result = parse_profile(md)
     assert result.frontmatter.id == "triage"
-    assert result.config.get("runtime") == "claude_sdk"
+    assert result.config.get("harness") == "claude"
     assert result.config.get("needs_workspace") is False
     # task_route must be in the allowed tools list
     allowed = result.tools.get("allowed", [])

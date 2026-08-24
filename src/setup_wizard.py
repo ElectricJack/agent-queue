@@ -920,7 +920,7 @@ def step_agents(existing: dict) -> dict:
     claude_installed, claude_logged_in = _check_claude_cli()
 
     # If the user is already logged in via `claude login`, that's sufficient —
-    # the claude_agent_sdk uses the Claude CLI which reads those credentials.
+    # the session harnesses run the Claude CLI, which reads those credentials.
     if claude_logged_in:
         print()
         success("Claude Code: logged in via Anthropic account")
@@ -930,7 +930,7 @@ def step_agents(existing: dict) -> dict:
         # Try Vertex AI / Bedrock / API key auto-detection
         print()
         info("Testing Claude SDK connectivity...")
-        claude_ok, sdk_backend = _test_claude_sdk(api_key if api_key else None)
+        claude_ok, sdk_backend = _test_anthropic_api(api_key if api_key else None)
 
         if claude_ok:
             success(f"Using {sdk_backend}")
@@ -975,7 +975,7 @@ def step_agents(existing: dict) -> dict:
                     from_env = False
                     _save_env_value("ANTHROPIC_API_KEY", api_key)
                     info("Testing with provided key...")
-                    claude_ok, sdk_backend = _test_claude_sdk(api_key)
+                    claude_ok, sdk_backend = _test_anthropic_api(api_key)
 
                     while not claude_ok:
                         print()
@@ -985,7 +985,7 @@ def step_agents(existing: dict) -> dict:
                         print()
                         if not prompt_yes_no("Retry with this key?", default=True):
                             break
-                        claude_ok, sdk_backend = _test_claude_sdk(api_key)
+                        claude_ok, sdk_backend = _test_anthropic_api(api_key)
 
     # Test claude-agent-sdk
     print()
@@ -993,9 +993,9 @@ def step_agents(existing: dict) -> dict:
     if not claude_installed:
         warn("Claude Code CLI not found — agents will not be able to run")
         info("Install from: https://claude.ai/download")
-        agent_sdk_ok = False
+        harnesses_ok = False
     else:
-        agent_sdk_ok = _test_claude_agent_sdk()
+        harnesses_ok = _probe_session_harnesses()
 
     default_model = yaml_cfg.get("model", "claude-sonnet-4-20250514")
     model = prompt("Model", default_model)
@@ -1004,7 +1004,7 @@ def step_agents(existing: dict) -> dict:
         "api_key": api_key,
         "model": model,
         "connected": claude_ok,
-        "agent_sdk_ok": agent_sdk_ok,
+        "harnesses_ok": harnesses_ok,
         "from_env": from_env,
         "backend": sdk_backend,
     }
@@ -1012,11 +1012,16 @@ def step_agents(existing: dict) -> dict:
     return agents
 
 
-def _test_claude_sdk(api_key: str | None = None) -> tuple[bool, str | None]:
-    """Test Claude SDK connectivity, trying multiple backends.
+def _test_anthropic_api(api_key: str | None = None) -> tuple[bool, str | None]:
+    """Test Anthropic API connectivity, trying multiple backends.
 
     Tries in order: direct API (if key available), Vertex AI, Bedrock.
     Returns (success, backend_name).
+
+    This checks the ``anthropic`` SDK used by the supervisor / chat provider.
+    It is unrelated to how *coding agents* run — those are tmux sessions
+    wrapping the ``claude`` / ``codex`` / ``gemini`` CLIs, which authenticate
+    themselves.
     """
     try:
         import anthropic
@@ -1097,26 +1102,28 @@ def _test_claude_sdk(api_key: str | None = None) -> tuple[bool, str | None]:
     return False, None
 
 
-def _test_claude_agent_sdk() -> bool:
-    """Test that the claude-agent-sdk is installed and can initialize."""
-    try:
-        from claude_agent_sdk import ClaudeAgentOptions
+def _probe_session_harnesses() -> bool:
+    """Report which session harness CLIs are installed.
 
-        # Verify we can construct options (doesn't make a network call)
-        # Don't specify model — let the SDK use its default, which respects
-        # CLAUDE_CODE_USE_VERTEX and other env-based configuration.
-        ClaudeAgentOptions(
-            allowed_tools=["Read"],
-        )
-        success("claude-agent-sdk installed and importable")
-        return True
-    except ImportError:
-        error("claude-agent-sdk not installed")
-        info("  Install with: pip install 'claude-agent-sdk>=0.1.30'")
-        return False
-    except Exception as e:
-        error(f"claude-agent-sdk error: {e}")
-        return False
+    Coding agents run as tmux sessions wrapping a CLI, so what matters at
+    setup time is whether any of the shipped harness binaries exist — not
+    whether a Python SDK imports.  ``claude-agent-sdk`` was removed with the
+    ``claude_sdk`` runtime.
+    """
+    import shutil
+
+    found = [c for c in ("claude", "codex", "gemini") if shutil.which(c)]
+    missing = [c for c in ("claude", "codex", "gemini") if c not in found]
+    if found:
+        success(f"session harnesses available: {', '.join(found)}")
+    else:
+        error("no session harness CLI found (claude / codex / gemini)")
+        info("  A profile's `harness` selects which CLI runs its tasks.")
+    if missing:
+        info(f"  not installed: {', '.join(missing)} (only needed if a profile uses them)")
+    if not shutil.which("tmux"):
+        warn("tmux not found — sessions cannot start without it")
+    return bool(found)
 
 
 # ── Step 4: Chat Provider (LLM Backend) ──────────────────────────────────────
@@ -1592,10 +1599,10 @@ def step_test_connectivity(discord_cfg: dict, agents_cfg: dict, chat_provider_cf
     elif claude_cfg:
         error("Claude API: not verified")
 
-    if claude_cfg and claude_cfg.get("agent_sdk_ok"):
-        success("claude-agent-sdk: installed")
+    if claude_cfg and claude_cfg.get("harnesses_ok"):
+        success("session harnesses: at least one CLI available")
     elif claude_cfg:
-        error("claude-agent-sdk: not installed")
+        error("session harnesses: no agent CLI found (claude / codex / gemini)")
 
     cp = chat_provider_cfg
     if cp.get("provider") == "ollama":

@@ -76,15 +76,24 @@ class TestConfigLoading:
 
 def test_default_runtime_default_value():
     cfg = AppConfig()
-    assert cfg.default_runtime == "claude_sdk"
+    assert cfg.default_runtime == ""  # session-routed; harness picks the CLI
 
 
-def test_default_runtime_validation_accepts_known():
+def test_default_runtime_validation_accepts_empty():
+    """Empty is the normal value: run as a session, harness picks the CLI."""
+    cfg = AppConfig()
+    cfg.default_runtime = ""
+    errors = [e for e in cfg.validate() if e.field == "default_runtime"]
+    assert errors == []
+
+
+def test_default_runtime_validation_rejects_deleted_runtimes():
+    """`claude_sdk` / `acpx` were removed; naming one must not silently pass."""
     for name in ("claude_sdk", "acpx"):
         cfg = AppConfig()
         cfg.default_runtime = name
         errors = [e for e in cfg.validate() if e.field == "default_runtime"]
-        assert errors == [], f"{name} flagged as invalid"
+        assert len(errors) == 1, f"{name} should be rejected"
 
 
 def test_default_runtime_validation_rejects_unknown():
