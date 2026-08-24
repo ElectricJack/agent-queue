@@ -2034,3 +2034,24 @@ class TestMockAdapter:
         # We just verify the protocol is runtime-checkable and the real adapter passes
         adapter = SQLiteDatabaseAdapter.__new__(SQLiteDatabaseAdapter)
         assert isinstance(adapter, DatabaseBackend)
+
+
+class TestAdapterParity:
+    """The two adapters must expose the same surface.
+
+    Regression guard: ``ApiSessionTokenQueriesMixin`` was added to the SQLite
+    adapter but not the PostgreSQL one, so every ``_revoke_expired_tokens``
+    cascade pass on a Postgres deployment raised ``AttributeError:
+    'PostgreSQLDatabaseAdapter' object has no attribute
+    'delete_expired_api_tokens'``.  A mixin added to one adapter and forgotten
+    on the other is invisible until runtime on whichever backend was missed.
+    """
+
+    def test_adapters_expose_identical_public_methods(self):
+        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+        from src.database.adapters.sqlite import SQLiteDatabaseAdapter
+
+        pg = {m for m in dir(PostgreSQLDatabaseAdapter) if not m.startswith("_")}
+        lite = {m for m in dir(SQLiteDatabaseAdapter) if not m.startswith("_")}
+        assert lite - pg == set(), f"on SQLite but missing from PostgreSQL: {sorted(lite - pg)}"
+        assert pg - lite == set(), f"on PostgreSQL but missing from SQLite: {sorted(pg - lite)}"
