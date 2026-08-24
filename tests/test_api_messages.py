@@ -79,6 +79,23 @@ class TestNameResolution:
             await resolve_session_project(name, handler)
         assert exc.value.status_code == 404
 
+    async def test_global_supervisor_resolves_without_a_preexisting_project(self, handler):
+        """`supervisor-global` addresses the *global* supervisor, not a project
+        literally named "global". It has to resolve before that project row
+        exists: the stub row is created lazily on SessionLens's cold-start
+        path, which can only be reached by a request that got past this
+        resolver. Requiring the row up front deadlocked the dashboard's
+        global chat at `/` behind a permanent 404."""
+        assert await resolve_session_project("supervisor-global", handler) == "global"
+
+    async def test_global_supervisor_resolution_creates_nothing(self, handler):
+        """Resolution must stay side-effect free. Creating the stub here meant
+        every dashboard chat *load* conjured a `global` project row, which then
+        showed up as a phantom "Global" entry in the sidebar. The write path
+        creates it instead."""
+        await resolve_session_project("supervisor-global", handler)
+        assert await handler.db.get_project("global") is None
+
     async def test_role_boundary_beats_hyphen_position(self, handler):
         """`code-reviewer-myproj` with projects {myproj, reviewer-myproj}
         resolved to `reviewer-myproj` — the wrong project — because the walk

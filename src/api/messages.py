@@ -19,11 +19,14 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel, Field
 
 from src.api.auth import LOCAL_SCOPE
 from src.api.dependencies import get_command_handler
 from src.api.scope import check_command_scope
+from src.messages.session_lens import _GLOBAL_SUPERVISOR_SUFFIX
+from src.models import Project
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +68,26 @@ class SessionMessageResponse(BaseModel):
 KNOWN_SESSION_ROLES: tuple[str, ...] = ("supervisor",)
 
 
+#: Role half of the global supervisor's address. Kept alongside
+#: ``KNOWN_SESSION_ROLES`` so the two can't drift apart.
+_SUPERVISOR_ROLE: str = "supervisor"
+
+
+async def _ensure_global_project_stub(ch) -> None:
+    """Idempotently create the stub ``projects`` row the global supervisor's
+    rows hang off. Mirrors the create in :mod:`src.messages.session_lens`;
+    whichever path runs first wins and the other is a no-op."""
+    if await ch.db.get_project(_GLOBAL_SUPERVISOR_SUFFIX):
+        return
+    try:
+        await ch.db.create_project(
+            Project(id=_GLOBAL_SUPERVISOR_SUFFIX, name="Global")
+        )
+    except IntegrityError:
+        # Raced with the session-lens create — the row is there either way.
+        logger.debug("global project stub already present")
+
+
 async def resolve_session_project(name: str, ch) -> str:
     """Map a logical session name to its project id.
 
@@ -74,9 +97,25 @@ async def resolve_session_project(name: str, ch) -> str:
     and even ``-agent-queue`` resolved happily, and ``code-reviewer-myproj``
     with projects ``{myproj, reviewer-myproj}`` picked the wrong one.
 
+    ``supervisor-global`` is special: it addresses the *global* supervisor
+    (the Agent Q chat at ``/`` in the dashboard), not a per-project supervisor
+    for a project literally named "global" — see
+    :mod:`src.messages.session_lens`. Its stub ``projects`` row is created
+    lazily on the SessionLens cold-start path, which is only reachable by a
+    request that already got past this resolver, so requiring the row up front
+    deadlocked the global chat behind a permanent 404. Resolve it directly.
+
+    Resolution is deliberately side-effect free: merely *reading* the global
+    transcript must not conjure a ``projects`` row, or every dashboard load
+    would add a phantom "Global" project to the sidebar. The write path calls
+    :func:`_ensure_global_project_stub` instead.
+
     Raises ``HTTPException(404)`` when the role is unknown or the project
     doesn't exist.
     """
+    if name == f"{_SUPERVISOR_ROLE}-{_GLOBAL_SUPERVISOR_SUFFIX}":
+        return _GLOBAL_SUPERVISOR_SUFFIX
+
     for role in KNOWN_SESSION_ROLES:
         prefix = f"{role}-"
         if not name.startswith(prefix):
@@ -103,6 +142,11 @@ async def post_session_message(
     """Queue a message addressed to the named session."""
     scope = getattr(request.state, "scope", LOCAL_SCOPE)
     project_id = await resolve_session_project(name, ch)
+    if project_id == _GLOBAL_SUPERVISOR_SUFFIX:
+        # ``messages.project_id`` is a NOT NULL FK to ``projects.id``, so the
+        # stub has to exist before this row lands. Only on the write path —
+        # see resolve_session_project.
+        await _ensure_global_project_stub(ch)
     args: dict = {
         "project_id": project_id,
         "to_kind": "session",

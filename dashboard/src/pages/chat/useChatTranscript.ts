@@ -140,6 +140,11 @@ export function useChatTranscript(
       }),
     enabled: !!projectId || !!overrides.sessionAddress,
     staleTime: 15_000,
+    // Surface a chat failure promptly. On the client default (retry: 3) the
+    // backoff runs 1s + 2s + 4s, so a rejected session address sat on a blank
+    // "connecting" pane for ~7s before the error text appeared.
+    retry: 1,
+    retryDelay: 250,
   });
 
   const [live, setLive] = useState<MessageModel[]>([]);
