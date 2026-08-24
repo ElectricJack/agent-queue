@@ -296,11 +296,64 @@ class TestProfileResolution:
         assert profile.id == "test-reviewer"
 
     async def test_resolve_no_profile(self, orch):
-        """Task without profile_id, project without default → None."""
+        """No task profile, no project default, no profiles registered → None."""
+        for p in await orch.db.list_profiles():
+            await orch.db.delete_profile(p.id)
         await orch.db.create_project(Project(id="p-1", name="test"))
         task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
         profile = await orch._resolve_profile(task)
         assert profile is None
+
+    @staticmethod
+    async def _only_profiles(orch, *profile_ids: str) -> None:
+        """Reduce the registered profile set to exactly *profile_ids*.
+
+        ``initialize()`` seeds a shipped profile set, so pin the selector's
+        input rather than asserting against whatever happens to be seeded.
+        """
+        keep = set(profile_ids)
+        for p in await orch.db.list_profiles():
+            if p.id not in keep:
+                await orch.db.delete_profile(p.id)
+            keep.discard(p.id)
+        for pid in keep:
+            await orch.db.create_profile(AgentProfile(id=pid, name=pid))
+
+    async def test_resolve_falls_back_to_system_default(self, orch):
+        """No task profile and no project default → system-wide default.
+
+        The reconciler builds the agent row from the same third rung, so
+        dispatch must agree rather than running the task profile-less.
+        """
+        await self._only_profiles(orch, "claude-opus")
+        await orch.db.create_project(Project(id="p-1", name="test"))
+        task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
+
+        profile = await orch._resolve_profile(task)
+
+        assert profile is not None
+        assert profile.id == "claude-opus"
+
+    async def test_system_default_fallback_is_persisted(self, orch):
+        """The fallback is written to the project so the choice is stable."""
+        await self._only_profiles(orch, "claude-opus")
+        await orch.db.create_project(Project(id="p-1", name="test"))
+        task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
+
+        await orch._resolve_profile(task)
+
+        project = await orch.db.get_project("p-1")
+        assert project.default_profile_id == "claude-opus"
+
+    async def test_system_default_prefers_project_scoped_override(self, orch):
+        """A project override of the fallback profile still wins."""
+        await self._only_profiles(orch, "claude-opus", "project:p-1:claude-opus")
+        await orch.db.create_project(Project(id="p-1", name="test"))
+        task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
+
+        profile = await orch._resolve_profile(task)
+
+        assert profile.id == "project:p-1:claude-opus"
 
     async def test_task_profile_overrides_project_default(self, orch):
         """Task profile_id takes precedence over project default_profile_id."""
