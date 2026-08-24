@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, insert, select
 
-from src.database.tables import agents, projects, tasks, token_ledger
+from src.database.tables import agents, archived_tasks, projects, tasks, token_ledger
 
 
 class TokenQueryMixin:
@@ -233,7 +233,7 @@ class TokenQueryMixin:
                     func.sum(token_ledger.c.tokens_used).label("tokens"),
                     func.count(func.distinct(token_ledger.c.task_id)).label("task_count"),
                 )
-                .join(projects, token_ledger.c.project_id == projects.c.id)
+                .join(projects, token_ledger.c.project_id == projects.c.id, isouter=True)
                 .where(base)
                 .group_by(token_ledger.c.project_id, projects.c.name)
                 .order_by(func.sum(token_ledger.c.tokens_used).desc())
@@ -258,7 +258,11 @@ class TokenQueryMixin:
                     tasks.c.status.label("task_status"),
                     func.sum(token_ledger.c.tokens_used).label("tokens"),
                 )
-                .join(tasks, token_ledger.c.task_id == tasks.c.id)
+                # Outer join: completed tasks are moved to ``archived_tasks``,
+                # so an inner join would silently drop exactly the finished
+                # work that dominates spend — while ``total`` above still
+                # counted it, making the two halves of the report disagree.
+                .join(tasks, token_ledger.c.task_id == tasks.c.id, isouter=True)
                 .where(base)
                 .group_by(
                     token_ledger.c.project_id,
@@ -280,6 +284,27 @@ class TokenQueryMixin:
                 }
                 for r in rows
             ]
+
+            # Most spend belongs to *finished* work, which lives in
+            # ``archived_tasks``.  Backfill titles/statuses for those so the
+            # report shows names instead of a column of bare ids.
+            missing = [t["task_id"] for t in top_tasks if t["title"] is None and t["task_id"]]
+            if missing:
+                arch_rows = (
+                    await conn.execute(
+                        select(
+                            archived_tasks.c.id,
+                            archived_tasks.c.title,
+                            archived_tasks.c.status,
+                        ).where(archived_tasks.c.id.in_(missing))
+                    )
+                ).fetchall()
+                arch = {r.id: (r.title, r.status) for r in arch_rows}
+                for t in top_tasks:
+                    hit = arch.get(t["task_id"])
+                    if hit is not None:
+                        t["title"], t["status"] = hit
+                        t["archived"] = True
 
             # -- Daily totals --
             # Group in Python to avoid dialect-specific date functions

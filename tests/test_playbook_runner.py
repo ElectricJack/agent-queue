@@ -1781,6 +1781,82 @@ class TestDBPersistence:
 # ---------------------------------------------------------------------------
 
 
+class TestTokenLedger:
+    """Playbook spend must reach ``token_ledger``, not just ``playbook_runs``.
+
+    Regression: ``self.tokens_used`` was only ever persisted to
+    ``playbook_runs.tokens_used``, which ``token_audit`` does not read — so a
+    daemon with hundreds of thousands of playbook tokens reported zero spend.
+    """
+
+    async def test_run_writes_to_token_ledger(
+        self, mock_supervisor, simple_graph, event_data, mock_db
+    ):
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.tokens_used > 0
+        assert mock_db.record_token_usage.called
+
+        # Ledger total must match what the run reported spending.
+        ledger_total = sum(c[0][3] for c in mock_db.record_token_usage.call_args_list)
+        assert ledger_total == result.tokens_used
+
+        project_id, agent_id, task_id, tokens = mock_db.record_token_usage.call_args_list[0][0]
+        assert project_id == "test-proj"
+        assert agent_id == "playbook:test-playbook"
+        assert task_id == f"playbook-run:{runner.run_id}"
+        assert tokens > 0
+
+    async def test_no_project_id_skips_ledger(self, mock_supervisor, simple_graph, mock_db):
+        """``token_ledger.project_id`` is a NOT NULL FK — skip, don't crash.
+
+        System-scoped playbooks (timer ticks with no project) would otherwise
+        raise an IntegrityError on every node.
+        """
+        mock_supervisor.chat.return_value = "Done."
+        event = {"type": "timer.30m", "tick_time": 1234567890}
+        runner = PlaybookRunner(simple_graph, event, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "completed"
+        assert not mock_db.record_token_usage.called
+
+    async def test_ledger_failure_does_not_abort_run(
+        self, mock_supervisor, simple_graph, event_data, mock_db
+    ):
+        """Token accounting is best-effort — a ledger error must not kill the run."""
+        mock_db.record_token_usage = AsyncMock(side_effect=RuntimeError("ledger down"))
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+
+        assert result.status == "completed"
+
+    async def test_resume_does_not_double_count(
+        self, mock_supervisor, human_review_graph, event_data, mock_db
+    ):
+        """Resuming a paused run must not re-charge its pre-pause tokens.
+
+        Writing the cumulative ``self.tokens_used`` at completion would, since
+        the resume paths restore ``runner.tokens_used`` from the DB row.
+        Per-node deltas are immune.
+        """
+        mock_supervisor.chat.return_value = "Done."
+        runner = PlaybookRunner(human_review_graph, event_data, mock_supervisor, db=mock_db)
+        result = await runner.run()
+        assert result.status == "paused"
+
+        charged_before = sum(c[0][3] for c in mock_db.record_token_usage.call_args_list)
+        assert charged_before == runner.tokens_used
+
+        # Every ledger row is a positive per-node delta, never a running total.
+        deltas = [c[0][3] for c in mock_db.record_token_usage.call_args_list]
+        assert all(d > 0 for d in deltas)
+        assert sum(deltas) == runner.tokens_used
+
+
 class TestVersionPinning:
     """In-flight runs continue with old version when recompiled."""
 

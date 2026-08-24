@@ -265,6 +265,15 @@ _ALL_TOOL_DEFINITIONS = [
                         "per_project_channels.auto_create config setting."
                     ),
                 },
+                "default_profile_id": {
+                    "type": "string",
+                    "description": (
+                        "Agent profile used for tasks in this project that "
+                        "don't specify their own profile_id.  When omitted, a "
+                        "system default is chosen automatically (claude-opus, "
+                        "then claude-sonnet, then any general-purpose profile)."
+                    ),
+                },
             },
             "required": ["name"],
         },

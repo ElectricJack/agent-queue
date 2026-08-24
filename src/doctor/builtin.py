@@ -240,6 +240,7 @@ def _scan_vault(vault_root: str) -> tuple[list[str], int]:
     from src.profiles.mcp_registry import derive_server_id, parse_server_markdown
     from src.profiles.parser import parse_profile
     from src.profiles.workspace_kind_parser import parse_workspace_kind_file
+    from src.vault_index import is_generated_hub_file
 
     errors: list[str] = []
     seen = 0
@@ -258,6 +259,8 @@ def _scan_vault(vault_root: str) -> tuple[list[str], int]:
             errors.append(f"{profile_path}: {'; '.join(parsed.errors)}")
 
     for kind_path in sorted(root.glob("**/workspace-kinds/*.md")):
+        if is_generated_hub_file(kind_path):
+            continue
         seen += 1
         try:
             parse_workspace_kind_file(kind_path, "system")
@@ -265,6 +268,8 @@ def _scan_vault(vault_root: str) -> tuple[list[str], int]:
             errors.append(f"{kind_path}: {exc}")
 
     for mcp_path in sorted(root.glob("**/mcp-servers/*.md")):
+        if is_generated_hub_file(mcp_path):
+            continue
         seen += 1
         rel = mcp_path.relative_to(root).as_posix()
         derived = derive_server_id(rel)

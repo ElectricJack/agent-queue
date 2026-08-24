@@ -304,6 +304,46 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         midnight = _midnight_today()
         return await self.db.get_daily_playbook_token_usage(midnight)
 
+    # ------------------------------------------------------------------
+    # Token ledger
+    # ------------------------------------------------------------------
+
+    async def _record_token_ledger(self, delta: int, node_id: str) -> None:
+        """Append this node's spend to the global ``token_ledger``.
+
+        ``self.tokens_used`` only ever reached ``playbook_runs.tokens_used``,
+        which ``token_audit`` / ``get_cost_rollup`` do not read.  The result
+        was that every token a playbook burned was invisible to cost
+        reporting — a live daemon could show hundreds of thousands of tokens
+        across ``playbook_runs`` while ``token_audit`` reported exactly zero.
+
+        Writes are best-effort: token accounting must never abort a run.
+        ``token_ledger.project_id`` is a non-null FK to ``projects``, so a
+        run whose trigger event carries no ``project_id`` (system-scoped
+        playbooks) is skipped rather than raising on insert.
+        """
+        if not self.db or delta <= 0:
+            return
+        project_id = (self.event or {}).get("project_id")
+        if not project_id:
+            return
+        try:
+            await self.db.record_token_usage(
+                project_id,
+                # ``agent_id``/``task_id`` are best-effort attribution
+                # strings, not FKs — see src/database/tables.py.
+                f"playbook:{self._playbook_id}",
+                (self.event or {}).get("task_id") or f"playbook-run:{self.run_id}",
+                delta,
+            )
+        except Exception:
+            logger.debug(
+                "playbook runner: record_token_usage failed for run %s node %s",
+                self.run_id,
+                node_id,
+                exc_info=True,
+            )
+
     @staticmethod
     async def check_daily_budget(
         db: DatabaseBackend,
@@ -1749,6 +1789,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         token_estimate = _estimate_tokens(prompt, response)
         self.tokens_used += token_estimate
         trace_entry.tokens_used += token_estimate
+        await self._record_token_ledger(token_estimate, node_id)
 
         return response
 

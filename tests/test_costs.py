@@ -372,6 +372,90 @@ class TestRecordTokenUsage:
         assert await db.get_project_token_usage("p-1") == 42
 
 
+class TestLedgerSurvivesLifecycle:
+    """The ledger is an audit record — routine GC must not erase spend.
+
+    Regression for ``token_audit`` reporting zero tokens.  ``token_ledger``
+    used to carry real FKs to ``agents.id`` and ``tasks.id``, so
+    ``archive_task`` and ``delete_agent`` both had to cascade into it.  Since
+    archiving is the *normal* end of a completed task and agents are reaped
+    whenever their profile stops resolving, that meant essentially all spend
+    was deleted moments after it was recorded.
+    """
+
+    async def _seed_spend(self, db):
+        from src.models import Task, TaskStatus
+
+        await db.create_project(Project(id="p-1", name="one"))
+        await db.create_agent(
+            Agent(id="a-1", name="a", profile_id="prof", state=AgentState.IDLE)
+        )
+        await db.create_task(
+            Task(
+                id="t-1",
+                project_id="p-1",
+                title="t",
+                description="d",
+                status=TaskStatus.COMPLETED,
+            )
+        )
+        await db.record_token_usage(
+            "p-1", "a-1", "t-1", 300, model="m-1", input_tokens=200, output_tokens=100
+        )
+
+    async def test_archiving_a_task_keeps_its_spend(self, db):
+        await self._seed_spend(db)
+        assert await db.archive_task("t-1") is True
+
+        assert await db.get_project_token_usage("p-1") == 300
+        audit = await db.get_token_audit(days=7)
+        assert audit["total"] == 300
+
+    async def test_archived_task_still_named_in_top_tasks(self, db):
+        """The audit outer-joins ``tasks`` then backfills from the archive."""
+        await self._seed_spend(db)
+        await db.archive_task("t-1")
+
+        audit = await db.get_token_audit(days=7)
+        top = {t["task_id"]: t for t in audit["top_tasks"]}
+        assert top["t-1"]["tokens"] == 300
+        # Title comes from archived_tasks, not a bare id with a null title.
+        assert top["t-1"]["title"] == "t"
+        assert top["t-1"]["archived"] is True
+
+    async def test_reaping_an_agent_keeps_its_spend(self, db):
+        await self._seed_spend(db)
+        await db.delete_agent("a-1")
+
+        assert await db.get_project_token_usage("p-1") == 300
+        audit = await db.get_token_audit(days=7)
+        assert audit["total"] == 300
+        # Attribution degrades gracefully rather than dropping the row.
+        rollup = await db.get_cost_rollup(group_by="profile")
+        assert sum(r["tokens_used"] for r in rollup) == 300
+
+    async def test_audit_survives_archive_and_reap_together(self, db):
+        """The real-world sequence: task completes, is archived, agent reaped."""
+        await self._seed_spend(db)
+        await db.archive_task("t-1")
+        await db.delete_agent("a-1")
+
+        audit = await db.get_token_audit(days=7)
+        assert audit["total"] == 300
+        assert audit["by_project"] == [
+            {"project_id": "p-1", "project_name": "one", "tokens": 300, "task_count": 1}
+        ]
+        assert audit["daily"] and sum(d["tokens"] for d in audit["daily"]) == 300
+
+    async def test_deleting_the_project_still_purges_the_ledger(self, db):
+        """``project_id`` keeps its FK — an explicit purge must still work."""
+        await self._seed_spend(db)
+        await db.delete_project("p-1")
+
+        audit = await db.get_token_audit(days=7)
+        assert audit["total"] == 0
+
+
 class TestConfigWiring:
     """``pricing:`` is a YAML *list*; ``security:`` is a map (spec §2)."""
 

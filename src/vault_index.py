@@ -95,6 +95,19 @@ def _is_hub_file(filepath: Path) -> bool:
     return filepath.stem == filepath.parent.name
 
 
+def is_generated_hub_file(filepath: Path | str) -> bool:
+    """Public predicate for "this .md is an Obsidian hub, not real content".
+
+    Every vault directory that grows past ``_LARGE_DIR_THRESHOLD`` entries
+    gets a generated hub file named after the directory (e.g.
+    ``workspace-kinds/workspace-kinds.md``).  Loaders that glob a vault
+    config directory for ``*.md`` must skip these — a hub has no
+    frontmatter contract and no fenced config block, so parsing one yields
+    a spurious "malformed config file" warning on every scan.
+    """
+    return _is_hub_file(Path(filepath))
+
+
 class VaultIndexGenerator:
     """Generates hub files throughout the vault tree.
 

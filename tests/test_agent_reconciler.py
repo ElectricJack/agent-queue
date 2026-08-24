@@ -96,35 +96,99 @@ async def test_creates_one_agent_for_one_ready_task(db):
     assert report.created == [("p", "claude-opus")]
 
 
-async def test_skips_when_no_resolvable_profile_id(db, caplog):
-    """Project + task both lacking profile_id → skip, log warn once per project."""
-    import logging
-
-    caplog.set_level(logging.WARNING)
+async def _seed_bare_project(db, *, project_id="p", max_agents=1):
+    """A project with a workspace but no default_profile_id."""
     await db.create_project(Project(
-        id="p", name="p",
-        max_concurrent_agents=1,
+        id=project_id, name=project_id,
+        max_concurrent_agents=max_agents,
         status=ProjectStatus.ACTIVE,
         credit_weight=1.0, total_tokens_used=0,
     ))
     await db.create_workspace(Workspace(
-        id="ws-p-0", project_id="p",
-        workspace_path="/tmp/p-0",
+        id=f"ws-{project_id}-0", project_id=project_id,
+        workspace_path=f"/tmp/{project_id}-0",
         source_type=RepoSourceType.LINK, enabled=True,
     ))
+
+
+async def test_skips_when_no_profiles_registered_at_all(db, caplog):
+    """No default, no task profile, and an empty agent_profiles table →
+    nothing to fall back to, so skip and warn once per project."""
+    import logging
+
+    caplog.set_level(logging.WARNING)
+    await _seed_bare_project(db)
     await _seed_ready_task(db, task_id="t", project_id="p")
 
     rec = AgentReconciler(db)
     report = await rec.reconcile()
     agents = await db.list_agents()
     assert len(agents) == 0
-    assert report.skipped == [("p", "no resolvable profile_id")]
+    assert len(report.skipped) == 1
+    assert report.skipped[0][0] == "p"
+    assert "no resolvable profile_id" in report.skipped[0][1]
     assert any("no resolvable profile_id" in r.message for r in caplog.records)
 
     # Dedup: second reconcile pass on the same instance should not re-log.
     caplog.clear()
     await rec.reconcile()
     assert not any("no resolvable profile_id" in r.message for r in caplog.records)
+
+
+async def test_backfills_project_default_and_creates_agent(db):
+    """The regression this guards: a project with READY tasks, no
+    default_profile_id, and tasks carrying no profile_id used to stall
+    forever.  Now the system default is picked, persisted, and an agent
+    is built from it."""
+    await _seed_bare_project(db)
+    for pid in ("claude-sonnet", "claude-opus", "reviewer"):
+        await db.create_profile(AgentProfile(id=pid, name=pid, runtime="claude_sdk"))
+    await _seed_ready_task(db, task_id="t", project_id="p")
+
+    report = await AgentReconciler(db).reconcile()
+
+    assert report.defaults_backfilled == [("p", "claude-opus")]
+    assert report.skipped == []
+    # Persisted, so Orchestrator._resolve_profile agrees with the agent row.
+    project = await db.get_project("p")
+    assert project.default_profile_id == "claude-opus"
+    agents = await db.list_agents()
+    assert len(agents) == 1
+    assert agents[0].profile_id == "claude-opus"
+
+
+async def test_backfill_is_idempotent_across_ticks(db):
+    """A second pass must not re-pick or re-log — the persisted default
+    short-circuits the fallback."""
+    await _seed_bare_project(db)
+    await db.create_profile(AgentProfile(
+        id="claude-opus", name="claude-opus", runtime="claude_sdk",
+    ))
+    await _seed_ready_task(db, task_id="t", project_id="p")
+
+    rec = AgentReconciler(db)
+    await rec.reconcile()
+    second = await rec.reconcile()
+
+    assert second.defaults_backfilled == []
+    assert second.created == []
+    assert len(await db.list_agents()) == 1
+
+
+async def test_backfill_skipped_when_all_tasks_carry_explicit_profile(db):
+    """An explicit task profile_id already resolves — don't stamp a
+    default the operator never asked for."""
+    await _seed_bare_project(db)
+    await db.create_profile(AgentProfile(
+        id="claude-opus", name="claude-opus", runtime="claude_sdk",
+    ))
+    await _seed_ready_task(db, task_id="t", project_id="p", profile_id="claude-opus")
+
+    report = await AgentReconciler(db).reconcile()
+
+    assert report.defaults_backfilled == []
+    assert (await db.get_project("p")).default_profile_id is None
+    assert [a.profile_id for a in await db.list_agents()] == ["claude-opus"]
 
 
 async def test_creates_one_agent_per_profile_under_cap(db):

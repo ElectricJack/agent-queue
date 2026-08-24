@@ -726,7 +726,24 @@ class Orchestrator(
         Resolution order (first non-None wins):
         1. **Task-level** — ``task.profile_id`` (explicit override per task)
         2. **Project default** — ``project.default_profile_id``
-        3. **None** (adapter uses built-in defaults)
+        3. **System default** — :func:`select_default_profile_id` over the
+           registered profiles, persisted onto the project
+        4. **None** (adapter uses built-in defaults)
+
+        Rung 3 is the same third rung :class:`AgentReconciler` uses when it
+        backfills a project that has READY tasks carrying no ``profile_id``.
+        Both ends of the handoff must agree: the reconciler decides which
+        profile the *agent row* is built for, and this method decides which
+        profile the *task actually executes under*. If only the reconciler
+        had the fallback, a task dispatched before the backfill landed — or
+        after a failed backfill write — would run with ``profile=None``, i.e.
+        no role text, no tool allowlist, and no MCP servers. That degradation
+        is silent, so close the loop here too.
+
+        Selection is deterministic over a given profile set, so the two
+        callers converge on the same id even when they run in either order.
+        The choice is persisted for the same reason the reconciler persists
+        it: it must survive restarts rather than drift as profiles are added.
 
         Project-scoped overrides are checked first at each level: if a
         profile with id ``project:{project_id}:{profile_id}`` exists, it
@@ -740,6 +757,8 @@ class Orchestrator(
         """
         project = await self.db.get_project(task.project_id)
         profile_id = task.profile_id or (project.default_profile_id if project else None)
+        if not profile_id and project:
+            profile_id = await self._backfill_default_profile_id(project)
         if not profile_id:
             return None
 
@@ -748,6 +767,45 @@ class Orchestrator(
             if scoped:
                 return scoped
         return await self.db.get_profile(profile_id)
+
+    async def _backfill_default_profile_id(self, project: Any) -> str | None:
+        """Pick and persist a system-default profile for *project*.
+
+        Rung 3 of :meth:`_resolve_profile`. Mirrors
+        ``AgentReconciler._backfill_project_default`` — same selector, same
+        persistence — so a task and the agent row created for it land on the
+        same profile regardless of which side got there first.
+
+        Returns ``None`` when no profile is eligible (an empty or unsynced
+        ``agent_profiles`` table), which leaves the caller on the pre-existing
+        "adapter built-in defaults" path.
+        """
+        from src.profiles.default_selection import select_default_profile_id
+
+        profiles = [p.id for p in await self.db.list_profiles()]
+        chosen = select_default_profile_id(profiles)
+        if not chosen:
+            return None
+        try:
+            await self.db.update_project(project.id, default_profile_id=chosen)
+        except Exception:
+            # Never fail a dispatch over a bookkeeping write. The selector is
+            # deterministic, so returning the id anyway still matches whatever
+            # the reconciler picks; the write simply retries on a later pass.
+            logger.exception(
+                "Failed to persist default_profile_id=%s for project=%s",
+                chosen,
+                project.id,
+            )
+            return chosen
+        project.default_profile_id = chosen
+        logger.info(
+            "Task dispatch: project=%s had no default_profile_id; "
+            "backfilled to system default %s",
+            project.id,
+            chosen,
+        )
+        return chosen
 
     async def _on_playbook_trigger(self, playbook: Any, event_data: dict) -> None:
         """PlaybookManager trigger dispatch — launch a run for a matched event.
@@ -2153,6 +2211,25 @@ class Orchestrator(
         # one written, even when other profiles (e.g. the bundled
         # supervisor / claude-* profiles created by ensure_vault_structure)
         # already exist.
+        # Self-heal the legacy colon-encoded layout first.  An older
+        # ``_vault_profile_path`` wrote project-scoped profiles to
+        # ``vault/agent-types/project:<pid>:<type>/`` — a path the profile
+        # scanner refuses to read, so the markdown stopped being the source
+        # of truth while the DB row stayed live.  Relocating before the
+        # migration below means the "vault file already exists" idempotency
+        # check sees the canonical path and skips correctly.
+        from src.profiles.migration import relocate_stray_scoped_profiles
+
+        try:
+            relocation = relocate_stray_scoped_profiles(data_dir)
+            if relocation["relocated"]:
+                logger.info(
+                    "Relocated %d stray scoped profile dir(s) into the project vault layout",
+                    relocation["relocated"],
+                )
+        except Exception:
+            logger.warning("Stray scoped profile relocation failed", exc_info=True)
+
         if all_profiles:
             from src.profiles.migration import migrate_db_profiles_to_vault
 
