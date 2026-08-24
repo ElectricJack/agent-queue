@@ -69,7 +69,8 @@ Ships three rules:
             "dedup_key": "triage-open",
             "title": "Triage unrouted tasks",
             "description": "Route every unrouted task in this project via `task_route`. Close this task when the queue is empty.",
-            "profile_id": "triage"
+            "profile_id": "triage",
+            "priority": 1
           },
           "on_success": "done",
           "on_failure": "done"

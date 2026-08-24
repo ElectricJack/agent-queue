@@ -373,3 +373,50 @@ class TestGateEventHandlers:
         finally:
             h.shutdown()
         assert bot._safe_api_call.await_count == 0
+
+
+@pytest.mark.asyncio
+class TestGateCreatedPosting:
+    """Only gates a person can resolve get an Approve/Deny embed.
+
+    ``gate_commands.resolve`` refuses the generic path for ``routing`` gates
+    ("routing gates can only be resolved via task_route"), so posting one put
+    buttons in Discord that could never work.  The default pipeline attaches a
+    routing gate to *every* new task, so a burst of task creation produced one
+    dead approval prompt per task.
+    """
+
+    def _handler(self):
+        from src.discord.notification_handler import DiscordNotificationHandler
+
+        h = DiscordNotificationHandler.__new__(DiscordNotificationHandler)
+        h.bot = MagicMock()
+        h.bot._send_message = AsyncMock(return_value=MagicMock())
+        h._gate_messages = {}
+        h._get_handler = lambda: _StubHandler()
+        return h
+
+    async def test_human_gate_is_posted(self):
+        h = self._handler()
+        await h._on_gate_created(
+            {"gate_id": "g1", "project_id": "p1", "gate_type": "human", "title": "Approve?"}
+        )
+        h.bot._send_message.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "gate_type", ["routing", "task", "pr-merged", "ci-run", "timer", "event"]
+    )
+    async def test_machine_resolved_gates_are_not_posted(self, gate_type):
+        h = self._handler()
+        await h._on_gate_created(
+            {"gate_id": "g1", "project_id": "p1", "gate_type": gate_type, "title": "x"}
+        )
+        h.bot._send_message.assert_not_awaited()
+
+    async def test_unknown_gate_type_is_still_posted(self):
+        """Fail open: a redundant prompt beats swallowing a real approval."""
+        h = self._handler()
+        await h._on_gate_created(
+            {"gate_id": "g1", "project_id": "p1", "gate_type": "brand-new", "title": "x"}
+        )
+        h.bot._send_message.assert_awaited_once()

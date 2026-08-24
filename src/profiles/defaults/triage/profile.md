@@ -55,7 +55,20 @@ When the routing queue is empty, close this task with a short summary:
     "Bash",
     "Read",
     "Glob",
-    "Grep"
+    "Grep",
+    "task_route",
+    "list_tasks",
+    "get_task",
+    "list_profiles",
+    "gate_list",
+    "create_task",
+    "edit_task"
   ]
 }
 ```
+
+Every command named in the Role section must appear above. The list was
+previously just the four filesystem tools, so the agent could not call
+`task_route` at all — it would read the instructions, find the tool absent
+from its active set, and stall. Routing gates then stayed open indefinitely,
+one per unrouted task.

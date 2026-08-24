@@ -1054,13 +1054,46 @@ class DiscordNotificationHandler:
     # Work-graph gates (Wave 4)
     # ------------------------------------------------------------------
 
+    #: Gate types the *system* resolves when their condition is met, never a
+    #: person: ``routing`` by the triage agent via ``task_route``, ``task``
+    #: when the awaited task completes, and ``pr-merged`` / ``ci-run`` /
+    #: ``timer`` / ``event`` by their respective signals.  These get no
+    #: Discord embed.
+    #:
+    #: Deliberately a denylist rather than a ``{"human"}`` allowlist: an
+    #: unrecognised gate type still gets posted.  Showing one redundant
+    #: prompt is a far cheaper mistake than silently swallowing a real
+    #: approval request that a person is waiting on.
+    MACHINE_RESOLVED_GATE_TYPES = frozenset(
+        {"routing", "task", "pr-merged", "ci-run", "timer", "event"}
+    )
+
     async def _on_gate_created(self, data: dict) -> None:
-        """Render a gate.created event as an embed with Approve/Deny buttons."""
+        """Render a gate.created event as an embed with Approve/Deny buttons.
+
+        Only gates a human can actually resolve are posted.  Posting the rest
+        was worse than noisy: ``gate_commands.resolve`` explicitly *refuses*
+        the generic path for ``routing`` gates ("routing gates can only be
+        resolved via task_route"), so those Approve/Deny buttons could never
+        work.  Since the default pipeline attaches a routing gate to every new
+        task, a burst of task creation posted one dead approval prompt per
+        task.
+        """
         from src.discord.gate_view import GateView, build_gate_embed
 
         gate_id = data.get("gate_id")
         project_id = data.get("project_id")
         if not gate_id or not project_id:
+            return
+
+        gate_type = str(data.get("gate_type") or "")
+        if gate_type in self.MACHINE_RESOLVED_GATE_TYPES:
+            logger.debug(
+                "gate.created: not posting %s gate %s — resolved by the system, "
+                "not by a person",
+                gate_type or "<unknown>",
+                gate_id,
+            )
             return
         embed = build_gate_embed(data)
         handler_ref = self._get_handler()
