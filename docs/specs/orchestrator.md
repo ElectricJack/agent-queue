@@ -48,7 +48,7 @@ avoid double-launching.  There are no threads and no multiprocessing.
 
 ### Purpose
 
-`EventBus` is a lightweight in-process pub/sub mechanism used by the hook engine and any
+`EventBus` is a lightweight in-process pub/sub mechanism used by the playbook executor and any
 other component that needs to react to lifecycle events without a direct dependency on the
 emitting component.
 
@@ -97,9 +97,9 @@ await bus.emit(event_type: str, data: dict | None = None) -> None
 
 ### Where it is used
 
-The `EventBus` instance lives on `Orchestrator.bus`.  The `HookEngine` receives a
-reference to it during `initialize()` and subscribes its own handlers to task lifecycle
-events.
+The `EventBus` instance lives on `Orchestrator.bus`.  `PlaybookManager` receives a
+reference to it during `initialize()` and subscribes playbook triggers to task lifecycle
+events.  `TimerService` publishes synthetic `timer.*` events onto the same bus.
 
 ---
 
@@ -169,7 +169,8 @@ The constructor creates all sub-objects but performs no I/O:
 | `_chat_provider` | optional | LLM provider for plan parsing |
 | `_no_pr_reminded_at` | `dict[str, float]` | Rate-limit tracker for no-PR reminders |
 | `_stuck_notified_at` | `dict[str, float]` | Rate-limit tracker for stuck-DEFINED alerts |
-| `hooks` | `HookEngine \| None` | Hook subsystem |
+| `playbook_manager` | `PlaybookManager \| None` | Playbook subsystem (`None` when `playbooks.enabled` is false) |
+| `timer_service` | `TimerService \| None` | Emits synthetic `timer.*` events for periodic playbook triggers |
 
 If `config.auto_task.use_llm_parser` is true, the constructor attempts to instantiate a
 `ChatProvider` via `create_chat_provider(config.chat_provider)`.  Failure is silently
@@ -183,13 +184,15 @@ Called once before the scheduling loop starts:
 2. `await self._recover_stale_state()` — repairs in-flight state from a previous run
    (see section 4a below).
 3. `_sync_profiles_from_config()` — syncs YAML agent profiles from config into the database.
-4. If `config.hook_engine.enabled` is true:
-   - Instantiate `HookEngine(db, bus, config)`.
-   - Call `hooks.set_orchestrator(self)`.
-   - `await hooks.initialize()`.
-5. Initialize `RuleManager` with `install_defaults()` (note: `reconcile()` runs later
-   in `on_ready`, after the supervisor is available).
-6. Start `ConfigWatcher` for configuration hot-reloading.
+4. If `config.playbooks.enabled` is true:
+   - Instantiate `PlaybookManager` and register its vault handlers.
+   - Start `TimerService` for playbooks with periodic triggers.
+   - Wire the playbook resume, workflow-stage resume, and orphan-recovery handlers.
+
+   When the flag is false all five attributes are set to `None` (not left unset), so the
+   `if x:` guards at the call sites see a falsy value rather than raise `AttributeError`.
+   Compiled JSON and `playbook_runs` rows are preserved.
+5. Start `ConfigWatcher` for configuration hot-reloading.
 
 ### 4a. Stale state recovery (`_recover_stale_state`)
 
@@ -224,7 +227,7 @@ Step 2   _check_defined_tasks           — promote DEFINED tasks whose deps are
 Step 2b  _check_stuck_defined_tasks     — alert on DEFINED tasks stuck beyond threshold
 Step 3   _schedule                      — ask Scheduler for assignment actions (skipped if paused)
 Step 4   Launch background executions   — start new asyncio.Tasks for each AssignAction
-Step 5   hooks.tick()                   — run hook engine tick (if enabled)
+Step 5   timer_service.tick()           — emit timer.* events for periodic playbooks
 Step 6   LLM log cleanup / analytics    — clean old log files, flush analytics
 Step 7   Auto-archive terminal tasks    — archive old completed/failed tasks
 Step 8   Periodic memory compaction     — compact project memory indexes
@@ -1082,7 +1085,7 @@ Allowed state: IN_PROGRESS only.  Any other state returns an error string.
    task-execution coroutines to finish.  Tasks still running after the timeout are
    abandoned (the process is exiting).
 2. Stop `ConfigWatcher` if running.
-3. If `hooks` is set: `await hooks.shutdown()`.
+3. If `timer_service` is set: `timer_service.stop()`.
 4. Close `memory_manager` if initialized.
 5. `await db.close()`.
 
@@ -1191,14 +1194,15 @@ where `sync_and_merge()` applies its rebase-before-merge fallback.
 
 ---
 
-## 18. Rule Manager Initialization
+## 18. Automation Initialization
 
-During `initialize()`, after hook engine setup:
-1. Create `RuleManager` with the data directory, database, and hook engine
-2. Run `install_defaults()` to create default global rules if not present
+Automation is owned entirely by the playbook subsystem — see
+[[design/playbooks|Playbooks]].  The former `HookEngine` and `RuleManager` were removed in
+playbooks spec §13 Phase 3; the `hooks` / `hook_runs` tables, their commands, and the
+`hook_engine` config section no longer exist.
 
-> **Note:** `reconcile()` is NOT called during `initialize()`. It runs later in `on_ready`,
-> after the Supervisor is available (the supervisor is needed for rule prompt expansion).
-
-The RuleManager is stored as `self.rule_manager` and is accessible by CommandHandler
-for rule CRUD operations. Rules have been replaced by [[design/playbooks|playbooks]].
+`TimerService` is the **sole** producer of `timer.*` / `cron.*` bus events, and its timer
+map comes exclusively from `PlaybookManager.get_all_triggers()`.  While playbooks are
+paused nothing emits those events, so a new periodic consumer must use a plugin `@cron`
+job (which stays on via `PluginRegistry.tick_cron()`) or a hardcoded cascade step — not a
+`timer.*` subscription.

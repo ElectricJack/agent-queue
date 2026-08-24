@@ -24,7 +24,7 @@ Every prompt is assembled from up to 5 ordered layers:
    - Project documentation (CLAUDE.md, README.md)
    - Falls back to empty string if memory unavailable
 
-3. **Relevant Rules** — Deprecated. Previously loaded from `RuleManager` via `load_relevant_rules(query)`. Rules have been replaced by playbooks and vault memory. `load_relevant_rules()` is now a no-op.
+3. **Relevant Rules** — Removed. Rules were replaced by [[design/playbooks|playbooks]] and vault memory; nothing is loaded at this step.
 
 4. **Specific Context** — What is the LLM doing right now? Arbitrary named context blocks:
    - `task` — task description
@@ -65,7 +65,7 @@ For task execution prompts (identity="task-agent"), the output is a single promp
 
 - `set_identity(name: str, variables: dict | None = None)` — Load identity template, render with variables
 - `load_project_context()` — async, pulls from memory_manager if available
-- `load_relevant_rules(query: str)` — async, queries RuleManager for applicable rules (project + globals). Without memsearch, loads all rules. Gracefully degrades to empty on errors.
+- `load_relevant_rules(query: str)` — retained as a no-op returning an empty list, for backward compatibility with external callers. Rules are gone; use playbooks or vault memory.
 - `add_context(name: str, content: str)` — Add a named context block to layer 4
 - `add_context_section(name: str, data: dict)` — Add structured context rendered as markdown. When `name="task_depth"`, dispatches to depth-aware template selection (see below)
 - `set_core_tools(tools: list[dict])` — Set the tool definitions for layer 5

@@ -346,11 +346,11 @@ def get_all_tools(self) -> list[dict]:
     return tools
 ```
 
-**HookEngine** — plugin-owned hooks are regular hooks with a `plugin_id` tag. No special handling needed — the hook engine already processes all hooks generically.
+**PlaybookManager** — plugin-owned playbooks are regular playbooks with a `plugin_id` tag. No special handling needed — the playbook manager already processes all playbooks generically.
 
 **EventBus** — plugins emit and subscribe to events freely. Plugin-declared event types are documented but not enforced (the EventBus is already freeform).
 
-**Orchestrator initialization** — plugins load after database, before hooks:
+**Orchestrator initialization** — plugins load after database, before playbooks:
 
 ```python
 async def initialize(self) -> None:

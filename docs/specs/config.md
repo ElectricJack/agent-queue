@@ -181,16 +181,7 @@ Maps to `ChatProviderConfig`. The YAML key is `chat_provider`.
 
 **Note:** The `__post_init__` method coerces `model` to a string, since YAML may parse numeric model names (e.g., `model: 4`) as integers.
 
-### 4.7 `hook_engine` Section
-
-Maps to `HookEngineConfig`. The YAML key is `hook_engine`.
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | `bool` | `True` | Whether the hook engine runs at all. When `False`, no hooks are triggered or executed. |
-| `max_concurrent_hooks` | `int` | `2` | Maximum number of hooks that may execute simultaneously. |
-
-### 4.8 `monitoring` Section
+### 4.7 `monitoring` Section
 
 Maps to `MonitoringConfig`. The YAML key is `monitoring`.
 
@@ -198,7 +189,7 @@ Maps to `MonitoringConfig`. The YAML key is `monitoring`.
 |---|---|---|---|
 | `stuck_task_threshold_seconds` | `int` | `3600` | A task that has been in `IN_PROGRESS` state without any status change for longer than this threshold (in seconds) is considered stuck. Defaults to 1 hour. |
 
-### 4.9 `auto_task` Section
+### 4.8 `auto_task` Section
 
 Maps to `AutoTaskConfig`. The YAML key is `auto_task`.
 
@@ -215,7 +206,7 @@ Maps to `AutoTaskConfig`. The YAML key is `auto_task`.
 | `use_llm_parser` | `bool` | `False` | When `True`, an LLM (Claude) is invoked to parse plan files instead of the deterministic parser. |
 | `llm_parser_model` | `str` | `""` | Model name to use when `use_llm_parser` is `True`. An empty string means the system uses its default model. |
 
-### 4.10 `memory` Section
+### 4.9 `memory` Section
 
 Maps to `MemoryConfig`. The YAML key is `memory`.
 
@@ -315,7 +306,7 @@ memory:
   recall_top_k: 10
 ```
 
-### 4.10.1 `playbooks` Section
+### 4.9.1 `playbooks` Section
 
 Maps to `PlaybooksConfig`. The YAML key is `playbooks`.
 
@@ -343,7 +334,7 @@ Note that `supervisor.observation.enabled` is also paused by default for the
 same reason (it gates `ChatObserver` construction — it is the real chat
 analyzer switch; there is no `chat_analyzer.enabled`).
 
-### 4.10.2 `sessions` Section
+### 4.9.2 `sessions` Section
 
 Maps to `SessionsConfig`. The YAML key is `sessions`. See
 [`design/session-runtime.md`](design/session-runtime.md) §7 and
@@ -384,7 +375,7 @@ Per-profile session knobs (`harness`, `lifecycle`, `mode`, `wake_mode`,
 `idle_timeout`, `max_session_age`) live in profile markdown, not here: they
 are per-agent-type, and profile markdown is where per-agent-type truth lives.
 
-### 4.11 `rate_limits` Section
+### 4.10 `rate_limits` Section
 
 Maps directly to `AppConfig.rate_limits` as a raw dict. The YAML key is `rate_limits`.
 

@@ -439,7 +439,7 @@ from one profile); live sessions drain naturally — `aq session kill` cleans st
       chain remains single-headed.
 - [x] `FakeProvider` + provider conformance suite (parametrized over `PROVIDER_CASES`;
       tmux joins by adding one entry carrying `pytest.mark.tmux`)
-- [x] `SessionsConfig` + validation + config docs (`docs/specs/config.md` §4.10.2)
+- [x] `SessionsConfig` + validation + config docs (`docs/specs/config.md` §4.9.2)
 
 **Phase S1 — tmux + harness**
 - [x] `harness_parser.py` / `harness_registry.py` + vault sync + shipped `vault/harnesses/claude.md`

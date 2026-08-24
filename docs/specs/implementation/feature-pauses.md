@@ -339,7 +339,7 @@ Implemented on `wave1/1a-feature-pauses` (Wave 1 Lane 1A).  Items marked
       payload shape to copy is the one emitted by `_health_checks()`.
 - [x] Ops note: Milvus may be stopped while paused; never delete its data dir (§7) —
       there is no `ops/README` in the tree, so the note lives in `README.md` next to
-      the self-improvement-loop section (and in `docs/specs/config.md` §4.10).
+      the self-improvement-loop section (and in `docs/specs/config.md` §4.9).
 - [x] Annotate `docs/specs/design/self-improvement.md` and `playbooks.md` Status lines as
       "Paused (feature-pauses.md)" — no content rewrite
 - [x] `pytest tests/ -n auto`: **zero new failures** against the Wave 0 baseline on this

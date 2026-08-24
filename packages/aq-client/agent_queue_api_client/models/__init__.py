@@ -28,13 +28,6 @@ from .archive_tasks_request import ArchiveTasksRequest
 from .archive_tasks_response import ArchiveTasksResponse
 from .archive_tasks_response_422 import ArchiveTasksResponse422
 from .archive_tasks_response_archived_item import ArchiveTasksResponseArchivedItem
-from .browse_rules_request import BrowseRulesRequest
-from .browse_rules_response import BrowseRulesResponse
-from .browse_rules_response_422 import BrowseRulesResponse422
-from .browse_rules_response_rules_item import BrowseRulesResponseRulesItem
-from .cancel_scheduled_request import CancelScheduledRequest
-from .cancel_scheduled_response import CancelScheduledResponse
-from .cancel_scheduled_response_422 import CancelScheduledResponse422
 from .check_profile_request import CheckProfileRequest
 from .check_profile_response import CheckProfileResponse
 from .check_profile_response_422 import CheckProfileResponse422
@@ -64,9 +57,6 @@ from .create_branch_response import CreateBranchResponse
 from .create_github_repo_request import CreateGithubRepoRequest
 from .create_github_repo_response import CreateGithubRepoResponse
 from .create_github_repo_response_422 import CreateGithubRepoResponse422
-from .create_hook_request import CreateHookRequest
-from .create_hook_response import CreateHookResponse
-from .create_hook_response_422 import CreateHookResponse422
 from .create_profile_request import CreateProfileRequest
 from .create_profile_request_mcp_servers_type_0 import CreateProfileRequestMcpServersType0
 from .create_profile_response import CreateProfileResponse
@@ -79,9 +69,6 @@ from .create_task_response import CreateTaskResponse
 from .create_task_response_422 import CreateTaskResponse422
 from .delete_agent_request import DeleteAgentRequest
 from .delete_agent_response_422 import DeleteAgentResponse422
-from .delete_hook_request import DeleteHookRequest
-from .delete_hook_response import DeleteHookResponse
-from .delete_hook_response_422 import DeleteHookResponse422
 from .delete_note_request import DeleteNoteRequest
 from .delete_note_response import DeleteNoteResponse
 from .delete_note_response_422 import DeleteNoteResponse422
@@ -95,8 +82,6 @@ from .delete_project_request import DeleteProjectRequest
 from .delete_project_response import DeleteProjectResponse
 from .delete_project_response_422 import DeleteProjectResponse422
 from .delete_project_response_channel_ids_type_0 import DeleteProjectResponseChannelIdsType0
-from .delete_rule_request import DeleteRuleRequest
-from .delete_rule_response_422 import DeleteRuleResponse422
 from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
 from .delete_task_response_422 import DeleteTaskResponse422
@@ -105,9 +90,6 @@ from .edit_agent_response_422 import EditAgentResponse422
 from .edit_file_request import EditFileRequest
 from .edit_file_response import EditFileResponse
 from .edit_file_response_422 import EditFileResponse422
-from .edit_hook_request import EditHookRequest
-from .edit_hook_response import EditHookResponse
-from .edit_hook_response_422 import EditHookResponse422
 from .edit_profile_request import EditProfileRequest
 from .edit_profile_request_mcp_servers_type_0 import EditProfileRequestMcpServersType0
 from .edit_profile_response import EditProfileResponse
@@ -131,12 +113,6 @@ from .find_merge_conflict_workspaces_request import FindMergeConflictWorkspacesR
 from .find_merge_conflict_workspaces_response import FindMergeConflictWorkspacesResponse
 from .find_merge_conflict_workspaces_response_422 import FindMergeConflictWorkspacesResponse422
 from .find_merge_conflict_workspaces_response_conflicts_item import FindMergeConflictWorkspacesResponseConflictsItem
-from .fire_all_scheduled_hooks_request import FireAllScheduledHooksRequest
-from .fire_all_scheduled_hooks_response import FireAllScheduledHooksResponse
-from .fire_all_scheduled_hooks_response_422 import FireAllScheduledHooksResponse422
-from .fire_hook_request import FireHookRequest
-from .fire_hook_response import FireHookResponse
-from .fire_hook_response_422 import FireHookResponse422
 from .generate_readme_request import GenerateReadmeRequest
 from .generate_readme_response import GenerateReadmeResponse
 from .generate_readme_response_422 import GenerateReadmeResponse422
@@ -228,13 +204,6 @@ from .glob_files_response_422 import GlobFilesResponse422
 from .grep_request import GrepRequest
 from .grep_response import GrepResponse
 from .grep_response_422 import GrepResponse422
-from .hook_run_summary import HookRunSummary
-from .hook_schedules_request import HookSchedulesRequest
-from .hook_schedules_response import HookSchedulesResponse
-from .hook_schedules_response_422 import HookSchedulesResponse422
-from .hook_schedules_response_hooks_item import HookSchedulesResponseHooksItem
-from .hook_summary import HookSummary
-from .hook_summary_trigger import HookSummaryTrigger
 from .http_validation_error import HTTPValidationError
 from .import_profile_request import ImportProfileRequest
 from .import_profile_response import ImportProfileResponse
@@ -265,12 +234,6 @@ from .list_available_tools_response_tools_item import ListAvailableToolsResponse
 from .list_directory_request import ListDirectoryRequest
 from .list_directory_response import ListDirectoryResponse
 from .list_directory_response_422 import ListDirectoryResponse422
-from .list_hook_runs_request import ListHookRunsRequest
-from .list_hook_runs_response import ListHookRunsResponse
-from .list_hook_runs_response_422 import ListHookRunsResponse422
-from .list_hooks_request import ListHooksRequest
-from .list_hooks_response import ListHooksResponse
-from .list_hooks_response_422 import ListHooksResponse422
 from .list_notes_request import ListNotesRequest
 from .list_notes_response import ListNotesResponse
 from .list_notes_response_422 import ListNotesResponse422
@@ -284,20 +247,12 @@ from .list_prompts_request import ListPromptsRequest
 from .list_prompts_response import ListPromptsResponse
 from .list_prompts_response_422 import ListPromptsResponse422
 from .list_prompts_response_prompts_item import ListPromptsResponsePromptsItem
-from .list_rules_request import ListRulesRequest
-from .list_rules_response_422 import ListRulesResponse422
-from .list_scheduled_request import ListScheduledRequest
-from .list_scheduled_response import ListScheduledResponse
-from .list_scheduled_response_422 import ListScheduledResponse422
-from .list_scheduled_response_scheduled_hooks_item import ListScheduledResponseScheduledHooksItem
 from .list_tasks_request import ListTasksRequest
 from .list_tasks_response import ListTasksResponse
 from .list_tasks_response_422 import ListTasksResponse422
 from .list_workspaces_request import ListWorkspacesRequest
 from .list_workspaces_response import ListWorkspacesResponse
 from .list_workspaces_response_422 import ListWorkspacesResponse422
-from .load_rule_request import LoadRuleRequest
-from .load_rule_response_422 import LoadRuleResponse422
 from .memory_reindex_request import MemoryReindexRequest
 from .memory_reindex_response import MemoryReindexResponse
 from .memory_reindex_response_422 import MemoryReindexResponse422
@@ -385,9 +340,6 @@ from .read_note_response_422 import ReadNoteResponse422
 from .read_prompt_request import ReadPromptRequest
 from .read_prompt_response import ReadPromptResponse
 from .read_prompt_response_422 import ReadPromptResponse422
-from .refresh_hooks_request import RefreshHooksRequest
-from .refresh_hooks_response import RefreshHooksResponse
-from .refresh_hooks_response_422 import RefreshHooksResponse422
 from .regenerate_profile_request import RegenerateProfileRequest
 from .regenerate_profile_response import RegenerateProfileResponse
 from .regenerate_profile_response_422 import RegenerateProfileResponse422
@@ -428,16 +380,9 @@ from .resume_agent_response_422 import ResumeAgentResponse422
 from .resume_project_request import ResumeProjectRequest
 from .resume_project_response import ResumeProjectResponse
 from .resume_project_response_422 import ResumeProjectResponse422
-from .rule_operation_response import RuleOperationResponse
 from .run_command_request import RunCommandRequest
 from .run_command_response import RunCommandResponse
 from .run_command_response_422 import RunCommandResponse422
-from .save_rule_request import SaveRuleRequest
-from .save_rule_response_422 import SaveRuleResponse422
-from .schedule_hook_request import ScheduleHookRequest
-from .schedule_hook_request_llm_config_type_0 import ScheduleHookRequestLlmConfigType0
-from .schedule_hook_response import ScheduleHookResponse
-from .schedule_hook_response_422 import ScheduleHookResponse422
 from .search_files_request import SearchFilesRequest
 from .search_files_response import SearchFilesResponse
 from .search_files_response_422 import SearchFilesResponse422
@@ -473,9 +418,6 @@ from .task_status_summary import TaskStatusSummary
 from .task_status_summary_by_status import TaskStatusSummaryByStatus
 from .task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem
 from .task_status_summary_ready_to_work_item import TaskStatusSummaryReadyToWorkItem
-from .toggle_project_hooks_request import ToggleProjectHooksRequest
-from .toggle_project_hooks_response import ToggleProjectHooksResponse
-from .toggle_project_hooks_response_422 import ToggleProjectHooksResponse422
 from .update_and_restart_request import UpdateAndRestartRequest
 from .update_and_restart_response import UpdateAndRestartResponse
 from .update_and_restart_response_422 import UpdateAndRestartResponse422
@@ -521,13 +463,6 @@ __all__ = (
     "ArchiveTasksResponse",
     "ArchiveTasksResponse422",
     "ArchiveTasksResponseArchivedItem",
-    "BrowseRulesRequest",
-    "BrowseRulesResponse",
-    "BrowseRulesResponse422",
-    "BrowseRulesResponseRulesItem",
-    "CancelScheduledRequest",
-    "CancelScheduledResponse",
-    "CancelScheduledResponse422",
     "CheckoutBranchRequest",
     "CheckoutBranchResponse",
     "CheckoutBranchResponse422",
@@ -557,9 +492,6 @@ __all__ = (
     "CreateGithubRepoRequest",
     "CreateGithubRepoResponse",
     "CreateGithubRepoResponse422",
-    "CreateHookRequest",
-    "CreateHookResponse",
-    "CreateHookResponse422",
     "CreateProfileRequest",
     "CreateProfileRequestMcpServersType0",
     "CreateProfileResponse",
@@ -572,9 +504,6 @@ __all__ = (
     "CreateTaskResponse422",
     "DeleteAgentRequest",
     "DeleteAgentResponse422",
-    "DeleteHookRequest",
-    "DeleteHookResponse",
-    "DeleteHookResponse422",
     "DeleteNoteRequest",
     "DeleteNoteResponse",
     "DeleteNoteResponse422",
@@ -588,8 +517,6 @@ __all__ = (
     "DeleteProjectResponse",
     "DeleteProjectResponse422",
     "DeleteProjectResponseChannelIdsType0",
-    "DeleteRuleRequest",
-    "DeleteRuleResponse422",
     "DeleteTaskRequest",
     "DeleteTaskResponse",
     "DeleteTaskResponse422",
@@ -598,9 +525,6 @@ __all__ = (
     "EditFileRequest",
     "EditFileResponse",
     "EditFileResponse422",
-    "EditHookRequest",
-    "EditHookResponse",
-    "EditHookResponse422",
     "EditProfileRequest",
     "EditProfileRequestMcpServersType0",
     "EditProfileResponse",
@@ -624,12 +548,6 @@ __all__ = (
     "FindMergeConflictWorkspacesResponse",
     "FindMergeConflictWorkspacesResponse422",
     "FindMergeConflictWorkspacesResponseConflictsItem",
-    "FireAllScheduledHooksRequest",
-    "FireAllScheduledHooksResponse",
-    "FireAllScheduledHooksResponse422",
-    "FireHookRequest",
-    "FireHookResponse",
-    "FireHookResponse422",
     "GenerateReadmeRequest",
     "GenerateReadmeResponse",
     "GenerateReadmeResponse422",
@@ -721,13 +639,6 @@ __all__ = (
     "GrepRequest",
     "GrepResponse",
     "GrepResponse422",
-    "HookRunSummary",
-    "HookSchedulesRequest",
-    "HookSchedulesResponse",
-    "HookSchedulesResponse422",
-    "HookSchedulesResponseHooksItem",
-    "HookSummary",
-    "HookSummaryTrigger",
     "HTTPValidationError",
     "ImportProfileRequest",
     "ImportProfileResponse",
@@ -756,12 +667,6 @@ __all__ = (
     "ListDirectoryRequest",
     "ListDirectoryResponse",
     "ListDirectoryResponse422",
-    "ListHookRunsRequest",
-    "ListHookRunsResponse",
-    "ListHookRunsResponse422",
-    "ListHooksRequest",
-    "ListHooksResponse",
-    "ListHooksResponse422",
     "ListNotesRequest",
     "ListNotesResponse",
     "ListNotesResponse422",
@@ -775,20 +680,12 @@ __all__ = (
     "ListPromptsResponse",
     "ListPromptsResponse422",
     "ListPromptsResponsePromptsItem",
-    "ListRulesRequest",
-    "ListRulesResponse422",
-    "ListScheduledRequest",
-    "ListScheduledResponse",
-    "ListScheduledResponse422",
-    "ListScheduledResponseScheduledHooksItem",
     "ListTasksRequest",
     "ListTasksResponse",
     "ListTasksResponse422",
     "ListWorkspacesRequest",
     "ListWorkspacesResponse",
     "ListWorkspacesResponse422",
-    "LoadRuleRequest",
-    "LoadRuleResponse422",
     "MemoryReindexRequest",
     "MemoryReindexResponse",
     "MemoryReindexResponse422",
@@ -876,9 +773,6 @@ __all__ = (
     "ReadPromptRequest",
     "ReadPromptResponse",
     "ReadPromptResponse422",
-    "RefreshHooksRequest",
-    "RefreshHooksResponse",
-    "RefreshHooksResponse422",
     "RegenerateProfileRequest",
     "RegenerateProfileResponse",
     "RegenerateProfileResponse422",
@@ -919,16 +813,9 @@ __all__ = (
     "ResumeProjectRequest",
     "ResumeProjectResponse",
     "ResumeProjectResponse422",
-    "RuleOperationResponse",
     "RunCommandRequest",
     "RunCommandResponse",
     "RunCommandResponse422",
-    "SaveRuleRequest",
-    "SaveRuleResponse422",
-    "ScheduleHookRequest",
-    "ScheduleHookRequestLlmConfigType0",
-    "ScheduleHookResponse",
-    "ScheduleHookResponse422",
     "SearchFilesRequest",
     "SearchFilesResponse",
     "SearchFilesResponse422",
@@ -964,9 +851,6 @@ __all__ = (
     "TaskStatusSummaryByStatus",
     "TaskStatusSummaryInProgressItem",
     "TaskStatusSummaryReadyToWorkItem",
-    "ToggleProjectHooksRequest",
-    "ToggleProjectHooksResponse",
-    "ToggleProjectHooksResponse422",
     "UpdateAndRestartRequest",
     "UpdateAndRestartResponse",
     "UpdateAndRestartResponse422",

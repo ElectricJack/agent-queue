@@ -89,11 +89,6 @@ Evaluates results, checks rules, may take follow-up actions (depth-limited).
 Never raises — all exceptions are caught internally. Returns a verdict
 that the caller uses to decide whether to trigger a reflection retry loop.
 
-**process_hook_llm(hook_context, rendered_prompt, project_id=None, hook_name="unknown", on_progress=None) → str**
-Entry point for hook engine LLM invocations. Sets active project,
-combines context with prompt, processes through `chat()` with
-`_reflection_trigger="hook.completed"`.
-
 **observe(messages, project_id) → dict**
 Stage 2 LLM pass for passive observation. Receives a batch of messages
 that passed the ChatObserver's Stage 1 keyword filter. Makes a lightweight

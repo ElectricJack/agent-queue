@@ -57,7 +57,7 @@ Logs a single `ChatProvider.create_message()` invocation. Called by `LoggedChatP
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `caller` | `str` | Call site identity (e.g. `"chat_agent.chat"`, `"hook_engine"`, `"plan_parser"`, `"chat_agent.summarize"`) |
+| `caller` | `str` | Call site identity (e.g. `"chat_agent.chat"`, `"plan_parser"`, `"chat_agent.summarize"`) |
 | `model` | `str` | Model name from the provider |
 | `provider` | `str` | Provider class name (e.g. `"AnthropicChatProvider"`, `"OllamaChatProvider"`) |
 | `messages` | `list[dict]` | The message history sent to the LLM |
@@ -193,7 +193,7 @@ The `caller` string can be changed at runtime to tag different call sites. For e
 
 - Creates the `LLMLogger` instance in `__init__` from `config.llm_logging`.
 - Wraps the plan parser's `_chat_provider` with `LoggedChatProvider(caller="plan_parser")` when logging is enabled.
-- Runs `cleanup_old_logs()` approximately once per hour in the main loop (step 6, after hook engine tick).
+- Runs `cleanup_old_logs()` approximately once per hour in the main loop (housekeeping phase, after the timer-service tick).
 - Exposes `self.llm_logger` for other components to reference.
 
 ### 5.2 ChatAgent (`src/chat_agent.py`)
@@ -211,10 +211,6 @@ The `caller` string can be changed at runtime to tag different call sites. For e
 ### 5.4 PlatformRegistry (`src/runtimes/__init__.py`)
 
 - Accepts optional `llm_logger` in constructor, passes it through to platforms on `create()`.
-
-### 5.5 HookEngine (`src/hooks.py`)
-
-- In `_invoke_llm()`: wraps the hook's ChatAgent provider with `LoggedChatProvider(caller="hook_engine")` when the orchestrator's logger is enabled.
 
 ### 5.6 Discord Bot (`src/discord/bot.py`)
 
@@ -248,8 +244,8 @@ tail -f logs/llm/$(date +%Y-%m-%d)/chat_provider.jsonl | jq .
 # Find slow calls (> 5 seconds)
 jq 'select(.duration_ms > 5000)' logs/llm/*/chat_provider.jsonl
 
-# See all hook LLM calls
-jq 'select(.caller == "hook_engine")' logs/llm/*/chat_provider.jsonl
+# Find all calls from one call site
+jq 'select(.caller == "chat_agent.chat")' logs/llm/*/chat_provider.jsonl
 
 # Agent session summary
 jq '{task: .task_id, tokens: .output.tokens_used, duration_s: (.duration_ms/1000)}' \
