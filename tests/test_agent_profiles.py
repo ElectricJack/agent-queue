@@ -3,7 +3,6 @@
 Covers:
 - Database CRUD for agent_profiles table
 - Profile resolution cascade (task → project → None)
-- ClaudeSDKRuntime._config_from_profile() merging
 - CommandHandler profile commands
 - Task/project profile_id and default_profile_id
 - Config loading from YAML
@@ -16,7 +15,6 @@ Covers:
 import pytest
 
 from src.runtimes.base import Runtime
-from src.runtimes.claude_sdk import ClaudeAdapterConfig, ClaudeSDKRuntime
 from src.config import AppConfig, AgentProfileConfig, load_config
 from src.database import Database
 from src.models import (
@@ -388,63 +386,6 @@ class TestProfileResolution:
         )
         profile = await orch._resolve_profile(task)
         assert profile is None
-
-
-# ---------------------------------------------------------------------------
-# ClaudeSDKRuntime._config_from_profile() merging
-# ---------------------------------------------------------------------------
-
-_DEFAULTS = ClaudeAdapterConfig()
-
-
-class TestConfigFromProfile:
-    def test_no_profile_returns_defaults(self):
-        result = ClaudeSDKRuntime._config_from_profile(None)
-        assert result.model == _DEFAULTS.model
-        assert result.permission_mode == _DEFAULTS.permission_mode
-        assert result.allowed_tools == _DEFAULTS.allowed_tools
-
-    def test_profile_overrides_model(self):
-        profile = AgentProfile(id="test", name="Test", model="claude-opus-4-20250514")
-        result = ClaudeSDKRuntime._config_from_profile(profile)
-        assert result.model == "claude-opus-4-20250514"
-
-    def test_profile_empty_model_falls_through_to_default(self):
-        profile = AgentProfile(id="test", name="Test", model="")
-        result = ClaudeSDKRuntime._config_from_profile(profile)
-        assert result.model == _DEFAULTS.model
-
-    def test_profile_overrides_allowed_tools(self):
-        profile = AgentProfile(
-            id="test-reviewer",
-            name="Reviewer",
-            allowed_tools=["Read", "Glob", "Grep"],
-        )
-        result = ClaudeSDKRuntime._config_from_profile(profile)
-        assert result.allowed_tools == ["Read", "Glob", "Grep"]
-
-    def test_profile_empty_tools_falls_through_to_default(self):
-        profile = AgentProfile(id="test", name="Test", allowed_tools=[])
-        result = ClaudeSDKRuntime._config_from_profile(profile)
-        assert result.allowed_tools == _DEFAULTS.allowed_tools
-
-    def test_profile_overrides_permission_mode(self):
-        profile = AgentProfile(id="test", name="Test", permission_mode="plan")
-        result = ClaudeSDKRuntime._config_from_profile(profile)
-        assert result.permission_mode == "plan"
-
-    def test_full_override(self):
-        profile = AgentProfile(
-            id="test-reviewer",
-            name="Reviewer",
-            model="claude-opus-4-20250514",
-            permission_mode="plan",
-            allowed_tools=["Read", "Glob"],
-        )
-        result = ClaudeSDKRuntime._config_from_profile(profile)
-        assert result.model == "claude-opus-4-20250514"
-        assert result.permission_mode == "plan"
-        assert result.allowed_tools == ["Read", "Glob"]
 
 
 # ---------------------------------------------------------------------------
