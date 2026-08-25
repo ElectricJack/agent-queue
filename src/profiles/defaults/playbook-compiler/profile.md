@@ -45,6 +45,12 @@ Do:
     "Edit",
     "Glob",
     "Grep",
+    "Task",
+    "TodoWrite",
+    "Skill",
+    "WebSearch",
+    "WebFetch",
+    "NotebookEdit",
     "playbook_validate",
     "playbook_install",
     "task_close"

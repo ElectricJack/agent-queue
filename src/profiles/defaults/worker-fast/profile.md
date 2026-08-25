@@ -43,10 +43,13 @@ any of the three by switching harness.
     "Write",
     "Edit",
     "Glob",
-    "Grep"
-  ],
-  "denied": [
-    "pr_merge"
+    "Grep",
+    "Task",
+    "TodoWrite",
+    "Skill",
+    "WebSearch",
+    "WebFetch",
+    "NotebookEdit"
   ]
 }
 ```

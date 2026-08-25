@@ -905,8 +905,29 @@ class DiscordNotificationHandler:
         """
         thread = self.bot._task_thread_objects.get(event.task_id)
         if thread is None:
-            # No thread → can't reliably edit.  Fall back to regular send.
-            await self.bot._send_message(event.message, project_id=event.project_id)
+            # In-memory map, so empty after a daemon restart while tasks keep
+            # running. The thread itself survives — its id is on
+            # ``tasks.discord_thread_id`` — so recover it rather than giving up.
+            rehydrate = getattr(self.bot, "_rehydrate_task_thread", None)
+            if rehydrate is not None and event.task_id:
+                try:
+                    thread = await rehydrate(event.task_id)
+                except Exception:
+                    logger.debug(
+                        "stream: thread rehydrate failed for %s",
+                        event.task_id,
+                        exc_info=True,
+                    )
+        if thread is None:
+            # Still nothing. Drop rather than fall back to the project channel:
+            # streamed frames are an agent's running commentary, and in the
+            # channel they read as the supervisor talking. Every transcript
+            # entry sets ``stream_id``, so this branch — not the plain one —
+            # is where almost all agent narration flows.
+            logger.debug(
+                "stream: no thread for %s — dropping agent output",
+                event.task_id or event.stream_id,
+            )
             return
 
         state = self._stream_states.get(event.stream_id)

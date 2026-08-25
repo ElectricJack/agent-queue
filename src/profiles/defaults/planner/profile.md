@@ -51,7 +51,13 @@ For each planning task you:
     "Write",
     "Edit",
     "Glob",
-    "Grep"
+    "Grep",
+    "Task",
+    "TodoWrite",
+    "Skill",
+    "WebSearch",
+    "WebFetch",
+    "NotebookEdit"
   ]
 }
 ```

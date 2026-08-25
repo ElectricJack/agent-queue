@@ -28,6 +28,12 @@ tags: [system, review, dv2-phase2]
     "Edit",
     "Glob",
     "Grep",
+    "Task",
+    "TodoWrite",
+    "Skill",
+    "WebSearch",
+    "WebFetch",
+    "NotebookEdit",
     "get_task",
     "task_close",
     "reopen_with_feedback"

@@ -55,7 +55,13 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "Write",
     "Edit",
     "Glob",
-    "Grep"
+    "Grep",
+    "Task",
+    "TodoWrite",
+    "Skill",
+    "WebSearch",
+    "WebFetch",
+    "NotebookEdit"
   ]
 }
 ```
