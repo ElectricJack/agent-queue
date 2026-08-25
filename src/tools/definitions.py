@@ -3444,6 +3444,14 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "commit": {"type": "string", "description": "Commit SHA (optional)"},
                 "notes": {"type": "string", "description": "Closing notes (optional)"},
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "Summary of what happened, for the reviewer/dashboard/vault note. "
+                        "Required for tasks whose profile has needs_workspace: true "
+                        "(Dv2 Phase 2 §7 close contract)."
+                    ),
+                },
             },
             "required": ["task_id", "outcome"],
         },
