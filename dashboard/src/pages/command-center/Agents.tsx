@@ -13,7 +13,11 @@ export default function CommandCenterAgents() {
   const bodyRef = useListNav<HTMLTableSectionElement>({ axis: "vertical" });
 
   const [view, setView] = useState<"table" | "grid">("table");
-  const MAX_TILES = 12;
+  // Deliberately *below* the backend's pane_stream_max_sessions (12): a full
+  // grid must not saturate the broadcaster's cap, or opening a session
+  // detail page from the grid — inside the 5s linger window, while every
+  // tile's watch is still alive — gets refused.
+  const MAX_TILES = 8;
 
   const running = (sessions ?? []).filter((s) => s.state === "running");
   const tiles = running.slice(0, MAX_TILES);
@@ -62,6 +66,7 @@ export default function CommandCenterAgents() {
               key={v}
               type="button"
               onClick={() => setView(v)}
+              aria-pressed={view === v}
               className={
                 "px-2 py-1 capitalize " +
                 (view === v ? "bg-gray-700 text-white" : "text-gray-400")
