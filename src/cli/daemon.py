@@ -369,6 +369,81 @@ def start_daemon() -> bool:
             pass
 
 
+#: tmux session-name prefixes the daemon owns: ``s-<task_id>`` for task
+#: sessions and ``n-<profile>--<project>`` for named ones.  The reconciler
+#: adopts on exactly these two prefixes, so they are also the safe set to
+#: reap — anything else on the socket belongs to someone else.
+_AQ_SESSION_PREFIXES = ("s-", "n-")
+
+
+def _tmux_socket() -> str:
+    """The tmux socket the daemon launches sessions on.
+
+    Read from config rather than hardcoded: an operator who changed
+    ``sessions.tmux_socket`` would otherwise have their sessions silently
+    left running by a stop that reported success.
+    """
+    try:
+        from src.config import load_config
+
+        cfg = load_config(os.path.expanduser("~/.agent-queue/config.yaml"))
+        return getattr(getattr(cfg, "sessions", None), "tmux_socket", None) or "aq"
+    except Exception:
+        return "aq"
+
+
+def stop_agent_sessions(quiet: bool = False) -> int:
+    """Kill the daemon's tmux sessions.  Returns how many were stopped.
+
+    Agent sessions deliberately outlive the daemon — ``sessions.adopt_on_start``
+    re-adopts them so a restart does not throw away in-flight work.  That is
+    right for ``restart`` and wrong for ``stop``: "shut down agent-queue" that
+    leaves five agents running against a dead API is not a shutdown, and those
+    agents cannot reach ``aq`` to report anything.
+
+    ``tmux kill-session`` hangs up the pane, which the agent CLI treats as a
+    normal terminal close.  Work in progress is lost — that is what stopping
+    means; use ``restart`` (or ``stop --keep-sessions``) to preserve it.
+    """
+    socket = _tmux_socket()
+    try:
+        listed = subprocess.run(
+            ["tmux", "-L", socket, "list-sessions", "-F", "#{session_name}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    if listed.returncode != 0:
+        # No server on this socket == no sessions.  Not an error.
+        return 0
+
+    names = [
+        n.strip()
+        for n in listed.stdout.splitlines()
+        if n.strip().startswith(_AQ_SESSION_PREFIXES)
+    ]
+    stopped = 0
+    for name in names:
+        try:
+            killed = subprocess.run(
+                ["tmux", "-L", socket, "kill-session", "-t", name],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if killed.returncode == 0:
+            stopped += 1
+        elif not quiet:
+            console.print(f"[yellow]Could not stop session {name}[/]")
+    if stopped and not quiet:
+        console.print(f"[bold]Stopped {stopped} agent session(s).[/]")
+    return stopped
+
+
 def stop_daemon(quiet: bool = False) -> bool:
     """Stop the daemon. Returns True if it was stopped."""
     pid = _find_daemon_pid()
@@ -554,15 +629,38 @@ def daemon_start(no_dashboard: bool) -> None:
 
 
 @cli.command("stop")
-def daemon_stop() -> None:
-    """Stop the agent-queue daemon."""
-    stop_daemon()
+@click.option(
+    "--keep-sessions",
+    is_flag=True,
+    help="Leave agent tmux sessions running (they are re-adopted on next start).",
+)
+def daemon_stop(keep_sessions: bool) -> None:
+    """Stop the agent-queue daemon and its agent sessions.
+
+    Agent sessions are stopped too: they outlive the daemon by design so a
+    *restart* can re-adopt them, but leaving them running after an explicit
+    stop means agents working against a dead API with no way to report back.
+    Pass ``--keep-sessions`` to preserve them.
+    """
+    stopped = stop_daemon()
+    if keep_sessions:
+        if stopped:
+            console.print("[dim]Agent sessions left running (--keep-sessions).[/]")
+        return
+    # After the daemon is down: nothing is left to notice the sessions
+    # disappearing and try to reconcile them mid-shutdown.
+    stop_agent_sessions()
 
 
 @cli.command("restart")
 @click.option("--no-dashboard", is_flag=True, help="Skip the dashboard prompt.")
 def daemon_restart(no_dashboard: bool) -> None:
-    """Restart the agent-queue daemon."""
+    """Restart the agent-queue daemon.
+
+    Agent sessions are deliberately left running — ``sessions.adopt_on_start``
+    re-adopts them, so in-flight work survives the restart. Use ``aq stop`` to
+    end them.
+    """
     stop_daemon(quiet=True)
     time.sleep(1)
     if not start_daemon():
