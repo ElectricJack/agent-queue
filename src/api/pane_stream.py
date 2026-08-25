@@ -13,7 +13,6 @@ regress behind this feature.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import time
@@ -33,6 +32,21 @@ _HEARTBEAT_SECONDS = 15.0
 
 def _sse(frame: dict) -> bytes:
     return f"data: {json.dumps(frame)}\n\n".encode()
+
+
+def _sse_headers() -> dict[str, str]:
+    return {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+def _single_frame_response(frame: dict) -> StreamingResponse:
+    """A 200 SSE stream carrying exactly one frame, then EOF."""
+
+    async def gen():
+        yield _sse(frame)
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream", headers=_sse_headers()
+    )
 
 
 def build_pane_router(*, db, broadcaster: PaneBroadcaster) -> APIRouter:
@@ -57,7 +71,17 @@ def build_pane_router(*, db, broadcaster: PaneBroadcaster) -> APIRouter:
                 detail=f"provider '{exc.provider}' cannot peek; no pane stream",
             ) from exc
         except PaneStreamRefused as exc:
-            raise HTTPException(status_code=429, detail=exc.message) from exc
+            # Design §3.1: a refusal must be "explicit and visible in the
+            # UI — never a silent empty tile".  EventSource fails
+            # permanently on a non-200 and exposes neither status nor body
+            # to JS, so a 429 here renders as an unexplained dead stream.
+            # The refusal is a *stream condition*, so it ships as the
+            # stream's first (and only) frame.  The 404/409 paths above
+            # stay HTTP status codes: those are request errors (§3.3).
+            return _single_frame_response(
+                {"source": "pane", "type": "error", "seq": 0,
+                 "ts": time.time(), "message": exc.message}
+            )
 
         started_at = time.monotonic()
 
@@ -85,13 +109,15 @@ def build_pane_router(*, db, broadcaster: PaneBroadcaster) -> APIRouter:
                         yield b": heartbeat\n\n"
                         last_beat = now
             finally:
-                with contextlib.suppress(Exception):
-                    await broadcaster.unsubscribe(session.name, queue)
+                # Synchronous and await-free on purpose: Starlette tears
+                # this generator down by cancelling it, and CancelledError
+                # is re-delivered at any await here (contextlib.suppress
+                # does not catch it), which would strand the poll loop
+                # with a subscriber that never reads again.
+                broadcaster.detach(session.name, queue)
 
         return StreamingResponse(
-            gen(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            gen(), media_type="text/event-stream", headers=_sse_headers()
         )
 
     return router

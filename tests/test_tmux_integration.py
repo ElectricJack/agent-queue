@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -273,6 +274,36 @@ class TestKillFencing:
             assert await provider.process_alive(live, ("python",)) is True
         finally:
             await provider.stop(live)
+
+
+class TestLivenessContract:
+    """``is_running`` and ``process_alive`` answer different questions.
+
+    Pinned against a *real* tmux server on purpose: ``FakeProvider`` flips
+    both at once on ``stop()``, so no fake can catch a caller that reaches
+    for ``is_running`` when it means "did the agent finish".  Under
+    ``remain-on-exit on`` (set by :meth:`TmuxProvider.start`) the pane
+    outlives its process, and ``is_running`` keeps saying yes forever.
+    """
+
+    async def test_is_running_stays_true_after_the_process_exits(
+        self, provider, tmp_path, stub_path
+    ):
+        handle = await provider.start(_spec(tmp_path, stub_path, name="s-live"))
+        try:
+            panes = await provider._panes()
+            os.kill(panes[handle.name].pid, signal.SIGKILL)
+            for _ in range(50):
+                provider._cache.invalidate()
+                if not await provider.process_alive(handle, ("python",)):
+                    break
+                await asyncio.sleep(0.1)
+            # The process is gone...
+            assert await provider.process_alive(handle, ("python",)) is False
+            # ...but the pane (and therefore is_running) is not.
+            assert await provider.is_running(handle) is True
+        finally:
+            await provider.stop(handle)
 
 
 class TestAdoption:

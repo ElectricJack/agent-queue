@@ -208,3 +208,115 @@ async def test_subscribe_after_shutdown_is_refused():
     with pytest.raises(PaneStreamRefused):
         await b.subscribe(Row("s1"))
     assert b.watched_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_liveness_uses_process_alive_not_is_running():
+    """The loop must ask "is the *process* alive", not "does a pane exist".
+
+    Regression guard: ``TmuxProvider`` sets ``remain-on-exit on``, so
+    ``is_running`` stays True for a finished agent forever.  Pinned here on
+    a provider whose two answers disagree the way tmux's do.
+    """
+    provider = await _fake_with("s1")
+
+    class RemainOnExit:
+        """A pane that outlives its process, exactly like tmux's."""
+
+        name = "remain"
+        capabilities = provider.capabilities
+
+        def supports(self, cap):
+            return provider.supports(cap)
+
+        async def peek(self, *a, **k):
+            return "frozen screen"
+
+        async def is_running(self, h):
+            return True  # pane still listed — this is the trap
+
+        async def process_alive(self, h, process_names=()):
+            return False
+
+    b = _bcast(RemainOnExit())
+    q = await b.subscribe(Row("s1"))
+    frame = await _next(q)
+    while frame["type"] == "screen":
+        frame = await _next(q)
+    assert frame["type"] == "stopped"
+    await b.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failing_liveness_probe_keeps_session_alive_and_warns(caplog):
+    """Unknown is not dead — but it must not be invisible either."""
+    provider = await _fake_with("s1")
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("ps exploded")
+
+    provider.process_alive = boom
+    b = _bcast(provider)
+    with caplog.at_level("WARNING", logger="src.sessions.pane_broadcaster"):
+        q = await b.subscribe(Row("s1"))
+        await _next(q)
+        await asyncio.sleep(0.1)
+        assert b.watched_count() == 1  # never reported stopped
+    assert any("liveness probe failing" in r.message for r in caplog.records)
+    await b.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_full_queue_drops_the_oldest_frame_not_the_newest():
+    """Every frame is a full snapshot, so the stale end is the droppable end."""
+    provider = await _fake_with("s1")
+    b = _bcast(provider)
+    q = await b.subscribe(Row("s1"))
+    await _next(q)
+    watch = b._watches["s1"]
+    # Saturate this subscriber's queue with numbered filler.
+    n = 0
+    while True:
+        try:
+            q.put_nowait({"filler": n})
+        except asyncio.QueueFull:
+            break
+        n += 1
+    b._emit(watch, {"type": "stopped"})
+    frames = []
+    while not q.empty():
+        frames.append(q.get_nowait())
+    assert frames[-1].get("type") == "stopped"  # the newest frame survived
+    assert frames[0] == {"filler": 1}  # ...at the cost of the oldest
+    await b.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_detach_is_synchronous_and_cannot_be_interrupted():
+    """Teardown must not depend on an await completing (see finding 4)."""
+    import inspect
+
+    provider = await _fake_with("s1")
+    b = _bcast(provider)
+    b.linger_seconds = 0.05
+    q = await b.subscribe(Row("s1"))
+    await _next(q)
+    assert not inspect.iscoroutinefunction(b.detach)
+    b.detach("s1", q)
+    assert b._watches["s1"].subscribers == set()
+    await asyncio.sleep(0.2)
+    assert b.watched_count() == 0
+    await b.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_detach_works_while_another_coroutine_holds_the_lock():
+    """Teardown must not queue behind the lock — that is where it gets cancelled."""
+    provider = await _fake_with("s1")
+    b = _bcast(provider)
+    q = await b.subscribe(Row("s1"))
+    await _next(q)
+    async with b._lock:  # contended, as two tiles unmounting at once would be
+        b.detach("s1", q)
+        assert b._watches["s1"].subscribers == set()
+    await b.shutdown()

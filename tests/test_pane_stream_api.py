@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import time
 
@@ -140,4 +142,118 @@ async def test_pane_stream_without_peek_capability_409(db):
         resp = await client.get("/api/sessions/sid2/pane")
     assert resp.status_code == 409
     assert "peek" in resp.json()["detail"].lower()
+    await broadcaster.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cap_refusal_is_a_200_error_frame_not_a_429(db):
+    """Design §3.1: a refusal is explicit and visible, never a dead socket.
+
+    EventSource fails permanently on a non-200 and hands JS neither the
+    status nor the body, so a 429 renders as an unexplained blank tile.
+    """
+    provider = FakeProvider(config=None)
+    for name in ("s-a", "s-b"):
+        await provider.start(
+            SessionSpec(session_name=name, work_dir="/w", command=("x",),
+                         instance_token="tok")
+        )
+    await _make_session(db, session_id="sidA", name="s-a")
+    await _make_session(db, session_id="sidB", name="s-b")
+
+    app, broadcaster = await _app(db, provider)
+    broadcaster.max_sessions = 1
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                            timeout=5.0) as client:
+        async with client.stream(
+            "GET", "/api/sessions/sidA/pane", params={"max_seconds": "0.2"}
+        ) as first:
+            assert first.status_code == 200
+            async for _ in first.aiter_bytes():
+                pass
+            resp = await client.get("/api/sessions/sidB/pane")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    frames = _frames(resp.text)
+    assert len(frames) == 1
+    assert frames[0]["source"] == "pane"
+    assert frames[0]["type"] == "error"
+    assert "cap" in frames[0]["message"].lower()
+    await broadcaster.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stream_end_leaves_no_subscriber_behind(db):
+    """The watch's subscriber set must actually empty when a stream ends."""
+    provider = FakeProvider(config=None)
+    await provider.start(
+        SessionSpec(session_name="s-1", work_dir="/w", command=("x",),
+                     instance_token="tok")
+    )
+    provider.sessions["s-1"].output.append("PANE")
+    await _make_session(db, session_id="sid1", name="s-1")
+
+    app, broadcaster = await _app(db, provider)
+    broadcaster.linger_seconds = 30.0  # keep the watch around to inspect it
+    transport = ASGITransport(app=app)
+    body = b""
+    async with AsyncClient(transport=transport, base_url="http://test",
+                            timeout=5.0) as client:
+        async with client.stream(
+            "GET", "/api/sessions/sid1/pane", params={"max_seconds": "0.2"}
+        ) as resp:
+            assert resp.status_code == 200
+            async for chunk in resp.aiter_bytes():
+                body += chunk
+
+    # The stream really did attach (ASGITransport only hands the body over
+    # once the generator has finished, so this is the proof available here).
+    assert _frames(body.decode())[0]["type"] == "screen"
+    watch = broadcaster._watches["s-1"]
+    assert watch.subscribers == set()
+    assert watch.stop_at is not None
+    await broadcaster.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stream_still_detaches(db):
+    """Client disconnect cancels the generator; teardown must survive it.
+
+    ``contextlib.suppress(Exception)`` does not catch ``CancelledError``, so
+    a teardown that awaits can be interrupted and strand the poll loop.
+    """
+    provider = FakeProvider(config=None)
+    await provider.start(
+        SessionSpec(session_name="s-1", work_dir="/w", command=("x",),
+                     instance_token="tok")
+    )
+    provider.sessions["s-1"].output.append("PANE")
+    await _make_session(db, session_id="sid1", name="s-1")
+
+    app, broadcaster = await _app(db, provider)
+    broadcaster.linger_seconds = 30.0
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                            timeout=5.0) as client:
+
+        async def consume():
+            async with client.stream("GET", "/api/sessions/sid1/pane") as resp:
+                async for _ in resp.aiter_bytes():
+                    pass
+
+        task = asyncio.create_task(consume())
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if broadcaster._watches.get("s-1", None) is not None and \
+                    broadcaster._watches["s-1"].subscribers:
+                break
+        watch = broadcaster._watches["s-1"]
+        assert watch.subscribers  # attached
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+    assert watch.subscribers == set()
     await broadcaster.shutdown()

@@ -125,15 +125,28 @@ class PaneBroadcaster:
                 )
         return queue
 
+    def detach(self, session_name: str, queue: asyncio.Queue) -> None:
+        """Detach a subscriber; the loop lingers before stopping.
+
+        Deliberately **synchronous and lock-free**: teardown runs in an
+        SSE generator's ``finally``, which Starlette reaches by cancelling
+        the generator on client disconnect.  Any ``await`` there — even
+        ``async with self._lock`` — can re-deliver ``CancelledError`` at
+        the suspension point and skip the removal, stranding a poll loop
+        with a subscriber that will never read again.  There is no await
+        between the read and the write below, so the discard cannot be
+        interrupted and the property holds unconditionally.
+        """
+        watch = self._watches.get(session_name)
+        if watch is None:
+            return
+        watch.subscribers.discard(queue)
+        if not watch.subscribers:
+            watch.stop_at = time.monotonic() + self.linger_seconds
+
     async def unsubscribe(self, session_name: str, queue: asyncio.Queue) -> None:
-        """Detach a subscriber; the loop lingers before stopping."""
-        async with self._lock:
-            watch = self._watches.get(session_name)
-            if watch is None:
-                return
-            watch.subscribers.discard(queue)
-            if not watch.subscribers:
-                watch.stop_at = time.monotonic() + self.linger_seconds
+        """Async alias for :meth:`detach` (kept for existing callers)."""
+        self.detach(session_name, queue)
 
     async def shutdown(self) -> None:
         """Cancel every loop.  Called from daemon/app teardown.
@@ -153,18 +166,6 @@ class PaneBroadcaster:
                 watch.task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await watch.task
-        # Belt-and-braces: a watch inserted between the snapshot and the
-        # _closed flag taking effect elsewhere (e.g. a future refactor)
-        # would otherwise leak. Nothing should land here given the lock
-        # ordering above, but a stray watch is cancelled rather than left.
-        async with self._lock:
-            stray = list(self._watches.values())
-            self._watches.clear()
-        for watch in stray:
-            if watch.task is not None:
-                watch.task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await watch.task
 
     # -- internals ---------------------------------------------------------
 
@@ -172,7 +173,11 @@ class PaneBroadcaster:
         """Push one frame to every subscriber (or just *only*).
 
         A subscriber whose queue is full is a slow reader, not a reason to
-        block the loop: the frame is dropped for that subscriber alone.
+        block the loop.  Each frame is a *full snapshot*, so the oldest
+        frame is the worthless one: dropping the newest would pin a
+        briefly-slow reader to a stale screen, and a dropped terminal
+        frame would leave its SSE generator running forever.  Drop from
+        the front and enqueue instead.
         """
         watch.seq += 1
         frame = {"source": "pane", "seq": watch.seq, "ts": time.time(), **payload}
@@ -181,7 +186,11 @@ class PaneBroadcaster:
             try:
                 queue.put_nowait(frame)
             except asyncio.QueueFull:
-                logger.debug("pane subscriber queue full; dropping frame")
+                logger.debug("pane subscriber queue full; dropping oldest frame")
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    queue.get_nowait()
+                with contextlib.suppress(asyncio.QueueFull):
+                    queue.put_nowait(frame)
 
     async def _run(self, session, watch: _Watch) -> None:
         handle = SessionHandle(
@@ -191,6 +200,7 @@ class PaneBroadcaster:
         )
         provider = self._providers.create(session.provider, self._config)
         errors = 0
+        probe_errors = 0
         try:
             while True:
                 if watch.stop_at is not None and time.monotonic() >= watch.stop_at:
@@ -212,10 +222,34 @@ class PaneBroadcaster:
 
                 # Liveness is checked *after* emitting, so the final screen
                 # of a session that just exited still reaches the viewer.
+                #
+                # ``process_alive`` — not ``is_running``.  TmuxProvider sets
+                # ``remain-on-exit on``, so a pane outlives its process:
+                # ``is_running`` stays True for a finished agent forever and
+                # the viewer never learns the session ended.  ``process_alive``
+                # is the method that consults ``pane_dead`` / the process
+                # subtree.  ``process_names`` is left empty on purpose: the
+                # reconciler narrows by harness name to decide whether to
+                # *reap*, while this loop only decides whether to show a
+                # banner, and an empty tuple can only ever err towards
+                # "still alive".
                 try:
-                    alive = await provider.is_running(handle)
+                    alive = await provider.process_alive(handle, ())
                 except Exception:
                     alive = True  # unknown is not dead
+                    probe_errors += 1
+                    # A persistently failing probe would otherwise be
+                    # invisible: the loop just never reports a stop.
+                    if probe_errors == 1 or probe_errors % 30 == 0:
+                        logger.warning(
+                            "pane liveness probe failing for %s (%d in a row); "
+                            "treating the session as alive",
+                            session.name,
+                            probe_errors,
+                            exc_info=True,
+                        )
+                else:
+                    probe_errors = 0
                 if not alive:
                     self._emit(watch, {"type": "stopped"})
                     break
