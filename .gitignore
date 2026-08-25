@@ -33,3 +33,7 @@ docs/.obsidian
 
 # Outrider
 .outrider/
+
+# Per-workspace agent state: hook settings, worktree slots, sentinels.
+# Generated per checkout by the session runtime — never shared.
+/.aq/
