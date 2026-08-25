@@ -195,3 +195,16 @@ async def test_repeated_peek_errors_emit_one_error_frame_and_stop():
     await asyncio.sleep(0.1)
     assert b.watched_count() == 0
     await b.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_subscribe_after_shutdown_is_refused():
+    provider = await _fake_with("s1")
+    b = _bcast(provider)
+    q = await b.subscribe(Row("s1"))
+    await _next(q)
+    await b.shutdown()
+    assert b.watched_count() == 0
+    with pytest.raises(PaneStreamRefused):
+        await b.subscribe(Row("s1"))
+    assert b.watched_count() == 0

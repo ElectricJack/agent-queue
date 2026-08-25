@@ -69,6 +69,7 @@ class PaneBroadcaster:
         self._config = config
         self._watches: dict[str, _Watch] = {}
         self._lock = asyncio.Lock()
+        self._closed = False
         sessions_cfg = getattr(config, "sessions", None)
         self.interval: float = float(
             getattr(sessions_cfg, "pane_stream_interval_seconds", 1.0) or 1.0
@@ -88,9 +89,12 @@ class PaneBroadcaster:
     async def subscribe(self, session) -> asyncio.Queue:
         """Attach a subscriber, starting the session's loop if needed.
 
-        Raises :class:`PaneStreamRefused` when the cap is reached, and
-        ``CapabilityUnsupported`` when the provider cannot peek at all.
+        Raises :class:`PaneStreamRefused` when the cap is reached or the
+        broadcaster has been shut down, and ``CapabilityUnsupported`` when
+        the provider cannot peek at all.
         """
+        if self._closed:
+            raise PaneStreamRefused("pane broadcaster is shut down")
         provider = self._providers.create(session.provider, self._config)
         if not provider.supports(Cap.PEEK):
             from src.sessions.provider import CapabilityUnsupported
@@ -99,6 +103,8 @@ class PaneBroadcaster:
 
         queue: asyncio.Queue = asyncio.Queue(maxsize=64)
         async with self._lock:
+            if self._closed:
+                raise PaneStreamRefused("pane broadcaster is shut down")
             watch = self._watches.get(session.name)
             if watch is None:
                 if len(self._watches) >= self.max_sessions:
@@ -130,11 +136,31 @@ class PaneBroadcaster:
                 watch.stop_at = time.monotonic() + self.linger_seconds
 
     async def shutdown(self) -> None:
-        """Cancel every loop.  Called from daemon/app teardown."""
+        """Cancel every loop.  Called from daemon/app teardown.
+
+        Sets ``_closed`` under the lock *before* releasing it, so no
+        ``subscribe()`` racing this call can observe an empty ``_watches``
+        and slip a fresh loop in after the snapshot below is taken — it
+        either lands before this lock is acquired (and gets cancelled with
+        everything else) or after ``_closed`` is set (and is refused).
+        """
         async with self._lock:
+            self._closed = True
             watches = list(self._watches.values())
             self._watches.clear()
         for watch in watches:
+            if watch.task is not None:
+                watch.task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await watch.task
+        # Belt-and-braces: a watch inserted between the snapshot and the
+        # _closed flag taking effect elsewhere (e.g. a future refactor)
+        # would otherwise leak. Nothing should land here given the lock
+        # ordering above, but a stray watch is cancelled rather than left.
+        async with self._lock:
+            stray = list(self._watches.values())
+            self._watches.clear()
+        for watch in stray:
             if watch.task is not None:
                 watch.task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
