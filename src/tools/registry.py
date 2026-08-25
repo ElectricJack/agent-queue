@@ -107,6 +107,13 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "the messages that carry all chat and handoff traffic"
         ),
     ),
+    "discord": CategoryMeta(
+        name="discord",
+        description=(
+            "Discord channel and thread housekeeping — purge channel messages, "
+            "archive or delete task threads"
+        ),
+    ),
     "mcp": CategoryMeta(
         name="mcp",
         description=(

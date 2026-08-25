@@ -90,6 +90,7 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "system": "system",
     "mcp": "mcp",
     "message": "message",
+    "discord": "discord",
 }
 
 # Human-readable group descriptions for newly created groups.
@@ -101,6 +102,7 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "system": "System diagnostics, config, and prompt management.",
     "mcp": "MCP server registry and tool catalog.",
     "message": "Inter-agent and user message queue.",
+    "discord": "Discord channel and thread housekeeping.",
 }
 
 

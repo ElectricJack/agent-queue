@@ -48,6 +48,7 @@ def get_all_response_models() -> dict[str, type[BaseModel]]:
     """Collect RESPONSE_MODELS from every category module."""
     from src.api.models import (
         agent,
+        discord,
         files,
         gate,
         git,
@@ -65,7 +66,7 @@ def get_all_response_models() -> dict[str, type[BaseModel]]:
     merged: dict[str, type[BaseModel]] = {}
     for mod in (
         task, project, agent, git, memory, files, system,
-        plugin, mcp, playbook, session, gate, message,
+        plugin, mcp, playbook, session, gate, message, discord,
     ):
         merged.update(mod.RESPONSE_MODELS)
     return merged

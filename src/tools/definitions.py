@@ -11,6 +11,9 @@ from __future__ import annotations
 _TOOL_CATEGORIES: dict[str, str] = {
     # git — migrated to aq-git internal plugin (src/plugins/internal/git.py)
     # project
+    # discord — channel and thread housekeeping
+    "discord_purge_channel": "discord",
+    "discord_cleanup_threads": "discord",
     "list_projects": "project",
     "create_project": "project",
     "pause_project": "project",
@@ -2357,6 +2360,71 @@ _ALL_TOOL_DEFINITIONS = [
     # create_branch, checkout_branch, commit_changes, push_branch, merge_branch)
     # migrated to aq-git internal plugin.
     # --- Communication ---
+    {
+        "name": "discord_purge_channel",
+        "description": (
+            "Delete messages from a Discord channel. Dry-run by default — it "
+            "reports how many messages would go; pass confirm=true to actually "
+            "delete. Discord only bulk-deletes messages under 14 days old; "
+            "older ones are counted and reported, not silently skipped."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_id": {"type": "string", "description": "Target channel id."},
+                "project_id": {
+                    "type": "string",
+                    "description": "Use this project's channel instead of channel_id.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many messages back to scan (default 1000).",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "Actually delete. Without it this is a dry run.",
+                },
+            },
+        },
+    },
+    {
+        "name": "discord_cleanup_threads",
+        "description": (
+            "Archive or delete threads in a Discord channel. Defaults to "
+            "mode='archive' and only_closed=true, so threads for running tasks "
+            "are left alone. Dry-run unless confirm=true."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_id": {"type": "string", "description": "Target channel id."},
+                "project_id": {
+                    "type": "string",
+                    "description": "Use this project's channel instead of channel_id.",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["archive", "delete"],
+                    "description": "archive (reversible, default) or delete (permanent).",
+                },
+                "only_closed": {
+                    "type": "boolean",
+                    "description": (
+                        "Only touch threads whose task is finished (default true). "
+                        "Matched via tasks.discord_thread_id."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many archived threads to scan (default 500).",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "Actually apply. Without it this is a dry run.",
+                },
+            },
+        },
+    },
     {
         "name": "get_system_channel",
         "description": (

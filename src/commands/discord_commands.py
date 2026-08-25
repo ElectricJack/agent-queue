@@ -93,3 +93,176 @@ class DiscordCommandsMixin:
             return {"success": True, "channel_id": channel_id}
         except Exception as e:
             return {"error": f"Failed to send message: {e}"}
+
+    # ------------------------------------------------------------------
+    # Channel / thread housekeeping
+    # ------------------------------------------------------------------
+
+    async def _resolve_discord_channel(self, args: dict):
+        """Resolve ``channel_id`` or ``project_id`` to a channel, or an error.
+
+        Returns ``(channel, None)`` or ``(None, {"error": ...})``.
+        """
+        bot = getattr(self.orchestrator, "_discord_bot", None)
+        if not bot:
+            return None, {"error": "Discord bot not available (is the daemon running?)"}
+
+        channel_id = args.get("channel_id")
+        project_id = args.get("project_id")
+        if not channel_id and project_id:
+            project = await self.db.get_project(str(project_id))
+            channel_id = getattr(project, "discord_channel_id", None) if project else None
+            if not channel_id:
+                return None, {"error": f"project '{project_id}' has no Discord channel"}
+        if not channel_id:
+            return None, {"error": "channel_id or project_id is required"}
+
+        try:
+            channel = bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
+        except Exception as e:
+            return None, {"error": f"could not resolve channel {channel_id}: {e}"}
+        return channel, None
+
+    async def _cmd_discord_purge_channel(self, args: dict) -> dict:
+        """Delete messages from a Discord channel.
+
+        Dry-run unless ``confirm`` is true: the default reports how many
+        messages *would* go, because this is irreversible and a mistyped
+        channel id is unrecoverable.
+
+        Discord only bulk-deletes messages under 14 days old.  Older ones must
+        be removed one at a time, which is heavily rate-limited, so they are
+        counted and reported rather than silently skipped — a purge that says
+        "done" while leaving hundreds of old messages is worse than one that
+        says what it could not do.
+        """
+        import datetime as _dt
+
+        channel, err = await self._resolve_discord_channel(args)
+        if err:
+            return err
+
+        limit = int(args.get("limit") or 1000)
+        confirm = bool(args.get("confirm"))
+        cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=14)
+
+        recent, old = [], 0
+        try:
+            async for msg in channel.history(limit=limit):
+                if msg.created_at >= cutoff:
+                    recent.append(msg)
+                else:
+                    old += 1
+        except Exception as e:
+            return {"error": f"could not read channel history: {e}"}
+
+        if not confirm:
+            return {
+                "success": True,
+                "dry_run": True,
+                "channel": getattr(channel, "name", str(channel.id)),
+                "deletable": len(recent),
+                "too_old_to_bulk_delete": old,
+                "note": "re-run with confirm=true to delete",
+            }
+
+        deleted = 0
+        try:
+            for i in range(0, len(recent), 100):
+                chunk = recent[i : i + 100]
+                await channel.delete_messages(chunk)
+                deleted += len(chunk)
+        except Exception as e:
+            return {
+                "error": f"purge failed after {deleted} message(s): {e}",
+                "deleted": deleted,
+            }
+        return {
+            "success": True,
+            "channel": getattr(channel, "name", str(channel.id)),
+            "deleted": deleted,
+            "too_old_to_bulk_delete": old,
+        }
+
+    async def _cmd_discord_cleanup_threads(self, args: dict) -> dict:
+        """Archive or delete threads in a Discord channel.
+
+        Defaults are the conservative ones: ``mode="archive"`` (reversible,
+        keeps the history) over ``delete``, and ``only_closed=True`` so a
+        thread whose task is still running is left alone.  ``only_closed``
+        matches threads back to tasks through ``tasks.discord_thread_id``;
+        a thread with no matching task row counts as closed, since nothing
+        live refers to it.
+
+        Dry-run unless ``confirm`` is true.
+        """
+        channel, err = await self._resolve_discord_channel(args)
+        if err:
+            return err
+
+        mode = str(args.get("mode") or "archive").lower()
+        if mode not in ("archive", "delete"):
+            return {"error": "mode must be 'archive' or 'delete'"}
+        only_closed = args.get("only_closed")
+        only_closed = True if only_closed is None else bool(only_closed)
+        confirm = bool(args.get("confirm"))
+        limit = int(args.get("limit") or 500)
+
+        threads = list(getattr(channel, "threads", []) or [])
+        try:
+            async for t in channel.archived_threads(limit=limit):
+                threads.append(t)
+        except Exception:
+            # Archived listing is best-effort: a missing permission should not
+            # stop us cleaning the active ones.
+            pass
+
+        live_thread_ids: set[str] = set()
+        if only_closed:
+            try:
+                rows = await self.db.list_tasks()
+                live_thread_ids = {
+                    str(t.discord_thread_id)
+                    for t in rows
+                    if getattr(t, "discord_thread_id", None)
+                    and getattr(t.status, "value", t.status)
+                    not in ("COMPLETED", "FAILED", "CANCELLED")
+                }
+            except Exception:
+                return {"error": "could not read tasks to determine which threads are live"}
+
+        targets = [
+            t for t in threads
+            if not (only_closed and str(t.id) in live_thread_ids)
+            and not (mode == "archive" and getattr(t, "archived", False))
+        ]
+
+        if not confirm:
+            return {
+                "success": True,
+                "dry_run": True,
+                "channel": getattr(channel, "name", str(channel.id)),
+                "threads_found": len(threads),
+                "would_" + mode: len(targets),
+                "skipped_live": len(threads) - len(targets),
+                "note": "re-run with confirm=true to apply",
+            }
+
+        done, failed = 0, 0
+        for t in targets:
+            try:
+                if mode == "delete":
+                    await t.delete()
+                else:
+                    await t.edit(archived=True)
+                done += 1
+            except Exception:
+                failed += 1
+        return {
+            "success": True,
+            "channel": getattr(channel, "name", str(channel.id)),
+            "mode": mode,
+            mode + "d": done,
+            "failed": failed,
+            "skipped_live": len(threads) - len(targets),
+        }
