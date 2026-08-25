@@ -316,6 +316,14 @@ class TaskQueryMixin:
         again. They accumulate silently: three survived a full queue cleanup
         here, each pinned to a COMPLETED task.
 
+        Scoped to ``routing`` gates on purpose. Every other type has its own
+        resolution path — a ``task`` gate resolves when the task it awaits
+        finishes, ``pr-merged`` on the merge, ``human`` on a click — and those
+        can legitimately outlive their waiters; resolving is a more meaningful
+        outcome than expiring, and pre-empting it loses that signal. A routing
+        gate is different: it is resolved *by* the triage agent acting on the
+        waiter, so once every waiter is terminal nothing can ever resolve it.
+
         Only gates whose waiters are *all* terminal are expired; a gate shared
         with a live task is left alone. Returns how many were expired.
         """
@@ -353,7 +361,13 @@ class TaskQueryMixin:
                     continue
                 result = await conn.execute(
                     update(gates)
-                    .where(and_(gates.c.id == gate_id, gates.c.status == "open"))
+                    .where(
+                        and_(
+                            gates.c.id == gate_id,
+                            gates.c.status == "open",
+                            gates.c.gate_type == "routing",
+                        )
+                    )
                     .values(status="expired", resolution="all waiters terminal")
                 )
                 expired += result.rowcount or 0

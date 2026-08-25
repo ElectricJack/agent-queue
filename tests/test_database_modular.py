@@ -2170,6 +2170,31 @@ class TestDeleteTaskClosesGates:
         await db.close()
 
     @pytest.mark.asyncio
+    async def test_non_routing_gates_are_left_to_resolve_themselves(self, tmp_path):
+        """A ``task`` gate resolves when the task it awaits finishes.
+
+        Expiring it because its waiter finished pre-empts that and loses the
+        distinction between "the awaited thing happened" and "nobody is
+        waiting any more".
+        """
+        from src.models import TaskStatus
+
+        db = Database(str(tmp_path / "gexp3.db"))
+        await db.initialize()
+        await db.create_project(Project(id="p1", name="P1"))
+        await db.create_task(Task(id="tA", project_id="p1", title="A", description="d"))
+        await db.create_task(Task(id="tB", project_id="p1", title="B", description="d"))
+        gate_id, _ = await db.create_gate(
+            project_id="p1", gate_type="task", title="await A",
+            await_id="tA", waiter_task_ids=["tB"],
+        )
+
+        await db.transition_task("tB", TaskStatus.COMPLETED)
+
+        assert (await db.get_gate(gate_id))["status"] == "open"
+        await db.close()
+
+    @pytest.mark.asyncio
     async def test_gate_shared_with_a_live_task_survives(self, tmp_path):
         from src.models import TaskStatus
 
