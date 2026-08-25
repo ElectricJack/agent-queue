@@ -71,6 +71,7 @@ HARNESS_KNOWN_KEYS: frozenset[str] = frozenset(
         "effort_flag",
         "session_id_flag",
         "settings_flag",
+        "tools_flag",
         "resume",
         "ready_delay_ms",
         "ready_prompt_prefix",
@@ -128,6 +129,11 @@ class Harness:
     #: ``--settings``.  Emitted only when ``hook_files`` actually rendered —
     #: without it the hook payload is written and never read.
     settings_flag: str = ""
+    #: Flag that restricts the harness's tool surface, e.g. Claude's
+    #: ``--allowedTools``.  Emitted only when the profile actually declares
+    #: an allowlist; a harness that omits this key cannot be restricted and
+    #: the launch says so once rather than silently ignoring the profile.
+    tools_flag: str = ""
     resume: ResumeSpec = field(default_factory=ResumeSpec)
     ready_delay_ms: int = 0
     ready_prompt_prefix: str | None = None

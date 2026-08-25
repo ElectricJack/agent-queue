@@ -30,44 +30,61 @@ vault watcher; no restart, no release.
     "supports_fork": true
   },
   "ready_delay_ms": 2000,
-  "ready_prompt_prefix": "❯ ",
-  "process_names": ["claude", "node"],
+  "ready_prompt_prefix": "\u276f ",
+  "process_names": [
+    "claude",
+    "node"
+  ],
   "skip_escape_before_enter": true,
   "supports_hooks": true,
   "hook_files": {
     ".aq/hooks/claude.json": "hooks/claude.json"
   },
   "instructions_file": "CLAUDE.md",
-  "transcript_paths": ["~/.claude/projects/{work_dir_slug}/*.jsonl"],
+  "transcript_paths": [
+    "~/.claude/projects/{work_dir_slug}/*.jsonl"
+  ],
   "max_argv_prompt_bytes": 1024,
   "dialogs": [
     {
       "name": "trust-folder",
       "pattern": "Do you trust the files in this folder|Is this a project you created or one you trust",
-      "keys": ["Enter"]
+      "keys": [
+        "Enter"
+      ]
     },
     {
       "name": "theme",
       "pattern": "Choose the text style that looks best",
-      "keys": ["Enter"]
+      "keys": [
+        "Enter"
+      ]
     },
     {
       "name": "bypass-permissions",
       "pattern": "Bypass Permissions mode",
-      "keys": ["Down", "Enter"]
+      "keys": [
+        "Down",
+        "Enter"
+      ]
     },
     {
       "name": "mcp-trust",
       "pattern": "New MCP server found",
-      "keys": ["Enter"]
+      "keys": [
+        "Enter"
+      ]
     },
     {
       "name": "rate-limit",
       "pattern": "approaching your usage limit",
-      "keys": ["Escape"],
+      "keys": [
+        "Escape"
+      ],
       "quarantine": true
     }
-  ]
+  ],
+  "tools_flag": "--allowedTools"
 }
 ```
 

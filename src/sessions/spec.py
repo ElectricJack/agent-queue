@@ -385,6 +385,10 @@ class SessionSpecBuilder:
         if effort and harness.effort_flag:
             argv.extend([harness.effort_flag, effort])
 
+        tools = self._resolve_allowed_tools(profile, harness)
+        if tools:
+            argv.extend([harness.tools_flag, ",".join(tools)])
+
         # Declaring the flag in a harness file is *permission to use it*,
         # not an instruction to always use it -- see
         # :func:`skip_permissions_allowed` for the trust-and-ops §4 rule.
@@ -438,6 +442,67 @@ class SessionSpecBuilder:
             rel,
         )
         return ["sh", "-c", _PROMPT_FILE_SCRIPT, "sh", rel, *argv]
+
+    #: Tool names a CLI harness understands directly.  Anything else in a
+    #: profile's allowlist is an ``aq`` *command* name, which reaches a
+    #: session through the ``aq`` CLI (i.e. through ``Bash``) rather than as
+    #: a tool the harness can be told about — sessions are launched without
+    #: ``--mcp-config``, so there is no MCP tool surface to restrict.
+    _HARNESS_TOOL_NAMES: frozenset[str] = frozenset(
+        {
+            "Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill",
+            "WebSearch", "WebFetch", "Task", "TodoWrite", "NotebookEdit",
+        }
+    )
+
+    def _resolve_allowed_tools(self, profile, harness) -> list[str]:
+        """Tool names to pass to the harness's allowlist flag.
+
+        Returns an empty list to mean "emit no flag", which leaves the CLI on
+        its own defaults.  That is the answer for three distinct cases: the
+        profile declares nothing, it declares ``["*"]`` (explicitly all), or
+        the harness has no ``tools_flag`` and therefore cannot be restricted.
+
+        ``aq`` command names in the allowlist are dropped, with a log line
+        naming them.  They are not tools the CLI knows: a session gets its
+        daemon access through the ``aq`` CLI, so those names describe
+        *intent* that the harness cannot enforce.  Dropping them silently is
+        what let profiles carry allowlists nobody applied.
+        """
+        declared = list(getattr(profile, "allowed_tools", None) or [])
+        if not declared:
+            return []
+        if "*" in declared:
+            return []
+        if not harness.tools_flag:
+            logger.info(
+                "harness %r has no tools_flag; profile %r allowlist not enforced",
+                harness.id,
+                getattr(profile, "id", "?"),
+            )
+            return []
+
+        keep = [t for t in declared if t in self._HARNESS_TOOL_NAMES]
+        dropped = [t for t in declared if t not in self._HARNESS_TOOL_NAMES]
+        if dropped:
+            logger.debug(
+                "profile %r: %d allowlist entr(ies) are aq commands, not harness "
+                "tools, and reach the session through the aq CLI instead: %s",
+                getattr(profile, "id", "?"),
+                len(dropped),
+                ", ".join(sorted(dropped)),
+            )
+        if not keep:
+            # Every entry was an aq command.  Emitting an empty flag would
+            # disable *all* tools including Bash, which is how the session
+            # reaches aq in the first place — that would strand the agent.
+            logger.warning(
+                "profile %r declares no harness tools (only aq commands); "
+                "leaving the CLI on its defaults rather than disabling every tool",
+                getattr(profile, "id", "?"),
+            )
+            return []
+        return keep
 
     def _resolve_model(
         self,

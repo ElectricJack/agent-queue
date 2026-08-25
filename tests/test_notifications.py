@@ -592,6 +592,10 @@ class TestDiscordNotificationHandler:
 
         bus = EventBus()
         bot = _make_mock_bot()
+        # Nothing to recover: no thread was ever opened for this task.  Stated
+        # explicitly because a bare MagicMock would return a truthy stand-in
+        # and the handler would "recover" a thread that does not exist.
+        bot.thread_callbacks_for_task = AsyncMock(return_value=None)
         handler = DiscordNotificationHandler(bot, bus)
 
         event = TaskMessageEvent(

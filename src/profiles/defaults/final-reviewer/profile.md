@@ -24,6 +24,8 @@ tags: [system, review, merge-authority, dv2-phase2]
   "allowed": [
     "Bash",
     "Read",
+    "Write",
+    "Edit",
     "Glob",
     "Grep",
     "get_task",

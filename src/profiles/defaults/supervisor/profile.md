@@ -39,6 +39,9 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   "harness": "claude",
   "model": "claude-opus-5",
   "lifecycle": "named",
+  "mode": "on_demand",
+  "wake_mode": "resume",
+  "idle_timeout": 2700,
   "needs_workspace": false
 }
 ```

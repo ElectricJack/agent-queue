@@ -598,6 +598,40 @@ class AgentQueueBot(commands.Bot):
         return None
 
 
+    async def thread_callbacks_for_task(self, task_id: str):
+        """Rebuild ``(send_thread, notify_main)`` for an already-open thread.
+
+        The notification handler keeps its callback map in memory, so a daemon
+        restart loses it while tasks keep running — and their output then had
+        nowhere to go.  The thread itself survives (its id is persisted on
+        ``tasks.discord_thread_id``), so the callbacks can be rebuilt on demand
+        rather than the output being dropped.
+
+        Returns ``None`` when no thread can be resolved; the caller decides
+        what to do with output that has no home.  Deliberately silent — no
+        "task resumed" banner — because this is recovering plumbing, not an
+        event a reader needs to know about.
+        """
+        thread = self._task_thread_objects.get(task_id)
+        if thread is None:
+            thread = await self._rehydrate_task_thread(task_id)
+        if thread is None:
+            return None
+
+        async def send_to_thread(text: str) -> None:
+            try:
+                await self._send_long_message(thread, text)
+            except Exception as e:
+                logger.error("Thread send error: %s", e)
+
+        async def notify_main_channel(text: str, *, embed=None) -> None:
+            # Matches the reuse path in ``_create_task_thread``: the thread
+            # already carries the detail, so a second copy in the channel is
+            # duplication.
+            return None
+
+        return send_to_thread, notify_main_channel
+
     async def _rehydrate_task_thread(self, task_id: str):
         """Return the Discord thread persisted for *task_id*, or ``None``.
 

@@ -746,6 +746,31 @@ class DiscordNotificationHandler:
     # Thread management
     # ------------------------------------------------------------------
 
+    async def _rebuild_thread_callbacks(self, task_id: str):
+        """Recover this task's thread callbacks after a restart, or ``None``.
+
+        Result is cached in ``_task_threads`` — including nothing-found, which
+        is cached as an absent key rather than re-queried per message.
+        """
+        if not task_id:
+            return None
+        cached = self._task_threads.get(task_id)
+        if cached is not None:
+            return cached
+        getter = getattr(self.bot, "thread_callbacks_for_task", None)
+        if getter is None:
+            return None
+        try:
+            rebuilt = await getter(task_id)
+        except Exception:
+            logger.debug("thread rebuild failed for %s", task_id, exc_info=True)
+            return None
+        if rebuilt is None:
+            return None
+        self._task_threads[task_id] = rebuilt
+        logger.info("Recovered Discord thread callbacks for task %s", task_id)
+        return rebuilt
+
     async def _on_task_thread_open(self, data: dict) -> None:
         event = TaskThreadOpenEvent(**{k: v for k, v in data.items() if k != "_event_type"})
         try:
@@ -847,18 +872,25 @@ class DiscordNotificationHandler:
                 if send_thread:
                     await send_thread(event.message)
             elif event.message_type == "agent_output":
-                # No thread for this task: drop rather than fall back to the
-                # project channel.  ``_task_threads`` is in-memory, so every
-                # daemon restart empties it while tasks keep running — and the
-                # fallback then dumped each agent's running commentary into the
-                # main channel, where it reads as the supervisor talking.  A
-                # task's narration belongs in that task's thread or nowhere;
-                # completions and ``brief`` notifications still reach the
-                # channel through their own paths.
-                logger.debug(
-                    "task_message: no thread for %s — dropping agent output",
-                    event.task_id or event.stream_id,
-                )
+                # ``_task_threads`` is in-memory, so a daemon restart empties
+                # it while tasks keep running.  The thread itself survives —
+                # its id is on ``tasks.discord_thread_id`` — so rebuild the
+                # callbacks and put the output back where it belongs.  Cached
+                # so this costs one lookup per task, not one per message.
+                rebuilt = await self._rebuild_thread_callbacks(event.task_id)
+                if rebuilt is not None:
+                    send_thread, _ = rebuilt
+                    await send_thread(event.message)
+                else:
+                    # Genuinely no thread (never opened, deleted, or access
+                    # lost).  Drop rather than fall back to the project
+                    # channel: an agent's running commentary there reads as
+                    # the supervisor talking.  ``brief`` and ``status``
+                    # messages still reach the channel through their own paths.
+                    logger.debug(
+                        "task_message: no thread for %s — dropping agent output",
+                        event.task_id or event.stream_id,
+                    )
             else:
                 await self.bot._send_message(event.message, project_id=event.project_id)
 

@@ -506,8 +506,44 @@ class TestAgentOutputRouting:
         await h._on_task_message(self._event(role="system", message="<system-reminder>"))
         h.bot._send_message.assert_not_awaited()
 
-    async def test_assistant_output_without_a_thread_is_dropped(self):
+    async def test_output_is_recovered_into_a_restored_thread(self):
+        """After a restart the callback map is empty but the thread survives.
+
+        Its id is persisted on ``tasks.discord_thread_id``, so the callbacks
+        are rebuilt on demand and the output lands in the thread — visible,
+        and still not in the project channel.
+        """
         h = self._handler()
+        sent = []
+
+        async def send_thread(text):
+            sent.append(text)
+
+        h.bot.thread_callbacks_for_task = AsyncMock(return_value=(send_thread, None))
+
+        await h._on_task_message(self._event(role="assistant", message="Now I'll implement."))
+
+        assert sent == ["Now I'll implement."]
+        h.bot._send_message.assert_not_awaited()
+        assert "t-1" in h._task_threads, "rebuilt callbacks should be cached"
+
+    async def test_rebuild_is_cached_not_repeated_per_message(self):
+        h = self._handler()
+
+        async def send_thread(text):
+            return None
+
+        h.bot.thread_callbacks_for_task = AsyncMock(return_value=(send_thread, None))
+        for _ in range(3):
+            await h._on_task_message(self._event(role="assistant", message="x"))
+        assert h.bot.thread_callbacks_for_task.await_count == 1
+
+    async def test_output_is_dropped_when_no_thread_can_be_recovered(self):
+        """Never fall back to the project channel — that reads as the
+        supervisor talking when it is a task agent narrating."""
+        h = self._handler()
+        h.bot.thread_callbacks_for_task = AsyncMock(return_value=None)
+
         await h._on_task_message(self._event(role="assistant", message="Now I'll implement."))
         h.bot._send_message.assert_not_awaited()
 
