@@ -893,6 +893,11 @@ class SessionsConfig:
     state_cache_ttl_seconds: int = 2
     transcript_poll_seconds: int = 2
     adopt_on_start: bool = True
+    #: Live pane stream (dashboard).  Polling happens only while a
+    #: subscriber is attached, so an unwatched daemon pays nothing.
+    pane_stream_interval_seconds: float = 1.0
+    pane_stream_max_sessions: int = 12
+    pane_stream_lines: int = 60
 
     _VALID_PROVIDERS = ("tmux", "subprocess", "fake")
 
@@ -940,6 +945,13 @@ class SessionsConfig:
         ):
             if getattr(self, name) < 0:
                 errors.append(ConfigError("sessions", name, "must be >= 0"))
+        for name in (
+            "pane_stream_interval_seconds",
+            "pane_stream_max_sessions",
+            "pane_stream_lines",
+        ):
+            if getattr(self, name) <= 0:
+                errors.append(ConfigError("sessions", name, "must be > 0"))
         return errors
 
 

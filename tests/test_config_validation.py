@@ -575,3 +575,25 @@ class TestSessionsProviderIsBuildable:
 
         errors = SessionsConfig(provider="nope").validate()
         assert any(e.field == "provider" for e in errors)
+
+
+def test_pane_stream_defaults():
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig()
+    assert cfg.pane_stream_interval_seconds == 1.0
+    assert cfg.pane_stream_max_sessions == 12
+    assert cfg.pane_stream_lines == 60
+    assert cfg.validate() == []
+
+
+def test_pane_stream_rejects_non_positive():
+    from src.config import SessionsConfig
+
+    cfg = SessionsConfig(pane_stream_interval_seconds=0)
+    fields = {e.field for e in cfg.validate()}
+    assert "pane_stream_interval_seconds" in fields
+
+    cfg = SessionsConfig(pane_stream_max_sessions=0)
+    fields = {e.field for e in cfg.validate()}
+    assert "pane_stream_max_sessions" in fields
