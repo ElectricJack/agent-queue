@@ -209,13 +209,17 @@ class DiscordCommandsMixin:
         limit = int(args.get("limit") or 500)
 
         threads = list(getattr(channel, "threads", []) or [])
+        archived_error: str | None = None
         try:
             async for t in channel.archived_threads(limit=limit):
                 threads.append(t)
-        except Exception:
-            # Archived listing is best-effort: a missing permission should not
-            # stop us cleaning the active ones.
-            pass
+        except Exception as e:
+            # Keep going — a missing permission should not stop us cleaning the
+            # active threads — but *say so*.  Swallowing this silently would
+            # report a tidy count while leaving every archived thread behind,
+            # and the caller would have no way to tell the difference between
+            # "none archived" and "could not look".
+            archived_error = f"could not list archived threads: {e}"
 
         live_thread_ids: set[str] = set()
         if only_closed:
@@ -238,7 +242,7 @@ class DiscordCommandsMixin:
         ]
 
         if not confirm:
-            return {
+            out = {
                 "success": True,
                 "dry_run": True,
                 "channel": getattr(channel, "name", str(channel.id)),
@@ -247,6 +251,9 @@ class DiscordCommandsMixin:
                 "skipped_live": len(threads) - len(targets),
                 "note": "re-run with confirm=true to apply",
             }
+            if archived_error:
+                out["warning"] = archived_error
+            return out
 
         done, failed = 0, 0
         for t in targets:
@@ -258,7 +265,7 @@ class DiscordCommandsMixin:
                 done += 1
             except Exception:
                 failed += 1
-        return {
+        out = {
             "success": True,
             "channel": getattr(channel, "name", str(channel.id)),
             "mode": mode,
@@ -266,3 +273,6 @@ class DiscordCommandsMixin:
             "failed": failed,
             "skipped_live": len(threads) - len(targets),
         }
+        if archived_error:
+            out["warning"] = archived_error
+        return out

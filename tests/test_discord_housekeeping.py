@@ -140,3 +140,35 @@ class TestCleanupThreads:
             {"channel_id": "111", "mode": "nuke"}
         )
         assert "error" in res
+
+
+class TestArchivedListingFailureIsReported:
+    """A failed archived listing must not masquerade as "nothing archived".
+
+    Swallowing it reported a tidy count while leaving every archived thread
+    behind, and the caller could not tell "none archived" from "could not
+    look" — the same silent-success shape this codebase keeps getting bitten
+    by.
+    """
+
+    class _BadChannel(_Channel):
+        async def archived_threads(self, limit=500):
+            raise PermissionError("missing Read Message History")
+            yield  # pragma: no cover - makes this an async generator
+
+    @pytest.mark.asyncio
+    async def test_dry_run_carries_the_warning(self):
+        ch = self._BadChannel(threads=[_thread(1)])
+        res = await _handler(ch)._cmd_discord_cleanup_threads({"channel_id": "111"})
+        assert res["success"] is True
+        assert "warning" in res
+        assert "archived" in res["warning"]
+
+    @pytest.mark.asyncio
+    async def test_active_threads_are_still_cleaned(self):
+        ch = self._BadChannel(threads=[_thread(1)])
+        res = await _handler(ch)._cmd_discord_cleanup_threads(
+            {"channel_id": "111", "confirm": True}
+        )
+        assert res["archived"] == 1
+        assert "warning" in res

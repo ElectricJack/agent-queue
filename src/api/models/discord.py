@@ -45,6 +45,9 @@ class DiscordCleanupThreadsResponse(BaseModel):
     failed: int | None = None
     skipped_live: int = 0
     note: str | None = None
+    #: Set when archived threads could not be listed — the counts above then
+    #: describe only the active ones.
+    warning: str | None = None
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
