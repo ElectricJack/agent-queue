@@ -11,6 +11,7 @@ from sqlalchemy import delete, insert, select, update, func, and_
 
 from src.database.tables import (
     gates,
+    sessions,
     task_context,
     task_criteria,
     task_dependencies,
@@ -19,7 +20,9 @@ from src.database.tables import (
     task_metadata,
     task_results,
     task_tools,
+    task_workspace_requirements,
     tasks,
+    workspaces,
 )
 from src.database.queries.blocked_state import (
     PROJECTION_INPUT_COLUMNS,
@@ -289,9 +292,75 @@ class TaskQueryMixin:
                 values["updated_at"] = time.time()
                 await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
                 flipped = await self.recompute_blocked({task_id}, conn=conn)
+                # A task that will not run again cannot satisfy a gate by
+                # waiting, so retire any gate now left with only terminal
+                # waiters. In the same transaction as the status write: a
+                # reader must never see a finished task still gating work.
+                if new_status.value in self._TERMINAL_TASK_STATUSES:
+                    await self.expire_satisfied_gates(task_id, conn=conn)
 
         await self.log_blocked_flips(flipped)
         return flipped
+
+    #: Statuses after which a task will not run again, so anything gated on
+    #: it can never be satisfied by waiting.
+    _TERMINAL_TASK_STATUSES = ("COMPLETED", "FAILED", "CANCELLED")
+
+    async def expire_satisfied_gates(self, task_id: str, *, conn=None) -> int:
+        """Expire open gates whose every waiter has reached a terminal state.
+
+        A routing gate is attached to each new task and resolved by the triage
+        agent. When the task finishes without that happening — routed by hand,
+        completed by an agent that never consulted the gate, closed as junk —
+        the gate stays ``open`` forever with a waiter that will never run
+        again. They accumulate silently: three survived a full queue cleanup
+        here, each pinned to a COMPLETED task.
+
+        Only gates whose waiters are *all* terminal are expired; a gate shared
+        with a live task is left alone. Returns how many were expired.
+        """
+        own = conn is None
+        if own:
+            ctx = self._engine.begin()
+            conn = await ctx.__aenter__()
+        try:
+            gate_ids = [
+                r[0]
+                for r in (
+                    await conn.execute(
+                        select(task_gates.c.gate_id).where(task_gates.c.task_id == task_id)
+                    )
+                ).fetchall()
+            ]
+            expired = 0
+            for gate_id in gate_ids:
+                live = (
+                    await conn.execute(
+                        select(task_gates.c.task_id)
+                        .select_from(
+                            task_gates.join(tasks, tasks.c.id == task_gates.c.task_id)
+                        )
+                        .where(
+                            and_(
+                                task_gates.c.gate_id == gate_id,
+                                tasks.c.status.notin_(self._TERMINAL_TASK_STATUSES),
+                            )
+                        )
+                        .limit(1)
+                    )
+                ).fetchone()
+                if live is not None:
+                    continue
+                result = await conn.execute(
+                    update(gates)
+                    .where(and_(gates.c.id == gate_id, gates.c.status == "open"))
+                    .values(status="expired", resolution="all waiters terminal")
+                )
+                expired += result.rowcount or 0
+            return expired
+        finally:
+            if own:
+                await ctx.__aexit__(None, None, None)
 
     async def delete_task(self, task_id: str) -> None:
         """Delete a task and all related child rows.
@@ -356,6 +425,33 @@ class TaskQueryMixin:
                         .where(and_(gates.c.id == gate_id, gates.c.status == "open"))
                         .values(status="expired", resolution="last waiter task deleted")
                     )
+
+            # Remaining FK holders. Without these the delete fails outright
+            # with a ForeignKeyViolationError naming one table at a time, so
+            # each is only discovered by hitting it.
+            #
+            # ``sessions`` is *nulled*, not deleted: a session row is the
+            # historical record of an agent run — how long it lived, what it
+            # cost — and that stays true after the task is gone. The other two
+            # describe the task's claim on resources and mean nothing without
+            # it, so the requirement rows go and the workspace lock is
+            # released rather than left pointing at a task that no longer
+            # exists.
+            await conn.execute(
+                update(sessions)
+                .where(sessions.c.task_id == task_id)
+                .values(task_id=None)
+            )
+            await conn.execute(
+                delete(task_workspace_requirements).where(
+                    task_workspace_requirements.c.task_id == task_id
+                )
+            )
+            await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.locked_by_task_id == task_id)
+                .values(locked_by_task_id=None, locked_by_agent_id=None)
+            )
 
             await conn.execute(delete(tasks).where(tasks.c.id == task_id))
 

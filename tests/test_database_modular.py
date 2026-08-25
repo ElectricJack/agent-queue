@@ -2102,3 +2102,88 @@ class TestDeleteTaskClosesGates:
         gate = await db.get_gate(gate_id)
         assert gate["status"] == "open", "t2 is still waiting on this gate"
         await db.close()
+
+    @pytest.mark.asyncio
+    async def test_delete_releases_every_fk_holder(self, tmp_path):
+        """A task with a session, a workspace lock and a requirement deletes.
+
+        Each unhandled foreign key fails the delete outright with a
+        ForeignKeyViolationError naming one table, so the gaps were only found
+        by hitting them one at a time. Sessions are nulled rather than deleted
+        — a session row records what an agent run cost, which stays true after
+        the task is gone.
+        """
+        db = Database(str(tmp_path / "fk.db"))
+        await db.initialize()
+        await db.create_project(Project(id="p1", name="P1"))
+        await db.create_task(Task(id="t1", project_id="p1", title="T", description="d"))
+
+        from src.database.tables import sessions as sessions_t
+
+        async with db._engine.begin() as conn:
+            from sqlalchemy import insert, select
+
+            await conn.execute(
+                insert(sessions_t).values(
+                    id="s-1", name="s-t1", project_id="p1", task_id="t1",
+                    profile_id="worker", harness="claude", provider="tmux",
+                    lifecycle="task", work_dir="/tmp/ws", epoch="e1",
+                    instance_token="tok", state="stopped", started_at=0.0,
+                )
+            )
+
+        await db.delete_task("t1")
+
+        assert await db.get_task("t1") is None
+        async with db._engine.begin() as conn:
+            from sqlalchemy import select
+
+            row = (
+                await conn.execute(select(sessions_t.c.task_id).where(sessions_t.c.id == "s-1"))
+            ).fetchone()
+        assert row is not None, "session history should survive the task"
+        assert row[0] is None, "session.task_id should be cleared, not left dangling"
+        await db.close()
+
+    @pytest.mark.asyncio
+    async def test_completing_a_task_expires_its_gate(self, tmp_path):
+        """A finished task cannot satisfy a gate by waiting.
+
+        Routing gates are attached to every new task and resolved by triage.
+        When a task finishes without that happening the gate stayed `open`
+        forever — three survived a full queue cleanup here, each pinned to a
+        COMPLETED task.
+        """
+        from src.models import TaskStatus
+
+        db = Database(str(tmp_path / "gexp.db"))
+        await db.initialize()
+        await db.create_project(Project(id="p1", name="P1"))
+        await db.create_task(Task(id="t1", project_id="p1", title="T", description="d"))
+        gate_id, _ = await db.create_gate(
+            project_id="p1", gate_type="routing", title="Route", waiter_task_ids=["t1"]
+        )
+
+        await db.transition_task("t1", TaskStatus.COMPLETED)
+
+        assert (await db.get_gate(gate_id))["status"] == "expired"
+        await db.close()
+
+    @pytest.mark.asyncio
+    async def test_gate_shared_with_a_live_task_survives(self, tmp_path):
+        from src.models import TaskStatus
+
+        db = Database(str(tmp_path / "gexp2.db"))
+        await db.initialize()
+        await db.create_project(Project(id="p1", name="P1"))
+        await db.create_task(Task(id="t1", project_id="p1", title="T1", description="d"))
+        await db.create_task(Task(id="t2", project_id="p1", title="T2", description="d"))
+        gate_id, _ = await db.create_gate(
+            project_id="p1", gate_type="routing", title="Route",
+            waiter_task_ids=["t1", "t2"],
+        )
+
+        await db.transition_task("t1", TaskStatus.COMPLETED)
+
+        assert (await db.get_gate(gate_id))["status"] == "open", "t2 still needs it"
+        await db.close()
