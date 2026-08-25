@@ -37,6 +37,39 @@ class GateCommandsMixin:
         waiters = args.get("waiter_task_ids") or ()
         if isinstance(waiters, str):
             waiters = [waiters]
+
+        # A ``routing`` gate means "this task still needs a profile". Attaching
+        # one to a task that already has a profile creates work that cannot be
+        # done: the default pipeline then ensures a triage task, an agent
+        # starts, finds nothing unrouted, and closes — once per created task.
+        # The gate itself is never resolved either; it sits open until the task
+        # finishes and it expires as "all waiters terminal", which reads as a
+        # task that ran unrouted when in fact it was routed at creation.
+        if str(gate_type) == "routing" and waiters:
+            unrouted = []
+            for w in waiters:
+                try:
+                    t = await self.db.get_task(str(w))
+                except Exception:
+                    # Cannot tell — attach the gate. A spurious gate is a
+                    # smaller problem than an unrouted task running silently.
+                    unrouted.append(str(w))
+                    continue
+                if t is None or not (getattr(t, "profile_id", "") or "").strip():
+                    unrouted.append(str(w))
+            if not unrouted:
+                logger.debug(
+                    "gate_create: every waiter already has a profile — no routing gate"
+                )
+                return {
+                    "success": True,
+                    "skipped": True,
+                    "reason": "all waiter tasks are already routed",
+                    "gate_id": None,
+                    "created": False,
+                }
+            waiters = unrouted
+
         try:
             gate_id, was_created = await self.db.create_gate(
                 project_id=str(project_id),
