@@ -3,12 +3,12 @@ import { act, render, screen } from "@testing-library/react";
 import SessionPeekPane from "../index";
 import { manifest, sessionPeekArgsSchema } from "../manifest";
 
-const mockUseTranscriptStream = vi.fn();
+const mockUsePaneStream = vi.fn();
 const mockUseSession = vi.fn();
 const mockUseSessionKill = vi.fn();
 
-vi.mock("../../../ws/useTranscriptStream", () => ({
-  useTranscriptStream: (...args: unknown[]) => mockUseTranscriptStream(...args),
+vi.mock("../../../ws/usePaneStream", () => ({
+  usePaneStream: (...args: unknown[]) => mockUsePaneStream(...args),
 }));
 vi.mock("../../../api/hooks", () => ({
   useSession: (...args: unknown[]) => mockUseSession(...args),
@@ -28,10 +28,6 @@ function baseProps() {
   };
 }
 
-function frame(text: string, idx: number, source: "peek" | "transcript" = "peek") {
-  return { source, text, ts: idx, _idx: idx };
-}
-
 // Avoids Array.prototype.at() — this package's tsconfig lib target (ES2020)
 // predates it.
 function lastCallArg0<T>(mockFn: { mock: { calls: T[][] } }): T | undefined {
@@ -41,46 +37,41 @@ function lastCallArg0<T>(mockFn: { mock: { calls: T[][] } }): T | undefined {
 
 describe("SessionPeekPane component", () => {
   beforeEach(() => {
-    mockUseTranscriptStream.mockReset();
+    mockUsePaneStream.mockReset();
     mockUseSession.mockReset();
     mockUseSessionKill.mockReset();
     mockUseSessionKill.mockReturnValue({ mutate: vi.fn() });
     mockUseSession.mockReturnValue({ data: { lifecycle: "running" } });
-    mockUseTranscriptStream.mockReturnValue({
-      entries: [frame("hello", 0), frame("world", 1)],
+    mockUsePaneStream.mockReturnValue({
+      screen: "hello",
       status: "open",
       error: null,
+      seq: 1,
     });
   });
 
   it("renders without crashing given valid args", () => {
     render(<SessionPeekPane {...baseProps()} />);
-    expect(screen.getByText("hello")).toBeInTheDocument();
-    expect(screen.getByText("world")).toBeInTheDocument();
+    expect(screen.getByText(/hello/)).toBeInTheDocument();
   });
 
-  it("filters out non-peek frames", () => {
-    mockUseTranscriptStream.mockReturnValue({
-      entries: [frame("hello", 0, "peek"), frame("ignored", 1, "transcript")],
-      status: "open",
+  it("shows a waiting state while connecting with no screen yet", () => {
+    mockUsePaneStream.mockReturnValue({
+      screen: null,
+      status: "connecting",
       error: null,
+      seq: 0,
     });
     render(<SessionPeekPane {...baseProps()} />);
-    expect(screen.getByText("hello")).toBeInTheDocument();
-    expect(screen.queryByText("ignored")).not.toBeInTheDocument();
-  });
-
-  it("shows a loading state while connecting with no frames yet", () => {
-    mockUseTranscriptStream.mockReturnValue({ entries: [], status: "connecting", error: null });
-    render(<SessionPeekPane {...baseProps()} />);
-    expect(screen.getByText("Connecting…")).toBeInTheDocument();
+    expect(screen.getByText(/waiting for pane/i)).toBeInTheDocument();
   });
 
   it("renders the stream error banner", () => {
-    mockUseTranscriptStream.mockReturnValue({
-      entries: [],
+    mockUsePaneStream.mockReturnValue({
+      screen: null,
       status: "error",
       error: "stream error (EventSource will retry)",
+      seq: 0,
     });
     render(<SessionPeekPane {...baseProps()} />);
     expect(screen.getByText("stream error (EventSource will retry)")).toBeInTheDocument();
@@ -88,24 +79,15 @@ describe("SessionPeekPane component", () => {
 
   // --- Task 7: toolbar actions ---
 
-  it("registers four toolbar actions on mount", () => {
+  it("registers three toolbar actions on mount", () => {
     const props = baseProps();
     render(<SessionPeekPane {...props} />);
     const lastCall = lastCallArg0(props.setToolbar);
     const ids = lastCall.map((a: { id: string }) => a.id);
-    expect(ids).toEqual(["toggle-tail", "copy-scrollback", "open-full", "kill-session"]);
+    expect(ids).toEqual(["copy-scrollback", "open-full", "kill-session"]);
   });
 
-  it("toggle-tail toolbar action flips args.tail via setArgs", () => {
-    const props = baseProps();
-    render(<SessionPeekPane {...props} />);
-    const actions = lastCallArg0(props.setToolbar);
-    const toggle = actions.find((a: { id: string }) => a.id === "toggle-tail");
-    toggle.onClick();
-    expect(props.setArgs).toHaveBeenCalledWith({ sessionId: "sess-1", tail: false });
-  });
-
-  it("copy-scrollback writes joined peek text to the clipboard", async () => {
+  it("copy-scrollback writes the current screen to the clipboard", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
     const props = baseProps();
@@ -113,11 +95,11 @@ describe("SessionPeekPane component", () => {
     const actions = lastCallArg0(props.setToolbar);
     const copy = actions.find((a: { id: string }) => a.id === "copy-scrollback");
     copy.onClick();
-    expect(writeText).toHaveBeenCalledWith("hello\nworld");
+    expect(writeText).toHaveBeenCalledWith("hello");
   });
 
-  it("copy-scrollback is disabled with no frames", () => {
-    mockUseTranscriptStream.mockReturnValue({ entries: [], status: "open", error: null });
+  it("copy-scrollback is disabled with no screen yet", () => {
+    mockUsePaneStream.mockReturnValue({ screen: null, status: "open", error: null, seq: 0 });
     const props = baseProps();
     render(<SessionPeekPane {...props} />);
     const actions = lastCallArg0(props.setToolbar);
@@ -169,20 +151,12 @@ describe("SessionPeekPane component", () => {
 
   // --- Task 8: keyboard shortcuts ---
 
-  it("registers six shortcuts on mount", () => {
+  it("registers three shortcuts on mount", () => {
     const props = baseProps();
     render(<SessionPeekPane {...props} />);
     const lastCall = lastCallArg0(props.setShortcuts);
     const keys = lastCall.map((b: { key: string }) => b.key);
-    expect(keys).toEqual(["space", "k", "o", "c", "Home", "End"]);
-  });
-
-  it("space flips tail via setArgs", () => {
-    const props = baseProps();
-    render(<SessionPeekPane {...props} />);
-    const bindings = lastCallArg0(props.setShortcuts);
-    bindings.find((b: { key: string }) => b.key === "space").onFire();
-    expect(props.setArgs).toHaveBeenCalledWith({ sessionId: "sess-1", tail: false });
+    expect(keys).toEqual(["k", "o", "c"]);
   });
 
   it("k shares kill's arm/confirm state with the toolbar", () => {
@@ -206,30 +180,14 @@ describe("SessionPeekPane component", () => {
     expect(() => bindings.find((b: { key: string }) => b.key === "o").onFire()).not.toThrow();
   });
 
-  it("c copies scrollback", () => {
+  it("c copies the current screen", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
     const props = baseProps();
     render(<SessionPeekPane {...props} />);
     const bindings = lastCallArg0(props.setShortcuts);
     bindings.find((b: { key: string }) => b.key === "c").onFire();
-    expect(writeText).toHaveBeenCalledWith("hello\nworld");
-  });
-
-  it("Home scrolls to top and turns tail off", () => {
-    const props = baseProps();
-    render(<SessionPeekPane {...props} />);
-    const bindings = lastCallArg0(props.setShortcuts);
-    bindings.find((b: { key: string }) => b.key === "Home").onFire();
-    expect(props.setArgs).toHaveBeenCalledWith({ sessionId: "sess-1", tail: false });
-  });
-
-  it("End scrolls to bottom and turns tail on", () => {
-    const props = baseProps();
-    render(<SessionPeekPane {...props} />);
-    const bindings = lastCallArg0(props.setShortcuts);
-    bindings.find((b: { key: string }) => b.key === "End").onFire();
-    expect(props.setArgs).toHaveBeenCalledWith({ sessionId: "sess-1", tail: true });
+    expect(writeText).toHaveBeenCalledWith("hello");
   });
 
   it("unmount clears shortcuts", () => {
@@ -241,12 +199,11 @@ describe("SessionPeekPane component", () => {
 
   // --- Task 9: session-exited banner ---
 
-  it("shows the exited banner and keeps frames visible when lifecycle is exited", () => {
+  it("shows the exited banner and keeps the last screen visible when lifecycle is exited", () => {
     mockUseSession.mockReturnValue({ data: { lifecycle: "exited" } });
     render(<SessionPeekPane {...baseProps()} />);
     expect(screen.getByText("Session exited — showing last scrollback.")).toBeInTheDocument();
-    expect(screen.getByText("hello")).toBeInTheDocument();
-    expect(screen.getByText("world")).toBeInTheDocument();
+    expect(screen.getByText(/hello/)).toBeInTheDocument();
   });
 
   it("shows the exited banner for terminated lifecycle too", () => {
@@ -265,10 +222,11 @@ describe("SessionPeekPane component", () => {
 
   it("does not show the exited banner on a transient stream error alone", () => {
     mockUseSession.mockReturnValue({ data: { lifecycle: "running" } });
-    mockUseTranscriptStream.mockReturnValue({
-      entries: [frame("hello", 0)],
+    mockUsePaneStream.mockReturnValue({
+      screen: "hello",
       status: "error",
       error: "stream error (EventSource will retry)",
+      seq: 1,
     });
     render(<SessionPeekPane {...baseProps()} />);
     expect(
@@ -276,37 +234,12 @@ describe("SessionPeekPane component", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("toggle-tail and open-full stay enabled while exited", () => {
+  it("open-full stays enabled while exited", () => {
     mockUseSession.mockReturnValue({ data: { lifecycle: "exited" } });
     const props = baseProps();
     render(<SessionPeekPane {...props} />);
     const actions = lastCallArg0(props.setToolbar);
-    expect(actions.find((a: { id: string }) => a.id === "toggle-tail").disabled).toBeFalsy();
     expect(actions.find((a: { id: string }) => a.id === "open-full").disabled).toBeFalsy();
-  });
-
-  // --- Task 10: sticky-scroll ---
-
-  it("scrolling away from bottom while tail is true calls setArgs with tail:false", () => {
-    const props = baseProps();
-    const { container } = render(<SessionPeekPane {...props} />);
-    const scrollBox = container.querySelector(".overflow-y-auto") as HTMLDivElement;
-    Object.defineProperty(scrollBox, "scrollHeight", { value: 1000, configurable: true });
-    Object.defineProperty(scrollBox, "clientHeight", { value: 300, configurable: true });
-    Object.defineProperty(scrollBox, "scrollTop", { value: 200, configurable: true });
-    scrollBox.dispatchEvent(new Event("scroll"));
-    expect(props.setArgs).toHaveBeenCalledWith({ sessionId: "sess-1", tail: false });
-  });
-
-  it("does not call setArgs when already near the bottom", () => {
-    const props = baseProps();
-    const { container } = render(<SessionPeekPane {...props} />);
-    const scrollBox = container.querySelector(".overflow-y-auto") as HTMLDivElement;
-    Object.defineProperty(scrollBox, "scrollHeight", { value: 1000, configurable: true });
-    Object.defineProperty(scrollBox, "clientHeight", { value: 300, configurable: true });
-    Object.defineProperty(scrollBox, "scrollTop", { value: 690, configurable: true }); // slack 10 < 24
-    scrollBox.dispatchEvent(new Event("scroll"));
-    expect(props.setArgs).not.toHaveBeenCalled();
   });
 });
 
@@ -317,11 +250,6 @@ describe("session-peek manifest", () => {
 
   it("args schema accepts a bare sessionId", () => {
     const result = sessionPeekArgsSchema.safeParse({ sessionId: "sess-1" });
-    expect(result.success).toBe(true);
-  });
-
-  it("args schema accepts sessionId + tail", () => {
-    const result = sessionPeekArgsSchema.safeParse({ sessionId: "sess-1", tail: false });
     expect(result.success).toBe(true);
   });
 
