@@ -346,6 +346,7 @@ def parse_harness_markdown(
         effort_flag=str(config.get("effort_flag") or ""),
         session_id_flag=str(config.get("session_id_flag") or ""),
         settings_flag=str(config.get("settings_flag") or ""),
+        tools_flag=str(config.get("tools_flag") or ""),
         resume=resume,
         ready_delay_ms=ready_delay,
         ready_prompt_prefix=config.get("ready_prompt_prefix") or None,

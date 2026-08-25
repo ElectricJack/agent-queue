@@ -68,3 +68,54 @@ class TestNoFlagEmitted:
         """Emitting an empty allowlist would remove Bash — the agent's only
         route to ``aq`` — and strand it. Fall back to CLI defaults instead."""
         assert resolve(_profile(["task_close", "pr_merge"]), claude) == []
+
+
+class TestHarnessParsesEveryKnownFlag:
+    """A key in HARNESS_KNOWN_KEYS must actually reach the Harness object.
+
+    ``tools_flag`` was added to the known-keys set and to the dataclass but not
+    to the constructor call, so it parsed without warning and silently
+    defaulted to "". The daemon logged "harness 'claude' has no tools_flag" on
+    every launch while the markdown plainly declared one — recognised, then
+    dropped. This test walks the known keys rather than checking one field, so
+    the next flag added cannot repeat it.
+    """
+
+    def test_declared_flags_reach_the_dataclass(self):
+        import dataclasses
+
+        from src.sessions.harness_parser import (
+            HARNESS_KNOWN_KEYS,
+            Harness,
+            parse_harness_markdown,
+        )
+
+        flag_keys = sorted(k for k in HARNESS_KNOWN_KEYS if k.endswith("_flag"))
+        assert flag_keys, "expected some *_flag keys to exist"
+
+        fields = {f.name for f in dataclasses.fields(Harness)}
+        config = {"command": "x"} | {k: f"--{k}" for k in flag_keys}
+        md = (
+            "---\nid: probe\nname: Probe\n---\n\n## Config\n\n```json\n"
+            + __import__("json").dumps(config)
+            + "\n```\n"
+        )
+        parsed = parse_harness_markdown(md, fallback_id="probe")
+        assert parsed.errors == [], parsed.errors
+
+        for key in flag_keys:
+            assert key in fields, f"{key} is a known key but not a Harness field"
+            assert getattr(parsed.harness, key) == f"--{key}", (
+                f"{key} is declared in the markdown and is a Harness field, but "
+                "the parser never assigns it — it will silently default"
+            )
+
+    def test_claude_harness_declares_a_tools_flag(self):
+        """The shipped harness must be able to carry an allowlist at all."""
+        import pathlib
+
+        from src.sessions.harness_parser import parse_harness_markdown
+
+        md = pathlib.Path("src/sessions/default_harnesses/claude.md").read_text()
+        parsed = parse_harness_markdown(md, fallback_id="claude")
+        assert parsed.harness.tools_flag == "--allowedTools"
