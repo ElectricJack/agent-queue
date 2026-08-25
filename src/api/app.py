@@ -22,6 +22,7 @@ from src.api.health import router as health_router
 from src.api.graph import router as graph_router
 from src.api.routers.proposals import router as proposals_router
 from src.api.messages import router as messages_router
+from src.api.pane_stream import router as pane_router
 from src.api.sessions import router as sessions_router
 from src.api.streams import router as streams_router
 from src.api.task_files import router as task_files_router
@@ -112,6 +113,10 @@ def create_app(
     # replay + live tail with peek-diff fallback.
     app.include_router(sessions_router)
 
+    # Live pane SSE: GET /api/sessions/{id}/pane — capture-pane screens
+    # from the shared PaneBroadcaster (one poll loop per watched session).
+    app.include_router(pane_router)
+
     # Streamable-command registry (console-stream pane view): POST/GET
     # /api/streams* — start/metadata/subscribe/tail/kill.
     app.include_router(streams_router)
@@ -145,5 +150,8 @@ def create_app(
     @app.on_event("shutdown")
     async def _shutdown_ws():
         ws_manager.shutdown()
+        from src.api.pane_stream import shutdown_broadcaster
+
+        await shutdown_broadcaster()
 
     return app
