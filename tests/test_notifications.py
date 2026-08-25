@@ -580,18 +580,45 @@ class TestDiscordNotificationHandler:
         handler.shutdown()
 
     @pytest.mark.asyncio
-    async def test_thread_message_fallback_to_channel(self):
-        """Without a thread, messages go to the channel."""
+    async def test_agent_output_without_a_thread_is_dropped(self):
+        """Agent narration goes to its task's thread, or nowhere.
+
+        This previously fell back to the project channel.  ``_task_threads``
+        is in-memory, so every daemon restart empties it while tasks keep
+        running, and the fallback then dumped each agent's running commentary
+        into the main channel — where it reads as the supervisor talking.
+        """
         from src.discord.notification_handler import DiscordNotificationHandler
 
         bus = EventBus()
         bot = _make_mock_bot()
         handler = DiscordNotificationHandler(bot, bus)
 
-        event = TaskMessageEvent(task_id="t1", message="no thread", project_id="proj")
+        event = TaskMessageEvent(
+            task_id="t1", message="no thread", project_id="proj", role="assistant"
+        )
         await bus.emit("notify.task_message", event.model_dump(mode="json"))
 
-        bot._send_message.assert_called_once_with("no thread", project_id="proj")
+        bot._send_message.assert_not_called()
+
+        handler.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_status_message_without_a_thread_still_reaches_the_channel(self):
+        """Only ``agent_output`` is narration; status/brief stay curated."""
+        from src.discord.notification_handler import DiscordNotificationHandler
+
+        bus = EventBus()
+        bot = _make_mock_bot()
+        handler = DiscordNotificationHandler(bot, bus)
+
+        event = TaskMessageEvent(
+            task_id="t1", message="status update", project_id="proj",
+            message_type="status",
+        )
+        await bus.emit("notify.task_message", event.model_dump(mode="json"))
+
+        bot._send_message.assert_called_once_with("status update", project_id="proj")
 
         handler.shutdown()
 

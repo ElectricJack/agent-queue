@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -762,8 +763,62 @@ class DiscordNotificationHandler:
         except Exception:
             logger.error("Failed to create thread for task %s", event.task_id, exc_info=True)
 
+    #: Tool-activity markers the transcript reader injects for SSE consumers
+    #: (``src/sessions/transcripts/claude.py::_extract_text``).  The dashboard
+    #: wants them — Discord does not: one ``[tool_use: Bash]`` plus one
+    #: ``[tool_result] <stdout>`` per tool call buries the agent's actual
+    #: words under a wall of mechanics.  Stripped here rather than at the
+    #: reader so the live pane keeps full fidelity.
+    #: A ``tool_result`` payload is arbitrary stdout and routinely contains
+    #: ``[`` (usage strings, log levels, JSON).  Consuming "up to the next
+    #: ``[``" therefore left fragments like ``[OPTIONS]`` behind, so the run
+    #: extends to the next *marker* or end-of-string instead.
+    _TOOL_MARKER_RE = re.compile(
+        r"\[tool_use:[^\]]*\]"
+        r"|\[tool_result\](?:(?!\[tool_use:)(?!\[tool_result\]).)*",
+        re.DOTALL,
+    )
+
+    @classmethod
+    def _strip_tool_noise(cls, text: str) -> str:
+        """Return *text* without tool-activity markers.
+
+        Blocks are concatenated by the reader, so a single message can carry
+        prose *and* markers ("I'll run the tests.[tool_use: Bash]").  Removing
+        just the markers keeps the sentence; a message that was nothing but
+        markers collapses to empty and the caller drops it.
+        """
+        return cls._TOOL_MARKER_RE.sub("", text or "").strip()
+
     async def _on_task_message(self, data: dict) -> None:
         event = TaskMessageEvent(**{k: v for k, v in data.items() if k != "_event_type"})
+
+        # Agent output reaches Discord as the agent's own prose only.
+        # ``brief`` notifications and status messages are already curated and
+        # pass through untouched.
+        if event.message_type == "agent_output":
+            # Only ``assistant`` frames are the agent talking.  ``user`` frames
+            # are echoes of what we sent it — the bootstrap prompt, injected
+            # inbox messages, the prime document — and ``system`` frames are
+            # harness machinery.  Relaying those reposted the entire system
+            # prompt into the channel on every session start.  An empty role
+            # means the event did not come from a transcript (a runtime
+            # emitting directly), which stays allowed.
+            if event.role and event.role != "assistant":
+                logger.debug(
+                    "task_message: dropping %s frame for %s",
+                    event.role,
+                    event.task_id or event.stream_id,
+                )
+                return
+            cleaned = self._strip_tool_noise(event.message)
+            if not cleaned:
+                logger.debug(
+                    "task_message: dropping tool-only output for %s",
+                    event.task_id or event.stream_id,
+                )
+                return
+            event.message = cleaned
 
         # Streaming runtimes (ACPX) set stream_id and send the cumulative
         # turn text on each update.  Edit a single Discord message in place
@@ -791,6 +846,19 @@ class DiscordNotificationHandler:
                 send_thread, _ = thread_cbs
                 if send_thread:
                     await send_thread(event.message)
+            elif event.message_type == "agent_output":
+                # No thread for this task: drop rather than fall back to the
+                # project channel.  ``_task_threads`` is in-memory, so every
+                # daemon restart empties it while tasks keep running — and the
+                # fallback then dumped each agent's running commentary into the
+                # main channel, where it reads as the supervisor talking.  A
+                # task's narration belongs in that task's thread or nowhere;
+                # completions and ``brief`` notifications still reach the
+                # channel through their own paths.
+                logger.debug(
+                    "task_message: no thread for %s — dropping agent output",
+                    event.task_id or event.stream_id,
+                )
             else:
                 await self.bot._send_message(event.message, project_id=event.project_id)
 

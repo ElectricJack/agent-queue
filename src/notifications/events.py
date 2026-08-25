@@ -225,6 +225,12 @@ class TaskMessageEvent(NotifyEvent):
     task_id: str = ""
     message: str = ""
     message_type: str = "agent_output"  # agent_output, status, error, brief
+    #: Transcript role for agent_output frames: ``assistant`` (the agent's own
+    #: words), ``user`` (prompt echoes and injected messages) or ``system``
+    #: (harness machinery).  Empty for messages that did not come from a
+    #: transcript.  The Discord relay forwards only ``assistant``; the
+    #: dashboard renders every role.
+    role: str = ""
     stream_id: str | None = None
     stream_done: bool = False
 

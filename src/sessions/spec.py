@@ -105,10 +105,20 @@ def skip_permissions_allowed(profile, workspace_source_type) -> bool:
     return mode == BYPASS_PERMISSION_MODE
 
 #: Bootstrap for a named (persistent) session — no task in scope.
+#:
+#: Deliberately does **not** say "run `aq prime`" the way
+#: :data:`BOOTSTRAP_PROMPT` does.  ``prime`` renders *a task's* startup
+#: document and requires a ``task_id`` (``--task-id``, defaulting to
+#: ``$AQ_TASK_ID``); a named session has no task, so the very first thing
+#: the supervisor did on every cold start was fail with "task_id is required
+#: (no task in scope)" and then improvise.  ``aq inbox`` is the equivalent
+#: that works here: it needs no task and surfaces exactly what a named
+#: session exists to process.
 NAMED_BOOTSTRAP_PROMPT = (
     "You are the {profile} session in {work_dir}.\n"
-    "Run `aq prime` first and follow what it tells you.\n"
-    "Work arrives as messages; stay running and wait for it."
+    "Check `aq inbox` for pending messages and handle anything waiting.\n"
+    "Work arrives as messages; stay running and wait for it. "
+    "Do not run `aq prime` — it is task-scoped and there is no task here."
 )
 
 #: The ``sh -c`` script used for oversized prompts.  ``$1`` is the prompt

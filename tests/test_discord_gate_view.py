@@ -420,3 +420,110 @@ class TestGateCreatedPosting:
             {"gate_id": "g1", "project_id": "p1", "gate_type": "brand-new", "title": "x"}
         )
         h.bot._send_message.assert_awaited_once()
+
+
+class TestToolNoiseStripping:
+    """Discord gets the supervisor's words, not its mechanics.
+
+    The transcript reader injects ``[tool_use: X]`` / ``[tool_result] …``
+    markers so the dashboard's live pane can show tool activity. Relaying
+    those verbatim to Discord buried the agent's actual replies under one
+    marker pair per tool call — a `pong` answer arrived under a dozen lines
+    of Bash frames and a paste of `aq prime --help`.
+    """
+
+    def _strip(self, text):
+        from src.discord.notification_handler import DiscordNotificationHandler
+
+        return DiscordNotificationHandler._strip_tool_noise(text)
+
+    def test_prose_survives(self):
+        assert self._strip("pong") == "pong"
+        assert self._strip("Here is the plan.\n\n1. Do X") == "Here is the plan.\n\n1. Do X"
+
+    def test_markers_are_removed_but_prose_kept(self):
+        assert self._strip("Checking.[tool_use: Bash][tool_result] done") == "Checking."
+
+    def test_tool_only_messages_collapse_to_empty(self):
+        assert self._strip("[tool_use: Bash]") == ""
+        assert self._strip("[tool_result] Exit code 1\nError: boom") == ""
+        assert self._strip("[tool_result] out[tool_use: Read]") == ""
+
+    def test_bracketed_tool_output_does_not_leak(self):
+        """Regression: a run ending at the next '[' left fragments behind.
+
+        Tool stdout routinely contains brackets (usage strings, log levels,
+        JSON), so the result run must extend to the next *marker*, not the
+        next bracket.
+        """
+        raw = "[tool_use: Bash][tool_result] Usage: aq prime [OPTIONS]\n --task-id TEXT"
+        assert self._strip(raw) == ""
+
+
+@pytest.mark.asyncio
+class TestAgentOutputRouting:
+    """Agent narration goes to its task's thread — or nowhere.
+
+    Three separate leaks put a working agent's running commentary into the
+    project channel, where it reads as the supervisor talking:
+
+    1. Non-``assistant`` transcript frames (the bootstrap prompt, injected
+       inbox messages, harness ``system`` frames) were relayed verbatim.
+    2. Entries whose text flattened to empty became literal ``[assistant]``
+       lines via an ``entry.text or f"[{entry.type}]"`` fallback.
+    3. With no thread registered — which is every task alive across a daemon
+       restart, since ``_task_threads`` is in-memory — output fell back to the
+       project channel.
+    """
+
+    def _handler(self):
+        from src.discord.notification_handler import DiscordNotificationHandler
+
+        h = DiscordNotificationHandler.__new__(DiscordNotificationHandler)
+        h.bot = MagicMock()
+        h.bot._send_message = AsyncMock(return_value=MagicMock())
+        h._task_threads = {}
+        return h
+
+    def _event(self, **kw):
+        base = {
+            "event_type": "notify.task_message",
+            "task_id": "t-1",
+            "project_id": "p-1",
+            "message": "hello",
+            "message_type": "agent_output",
+        }
+        base.update(kw)
+        return base
+
+    async def test_user_frames_are_not_relayed(self):
+        h = self._handler()
+        await h._on_task_message(self._event(role="user", message="You are running task t-1..."))
+        h.bot._send_message.assert_not_awaited()
+
+    async def test_system_frames_are_not_relayed(self):
+        h = self._handler()
+        await h._on_task_message(self._event(role="system", message="<system-reminder>"))
+        h.bot._send_message.assert_not_awaited()
+
+    async def test_assistant_output_without_a_thread_is_dropped(self):
+        h = self._handler()
+        await h._on_task_message(self._event(role="assistant", message="Now I'll implement."))
+        h.bot._send_message.assert_not_awaited()
+
+    async def test_assistant_output_reaches_its_thread(self):
+        h = self._handler()
+        sent = []
+
+        async def send_thread(text):
+            sent.append(text)
+
+        h._task_threads["t-1"] = (send_thread, None)
+        await h._on_task_message(self._event(role="assistant", message="Now I'll implement."))
+        assert sent == ["Now I'll implement."]
+
+    async def test_brief_notifications_still_reach_the_channel(self):
+        """Curated notifications are the channel's purpose — never filtered."""
+        h = self._handler()
+        await h._on_task_message(self._event(message_type="brief", message="Task completed"))
+        h.bot._send_message.assert_awaited_once()

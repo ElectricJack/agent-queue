@@ -35,13 +35,11 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
 ## Config
 ```json
 {
+  "runtime": "supervisor",
   "harness": "claude",
+  "model": "claude-opus-5",
   "lifecycle": "named",
-  "mode": "on_demand",
-  "wake_mode": "resume",
-  "idle_timeout": 900,
-  "permission_mode": "bypassPermissions",
-  "workspaces": ["vault", "readonly-dir"]
+  "needs_workspace": false
 }
 ```
 

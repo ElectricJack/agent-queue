@@ -173,15 +173,32 @@ class TranscriptWatcher:
             await self._on_in_turn(row, now=now)
 
     async def _emit_entry(self, row, entry: TranscriptEntry) -> None:
-        """One ``notify.task_message`` per entry, stream-keyed by session id."""
+        """One ``notify.task_message`` per entry, stream-keyed by session id.
+
+        Entries with no renderable text are skipped entirely.  An assistant
+        turn whose content was only ``thinking`` blocks flattens to an empty
+        string, and the old ``entry.text or f"[{entry.type}]"`` fallback turned
+        each one into a literal ``[assistant]`` line — dozens of them per task,
+        carrying no information at all.  Nothing downstream can render an empty
+        entry, so there is nothing to announce.
+        """
+        if not (entry.text or "").strip():
+            return
         payload = {
             "event_type": "notify.task_message",
             "severity": "info",
             "category": "task_stream",
             "project_id": row.project_id or None,
             "task_id": row.task_id or "",
-            "message": entry.text or f"[{entry.type}]",
+            "message": entry.text,
             "message_type": "agent_output",
+            # The transcript role (user | assistant | system | ...).  Carried
+            # so consumers can tell the agent's own words from prompt echoes
+            # and harness machinery: the dashboard renders every role, while
+            # the Discord relay forwards only ``assistant``.  Without it the
+            # relay had no way to distinguish them and posted the bootstrap
+            # prompt, injected messages and system frames verbatim.
+            "role": entry.type,
             "stream_id": row.id,
             "stream_done": False,
         }
