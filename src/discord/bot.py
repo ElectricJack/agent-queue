@@ -584,6 +584,18 @@ class AgentQueueBot(commands.Bot):
         if channel:
             if project_id and self._is_global_channel(channel, project_id):
                 text = self._prepend_project_tag(text, project_id)
+            # Outbound audit trail.  Nothing recorded what actually reached
+            # Discord, only that events were dispatched — so diagnosing channel
+            # noise meant reading code paths and screenshots instead of a log.
+            # Content is truncated: this is for answering "what did we send and
+            # where", not for archiving message bodies.
+            logger.debug(
+                "discord send → #%s%s: %s%s",
+                getattr(channel, "name", channel.id),
+                " [embed]" if embed is not None else "",
+                (text or "")[:160].replace("\n", " "),
+                "…" if text and len(text) > 160 else "",
+            )
             if embed is not None:
                 kwargs = {"embed": embed}
                 if view is not None:
@@ -620,6 +632,13 @@ class AgentQueueBot(commands.Bot):
 
         async def send_to_thread(text: str) -> None:
             try:
+                logger.debug(
+                    "discord send → thread %d (task %s): %s%s",
+                    thread.id,
+                    task_id,
+                    (text or "")[:160].replace("\n", " "),
+                    "…" if text and len(text) > 160 else "",
+                )
                 await self._send_long_message(thread, text)
             except Exception as e:
                 logger.error("Thread send error: %s", e)

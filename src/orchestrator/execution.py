@@ -319,11 +319,22 @@ class ExecutionMixin:
         # platforms (e.g. supervisor) skip workspace prep entirely.
         profile = await self._resolve_profile(task)
         if profile:
+            # Report the route actually taken.  This used to print
+            # ``platform=<profile.runtime>`` unconditionally, which was
+            # actively misleading: a session-routed task logged
+            # ``platform=claude_sdk`` while launching tmux, and after runtime
+            # stripping it prints an empty field for every task. The routing
+            # decision is what a reader needs.
+            _routed = self._is_session_routed(profile)
             logger.info(
-                "Task %s: profile='%s' platform=%s tools=%s mcp=%s",
+                "Task %s: profile='%s' via=%s tools=%s mcp=%s",
                 task.id,
                 profile.id,
-                profile.runtime,
+                (
+                    f"session/{getattr(profile, 'harness', '') or '?'}"
+                    if _routed
+                    else f"runtime/{profile.runtime or 'none'}"
+                ),
                 profile.allowed_tools or "(default)",
                 list(profile.mcp_servers) if profile.mcp_servers else "(none)",
             )
@@ -1700,6 +1711,58 @@ class ExecutionMixin:
             return False
         return bool(getattr(profile, "harness", "") or "")
 
+    async def _validated_resume_key(
+        self, harness_name: str, work_dir: str, task_id: str, resume_key: str
+    ) -> str | None:
+        """Return *resume_key* if the harness can actually resume it, else None.
+
+        Resuming a session the CLI has no record of is fatal: ``claude
+        --resume <unknown>`` exits 1 immediately, the launch is reported as
+        "process died while waiting for the ready prompt", and the task pauses
+        for 60s. The failed launch then records a *new* session id that also
+        never got a transcript, so the next attempt has a fresh dead key to
+        resume — a loop that survives daemon restarts because the key lives in
+        task metadata.
+
+        Dropping the key starts a fresh session instead, which loses the prior
+        conversation but runs. That is strictly better than not running.
+
+        Harnesses without a transcript reader (codex, gemini) are left alone:
+        no reader means no way to check, and refusing to resume on that basis
+        would break resume for them entirely.
+        """
+        try:
+            from src.sessions.transcripts import resolve_reader
+
+            reader = resolve_reader(harness_name)
+        except Exception:
+            return resume_key
+        if reader is None:
+            return resume_key
+
+        try:
+            path = reader.resolve_path(work_dir, resume_key)
+        except Exception:
+            return resume_key
+
+        # resolve_path falls back to the newest transcript when the key's own
+        # file is absent, so an exact match is the only proof it exists.
+        if path is not None and path.stem == resume_key:
+            return resume_key
+
+        logger.warning(
+            "Task %s: resume key %s has no transcript under %s — starting a "
+            "fresh session instead of resuming a session the CLI cannot find",
+            task_id,
+            resume_key,
+            work_dir,
+        )
+        try:
+            await self.db.set_task_meta(task_id, "session_resume_key", "")
+        except Exception:
+            logger.debug("Task %s: could not clear stale resume key", task_id)
+        return None
+
     async def _launch_session_for_task(
         self, action: AssignAction, task, profile, workspace: str | None
     ) -> None:
@@ -1771,6 +1834,10 @@ class ExecutionMixin:
             resume_key = await self.db.get_task_meta(task.id, "session_resume_key")
         except Exception:
             pass
+        if resume_key:
+            resume_key = await self._validated_resume_key(
+                harness_name, work_dir, task.id, str(resume_key)
+            )
 
         # The workspace's source_type decides whether this launch qualifies
         # for the harness's skip-permissions flag (trust-and-ops §4).  An
