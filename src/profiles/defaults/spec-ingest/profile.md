@@ -48,10 +48,19 @@ Do:
     "Write",
     "Edit",
     "Glob",
-    "Grep"
+    "Grep",
+    "list_tasks",
+    "get_downstream_tasks",
+    "task_batch_propose",
+    "task_close"
   ]
 }
 ```
+
+<!-- tools-rationale -->
+Every command named in the Role section above appears in this list. A profile whose instructions call a tool it cannot reach stalls at the sandbox with "not in active set".
+Role reads the graph (`list_tasks`, `get_downstream_tasks`) and proposes a batch. Deliberately WITHOUT `create_task` and `task_batch_commit`: it must not create tasks directly, and the commit is triggered by the human approving the gate.
+
 
 ## MCP Servers
 

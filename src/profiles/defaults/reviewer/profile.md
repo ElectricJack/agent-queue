@@ -25,10 +25,18 @@ tags: [system, review, dv2-phase2]
     "Bash",
     "Read",
     "Glob",
-    "Grep"
+    "Grep",
+    "get_task",
+    "task_close",
+    "reopen_with_feedback"
   ]
 }
 ```
+
+<!-- tools-rationale -->
+Every command named in the Role section above appears in this list. A profile whose instructions call a tool it cannot reach stalls at the sandbox with "not in active set".
+Role calls `task_close` (approve) and `reopen_with_feedback` (reject); `get_task` reads the reviewed task. No merge, no write tools — this profile is read_only and must never push.
+
 
 ## MCP Servers
 

@@ -44,10 +44,18 @@ Do:
     "Write",
     "Edit",
     "Glob",
-    "Grep"
+    "Grep",
+    "playbook_validate",
+    "playbook_install",
+    "task_close"
   ]
 }
 ```
+
+<!-- tools-rationale -->
+Every command named in the Role section above appears in this list. A profile whose instructions call a tool it cannot reach stalls at the sandbox with "not in active set".
+Role runs the validate/install loop on a compiled playbook JSON.
+
 
 ## MCP Servers
 
