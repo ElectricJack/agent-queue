@@ -228,11 +228,25 @@ class WorkspaceMixin:
             # Sentinel format: "task_id\nagent_id\n"
             owner_task_id = owner_info.split("\n")[0] if owner_info else ""
             owner_active = False
-            if owner_task_id:
+            if owner_task_id and owner_task_id != task.id:
                 owner_task = await self.db.get_task(owner_task_id)
                 owner_active = (
                     owner_task is not None and owner_task.status == TaskStatus.IN_PROGRESS
                 )
+            elif owner_task_id == task.id:
+                # Our own sentinel from an earlier attempt whose agent died —
+                # a killed session, a daemon stop, a crash.  Treating it as an
+                # "active" foreign owner deadlocks the task against itself:
+                # by the time this runs the task is already IN_PROGRESS, so the
+                # status check says the owner is live, the lock is released,
+                # the task pauses for 60s, and the next attempt reads the same
+                # sentinel. That loop is unbreakable without deleting the file
+                # by hand. Reclaim it instead.
+                logger.info(
+                    "Workspace %s carries this task's own sentinel — reclaiming",
+                    workspace,
+                )
+                self._remove_sentinel(workspace)
 
             if owner_active:
                 logger.warning(

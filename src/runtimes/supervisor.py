@@ -314,10 +314,18 @@ class Supervisor(Runtime):
         # Fields the profile may set — provider-semantic only.  Things
         # like api_key and base_url are environment specific and stay
         # in config.yaml.
+        #
+        # ``model`` is deliberately NOT in this list.  Since the supervisor
+        # became a named tmux session, ``model`` in its profile means *the
+        # model the CLI is launched with* (``claude --model ...``) and is
+        # necessarily a Claude model.  Feeding that to the chat provider —
+        # which is Gemini here — builds a Gemini client asking for
+        # ``claude-opus-5``.  One key cannot serve both paths, so the session
+        # keeps ``model`` and the in-process provider takes its model from
+        # ``config.chat_provider`` alone.
         overrides: dict = {}
         for key in (
             "provider",
-            "model",
             "max_tokens",
             "playbook_max_tokens",
             "thinking_budget",
