@@ -237,6 +237,17 @@ class TestCapabilityGating:
         finally:
             await provider.stop(handle)
 
+    async def test_peek_accepts_ansi_keyword(self, provider, case, tmp_path):
+        """Every provider accepts ansi= and still returns a string."""
+        if not provider.supports(Cap.PEEK):
+            pytest.skip(f"{provider.name} has no PEEK")
+        handle = await provider.start(_spec(case, tmp_path))
+        try:
+            assert isinstance(await provider.peek(handle, 10, ansi=True), str)
+            assert isinstance(await provider.peek(handle, 10, ansi=False), str)
+        finally:
+            await provider.stop(handle)
+
 
 class TestMeta:
     async def test_meta_round_trips(self, provider, case, tmp_path):

@@ -14,7 +14,8 @@ import {
   useSessionKill,
 } from "../api/hooks";
 import { useTranscriptStream } from "../ws/useTranscriptStream";
-import PaneView from "../components/PaneView";
+import { usePaneStream } from "../ws/usePaneStream";
+import LivePaneConsole from "../components/LivePaneConsole";
 
 export default function SessionDetail() {
   const { sessionId = "" } = useParams();
@@ -28,6 +29,7 @@ export default function SessionDetail() {
   const { entries, status, error, clear } = useTranscriptStream(sessionId, {
     enabled: streamOn,
   });
+  const pane = usePaneStream(sessionId, { enabled: streamOn && viewMode === "pane" });
 
   if (isLoading) return <div className="p-6 text-gray-400">Loading…</div>;
   if (!session) return <div className="p-6 text-gray-400">Session not found</div>;
@@ -167,7 +169,12 @@ export default function SessionDetail() {
         </div>
         {error && <p className="px-3 py-1 text-xs text-amber-400">{error}</p>}
         {viewMode === "pane" ? (
-          <PaneView entries={entries} />
+          <LivePaneConsole
+            screen={pane.screen}
+            status={pane.status}
+            error={pane.error}
+            className="max-h-[60vh]"
+          />
         ) : (
           <div className="max-h-[60vh] overflow-y-auto p-3 font-mono text-xs">
             {entries.length === 0 ? (

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -275,6 +276,36 @@ class TestKillFencing:
             await provider.stop(live)
 
 
+class TestLivenessContract:
+    """``is_running`` and ``process_alive`` answer different questions.
+
+    Pinned against a *real* tmux server on purpose: ``FakeProvider`` flips
+    both at once on ``stop()``, so no fake can catch a caller that reaches
+    for ``is_running`` when it means "did the agent finish".  Under
+    ``remain-on-exit on`` (set by :meth:`TmuxProvider.start`) the pane
+    outlives its process, and ``is_running`` keeps saying yes forever.
+    """
+
+    async def test_is_running_stays_true_after_the_process_exits(
+        self, provider, tmp_path, stub_path
+    ):
+        handle = await provider.start(_spec(tmp_path, stub_path, name="s-live"))
+        try:
+            panes = await provider._panes()
+            os.kill(panes[handle.name].pid, signal.SIGKILL)
+            for _ in range(50):
+                provider._cache.invalidate()
+                if not await provider.process_alive(handle, ("python",)):
+                    break
+                await asyncio.sleep(0.1)
+            # The process is gone...
+            assert await provider.process_alive(handle, ("python",)) is False
+            # ...but the pane (and therefore is_running) is not.
+            assert await provider.is_running(handle) is True
+        finally:
+            await provider.stop(handle)
+
+
 class TestAdoption:
     async def test_fresh_provider_instance_adopts_a_running_session(
         self, provider, tmp_path, stub_path
@@ -304,3 +335,31 @@ class TestAdoption:
             assert "sess-s-scan" in markers
         finally:
             await provider.stop(handle)
+
+
+@pytest.mark.asyncio
+async def test_peek_ansi_flag_adds_dash_e(monkeypatch):
+    """ansi=True puts -e on capture-pane; ansi=False leaves it off."""
+    from src.sessions.provider import SessionHandle
+    from src.sessions.tmux import TmuxProvider
+
+    provider = TmuxProvider(config=None)
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_tmux(*args, **kwargs):
+        calls.append(args)
+        return "screen"
+
+    async def fenced(_h):
+        return True
+
+    monkeypatch.setattr(provider, "_tmux", fake_tmux)
+    monkeypatch.setattr(provider, "_fenced", fenced)
+    handle = SessionHandle(name="s1", provider="tmux", instance_token="tok")
+
+    await provider.peek(handle, 10, ansi=True)
+    await provider.peek(handle, 10, ansi=False)
+
+    assert "-e" in calls[0]
+    assert "-e" not in calls[1]
+    assert calls[0][0] == "capture-pane"

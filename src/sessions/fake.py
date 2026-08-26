@@ -192,7 +192,7 @@ class FakeProvider(SessionProvider):
         s = self._get(h)
         return s.activity if s else None
 
-    async def peek(self, h: SessionHandle, lines: int = 60) -> str:
+    async def peek(self, h: SessionHandle, lines: int = 60, *, ansi: bool = False) -> str:
         s = self._get(h)
         if s is None:
             return ""

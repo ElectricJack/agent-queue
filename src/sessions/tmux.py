@@ -442,13 +442,15 @@ class TmuxProvider(SessionProvider):
                 return before
         return activity
 
-    async def peek(self, h: SessionHandle, lines: int = 60) -> str:
+    async def peek(self, h: SessionHandle, lines: int = 60, *, ansi: bool = False) -> str:
         if not await self._fenced(h):
             return ""
+        args = ["capture-pane", "-p"]
+        if ansi:
+            args.append("-e")
+        args.extend(["-t", f"={h.name}:", "-S", f"-{max(lines, 1)}"])
         try:
-            return await self._tmux(
-                "capture-pane", "-p", "-t", f"={h.name}:", "-S", f"-{max(lines, 1)}"
-            )
+            return await self._tmux(*args)
         except TmuxCommandError:
             return ""
 

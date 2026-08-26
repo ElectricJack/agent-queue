@@ -4,7 +4,6 @@ import type { PaneManifest } from "../types";
 
 export const sessionPeekArgsSchema = z.object({
   sessionId: z.string().min(1),
-  tail: z.boolean().optional(),
 });
 
 export type SessionPeekArgs = z.infer<typeof sessionPeekArgsSchema>;

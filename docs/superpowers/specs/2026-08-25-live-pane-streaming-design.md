@@ -122,7 +122,13 @@ Server-Sent Events, one frame per changed screen:
 - 15s heartbeat comments, matching `/stream`'s intermediary handling.
 - `max_seconds` query param for tests, mirroring the transcript endpoint.
 - Unknown session -> 404. Provider without `Cap.PEEK` -> 409 naming the
-  provider, never a plausible-looking empty stream.
+  provider, never a plausible-looking empty stream. Both are *request*
+  errors, so both stay HTTP status codes.
+- Over the cap -> **HTTP 200** whose first and only frame is
+  `{"type":"error","message":"pane stream cap reached ..."}`. A refusal
+  is a *stream* condition, and `EventSource` fails permanently on a
+  non-200 while exposing neither status nor body to JS — a 429 would
+  render as exactly the silent dead tile §3.1 forbids.
 - Built by a `build_pane_router(...)` factory alongside
   `build_sessions_router`, so tests wire a lightweight db and a
   `FakeProvider` without the daemon.
@@ -148,10 +154,13 @@ regress.
 - `dashboard/src/pages/command-center/Agents.tsx` gains a `Table|Grid`
   segmented toggle. Table stays the default view, unchanged. Grid
   renders one `AgentConsoleTile` per **running** session (a tile is a
-  header line plus a `LivePaneConsole`), capped at
-  `pane_stream_max_sessions` with a visible "+N more" note. Clicking a
-  tile opens the full `session-peek` pane, preserving today's row
-  behaviour.
+  header button plus a `LivePaneConsole`), capped at `MAX_TILES = 8`
+  with a visible "+N more" note. The tile cap sits *below*
+  `pane_stream_max_sessions` (12) on purpose: a full grid must not
+  saturate the backend cap, or navigating from the grid to a session
+  detail page inside the broadcaster's linger window gets refused.
+  Clicking a tile's header opens the full `session-peek` pane,
+  preserving today's row behaviour.
 
 Polling only happens while something is subscribed, so the Table view
 costs nothing.
@@ -187,7 +196,7 @@ Every failure is explicit rather than a plausible blank:
 - Unsubscribing the last subscriber stops the loop after the linger;
   re-subscribing within the linger reuses the running loop.
 - An unchanged screen emits no frame; a changed screen emits one.
-- The cap refuses subscription 13 with an error frame.
+- The cap refuses subscription 13 with an error frame over HTTP 200.
 - Consecutive provider errors emit one error frame and stop the loop.
 - Endpoint: 404 unknown, 409 no-PEEK, frame shape, heartbeat, bounded
   by `max_seconds` (the pattern in `tests/` for `/stream`).

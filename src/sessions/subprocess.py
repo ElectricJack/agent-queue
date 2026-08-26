@@ -201,7 +201,7 @@ class SubprocessProvider(SessionProvider):
             return running.started_at
         return mtime
 
-    async def peek(self, h: SessionHandle, lines: int = 60) -> str:
+    async def peek(self, h: SessionHandle, lines: int = 60, *, ansi: bool = False) -> str:
         running = self._get(h)
         if running is None:
             return ""

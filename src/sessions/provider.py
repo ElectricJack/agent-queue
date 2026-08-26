@@ -308,8 +308,14 @@ class SessionProvider(ABC):
         """
 
     @abstractmethod
-    async def peek(self, h: SessionHandle, lines: int = 60) -> str:
-        """Last *lines* of visible output (``""`` when unsupported)."""
+    async def peek(self, h: SessionHandle, lines: int = 60, *, ansi: bool = False) -> str:
+        """Last *lines* of visible output (``""`` when unsupported).
+
+        ``ansi=True`` asks for the screen *with* SGR colour sequences
+        retained.  It is opt-in because every existing caller renders the
+        text as plain output; only the pane stream wants colour.  A
+        provider whose output has no colour to preserve ignores the flag.
+        """
 
     # -- interaction -------------------------------------------------------
 
