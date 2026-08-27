@@ -685,6 +685,163 @@ class TestNamedSessions:
         assert (await db.get_session("n1")).state == "running"
 
 
+class TestDesiredState:
+    """The intent column and the up-convergence branch it enables.
+
+    Spec: docs/superpowers/specs/2026-08-27-session-desired-state-design.md
+    """
+
+    class _Starter:
+        """Stand-in for SessionLens — records the addresses it was asked for."""
+
+        def __init__(self, result=True):
+            self.calls: list[tuple[str, str | None]] = []
+            self.result = result
+
+        async def ensure_started(self, *, kind, target_id, project_id):
+            self.calls.append((target_id, project_id))
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    async def _named(self, db, provider, **kw):
+        kw.setdefault("name", "n-supervisor--p1")
+        kw.setdefault("lifecycle", "named")
+        kw.setdefault("task_id", None)
+        return await _session(db, provider, sid="n1", **kw)
+
+    async def _idle_profile(self, db, monkeypatch, timeout=600):
+        class _P:
+            idle_timeout = timeout
+
+        async def _get_profile(_pid):
+            return _P()
+
+        monkeypatch.setattr(db, "get_profile", _get_profile)
+
+    async def test_drain_writes_intent_as_well_as_state(
+        self, db, provider, reconciler, monkeypatch
+    ):
+        """The half that stops the flap: a drained session stops being wanted."""
+        await self._named(db, provider, started_at=NOW - 5000, last_activity=NOW - 5000)
+        provider.sessions["n-supervisor--p1"].activity = NOW - 5000
+        await self._idle_profile(db, monkeypatch)
+        await reconciler.tick(now=NOW)
+        row = await db.get_session("n1")
+        assert row.state == "sleeping" and row.desired_state == "sleeping"
+
+    async def test_wanted_but_not_live_is_started(self, db, provider, reconciler, bus):
+        starter = self._Starter()
+        reconciler.starter = starter
+        await self._named(
+            db,
+            provider,
+            state="sleeping",
+            desired_state="running",
+            started_at=NOW - 5000,
+            last_activity=NOW - 5000,
+        )
+        await reconciler.tick(now=NOW)
+        assert starter.calls == [("supervisor-p1", "p1")]
+        assert "session.started" in bus.types()
+        # Intent retired: the lens inserted a *new* row for it, so leaving
+        # this one wanted would start a second session next tick.
+        assert (await db.get_session("n1")).desired_state == "stopped"
+
+    async def test_sleeping_and_wanted_sleeping_is_left_alone(
+        self, db, provider, reconciler
+    ):
+        starter = self._Starter()
+        reconciler.starter = starter
+        await self._named(
+            db,
+            provider,
+            state="sleeping",
+            desired_state="sleeping",
+            started_at=NOW - 5000,
+            last_activity=NOW - 5000,
+        )
+        await reconciler.tick(now=NOW)
+        assert starter.calls == []
+
+    async def test_no_starter_means_no_up_convergence(self, db, provider, reconciler):
+        """Every pre-existing caller constructs a reconciler without one."""
+        await self._named(
+            db,
+            provider,
+            state="sleeping",
+            desired_state="running",
+            started_at=NOW - 5000,
+            last_activity=NOW - 5000,
+        )
+        await reconciler.tick(now=NOW)  # must not raise
+        assert (await db.get_session("n1")).desired_state == "running"
+
+    async def test_task_sessions_are_not_woken(self, db, provider, reconciler):
+        """A task session is started by the task lifecycle, never by intent."""
+        starter = self._Starter()
+        reconciler.starter = starter
+        await _task(db)
+        await _session(
+            db,
+            provider,
+            sid="s1",
+            state="sleeping",
+            desired_state="running",
+            started_at=NOW - 5000,
+            last_activity=NOW - 5000,
+        )
+        await reconciler.tick(now=NOW)
+        assert starter.calls == []
+
+    async def test_repeated_start_failure_quarantines(
+        self, db, provider, reconciler, config, bus
+    ):
+        """A misconfigured supervisor must not cost an attempt every tick."""
+        reconciler.starter = self._Starter(result=RuntimeError("no harness"))
+        await self._named(
+            db,
+            provider,
+            state="sleeping",
+            desired_state="running",
+            started_at=NOW - 5000,
+            last_activity=NOW - 5000,
+        )
+        now = NOW
+        for _ in range(config.sessions.max_restarts + 1):
+            await reconciler.tick(now=now)
+            now += config.sessions.restart_backoff_seconds * 10
+        row = await db.get_session("n1")
+        assert row.state == "quarantined" and row.sleep_reason == "start_failed"
+        assert row.desired_state == "stopped"
+
+    async def test_backoff_holds_between_attempts(self, db, provider, reconciler, config):
+        starter = self._Starter(result=False)  # declines, so intent stands
+        reconciler.starter = starter
+        await self._named(
+            db,
+            provider,
+            state="sleeping",
+            desired_state="running",
+            started_at=NOW - 5000,
+            last_activity=NOW - 5000,
+        )
+        await reconciler.tick(now=NOW)
+        assert len(starter.calls) == 1
+        await reconciler.tick(now=NOW + 1)  # same tick window — no second attempt
+        assert len(starter.calls) == 1
+        await reconciler.tick(now=NOW + config.sessions.restart_backoff_seconds * 5)
+        assert len(starter.calls) == 2
+
+    async def test_terminal_verdicts_leave_intent_stopped(self, db, provider, reconciler):
+        """Nothing resurrects a session that finished its work."""
+        await _task(db, status=TaskStatus.COMPLETED)
+        row = await _session(db, provider)
+        await provider.set_meta(reconciler._handle(row), DRAIN_ACK_KEY, "1")
+        await reconciler.tick(now=NOW)
+        assert (await db.get_session("s1")).desired_state == "stopped"
+
+
 class TestBackstop:
     async def test_stuck_timeout_force_kills_and_blocks(
         self, db, provider, reconciler, bus, config
@@ -1114,12 +1271,16 @@ class TestForensicsAndBudgets:
     async def test_both_ladders_agree_on_the_restart_budget(
         self, db, provider, reconciler, config
     ):
-        """Quarantine threshold was ``>=`` in one branch and ``>`` in the other."""
+        """Quarantine threshold was ``>=`` in one branch and ``>`` in the other.
+
+        Three ladders spend the budget now: rapid-crash, stall-restart, and
+        named up-convergence.  All three must agree on what the cap means.
+        """
         import inspect
 
         src = inspect.getsource(type(reconciler))
         assert "count > self.sessions_config.max_restarts" not in src
-        assert src.count("count >= self.sessions_config.max_restarts") == 2
+        assert src.count("count >= self.sessions_config.max_restarts") == 3
 
 
 class TestCreateSessionLiveGuard:

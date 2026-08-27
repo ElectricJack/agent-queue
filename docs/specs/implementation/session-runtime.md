@@ -461,9 +461,14 @@ from one profile); live sessions drain naturally — `aq session kill` cleans st
 **Phase S2 — orchestration**
 - [x] `SessionReconciler` (adopt, drain-ack, exit classifier, orphans, stall ladder,
       backstop) wired into `run_one_cycle` + `initialize`. **Named desired-state converges
-      one way only**: idle drain to `sleeping` is implemented; start/wake/recycle-via-handoff
-      need the message routing [[supervisor-agent]] owns and are deferred rather than
-      half-built.
+      both ways** as of 2026-08-27: `sessions.desired_state` (`running | sleeping |
+      stopped`) separates intent from the observed `state`, so idle drain writes both and
+      a non-live row still marked `running` is started through the lens's cold-start path.
+      Failed starts spend the `max_restarts` budget and quarantine. Still deferred:
+      profile-declared session *pools* (a wanted session with no row at all) and
+      recycle-via-handoff on config drift — both need the message routing
+      [[supervisor-agent]] owns. Design:
+      `docs/superpowers/specs/2026-08-27-session-desired-state-design.md`.
       - Every terminal verdict runs the same cleanup tail as the happy path
         (`ExecutionMixin.release_session_task_resources`: agent → IDLE, workspace lock
         released). The reconciler holds an orchestrator reference for exactly this.

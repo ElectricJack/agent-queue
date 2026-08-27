@@ -101,6 +101,21 @@ class SessionKillResponse(BaseModel):
     session_id: str
 
 
+class SessionDesiredStateResponse(BaseModel):
+    """``session_sleep`` / ``session_wake`` — intent, not observation.
+
+    Both fields are returned so a caller can see the gap it just opened:
+    ``desired_state`` is what was written, ``state`` is what the runtime
+    still shows until the reconciler converges.
+    """
+
+    model_config = {"extra": "allow"}
+    success: bool = True
+    session_id: str
+    desired_state: str
+    state: str | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "session_list": ListSessionsResponse,
     "session_show": ShowSessionResponse,
@@ -109,4 +124,6 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "session_nudge": SessionNudgeResponse,
     "session_logs": SessionLogsResponse,
     "session_kill": SessionKillResponse,
+    "session_sleep": SessionDesiredStateResponse,
+    "session_wake": SessionDesiredStateResponse,
 }

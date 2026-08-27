@@ -440,7 +440,8 @@ Agent session rows (session-runtime). One row per launched harness session.
 | `provider` | TEXT | NOT NULL | Underlying provider/runtime |
 | `name` | TEXT | NOT NULL | Human-readable session name |
 | `lifecycle` | TEXT | NOT NULL | Lifecycle class (e.g. per-task, long-lived) |
-| `state` | TEXT | NOT NULL DEFAULT 'starting' | Session state machine value |
+| `state` | TEXT | NOT NULL DEFAULT 'starting' | Observed state — the runtime projection |
+| `desired_state` | TEXT | NOT NULL DEFAULT 'running' | Intent the reconciler converges toward: `running`/`sleeping`/`stopped` |
 | `session_key` | TEXT | nullable | Multiplexer key (e.g. tmux session name) |
 | `work_dir` | TEXT | NOT NULL | Working directory (an isolated worktree for task sessions) |
 | `epoch` | TEXT | NOT NULL | Restart generation marker |

@@ -146,10 +146,20 @@ def handler(orch, config):
     return CommandHandler(orch, config)
 
 
-async def _make_session(db, provider, *, sid="sess-1", task_id="t1", state="running"):
+async def _make_session(
+    db,
+    provider,
+    *,
+    sid="sess-1",
+    task_id="t1",
+    state="running",
+    lifecycle="task",
+    name=None,
+    desired_state="running",
+):
     from src.sessions.provider import SessionSpec
 
-    name = f"s-{task_id}"
+    name = name or f"s-{task_id}"
     await provider.start(
         SessionSpec(
             session_name=name, work_dir="/wd", command=("claude",), instance_token="tok-1"
@@ -162,7 +172,7 @@ async def _make_session(db, provider, *, sid="sess-1", task_id="t1", state="runn
         harness="claude",
         provider="fake",
         name=name,
-        lifecycle="task",
+        lifecycle=lifecycle,
         work_dir="/wd",
         epoch="epoch-test",
         instance_token="tok-1",
@@ -170,6 +180,7 @@ async def _make_session(db, provider, *, sid="sess-1", task_id="t1", state="runn
         last_activity=time.time(),
         task_id=task_id,
         state=state,
+        desired_state=desired_state,
     )
     await db.create_session(row)
     return row
@@ -318,6 +329,63 @@ class TestPeekNudgeAttachKill:
         await _make_session(db, provider)
         await handler.execute("session_kill", {"session_id": "sess-1"})
         assert (await db.get_session("sess-1")).state == "running"
+
+
+class TestDesiredStateCommands:
+    """Intent is separate from observation — see the design spec."""
+
+    async def test_kill_records_that_the_session_is_not_wanted(
+        self, handler, db, provider
+    ):
+        """Otherwise up-convergence restarts what an operator just killed."""
+        await _make_task(db)
+        await _make_session(db, provider)
+        await handler.execute("session_kill", {"session_id": "sess-1"})
+        row = await db.get_session("sess-1")
+        # Intent moved; observed state deliberately did not (see B2 above).
+        assert row.desired_state == "stopped" and row.state == "running"
+
+    async def test_sleep_sets_intent_without_signalling(self, handler, db, provider):
+        await _make_task(db)
+        await _make_session(db, provider)
+        r = await handler.execute("session_sleep", {"session_id": "sess-1"})
+        assert r["success"] is True and r["desired_state"] == "sleeping"
+        assert (await db.get_session("sess-1")).desired_state == "sleeping"
+        # Still running: sleep is a statement of intent, not a signal.
+        assert [h.name for h in await provider.list_running("s-")] == ["s-t1"]
+
+    async def test_wake_marks_a_named_session_wanted(self, handler, db, provider):
+        await _make_session(
+            db,
+            provider,
+            sid="n1",
+            task_id=None,
+            name="n-supervisor--p1",
+            lifecycle="named",
+            state="sleeping",
+            desired_state="sleeping",
+        )
+        r = await handler.execute("session_wake", {"session_id": "n1"})
+        assert r["success"] is True
+        row = await db.get_session("n1")
+        assert row.desired_state == "running"
+        # The restart budget counts *consecutive* failed starts; an
+        # operator asking for a wake is a fresh intent, not a retry.
+        assert row.restarts == 0
+
+    async def test_wake_refuses_task_sessions(self, handler, db, provider):
+        await _make_task(db)
+        await _make_session(db, provider, state="sleeping")
+        r = await handler.execute("session_wake", {"session_id": "sess-1"})
+        assert r["success"] is False
+        assert (await db.get_session("sess-1")).desired_state == "running"
+
+    async def test_list_reports_intent(self, handler, db, provider):
+        await _make_task(db)
+        await _make_session(db, provider)
+        await handler.execute("session_sleep", {"session_id": "sess-1"})
+        entry = (await handler.execute("session_list", {}))["sessions"][0]
+        assert entry["state"] == "running" and entry["desired_state"] == "sleeping"
 
 
 class TestDrainAckCommand:

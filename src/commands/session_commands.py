@@ -121,6 +121,7 @@ class SessionCommandsMixin:
             "provider": session.provider,
             "lifecycle": session.lifecycle,
             "state": session.state,
+            "desired_state": session.desired_state,
             "work_dir": session.work_dir,
             "started_at": session.started_at,
             "last_activity": session.last_activity,
@@ -138,6 +139,7 @@ class SessionCommandsMixin:
         """List sessions with lifecycle, state, task, harness, activity."""
         sessions = await self.db.list_sessions(
             state=args.get("state"),
+            desired_state=args.get("desired_state"),
             lifecycle=args.get("lifecycle"),
             project_id=args.get("project_id") or self._active_project_id,
             live_only=bool(args.get("live_only")),
@@ -319,6 +321,12 @@ class SessionCommandsMixin:
             )
         except Exception as exc:
             return {"error": f"kill failed: {exc}"}
+        # Intent, not observation.  The docstring above is about ``state``:
+        # writing that would hide the exit from the classifier.  Intent is
+        # the opposite case -- a human killing a session plainly does not
+        # want it back, and without this the reconciler's up-convergence
+        # would restart a named session the operator just killed.
+        await self.db.update_session(session.id, desired_state="stopped")
         await self.orchestrator.bus.emit(
             "session.killed",
             {
@@ -336,6 +344,61 @@ class SessionCommandsMixin:
                 "process signalled; the next reconciler tick classifies the exit "
                 "and releases the task"
             ),
+        }
+
+    async def _cmd_session_sleep(self, args: dict) -> dict:
+        """Record that a session is not wanted running.
+
+        Intent only — this does not signal the process.  The reconciler's
+        idle-drain branch takes it down on a later tick, or ``session kill``
+        does it now.  Setting intent first is what stops the up-convergence
+        branch from restarting it a tick after the kill.
+        """
+        return await self._set_desired_state(args, "sleeping")
+
+    async def _cmd_session_wake(self, args: dict) -> dict:
+        """Mark a sleeping named session as wanted again.
+
+        The next reconciler tick starts it (through the same lens cold-start
+        path an inbound message uses).  Waking is always explicit: nothing
+        infers it from activity.
+        """
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        if session.lifecycle != "named":
+            return {
+                "success": False,
+                "error": (
+                    "only named sessions are wake-on-demand; a task session is "
+                    "started by the task lifecycle"
+                ),
+                "session_id": session.id,
+            }
+        # Clear the restart budget: it counts *consecutive* failed starts,
+        # and an operator asking for a wake is a fresh intent, not a retry
+        # of the one that failed.
+        await self.db.update_session(
+            session.id, desired_state="running", restarts=0, last_activity=None
+        )
+        return {
+            "success": True,
+            "session_id": session.id,
+            "desired_state": "running",
+            "state": session.state,
+            "note": "the next reconciler tick starts it",
+        }
+
+    async def _set_desired_state(self, args: dict, desired: str) -> dict:
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        await self.db.update_session(session.id, desired_state=desired)
+        return {
+            "success": True,
+            "session_id": session.id,
+            "desired_state": desired,
+            "state": session.state,
         }
 
     async def _cmd_session_drain_ack(self, args: dict) -> dict:

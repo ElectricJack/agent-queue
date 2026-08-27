@@ -540,6 +540,12 @@ sessions = Table(
     # starting | running | draining | stopped | sleeping | quarantined.
     # "stalled" is derived (lease TTL vs last_activity), never stored.
     Column("state", Text, nullable=False, server_default="starting"),
+    # What the daemon *wants*: running | sleeping | stopped.  ``state`` is
+    # the runtime projection (what we last observed); this is the intent it
+    # converges toward.  One column served both roles until 2026-08-27,
+    # which is why _step_named could only converge downward -- "sleeping"
+    # and "should be sleeping" were the same value.
+    Column("desired_state", Text, nullable=False, server_default="running"),
     Column("session_key", Text, nullable=True),  # harness resume key
     Column("work_dir", Text, nullable=False),
     Column("epoch", Text, nullable=False),  # AQ_DAEMON_EPOCH at launch

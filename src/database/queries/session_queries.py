@@ -71,6 +71,7 @@ def _row_to_session(row) -> SessionRecord:
         name=row["name"],
         lifecycle=row["lifecycle"],
         state=row["state"] or "starting",
+        desired_state=row["desired_state"] or "running",
         session_key=row["session_key"],
         work_dir=row["work_dir"],
         epoch=row["epoch"],
@@ -118,6 +119,7 @@ class SessionQueryMixin:
                     name=session.name,
                     lifecycle=session.lifecycle,
                     state=session.state,
+                    desired_state=session.desired_state,
                     session_key=session.session_key,
                     work_dir=session.work_dir,
                     epoch=session.epoch,
@@ -166,6 +168,7 @@ class SessionQueryMixin:
         *,
         state: str | None = None,
         states: list[str] | tuple[str, ...] | None = None,
+        desired_state: str | None = None,
         lifecycle: str | None = None,
         project_id: str | None = None,
         name: str | None = None,
@@ -183,6 +186,8 @@ class SessionQueryMixin:
             query = query.where(sessions.c.state.in_(_LIVE_STATES))
         elif states:
             query = query.where(sessions.c.state.in_(list(states)))
+        if desired_state is not None:
+            query = query.where(sessions.c.desired_state == desired_state)
         if lifecycle is not None:
             query = query.where(sessions.c.lifecycle == lifecycle)
         if project_id is not None:

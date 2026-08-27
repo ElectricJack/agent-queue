@@ -85,7 +85,7 @@ def session_list(ctx: click.Context, state, lifecycle, live_only) -> None:
                 r.get("name") or "",
                 # A stalled session is still "running" in the DB — stalled is
                 # derived, so show it as an annotation rather than a state.
-                (r.get("state") or "") + (" (stalled)" if r.get("stalled") else ""),
+                _state_cell(r),
                 r.get("task_id") or "",
                 r.get("harness") or "",
                 f"{int(idle)}s",
@@ -154,6 +154,48 @@ def session_logs(ctx: click.Context, session_id, lines) -> None:
         ctx, "session_logs", {"session_id": _resolve_session_id(session_id), "lines": lines}
     )
     emit(ctx, result, render=lambda data: click.echo(data.get("output", "")))
+
+
+def _state_cell(row: dict) -> str:
+    """Observed state, annotated when it disagrees with what we want.
+
+    "stalled" is derived (lease TTL vs activity), so it shows as an
+    annotation rather than a state.  ``desired_state`` is shown the same
+    way and only when the two differ: agreement is the boring case and
+    printing it on every row would bury the one row that matters.
+    """
+    state = row.get("state") or ""
+    cell = state + (" (stalled)" if row.get("stalled") else "")
+    desired = row.get("desired_state")
+    if desired and desired != state:
+        cell += f" [yellow]→{desired}[/yellow]"
+    return cell
+
+
+@session.command("sleep")
+@click.argument("session_id")
+@click.pass_context
+@_handle_errors
+def session_sleep(ctx: click.Context, session_id) -> None:
+    """Mark a session as not wanted running.
+
+    Intent only — the process is not signalled.  The reconciler drains it
+    on a later tick; use ``session kill`` to stop it now.
+    """
+    emit(ctx, _call(ctx, "session_sleep", {"session_id": session_id}))
+
+
+@session.command("wake")
+@click.argument("session_id")
+@click.pass_context
+@_handle_errors
+def session_wake(ctx: click.Context, session_id) -> None:
+    """Mark a sleeping named session as wanted again.
+
+    The next reconciler tick starts it.  Named sessions only — task
+    sessions are started by the task lifecycle.
+    """
+    emit(ctx, _call(ctx, "session_wake", {"session_id": session_id}))
 
 
 @session.command("kill")

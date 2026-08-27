@@ -140,6 +140,27 @@ The reconciler builds the **desired set** of named sessions each tick from profi
 `lifecycle: named` (per project where project-scoped) and converges: missing+wanted →
 start (or wake), present+unwanted → drain, config drift → recycle via handoff.
 
+**Intent is a column, not an inference** (2026-08-27). `sessions.state` is the runtime
+projection — what was last observed. `sessions.desired_state` (`running | sleeping |
+stopped`) is what the daemon wants. Collapsing both into `state` is what limited
+convergence to one direction: "sleeping" and "should be sleeping" were the same value, so
+a wake branch would have fought the drain branch every tick.
+
+Intent is written by whoever *forms* it — the lens on cold start, the reconciler on idle
+drain or a terminal verdict, an operator via `aq session sleep | wake | kill`. Draining
+writes both fields at once, so a drained session stops being wanted at the moment it stops
+running. **Waking is always explicit**; nothing infers it from activity.
+
+Starting is delegated to the session lens rather than reimplemented in the reconciler
+(the lens owns token minting, the global-supervisor cases and work_dir resolution).
+Failed starts spend the stall ladder's `max_restarts` budget and end in `quarantined`, so
+a misconfigured named session costs a bounded number of attempts rather than one per tick.
+See `docs/superpowers/specs/2026-08-27-session-desired-state-design.md`.
+
+Still deferred: profile-declared session *pools* (starting a session that has no row at
+all) and recycle-on-drift. Both are writable now that intent is representable; both need
+the [[supervisor-agent]] routing story settled first.
+
 ### 4.3 Heartbeats, leases, and the stall ladder
 
 `agents.last_heartbeat` is fed from two sources: transcript `in-turn` activity (§4.5) and

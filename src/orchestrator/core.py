@@ -479,6 +479,12 @@ class Orchestrator(
             # paths into the ``sessions`` table.
             epoch=self.daemon_epoch,
         )
+        # The reconciler's named up-convergence starts sessions through the
+        # lens rather than duplicating its cold-start path (token minting,
+        # global-supervisor cases, work_dir resolution).  Assigned after
+        # construction because the lens is built second; a reconciler with
+        # no starter simply does not converge upward.
+        self.session_reconciler.starter = self.session_lens
         self.message_delivery = MessageDeliveryEngine(
             db=self.db,
             sessions=self.session_lens,

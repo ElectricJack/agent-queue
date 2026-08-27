@@ -437,6 +437,10 @@ class SessionLens:
                     # invariant execution.py relies on.
                     session_key=session_id,
                     state="running",
+                    # Explicit rather than defaulted: a cold start is the
+                    # clearest statement of intent there is, and the
+                    # reconciler's up-convergence reads this column.
+                    desired_state="running",
                 )
             )
         except IntegrityError:

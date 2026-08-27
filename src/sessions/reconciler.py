@@ -94,6 +94,7 @@ class SessionReconciler:
         spec_builder=None,
         bus=None,
         orchestrator=None,
+        starter=None,
         epoch: str | None = None,
     ):
         self.db = db
@@ -103,6 +104,11 @@ class SessionReconciler:
         self.spec_builder = spec_builder
         self.bus = bus
         self.orchestrator = orchestrator
+        #: Anything with ``async ensure_started(kind, target_id, project_id)``
+        #: -- :class:`~src.messages.session_lens.SessionLens` in production.
+        #: ``None`` disables up-convergence entirely, which is the correct
+        #: behavior for a daemon with no message routing wired.
+        self.starter = starter
         self.epoch = epoch or uuid.uuid4().hex[:12]
         #: Names whose destructive handling is deferred this tick because
         #: enumeration was incomplete.  Cleared and rebuilt every tick.
@@ -459,7 +465,7 @@ class SessionReconciler:
 
         if verdict.verdict is Verdict.RATE_LIMIT:
             await self.db.update_session(
-                row.id, state="sleeping", sleep_reason="rate_limit"
+                row.id, state="sleeping", desired_state="sleeping", sleep_reason="rate_limit"
             )
             if task is not None:
                 await self.db.transition_task(
@@ -486,7 +492,7 @@ class SessionReconciler:
             if count >= self.sessions_config.max_restarts:
                 await self._quarantine(row, task, reason="rapid_crash", now=now)
                 return
-            await self.db.update_session(row.id, state="stopped")
+            await self.db.update_session(row.id, state="stopped", desired_state="stopped")
             if task is not None:
                 # Return to READY with a backoff so the normal scheduler
                 # relaunches it.  The session row is history; the retry
@@ -514,7 +520,7 @@ class SessionReconciler:
         # PRODUCTIVE_DEATH — the agent worked, then vanished without
         # closing.  Never silently READY: a human (or the supervisor) has
         # to look, because the work may be half-done in the worktree.
-        await self.db.update_session(row.id, state="stopped")
+        await self.db.update_session(row.id, state="stopped", desired_state="stopped")
         if task is not None:
             await self.db.set_task_meta(task.id, "needs_attention", "session_exited_open")
             await self.db.transition_task(
@@ -674,7 +680,7 @@ class SessionReconciler:
         for row in live:
             if row.lifecycle != "task":
                 continue
-            if any(row.name.startswith(p) for p in self._deferred_prefixes):
+            if self._is_deferred(row.name):
                 continue
             fresh = await self._still_live(row)
             if fresh is None:
@@ -737,7 +743,7 @@ class SessionReconciler:
                 continue
             if row.state in _LIVE_STATES:
                 continue
-            if any(row.name.startswith(p) for p in self._deferred_prefixes):
+            if self._is_deferred(row.name):
                 continue
             logger.warning(
                 "Task %s is IN_PROGRESS but session %s is %s — releasing",
@@ -764,13 +770,26 @@ class SessionReconciler:
     # -- step 5: named desired-state ---------------------------------------
 
     async def _step_named(self, live: list[SessionRecord], now: float) -> None:
-        """Converge persistent sessions toward the profile-declared set.
+        """Converge persistent sessions toward their declared intent.
 
-        v1 scope: *drain idle* sessions to ``sleeping``.  Starting and
-        recycling named sessions needs the message routing that
-        [[design/supervisor-agent]] owns, so this deliberately converges in
-        one direction only rather than half-implementing wake semantics.
+        Both directions, since ``sessions.desired_state`` exists to say
+        which one is wanted (see
+        ``docs/superpowers/specs/2026-08-27-session-desired-state-design.md``):
+
+        * **down** — a running session past its profile's ``idle_timeout``
+          is drained to ``sleeping``, and its *intent* becomes ``sleeping``
+          at the same moment.  That second half is what stops the flap: a
+          drained session stops being wanted, so the up-branch does not
+          immediately undo the down-branch.
+        * **up** — a non-live row still marked ``desired_state="running"``
+          is started.  Waking is always an explicit act (an inbound message
+          via the lens, or ``aq session wake``), never an inference.
+
+        Starting is delegated to :attr:`starter`, not reimplemented here:
+        the lens owns token minting, the global-supervisor special cases
+        and work_dir resolution, and two copies of that would drift.
         """
+        await self._converge_named_up(now)
         idle_rows = [r for r in live if r.lifecycle == "named" and r.state == "running"]
         if not idle_rows:
             return
@@ -795,6 +814,95 @@ class SessionReconciler:
                 project_id=row.project_id,
                 reason="idle_timeout",
             )
+
+    async def _converge_named_up(self, now: float) -> None:
+        """Start named rows that are wanted but not live.
+
+        Never destructive, and never the *first* attempt at a start — the
+        lens starts a supervisor synchronously when a message arrives.  This
+        is the safety net for the case where that start failed, or the
+        process died later without anything noticing: the intent survives in
+        the row, so the next tick tries again.
+
+        Failures spend the stall ladder's budget (``max_restarts``,
+        ``restart_backoff_seconds``) rather than retrying every 5 s forever;
+        a permanently misconfigured supervisor reaches ``quarantined`` and
+        stops costing an attempt per tick.
+        """
+        if self.starter is None:
+            logger.debug("no session starter wired; named up-convergence disabled")
+            return
+        try:
+            wanted = await self.db.list_sessions(
+                lifecycle="named", desired_state="running"
+            )
+        except Exception:
+            logger.debug("listing wanted named sessions failed", exc_info=True)
+            return
+        for row in wanted:
+            if row.state in _LIVE_STATES:
+                continue
+            if self._is_deferred(row.name):
+                continue
+            last = row.last_activity or row.started_at or 0.0
+            backoff = self.sessions_config.restart_backoff_seconds * max(row.restarts, 1)
+            if now - last < backoff:
+                continue
+            count = await self.db.bump_session_restarts(row.id)
+            if count >= self.sessions_config.max_restarts:
+                await self._quarantine(row, None, reason="start_failed", now=now)
+                continue
+            # ``last_activity`` doubles as the backoff clock for a row that
+            # is not running: without stamping it, every tick would compute
+            # the same elapsed time and retry immediately.
+            await self.db.update_session(row.id, last_activity=now)
+            address = self._named_address(row)
+            if address is None:
+                continue
+            try:
+                started = await self.starter.ensure_started(
+                    kind="session", target_id=address, project_id=row.project_id
+                )
+            except Exception:
+                logger.warning("starting named session %s failed", row.name, exc_info=True)
+                continue
+            if not started:
+                logger.debug("starter declined to start %s", row.name)
+                continue
+            # The intent has been satisfied -- by a *new* row, since the
+            # lens inserts one per cold start.  Retire this row's intent so
+            # the next tick does not start a second session for the same
+            # want.  Guarded on the row still being non-live: if the start
+            # was a no-op because the process was alive all along, the row
+            # is the live one and its intent must stand.
+            fresh = await self.db.get_session(row.id)
+            if fresh is not None and fresh.state not in _LIVE_STATES:
+                await self.db.update_session(row.id, desired_state="stopped")
+            await self._emit(
+                "session.started",
+                session_id=row.id,
+                name=row.name,
+                project_id=row.project_id,
+                reason="desired_running",
+            )
+
+    @staticmethod
+    def _named_address(row: SessionRecord) -> str | None:
+        """Runtime session name -> messaging address.
+
+        The inverse of the lens's ``_resolve_runtime_session_name``:
+        ``n-supervisor--<pid>`` addresses as ``supervisor-<pid>``.  Only
+        supervisor-named sessions are wake-on-demand today; anything else
+        returns None rather than guessing an address the lens would reject.
+        """
+        name = row.name or ""
+        if not name.startswith("n-supervisor--"):
+            return None
+        return "supervisor-" + name[len("n-supervisor--") :]
+
+    def _is_deferred(self, name: str) -> bool:
+        """True when this tick could not enumerate *name*'s provider."""
+        return any(name.startswith(prefix) for prefix in self._deferred_prefixes)
 
     async def _profile_for(self, row: SessionRecord):
         try:
@@ -953,7 +1061,7 @@ class SessionReconciler:
         # stale in-memory value let a backstop kill on a RATE_LIMIT-slept
         # session overwrite ``"rate_limit"`` with ``None`` -- destroying the
         # one field that explained what happened.
-        fields = {"state": state}
+        fields = {"state": state, "desired_state": state}
         if state == "sleeping":
             fields["sleep_reason"] = reason
         await self.db.update_session(row.id, **fields)
@@ -967,7 +1075,11 @@ class SessionReconciler:
             except Exception:
                 logger.debug("stop during quarantine failed for %s", row.id, exc_info=True)
         await self.db.update_session(
-            row.id, state="quarantined", quarantined_at=now, sleep_reason=reason
+            row.id,
+            state="quarantined",
+            desired_state="stopped",
+            quarantined_at=now,
+            sleep_reason=reason,
         )
         await self._emit(
             "session.quarantined",

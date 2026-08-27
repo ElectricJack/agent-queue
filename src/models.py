@@ -1205,7 +1205,9 @@ class SessionRecord:
     ``task_id`` is None for named (persistent) sessions.  ``state`` is one
     of ``starting | running | draining | stopped | sleeping | quarantined``;
     "stalled" is derived from the lease TTL versus ``last_activity`` and is
-    deliberately never stored.
+    deliberately never stored.  ``desired_state`` is the intent ``state``
+    converges toward -- see
+    ``docs/superpowers/specs/2026-08-27-session-desired-state-design.md``.
 
     ``epoch`` is provenance (which daemon run launched this), not a validity
     test — an older-epoch session is still adoptable.  ``instance_token`` is
@@ -1226,6 +1228,10 @@ class SessionRecord:
     started_at: float
     task_id: str | None = None
     state: str = "starting"
+    #: Desired state -- ``running | sleeping | stopped``.  Written by
+    #: whoever forms the intent (lens cold-start, idle drain, terminal
+    #: verdict, operator); ``state`` is written by whoever observes.
+    desired_state: str = "running"
     session_key: str | None = None
     last_activity: float | None = None
     restarts: int = 0

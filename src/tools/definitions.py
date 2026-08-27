@@ -188,6 +188,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "session_nudge": "system",
     "session_logs": "system",
     "session_kill": "system",
+    "session_sleep": "system",
+    "session_wake": "system",
     # gate — work-graph WG-3 operator surface
     "gate_create": "task",
     "gate_list": "task",
