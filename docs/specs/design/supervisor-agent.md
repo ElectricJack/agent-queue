@@ -45,7 +45,7 @@ not revisited here:
 | S4 | **One supervisor per project, `mode: on_demand`** — wakes on the first message, sleeps after `idle_timeout`, `--resume` preserves its conversation. An install-wide shared instance stays possible later as pure config. |
 | S5 | No repo worktree. The supervisor gets the `vault` kind plus a **read-only** project directory. It never edits code. |
 | S6 | It acts only through `aq` / slim MCP; it talks to users via the Discord project channel and dashboard chat. |
-| S7 | A new `messages` table carries all user↔session and session↔session traffic; delivery is nudge-when-idle, `UserPromptSubmit`-inject-when-busy, prime-inject at session start. |
+| S7 | A new `messages` table carries all user↔session and session↔session traffic; delivery is nudge-when-idle (a message arriving mid-turn waits for the next idle observation), prime-inject at session start. |
 | S8 | Specs live at `vault/projects/<pid>/specs/<slug>.md`; graphs are created via `aq task create --graph` / `--from-spec` in a single transaction; `task_context.type='spec_ref'` links tasks to spec sections. |
 | S9 | Old code: `Supervisor.chat()` is unwired from Discord/Telegram/CLI; `src/runtimes/supervisor.py` and `src/chat_providers/` stay **dormant as reference**. The `supervisor` runtime value in profiles maps to a restricted-tools task session. |
 
@@ -233,9 +233,13 @@ to a concrete session and picks one of three paths:
    (`[message <id> from <from>] <body>` plus the standing instruction to reply with
    `aq reply <id>`). A nudge to a sleeping `on_demand` session first **wakes** it
    (session-runtime start with `--resume`); this is the "wakes on first message" behavior.
-2. **Target session busy (mid-turn)** → do not interrupt. The message waits; the
-   harness's `UserPromptSubmit` hook (`aq inbox --inject`, Workstream A.4) delivers it at
-   the next prompt boundary.
+2. **Target session busy (mid-turn)** → do not interrupt. The message waits and is
+   nudged on the first cycle that observes the session idle. This *was* a
+   `UserPromptSubmit` hook running `aq inbox --inject`; it was removed 2026-08-27 because
+   the command was a stub, so it cost ~1.3 s per prompt and delivered nothing. The two
+   moments — "next prompt boundary" and "first idle observation" — are within one cascade
+   tick of each other, so the path is a latency optimization rather than a delivery
+   mechanism, and it should be reinstated only with a measurement behind it.
 3. **Session starting** → pending messages ride into the first prompt via `aq prime`
    (prime content assembly is owned by the aq-surface spec; this spec only defines that
    undelivered messages are part of it, and that `archive_after_inject` rows are archived

@@ -132,12 +132,18 @@ SessionStart hook that also ran `aq prime --hook-json` on startup would
 double-inject. The hook is active exactly where the argv prompt is
 absent: resuming a session and returning from a PreCompact.
 
-**`UserPromptSubmit` runs `aq inbox --inject`** at every prompt boundary
-(supervisor-agent.md §8) — this is the prompt-boundary injection path for
-messages queued while the session was mid-turn. The hook is a no-op when
-there are no pending messages, when the recipient cannot be resolved from
-`AQ_TASK_ID`, or when the daemon is unreachable: `aq inbox` exits 0 with
-no output in all three cases so a busy or offline daemon can never block
-the agent's next prompt. `--inject` marks each rendered row delivered via
-CAS with `via="inject"`, so a racing nudge or prime render cannot double-
-deliver the same message.
+**There is no `UserPromptSubmit` hook** (removed 2026-08-27). It ran
+`aq inbox --inject` at every prompt boundary, which cost ~1.3 s of Python
+interpreter startup per prompt and delivered nothing: `aq inbox` is a
+Phase S1 stub that returns immediately (`src/cli/agent_surface.py`) and
+was never repointed at the real `aq message inbox --inject`.
+
+Nothing is lost. A message queued while the session is mid-turn is
+delivered by the cascade's nudge as soon as the session goes idle — which
+is the same moment a prompt boundary would have arrived — with the
+transcript-tail fallback behind it and prime injection at session start.
+Prompt-boundary injection is an *optimization* over those paths and has to
+be measured against them before it comes back, rather than being assumed.
+This is the per-turn shell-out the 2026-08-19 Gas City comparison listed
+among their weaknesses; we had adopted the mechanism without answering the
+criticism.

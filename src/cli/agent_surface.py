@@ -173,10 +173,16 @@ def handoff(ctx: click.Context, subject, detail, auto, task_id, session_id) -> N
 # STUB (Phase S1): the `messages` table query layer (supervisor-agent) is
 # being built in a parallel lane and does not exist at this branch point.
 # Per the implementation spec's own S1 note, this ships as a no-op: always
-# prints nothing and exits 0 so the UserPromptSubmit hook never blocks a
-# human's prompt from reaching the agent (design §6.2's "always exit 0"
-# contract holds even before real delivery lands — this just short-circuits
-# the 15s daemon round trip entirely for now).
+# prints nothing and exits 0.
+#
+# 2026-08-27: the query layer landed long ago under `aq message inbox
+# --inject` and this was never repointed at it.  The UserPromptSubmit hook
+# that called this has been removed rather than left paying ~1.3 s of
+# interpreter startup per prompt for a command that returns immediately.
+# The stub stays so an already-launched session whose rendered hook file
+# still names it does not start failing; anything wanting real prompt-
+# boundary injection should call `aq message inbox --inject` and be
+# measured against the nudge path first.
 # ---------------------------------------------------------------------------
 
 

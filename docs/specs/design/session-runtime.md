@@ -237,7 +237,11 @@ declares `supports_hooks`:
   on this start; active after compaction and on resume).
 - `PreCompact` → `aq handoff --auto` — writes the handoff note, **no restart** (Gas City's
   gc-flp1 scar: restarting on every compaction loops).
-- `UserPromptSubmit` → `aq inbox --inject` (pending human replies; 15 s timeout, exit 0).
+- ~~`UserPromptSubmit` → `aq inbox --inject`~~ — **removed 2026-08-27.** The command was
+  a Phase S1 stub that returned immediately, so the hook cost ~1.3 s of interpreter
+  startup per prompt and delivered nothing. Messages queued mid-turn reach the agent by
+  nudge as soon as it goes idle, by transcript-tail fallback, or by prime at session
+  start. Reinstating prompt-boundary injection means measuring it against nudge first.
 - **No Stop hook.** Completion is explicit (§4.1); a Stop hook would re-introduce
   exit-as-signal.
 

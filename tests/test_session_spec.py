@@ -556,8 +556,12 @@ class TestHookMaterial:
         spec = _build(builder, harness=harness)
         assert spec.files == ()  # launch still proceeds
 
-    def test_hook_payload_contains_all_three_hook_events(self, builder):
-        """Design §3.8: SessionStart, PreCompact, UserPromptSubmit — no Stop."""
+    def test_hook_payload_contains_the_two_shipped_hook_events(self, builder):
+        """SessionStart and PreCompact — no Stop, and no UserPromptSubmit.
+
+        Design §3.8 declared a third: ``aq inbox --inject`` at every prompt
+        boundary.  It was removed 2026-08-27 — see the class of test below.
+        """
         import json as _json
 
         harness = replace(
@@ -569,10 +573,7 @@ class TestHookMaterial:
         by_path = dict(spec.files)
         payload = _json.loads(by_path[".aq/hooks/claude.json"])
         hooks = payload["hooks"]
-        # All three declared events, no Stop
-        assert set(hooks.keys()) == {
-            "SessionStart", "PreCompact", "UserPromptSubmit"
-        }, hooks.keys()
+        assert set(hooks.keys()) == {"SessionStart", "PreCompact"}, hooks.keys()
 
     def test_session_start_hook_runs_aq_prime(self, builder):
         import json as _json
@@ -608,22 +609,28 @@ class TestHookMaterial:
         assert "--auto" in cmd_entry["command"]
         assert cmd_entry["timeout"] == 30
 
-    def test_user_prompt_submit_hook_injects_inbox_with_15s_timeout(self, builder):
-        import json as _json
+    def test_no_per_prompt_hook(self, builder):
+        """``aq inbox --inject`` on every UserPromptSubmit is gone.
 
+        It cost ~1.3 s of interpreter startup per prompt and delivered
+        nothing: ``aq inbox`` is a Phase S1 stub that returns immediately
+        (``src/cli/agent_surface.py``), and the real command was never wired
+        to it.  Meanwhile all three designed delivery paths work -- the
+        cascade's nudge, prime (``via="prime"``), and the transcript-tail
+        fallback.
+
+        This is the same per-turn shell-out the 2026-08-19 Gas City
+        comparison listed among *their* weaknesses; we had adopted the
+        mechanism without answering the criticism.  Prompt-boundary
+        injection has to be measured against nudge before it comes back.
+        """
         harness = replace(
             CLAUDE, supports_hooks=True,
             hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
         )
-        payload = _json.loads(
-            dict(_build(builder, harness=harness).files)[".aq/hooks/claude.json"]
-        )
-        cmd_entry = payload["hooks"]["UserPromptSubmit"][0]["hooks"][0]
-        assert "aq inbox" in cmd_entry["command"]
-        assert "--inject" in cmd_entry["command"]
-        # Design §3.8: 15 s timeout, exit 0 — the injection is best-effort;
-        # a slow inbox must not block the user's next turn.
-        assert cmd_entry["timeout"] == 15
+        raw = dict(_build(builder, harness=harness).files)[".aq/hooks/claude.json"]
+        assert "UserPromptSubmit" not in raw
+        assert "aq inbox" not in raw
 
     def test_no_stop_hook_in_shipped_payload(self, builder):
         """Design §3.8: no Stop hook — completion is explicit."""
