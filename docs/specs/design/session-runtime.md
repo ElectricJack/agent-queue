@@ -140,6 +140,15 @@ The reconciler builds the **desired set** of named sessions each tick from profi
 `lifecycle: named` (per project where project-scoped) and converges: missing+wanted →
 start (or wake), present+unwanted → drain, config drift → recycle via handoff.
 
+**The state machine is enforced** (2026-08-27). `update_session` validates every write to
+`state` against the transition table in `session_queries.py` and raises
+`InvalidSessionTransition` on an illegal edge; re-writing the state a row already has is a
+no-op, not a violation. Two edges are load-bearing: nothing revives a `stopped` row (a
+restart produces a *new* row, so a revived one would put two live rows under one name),
+and `quarantined` is terminal in code rather than only in prose. Raising is safe for the
+reconciler, whose steps are individually guarded — a bad edge fails one step loudly
+instead of corrupting the row.
+
 **Intent is a column, not an inference** (2026-08-27). `sessions.state` is the runtime
 projection — what was last observed. `sessions.desired_state` (`running | sleeping |
 stopped`) is what the daemon wants. Collapsing both into `state` is what limited

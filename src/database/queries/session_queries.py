@@ -50,6 +50,49 @@ logger = logging.getLogger(__name__)
 #: terminal-by-default but still the newest thing under that name, so they
 #: rank above ``stopped`` and below anything live.
 _LIVE_STATES: tuple[str, ...] = ("starting", "running", "draining")
+
+#: The session state machine, enforced by :meth:`SessionQueryMixin.update_session`.
+#:
+#: The design spec has always described these transitions; nothing checked
+#: them, which is the Gas City post-mortem's finding we borrowed the
+#: diagnosis of and not the cure.  Two edges are load-bearing:
+#:
+#: * **nothing revives a ``stopped`` row.**  A restart deliberately produces
+#:   a *new* row (see the module docstring on name uniqueness), so a revived
+#:   one would put two live rows under a single name and silently break the
+#:   invariant ``create_session`` enforces.
+#: * **``quarantined`` is terminal.**  "Nothing auto-releases a quarantine"
+#:   was a docstring promise; here it is a constraint.
+#:
+#: Re-writing the state a row already has is a no-op, not a violation:
+#: callers converge, and converging twice is normal.
+_SESSION_TRANSITIONS: dict[str, frozenset[str]] = {
+    "starting": frozenset({"running", "draining", "sleeping", "stopped", "quarantined"}),
+    "running": frozenset({"draining", "sleeping", "stopped", "quarantined"}),
+    "draining": frozenset({"stopped", "quarantined"}),
+    "sleeping": frozenset({"stopped", "quarantined"}),
+    "stopped": frozenset(),
+    "quarantined": frozenset(),
+}
+
+#: Intent (``desired_state``) is deliberately **not** guarded.  Every intent
+#: is expressible from every state -- wanting a stopped session running
+#: again is the whole point of the column.
+_DESIRED_STATES: frozenset[str] = frozenset({"running", "sleeping", "stopped"})
+
+
+class InvalidSessionTransition(ValueError):
+    """An update tried to walk an edge the state machine does not have."""
+
+    def __init__(self, session_id: str, current: str, requested: str):
+        self.session_id = session_id
+        self.current = current
+        self.requested = requested
+        allowed = sorted(_SESSION_TRANSITIONS.get(current, frozenset()))
+        super().__init__(
+            f"session {session_id}: {current!r} -> {requested!r} is not a legal "
+            f"transition (allowed from {current!r}: {allowed or 'none — terminal'})"
+        )
 _STATE_RANK: dict[str, int] = {
     "running": 0,
     "starting": 1,
@@ -200,14 +243,42 @@ class SessionQueryMixin:
             return [_row_to_session(r) for r in result.mappings().fetchall()]
 
     async def update_session(self, session_id: str, **fields) -> int:
-        """Update arbitrary columns.  Returns rows affected."""
+        """Update arbitrary columns.  Returns rows affected.
+
+        Writes to ``state`` are checked against ``_SESSION_TRANSITIONS`` and
+        raise :class:`InvalidSessionTransition` on an illegal edge.  Raising
+        is safe for the reconciler, whose steps are individually guarded: a
+        bad edge fails one step loudly instead of corrupting the row.
+        """
         if not fields:
             return 0
+        requested = fields.get("state")
+        if requested is not None:
+            current = await self._current_state(session_id)
+            # A missing row is the UPDATE's problem (it affects 0 rows), not
+            # the state machine's -- do not turn it into a transition error.
+            if current is not None and requested != current:
+                if requested not in _SESSION_TRANSITIONS.get(current, frozenset()):
+                    raise InvalidSessionTransition(session_id, current, requested)
+        desired = fields.get("desired_state")
+        if desired is not None and desired not in _DESIRED_STATES:
+            raise ValueError(
+                f"session {session_id}: {desired!r} is not a desired state "
+                f"({sorted(_DESIRED_STATES)})"
+            )
         async with self._engine.begin() as conn:
             result = await conn.execute(
                 update(sessions).where(sessions.c.id == session_id).values(**fields)
             )
             return result.rowcount
+
+    async def _current_state(self, session_id: str) -> str | None:
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(sessions.c.state).where(sessions.c.id == session_id)
+            )
+            row = result.fetchone()
+        return row[0] if row else None
 
     async def bump_session_restarts(self, session_id: str) -> int:
         """Atomically increment ``restarts`` and return the new value.
