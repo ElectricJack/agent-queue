@@ -872,8 +872,9 @@ class SessionsConfig:
     """
 
     enabled: bool = False
-    #: ``subprocess`` while tmux is deferred.  The default has to be a
-    #: provider ``default_session_registry`` can actually build: with
+    #: ``subprocess`` -- not because tmux is unimplemented (it is not), but
+    #: because the default has to be a provider
+    #: ``default_session_registry`` can actually build on any host: with
     #: ``tmux`` here, flipping ``enabled: true`` on a stock install made
     #: ``providers.create("tmux")`` raise on every launch, which pauses the
     #: task for 60 s *and posts a Discord notification* -- per task, every

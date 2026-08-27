@@ -320,6 +320,16 @@ fixture teardown, plus a per-run suffix on the socket name.
 
 ## 8. Recommendations, in order
 
+> **Status, 2026-08-27.** All six were worked in this order. What actually changed:
+> the test leak is fixed (per-run socket + `kill-server` teardown); `sessions.desired_state`
+> now separates intent from observation and `_step_named` converges both ways; the state
+> machine is enforced in `update_session`; `CodexTranscriptReader` landed (and learns the
+> UUID that blocked `codex resume`); the per-prompt inbox hook was **removed** rather than
+> demoted — investigating it found `aq inbox` is a no-op stub, so the hook cost ~1.3 s per
+> prompt and delivered nothing; the checklist is corrected. The remaining gap in §5.4 is
+> now Gemini alone, not two of three harnesses.
+
+
 1. **Fix the test leak.** Cheap, and it restores a real signal currently written off.
 2. **Model desired state before flipping `sessions.enabled`.** Add the
    BaseState/DesiredState/RuntimeProjection split; then `_step_named` can converge in

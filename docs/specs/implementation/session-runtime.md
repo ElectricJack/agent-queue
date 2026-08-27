@@ -443,12 +443,17 @@ from one profile); live sessions drain naturally — `aq session kill` cleans st
 
 **Phase S1 — tmux + harness**
 - [x] `harness_parser.py` / `harness_registry.py` + vault sync + shipped `vault/harnesses/claude.md`
-- [ ] `TmuxProvider` (probe, create flags, readiness, dialogs, nudge, peek, activity, kill,
-      state cache) + `proctable.py` + `dialogs.py` — **deferred: needs a POSIX host.**
-      `DialogRule` (the data shape) lives in `provider.py`; `dialogs.py` owns the runner.
+- [x] `TmuxProvider` (probe, create flags, readiness, dialogs, nudge, peek, activity, kill,
+      state cache) + `proctable.py` + `dialogs.py`. `DialogRule` (the data shape) lives in
+      `provider.py`; `dialogs.py` owns the runner, with **one shared** dismissal budget
+      rather than the per-dialog budgets whose sum blew the start deadline in the Gas City
+      post-mortem. Covered by `tests/test_tmux_integration.py` (15 cases, `pytest.mark.tmux`)
+      against a real tmux server on a per-run socket.
 - [x] `SubprocessProvider` — with one honest gap: `list_running` only sees sessions this
-      daemon started, because the env-marker process scan lives in the deferred
-      `proctable.py`. Nothing is mis-reaped; nothing is re-adopted either.
+      daemon started, so a subprocess session is not re-adopted after a daemon restart.
+      Nothing is mis-reaped; nothing is re-adopted either. **The stated cause is stale**:
+      `proctable.scan_by_env_marker` landed with the tmux wave, and `subprocess.py` simply
+      does not call it yet. Wiring it is a small, self-contained follow-up.
 - [x] `SessionSpecBuilder` (names, argv, prompt delivery incl. >1 KB temp file, env markers,
       hook material). **`permission_flag` is gated, not unconditional**: per
       [[trust-and-ops]] §4 the flag rides argv only when the workspace is an isolated
@@ -501,22 +506,29 @@ from one profile); live sessions drain naturally — `aq session kill` cleans st
       has only two feeds, and a nudgeless provider (subprocess) skips the ladder's nudge
       rungs straight to interrupt+kill — so nothing else would keep a healthy agent alive
       through an 8-minute build.
-- [x] `sessions.provider` defaults to `subprocess` while tmux is deferred, and
+- [x] `sessions.provider` defaults to `subprocess` — **not** because tmux is deferred (it
+      is not, see S1), but because the default has to be a provider the registry can build
+      on any host, and
       `SessionsConfig.validate()` rejects a provider the registry cannot build. With
       `tmux` as the default, flipping `enabled: true` on a stock install paused every task
       for 60 s *and* posted a Discord notification, per task, forever.
 
 **Phase S3 — observation**
-- [ ] `transcripts/base.py` + `claude.py` + `TranscriptWatcher` (events, token ledger,
-      activity/heartbeat)
-- [ ] `GET /api/sessions/{id}/stream` SSE + peek fallback
-- [ ] Hook templates written at spec-build (SessionStart/PreCompact/UserPromptSubmit; no Stop)
-      — the *plumbing* is done (`hook_files` render into the work_dir and `--settings`
-      points the CLI at them); the remaining work is the template payloads themselves.
+- [x] `transcripts/base.py` + `claude.py` + `codex.py` + `TranscriptWatcher` (events, token
+      ledger, activity/heartbeat). Gemini has no reader, so a Gemini session's heartbeat
+      still rides on pane activity alone.
+- [x] `GET /api/sessions/{id}/stream` SSE + peek fallback (`src/api/sessions.py`,
+      `tests/test_session_stream_api.py`)
+- [x] Hook templates written at spec-build — **SessionStart and PreCompact, no Stop and no
+      UserPromptSubmit.** The third hook (`aq inbox --inject` per prompt) was removed
+      2026-08-27: the command is a stub, so it cost ~1.3 s per prompt and delivered
+      nothing. See design §4.6.
 
 **Phase S4 — dual-run and cutover**
 - [ ] Dual-run comparison on test project; fix divergences
-- [ ] `gemini.md`, `opencode.md` harnesses + `gemini.py` reader. `codex.md` and
+- [ ] `opencode.md` harness + `gemini.py` reader. `gemini.md` and `codex.md` ship in
+      `src/sessions/default_harnesses/`; both declare `supports_hooks: false` with the
+      reason stated rather than claiming support they do not have. `codex.md` and
       `codex.py` landed 2026-08-27: the reader resolves by reading `cwd` out of each
       rollout's first line (the tree is date-keyed, so there is no slug), takes text from
       `event_msg` and tools from `response_item` (both channels record every turn, so
