@@ -211,6 +211,14 @@ and the dashboard (replacing the SDK message callback), token usage into the tok
 (`db.record_token_usage`), model/context-% for session views, and `in-turn`/`idle` activity
 for the heartbeat. **This is the signal; pane text is a hint.**
 
+Claude and Codex have readers as of 2026-08-27; Gemini does not, and until it does a
+Gemini session's heartbeat rides on pane activity alone — the exact signal the paragraph
+above says not to trust. Where a harness picks its own conversation id instead of taking
+ours (Codex has no `--session-id`), the reader also reports it via
+`discover_session_key`, and the watcher writes it onto the row: that is the only place the
+daemon can learn a key it did not assign, and without it restart-with-resume is impossible
+for that harness.
+
 **Peek** is `capture-pane` — for humans (`aq session peek`, dashboard, Discord `/peek`) and
 as the SSE fallback when no transcript is found. **Activity** from the provider is pane
 activity with poke discounting (our own nudges must not look like agent progress).

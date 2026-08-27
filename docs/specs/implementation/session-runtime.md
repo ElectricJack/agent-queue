@@ -516,7 +516,13 @@ from one profile); live sessions drain naturally — `aq session kill` cleans st
 
 **Phase S4 — dual-run and cutover**
 - [ ] Dual-run comparison on test project; fix divergences
-- [ ] `codex.md`, `gemini.md`, `opencode.md` harnesses + `codex.py`/`gemini.py` readers
+- [ ] `gemini.md`, `opencode.md` harnesses + `gemini.py` reader. `codex.md` and
+      `codex.py` landed 2026-08-27: the reader resolves by reading `cwd` out of each
+      rollout's first line (the tree is date-keyed, so there is no slug), takes text from
+      `event_msg` and tools from `response_item` (both channels record every turn, so
+      mixing them double-counts), and bills `last_token_usage`. It also learns the UUID
+      Codex chose for itself, which the watcher writes to `sessions.session_key` — the
+      thing that blocked `codex resume`.
 - [ ] Delete `claude_sdk.py`, `acpx.py`, `_subprocess.py`, deps; flip defaults
 
 ## 8. Test Plan

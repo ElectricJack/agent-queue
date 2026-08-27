@@ -17,10 +17,29 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar
 
-__all__ = ["TranscriptEntry", "TranscriptReader"]
+__all__ = ["TranscriptEntry", "TranscriptReader", "parse_iso_ts"]
+
+
+def parse_iso_ts(raw) -> float:
+    """ISO-8601 (with trailing ``Z``) → epoch seconds.  Missing → 0.0.
+
+    Shared because every harness so far stamps its transcript lines this
+    way; a reader that does something else is free to not call it.
+    """
+    if not raw:
+        return 0.0
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(
+            timezone.utc
+        ).timestamp()
+    except Exception:
+        return 0.0
 
 
 #: A completed assistant turn counts as *in-turn* until this many seconds
@@ -60,6 +79,16 @@ class TranscriptReader(ABC):
 
     def __init__(self, base_dir: Path | None = None) -> None:
         self.base_dir = Path(base_dir) if base_dir is not None else Path.home()
+
+    def discover_session_key(self, path: Path) -> str | None:
+        """The harness's own conversation id for *path*, if it is derivable.
+
+        Claude does not need this — we pin its id with ``--session-id``, so
+        the key is known before the file exists.  Codex picks its own UUID
+        and only reveals it on disk, so the watcher writes what this returns
+        back onto the row.  Default: not derivable.
+        """
+        return None
 
     @abstractmethod
     def resolve_path(

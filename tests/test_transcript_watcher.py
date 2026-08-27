@@ -315,3 +315,85 @@ async def test_watcher_ignores_non_claude_harness(tmp_path, db, bus):
     # Should tick cleanly, emit nothing.
     await w.tick()
     assert not bus.events
+
+
+CODEX_UUID = "01a02602-d8b3-7ab1-9c8a-3718b27f1348"
+
+
+async def _make_codex_session(db, work_dir, *, session_key=None, task_id="tc"):
+    await db.create_task(Task(id=task_id, project_id="p1", title="T", description="d"))
+    row = SessionRecord(
+        id="sc",
+        project_id="p1",
+        profile_id="codex-agent",
+        harness="codex",
+        provider="fake",
+        name=f"s-{task_id}",
+        lifecycle="task",
+        work_dir=work_dir,
+        epoch="e",
+        instance_token="tok",
+        started_at=time.time(),
+        task_id=task_id,
+        state="running",
+        session_key=session_key,
+    )
+    await db.create_session(row)
+    return row
+
+
+def _make_codex_transcript(base_dir: Path, work_dir: str, uuid=CODEX_UUID) -> Path:
+    day = base_dir / ".codex" / "sessions" / "2026" / "08" / "21"
+    day.mkdir(parents=True, exist_ok=True)
+    path = day / f"rollout-2026-08-21T13-28-35-{uuid}.jsonl"
+    src = Path(__file__).parent / "fixtures" / "transcripts" / "codex" / "basic.jsonl"
+    body = src.read_text().replace('"cwd":"/tmp/wd"', f'"cwd":"{work_dir}"')
+    path.write_text(body)
+    return path
+
+
+@pytest.mark.asyncio
+async def test_codex_session_gets_its_conversation_id_written_back(tmp_path, db, bus):
+    """Codex picks its own UUID and offers no --session-id to pin ours, so
+    the transcript is the only place the daemon can learn it.  Without this
+    the row stays keyless and `codex resume` can never be wired."""
+    work_dir = "/work/codex"
+    _make_codex_transcript(tmp_path, work_dir)
+    await _make_codex_session(db, work_dir, session_key=None)
+
+    w = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await w.tick()
+
+    assert (await db.get_session("sc")).session_key == CODEX_UUID
+
+
+@pytest.mark.asyncio
+async def test_a_key_the_launcher_pinned_is_never_overwritten(tmp_path, db, bus):
+    work_dir = "/work/codex2"
+    _make_codex_transcript(tmp_path, work_dir)
+    await _make_codex_session(db, work_dir, session_key="pinned-by-launcher")
+
+    w = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await w.tick()
+
+    assert (await db.get_session("sc")).session_key == "pinned-by-launcher"
+
+
+@pytest.mark.asyncio
+async def test_codex_transcript_feeds_the_stream_and_the_ledger(tmp_path, db, bus):
+    """The gap this closes: two of three harnesses ran with no structured
+    channel at all, so the stall ladder rode on pane activity alone."""
+    work_dir = "/work/codex3"
+    _make_codex_transcript(tmp_path, work_dir)
+    await _make_codex_session(db, work_dir)
+
+    w = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
+    await w.tick()
+
+    messages = [p["message"] for p in bus.payloads("notify.task_message")]
+    assert "On it." in messages
+    assert "do the thing" in messages
+    rollup = await db.get_cost_rollup(project_id="p1")
+    # 13972 - 6528 input + 6528 cached + 89 output
+    assert sum(r["tokens_used"] for r in rollup) == 14061
+    assert (await db.get_session("sc")).last_activity

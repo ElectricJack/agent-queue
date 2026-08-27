@@ -18,11 +18,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar
 
-from src.sessions.transcripts.base import TranscriptEntry, TranscriptReader
+from src.sessions.transcripts.base import (
+    TranscriptEntry,
+    TranscriptReader,
+    parse_iso_ts as _parse_ts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,19 +45,6 @@ def slug_work_dir(work_dir: str) -> str:
     reader finds the right slug.
     """
     return str(work_dir).replace("/", "-").replace(".", "-")
-
-
-def _parse_ts(raw) -> float:
-    """ISO-8601 (with trailing ``Z``) → epoch seconds.  Missing → 0.0."""
-    if not raw:
-        return 0.0
-    if isinstance(raw, (int, float)):
-        return float(raw)
-    try:
-        s = str(raw).replace("Z", "+00:00")
-        return datetime.fromisoformat(s).astimezone(timezone.utc).timestamp()
-    except Exception:
-        return 0.0
 
 
 def _extract_text(content) -> str:

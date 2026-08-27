@@ -57,10 +57,17 @@ UUID and offers no way to pin it at launch (no `--session-id` analogue),
 so the daemon's session UUID means nothing to `codex resume` — declaring
 `subcommand` resume made relaunches die with "No saved session found with
 ID <daemon-uuid>" (observed live, 2026-08-21). The CLI itself supports
-`codex resume <uuid>` / `codex fork`; flip this back to
+`codex resume <uuid>` / `codex fork`.
+
+**The blocker is now gone**: the transcript reader learns the real UUID off
+disk and `TranscriptWatcher._learn_session_key` writes it to
+`sessions.session_key` on the first poll, so a restart *does* have a key to
+resume from. Flipping this to
 `{"style": "subcommand", "subcommand": "resume", "supports_fork": true}`
-once a Codex transcript reader (`src/sessions/transcripts/`) can learn the
-real UUID from `~/.codex/sessions/`. Until then restarts start fresh.
+needs one thing verified first — that a session killed mid-turn resumes
+cleanly from a rollout written by the previous process — so it is left as a
+deliberate next step rather than flipped untested. Until then restarts
+start fresh.
 
 **`supports_hooks: false`.** Codex has no settings-file hook mechanism like
 Claude's `--settings`, so there is no prompt-boundary `aq inbox --inject`
@@ -68,11 +75,22 @@ path. Queued messages reach a Codex session via nudge (keystrokes into the
 pane) or transcript-tail fallback; task completion is unaffected because it
 is explicit (`aq task close` through the injected CLI/MCP surface).
 
-**No `transcript_paths`.** Codex records sessions under
-`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, keyed by date rather than
-work_dir, and no reader exists for the format. Listing the glob without a
-reader would imply support the daemon does not have; pane capture is the
-observation path.
+**Transcripts are read** (2026-08-27). Codex records sessions under
+`~/.codex/sessions/YYYY/MM/DD/rollout-<iso>-<uuid>.jsonl`, keyed by date
+rather than work_dir, so `CodexTranscriptReader`
+(`src/sessions/transcripts/codex.py`) resolves a session by reading
+`session_meta.payload.cwd` out of each candidate's first line — newest
+first, capped at 200 files. Once the watcher has learned the UUID (below)
+resolution is a direct filename match and no scan happens.
+
+The rollout records the same conversation twice: `event_msg` is the UI
+event stream, `response_item` the model-facing record. The reader takes
+text from `event_msg` and tool calls from `response_item`, which are
+disjoint — taking both `message` channels double-counts every turn, and
+`response_item.message` additionally carries the system-prompt and
+`<environment_context>` frames. Token usage comes from
+`event_msg/token_count` using `last_token_usage`, never the cumulative
+`total_token_usage`.
 
 **`permission_flag` follows the trust argument in claude.md:** it is
 emitted only when the session's work_dir is an isolated worktree (or the

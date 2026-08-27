@@ -137,6 +137,7 @@ class TranscriptWatcher:
             state.offset = 0
             state.charged_uuids.clear()
         state.last_path = path
+        await self._learn_session_key(row, reader, path)
 
         entries, new_offset = await reader.read_new(path, state.offset)
         state.offset = new_offset
@@ -171,6 +172,33 @@ class TranscriptWatcher:
         tail = entries[-self._tail_size :]
         if reader.infer_activity(tail) == "in-turn":
             await self._on_in_turn(row, now=now)
+
+    async def _learn_session_key(self, row, reader, path: Path) -> None:
+        """Write back a harness-chosen conversation id we did not pin.
+
+        Claude never reaches this: ``--session-id`` pins its id at launch,
+        so the row already has the key. Codex picks its own UUID and only
+        reveals it on disk (``default_harnesses/codex.md``), which is what
+        blocks ``codex resume``. Reading it off the resolved transcript is
+        the only place the daemon can learn it.
+
+        Only ever fills a blank -- never overwrites a key the launcher set.
+        """
+        if getattr(row, "session_key", None):
+            return
+        try:
+            key = reader.discover_session_key(path)
+        except Exception:
+            logger.debug("discover_session_key failed for %s", row.id, exc_info=True)
+            return
+        if not key:
+            return
+        try:
+            await self.db.update_session(row.id, session_key=key)
+        except Exception:
+            logger.debug("writing session_key for %s failed", row.id, exc_info=True)
+            return
+        logger.info("learned %s session key %s for session %s", row.harness, key, row.id)
 
     async def _emit_entry(self, row, entry: TranscriptEntry) -> None:
         """One ``notify.task_message`` per entry, stream-keyed by session id.

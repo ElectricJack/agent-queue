@@ -21,11 +21,13 @@ from src.sessions.transcripts.base import (
     TranscriptReader,
 )
 from src.sessions.transcripts.claude import ClaudeTranscriptReader
+from src.sessions.transcripts.codex import CodexTranscriptReader
 
 __all__ = [
     "TranscriptEntry",
     "TranscriptReader",
     "ClaudeTranscriptReader",
+    "CodexTranscriptReader",
     "resolve_reader",
 ]
 
@@ -41,4 +43,6 @@ def resolve_reader(
     """
     if harness == "claude":
         return ClaudeTranscriptReader(base_dir=base_dir)
+    if harness == "codex":
+        return CodexTranscriptReader(base_dir=base_dir)
     return None

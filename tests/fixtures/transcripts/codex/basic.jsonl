@@ -1,0 +1,13 @@
+{"timestamp":"2026-08-21T20:28:37.063Z","type":"session_meta","payload":{"id":"01a02602-d8b3-7ab1-9c8a-3718b27f1348","timestamp":"2026-08-21T20:28:35.913Z","cwd":"/tmp/wd","originator":"codex-tui","cli_version":"0.125.0","base_instructions":{"text":"You are Codex, a coding agent. (elided)"}}}
+{"timestamp":"2026-08-21T20:28:37.064Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1","started_at":1787344116}}
+{"timestamp":"2026-08-21T20:28:37.065Z","type":"turn_context","payload":{"turn_id":"turn-1","cwd":"/tmp/wd","model":"gpt-5.5"}}
+{"timestamp":"2026-08-21T20:28:37.065Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions> (elided)"}]}}
+{"timestamp":"2026-08-21T20:28:37.066Z","type":"event_msg","payload":{"type":"user_message","message":"do the thing"}}
+{"timestamp":"2026-08-21T20:28:37.067Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"do the thing"}]}}
+{"timestamp":"2026-08-21T20:28:39.905Z","type":"event_msg","payload":{"type":"agent_message","message":"On it.","phase":"commentary"}}
+{"timestamp":"2026-08-21T20:28:39.906Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"On it."}]}}
+{"timestamp":"2026-08-21T20:28:40.898Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\": \"ls\"}","call_id":"call_1"}}
+{"timestamp":"2026-08-21T20:28:42.069Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"README.md\n"}}
+{"timestamp":"2026-08-21T20:28:45.540Z","type":"response_item","payload":{"type":"reasoning","summary":[],"encrypted_content":"gAAAAA-elided"}}
+{"timestamp":"2026-08-21T20:28:46.000Z","type":"event_msg","payload":{"type":"token_count","turn_id":"turn-1","info":{"total_token_usage":{"input_tokens":20000,"cached_input_tokens":9000,"output_tokens":300,"total_tokens":20300},"last_token_usage":{"input_tokens":13972,"cached_input_tokens":6528,"output_tokens":89,"total_tokens":14061},"model_context_window":258400}}}
+{"timestamp":"2026-08-21T20:28:47.000Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex"}}}
