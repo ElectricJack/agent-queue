@@ -16,7 +16,9 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -79,14 +81,33 @@ while True:
 
 @pytest.fixture
 def provider(tmp_path):
+    # ``tmp_path.name`` alone is stable across pytest runs (pytest reuses
+    # ``test_foo0``), so a socket derived from it is *shared* with every
+    # previous run on this machine.  Combined with ``remain-on-exit on``
+    # that server outlives the run and the next one fails with "duplicate
+    # session".  Suffix a per-run token and kill the server on the way out
+    # so nothing survives the test.
+    socket = f"aq-test-{tmp_path.name}-{uuid.uuid4().hex[:8]}"
+
     class _Sessions:
-        tmux_socket = f"aq-test-{tmp_path.name}"
+        tmux_socket = socket
 
     class _Cfg:
         data_dir = str(tmp_path / "state")
         sessions = _Sessions()
 
-    return TmuxProvider(config=_Cfg())
+    yield TmuxProvider(config=_Cfg())
+
+    subprocess.run(
+        ["tmux", "-L", socket, "kill-server"],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    # kill-server leaves the (now dead) socket file behind; unlink it so a
+    # long-lived dev box does not accumulate one per test per run.
+    tmpdir = os.environ.get("TMUX_TMPDIR") or "/tmp"
+    Path(f"{tmpdir}/tmux-{os.getuid()}/{socket}").unlink(missing_ok=True)
 
 
 @pytest.fixture
