@@ -3674,6 +3674,13 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project whose memory to search (optional; defaults to "
+                        "the active project)"
+                    ),
+                },
                 "query": {"type": "string", "description": "Search query"},
                 "scope": {
                     "type": "string",

@@ -487,7 +487,11 @@ class TestDiscordPlaybookPausedFormatters:
 class TestPlaybookResumeView:
     """Tests for PlaybookResumeView interactive button."""
 
-    def test_view_creation(self):
+    # discord.py 2.5 builds a View/Modal's internal stop future at construction
+    # time, so both must be instantiated inside a running event loop — exactly
+    # how the notification handler constructs them in production.
+    @pytest.mark.asyncio
+    async def test_view_creation(self):
         from src.discord.notifications import PlaybookResumeView
 
         view = PlaybookResumeView("run-123", handler=MagicMock())
@@ -496,7 +500,8 @@ class TestPlaybookResumeView:
         # Should have at least 2 buttons
         assert len(view.children) >= 2
 
-    def test_modal_creation(self):
+    @pytest.mark.asyncio
+    async def test_modal_creation(self):
         from src.discord.notifications import PlaybookResumeModal
 
         modal = PlaybookResumeModal("run-123", handler=MagicMock())

@@ -414,6 +414,31 @@ acquires one workspace per declared kind, all-or-nothing, in canonical lock orde
 | `position` | INTEGER | PRIMARY KEY DEFAULT 0 | Composite PK part 3; allows two of the same kind |
 | `alias` | TEXT | nullable | Name the task uses to refer to this attachment |
 
+### Table: `task_proposals`
+
+A batch of tasks and dependency edges proposed as one reviewable graph, before
+anything exists in the live work graph. Written by spec ingest and by agents via
+`task_batch_propose`; `task_batch_commit` materialises the whole batch atomically
+and flips `status` to `committed` in a single conditional update, so two
+concurrent commits cannot both win.
+
+`payload` is a JSON blob rather than normalised rows on purpose: a proposal is
+reviewed and committed or discarded as a unit, never queried edge-by-edge, and
+its tasks do not have real ids until the commit creates them.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | `"prop-"` + uuid4[:12] |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
+| `source` | TEXT | NOT NULL | Provenance, e.g. `spec:projects/foo/specs/2026-08-21-thing.md`; stamped onto every task the commit creates |
+| `payload` | TEXT | NOT NULL | JSON: `{"tasks":[{tempId,title,description,priority?},...], "edges":[{from,to,dep_type},...]}` |
+| `status` | TEXT | NOT NULL DEFAULT 'draft' | CHECK `ck_task_proposals_status`: draft, ready, committed, discarded |
+| `created_at` | REAL | NOT NULL | Set on insert |
+| `updated_at` | REAL | NOT NULL | Set on insert and every update |
+
+Index: `idx_task_proposals_project_status` on (`project_id`, `status`) — the
+review surface lists pending proposals per project.
+
 ### Table: `merge_slots`
 
 One row per project — the mutex that serialises merges into the default branch.

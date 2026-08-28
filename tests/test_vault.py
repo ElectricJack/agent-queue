@@ -1621,23 +1621,29 @@ def test_ensure_shared_claude_memory_dir(tmp_path):
     assert again is False
 
 
-def test_ensure_vault_layout_creates_all_claude_profiles(tmp_path):
-    """Full layout installs claude-opus + claude-sonnet + shared claude/memory.
+def test_ensure_vault_layout_does_not_seed_legacy_claude_profiles(tmp_path):
+    """Full layout seeds the shipped profile set, not the legacy claude-* ones.
 
-    Both profiles drive the same Claude Code CLI; they differ only in
-    the model selected and both share the ``claude`` memory scope so
-    insights pool across model choices.  The older model-agnostic
-    ``claude-code`` profile template still exists but is no longer
-    auto-installed — users opt in via the CLAUDE_CODE_PROFILE constant
-    if they want it.
+    Rewritten (was ``..._creates_all_claude_profiles``): the old assertions
+    were genuinely wrong after 156315f2, which deliberately dropped the
+    ``ensure_claude_opus_profile`` / ``ensure_claude_sonnet_profile`` /
+    ``ensure_shared_claude_memory_dir`` calls from ``ensure_vault_layout``.
+    The hardcoded model-per-profile pairs were superseded by the 3-tier x
+    4-thinking intelligence-class matrix plus the generic
+    ``worker-{fast,standard,deep}`` profiles (bdf4d19e); the helper
+    functions and ``CLAUDE_*_PROFILE`` constants survive only as an
+    opt-in migration seam, covered by their own tests above.
     """
     ensure_vault_layout(str(tmp_path))
 
     agent_types = tmp_path / "vault" / "agent-types"
-    assert (agent_types / "claude-opus" / "profile.md").is_file()
-    assert (agent_types / "claude-sonnet" / "profile.md").is_file()
-    assert (agent_types / "claude" / "memory").is_dir()
-    # The shared claude/ dir has no profile.md — it's memory-only.
-    assert not (agent_types / "claude" / "profile.md").exists()
-    # claude-code is no longer auto-installed.
+    # The shipped defaults are seeded from src/profiles/defaults/.
+    assert (agent_types / "supervisor" / "profile.md").is_file()
+    for worker in ("worker-fast", "worker-standard", "worker-deep"):
+        assert (agent_types / worker / "profile.md").is_file(), worker
+
+    # None of the legacy hardcoded claude-* profiles are auto-installed.
+    assert not (agent_types / "claude-opus" / "profile.md").exists()
+    assert not (agent_types / "claude-sonnet" / "profile.md").exists()
     assert not (agent_types / "claude-code" / "profile.md").exists()
+    assert not (agent_types / "claude" / "profile.md").exists()

@@ -1449,15 +1449,20 @@ class TestValidateConfig:
     def test_config_known_keys(self):
         """CONFIG_KNOWN_KEYS contains the spec-defined fields, including
         ``runtime`` (selects the Runtime implementation at dispatch
-        time), ``agent_name`` (ACP agent identifier when runtime is
-        ``"acpx"``), and the named-session fields from
-        docs/specs/implementation/supervisor-agent.md §7."""
+        time), ``read_only`` (profile may not write to its workspace),
+        and the named-session fields from
+        docs/specs/implementation/supervisor-agent.md §7.
+
+        Note: ``agent_name`` is deliberately *not* a known key. It was
+        retired together with the ``acpx`` runtime; the parser now
+        rejects it outright (see ``test_config_agent_name_rejected``)
+        and agent selection happens through ``harness``.
+        """
         assert CONFIG_KNOWN_KEYS == {
             "model",
             "permission_mode",
             "max_tokens_per_task",
             "runtime",
-            "agent_name",
             "harness",
             "lifecycle",
             "mode",
@@ -1467,7 +1472,15 @@ class TestValidateConfig:
             "workspaces",
             "default_class",
             "needs_workspace",
+            "read_only",
         }
+
+    def test_config_agent_name_rejected(self):
+        """``agent_name`` is rejected: it retired with the ``acpx`` runtime."""
+        errors = _validate_config({"agent_name": "codex"})
+        assert errors
+        assert "agent_name" in errors[0]
+        assert "harness" in errors[0]
 
     def test_valid_permission_modes_set(self):
         """VALID_PERMISSION_MODES contains all expected modes."""

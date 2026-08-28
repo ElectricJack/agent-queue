@@ -364,7 +364,14 @@ class TestRecallFromParsedFacts:
         await service.kv_recall(
             "tech_stack",
             project_id="my-app",
-            profile_id="coding",
+            # NOTE: `agent_type=`, not `profile_id=`.  Commit 00ae74e6
+            # ("tests: partial mechanical rename agent_type -> profile_id")
+            # renamed this kwarg by sed, but the rename applied only to the
+            # aq task/agent model — the aq-memory scoping API (MemoryService
+            # .kv_recall / .recall / .load_l1_facts, and MemoryService's
+            # Protocol in src/plugins/services.py) still scopes by
+            # `agent_type`.  The test, not the service, was wrong.
+            agent_type="coding",
             namespace="project",
         )
 

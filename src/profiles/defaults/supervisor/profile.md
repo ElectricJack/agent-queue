@@ -62,7 +62,8 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "WebSearch",
     "WebFetch",
     "NotebookEdit"
-  ]
+  ],
+  "denied": []
 }
 ```
 

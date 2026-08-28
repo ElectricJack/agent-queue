@@ -37,15 +37,27 @@ def test_columns_and_check_constraint():
     assert any("status" in (n or "") for n in check_names)
 
 
+#: migrations/versions/5ba6efdd01d0_add_task_proposals_table.py and its parent.
+#: Pinned explicitly rather than using ``head``/``-1``: this test used to
+#: upgrade to head and downgrade one step, which only tested *this* migration
+#: while it happened to be head.  Every migration merged after it silently
+#: turned the downgrade into a test of someone else's revision, and the
+#: assertion below had been failing ever since.
+TASK_PROPOSALS_REVISION = "5ba6efdd01d0"
+PRIOR_REVISION = "c17d35836ed3"
+
+
 def test_migration_creates_and_drops(tmp_path):
-    """Round-trip: alembic upgrade head then downgrade -1 on a scratch DB."""
+    """Round-trip: upgrade to the task_proposals revision, then back off it."""
     db_path = tmp_path / "aq.db"
     env = {
         **os.environ,
         "AGENT_QUEUE_DB_URL": f"sqlite+aiosqlite:///{db_path}",
     }
     subprocess.run(
-        ["python3", "-m", "alembic", "upgrade", "head"], check=True, env=env
+        ["python3", "-m", "alembic", "upgrade", TASK_PROPOSALS_REVISION],
+        check=True,
+        env=env,
     )
 
     eng = create_engine(f"sqlite:///{db_path}")
@@ -54,7 +66,9 @@ def test_migration_creates_and_drops(tmp_path):
     eng.dispose()
 
     subprocess.run(
-        ["python3", "-m", "alembic", "downgrade", "-1"], check=True, env=env
+        ["python3", "-m", "alembic", "downgrade", PRIOR_REVISION],
+        check=True,
+        env=env,
     )
     eng = create_engine(f"sqlite:///{db_path}")
     insp = inspect(eng)

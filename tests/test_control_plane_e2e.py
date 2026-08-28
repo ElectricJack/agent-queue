@@ -70,7 +70,7 @@ async def wired(tmp_path):
             name="Triage",
             model="claude-haiku-4-5",
             harness="claude",
-            default_class="fast",
+            default_class="fast-medium",
             needs_workspace=False,
         )
     )
@@ -156,7 +156,7 @@ async def test_e2e_routing(wired):
         {
             "task_id": task_id,
             "profile_id": "coder",
-            "intelligence_class": "standard",
+            "intelligence_class": "standard-medium",
         },
     )
     assert rr["success"] is True, rr
@@ -168,7 +168,7 @@ async def test_e2e_routing(wired):
     assert t2.status == TaskStatus.READY, (t2.status, t2.is_blocked)
     assert bool(t2.is_blocked) is False, t2.is_blocked
     assert t2.profile_id == "coder"
-    assert t2.intelligence_class == "standard"
+    assert t2.intelligence_class == "standard-medium"
 
     # And confirm the routing gate is closed.
     gates2 = await db.get_gates_for_task(task_id)
@@ -178,14 +178,17 @@ async def test_e2e_routing(wired):
 
     # 7) Chain-end proof — build a REAL SessionSpecBuilder over the seeded
     #    intelligence-classes vault and confirm the composed argv carries
-    #    the "standard" class's anthropic model, overriding profile.model.
+    #    the "standard-medium" class's anthropic model, overriding
+    #    profile.model.
     #    This mocks only the fake harness (tmux-level) — the class lookup,
     #    provider inference, and _resolve_model logic are all real.
     config = wired["config"]
     classes = load_intelligence_classes(config.data_dir)
-    assert "standard" in classes, list(classes)
-    # The default standard class ships anthropic → claude-sonnet-4-6.
-    expected_model = classes["standard"].mapping["anthropic"]["model"]
+    assert "standard-medium" in classes, list(classes)
+    # The shipped classes are the 3-tier x 4-thinking matrix
+    # (fast/standard/deep x off/low/medium/high); the bare "standard"
+    # alias was removed in bdf4d19e.  standard-* ships anthropic sonnet.
+    expected_model = classes["standard-medium"].mapping["anthropic"]["model"]
     profile = await db.get_profile(t2.profile_id)
     # Override profile.model so the assertion can distinguish "class won" from
     # "profile happened to be equal".

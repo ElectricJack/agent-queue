@@ -45,6 +45,7 @@ from src.database.tables import (
     task_gates,
     task_labels,
     task_metadata,
+    task_proposals,
     task_results,
     task_tools,
     task_workspace_requirements,
@@ -106,6 +107,8 @@ _ORDERED_TABLES = [
     task_workspace_requirements,
     # FK → gates, tasks
     task_gates,
+    # FK → projects
+    task_proposals,
     # FK → projects, tasks
     sessions,
     # FK → projects, agents, tasks

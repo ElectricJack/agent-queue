@@ -1,4 +1,4 @@
-"""Centralized Discord embed factory for AgentQueue.
+"""Centralized Discord embed factory for Agent Q.
 
 This module is the single source of truth for all embed creation, semantic
 colors, task-status visual mappings, and text-safety utilities.  Every embed
@@ -9,7 +9,7 @@ Design principles
 -----------------
 * **Auto-truncation** -- every text property is silently capped to its Discord
   API limit so callers never have to worry about ``HTTPException: 400``.
-* **Consistent branding** -- all embeds carry an "AgentQueue" footer and a UTC
+* **Consistent branding** -- all embeds carry an "Agent Q" footer and a UTC
   timestamp unless explicitly suppressed.
 * **Pure functions** -- nothing in this module touches the Discord gateway or
   requires a bot instance, making everything trivially unit-testable.
@@ -350,7 +350,7 @@ def make_embed(
         and value is auto-truncated to its Discord limit.  At most 25
         fields are kept.
     footer:
-        Footer text.  Defaults to ``"AgentQueue"``.  Pass ``None`` to omit.
+        Footer text.  Defaults to ``"Agent Q"``.  Pass ``None`` to omit.
     timestamp:
         * ``True`` (default) -- use ``datetime.now(tz=timezone.utc)``
         * A ``datetime`` instance -- use that value

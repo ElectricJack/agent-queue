@@ -382,7 +382,9 @@ class TestFormatPlanGeneratedEmbed:
         embed = format_plan_generated_embed(parent, subs)
 
         assert embed.footer is not None
-        assert "AgentQueue" in embed.footer.text
+        # Brand is "Agent Q" — the product was renamed from "Agent Queue"/"AgentQueue"
+        # (see _DEFAULT_FOOTER in src/discord/embeds.py); the old string was stale.
+        assert "Agent Q" in embed.footer.text
 
     def test_workspace_path_truncated_for_long_paths(self):
         parent = _make_task()

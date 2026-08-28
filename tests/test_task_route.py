@@ -68,13 +68,15 @@ async def test_task_route_happy_path(handler, db):
     )
     r = await handler.execute(
         "task_route",
-        {"task_id": "t1", "profile_id": "coder", "intelligence_class": "standard"},
+        # "standard-medium" is a shipped class id; the bare "standard"
+        # alias was removed with the 3-tier x 4-thinking matrix (bdf4d19e).
+        {"task_id": "t1", "profile_id": "coder", "intelligence_class": "standard-medium"},
     )
     assert r["success"] is True
     assert gate_id in r["resolved_gate_ids"]
     t = await db.get_task("t1")
     assert t.profile_id == "coder"
-    assert t.intelligence_class == "standard"
+    assert t.intelligence_class == "standard-medium"
     g = await db.get_gate(gate_id)
     assert g["status"] == "resolved"
 

@@ -317,27 +317,42 @@ class TestFileWatcherEmits:
 
 
 # ---------------------------------------------------------------------------
-# Test: chat.message emit
+# Test: Discord transport emits
 # ---------------------------------------------------------------------------
 
 
-class TestChatMessageEmit:
-    """Verify discord/bot.py chat.message emit has all required fields."""
+class TestDiscordEmits:
+    """Verify the emits produced by the Discord transport comply with schemas.
 
-    def test_chat_message_emit_has_required_fields(self):
-        bot_path = SRC_DIR / "discord" / "bot.py"
-        source = bot_path.read_text(encoding="utf-8")
-        schema = EVENT_SCHEMAS["chat.message"]
+    The bot used to emit ``chat.message`` for the chat observer, but both the
+    observer and that emit were removed in the M0 messaging strip -- chat input
+    is now enqueued through ``message_send`` instead.  Asserting the old call
+    site still exists tested nothing about today's code, so these tests check
+    the emits the package actually makes.
+    """
 
-        match = re.search(
-            r'emit\(\s*"chat\.message"\s*,\s*\{([^}]+)\}',
+    def test_discord_emits_use_registered_event_types(self):
+        for path in sorted((SRC_DIR / "discord").glob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            for event_type in re.findall(r'emit\(\s*"([\w.]+)"', source):
+                assert event_type in EVENT_SCHEMAS, (
+                    f"{path.name} emits unregistered event type '{event_type}'"
+                )
+
+    def test_system_online_emit_has_required_fields(self):
+        """bot.py emits notify.system_online from the event model's dump."""
+        from src.notifications.events import SystemOnlineEvent
+
+        source = (SRC_DIR / "discord" / "bot.py").read_text(encoding="utf-8")
+        assert re.search(
+            r'emit\(\s*"notify\.system_online"\s*,\s*\n\s*SystemOnlineEvent\(\)',
             source,
-            re.DOTALL,
+        ), "notify.system_online emit not found in bot.py"
+
+        errors = validate_payload(
+            "notify.system_online", SystemOnlineEvent().model_dump(mode="json")
         )
-        assert match is not None, "chat.message emit not found in bot.py"
-        keys = set(re.findall(r'"(\w+)"', match.group(1)))
-        for req in schema["required"]:
-            assert req in keys, f"bot.py chat.message emit missing required field '{req}'"
+        assert errors == [], f"notify.system_online payload invalid: {errors}"
 
 
 # ---------------------------------------------------------------------------

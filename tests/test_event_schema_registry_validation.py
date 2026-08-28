@@ -494,6 +494,32 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "run_id": "run-001",
         "node_id": "review-step",
     },
+    "notify.playbook_run_cancelled": {
+        "event_type": "notify.playbook_run_cancelled",
+        "severity": "info",
+        "category": "interaction",
+        "playbook_id": "code-quality-gate",
+        "run_id": "run-001",
+        "node_id": "review-step",
+        "tokens_used": 1200,
+    },
+    "notify.playbook_run_node_started": {
+        "event_type": "notify.playbook_run_node_started",
+        "severity": "info",
+        "category": "interaction",
+        "playbook_id": "code-quality-gate",
+        "run_id": "run-001",
+        "node_id": "lint-check",
+    },
+    "notify.playbook_run_node_completed": {
+        "event_type": "notify.playbook_run_node_completed",
+        "severity": "info",
+        "category": "interaction",
+        "playbook_id": "code-quality-gate",
+        "run_id": "run-001",
+        "node_id": "lint-check",
+        "status": "completed",
+    },
     # Command events (Phase 5 follow-up)
     "command.invoked": {
         "command": "list_projects",
@@ -657,6 +683,28 @@ _CANONICAL_PAYLOADS.update(
             "title": "Implement feature X",
             "outcome": "pass",
             "status": "COMPLETED",
+        },
+    }
+)
+
+# -- spec + proposal events (Phase 6 — spec ingestion §8) -----------------
+# Payloads mirror the literal dicts passed to ``bus.emit`` in
+# ``spec_commands._cmd_approve_spec`` and
+# ``proposal_commands._emit_proposal_event`` call sites.
+_CANONICAL_PAYLOADS.update(
+    {
+        "spec.approved": {
+            "project_id": "my-app",
+            "spec_path": "/vault/projects/my-app/specs/feature-x.md",
+        },
+        "proposal.ready": {
+            "project_id": "my-app",
+            "proposal_id": "prop-1",
+        },
+        "proposal.status_changed": {
+            "project_id": "my-app",
+            "proposal_id": "prop-1",
+            "status": "committed",
         },
     }
 )
