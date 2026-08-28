@@ -198,6 +198,17 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # explain + ready frontier — work-graph WG-4
     "explain_task": "task",
     "project_ready": "task",
+    # spec ingest + task proposals — a batch of tasks is proposed, reviewed,
+    # then committed atomically (src/commands/proposal_commands.py).
+    "spec_approve": "task",
+    "task_batch_propose": "task",
+    "task_batch_update": "task",
+    "task_batch_commit": "task",
+    "task_batch_discard": "task",
+    # playbook authoring — an agent writes the markdown, validates it, then
+    # installs the compiled artifact (src/playbooks/validator_command.py).
+    "playbook_validate": "playbook",
+    "playbook_install": "playbook",
     # control plane — dv2 phase 1
     "ensure_task": "task",
     "get_downstream_tasks": "task",
@@ -3739,5 +3750,241 @@ _ALL_TOOL_DEFINITIONS = [
             },
             "required": ["project_id", "pr_url"],
         },
+    },
+    # -----------------------------------------------------------------
+    # Spec ingest and task proposals (src/commands/proposal_commands.py,
+    # spec_commands.py).  A batch of tasks is proposed as one graph,
+    # reviewed, then committed atomically — so the schemas describe the
+    # *whole* graph, not one task at a time.
+    # -----------------------------------------------------------------
+    {
+        "name": "spec_approve",
+        "description": (
+            "Flip a spec's frontmatter ``status`` to ``approved`` in place, "
+            "preserving comments and key order. The spec must live under "
+            "``<vault>/projects/<project_id>/specs/`` and end in ``.md``; "
+            "anything outside that root is refused. Approving a spec is what "
+            "makes it eligible for ingest into the work graph."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Project owning the spec (defaults to the active project)."
+                    ),
+                },
+                "spec_path": {
+                    "type": "string",
+                    "description": (
+                        "Path to the spec markdown file, inside the project's "
+                        "specs directory."
+                    ),
+                },
+            },
+            "required": ["spec_path"],
+        },
+    },
+    {
+        "name": "task_batch_propose",
+        "description": (
+            "Propose a batch of tasks and their dependency edges as one "
+            "reviewable graph, without creating anything live. Tasks are "
+            "identified by caller-chosen ``tempId``s that edges reference; "
+            "edges may also point at existing task ids. The proposal is "
+            "rejected up front if the shape is wrong, if it references tasks "
+            "that do not exist, or if it would introduce a dependency cycle "
+            "against the project's current graph. Returns a proposal_id for "
+            "task_batch_update / _commit / _discard."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project to propose into (defaults to the active one).",
+                },
+                "source": {
+                    "type": "string",
+                    "description": (
+                        "Where the proposal came from (e.g. a spec path or "
+                        "playbook id). Recorded as provenance on every task "
+                        "the commit creates."
+                    ),
+                },
+                "tasks": {
+                    "type": "array",
+                    "description": "The tasks to create. Must be non-empty.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tempId": {
+                                "type": "string",
+                                "description": (
+                                    "Caller-chosen id, unique within this batch, "
+                                    "that edges reference."
+                                ),
+                            },
+                            "title": {"type": "string", "description": "Task title."},
+                            "description": {
+                                "type": "string",
+                                "description": "Task description (required, may be empty).",
+                            },
+                            "priority": {
+                                "type": "integer",
+                                "description": "Priority (default 100).",
+                            },
+                        },
+                        "required": ["tempId", "title", "description"],
+                    },
+                },
+                "edges": {
+                    "type": "array",
+                    "description": "Dependency edges between the batch's tasks.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "from": {
+                                "type": "string",
+                                "description": "Source tempId, or an existing task id.",
+                            },
+                            "to": {
+                                "type": "string",
+                                "description": "Target tempId, or an existing task id.",
+                            },
+                            "dep_type": {
+                                "type": "string",
+                                "description": "Dependency type (default 'blocks').",
+                            },
+                        },
+                        "required": ["from", "to"],
+                    },
+                },
+            },
+            "required": ["source", "tasks"],
+        },
+    },
+    {
+        "name": "task_batch_update",
+        "description": (
+            "Replace a pending proposal's tasks and edges, re-running the same "
+            "shape, reference and cycle checks as task_batch_propose. Only "
+            "proposals still in ``draft`` or ``ready`` can be updated — a "
+            "committed or discarded one is history."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "proposal_id": {"type": "string", "description": "Proposal to replace."},
+                "payload": {
+                    "type": "object",
+                    "description": (
+                        "The replacement graph: ``{\"tasks\": [...], "
+                        "\"edges\": [...]}`` in the same shape "
+                        "task_batch_propose takes."
+                    ),
+                },
+            },
+            "required": ["proposal_id", "payload"],
+        },
+    },
+    {
+        "name": "task_batch_commit",
+        "description": (
+            "Atomically materialise a proposal into the live work graph: "
+            "creates every task, then every dependency edge, stamping the "
+            "proposal's source as provenance. The ready→committed flip is a "
+            "single conditional update, so two concurrent commits cannot both "
+            "win. Any failure unwinds every task and edge already created and "
+            "returns the proposal to ``ready`` for a retry. Returns the "
+            "created task ids."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "proposal_id": {"type": "string", "description": "Proposal to commit."},
+            },
+            "required": ["proposal_id"],
+        },
+    },
+    {
+        "name": "task_batch_discard",
+        "description": (
+            "Discard a pending proposal without creating anything. Refused if "
+            "it was already committed or discarded."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "proposal_id": {"type": "string", "description": "Proposal to discard."},
+            },
+            "required": ["proposal_id"],
+        },
+    },
+    # -----------------------------------------------------------------
+    # Playbook authoring (src/playbooks/validator_command.py).  Compiling a
+    # markdown playbook is an agent-produced task, so the agent needs to
+    # check its own work and install the artifact.
+    # -----------------------------------------------------------------
+    {
+        "name": "playbook_validate",
+        "description": (
+            "Validate a playbook file inside the vault. A ``.md`` source is "
+            "checked for YAML frontmatter only and comes back with "
+            "``requires_compile: true`` — compiling it is a separate, "
+            "agent-produced step. A ``.json`` artifact is fully validated "
+            "against the compiled-playbook schema. Errors are returned as "
+            "structured ``{node, field, message}`` rows, not prose. Paths "
+            "outside the vault root are refused."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Path to the .md source or .json artifact, inside the vault."
+                    ),
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "playbook_install",
+        "description": (
+            "Install a compiled playbook artifact into the live registry. "
+            "Re-validates server-side before installing (a caller's own "
+            "validation is not trusted), refuses a markdown source, and "
+            "refuses an artifact whose ``id`` does not match the requested "
+            "playbook_id. Paths outside the vault root are refused."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {
+                    "type": "string",
+                    "description": (
+                        "The playbook id being installed. Must equal the "
+                        "artifact's own id."
+                    ),
+                },
+                "compiled_path": {
+                    "type": "string",
+                    "description": "Path to the compiled .json artifact, inside the vault.",
+                },
+            },
+            "required": ["playbook_id", "compiled_path"],
+        },
+    },
+    {
+        "name": "list_intelligence_classes",
+        "description": (
+            "List the intelligence classes seeded under "
+            "``vault/intelligence-classes`` — id, name, description, and the "
+            "provider→config mapping each one resolves to. Read-only."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
     },
 ]

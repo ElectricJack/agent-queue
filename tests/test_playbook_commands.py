@@ -1134,23 +1134,33 @@ class TestAllPlaybookCommandsRegistered:
     the tool registry.  Update EXPECTED_COMMANDS when adding a new one.
     """
 
+    #: Must stay identical to ``_PLAYBOOK_COMMANDS`` in
+    #: tests/test_tool_registry.py -- see the note there.
     EXPECTED_COMMANDS = [
-        "compile_playbook",
+        # Run management
         "run_playbook",
         "dry_run_playbook",
-        "show_playbook_graph",
-        "list_playbooks",
         "list_playbook_runs",
         "inspect_playbook_run",
         "resume_playbook",
         "cancel_playbook_run",
         "recover_workflow",
-        "playbook_health",
-        "playbook_graph_view",
+        # Authoring: write the source, validate it, compile it, install the
+        # artifact.  ``playbook_validate`` / ``playbook_install`` are how an
+        # agent checks and ships its own compile output.
+        "create_playbook",
         "get_playbook_source",
         "update_playbook_source",
-        "create_playbook",
         "delete_playbook",
+        "compile_playbook",
+        "playbook_validate",
+        "playbook_install",
+        # Inspection and control
+        "list_playbooks",
+        "show_playbook_graph",
+        "playbook_graph_view",
+        "playbook_health",
+        "set_playbook_enabled",
     ]
 
     def test_all_cmd_methods_exist(self):

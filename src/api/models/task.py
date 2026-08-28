@@ -328,6 +328,30 @@ class TaskRouteResponse(BaseModel):
 # Registry
 # ---------------------------------------------------------------------------
 
+class SpecApproveResponse(BaseModel):
+    success: bool = True
+
+
+class TaskBatchProposeResponse(BaseModel):
+    """A proposal is created, not applied — nothing exists in the graph yet."""
+
+    success: bool = True
+    proposal_id: str | None = None
+
+
+class TaskBatchAckResponse(BaseModel):
+    """``task_batch_update`` / ``task_batch_discard`` — bare acknowledgement."""
+
+    success: bool = True
+
+
+class TaskBatchCommitResponse(BaseModel):
+    """The ids of the tasks the commit actually created, in batch order."""
+
+    success: bool = True
+    task_ids: list[str] = []
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_tasks": ListTasksResponse,
     "create_task": CreateTaskResponse,
@@ -364,4 +388,9 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "ensure_task": EnsureTaskResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
+    "spec_approve": SpecApproveResponse,
+    "task_batch_propose": TaskBatchProposeResponse,
+    "task_batch_update": TaskBatchAckResponse,
+    "task_batch_commit": TaskBatchCommitResponse,
+    "task_batch_discard": TaskBatchAckResponse,
 }

@@ -240,6 +240,19 @@ class ScanStubStalenessResponse(BaseModel):
     summary: str = ""
 
 
+class IntelligenceClassModel(BaseModel):
+    id: str
+    name: str = ""
+    description: str = ""
+    #: provider → config mapping this class resolves to.
+    mapping: dict = {}
+
+
+class ListIntelligenceClassesResponse(BaseModel):
+    success: bool = True
+    classes: list[IntelligenceClassModel] = []
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_status": GetStatusResponse,
     "get_token_usage": GetTokenUsageResponse,
@@ -263,4 +276,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "read_logs": ReadLogsResponse,
     "get_stuck_tasks": GetStuckTasksResponse,
     "scan_stub_staleness": ScanStubStalenessResponse,
+    "list_intelligence_classes": ListIntelligenceClassesResponse,
 }

@@ -219,8 +219,34 @@ class SetPlaybookEnabledResponse(BaseModel):
     errors: list[str] | None = None
 
 
+class PlaybookValidationError(BaseModel):
+    """One structured validation failure.
+
+    ``node`` is the compiled node the error belongs to, or None for a
+    whole-file problem (missing frontmatter, path outside the vault).
+    """
+
+    node: str | None = None
+    field: str | None = None
+    message: str = ""
+
+
+class PlaybookValidateResponse(BaseModel):
+    success: bool = True
+    errors: list[PlaybookValidationError] = []
+    #: True for a ``.md`` source: frontmatter checked, compile still owed.
+    requires_compile: bool = False
+
+
+class PlaybookInstallResponse(BaseModel):
+    success: bool = True
+    errors: list[PlaybookValidationError] = []
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_playbooks": ListPlaybooksResponse,
+    "playbook_validate": PlaybookValidateResponse,
+    "playbook_install": PlaybookInstallResponse,
     "list_playbook_runs": ListPlaybookRunsResponse,
     "inspect_playbook_run": InspectPlaybookRunResponse,
     "resume_playbook": ResumePlaybookResponse,
