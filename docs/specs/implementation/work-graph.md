@@ -309,6 +309,30 @@ Three user-visible changes landed with the swarm hierarchy work
   completed, so no completion event fires and the review/reflection pipelines
   are not triggered for them. This is intended.
 
+## 11b. Module map addendum — claims, pools, worker-filed work
+
+Swarm-work-model Part II (`docs/superpowers/specs/2026-08-28-swarm-work-model-design.md`
+§9–§12) adds these modules on top of the ones this spec named; see that spec for the
+contract, this is only the file map:
+
+| Module | Contents |
+|---|---|
+| `src/database/queries/claim_queries.py` | The one-transaction claim (session-slot CAS → work query with `FOR UPDATE SKIP LOCKED` on Postgres, select-and-CAS on SQLite → holder rows), `release_claim`, `terminate_pool_session`, claim-file read/write helpers. |
+| `src/commands/claim_commands.py` | `_cmd_task_claim` (`task_claim`) — admission precondition check, long-poll subscribe-then-check, attempt-outcome resolution. |
+| `src/orchestrator/pools.py` | `_reconcile_pools` cascade step: demand/supply aggregation, `_launch_pool_session`, `_terminate_pool_session`. |
+| `src/scheduler.py` | Pure `size_pools(demand, supply, profiles, projects, caps, deficits) -> list[PoolAction]` beside `Scheduler.schedule` (table-tested, no I/O), plus `PoolKey`/`PoolSupply`/`PoolAction`. |
+| `src/sessions/reconciler.py` | Pool carve-outs on the existing steps (§4 of `implementation/session-runtime.md`): `_step_prepare_timeout` (new), `_step_orphans`/`_step_exits` pool branches, stall ladder gated on `task_id IS NOT NULL`. |
+| `src/doctor/pool_checks.py` | `pools.stuck`, `pools.orphan_agents`, `pools.preparing_stuck`, `claims.holder_consistency` (all report-only). |
+| `src/commands/ops_commands.py` | `_cmd_pool_status`, `_cmd_pool_scale` (writes the profile's vault `## Config`; a vault re-sync overwrites it). |
+| `src/profiles/parser.py` | `lifecycle: pool` + `min_active`/`max_active`/`max_claims_per_session` (`NULL` = unlimited, `0`/negative/bool = parse error, pool-only keys rejected on other lifecycles). |
+| `src/config.py::SwarmConfig` | `swarm` section — see `docs/specs/config.md` §4.11. |
+| Tests | `tests/test_claim_queries.py`, `tests/test_claim_commands.py`, `tests/test_pool_sizing.py`, `tests/test_pool_reconciler.py`, `tests/test_pool_reconciler_carveouts.py`, `tests/test_pool_doctor.py`, `tests/perf/test_claim_statements.py` (statement-count and p99 budgets). |
+
+Migration: Alembic revisions `a1b2c3d4e5f6` (DDL — `lifecycle='pool'` columns, `sessions`
+claim-phase columns, `tasks.claim_epoch`/`filed_count`), `b2c3d4e5f6a7` (data +
+`uq_task_deps_single_parent`, shared with Part I), `c3d4e5f6a7b8` (the two swarm indexes —
+current `alembic heads`).
+
 ## 12. Risks
 
 | Risk | Mitigation |

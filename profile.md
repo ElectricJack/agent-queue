@@ -145,6 +145,24 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 | `src/orphan_workflow_recovery.py` | Detect & recover workflows whose coordination playbook died (startup + periodic) |
 | `src/workflow_pipeline_view.py` | Dashboard-ready pipeline visualization (stages, tasks, agents, progress) |
 
+### Hierarchy, Claims & Pools (Swarm Work Model)
+
+Design: `docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` (Part I hierarchy,
+Part II claims/pools/worker-filed work). Off by default (`swarm.enabled: false`);
+`lifecycle: task` profiles are unaffected.
+
+| File | Purpose |
+|------|---------|
+| `src/database/queries/hierarchy_queries.py` | Single-writer `set_parent`; children/progress reads; close/delete/archive subtree semantics |
+| `src/database/hierarchy_migration.py` | Snapshot → canonicalise → validate → apply migration for the parent-edge/column drift |
+| `src/database/queries/claim_queries.py` | The one-transaction claim (session-slot CAS → work query → holder rows), `release_claim`, `terminate_pool_session` |
+| `src/commands/claim_commands.py` | `_cmd_task_claim` (`task_claim`) — admission checks, long-poll, attempt-outcome resolution |
+| `src/orchestrator/pools.py` | `_reconcile_pools` cascade step — demand/supply aggregation, pool session launch/terminate |
+| `src/scheduler.py` | (also) pure `size_pools(...) -> list[PoolAction]` — pool sizing, table-tested, no I/O |
+| `src/sessions/reconciler.py` | (also) pool carve-outs on the session reconciler steps — `_step_prepare_timeout`, pool branches of `_step_orphans`/`_step_exits` |
+| `src/doctor/pool_checks.py` | `pools.stuck`, `pools.orphan_agents`, `pools.preparing_stuck`, `claims.holder_consistency` (report-only) |
+| `src/profiles/parser.py` | (also) `lifecycle: pool` + `min_active`/`max_active`/`max_claims_per_session` parsing |
+
 ### Memory & Knowledge
 
 Memory is provided by the **external `aq-memory` plugin** (install via `aq plugin install`). The plugin owns its memsearch/Milvus backend, the auto-extractor, and all `memory_*` tool/command handlers. Only the in-tree parsers below remain in core.

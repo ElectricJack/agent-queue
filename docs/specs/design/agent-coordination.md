@@ -300,6 +300,22 @@ not by reaching into the scheduler's internals:
 are scheduled exactly as today — the deficit-based algorithm assigns them. Playbooks
 are opt-in, not required.
 
+### Hybrid dispatch: push and pull
+
+The scheduler's "assignment mechanics" bullet above is push: the scheduler decides both
+*that* a task should run and *which* live-or-fresh agent gets it. The swarm work model
+(`docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` §9–§11, decision D4) adds
+a second, opt-in mode alongside it, split by profile `lifecycle`: `lifecycle: task`
+profiles keep push unchanged; `lifecycle: pool` profiles instead pull — a fixed-size pool
+of long-running sessions each call `aq task claim [--next] [--wait S]` against the ready
+frontier the coordination-playbook DAG already produces. The scheduler still owns *how
+many* pool sessions exist per `(project, profile)` (`_reconcile_pools` in
+`src/orchestrator/pools.py`, sized by `size_pools` in `src/scheduler.py` — the same
+deficit/fair-share caps as push) and *which* work is admissible (project state, budget);
+a pool session only decides *which admissible task it takes next*, because the consumer
+is the only party that knows precisely when it is free. Off by default
+(`swarm.enabled: false`); nothing above this section changes when it is on.
+
 ---
 
 ## 6. Workflow Runtime

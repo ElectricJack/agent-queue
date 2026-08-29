@@ -211,6 +211,8 @@ Graph reasons come straight from the projection queries; scheduler reasons come 
 
 Every event type emitted anywhere (bus or `log_event`) must have a registered payload schema in `src/event_schemas.py` — including all new types from this spec (`task.blocked`, `task.unblocked`, `task.skipped_conditional`, `dependency.added`, `dependency.removed`, `gate.created`, `gate.resolved`, `gate.expired`, `label.added`, `label.removed`). A test walks emit call sites and fails on unregistered types (the AQ version of `TestEveryKnownEventTypeHasRegisteredPayload`).
 
+**Swarm work model additions** (`docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` Part II §9, all registered in `src/event_schemas.py`): `task.ready` `{task_id, project_id, title, reason}` — emitted on every entry into the ready frontier (promotion, unblock, hold-label removal, gate resolution, release), with an in-transaction `events` audit row so a crash between commit and bus emission cannot lose it; `task.claimed` `{task_id, project_id, title, session_id?, profile_id?, claim_epoch?}`; `task.claim_conflict` `{task_id, project_id, title, session_id?}` (debug); `pool.scaled` `{project_id, profile_id, kind, count}`; `session.claim_timeout` `{session_id, task_id?}`; admission-wait wake signals `snapshot.refreshed` `{tick}`, `project.resumed` `{project_id}`, `constraint.released` `{project_id}`.
+
 ## 11. Cycle rules for typed edges
 
 - **Acyclicity is enforced over blocking edges only** — `blocks`, `parent-child`, `waits-for`, `conditional-blocks` all enter the DFS (a conditional cycle deadlocks just as hard). Non-blocking edges are exempt: `discovered-from` legitimately points backwards; `related` is symmetric.
@@ -245,6 +247,19 @@ Containers are marked explicitly: `task_metadata.container = true`, set on a tas
 **Events and error codes.** A successful reparent emits `task.reparented` on the bus after commit, with `task_id`, `project_id`, `title`, `old_parent` and `new_parent` (`null` at the root); playbooks can trigger on it. Rejected hierarchy mutations raise `HierarchyError` and surface as `hierarchy.<code>`, the full set being: `not_found` (task or parent missing), `self_parent`, `cross_project`, `container_closed` (parent is COMPLETED), `cycle`, `depth` (structural or naming cap), `open_children` (any unforced transition to COMPLETED with a non-terminal direct child — enforced in `_apply_transition`, not only at the close surfaces), `open_descendants` (archive of a subtree with a non-terminal *descendant*), `has_children` (delete without `--cascade`), `live_descendants` (abandon or cascade while a descendant has a live session), and `cycle_check_skipped` (internal: the bulk graph-creation writer `set_parent_bulk` was handed a task that is not a freshly inserted leaf). `aq schema` exposes the same list as the `hierarchy_error` enum.
 
 **Hierarchical child ids:** children created under a parent (supervisor graphs, plan subtasks, `--parent`) get `<parent_id>.1`, `<parent_id>.1.2` — ordinal per parent via `next_child_ordinal`, depth ≤ 3 — while root ids stay adjective-noun slugs. Ids never change after assignment. The id itself now carries structure a human can read in Discord, a branch name (`aq/swift-falcon.2`), or a log line, and sorting groups a family together everywhere.
+
+## 13a. Claims and pools
+
+**Implemented by the swarm work model.** Pull-based work assignment for `lifecycle: pool`
+profiles — the claim transaction, worker pools, and worker-filed work — is specified in
+`docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` Part II (§9–§12); it does
+not change anything above. `lifecycle: task` sessions keep the existing push assignment
+(§9 D4 — hybrid dispatch). Summary: a pool session calls `aq task claim [--next] [--wait
+S]` against the same ready frontier this spec defines (§9 "Reads" / the work query in
+design §10 layers on top of it); the frontier-entry event this section's `task.ready`
+depends on is emitted on every `DEFINED → READY` promotion, `is_blocked` flip, hold-label
+removal, and gate resolution (design §9), not only on the legacy `task.unblocked` path.
+Off by default (`swarm.enabled: false`, `docs/specs/config.md` §4.11).
 
 ## 14. Out of scope
 

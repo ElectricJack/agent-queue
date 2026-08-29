@@ -383,6 +383,40 @@ follows the existing `_cmd_*` convention.
 | `src/database/base.py`, `adapters/sqlite.py`, `adapters/postgresql.py` | Add `SessionQueryMixin` to the protocol and both adapters. |
 | `src/event_bus.py` | No changes — new `session.*` / `task.stalled…` events use the existing bus. Payloads registered in the notifications event registry (`src/notifications/events.py`). |
 
+## 4a. Pool sessions (swarm-work-model Part II)
+
+`lifecycle: pool` sessions (`docs/superpowers/specs/2026-08-28-swarm-work-model-design.md`
+§11) are a session-runtime carve-out, not a second runtime — the same `SessionReconciler`
+owns them. What differs from `lifecycle: task`:
+
+- **Naming and identity.** Session ids are `p-<profile>--<project>--<8hex>`, adopted at
+  boot alongside `s-`/`n-` prefixes (`adopt_on_start`). A pool session owns an `agents`
+  row and one `project-repo` worktree slot for its *entire life*, not per-task; the claim
+  transaction (`src/database/queries/claim_queries.py`) flips the agent row `IDLE ⇄ BUSY`
+  and updates `workspaces.locked_by_task_id` on each claim/release without touching the
+  slot lock itself.
+- **Bootstrap.** `_launch_pool_session(project, profile)` in `src/orchestrator/pools.py`
+  mirrors `_launch_session_for_task` and sends `POOL_BOOTSTRAP_PROMPT` (design §11.1): a
+  loop of `aq task claim --next --wait 60` → work → `aq task close … --claim-next`.
+- **Claim phases.** `sessions.claim_phase` (`claiming → preparing → active`) and
+  `claim_phase_at` track an in-flight claim; `claim_phase_at` is the clock
+  `_step_prepare_timeout` reads (new reconciler step — releases a claim stuck in
+  `preparing` past `swarm.prepare_timeout`, default 120 s).
+- **Reconciler carve-outs** (design §11.3) — pool rows change the meaning of existing
+  steps rather than adding new ones, except `_step_prepare_timeout`: `_step_orphans`
+  releases the held task to `READY` instead of blocking; `_step_exits` runs
+  `terminate_pool_session` (retires the agent row, clears both workspace lock columns,
+  revokes the token) instead of the task-session cleanup; the stall ladder applies only
+  while `task_id IS NOT NULL`; a pool session is **never restarted in place** — exit,
+  orphan, or stall all terminate it and release the task, never resume the same row.
+- **Ownership fence.** `aq task close|heartbeat|set|handoff` verify ownership through
+  `sessions.task_id == task_id AND tasks.claim_epoch == :epoch`, not the token's
+  `task_id` (which is null for pool sessions, since the token is minted with
+  `task_id=None` and pinned only to the project).
+
+See `docs/specs/config.md` §4.11 for the `swarm` config section and
+`docs/specs/implementation/work-graph.md` §11b for the full module map.
+
 ## 5. Config Keys (`~/.agent-queue/config.yaml`)
 
 ```yaml

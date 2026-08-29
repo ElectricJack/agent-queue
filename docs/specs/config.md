@@ -383,6 +383,33 @@ The value must be a dict whose values are themselves dicts mapping string keys t
 
 Default value is an empty dict `{}` if the key is absent.
 
+### 4.11 `swarm` Section
+
+Maps to `SwarmConfig` (`src/config.py`). The YAML key is `swarm`. See
+`docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` §10–§12, §17.
+
+Pull-based worker pools: `lifecycle: pool` profiles (per-profile config in the
+profile's own `## Config`, not here — see `src/profiles/parser.py`) pull work
+via `aq task claim`; `lifecycle: task` profiles are unaffected and keep push
+assignment. Every key is hot-reloadable — the daemon reads `AppConfig.swarm`
+fresh each tick/request, there is no restart-required subset.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `bool` | `False` | Master switch. `false` disables `_reconcile_pools` and refuses new `lifecycle: pool` launches; `task_claim` itself stays callable (idempotent re-claim only) so the command surface is stable before pools turn on. |
+| `claim_wait_max` | `int` | `60` | Upper clamp on `task_claim`'s `--wait` seconds — both the frontier long-poll and the admission long-poll. |
+| `max_starts_per_tick` | `int` | `2` | Pool session launches `_reconcile_pools` may start in one cascade tick, across all `(project, profile)` keys. |
+| `max_drains_per_tick` | `int` | `5` | Idle pool sessions `_reconcile_pools` may mark `desired_state='stopped'` in one bulk update per tick. |
+| `scale_down_grace` | `int` | `120` | Seconds a `(project, profile)` key's surplus (idle above its sized floor) must persist, tracked in memory, before a drain is issued. |
+| `prepare_timeout` | `int` | `120` | Seconds a claim may stay `claim_phase='preparing'` (the git-reset window) before the reconciler releases it as `prepare_failed`. |
+| `max_filings_per_task` | `int` | `20` | Worker-filed tasks (`create_task` from a session holding a task) permitted per held task, across all its claims; reserved atomically, see design §12. |
+
+Validation (`SwarmConfig.validate`): every integer key must be `>= 0`.
+
+No global pool cap exists — sizing binds on each project's `max_concurrent_agents`
+and each profile's own `min_active`/`max_active` (profile markdown, pool-only
+keys — parse error on `lifecycle: task`/`named`).
+
 ---
 
 ## 5. Loading Behavior

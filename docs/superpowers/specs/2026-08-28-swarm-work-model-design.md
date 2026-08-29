@@ -1025,13 +1025,13 @@ Data step — canonicalise from an **immutable snapshot** taken before any write
 
 ### 18. Property crosswalk
 
-| Beads property (parity doc) | Delivered by |
-|---|---|
-| P1 graph decides | `blocked_state_authoritative` flip + claim over `get_ready_frontier` |
-| P2 fenced claim + leases | §10 (holder recorded in the claim transaction; `claim_epoch` fences every later mutation; token pins session/project); existing leases |
-| P4 typed close | `--claim-next` on the existing typed close |
-| P5 agents file work | §12 |
-| P6 ordering primitives | Part I (single parent, subtree archive/delete, event-driven completion) |
-| P7 workflows as data | Part III |
-| P11 provenance | `created_by_*`, `GIT_AUTHOR_NAME` per session |
-| P9 context frugality | `aq schema` completion, prime size per claim |
+| Beads property (parity doc) | Delivered by | Files |
+|---|---|---|
+| P1 graph decides | `blocked_state_authoritative` flip + claim over `get_ready_frontier` | `src/database/queries/task_queries.py` (`transition_task`, `recompute_blocked`), `src/database/queries/claim_queries.py` (work query, §10), `src/config.py::WorkGraphConfig.blocked_state_authoritative` |
+| P2 fenced claim + leases | §10 (holder recorded in the claim transaction; `claim_epoch` fences every later mutation; token pins session/project); existing leases | `src/database/queries/claim_queries.py`, `src/commands/claim_commands.py` (`_cmd_task_claim`), `tasks.claim_epoch` + `sessions.claim_phase`/`claim_phase_at` (`src/database/tables.py`), `tests/test_claim_queries.py`, `tests/test_claim_commands.py`, `tests/perf/test_claim_statements.py` |
+| P4 typed close | `--claim-next` on the existing typed close | `src/commands/task_commands.py::_cmd_task_close` (`claim_next` arg, separate-transaction re-claim), `tests/test_claim_commands.py` |
+| P5 agents file work | §12 | `src/commands/task_commands.py::_cmd_create_task` (session path: project pin, `discovered-from`, quota, routing gate), `src/prompts/default_playbooks/default-pipeline.md` (`worker-filed-triage` rule), `tests/test_worker_filing.py` |
+| P6 ordering primitives | Part I (single parent, subtree archive/delete, event-driven completion) | `src/database/queries/hierarchy_queries.py` (`set_parent`, close/delete/archive subtree), `src/database/hierarchy_migration.py`, `src/task_names.py` (dotted ids, `next_child_ordinal`), `tests/test_hierarchy_queries.py` |
+| P7 workflows as data | Part III | Not yet implemented — Plan 3 (formulas, `vault/formulas/*.md`, `aq-graph`) |
+| P11 provenance | `created_by_*`, `GIT_AUTHOR_NAME` per session | `tasks.created_by_kind`/`created_by_id` (`src/database/tables.py`), `src/orchestrator/pools.py::_launch_pool_session` (`build_pool_spec` env), `src/sessions/spec.py` |
+| P9 context frugality | `aq schema` completion, prime size per claim | `src/commands/surface_commands.py::_cmd_get_schema` (`claim_phase`, `claim_result`, `lifecycle`, `agent_state` enums), prompt-analytics logging of prime size per claim (`src/llm_logger.py`) |
