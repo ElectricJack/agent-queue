@@ -62,7 +62,9 @@ class ClaimQueryMixin:
             return "drain_requested", record
         if cap is not None and record.claims >= cap:
             return "session_exhausted", record
-        return ("active" if record.task_id else "drain_requested"), record
+        if record.task_id:
+            return "active", record
+        return "not_found", record
 
     async def release_claim_slot(self, conn, session_id: str) -> None:
         await conn.execute(
@@ -131,16 +133,21 @@ class ClaimQueryMixin:
         row = (await conn.execute(select(tasks).where(tasks.c.id == task_id))).mappings().fetchone()
         return self._row_to_task(row)
 
-    async def bump_claim_epoch(self, task_id: str) -> int:
-        async with self.immediate() as conn:
-            await conn.execute(
+    async def bump_claim_epoch(self, task_id: str, *, conn=None) -> int:
+        async def _run(c):
+            await c.execute(
                 update(tasks)
                 .where(tasks.c.id == task_id)
                 .values(claim_epoch=tasks.c.claim_epoch + 1)
             )
             return (
-                await conn.execute(select(tasks.c.claim_epoch).where(tasks.c.id == task_id))
+                await c.execute(select(tasks.c.claim_epoch).where(tasks.c.id == task_id))
             ).scalar() or 0
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.immediate() as conn:
+            return await _run(conn)
 
     async def record_holder(self, conn, *, session_id, task_id, agent_id, work_dir, now) -> None:
         await conn.execute(
@@ -148,22 +155,25 @@ class ClaimQueryMixin:
             .where(sessions.c.id == session_id)
             .values(task_id=task_id, claim_phase="preparing", claim_phase_at=now)
         )
-        await conn.execute(
-            update(agents)
-            .where(agents.c.id == agent_id)
-            .values(state=AgentState.BUSY.value, current_task_id=task_id)
-        )
-        await conn.execute(
-            update(workspaces)
-            .where(workspaces.c.locked_by_agent_id == agent_id)
-            .values(locked_by_task_id=task_id)
-        )
+        if agent_id:
+            await conn.execute(
+                update(agents)
+                .where(agents.c.id == agent_id)
+                .values(state=AgentState.BUSY.value, current_task_id=task_id)
+            )
+            await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.locked_by_agent_id == agent_id)
+                .values(locked_by_task_id=task_id)
+            )
         await self._upsert_meta(task_id, "claimed_by_session", session_id, conn=conn)
         await self._upsert_meta(task_id, "work_dir", work_dir, conn=conn)
 
-    async def activate_claim(self, session_id, task_id, *, epoch: int, now: float) -> bool:
-        async with self.immediate() as conn:
-            res = await conn.execute(
+    async def activate_claim(
+        self, session_id, task_id, *, epoch: int, now: float, conn=None
+    ) -> bool:
+        async def _run(c):
+            res = await c.execute(
                 update(sessions)
                 .where(
                     and_(
@@ -181,6 +191,11 @@ class ClaimQueryMixin:
                 )
             )
             return res.rowcount == 1
+
+        if conn is not None:
+            return await _run(conn)
+        async with self.immediate() as conn:
+            return await _run(conn)
 
     async def _release_claim_on(
         self, conn, session_id, *, task_status, context, now, result, needs_attention
@@ -204,12 +219,17 @@ class ClaimQueryMixin:
             )
             if needs_attention:
                 await self._upsert_meta(task_id, "needs_attention", needs_attention, conn=conn)
+        if agent_id:
+            # Clear the task lock unconditionally — even a session that held no
+            # task (e.g. released mid-``claiming``) must not leave a stale
+            # ``locked_by_task_id`` on its agent's workspace.  The agent lock
+            # itself (``locked_by_agent_id``) is retained; only
+            # ``terminate_pool_session`` releases it.
             await conn.execute(
                 update(workspaces)
                 .where(workspaces.c.locked_by_agent_id == agent_id)
                 .values(locked_by_task_id=None)
             )
-        if agent_id:
             await conn.execute(
                 update(agents)
                 .where(agents.c.id == agent_id)

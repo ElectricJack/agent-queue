@@ -143,6 +143,12 @@ class TestClaimTransaction:
             kind, _ = await db.take_claim_slot(conn, sid, now=NOW, cap=None)
         assert kind == "drain_requested"
 
+    async def test_drain_takes_precedence_over_cap_exhaustion(self, db):
+        sid = await pool_session(db, claims=1, desired_state="stopped")
+        async with db.immediate() as conn:
+            kind, _ = await db.take_claim_slot(conn, sid, now=NOW, cap=1)
+        assert kind == "drain_requested"
+
     async def test_work_query_excludes_other_profiles_holds_and_plan_subtasks(self, db):
         await mktask(db, "other", profile_id="reviewer")
         await mktask(db, "held", profile_id="worker")

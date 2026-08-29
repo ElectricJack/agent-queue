@@ -17,8 +17,12 @@ both reach ``BEGIN IMMEDIATE`` before either commits are issuing nested
 transaction within a transaction" rather than blocking.  A real SQLite
 writer lock across separate connections would simply serialize; a shared
 in-process connection needs an explicit ``asyncio.Lock`` to reproduce that
-same one-writer-at-a-time behaviour for concurrent claim attempts
-(swarm-work-model §10) instead of racing the driver.
+same one-writer-at-a-time behaviour for concurrent ``immediate()`` callers
+(swarm-work-model §10 claim attempts) instead of racing the driver.  The
+lock only serialises ``immediate()`` against itself — a concurrent plain
+``engine.begin()`` writer on the same shared StaticPool connection is
+*not* covered by it and can still race (a pre-existing hazard, tracked
+separately from this task).
 """
 
 from __future__ import annotations
@@ -39,9 +43,12 @@ class TransactionQueryMixin:
     def _get_immediate_lock(self) -> asyncio.Lock:
         """Return the mixin's shared ``asyncio.Lock``, creating it lazily.
 
-        Lazy construction avoids binding the lock to a particular event
-        loop at ``__init__`` time (adapter instances outlive any given
-        loop in tests).
+        Lazy construction avoids binding the lock to an event loop at
+        ``__init__`` time, before any loop is running.  The lock is bound
+        to whichever loop is running on first use and then persists on
+        the instance for the rest of its lifetime — fine here because one
+        adapter instance is used from one event loop at a time (a fresh
+        loop per test, the daemon's single loop in production).
         """
         lock = getattr(self, "_immediate_lock", None)
         if lock is None:
