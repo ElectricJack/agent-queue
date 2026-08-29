@@ -235,6 +235,11 @@ class SurfaceCommandsMixin:
                     "explicitly or run inside a task session)"
                 )
             }
+        # A pool token pins no task, so ``check_command_scope`` cannot fence
+        # an explicit ``--task-id``; the project fence is the one that holds.
+        scope_err = self._assert_task_in_scope(await self.db.get_task(task_id))
+        if scope_err:
+            return scope_err
 
         from src.prime import PrimeRenderer
 

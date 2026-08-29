@@ -39,15 +39,16 @@ def upgrade() -> None:
     # Preflight, committed before we decide whether to abort.  On Postgres
     # ``bind.engine.connect()`` opens a genuinely separate connection and
     # transaction, independent of the outer migration transaction, so the
-    # commit below is durable even if ``upgrade`` later raises.  On SQLite's
-    # ``StaticPool`` (used by the in-process test suite and any embedded
-    # deployment) there is only ever one underlying DBAPI connection, so
-    # this "separate" connection is in fact the same one the outer
-    # migration transaction runs on — the commit here lands the rejects
-    # rows (and revision A's DDL) immediately, before the RuntimeError
-    # below aborts the *rest* of this migration.  That is the intended
-    # durability on both backends: the report and the rejects table always
-    # survive an abort.
+    # commit below is durable even if ``upgrade`` later raises.  On SQLite
+    # the daemon's engine uses ``NullPool`` for file databases (a fresh
+    # DBAPI connection per transaction), so this connection is separate
+    # there too; the ``alembic`` CLI path (``migrations/env.py``) still
+    # forces ``StaticPool``, where it is the same connection as the outer
+    # migration transaction and the commit lands the rejects rows (and
+    # revision A's DDL) immediately.  Either way the report and the rejects
+    # table survive an abort, which is the intended durability — and
+    # ``transaction_per_migration=True`` in ``env.py`` is what keeps
+    # revision A's DDL visible here on a separate connection.
     with bind.engine.connect() as pre:
         with pre.begin():
             plan = hm.canonicalise(pre)

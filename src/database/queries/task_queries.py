@@ -790,8 +790,8 @@ class TaskQueryMixin:
         delete) — this method writes on it and returns the accumulated
         ``TransitionResult`` instead of opening its own transaction and
         firing the post-commit notifications itself; the caller is then
-        responsible for ``log_blocked_flips`` / ``_notify_settled`` once its
-        own transaction has committed.
+        responsible for ``log_blocked_flips`` / ``_notify_settled`` /
+        ``_notify_ready`` once its own transaction has committed.
         """
         if conn is not None:
             return await self._delete_task_body(task_id, cascade=cascade, conn=conn)

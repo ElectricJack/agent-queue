@@ -382,7 +382,8 @@ class TestReadScope:
         )
 
     @pytest.mark.parametrize(
-        "command", ["_cmd_get_task", "_cmd_task_show", "_cmd_task_children", "_cmd_task_progress"]
+        "command",
+        ["_cmd_get_task", "_cmd_task_show", "_cmd_task_children", "_cmd_task_progress", "_cmd_prime"],
     )
     async def test_cross_project_read_refused(self, handler, db, tmp_path, command):
         await self.setup_other_project(db)
@@ -392,7 +393,8 @@ class TestReadScope:
         assert res["success"] is False
 
     @pytest.mark.parametrize(
-        "command", ["_cmd_get_task", "_cmd_task_show", "_cmd_task_children", "_cmd_task_progress"]
+        "command",
+        ["_cmd_get_task", "_cmd_task_show", "_cmd_task_children", "_cmd_task_progress", "_cmd_prime"],
     )
     async def test_same_project_read_allowed(self, handler, db, tmp_path, command):
         await mktask(db, "t1", profile_id="worker")
