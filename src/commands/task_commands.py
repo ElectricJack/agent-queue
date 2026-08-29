@@ -764,7 +764,7 @@ class TaskCommandsMixin:
         max_depth: int = args.get("max_depth", 4)
         show_dependencies: bool = args.get("show_dependencies", False)
 
-        tree_data = await self.db.get_task_tree(task_id)
+        tree_data = await self.db.get_task_tree(task_id, max_depth=max_depth)
         if tree_data is None:
             return {"error": f"Task '{task_id}' not found"}
 
@@ -1137,13 +1137,9 @@ class TaskCommandsMixin:
                     extras["profile_id"] = profile_id
                 if task_type:
                     extras["task_type"] = task_type.value
-                await self.orchestrator._emit_task_event(
-                    "task.created", task, **extras
-                )
+                await self.orchestrator._emit_task_event("task.created", task, **extras)
             except AttributeError as e:  # orchestrator missing hook (test doubles)
-                logger.warning(
-                    "create_task: failed to emit task.created (missing hook): %s", e
-                )
+                logger.warning("create_task: failed to emit task.created (missing hook): %s", e)
             except Exception as e:
                 # Narrow-log the emission failure loudly — this is the wire that
                 # kicks off the default pipeline (routing gate + triage).  Losing
@@ -1406,6 +1402,8 @@ class TaskCommandsMixin:
                 }
                 for st in subtasks
             ]
+
+        info["children"] = await self.db.get_children_summary(task.id)
 
         return info
 
@@ -1860,8 +1858,7 @@ class TaskCommandsMixin:
             except Exception:
                 edges = []
             if any(
-                dep_id == task_id and dep_type == "discovered-from"
-                for dep_id, dep_type in edges
+                dep_id == task_id and dep_type == "discovered-from" for dep_id, dep_type in edges
             ):
                 try:
                     await self.db.transition_task(
@@ -3287,9 +3284,7 @@ class TaskCommandsMixin:
             labels = []
         for lbl in labels:
             if lbl.startswith("hold:"):
-                reasons.append(
-                    Reason(code="held", detail=f"label '{lbl}' withholds task", ref=lbl)
-                )
+                reasons.append(Reason(code="held", detail=f"label '{lbl}' withholds task", ref=lbl))
 
         # 2. Blocking dependencies (open gates + typed edges).
         try:
@@ -3303,13 +3298,8 @@ class TaskCommandsMixin:
                     f"status={dep_status} in project '{dep_project}'"
                 )
             else:
-                detail = (
-                    f"blocked by {dep_type} dep '{dep_id}' ({dep_title}) "
-                    f"status={dep_status}"
-                )
-            reasons.append(
-                Reason(code="blocked_dependency", detail=detail, ref=dep_id)
-            )
+                detail = f"blocked by {dep_type} dep '{dep_id}' ({dep_title}) status={dep_status}"
+            reasons.append(Reason(code="blocked_dependency", detail=detail, ref=dep_id))
 
         # 3. Open/expired gates attached to this task.
         try:
@@ -3496,6 +3486,7 @@ class TaskCommandsMixin:
         cls_id = args.get("intelligence_class") or (profile.default_class or None)
         if cls_id:
             from src.intelligence_classes import load_intelligence_classes, resolve_class
+
             classes = load_intelligence_classes(self.config.data_dir)
             cls = classes.get(cls_id)
             if cls is None:

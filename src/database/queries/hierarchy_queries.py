@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import and_, delete, exists, insert, literal, select, update
+from sqlalchemy import and_, case, delete, exists, func, insert, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -120,6 +120,84 @@ class HierarchyQueryMixin:
         cte = self._descendant_cte(root_id)
         rows = (await conn.execute(select(cte.c.id).order_by(cte.c.depth, cte.c.id))).fetchall()
         return [r[0] for r in rows]
+
+    async def get_children(
+        self,
+        parent_id: str,
+        *,
+        recursive: bool = False,
+        status: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[Task]:
+        """Direct (or recursive) children, ordered by depth then id."""
+        if recursive:
+            cte = self._descendant_cte(parent_id)
+            stmt = (
+                select(tasks, cte.c.depth)
+                .join(cte, cte.c.id == tasks.c.id)
+                .where(cte.c.id != parent_id)
+                .order_by(cte.c.depth, tasks.c.id)
+            )
+        else:
+            stmt = select(tasks).where(tasks.c.parent_task_id == parent_id).order_by(tasks.c.id)
+        if status:
+            stmt = stmt.where(tasks.c.status == status)
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        if offset:
+            stmt = stmt.offset(offset)
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [self._row_to_task(r) for r in rows]
+
+    async def get_children_summary(self, task_id: str) -> dict | None:
+        """One aggregate over the direct children; ``None`` when there are none."""
+        s = tasks.c.status
+        stmt = select(
+            func.count().label("total"),
+            func.sum(case((s == TaskStatus.COMPLETED.value, 1), else_=0)).label("done"),
+            func.sum(
+                case((and_(s == TaskStatus.READY.value, tasks.c.is_blocked == 0), 1), else_=0)
+            ).label("ready"),
+            func.sum(case((tasks.c.is_blocked == 1, 1), else_=0)).label("blocked"),
+            func.sum(
+                case(
+                    (s.in_((TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value)), 1),
+                    else_=0,
+                )
+            ).label("in_progress"),
+        ).where(tasks.c.parent_task_id == task_id)
+        async with self._engine.begin() as conn:
+            row = (await conn.execute(stmt)).mappings().fetchone()
+        if not row or not row["total"]:
+            return None
+        return {k: int(row[k] or 0) for k in ("total", "done", "ready", "blocked", "in_progress")}
+
+    async def get_task_tree(self, root_task_id: str, *, max_depth: int = 4) -> dict | None:
+        """Nested ``{"task", "children"}`` from one recursive CTE (spec §8)."""
+        cte = self._descendant_cte(root_task_id)
+        stmt = (
+            select(tasks, cte.c.depth)
+            .join(cte, cte.c.id == tasks.c.id)
+            .where(cte.c.depth <= max_depth + 1)
+            .order_by(cte.c.depth, tasks.c.id)
+        )
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        if not rows:
+            return None
+        nodes: dict[str, dict] = {}
+        root: dict | None = None
+        for r in rows:
+            task = self._row_to_task(r)
+            node = {"task": task, "children": []}
+            nodes[task.id] = node
+            if task.id == root_task_id:
+                root = node
+            elif task.parent_task_id in nodes:
+                nodes[task.parent_task_id]["children"].append(node)
+        return root
 
     # -- the single writer ----------------------------------------------
 

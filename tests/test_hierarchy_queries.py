@@ -264,3 +264,41 @@ class TestStructureReads:
             assert await db.subtree_height("root", conn=conn) == 3
 
             assert await db.subtree_ids("root", conn=conn) == ["root", "mid", "leaf"]
+
+
+class TestReads:
+    async def test_tree_shape_and_depth_bound(self, db):
+        await mktask(db, "r", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "r.1", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "r.1.1")
+        await db.add_dependency("r.1", "r", "parent-child")
+        await db.add_dependency("r.1.1", "r.1", "parent-child")
+        tree = await db.get_task_tree("r")
+        assert tree["task"].id == "r"
+        assert tree["children"][0]["task"].id == "r.1"
+        assert tree["children"][0]["children"][0]["task"].id == "r.1.1"
+        shallow = await db.get_task_tree("r", max_depth=1)
+        assert shallow["children"][0]["children"] == []
+
+    async def test_children_filters(self, db):
+        await mktask(db, "r", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "r.1", status=TaskStatus.READY)
+        await mktask(db, "r.2", status=TaskStatus.COMPLETED)
+        await db.add_dependency("r.1", "r", "parent-child")
+        await db.add_dependency("r.2", "r", "parent-child")
+        assert [t.id for t in await db.get_children("r", status="READY")] == ["r.1"]
+        assert [t.id for t in await db.get_children("r", limit=1, offset=1)] == ["r.2"]
+        summary = await db.get_children_summary("r")
+        assert summary == {"total": 2, "done": 1, "ready": 1, "blocked": 0, "in_progress": 0}
+        assert await db.get_children_summary("r.1") is None
+
+    async def test_progress_extras(self, db):
+        await mktask(db, "r", status=TaskStatus.IN_PROGRESS)
+        for c in ("r.1", "r.2", "r.3"):
+            await mktask(db, c, status=TaskStatus.READY)
+            await db.add_dependency(c, "r", "parent-child")
+        await db.add_dependency("r.3", "r.1", "blocks")
+        p = await db.get_group_progress("r")
+        assert p["waves"] == [["r.1", "r.2"], ["r.3"]]
+        assert p["max_parallelism"] == 2
+        assert p["depth"] == 2

@@ -83,6 +83,15 @@ class SurfaceCommandsMixin:
 
         info["context"] = await self.db.get_task_contexts(task_id)
         info["labels"] = await self.db.get_task_labels(task_id)
+
+        parent = None
+        parent_id = info.get("parent_task_id")
+        if parent_id:
+            p = await self.db.get_task(parent_id)
+            if p:
+                parent = {"id": p.id, "title": p.title, "status": p.status.value}
+        info["parent"] = parent
+        info["children"] = await self.db.get_children_summary(task_id)
         return info
 
     # ------------------------------------------------------------------
@@ -212,9 +221,7 @@ class SurfaceCommandsMixin:
         return {
             "success": True,
             "body": doc.to_markdown(),
-            "sections": [
-                {"key": s.key, "title": s.title, "body": s.body} for s in doc.sections
-            ],
+            "sections": [{"key": s.key, "title": s.title, "body": s.body} for s in doc.sections],
             "source": doc.source,
             "tokens_est": doc.tokens_est(),
         }

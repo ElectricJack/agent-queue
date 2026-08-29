@@ -488,9 +488,7 @@ class TaskQueryMixin:
         await self._notify_settled(result.settled)
         return result
 
-    async def _delete_task_body(
-        self, task_id: str, *, cascade: bool, conn
-    ) -> TransitionResult:
+    async def _delete_task_body(self, task_id: str, *, cascade: bool, conn) -> TransitionResult:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
@@ -799,6 +797,8 @@ class TaskQueryMixin:
             "total": len(children),
             **counts,
             "waves": waves,
+            "max_parallelism": max((len(w) for w in waves), default=0),
+            "depth": len(waves),
         }
 
     async def get_subtasks(self, parent_task_id: str) -> list[Task]:
@@ -808,21 +808,6 @@ class TaskQueryMixin:
                 select(tasks).where(tasks.c.parent_task_id == parent_task_id)
             )
             return [self._row_to_task(r) for r in result.mappings().fetchall()]
-
-    async def get_task_tree(self, root_task_id: str) -> dict | None:
-        """Return a nested dict representing the full task hierarchy."""
-        root = await self.get_task(root_task_id)
-        if root is None:
-            return None
-
-        async def _build_subtree(task: Task) -> dict:
-            children = await self.get_subtasks(task.id)
-            child_nodes = []
-            for child in children:
-                child_nodes.append(await _build_subtree(child))
-            return {"task": task, "children": child_nodes}
-
-        return await _build_subtree(root)
 
     async def get_parent_tasks(
         self,
