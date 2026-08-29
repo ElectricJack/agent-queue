@@ -13,6 +13,7 @@ from src.task_graph.formulas import (
     chain_sha,
     load_from_vault,
     merge_documents,
+    merged_var_decls,
     resolve_chain,
     resolve_formula,
     validate_vars,
@@ -114,3 +115,58 @@ def test_chain_sha_changes_when_root_changes(reg):
     after = resolve_formula(r, "review-and-fix", project_id=None,
                             supplied_vars={"branch": "b"}).chain_sha
     assert before != after
+
+
+def test_three_hop_chain_inherits_omitted_scalars(reg, tmp_path):
+    # root sets node `review` priority: 200 and a parent priority: 200; mid
+    # (extends root) only adds node `fix`; leaf (extends mid) overrides only
+    # `review.title` and only `parent.title` — the omitted scalars (node
+    # priority, parent priority) must be inherited from root untouched, since
+    # `Formula.graph_doc` now holds only authored keys (no `to_dict()`
+    # defaults to clobber them with).
+    r, vault = reg
+    (vault / "formulas" / "root.md").write_text(
+        "---\nname: root\nvars:\n  branch: {required: true}\n---\n"
+        "```aq-graph\nversion: 1\n"
+        "parent:\n  title: Root parent\n  priority: 200\n"
+        "nodes:\n  - key: review\n    title: Review {branch}\n    priority: 200\n"
+        "```\n")
+    (vault / "formulas" / "mid.md").write_text(
+        "---\nname: mid\nextends: root\nvars:\n  branch: {required: true}\n---\n"
+        "```aq-graph\nversion: 1\n"
+        "nodes:\n  - key: fix\n    title: Fix findings\n    needs: [review]\n"
+        "```\n")
+    (vault / "formulas" / "leaf.md").write_text(
+        "---\nname: leaf\nextends: mid\nvars:\n  branch: {required: true}\n---\n"
+        "```aq-graph\nversion: 1\n"
+        "parent:\n  title: Leaf parent\n"
+        "nodes:\n  - key: review\n    title: Review {branch} (leaf)\n"
+        "```\n")
+    load_from_vault(r, str(vault))
+    chain = resolve_chain(r, "leaf", project_id=None)
+    assert [f.name for f in chain] == ["root", "mid", "leaf"]
+    doc = merge_documents(chain)
+    assert [n["key"] for n in doc["nodes"]] == ["review", "fix"]
+    review = next(n for n in doc["nodes"] if n["key"] == "review")
+    assert review["title"] == "Review {branch} (leaf)"
+    assert review["priority"] == 200  # inherited from root, leaf never wrote it
+    assert doc["parent"]["title"] == "Leaf parent"  # leaf wins
+    assert doc["parent"]["priority"] == 200  # inherited, leaf's parent block omits it
+
+
+def test_leaf_redeclares_var_with_tighter_enum(reg, tmp_path):
+    r, vault = reg
+    (vault / "formulas" / "wide.md").write_text(
+        "---\nname: wide\nvars:\n"
+        "  reviewer: {default: reviewer, enum: [reviewer, coding, other]}\n---\n"
+        "```aq-graph\nversion: 1\nnodes:\n  - key: x\n    title: x\n```\n")
+    (vault / "formulas" / "narrow.md").write_text(
+        "---\nname: narrow\nextends: wide\nvars:\n"
+        "  reviewer: {default: reviewer, enum: [reviewer, coding]}\n---\n"
+        "```aq-graph\nversion: 1\nnodes:\n  - key: y\n    title: y\n```\n")
+    load_from_vault(r, str(vault))
+    chain = resolve_chain(r, "narrow", project_id=None)
+    decls = merged_var_decls(chain)
+    assert decls["reviewer"].enum == ("reviewer", "coding")  # leaf's tighter enum wins
+    errors = validate_vars(decls, {"reviewer": "other"})
+    assert [e.rule for e in errors] == ["formula.var_enum"]

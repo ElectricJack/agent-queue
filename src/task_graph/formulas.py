@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import logging
 import os
 import re
@@ -85,7 +86,15 @@ class Formula:
     vars: dict[str, VarDecl]
     extends: str | None
     graph_block: str  # raw text of the aq-graph block
-    graph_doc: dict  # parsed block (JSON/YAML -> dict), unvalidated
+    #: The RAW authored mapping (``yaml.safe_load``/``json.loads`` of
+    #: ``graph_block``, mirroring :func:`~src.task_graph.parser.parse_graph`'s
+    #: auto format detection) — only the keys the author actually wrote, no
+    #: ``TaskGraph.to_dict()`` defaults baked in.  ``parse_graph(graph_block)``
+    #: is still run at parse time to validate structure; its ``TaskGraph`` is
+    #: not stored, only used for validation, so chain merging (see
+    #: ``merge_documents``) can tell "the author set this" from "this field
+    #: defaulted" — a distinction ``to_dict()`` erases.
+    graph_doc: dict
     content_sha: str  # sha256 of the whole file text
 
 
@@ -114,6 +123,23 @@ def vault_path_for(vault_root: str, name: str, project_id: str | None) -> str:
     if project_id:
         return os.path.join(vault_root, "projects", project_id, "formulas", f"{name}.md")
     return os.path.join(vault_root, "formulas", f"{name}.md")
+
+
+def _load_raw_document(block: str) -> dict | None:
+    """Best-effort raw parse of an ``aq-graph`` *block* to a plain dict.
+
+    Mirrors :func:`~src.task_graph.parser.parse_graph`'s ``fmt="auto"``
+    detection (try JSON, then YAML) so ``Formula.graph_doc`` holds exactly
+    the keys the author wrote — no ``TaskGraph.to_dict()`` defaults.
+    """
+    for loader in (json.loads, yaml.safe_load):
+        try:
+            data = loader(block)
+        except (json.JSONDecodeError, yaml.YAMLError, ValueError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
 
 
 def _parse_var_decls(raw, errors: list[GraphError]) -> dict[str, VarDecl]:
@@ -209,7 +235,7 @@ def parse_formula(text: str, *, rel_path: str) -> Formula:
     graph_doc: dict = {}
     if block:
         try:
-            graph_doc = parse_graph(block).to_dict()
+            parse_graph(block)  # validate structure only; TaskGraph itself is discarded
         except GraphParseError as exc:
             errors.append(
                 GraphError(
@@ -217,17 +243,16 @@ def parse_formula(text: str, *, rel_path: str) -> Formula:
                 )
             )
         else:
-            try:
-                raw_doc = yaml.safe_load(block)
-            except yaml.YAMLError:
-                raw_doc = None
-            if isinstance(raw_doc, dict) and "vars" in raw_doc:
-                errors.append(
-                    GraphError(
-                        rule="formula.vars_in_body",
-                        detail="declare vars in frontmatter, not in the aq-graph block",
+            raw_doc = _load_raw_document(block)
+            if isinstance(raw_doc, dict):
+                if "vars" in raw_doc:
+                    errors.append(
+                        GraphError(
+                            rule="formula.vars_in_body",
+                            detail="declare vars in frontmatter, not in the aq-graph block",
+                        )
                     )
-                )
+                graph_doc = raw_doc
 
     if errors:
         raise FormulaError(errors)
@@ -480,27 +505,38 @@ def resolve_chain(
     return chain
 
 
-def _clean(mapping: dict) -> dict:
-    """Drop keys whose value is falsy-empty (``None``, ``[]``, ``""``).
+def _drop_null(mapping: dict) -> dict:
+    """Drop keys whose authored value is ``None``.
 
-    Used so a child's ``to_dict()`` output — which always populates every
-    dataclass field, set or not — only overrides fields the child actually
-    authored, letting unset fields inherit from the parent.
+    A bare YAML ``key:`` with nothing after it parses to ``None``, and raw
+    YAML/JSON gives no other way to write "unset this key" that differs from
+    "omit this key" — so a null is treated the same as an omission and
+    dropped before the merge update, rather than overwriting an inherited
+    value with ``None``. Every *other* authored value — including an
+    explicit ``[]`` or ``""`` — is a genuine override: a child that writes
+    ``labels: []`` really does clear the labels it inherited.
     """
-    return {k: v for k, v in mapping.items() if v not in (None, [], "")}
+    return {k: v for k, v in mapping.items() if v is not None}
 
 
 def merge_documents(chain: list[Formula]) -> dict:
     """Merge a resolved ``extends`` chain (root first) into one graph document.
 
+    Each ``Formula.graph_doc`` is the RAW authored mapping (see
+    :func:`parse_formula`) — only the keys the author actually wrote, with no
+    ``TaskGraph.to_dict()`` defaults baked in — so a child overrides *exactly*
+    the keys it authored; an omitted key is inherited from the parent
+    unchanged.
+
     - ``defaults``: merged key-wise, child wins.
     - ``parent``: merged field-wise, child keys override, missing keys
       inherited from the parent formula(s).
-    - ``nodes``: merged by ``key``. A child node replaces the fields it sets
-      on the same-keyed parent node (field-wise, child wins); ``needs``,
-      ``labels``, ``acceptance`` and ``context`` are REPLACED, never
-      concatenated, when the child sets them. New keys are appended in the
-      order the child introduces them.
+    - ``nodes``: merged by ``key``. A child node replaces the fields it
+      authors on the same-keyed parent node (field-wise, child wins);
+      ``needs`` (a list of strings and/or dicts, either shape), ``labels``,
+      ``acceptance`` and ``context`` are REPLACED wholesale, never
+      concatenated, when the child authors them. New keys are appended in
+      the order the child introduces them.
     - ``spec``: child wins.
 
     Returns a new dict — never mutates any ``Formula.graph_doc``.
@@ -512,10 +548,10 @@ def merge_documents(chain: list[Formula]) -> dict:
         if src.get("spec"):
             doc["spec"] = src["spec"]
         doc["defaults"].update(src.get("defaults") or {})
-        doc["parent"].update(_clean(src.get("parent") or {}))
+        doc["parent"].update(_drop_null(src.get("parent") or {}))
         for node in src.get("nodes") or []:
             key = node["key"]
-            clean = _clean(node)
+            clean = _drop_null(node)
             if key in index:
                 doc["nodes"][index[key]].update(clean)
             else:
