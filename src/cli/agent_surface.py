@@ -261,7 +261,7 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
 
 
 @task.command("close")
-@click.argument("task_id")
+@click.argument("task_id", required=False)
 @click.option(
     "--outcome", type=click.Choice(["pass", "fail"]), required=True, help="Overall task outcome."
 )
@@ -308,10 +308,19 @@ def task_close(
     wait,
     claim_epoch,
 ) -> None:
-    """Close TASK_ID with an outcome; only way a session-run task reaches COMPLETED."""
+    """Close TASK_ID with an outcome; only way a session-run task reaches COMPLETED.
+
+    TASK_ID is optional: omit it and the daemon closes whichever task the
+    calling session currently holds (``sessions.task_id``).  That is what
+    the pool bootstrap prompt and ``aq-tasks`` tell workers to run --
+    ``aq task close --outcome pass --claim-next`` -- since a pool worker's
+    task changes with every claim.
+    """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     resolved_epoch = resolve_claim_epoch(claim_epoch)
-    args: dict = {"task_id": task_id, "outcome": outcome}
+    args: dict = {"outcome": outcome}
+    if task_id:
+        args["task_id"] = task_id
     if summary:
         args["summary"] = summary
     if failure_class:

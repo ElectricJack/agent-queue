@@ -62,9 +62,18 @@ class ArchiveQueryMixin:
                 if task is not None:
                     await self._archive_one(task, conn=conn)
             flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
+            # Archiving a blocker unblocks its dependents exactly as
+            # completing it would, so the same ``task.ready`` audit row and
+            # listener wake-up are owed (I2) — without them a waiting
+            # ``task_claim`` long-poll sleeps through claimable work.
+            ready = [
+                (tid, "unblocked")
+                for tid in await self._note_frontier_entry(conn, flipped, reason="unblocked")
+            ]
             settle_result = await self.settle_containers({parent} if parent else set(), conn=conn)
         await self.log_blocked_flips(flipped | settle_result.flipped)
         await self._notify_settled(settle_result.settled)
+        await self._notify_ready(ready + list(settle_result.ready))
         return True
 
     async def _archive_one(self, task, *, conn) -> None:

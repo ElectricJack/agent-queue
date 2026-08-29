@@ -2264,6 +2264,7 @@ class TaskCommandsMixin:
             # delete.
             await self.db.log_blocked_flips(result.flipped)
             await self.db._notify_settled(result.settled)
+            await self.db._notify_ready(result.ready)
         else:
             try:
                 await self.db.delete_task(task_id, cascade=False)

@@ -434,6 +434,20 @@ class SessionCommandsMixin:
     # agent surface — the completion protocol
     # ------------------------------------------------------------------
 
+    async def _scoped_held_task_id(self) -> str | None:
+        """``sessions.task_id`` of the session in scope, if any (I3).
+
+        A pool worker's task changes with every claim, so the completion
+        protocol tells it to run ``aq task close --outcome … --claim-next``
+        with no TASK_ID; the CLI then sends none and the daemon resolves it
+        from whatever the calling session currently holds.
+        """
+        session_id = (self._current_scope or {}).get("session_id")
+        if not session_id:
+            return None
+        session = await self.db.get_session(str(session_id))
+        return session.task_id if session is not None else None
+
     async def _cmd_task_close(self, args: dict) -> dict:
         """Close a task with an outcome.  Backs ``aq task close``.
 
@@ -447,9 +461,12 @@ class SessionCommandsMixin:
         that is either a bug or an agent that wandered, and both should be
         loud rather than silently accepted.
         """
-        task_id = args.get("task_id")
+        task_id = args.get("task_id") or await self._scoped_held_task_id()
         if not task_id:
-            return {"success": False, "error": "task_id is required"}
+            return {
+                "success": False,
+                "error": "no task_id and the session holds no task",
+            }
 
         outcome = str(args.get("outcome") or "").strip().lower()
         if outcome not in VALID_OUTCOMES:
@@ -573,6 +590,7 @@ class SessionCommandsMixin:
             # transaction — a listener failure must not roll back the abandon).
             await self.db.log_blocked_flips(abandon_result.flipped)
             await self.db._notify_settled(abandon_result.settled)
+            await self.db._notify_ready(abandon_result.ready)
             abandoned = abandon_result.abandoned
 
         # Outcome metadata is written first: it must survive even if the
@@ -696,7 +714,9 @@ class SessionCommandsMixin:
             if session is not None:
                 task_id = session.task_id
         if not task_id:
-            return {"error": "task_id is required (or a session_id that owns one)"}
+            task_id = await self._scoped_held_task_id()
+        if not task_id:
+            return {"success": False, "error": "no task_id and the session holds no task"}
 
         err = await self._assert_session_owns(
             task_id,

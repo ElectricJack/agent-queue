@@ -29,22 +29,35 @@ import click
 def read_claim_epoch(cwd: str | None = None) -> int | None:
     """Resolve the calling session's current claim epoch (swarm-work-model §10).
 
-    Reads ``<cwd>/.aq/claim.json`` (written server-side by ``task_claim``)
-    first, falling back to the ``AQ_CLAIM_EPOCH`` env var push launches
-    export. Returns ``None`` when neither resolves — the mutator commands
-    that use this only send ``claim_epoch`` when it returns a value, so a
-    task (non-pool) session's calls are unaffected.
+    Reads ``.aq/claim.json`` (written server-side by ``task_claim`` at the
+    workspace root), falling back to the ``AQ_CLAIM_EPOCH`` env var push
+    launches export. Returns ``None`` when neither resolves — the mutator
+    commands that use this only send ``claim_epoch`` when it returns a
+    value, so a task (non-pool) session's calls are unaffected.
+
+    The search walks *up* from *cwd* to the filesystem root and stops at
+    the first ``.aq/claim.json`` it finds (M5): a worker that ``cd``ed into
+    a subdirectory of its workspace — the normal way to work in a repo —
+    would otherwise silently lose its epoch and fall through to the env
+    var, which is stale after the first re-claim.
     """
-    base = cwd or os.getcwd()
-    path = os.path.join(base, ".aq", "claim.json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        epoch = data.get("claim_epoch")
-        if epoch is not None:
-            return int(epoch)
-    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
-        pass
+    base = os.path.abspath(cwd or os.getcwd())
+    seen = set()
+    while base not in seen:
+        seen.add(base)
+        path = os.path.join(base, ".aq", "claim.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            epoch = data.get("claim_epoch")
+            if epoch is not None:
+                return int(epoch)
+            break  # a claim file with no epoch: stop, don't climb past it
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except (OSError, ValueError, json.JSONDecodeError):
+            break  # unreadable/corrupt claim file — fall through to the env
+        base = os.path.dirname(base)
     raw = os.environ.get("AQ_CLAIM_EPOCH")
     if raw is not None:
         try:

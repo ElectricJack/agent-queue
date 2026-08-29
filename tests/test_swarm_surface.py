@@ -87,6 +87,81 @@ def test_cli_close_sends_claim_epoch(tmp_path, monkeypatch):
     assert (sent["args"]["claim_epoch"], sent["args"]["claim_next"]) == (4, True)
 
 
+def test_read_claim_epoch_walks_up_from_a_subdirectory(tmp_path, monkeypatch):
+    """M5: a worker that ``cd``ed into a subdirectory still resolves its epoch."""
+    from src.cli.agent_surface import read_claim_epoch
+
+    monkeypatch.delenv("AQ_CLAIM_EPOCH", raising=False)
+    (tmp_path / ".aq").mkdir()
+    (tmp_path / ".aq" / "claim.json").write_text(json.dumps({"task_id": "t", "claim_epoch": 7}))
+    deep = tmp_path / "src" / "pkg" / "sub"
+    deep.mkdir(parents=True)
+    assert read_claim_epoch(str(deep)) == 7
+
+
+def test_read_claim_epoch_returns_none_outside_a_workspace(tmp_path, monkeypatch):
+    from src.cli.agent_surface import read_claim_epoch
+
+    monkeypatch.delenv("AQ_CLAIM_EPOCH", raising=False)
+    lonely = tmp_path / "nowhere"
+    lonely.mkdir()
+    assert read_claim_epoch(str(lonely)) is None
+
+
+def test_cli_close_without_task_id_sends_none(tmp_path, monkeypatch):
+    """I3: the pool bootstrap prompt's form must be accepted by the CLI."""
+    from src.cli import agent_surface
+    from src.cli.app import cli
+
+    sent = {}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def execute(self, command, args=None):
+            sent.update(command=command, args=args or {})
+            return {"success": True}
+
+    monkeypatch.setattr(agent_surface, "_get_client", lambda *a, **k: FakeClient())
+    monkeypatch.delenv("AQ_CLAIM_EPOCH", raising=False)
+    monkeypatch.chdir(tmp_path)
+    r = CliRunner().invoke(cli, ["task", "close", "--outcome", "pass", "--claim-next"])
+    assert r.exit_code == 0, r.output
+    assert sent["command"] == "task_close"
+    assert "task_id" not in sent["args"]
+    assert sent["args"]["claim_next"] is True
+
+
+def test_cli_heartbeat_without_task_id_sends_none(tmp_path, monkeypatch):
+    from src.cli import agent_surface
+    from src.cli.app import cli
+
+    sent = {}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def execute(self, command, args=None):
+            sent.update(command=command, args=args or {})
+            return {"success": True}
+
+    monkeypatch.setattr(agent_surface, "_get_client", lambda *a, **k: FakeClient())
+    monkeypatch.delenv("AQ_CLAIM_EPOCH", raising=False)
+    monkeypatch.chdir(tmp_path)
+    r = CliRunner().invoke(cli, ["task", "heartbeat"])
+    assert r.exit_code == 0, r.output
+    assert sent["command"] == "task_heartbeat"
+    assert "task_id" not in sent["args"]
+
+
 def test_cli_claim_timeout_is_long():
     from src.cli.client import _COMMAND_TIMEOUTS
 

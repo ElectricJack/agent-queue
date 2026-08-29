@@ -88,6 +88,11 @@ aq task close --outcome pass|fail --summary "..." --claim-next --wait 60
 | `stale_claim` | a mutator's `claim_epoch` no longer matches the task's current one |
 | `out_of_scope` | the caller isn't allowed to claim (not a pool session) |
 
+`aq task close`'s TASK_ID argument is optional: omit it (as the loop above
+does) and the daemon closes whichever task this session currently holds —
+which is the only sane form for a pool worker, whose task changes with every
+claim. The same goes for `aq task heartbeat`.
+
 `task_close --claim-next` chains straight into the next claim after closing,
 so the loop above is really one command per iteration. `aq task heartbeat`,
 `aq task set`, and `aq handoff` all accept `--claim-epoch` too — every one of

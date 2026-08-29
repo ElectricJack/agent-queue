@@ -6,6 +6,9 @@ next claim straight onto the close instead of stopping:
     aq task close {task_id} --outcome pass|fail --summary "..." \
         --claim-next --wait 60
 
+The task id is optional — omit it and the daemon closes whatever task this
+session currently holds, which is what the loop below does.
+
 `--claim-next` claims the next ready task matching this session's profile
 right after the close lands; `--wait N` long-polls for up to N seconds
 before giving up with `no_ready_work`. If you ever need to claim without

@@ -9,7 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from sqlalchemy import delete, insert, literal, select, update, func, and_
+from sqlalchemy import delete, insert, literal, null, select, update, func, and_
 
 from src.database.tables import (
     events,
@@ -343,7 +343,10 @@ class TaskQueryMixin:
                     literal("task.ready"),
                     tasks.c.project_id,
                     tasks.c.id,
-                    literal(None),
+                    # ``agent_id`` — a genuine SQL NULL.  ``literal(None)``
+                    # renders as an untyped bind parameter, which some
+                    # backends reject in an ``INSERT … SELECT``.
+                    null(),
                     literal(reason),
                     literal(time.time()),
                 ).where(frontier),
@@ -797,6 +800,7 @@ class TaskQueryMixin:
             result = await self._delete_task_body(task_id, cascade=cascade, conn=c)
         await self.log_blocked_flips(result.flipped)
         await self._notify_settled(result.settled)
+        await self._notify_ready(result.ready)
         return result
 
     async def _delete_task_body(self, task_id: str, *, cascade: bool, conn) -> TransitionResult:
@@ -816,9 +820,19 @@ class TaskQueryMixin:
         for tid in reversed(ids):  # deepest first (subtree_ids is shallow→deep)
             await self._delete_one(tid, conn=conn)
         flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
+        # Deleting a blocker unblocks its dependents exactly as completing it
+        # would, so the same ``task.ready`` audit row and listener wake-up are
+        # owed — without them a waiting ``task_claim`` long-poll sleeps
+        # through work that just became claimable.
+        ready = [
+            (tid, "unblocked")
+            for tid in await self._note_frontier_entry(conn, flipped, reason="unblocked")
+        ]
         settle_result = await self.settle_containers({parent} if parent else set(), conn=conn)
         return TransitionResult(
-            flipped=flipped | settle_result.flipped, settled=settle_result.settled
+            flipped=flipped | settle_result.flipped,
+            settled=settle_result.settled,
+            ready=ready + list(settle_result.ready),
         )
 
     async def _delete_one(self, task_id: str, *, conn) -> None:

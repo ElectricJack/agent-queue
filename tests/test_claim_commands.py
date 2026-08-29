@@ -416,6 +416,39 @@ class TestReadScope:
         assert res["id"] == "foreign"
 
 
+class TestImplicitTaskId:
+    """I3: the pool worker loop closes/heartbeats without naming a task."""
+
+    async def test_close_resolves_held_task_from_scope(self, handler, db, tmp_path):
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        claimed = await h._cmd_task_claim({"next": True})
+        res = await h._cmd_task_close(
+            {"outcome": "pass", "summary": "done", "claim_epoch": claimed["claim_epoch"]}
+        )
+        assert res["success"] is True
+        assert (await db.get_task("t1")).status == TaskStatus.COMPLETED
+
+    async def test_heartbeat_resolves_held_task_from_scope(self, handler, db, tmp_path):
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        claimed = await h._cmd_task_claim({"next": True})
+        res = await h._cmd_task_heartbeat({"claim_epoch": claimed["claim_epoch"]})
+        assert res["success"] is True
+
+    async def test_close_without_a_held_task_errors_clearly(self, handler, db, tmp_path):
+        sid, _ = await pool_session(db, tmp_path)
+        res = await scoped(handler, sid)._cmd_task_close({"outcome": "pass"})
+        assert res == {"success": False, "error": "no task_id and the session holds no task"}
+
+    async def test_heartbeat_without_a_held_task_errors_clearly(self, handler, db, tmp_path):
+        sid, _ = await pool_session(db, tmp_path)
+        res = await scoped(handler, sid)._cmd_task_heartbeat({})
+        assert res == {"success": False, "error": "no task_id and the session holds no task"}
+
+
 class TestSwarmDisabledGate:
     async def test_claim_refused_when_swarm_disabled(self, handler, db, tmp_path):
         """M8: the command stays callable but hands out no work."""

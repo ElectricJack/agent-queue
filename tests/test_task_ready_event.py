@@ -213,6 +213,60 @@ class TestProjectionStable:
         assert (await db.get_task("d")).is_blocked is False
 
 
+class TestRemovalUnblocks:
+    """I2: removing a blocker unblocks dependents — same audit + wake-up."""
+
+    async def _blocked_pair(self, db, dep_status=TaskStatus.READY):
+        await mktask(db, "dep", status=dep_status)
+        await mktask(db, "a", status=TaskStatus.READY)
+        await db.add_dependency("a", "dep", "blocks")
+        assert (await db.get_task("a")).is_blocked is True
+        seen: list = []
+
+        async def listener(entries):
+            seen.append(list(entries))
+
+        db.set_ready_listener(listener)
+        return seen
+
+    async def test_deleting_a_blocker_records_and_emits(self, db):
+        seen = await self._blocked_pair(db)
+        await db.delete_task("dep")
+        assert await ready_rows(db, "a") == ["unblocked"]
+        assert seen == [[("a", "unblocked")]]
+        assert (await db.get_task("a")).is_blocked is False
+
+    async def test_archiving_a_blocker_records_and_emits(self, db):
+        # ``archive_task`` requires a terminal status, and COMPLETED already
+        # unblocks the dependent -- FAILED is terminal *and* still blocking,
+        # so removing it is what flips 'a'.
+        seen = await self._blocked_pair(db, dep_status=TaskStatus.FAILED)
+        assert await db.archive_task("dep")
+        assert await ready_rows(db, "a") == ["unblocked"]
+        assert seen and ("a", "unblocked") in seen[0]
+
+    async def test_abandoning_a_container_child_records_and_emits(self, db):
+        # container -> child(blocker);  'a' waits on the child.
+        await mktask(db, "container", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "child", status=TaskStatus.READY, parent_task_id="container")
+        await mktask(db, "a", status=TaskStatus.READY)
+        await db.add_dependency("a", "child", "blocks")
+        assert (await db.get_task("a")).is_blocked is True
+        seen: list = []
+
+        async def listener(entries):
+            seen.append(list(entries))
+
+        db.set_ready_listener(listener)
+        async with db.immediate() as conn:
+            res = await db.abandon_subtree("container", conn=conn)
+        assert res.abandoned == ["child"]
+        assert ("a", "unblocked") in res.ready
+        await db._notify_ready(res.ready)
+        assert seen == [[("a", "unblocked")]]
+        assert await ready_rows(db, "a") == ["unblocked"]
+
+
 class TestWaitFor:
     async def test_wait_for_returns_matching_event(self):
         bus = EventBus()

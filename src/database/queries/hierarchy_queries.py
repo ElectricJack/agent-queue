@@ -694,6 +694,10 @@ class HierarchyQueryMixin:
             )
             result.settled.extend(res.settled)
             result.flipped |= res.flipped
+            # Abandoning a blocker unblocks its dependents; carry the
+            # frontier entries up so the caller's ``_notify_ready`` wakes a
+            # waiting ``task_claim`` long-poll (I2).
+            result.ready.extend(res.ready)
             result.abandoned.append(tid)
         return result
 
