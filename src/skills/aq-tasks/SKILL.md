@@ -26,6 +26,11 @@ aq task explain <task_id>           # "why isn't this running?" — blockers,
 aq task deps <task_id>              # dependency graph for one task
 aq task tree <task_id>              # subtask tree, expanded
 aq task result <task_id>            # result payload from a completed task
+aq task children <id> [--recursive] [--status S] [--limit N] [--offset N]
+                                    # direct or recursive children of a container
+aq task progress <id>               # computed group progress: counts, waves,
+                                    # max parallelism — never stored, always
+                                    # derived from the current graph
 ```
 
 ## The close-a-task loop
@@ -83,7 +88,37 @@ aq task create --project <pid> --title "..." --description "..." \
 # From a spec (preferred for multi-task graphs)
 aq task create --from-spec vault/projects/<pid>/specs/<slug>.md
 aq task create --from-spec <path> --dry-run   # validate first, always
+
+# Create under an existing container (single task or a --from-spec graph)
+aq task create --project <pid> --title "..." --description "..." \
+  --profile worker-standard --parent <container_task_id>
 ```
+
+## Hierarchy
+
+Any task can become a **container** just by gaining a child — there is no
+separate group entity, and progress is always computed live from the graph,
+never stored. Ids are hierarchical and **immutable**: a child created under
+`swift-falcon` gets `swift-falcon.1`, its own child gets `swift-falcon.1.1`,
+and so on — an id never changes once assigned, and structural depth is
+capped at 3 (root = 1).
+
+```bash
+aq task reparent <task_id> --parent <new_parent_id>   # move under another container
+aq task reparent <task_id> --root                     # detach to root (clears parent)
+aq task delete <task_id> --cascade                    # delete a container + its whole subtree
+aq task close --task-id <id> --abandon-children \
+  --outcome ... --summary "..."                       # close a container, abandoning
+                                                        # any still-open descendants
+```
+
+Rules the daemon enforces: a container with open children refuses a plain
+`close`/`delete`; `--abandon-children` and `--cascade` are refused while any
+descendant has a live session; adding a child under a COMPLETED container is
+refused. Failures come back as `hierarchy.<code>` (e.g. `hierarchy.depth`,
+`hierarchy.cycle`, `hierarchy.container_closed`, `hierarchy.open_children`,
+`hierarchy.live_descendants`, `hierarchy.has_children`) — `aq schema` lists
+the full `hierarchy_error` enum.
 
 ## Dependencies
 

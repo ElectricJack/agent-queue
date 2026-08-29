@@ -267,8 +267,16 @@ SELECT id FROM tasks WHERE id IN (:ordered) FOR UPDATE   -- PG only; canonical s
 - [ ] `_cmd_close_task` + outcome/work-state metadata helpers (column↔key sync for `pr_url`/`branch_name`)
 - [ ] `failure_class` retry policy in execution.py; `state_machine.enforce` flag + `force` plumbing + call-site audit
 - [ ] **`is_valid_status_transition` has no event-level precision.** WG-2 added `(DEFINED, CONDITIONAL_DEAD) → COMPLETED` and `(READY, CONDITIONAL_DEAD) → COMPLETED`. `VALID_STATUS_TRANSITIONS` is the `(from, to)` projection of the event table and `transition_task` validates on that pair alone, so `is_valid_status_transition(DEFINED, COMPLETED)` is now `True` **everywhere** — not just for the conditional cascade. Harmless while validation is warn-only; the moment `state_machine.enforce` lands, any caller can walk a DEFINED task straight to COMPLETED unchallenged. Fix here by threading `event: TaskEvent` through `transition_task` (§4.1 already plans the parameter) and validating on `(from, event)`, keeping the `(from, to)` set only as a fallback for callers that pass no event.
-- [ ] Hierarchical child ids; `get_group_progress` + command
+- [x] Hierarchical child ids; `get_group_progress` + command — implemented per `docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` Part I §4–§8, §17 (see `docs/specs/design/work-graph.md` §13)
 - [ ] Docs: update `docs/specs/models-and-state-machine.md`, `database.md`, `command-handler.md`
+- [ ] **Not done in this plan (recorded, not fixed here):** the client generators
+  (`openapi.json`, `packages/aq-client`, `packages/aq-ts-client`) were not regenerated
+  for the three new hierarchy commands and the `task.reparented` event — the generator
+  toolchain was unavailable in this environment; an operator with it needs to run it
+  before those packages are trusted for the new surface. Also, the graph creator's
+  `graph.parent` block (a `--from-spec` YAML front-matter field) is silently ignored
+  when `--parent` is also passed on the command line — `--parent` wins with no warning
+  emitted; a future task should either merge the two or warn on the conflict.
 
 ## 11. Test plan
 

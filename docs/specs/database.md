@@ -124,6 +124,9 @@ No `updated_at` on projects. The `discord_control_channel_id` column exists for 
 | `profile_id` | TEXT | nullable REFERENCES agent_profiles(id) | Agent profile for execution (added via migration) |
 | `preferred_workspace_id` | TEXT | nullable REFERENCES workspaces(id) | Preferred workspace (added via migration) |
 | `attachments` | TEXT | DEFAULT '[]' | JSON-encoded list of attachment paths/URLs (added via migration) |
+| `next_child_ordinal` | INTEGER | NOT NULL DEFAULT 1 | Per-parent counter for dotted child ids (swarm-work-model §4, §6); incremented atomically by `task_names.reserve_child_ordinal`; never read for anything else |
+| `created_by_kind` | TEXT | nullable | Provenance (swarm-work-model §9): who created the row; stamped by `CommandHandler.execute` from the request scope (Plan 2); nullable so rows from legacy paths stay valid |
+| `created_by_id` | TEXT | nullable | Provenance (swarm-work-model §9), paired with `created_by_kind` |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
@@ -151,6 +154,11 @@ Directed edge: "`task_id` depends on `depends_on_task_id`" (i.e., `depends_on_ta
 | `depends_on_task_id` | TEXT | NOT NULL REFERENCES tasks(id) | Must complete first |
 | (composite PK) | | PRIMARY KEY (task_id, depends_on_task_id) | No duplicate edges |
 | (check) | | CHECK (task_id != depends_on_task_id) | No self-dependencies |
+
+Partial unique index `uq_task_deps_single_parent` on `task_id` where
+`dep_type = 'parent-child'` (swarm-work-model §4): enforces exactly one
+parent per task. Created by migration revision `b2c3d4e5f6a7` after the
+existing data is canonicalised to satisfy it.
 
 ### Table: `task_context`
 
@@ -334,7 +342,9 @@ Methods: `archive_task`, `archive_completed_tasks`, `archive_old_terminal_tasks`
 ### Table: `task_metadata`
 
 Free-form per-task key/value store. Used for values that don't warrant a column
-(workflow bookkeeping, adapter hints).
+(workflow bookkeeping, adapter hints). Notably `container = "true"`, set on a
+task the first time it gains a child and never cleared — marks the task as a
+hierarchy container (swarm-work-model §4, §7).
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|

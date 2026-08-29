@@ -194,7 +194,11 @@ child's own `_apply_transition` when the new status is `COMPLETED` (seed = paren
 `set_parent` (seeds = old and new parent); `delete_task` / `archive_task` (seed = parent).
 The **no-live-session guard** is what lets a worker that spawned subtasks keep ownership
 of its own task until it closes it explicitly. The container's `task.completed` is emitted
-after commit like any other transition.
+after commit like any other transition. (Confirmed by the reviewed implementation: a
+settled container's `task.completed` goes through the same `_apply_transition` →
+`_emit_task_event` path as an ordinary completion, so the default pipeline's
+branch-guarded review rules — and reflection, once unpaused — see it exactly as they
+would any other completed task.)
 
 `_check_plan_parent_completion` is **deleted**. A backstop `_sweep_container_completion`
 runs every `work_graph.container_sweep_interval_seconds` (default 60): one aggregate
@@ -987,8 +991,12 @@ Data step — canonicalise from an **immutable snapshot** taken before any write
    Tasks with a column value and no edge → candidate edge from the column
    (`source='column_only'`).
 3. **Validate the candidate graph as a whole** before writing it: cross-project parent,
-   cycle, structural depth > 3, parent not found. Each failure → rejects table with the
-   reason; the candidate is dropped (task becomes a root).
+   cycle (every member of the cycle, not just one), structural depth > 3, parent not
+   found. Each failure → rejects table with the reason; the candidate is dropped (task
+   becomes a root). Depth is enforced with the **shallowest violator severed first, not
+   deepest**: on a chain that overruns the cap, cutting the shallowest offending node also
+   pulls its whole subtree one level shallower, so a single reject can clear every deeper
+   node in the chain too instead of the migration walking it node by node.
 4. Apply: delete every `parent-child` edge, insert the canonical set, write
    `parent_task_id` from it, set `task_metadata.container='1'` for every task with a
    child. Backfill `next_child_ordinal` **by id prefix, not by current parent**: for every
