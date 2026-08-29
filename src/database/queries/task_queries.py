@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import dataclass, field
 
 from sqlalchemy import delete, insert, select, update, func, and_
 
@@ -32,6 +33,14 @@ from src.models import Task, TaskStatus, TaskType, VerificationType, WorkspaceMo
 from src.state_machine import is_valid_status_transition
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TransitionResult:
+    """What one status write changed besides the row itself."""
+
+    flipped: set[str] = field(default_factory=set)
+    settled: list[str] = field(default_factory=list)
 
 
 class TaskQueryMixin:
@@ -219,6 +228,113 @@ class TaskQueryMixin:
         """
         self._sm_enforce = bool(enforce)
 
+    async def _apply_transition(
+        self,
+        conn,
+        task_id: str,
+        new_status: TaskStatus,
+        *,
+        context: str = "",
+        event=None,
+        force: bool = False,
+        **kwargs,
+    ) -> TransitionResult:
+        """Update task status with state-machine validation, on a caller-owned connection.
+
+        Read, validate, apply and recompute ``is_blocked`` happen in **one**
+        transaction (work-graph implementation spec §4.1), so no reader can
+        observe the new status against the old projection.
+
+        Validation stays warn-only in this phase — the ``state_machine.
+        enforce`` flag and the ``force`` bypass land with WG-5.
+
+        Returns the set of task ids whose ``is_blocked`` flipped, plus any
+        containers settled by this write (spec §7); the matching
+        ``task.blocked`` / ``task.unblocked`` audit rows and the settlement
+        listener callback are the caller's job, after the transaction commits.
+
+        A same-status call is **not** a no-op for the projection: it can still
+        carry a ``PROJECTION_INPUT_COLUMNS`` write (a FAILED task bumped to
+        ``retry_count == max_retries`` turns a transient failure terminal,
+        satisfying every ``conditional-blocks`` edge pointing at it), so it
+        recomputes too.
+        """
+        values = self._coerce_task_values(kwargs)
+        result = TransitionResult()
+
+        row = (await conn.execute(select(tasks.c.status).where(tasks.c.id == task_id))).fetchone()
+
+        if row is None:
+            logger.warning("transition_task: task '%s' not found, cannot validate", task_id)
+            values["status"] = new_status.value
+            values["updated_at"] = time.time()
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
+            return TransitionResult()
+
+        current_status = TaskStatus(row[0])
+
+        if current_status == new_status:
+            if values:
+                values["updated_at"] = time.time()
+                await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
+                if PROJECTION_INPUT_COLUMNS & values.keys():
+                    result.flipped = await self.recompute_blocked({task_id}, conn=conn)
+        else:
+            if not is_valid_status_transition(current_status, new_status):
+                ctx = f" ({context})" if context else ""
+                # WG-5: enforce raises when the flag is on and the
+                # caller didn't opt out via ``force=True``.  Warn-only
+                # otherwise (unchanged pre-flip behaviour).
+                if getattr(self, "_sm_enforce", False) and not force:
+                    from src.state_machine import InvalidTransition
+
+                    raise InvalidTransition(
+                        current_status,
+                        event,
+                        from_status=current_status,
+                        to_status=new_status,
+                    )
+                logger.warning(
+                    "Invalid task status transition: %s -> %s for task '%s'%s",
+                    current_status.value,
+                    new_status.value,
+                    task_id,
+                    ctx,
+                )
+
+            values["status"] = new_status.value
+            values["updated_at"] = time.time()
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
+            result.flipped = await self.recompute_blocked({task_id}, conn=conn)
+            # A task that will not run again cannot satisfy a gate by
+            # waiting, so retire any gate now left with only terminal
+            # waiters. In the same transaction as the status write: a
+            # reader must never see a finished task still gating work.
+            if new_status.value in self._TERMINAL_TASK_STATUSES:
+                await self.expire_satisfied_gates(task_id, conn=conn)
+
+            if new_status == TaskStatus.COMPLETED:
+                parent = (
+                    await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
+                ).scalar()
+                if parent:
+                    result.settled.extend(await self.settle_containers({parent}, conn=conn))
+
+        return result
+
+    _settlement_listener = None
+
+    def set_settlement_listener(self, cb) -> None:
+        """Register the post-commit callback for settled containers (spec §7)."""
+        self._settlement_listener = cb
+
+    async def _notify_settled(self, settled: list[str]) -> None:
+        if settled and self._settlement_listener is not None:
+            try:
+                await self._settlement_listener(list(settled))
+            except Exception:  # a listener failure must not fail the transition
+                logger.exception("settlement listener failed for %s", settled)
+
     async def transition_task(
         self,
         task_id: str,
@@ -229,84 +345,18 @@ class TaskQueryMixin:
         force: bool = False,
         **kwargs,
     ) -> set[str]:
-        """Update task status with state-machine validation.
+        """Public status write: one transaction, then post-commit emission.
 
-        Read, validate, apply and recompute ``is_blocked`` happen in **one**
-        transaction (work-graph implementation spec §4.1), so no reader can
-        observe the new status against the old projection.
-
-        Validation stays warn-only in this phase — the ``state_machine.
-        enforce`` flag and the ``force`` bypass land with WG-5.
-
-        Returns the set of task ids whose ``is_blocked`` flipped; the
-        matching ``task.blocked`` / ``task.unblocked`` audit rows are written
-        after the transaction commits.
-
-        A same-status call is **not** a no-op for the projection: it can still
-        carry a ``PROJECTION_INPUT_COLUMNS`` write (a FAILED task bumped to
-        ``retry_count == max_retries`` turns a transient failure terminal,
-        satisfying every ``conditional-blocks`` edge pointing at it), so it
-        recomputes too.
+        Returns the blocked-state flips (unchanged contract).  Settled
+        containers are delivered to the settlement listener after commit.
         """
-        values = self._coerce_task_values(kwargs)
-        flipped: set[str] = set()
-
         async with self._engine.begin() as conn:
-            row = (
-                await conn.execute(select(tasks.c.status).where(tasks.c.id == task_id))
-            ).fetchone()
-
-            if row is None:
-                logger.warning("transition_task: task '%s' not found, cannot validate", task_id)
-                values["status"] = new_status.value
-                values["updated_at"] = time.time()
-                await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
-                return set()
-
-            current_status = TaskStatus(row[0])
-
-            if current_status == new_status:
-                if values:
-                    values["updated_at"] = time.time()
-                    await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
-                    if PROJECTION_INPUT_COLUMNS & values.keys():
-                        flipped = await self.recompute_blocked({task_id}, conn=conn)
-            else:
-                if not is_valid_status_transition(current_status, new_status):
-                    ctx = f" ({context})" if context else ""
-                    # WG-5: enforce raises when the flag is on and the
-                    # caller didn't opt out via ``force=True``.  Warn-only
-                    # otherwise (unchanged pre-flip behaviour).
-                    if getattr(self, "_sm_enforce", False) and not force:
-                        from src.state_machine import InvalidTransition
-
-                        raise InvalidTransition(
-                            current_status,
-                            event,
-                            from_status=current_status,
-                            to_status=new_status,
-                        )
-                    logger.warning(
-                        "Invalid task status transition: %s -> %s for task '%s'%s",
-                        current_status.value,
-                        new_status.value,
-                        task_id,
-                        ctx,
-                    )
-
-                values["status"] = new_status.value
-                values["updated_at"] = time.time()
-                await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
-                flipped = await self.recompute_blocked({task_id}, conn=conn)
-                # A task that will not run again cannot satisfy a gate by
-                # waiting, so retire any gate now left with only terminal
-                # waiters. In the same transaction as the status write: a
-                # reader must never see a finished task still gating work.
-                if new_status.value in self._TERMINAL_TASK_STATUSES:
-                    await self.expire_satisfied_gates(task_id, conn=conn)
-
-        await self.log_blocked_flips(flipped)
-        return flipped
+            result = await self._apply_transition(
+                conn, task_id, new_status, context=context, event=event, force=force, **kwargs
+            )
+        await self.log_blocked_flips(result.flipped)
+        await self._notify_settled(result.settled)
+        return result.flipped
 
     #: Statuses after which a task will not run again, so anything gated on
     #: it can never be satisfied by waiting.

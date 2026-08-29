@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy import and_, delete, insert, literal, select, update
+from sqlalchemy import and_, delete, exists, insert, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -27,6 +27,10 @@ from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
 
 CONTAINER_KEY = "container"
 CONTAINER_VALUE = "true"  # json.dumps(True); matches set_task_meta's encoding
+
+#: Session states that still hold their task — a container in one of these
+#: cannot be settled out from under a live worker (spec §7).
+LIVE_SESSION_STATES = ("starting", "running", "draining")
 
 
 class HierarchyError(Exception):
@@ -227,11 +231,67 @@ class HierarchyQueryMixin:
             deps.setdefault(tid, set()).add(dep)
         return deps
 
-    # -- settlement (filled in by Task 5) ---------------------------------
+    # -- settlement -------------------------------------------------------
 
     async def settle_containers(self, seeds: set[str], *, conn) -> list[str]:
-        """Complete every seeded container whose children are all done (spec §7)."""
-        return []  # replaced in Task 5
+        """Complete every seeded container whose children are all done (spec §7).
+
+        Predicate: container flag ∧ status = IN_PROGRESS ∧ no live session holds
+        it ∧ no non-COMPLETED child (vacuously true when empty).  Each hit goes
+        through ``_apply_transition``, which seeds its own parent, so the walk
+        climbs at most ``MAX_STRUCTURAL_DEPTH`` levels.
+        """
+        from src.database.tables import sessions
+
+        settled: list[str] = []
+        pending = {s for s in seeds if s}
+        rounds = 0
+        while pending and rounds < MAX_STRUCTURAL_DEPTH:
+            rounds += 1
+            child = tasks.alias("child")
+            stmt = select(tasks.c.id).where(
+                and_(
+                    tasks.c.id.in_(sorted(pending)),
+                    tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                    exists(
+                        select(literal(1)).where(
+                            and_(
+                                task_metadata.c.task_id == tasks.c.id,
+                                task_metadata.c.key == CONTAINER_KEY,
+                                task_metadata.c.value == CONTAINER_VALUE,
+                            )
+                        )
+                    ),
+                    ~exists(
+                        select(literal(1)).where(
+                            and_(
+                                sessions.c.task_id == tasks.c.id,
+                                sessions.c.state.in_(LIVE_SESSION_STATES),
+                            )
+                        )
+                    ),
+                    ~exists(
+                        select(literal(1)).where(
+                            and_(
+                                child.c.parent_task_id == tasks.c.id,
+                                child.c.status != TaskStatus.COMPLETED.value,
+                            )
+                        )
+                    ),
+                )
+            )
+            hits = [r[0] for r in (await conn.execute(stmt)).fetchall()]
+            pending = set()
+            for cid in hits:
+                # _apply_transition seeds the container's own parent via
+                # settle_containers, so grandparents are handled by recursion;
+                # collect everything it settled.
+                res = await self._apply_transition(
+                    conn, cid, TaskStatus.COMPLETED, context="subtasks_completed"
+                )
+                settled.append(cid)
+                settled.extend(res.settled)
+        return settled
 
     # -- creation -------------------------------------------------------
 
