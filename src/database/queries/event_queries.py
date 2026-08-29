@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy import and_, insert, select
+from sqlalchemy import and_, func, insert, select
 
 from src.database.tables import events
 
@@ -120,3 +120,25 @@ class EventQueryMixin:
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
             return [dict(r) for r in result.mappings().fetchall()]
+
+    async def max_event_id(self) -> int:
+        """Return the highest event id, or 0 when the log is empty."""
+        async with self._engine.begin() as conn:
+            value = (await conn.execute(select(func.max(events.c.id)))).scalar()
+            return int(value) if value is not None else 0
+
+    async def count_events_after(self, seq: int, *, event_type: str, project_id: str) -> int:
+        """Count events of *event_type* for *project_id* with id > *seq*."""
+        async with self._engine.begin() as conn:
+            value = (
+                await conn.execute(
+                    select(func.count()).where(
+                        and_(
+                            events.c.id > seq,
+                            events.c.event_type == event_type,
+                            events.c.project_id == project_id,
+                        )
+                    )
+                )
+            ).scalar()
+            return int(value) if value is not None else 0

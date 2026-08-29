@@ -514,20 +514,35 @@ class WorkspaceQueryMixin:
                 )
             )
 
-    async def release_workspaces_for_agent(self, agent_id: str) -> int:
+    async def release_workspaces_for_agent(self, agent_id: str, *, conn=None) -> int:
         """Release all workspace locks held by an agent. Returns count released."""
+        stmt = (
+            update(workspaces)
+            .where(workspaces.c.locked_by_agent_id == agent_id)
+            .values(
+                locked_by_agent_id=None,
+                locked_by_task_id=None,
+                locked_at=None,
+                lock_mode=None,
+            )
+        )
+        if conn is not None:
+            result = await conn.execute(stmt)
+            return result.rowcount
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return result.rowcount
+
+    async def get_workspace_for_agent(self, agent_id: str) -> Workspace | None:
+        """Find the workspace currently locked by an agent."""
         async with self._engine.begin() as conn:
             result = await conn.execute(
-                update(workspaces)
-                .where(workspaces.c.locked_by_agent_id == agent_id)
-                .values(
-                    locked_by_agent_id=None,
-                    locked_by_task_id=None,
-                    locked_at=None,
-                    lock_mode=None,
-                )
+                select(workspaces).where(workspaces.c.locked_by_agent_id == agent_id)
             )
-            return result.rowcount
+            row = result.mappings().fetchone()
+            if not row:
+                return None
+            return self._row_to_workspace(row)
 
     async def release_workspaces_for_task(self, task_id: str) -> int:
         """Release all workspace locks held by a task. Returns count released."""

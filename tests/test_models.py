@@ -33,6 +33,8 @@ class TestTaskEvent:
         expected = {
             "DEPS_MET",
             "ASSIGNED",
+            # Pool-worker claim of a READY task (swarm-work-model §10)
+            "CLAIMED",
             "AGENT_STARTED",
             "AGENT_COMPLETED",
             "AGENT_FAILED",

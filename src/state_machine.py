@@ -75,6 +75,7 @@ VALID_TASK_TRANSITIONS: dict[tuple[TaskStatus, TaskEvent], TaskStatus] = {
     # --- Core lifecycle ---
     (TaskStatus.DEFINED, TaskEvent.DEPS_MET): TaskStatus.READY,
     (TaskStatus.READY, TaskEvent.ASSIGNED): TaskStatus.ASSIGNED,
+    (TaskStatus.READY, TaskEvent.CLAIMED): TaskStatus.IN_PROGRESS,
     (TaskStatus.ASSIGNED, TaskEvent.AGENT_STARTED): TaskStatus.IN_PROGRESS,
     (TaskStatus.IN_PROGRESS, TaskEvent.AGENT_COMPLETED): TaskStatus.COMPLETED,
     (TaskStatus.IN_PROGRESS, TaskEvent.PR_CREATED): TaskStatus.AWAITING_APPROVAL,

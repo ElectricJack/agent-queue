@@ -69,6 +69,10 @@ def _ready_reason(context: str) -> str:
     return "promoted"
 
 
+class StaleClaim(Exception):
+    """A fenced write found the task held under a different claim epoch (spec §10)."""
+
+
 @dataclass
 class TransitionResult:
     """What one status write changed besides the row itself."""
@@ -311,6 +315,7 @@ class TaskQueryMixin:
         event=None,
         force: bool = False,
         _settle_depth: int = 0,
+        expect_claim_epoch: int | None = None,
         **kwargs,
     ) -> TransitionResult:
         """Update task status with state-machine validation, on a caller-owned connection.
@@ -362,7 +367,19 @@ class TaskQueryMixin:
         if current_status == new_status:
             if values:
                 values["updated_at"] = time.time()
-                await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
+                stmt = update(tasks).where(tasks.c.id == task_id)
+                if expect_claim_epoch is not None:
+                    stmt = stmt.where(
+                        and_(
+                            tasks.c.claim_epoch == expect_claim_epoch,
+                            tasks.c.assigned_agent_id.isnot(None),
+                        )
+                    )
+                res = await conn.execute(stmt.values(**values))
+                if expect_claim_epoch is not None and res.rowcount == 0:
+                    raise StaleClaim(
+                        f"{task_id}: claim epoch {expect_claim_epoch} is not current"
+                    )
                 if PROJECTION_INPUT_COLUMNS & values.keys():
                     result.flipped = await self.recompute_blocked({task_id}, conn=conn)
                     # A same-status write can still flip is_blocked (e.g. a
@@ -438,7 +455,17 @@ class TaskQueryMixin:
 
             values["status"] = new_status.value
             values["updated_at"] = time.time()
-            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
+            stmt = update(tasks).where(tasks.c.id == task_id)
+            if expect_claim_epoch is not None:
+                stmt = stmt.where(
+                    and_(
+                        tasks.c.claim_epoch == expect_claim_epoch,
+                        tasks.c.assigned_agent_id.isnot(None),
+                    )
+                )
+            res = await conn.execute(stmt.values(**values))
+            if expect_claim_epoch is not None and res.rowcount == 0:
+                raise StaleClaim(f"{task_id}: claim epoch {expect_claim_epoch} is not current")
             result.flipped = await self.recompute_blocked({task_id}, conn=conn)
 
             if not was_frontier:
@@ -516,6 +543,7 @@ class TaskQueryMixin:
         context: str = "",
         event=None,
         force: bool = False,
+        expect_claim_epoch: int | None = None,
         **kwargs,
     ) -> set[str]:
         """Public status write: one transaction, then post-commit emission.
@@ -525,7 +553,14 @@ class TaskQueryMixin:
         """
         async with self._engine.begin() as conn:
             result = await self._apply_transition(
-                conn, task_id, new_status, context=context, event=event, force=force, **kwargs
+                conn,
+                task_id,
+                new_status,
+                context=context,
+                event=event,
+                force=force,
+                expect_claim_epoch=expect_claim_epoch,
+                **kwargs,
             )
         await self.log_blocked_flips(result.flipped)
         await self._notify_settled(result.settled)

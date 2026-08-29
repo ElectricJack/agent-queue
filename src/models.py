@@ -56,6 +56,9 @@ class TaskEvent(Enum):
 
     DEPS_MET = "DEPS_MET"
     ASSIGNED = "ASSIGNED"
+    # A pool-worker claim of a READY task (swarm-work-model §10): goes
+    # straight to IN_PROGRESS, no ASSIGNED hop for pulled work.
+    CLAIMED = "CLAIMED"
     AGENT_STARTED = "AGENT_STARTED"
     AGENT_COMPLETED = "AGENT_COMPLETED"
     AGENT_FAILED = "AGENT_FAILED"
