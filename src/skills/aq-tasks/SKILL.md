@@ -113,12 +113,31 @@ aq task close --task-id <id> --abandon-children \
 ```
 
 Rules the daemon enforces: a container with open children refuses a plain
-`close`/`delete`; `--abandon-children` and `--cascade` are refused while any
-descendant has a live session; adding a child under a COMPLETED container is
-refused. Failures come back as `hierarchy.<code>` (e.g. `hierarchy.depth`,
-`hierarchy.cycle`, `hierarchy.container_closed`, `hierarchy.open_children`,
-`hierarchy.live_descendants`, `hierarchy.has_children`) — `aq schema` lists
-the full `hierarchy_error` enum.
+`close`/`delete` — and so does *any* transition to COMPLETED (merge, approval,
+session close), unless it is an administrative forced close;
+`--abandon-children` and `--cascade` are refused while any descendant has a
+live session; adding a child under a COMPLETED container is refused.
+
+A successful `reparent` emits **`task.reparented`** on the bus, carrying
+`task_id`, `project_id`, `title`, `old_parent` and `new_parent` (either parent
+is `null` at the root). Playbooks can trigger on it.
+
+Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
+`hierarchy_error` enum):
+
+| Code | Meaning |
+|---|---|
+| `not_found` | the task or the requested parent does not exist |
+| `self_parent` | a task cannot be its own parent |
+| `cross_project` | parent and child live in different projects |
+| `container_closed` | the parent is COMPLETED and cannot take children |
+| `cycle` | the move would close a loop over blocking edges |
+| `depth` | structural or naming depth would exceed 3 |
+| `open_children` | close/complete refused: a direct child is non-terminal |
+| `open_descendants` | archive refused: a *deeper* descendant is non-terminal |
+| `has_children` | delete refused: the task is a container (use `--cascade`) |
+| `live_descendants` | abandon/cascade refused: a descendant has a live session |
+| `cycle_check_skipped` | internal: the bulk graph-creation path was handed a task that is not a fresh leaf |
 
 ## Dependencies
 

@@ -16,7 +16,12 @@ every method in this protocol.
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
 from typing import Protocol, runtime_checkable
+
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+from src.database.queries.task_queries import TransitionResult
 
 from src.models import (
     Agent,
@@ -110,7 +115,9 @@ class DatabaseBackend(Protocol):
         context: str = "",
         **kwargs,
     ) -> set[str]: ...
-    async def delete_task(self, task_id: str) -> None: ...
+    async def delete_task(
+        self, task_id: str, *, cascade: bool = False, conn=None
+    ) -> "TransitionResult | None": ...
     async def get_task_updated_at(self, task_id: str) -> float | None: ...
     async def get_task_created_at(self, task_id: str) -> float | None: ...
     async def add_task_context(
@@ -130,7 +137,7 @@ class DatabaseBackend(Protocol):
     async def remove_task_label(self, task_id: str, label: str) -> None: ...
     async def get_task_labels(self, task_id: str) -> list[str]: ...
     async def get_subtasks(self, parent_task_id: str) -> list[Task]: ...
-    async def get_task_tree(self, root_task_id: str) -> dict | None: ...
+    async def get_task_tree(self, root_task_id: str, *, max_depth: int = 4) -> dict | None: ...
     async def get_parent_tasks(
         self,
         project_id: str,
@@ -138,6 +145,43 @@ class DatabaseBackend(Protocol):
         labels: list[str] | None = None,
         any_label: list[str] | None = None,
     ) -> list[Task]: ...
+
+    # --- Hierarchy (swarm work model, spec Part I §4-§8) ---
+    #
+    # ``set_parent`` / ``set_parent_bulk`` are the *only* writers of
+    # ``tasks.parent_task_id``; both take a caller-owned ``conn`` because the
+    # edge, the pointer, the blocked-state recompute and the settlement are
+    # one transaction.
+
+    async def get_children(
+        self,
+        parent_id: str,
+        *,
+        recursive: bool = False,
+        status: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[Task]: ...
+    async def get_children_summary(self, task_id: str) -> dict | None: ...
+    async def set_parent(
+        self, task_id: str, parent_id: str | None, *, conn
+    ) -> tuple[set[str], list[str]]: ...
+    async def set_parent_bulk(
+        self, child_ids: list[str], parent_id: str, *, conn
+    ) -> tuple[set[str], list[str]]: ...
+    async def settle_containers(
+        self, seeds: set[str], *, conn, depth: int = 0
+    ) -> "TransitionResult": ...
+    async def open_children(self, task_id: str, *, conn=None) -> list[str]: ...
+    async def subtree_ids(self, root_id: str, *, conn) -> list[str]: ...
+    async def abandon_subtree(self, task_id: str, *, conn) -> "TransitionResult": ...
+    async def live_descendant_sessions(
+        self, task_id: str, *, conn
+    ) -> list[tuple[str, str]]: ...
+
+    # --- Transactions ---
+
+    def immediate(self) -> "AbstractAsyncContextManager[AsyncConnection]": ...
 
     # --- Blocked-state projection (work-graph design §4) ---
 

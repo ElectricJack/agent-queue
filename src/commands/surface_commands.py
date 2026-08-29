@@ -68,6 +68,7 @@ class SurfaceCommandsMixin:
                     "open_children",
                     "open_descendants",
                     "live_descendants",
+                    "cycle_check_skipped",
                 ],
             },
         }

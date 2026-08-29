@@ -291,6 +291,24 @@ SELECT id FROM tasks WHERE id IN (:ordered) FOR UPDATE   -- PG only; canonical s
 - **Registry invariant:** emit-site scan → every event type registered in `EVENT_SCHEMAS`.
 - **Perf:** 10k-task synthetic graph — single-edge recompute < 50 ms (SQLite), full backfill < 5 s; frontier query uses `idx_tasks_project_status_blocked` (EXPLAIN assertion). Note the budget covers the flip **events**, not just the `UPDATE`: `log_blocked_flips` must write one batched insert, not one transaction per flipped row (per-row `log_event` cost ~50× the recompute `UPDATE` and blew the 5 s backfill budget on its own).
 
+## 11a. Behaviour changes (hierarchy model)
+
+Three user-visible changes landed with the swarm hierarchy work
+(`docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` Part I):
+
+- **Tasks created with `--parent` start `DEFINED`, not `READY`.** They become
+  READY on the next cascade tick (≤5 s) once dependency promotion has run, so
+  a script that creates a child and immediately asserts `READY` now sees one
+  tick of `DEFINED` first.
+- **Archiving the last non-COMPLETED child settles the container.** An
+  `IN_PROGRESS` container whose only remaining open child is archived now
+  completes on the spot — archive is a mutation of the child set like any
+  other, and settlement runs in the same transaction.
+- **Abandoned descendants do not emit `task.completed`.** `--abandon-children`
+  closes them with `work_outcome = abandoned`; they were abandoned, not
+  completed, so no completion event fires and the review/reflection pipelines
+  are not triggered for them. This is intended.
+
 ## 12. Risks
 
 | Risk | Mitigation |

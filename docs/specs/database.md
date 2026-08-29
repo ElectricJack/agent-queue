@@ -152,8 +152,10 @@ Directed edge: "`task_id` depends on `depends_on_task_id`" (i.e., `depends_on_ta
 |---|---|---|---|
 | `task_id` | TEXT | NOT NULL REFERENCES tasks(id) | The waiting task |
 | `depends_on_task_id` | TEXT | NOT NULL REFERENCES tasks(id) | Must complete first |
-| (composite PK) | | PRIMARY KEY (task_id, depends_on_task_id) | No duplicate edges |
+| `dep_type` | TEXT | NOT NULL DEFAULT `'blocks'` | Edge type: `blocks`, `parent-child`, `waits-for`, `conditional-blocks`, `discovered-from`, `related`, `duplicates`, `supersedes`. Part of the PK, so one pair of tasks may carry several differently-typed edges. |
+| (composite PK) | | PRIMARY KEY (task_id, depends_on_task_id, dep_type) | No duplicate edges *of the same type* |
 | (check) | | CHECK (task_id != depends_on_task_id) | No self-dependencies |
+| (check) | | CHECK `ck_task_deps_dep_type` on `dep_type` | Only the eight known types |
 
 Partial unique index `uq_task_deps_single_parent` on `task_id` where
 `dep_type = 'parent-child'` (swarm-work-model §4): enforces exactly one
