@@ -636,7 +636,7 @@ Also after `recompute_blocked` returns `flipped`: `for tid in await self._note_f
 
 `transition_task`: after commit, `await self._notify_ready(result.ready)` — mirror `_notify_settled`: `set_ready_listener(cb)`, `_ready_listener`, `async _notify_ready(entries: list[tuple[str, str]])` (no-op when the list is empty or no listener is set; exceptions logged, never raised).
 
-`dependency_queries.add_dependency/remove_dependency` and `gate_queries.resolve_gate`: they call `recompute_blocked` then `log_blocked_flips(flipped)`; extend `log_blocked_flips` to also call `_note_frontier_entry` for flipped ids whose `is_blocked` is now 0 (it already re-reads `is_blocked` for the audit rows — add `status` to that select and record `task.ready` with reason `unblocked` for `READY ∧ 0` rows, in the same transaction it opens) and return the entries; callers pass them to `_notify_ready`. Note `log_blocked_flips` opens its own transaction post-commit — that is acceptable here (the flips themselves already committed; the audit row for them is best-effort by existing design), but for `_apply_transition`'s own path the in-transaction write above is authoritative.
+`dependency_queries.add_dependency/remove_dependency` and `gate_queries.resolve_gate`: they call `recompute_blocked` then `log_blocked_flips(flipped)` without going through `_apply_transition`. Give `log_blocked_flips` a keyword `note_ready: bool = False`; when `True` it also calls `_note_frontier_entry` for flipped ids whose `status == READY ∧ is_blocked == 0` (it already re-reads `is_blocked` for the audit rows — add `status` to that select), in the same transaction it opens, with reason `unblocked`, and returns the entries (`list[tuple[str, str]]`, empty otherwise); those three callers pass `note_ready=True` and hand the result to `_notify_ready`. `transition_task`, `release_claim` and every other caller that already ran `_apply_transition` keep the default `False` — `_apply_transition` recorded those entries in-transaction and must not be double-counted.
 
 `remove_task_label`: if `label.startswith(HOLD_LABEL_PREFIX)`, after the delete in the same transaction call `_note_frontier_entry(conn, {task_id}, reason="hold_removed")` and return the list; otherwise return `[]`. `_cmd_task_set`'s `labels_remove` loop: `entered = await self.db.remove_task_label(...)`; `await self.db._notify_ready([(t, "hold_removed") for t in entered])`.
 
@@ -704,6 +704,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `src/database/queries/claim_queries.py`
 - Modify: `src/database/queries/__init__.py`, `src/database/adapters/sqlite.py:59-85`, `src/database/adapters/postgresql.py` (register `ClaimQueryMixin` right after `HierarchyQueryMixin`)
 - Modify: `src/database/queries/task_queries.py` (`_apply_transition` gains `expect_claim_epoch: int | None = None`; `transition_task` threads it; new `StaleClaim` exception)
+- Modify: `src/state_machine.py` (`TaskEvent.CLAIMED`; `(TaskStatus.READY, TaskEvent.CLAIMED): TaskStatus.IN_PROGRESS` in `VALID_TASK_TRANSITIONS` — a claim goes straight to IN_PROGRESS, there is no ASSIGNED hop for pulled work), `src/models.py` (`TaskEvent.CLAIMED = "claimed"` if the enum lives there)
 - Modify: `src/database/queries/workspace_queries.py:517` (`release_workspaces_for_agent(agent_id, *, conn=None)`; new `get_workspace_for_agent`)
 - Modify: `src/database/queries/event_queries.py` (`max_event_id`, `count_events_after`)
 - Modify: `src/database/base.py` (protocol methods)
@@ -1087,7 +1088,8 @@ class ClaimQueryMixin:
         if res.rowcount != 1:
             return None
         await self._apply_transition(
-            conn, task_id, TaskStatus.IN_PROGRESS, context="claim", assigned_agent_id=agent_id
+            conn, task_id, TaskStatus.IN_PROGRESS, context="claim", event=TaskEvent.CLAIMED,
+            assigned_agent_id=agent_id,
         )
         row = (await conn.execute(select(tasks).where(tasks.c.id == task_id))).mappings().fetchone()
         return self._row_to_task(row)
