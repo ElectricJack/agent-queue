@@ -272,6 +272,22 @@ class TestStallLadder:
         assert (t.status, t.assigned_agent_id) == (TaskStatus.READY, None)
 
 
+class TestPrepareTimeoutFlagGate:
+    """I7: pool sessions can only exist when ``swarm.enabled`` is true."""
+
+    async def test_skips_queries_when_swarm_disabled(self, db, reconciler):
+        reconciler.config.swarm.enabled = False
+        db.list_sessions = AsyncMock(side_effect=AssertionError("must not query"))
+        await reconciler._step_prepare_timeout([], time.time())
+
+    async def test_queries_when_swarm_enabled(self, db, reconciler):
+        reconciler.config.swarm.enabled = True
+        spy = AsyncMock(return_value=[])
+        db.list_sessions = spy
+        await reconciler._step_prepare_timeout([], time.time())
+        assert spy.await_count == 2  # claiming + preparing
+
+
 class TestOrphans:
     async def test_pool_orphan_terminates_with_reason_orphaned(self, db, reconciler):
         sid = await held_pool_session(db)

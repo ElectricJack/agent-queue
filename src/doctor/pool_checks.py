@@ -21,6 +21,22 @@ OWNER = "swarm-work-model"
 _LIVE_TASK_STATUSES = (TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED)
 
 
+async def _pool_profile_ids(db) -> set[str]:
+    """Bare agent-type ids of every ``lifecycle: pool`` profile.
+
+    A project-scoped profile is stored as ``<project>:<agent-type>`` while
+    ``agents.profile_id`` holds the bare agent-type id, so the id has to be
+    normalised before it can be matched against an agent — the same
+    ``rsplit(":", 1)[-1]`` the orchestrator's reaper (``core.py``) and
+    ``_reconcile_pools`` (``pools.py``) use.
+    """
+    return {
+        p.id.rsplit(":", 1)[-1]
+        for p in await db.list_profiles()
+        if getattr(p, "lifecycle", "task") == "pool"
+    }
+
+
 def _no_db_result(check_id: str) -> CheckResult:
     return CheckResult(
         id=check_id,
@@ -108,8 +124,7 @@ async def _find_orphan_agents(ctx: DoctorContext):
     Gate on the same ``2 x prepare_timeout`` staleness ``pools.preparing_stuck``
     uses for its own "this has been mid-flight too long" judgment call.
     """
-    profiles = await ctx.db.list_profiles()
-    pool_profile_ids = {p.id for p in profiles if p.lifecycle == "pool"}
+    pool_profile_ids = await _pool_profile_ids(ctx.db)
     if not pool_profile_ids:
         return []
     threshold = time.time() - 2 * _prepare_timeout(ctx)
@@ -216,6 +231,49 @@ async def _fix_preparing_stuck(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# pools.disabled (report-only — no fix)
+# ---------------------------------------------------------------------------
+
+
+async def _check_pools_disabled(ctx: DoctorContext) -> CheckResult:
+    """Report-only: pool profiles exist but ``swarm.enabled`` is False.
+
+    Ruling P2-17.  The two gates that keep a ``lifecycle: pool`` profile
+    from being push-launched are lifecycle-only (they do not consult
+    ``swarm.enabled``), while ``_reconcile_pools`` -- the only thing that
+    *does* launch pool workers -- is flag-gated.  So with the flag off a
+    pool profile's tasks are never pushed and never claimed: they sit in
+    READY forever with nothing in the log to say why.  Both gates are
+    correct as they stand; what was missing is anyone saying so out loud.
+    """
+    if ctx.db is None:
+        return _no_db_result("pools.disabled")
+    swarm = getattr(ctx.config, "swarm", None)
+    enabled = getattr(swarm, "enabled", True) if swarm is not None else True
+    pool_profile_ids = await _pool_profile_ids(ctx.db)
+    if enabled or not pool_profile_ids:
+        return CheckResult(
+            id="pools.disabled",
+            severity=Severity.OK,
+            detail=(
+                "no pool profiles configured"
+                if not pool_profile_ids
+                else "swarm.enabled is true"
+            ),
+        )
+    ids = sorted(pool_profile_ids)
+    return CheckResult(
+        id="pools.disabled",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(ids)} pool profile(s) configured but swarm.enabled is false — "
+            "their tasks are never pushed and never claimed (report-only)"
+        ),
+        data={"count": len(ids), "profiles": ids[:50]},
+    )
+
+
+# ---------------------------------------------------------------------------
 # claims.holder_consistency (report-only — no fix)
 # ---------------------------------------------------------------------------
 
@@ -226,23 +284,36 @@ async def _check_holder_consistency(ctx: DoctorContext) -> CheckResult:
     It ranks by state/recency and returns its single best guess -- exactly
     the wrong tool here, since "two sessions both think they hold this
     task" is itself the anomaly this check exists to catch. Counts every
-    session whose ``task_id`` matches instead of asking for "the" one, and
-    a missing ``claimed_by_session`` meta value is treated as an anomaly
-    (not a free pass) -- a claim that ever went through ``record_holder``
-    always has one.
+    session whose ``task_id`` matches instead of asking for "the" one.
+
+    Scope: **claim-path** holders only.  ``claimed_by_session`` is written
+    by ``record_holder``, which only the claim path calls, so a
+    push-launched (``lifecycle: task``) session legitimately holds its task
+    with no such meta value -- treating that as an anomaly warned on every
+    healthy push-launched task.  A task held *only* by non-pool sessions is
+    therefore skipped.  A task with no holder session at all is still
+    flagged -- an IN_PROGRESS task with an assigned agent and nobody
+    holding it is an anomaly whichever path put it there.  Within pool
+    holders a missing ``claimed_by_session`` is still an anomaly, not a
+    free pass.
     """
     if ctx.db is None:
         return _no_db_result("claims.holder_consistency")
     sessions_by_task: dict[str, list[str]] = {}
+    pool_session_ids: set[str] = set()
     for s in await ctx.db.list_sessions():
+        if getattr(s, "lifecycle", "task") == "pool":
+            pool_session_ids.add(s.id)
         if s.task_id:
             sessions_by_task.setdefault(s.task_id, []).append(s.id)
     bad = []
     for task in await ctx.db.list_tasks(status=TaskStatus.IN_PROGRESS):
         if not task.assigned_agent_id:
             continue
-        agent = await ctx.db.get_agent(task.assigned_agent_id)
         holders = sessions_by_task.get(task.id, [])
+        if holders and not any(h in pool_session_ids for h in holders):
+            continue
+        agent = await ctx.db.get_agent(task.assigned_agent_id)
         meta = await ctx.db.get_task_meta(task.id, "claimed_by_session")
         ok = (
             agent is not None
@@ -280,6 +351,9 @@ def pool_checks() -> list[DoctorCheck]:
             fix=_fix_preparing_stuck,
             owner=OWNER,
         ),
+        # Report-only: no ``fix`` — flipping ``swarm.enabled`` is an operator
+        # decision, not a repair (they may have disabled it deliberately).
+        DoctorCheck(id="pools.disabled", run=_check_pools_disabled, owner=OWNER),
         # Report-only: no ``fix`` — a claim/holder mismatch needs a human to
         # decide which side (agent, session, or task) is authoritative.
         DoctorCheck(id="claims.holder_consistency", run=_check_holder_consistency, owner=OWNER),

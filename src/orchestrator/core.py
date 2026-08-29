@@ -704,6 +704,38 @@ class Orchestrator(
         # Last resort fallback
         return "main"
 
+    async def _warn_if_pools_disabled(self) -> None:
+        """Say out loud that ``swarm.enabled=False`` strands pool profiles.
+
+        Ruling P2-17.  The push-launch gates are lifecycle-only while
+        ``_reconcile_pools`` is flag-gated, so a ``lifecycle: pool`` profile
+        with the swarm flag off is never pushed *and* never claimed — its
+        tasks sit in READY with nothing explaining why.  Both gates stay as
+        they are; this makes the consequence visible once at startup (the
+        ``pools.disabled`` doctor check reports the same condition on
+        demand).
+        """
+        if getattr(self.config.swarm, "enabled", True):
+            return
+        try:
+            pool_profiles = [
+                p.id
+                for p in await self.db.list_profiles()
+                if getattr(p, "lifecycle", "task") == "pool"
+            ]
+        except Exception:  # pragma: no cover - never block startup on a warning
+            logger.debug("pool-profile startup warning skipped", exc_info=True)
+            return
+        if pool_profiles:
+            logger.warning(
+                "swarm.enabled is false but %d pool profile(s) are configured (%s): "
+                "their tasks will never be pushed nor claimed. Set swarm.enabled: true "
+                "or change those profiles to lifecycle: task. "
+                "(doctor check: pools.disabled)",
+                len(pool_profiles),
+                ", ".join(sorted(pool_profiles)[:10]),
+            )
+
     async def _sync_profiles_from_config(self) -> None:
         """Sync agent profiles from YAML config into the database (idempotent upsert).
 
@@ -1388,6 +1420,7 @@ class Orchestrator(
         if getattr(self, "session_lens", None) is not None:
             self.session_lens._token_store = self.token_store
         await self._sync_profiles_from_config()
+        await self._warn_if_pools_disabled()
         # Adoption runs *before* recovery: a session that survived the
         # restart must be re-bound before the blanket reset would otherwise
         # yank its task out from under it.  Harnesses are loaded first
@@ -3296,8 +3329,10 @@ class Orchestrator(
         self._last_scheduler_idle_by_project = _idle_by_project(state)
         # Wakes any ``task_claim`` long-poll blocked on admission (spec §10):
         # a fresh snapshot may have flipped a project back to admissible
-        # even though nothing on the frontier changed.
-        await self.bus.emit("snapshot.refreshed", {"tick": time.time()})
+        # even though nothing on the frontier changed.  Nobody else listens
+        # for this, so skip the every-tick emit when no long-poll is waiting.
+        if self.bus.subscriber_count("snapshot.refreshed") > 0:
+            await self.bus.emit("snapshot.refreshed", {"tick": time.time()})
         # Log *why* READY tasks didn't get assigned, but only when the set of
         # unassignable reasons changes. Silent scheduler no-ops previously
         # left tasks stuck in READY forever with zero log signal.

@@ -439,7 +439,14 @@ class SessionReconciler:
         claimed task; a session that never leaves that window (crashed
         mid-prepare, workspace setup hung) would otherwise hold the task
         and the agent forever.
+
+        Skipped entirely when ``swarm.enabled`` is false: pool sessions are
+        only ever created by ``_reconcile_pools``, which is itself
+        flag-gated, so the two ``list_sessions`` queries below can only
+        come back empty.
         """
+        if not getattr(self.config.swarm, "enabled", True):
+            return
         timeout = self.config.swarm.prepare_timeout
         for phase in ("claiming", "preparing"):
             for s in await self.db.list_sessions(lifecycle="pool", claim_phase=phase):

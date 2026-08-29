@@ -63,6 +63,7 @@ def test_check_names():
         "pools.stuck",
         "pools.orphan_agents",
         "pools.preparing_stuck",
+        "pools.disabled",
         "claims.holder_consistency",
     }
     assert all(c.owner == "swarm-work-model" for c in pool_checks.CHECKS)
@@ -263,3 +264,90 @@ async def test_holder_consistency_flags_duplicate_session_holders(db):
         )
     finding = await pool_checks.run_check(db, "claims.holder_consistency", config=None)
     assert finding.data["count"] == 1
+
+
+async def test_holder_consistency_ignores_push_launched_holder(db):
+    """A ``lifecycle: task`` session holding its task is healthy (I1).
+
+    ``claimed_by_session`` is written only by ``record_holder`` on the claim
+    path, so a push-launched session never has one -- which used to make
+    this check WARN on every healthy push-launched task.
+    """
+    await db.create_profile(AgentProfile(id="pusher", name="p", lifecycle="task"))
+    await db.create_agent(Agent(id="a1", name="a1", profile_id="pusher", state=AgentState.BUSY))
+    await db.create_task(
+        Task(
+            id="t1",
+            project_id=PROJECT_ID,
+            title="t",
+            description="d",
+            status=TaskStatus.IN_PROGRESS,
+            assigned_agent_id="a1",
+        )
+    )
+    await db.update_agent("a1", current_task_id="t1")
+    await db.create_session(
+        SessionRecord(
+            id="s1",
+            project_id=PROJECT_ID,
+            profile_id="pusher",
+            harness="claude",
+            provider="fake",
+            name="s1",
+            lifecycle="task",
+            work_dir="/w",
+            epoch="e",
+            instance_token="t",
+            started_at=time.time(),
+            state="running",
+            agent_id="a1",
+            task_id="t1",
+        )
+    )
+    finding = await pool_checks.run_check(db, "claims.holder_consistency", config=None)
+    assert finding.severity is Severity.OK
+    assert finding.data.get("count", 0) == 0
+
+
+async def test_orphan_agents_sees_project_scoped_pool_profile(db):
+    """Project-scoped profile ids are ``<project>:<agent-type>`` (M2).
+
+    ``agents.profile_id`` holds the bare agent-type id, so the profile id
+    has to be normalised the same way ``core.py``/``pools.py`` do or the
+    check never matches a project-scoped pool agent.
+    """
+    from src.config import AppConfig
+
+    await db.create_profile(
+        AgentProfile(id=f"{PROJECT_ID}:scoped", name="scoped", lifecycle="pool")
+    )
+    cfg = AppConfig()
+    cfg.swarm.prepare_timeout = 5
+    await db.create_agent(Agent(id="a9", name="a9", profile_id="scoped", state=AgentState.IDLE))
+    await db.update_agent("a9", created_at=time.time() - (2 * cfg.swarm.prepare_timeout) - 1)
+    finding = await pool_checks.run_check(db, "pools.orphan_agents", config=cfg)
+    assert finding.data["count"] == 1
+    assert "a9" in str(finding.data)
+
+
+async def test_pools_disabled_warns_when_flag_off(db):
+    """I5 / ruling P2-17: pool profiles + ``swarm.enabled=False`` strands work."""
+    from src.config import AppConfig
+
+    cfg = AppConfig()
+    cfg.swarm.enabled = False
+    finding = await pool_checks.run_check(db, "pools.disabled", config=cfg)
+    assert finding.severity is Severity.WARN
+    assert finding.data["count"] == 1
+    assert "worker" in finding.data["profiles"]
+    check = next(c for c in pool_checks.CHECKS if c.id == "pools.disabled")
+    assert check.fix is None
+
+
+async def test_pools_disabled_ok_when_flag_on(db):
+    from src.config import AppConfig
+
+    cfg = AppConfig()
+    cfg.swarm.enabled = True
+    finding = await pool_checks.run_check(db, "pools.disabled", config=cfg)
+    assert finding.severity is Severity.OK

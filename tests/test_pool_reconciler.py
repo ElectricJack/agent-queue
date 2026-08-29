@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import time
 
@@ -248,6 +249,38 @@ class TestReconcilePools:
         updated = await db.get_session(session.id)
         assert updated.state == "stopped"
         assert not os.path.exists(claim_path)
+
+    async def test_startup_warns_when_pool_profiles_but_swarm_disabled(self, orch, caplog):
+        """I5 / ruling P2-17: say out loud that the flag strands pool work."""
+        orch.config.swarm.enabled = False
+        with caplog.at_level(logging.WARNING, logger="src.orchestrator.core"):
+            await orch._warn_if_pools_disabled()
+        assert any("swarm.enabled is false" in r.message for r in caplog.records)
+
+    async def test_startup_silent_when_swarm_enabled(self, orch, caplog):
+        orch.config.swarm.enabled = True
+        with caplog.at_level(logging.WARNING, logger="src.orchestrator.core"):
+            await orch._warn_if_pools_disabled()
+        assert not any("swarm.enabled is false" in r.message for r in caplog.records)
+
+    async def test_schedule_skips_snapshot_emit_with_no_subscribers(self, orch, db):
+        """I7: the only listener is a ``task_claim`` long-poll (none here)."""
+        await ready(db, "t1")
+        assert orch.bus.subscriber_count("snapshot.refreshed") == 0
+        await orch._schedule()
+        emitted = [c.args[0] for c in orch.bus.emit.await_args_list if c.args]
+        assert "snapshot.refreshed" not in emitted
+
+    async def test_schedule_emits_snapshot_when_someone_listens(self, orch, db):
+        await ready(db, "t1")
+
+        async def _noop(_event):
+            return None
+
+        orch.bus.subscribe("snapshot.refreshed", _noop)
+        await orch._schedule()
+        emitted = [c.args[0] for c in orch.bus.emit.await_args_list if c.args]
+        assert "snapshot.refreshed" in emitted
 
     async def test_schedule_excludes_pool_profile_task_and_pool_agent(self, orch, db):
         await ready(db, "t1")
