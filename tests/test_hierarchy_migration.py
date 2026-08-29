@@ -6,9 +6,13 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 from sqlalchemy import create_engine, inspect
+from sqlalchemy import text as sqltext
+
+from src.database import hierarchy_migration as hm
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -36,11 +40,22 @@ class TestRevisionA:
         assert res.returncode == 0, res.stderr
         insp = inspect(create_engine(f"sqlite:///{db_path}"))
         task_cols = {c["name"] for c in insp.get_columns("tasks")}
-        assert {"next_child_ordinal", "created_by_kind", "created_by_id", "claim_epoch",
-                "filed_count"} <= task_cols
+        assert {
+            "next_child_ordinal",
+            "created_by_kind",
+            "created_by_id",
+            "claim_epoch",
+            "filed_count",
+        } <= task_cols
         sess_cols = {c["name"] for c in insp.get_columns("sessions")}
-        assert {"claims", "agent_id", "claim_phase", "claim_phase_at",
-                "last_claim_epoch", "last_claim_result"} <= sess_cols
+        assert {
+            "claims",
+            "agent_id",
+            "claim_phase",
+            "claim_phase_at",
+            "last_claim_epoch",
+            "last_claim_result",
+        } <= sess_cols
         prof_cols = {c["name"] for c in insp.get_columns("agent_profiles")}
         assert {"min_active", "max_active", "max_claims_per_session"} <= prof_cols
         assert "hierarchy_migration_rejects" in insp.get_table_names()
@@ -54,3 +69,153 @@ class TestRevisionA:
         insp = inspect(create_engine(f"sqlite:///{db_path}"))
         assert "next_child_ordinal" not in {c["name"] for c in insp.get_columns("tasks")}
         assert "hierarchy_migration_rejects" not in insp.get_table_names()
+
+
+def _seed(engine, rows, edges):
+    """rows: (id, project, parent_col, status); edges: (task, parent)."""
+    with engine.begin() as c:
+        for pid in {r[1] for r in rows}:
+            c.execute(
+                sqltext("INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (:i, :i, 0)"),
+                {"i": pid},
+            )
+        for tid, proj, parent_col, status in rows:
+            c.execute(
+                sqltext(
+                    "INSERT INTO tasks (id, project_id, parent_task_id, title, description, "
+                    "status, created_at, updated_at) "
+                    "VALUES (:i, :p, :pc, :i, :i, :s, :t, :t)"
+                ),
+                {"i": tid, "p": proj, "pc": parent_col, "s": status, "t": time.time()},
+            )
+        for t, p in edges:
+            c.execute(
+                sqltext(
+                    "INSERT INTO task_dependencies (task_id, depends_on_task_id, dep_type) "
+                    "VALUES (:t, :p, 'parent-child')"
+                ),
+                {"t": t, "p": p},
+            )
+
+
+@pytest.fixture
+def engine_at_a(db_path):
+    assert _alembic(db_path, "upgrade", "a1b2c3d4e5f6").returncode == 0
+    return create_engine(f"sqlite:///{db_path}")
+
+
+class TestCanonicalise:
+    def test_column_breaks_duplicate_edge_tie(self, engine_at_a):
+        _seed(
+            engine_at_a,
+            [
+                ("p1", "x", None, "IN_PROGRESS"),
+                ("p2", "x", None, "IN_PROGRESS"),
+                ("c", "x", "p2", "READY"),
+            ],
+            [("c", "p1"), ("c", "p2")],
+        )
+        with engine_at_a.begin() as conn:
+            plan = hm.canonicalise(conn)
+        assert plan.parents["c"] == "p2"
+        assert [r.reason for r in plan.rejects] == ["duplicate"]
+        assert plan.rejects[0].parent_id == "p1"
+
+    def test_column_only_becomes_edge(self, engine_at_a):
+        _seed(engine_at_a, [("p", "x", None, "IN_PROGRESS"), ("c", "x", "p", "READY")], [])
+        with engine_at_a.begin() as conn:
+            plan = hm.canonicalise(conn)
+        assert plan.parents == {"c": "p"}
+        assert plan.rejects == []
+
+    def test_cross_project_parent_is_rejected(self, engine_at_a):
+        _seed(engine_at_a, [("p", "x", None, "IN_PROGRESS"), ("c", "y", "p", "READY")], [])
+        with engine_at_a.begin() as conn:
+            plan = hm.canonicalise(conn)
+        assert "c" not in plan.parents
+        assert plan.rejects[0].reason == "cross_project"
+
+    def test_cycle_and_depth_rejected(self, engine_at_a):
+        _seed(
+            engine_at_a,
+            [
+                ("a", "x", None, "IN_PROGRESS"),
+                ("b", "x", None, "IN_PROGRESS"),
+                ("d1", "x", None, "IN_PROGRESS"),
+                ("d2", "x", None, "IN_PROGRESS"),
+                ("d3", "x", None, "IN_PROGRESS"),
+                ("d4", "x", None, "READY"),
+            ],
+            [("a", "b"), ("b", "a"), ("d2", "d1"), ("d3", "d2"), ("d4", "d3")],
+        )
+        with engine_at_a.begin() as conn:
+            plan = hm.canonicalise(conn)
+        reasons = {(r.task_id, r.reason) for r in plan.rejects}
+        assert ("d4", "depth") in reasons
+        assert any(t in ("a", "b") and r == "cycle" for t, r in reasons)
+
+    def test_ordinals_backfill_by_id_prefix_across_archive(self, engine_at_a):
+        _seed(engine_at_a, [("p", "x", None, "IN_PROGRESS"), ("p.3", "x", None, "READY")], [])
+        with engine_at_a.begin() as c:
+            c.execute(
+                sqltext(
+                    "INSERT INTO archived_tasks (id, project_id, title, description, status, "
+                    "created_at, updated_at, archived_at) "
+                    "VALUES ('p.7', 'x', 'a', 'a', 'COMPLETED', 0, 0, 0)"
+                )
+            )
+        with engine_at_a.begin() as conn:
+            plan = hm.canonicalise(conn)
+            hm.apply(conn, plan)
+        with engine_at_a.begin() as conn:
+            n = conn.execute(sqltext("SELECT next_child_ordinal FROM tasks WHERE id='p'")).scalar()
+        assert n == 8
+
+
+class TestRevisionB:
+    def test_fails_on_rejects_but_keeps_report(self, db_path, engine_at_a):
+        _seed(engine_at_a, [("p", "x", None, "IN_PROGRESS"), ("c", "y", "p", "READY")], [])
+        res = _alembic(db_path, "upgrade", "b2c3d4e5f6a7")
+        assert res.returncode != 0
+        with engine_at_a.begin() as conn:
+            rows = conn.execute(
+                sqltext("SELECT reason FROM hierarchy_migration_rejects")
+            ).fetchall()
+        assert rows == [("cross_project",)]
+        # Schema unchanged: no unique index yet.
+        insp = inspect(engine_at_a)
+        assert not any(
+            i["name"] == "uq_task_deps_single_parent" for i in insp.get_indexes("task_dependencies")
+        )
+
+    def test_allow_rejects_env_proceeds(self, db_path, engine_at_a, monkeypatch):
+        _seed(engine_at_a, [("p", "x", None, "IN_PROGRESS"), ("c", "y", "p", "READY")], [])
+        monkeypatch.setenv("AQ_MIGRATION_ALLOW_REJECTS", "1")
+        res = _alembic(db_path, "upgrade", "b2c3d4e5f6a7")
+        assert res.returncode == 0, res.stderr
+        with engine_at_a.begin() as conn:
+            assert (
+                conn.execute(sqltext("SELECT parent_task_id FROM tasks WHERE id='c'")).scalar()
+                is None
+            )
+        insp = inspect(engine_at_a)
+        assert any(
+            i["name"] == "uq_task_deps_single_parent" for i in insp.get_indexes("task_dependencies")
+        )
+
+    def test_clean_data_migrates_and_flags_containers(self, db_path, engine_at_a):
+        _seed(
+            engine_at_a, [("p", "x", None, "IN_PROGRESS"), ("c", "x", None, "READY")], [("c", "p")]
+        )
+        assert _alembic(db_path, "upgrade", "b2c3d4e5f6a7").returncode == 0
+        with engine_at_a.begin() as conn:
+            assert (
+                conn.execute(sqltext("SELECT parent_task_id FROM tasks WHERE id='c'")).scalar()
+                == "p"
+            )
+            assert (
+                conn.execute(
+                    sqltext("SELECT value FROM task_metadata WHERE task_id='p' AND key='container'")
+                ).scalar()
+                == "true"
+            )

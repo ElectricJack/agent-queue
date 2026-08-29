@@ -201,3 +201,37 @@ class OpsCommandsMixin:
             "unpriced_tokens": unpriced,
             "pricing_models": [m.model for m in pricing.models],
         }
+
+    # -----------------------------------------------------------------------
+    # hierarchy preflight
+    # -----------------------------------------------------------------------
+
+    async def _cmd_db_preflight_hierarchy(self, args: dict) -> dict:
+        """Dry-run hierarchy canonicalisation; commit the rejects report (spec §17)."""
+        import os
+        import uuid
+
+        from src.database import hierarchy_migration as hm
+
+        run_id = uuid.uuid4().hex[:12]
+        holder: dict = {}
+
+        def _run(sync_conn):
+            plan = hm.canonicalise(sync_conn)
+            hm.persist_rejects(sync_conn, run_id, plan.rejects)
+            holder["plan"] = plan
+
+        async with self.db._engine.begin() as conn:
+            await conn.run_sync(_run)
+        plan = holder["plan"]
+        report = os.path.join(
+            os.path.expanduser(self.config.data_dir), "logs", f"hierarchy-preflight-{run_id}.json"
+        )
+        hm.write_report(report, run_id, plan)
+        return {
+            "success": not plan.rejects,
+            "run_id": run_id,
+            "parents_resolved": len(plan.parents),
+            "rejects": [r.__dict__ for r in plan.rejects],
+            "report_path": report,
+        }

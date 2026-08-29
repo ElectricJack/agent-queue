@@ -23,6 +23,7 @@ _UNSTRUCTURED_EXEMPT: set[str] = {
     # cleanup pass that isn't part of this lane.
     "ask_human",
     "create_task_graph",
+    "db_preflight_hierarchy",
     "doctor",
     "get_chat_analyzer_metrics",
     "get_costs",

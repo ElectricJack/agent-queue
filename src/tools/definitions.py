@@ -159,6 +159,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_intelligence_classes": "system",
     "doctor": "system",
     "get_costs": "system",
+    "db_preflight_hierarchy": "system",
     "get_schema": "system",
     # aq-surface task-scope allowlist (design §8.2 DEFAULT_TASK_ALLOWLIST).
     # Categorized (not core) so they don't inflate the supervisor's always-
@@ -3398,6 +3399,20 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
         },
+    },
+    {
+        "name": "db_preflight_hierarchy",
+        "description": (
+            "Dry-run the hierarchy canonicalisation used by migration revision "
+            "b2c3d4e5f6a7 (spec §17): pick one canonical parent per task from "
+            "the current parent_task_id column and parent-child edges, and "
+            "validate the resulting graph (parent exists, same project, no "
+            "cycle, structural depth <= 3).  Nothing is rewritten — this only "
+            "computes the plan and commits it to hierarchy_migration_rejects "
+            "plus a JSON report under <data_dir>/logs/.  success is False "
+            "when any task was rejected."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
     },
     # -- Agent surface: schema + task work-state (aq-surface §3, §4.3) ------
     {

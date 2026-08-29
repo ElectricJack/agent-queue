@@ -172,6 +172,16 @@ task_dependencies = Table(
     # blocked-state recompute predicate's dep_type filters.
     Index("idx_task_deps_task_type", "task_id", "dep_type"),
     Index("idx_task_deps_depson_type", "depends_on_task_id", "dep_type"),
+    # Exactly one parent per task (swarm-work-model §4): a partial unique
+    # index over parent-child edges only.  Created by revision B after the
+    # data is canonicalised.
+    Index(
+        "uq_task_deps_single_parent",
+        "task_id",
+        unique=True,
+        sqlite_where=text("dep_type = 'parent-child'"),
+        postgresql_where=text("dep_type = 'parent-child'"),
+    ),
 )
 
 task_context = Table(
