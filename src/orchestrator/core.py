@@ -379,6 +379,11 @@ class Orchestrator(
         self._last_scheduler_state = None
         self._last_scheduler_workspace_counts: dict[str, int] = {}
         self._last_scheduler_idle_by_project: dict[str, int] = {}
+        # In-flight ``task_claim`` attempts a concurrent long-poller can wait
+        # on instead of re-polling (swarm-work-model §10).  Keyed by
+        # ``(session_id, claim_epoch)``; resolved by
+        # ``ClaimCommandsMixin._resolve_claim_waiters``.
+        self.claim_waiters: dict[tuple[str, int | None], asyncio.Future] = {}
         # EventBus subscription that resolves ``event`` gates live.  Set by
         # ``_subscribe_event_gates`` on initialize; kept as an attribute so
         # tests can toggle it deterministically.
@@ -3144,6 +3149,10 @@ class Orchestrator(
         self._last_scheduler_state = state
         self._last_scheduler_workspace_counts = dict(workspace_counts)
         self._last_scheduler_idle_by_project = _idle_by_project(state)
+        # Wakes any ``task_claim`` long-poll blocked on admission (spec §10):
+        # a fresh snapshot may have flipped a project back to admissible
+        # even though nothing on the frontier changed.
+        await self.bus.emit("snapshot.refreshed", {"tick": time.time()})
         # Log *why* READY tasks didn't get assigned, but only when the set of
         # unassignable reasons changes. Silent scheduler no-ops previously
         # left tasks stuck in READY forever with zero log signal.

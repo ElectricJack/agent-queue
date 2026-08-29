@@ -1860,6 +1860,24 @@ class ExecutionMixin:
         except Exception:
             logger.debug("Task %s: could not read workspace source_type", task.id)
 
+        # A push launch joins the same claim fence a pool session's pull
+        # claim does (swarm-work-model §10): bump the task's epoch, write
+        # the claim file the agent's ``.aq`` tooling reads, and hand the
+        # epoch to the harness as ``AQ_CLAIM_EPOCH`` so its writes are
+        # fenced identically.
+        from src.commands.claim_commands import write_claim_file
+
+        claim_epoch = await self.db.bump_claim_epoch(task.id)
+        write_claim_file(
+            work_dir,
+            {
+                "task_id": task.id,
+                "claim_epoch": claim_epoch,
+                "session_id": session_id,
+                "claimed_at": time.time(),
+            },
+        )
+
         spec = self.session_spec_builder.build_task_spec(
             task=task,
             profile=profile,
@@ -1871,6 +1889,7 @@ class ExecutionMixin:
             api_token=api_token,
             resume_key=resume_key,
             workspace_source_type=source_type,
+            extra_env={"AQ_CLAIM_EPOCH": str(claim_epoch)},
         )
 
         try:
@@ -1997,6 +2016,8 @@ class ExecutionMixin:
         failure_class: str = "",
         commit: str = "",
         notes: str = "",
+        expect_claim_epoch: int | None = None,
+        pool: bool = False,
     ) -> dict:
         """Run the completion pipeline for a session-closed task.
 
@@ -2005,6 +2026,14 @@ class ExecutionMixin:
         that differs between the two runtimes is launch/observe/close --
         commit, push, PR and verify behave identically, which is what makes
         the dual-run comparison meaningful.
+
+        ``expect_claim_epoch`` fences the terminal ``transition_task`` call
+        (swarm-work-model §10) — a stale epoch raises ``StaleClaim``, which
+        the caller (``_cmd_task_close``) turns into ``{"result":
+        "stale_claim"}``.  ``pool=True`` means the calling session is a pool
+        session: it keeps its workspace agent-lock and instance token, so
+        ``release_session_task_resources`` (a full release) is skipped —
+        ``_cmd_task_close`` releases the claim itself via ``db.release_claim``.
         """
         agent = (
             await self.db.get_agent(task.assigned_agent_id)
@@ -2098,10 +2127,15 @@ class ExecutionMixin:
                     context=context,
                     retry_count=new_retry,
                     assigned_agent_id=None,
+                    expect_claim_epoch=expect_claim_epoch,
                 )
             else:
                 await self.db.transition_task(
-                    task.id, new_status, context=context, assigned_agent_id=None
+                    task.id,
+                    new_status,
+                    context=context,
+                    assigned_agent_id=None,
+                    expect_claim_epoch=expect_claim_epoch,
                 )
         except HierarchyError as exc:
             # Invariant 6 (spec §7): the task has open children, so it stays
@@ -2122,9 +2156,12 @@ class ExecutionMixin:
 
         # Release the workspace and free the agent -- the session is on its
         # way out, and the next task should not wait for the drain-ack.
-        await self.release_session_task_resources(
-            task.id, agent_id=task.assigned_agent_id, workspace_path=workspace_path
-        )
+        # Pool sessions skip this: they keep their agent-lock and token, and
+        # ``_cmd_task_close`` releases the claim itself via ``db.release_claim``.
+        if not pool:
+            await self.release_session_task_resources(
+                task.id, agent_id=task.assigned_agent_id, workspace_path=workspace_path
+            )
 
         return {
             "status": new_status.value,

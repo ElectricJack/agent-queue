@@ -103,6 +103,8 @@ def build_task_section(task: Any) -> PrimeSection:
         f"**title:** {task.title}",
         f"**status:** {status_value}",
     ]
+    if getattr(task, "claim_epoch", 0):
+        lines.append(f"Claim epoch: {task.claim_epoch}")
     if task.description:
         lines.append("")
         lines.append(task.description.strip())

@@ -374,6 +374,32 @@ class TaskBatchAckResponse(BaseModel):
     success: bool = True
 
 
+class ClaimSessionSummary(BaseModel):
+    """The calling session's claim bookkeeping, echoed back on every ``task_claim`` reply."""
+
+    id: str | None = None
+    claims: int | None = None
+    cap: int | None = None
+    desired_state: str | None = None
+    claim_phase: str | None = None
+
+
+class TaskClaimResponse(BaseModel):
+    """``task_claim`` — pull-based work selection (swarm-work-model §10).
+
+    ``task`` mirrors ``GetTaskResponse`` on a successful claim and is
+    ``None`` for every non-``claimed`` result code.
+    """
+
+    success: bool
+    result: str
+    task: dict[str, Any] | None = None
+    claim_epoch: int | None = None
+    session: ClaimSessionSummary = ClaimSessionSummary()
+    reason: str | None = None
+    error: str | None = None
+
+
 class TaskBatchCommitResponse(BaseModel):
     """The ids of the tasks the commit actually created, in batch order."""
 
@@ -425,4 +451,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_update": TaskBatchAckResponse,
     "task_batch_commit": TaskBatchCommitResponse,
     "task_batch_discard": TaskBatchAckResponse,
+    "task_claim": TaskClaimResponse,
 }

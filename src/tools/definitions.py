@@ -181,6 +181,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_set": "task",
     "task_close": "task",
     "task_heartbeat": "task",
+    "task_claim": "task",
     "ask_human": "task",
     "memory_save": "memory",
     "memory_search": "memory",
@@ -3550,6 +3551,38 @@ _ALL_TOOL_DEFINITIONS = [
                 "task_id": {
                     "type": "string",
                     "description": "Task ID (optional — defaults to the caller's session scope)",
+                },
+            },
+        },
+    },
+    {
+        "name": "task_claim",
+        "description": (
+            "Claim a ready task for the calling pool/task session (pull-based work "
+            "selection, swarm-work-model §10). Pass `next: true` for the next available "
+            "task matching the session's profile, or `task_id` for a specific one. `wait` "
+            "long-polls (clamped to `swarm.claim_wait_max`) instead of returning "
+            "`no_ready_work` immediately. Writes `.aq/claim.json` and returns the task plus "
+            "`claim_epoch`, which subsequent `task_close` / `task_heartbeat` / `task_set` / "
+            "`task_handoff` calls must echo back."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Claim this specific task (optional — mutually exclusive with next).",
+                },
+                "next": {
+                    "type": "boolean",
+                    "description": "Claim whatever ready task matches the session's profile.",
+                },
+                "wait": {
+                    "type": "integer",
+                    "description": (
+                        "Seconds to long-poll for ready work before returning "
+                        "`no_ready_work` (optional, clamped to `swarm.claim_wait_max`)."
+                    ),
                 },
             },
         },

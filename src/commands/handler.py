@@ -55,6 +55,7 @@ _plan_subtask_creation_mode_var: contextvars.ContextVar[bool] = contextvars.Cont
 )
 
 # Mixin imports — each provides one domain of _cmd_* methods
+from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.system_commands import SystemCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
@@ -281,6 +282,7 @@ def _is_memory_command(name: str) -> bool:
 
 
 class CommandHandler(
+    ClaimCommandsMixin,
     SystemCommandsMixin,
     ProjectCommandsMixin,
     TaskCommandsMixin,

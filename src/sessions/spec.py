@@ -192,6 +192,7 @@ class SessionSpecBuilder:
         resume_key: str | None = None,
         prompt: str | None = None,
         workspace_source_type=None,
+        extra_env: dict[str, str] | None = None,
     ) -> SessionSpec:
         """Spec for a one-task session (``lifecycle="task"``).
 
@@ -199,6 +200,11 @@ class SessionSpecBuilder:
         of the workspace behind *work_dir*.  It is what
         :func:`skip_permissions_allowed` reads; omitting it is the safe
         default (no skip-permissions unless the profile opted in).
+
+        *extra_env* is applied after the ``AQ_*`` markers, before scrubbing
+        (see :func:`~src.sessions.env.build_session_env`) — e.g.
+        ``AQ_CLAIM_EPOCH`` for a push launch that joins the claim fence
+        (swarm-work-model §10).
         """
         name = task_session_name(task.id)
         bootstrap = prompt if prompt is not None else BOOTSTRAP_PROMPT.format(
@@ -222,6 +228,7 @@ class SessionSpecBuilder:
             lifecycle="task",
             allow_skip_permissions=skip_permissions_allowed(profile, workspace_source_type),
             task_intelligence_class=getattr(task, "intelligence_class", None),
+            extra_env=extra_env,
         )
 
     def build_named_spec(
@@ -296,6 +303,7 @@ class SessionSpecBuilder:
         lifecycle: str,
         allow_skip_permissions: bool = False,
         task_intelligence_class: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> SessionSpec:
         files: list[tuple[str, str]] = []
 
@@ -329,6 +337,7 @@ class SessionSpecBuilder:
             harness_env=harness.env_map,
             config=self.config,
             prompt_delivered=prompt is not None,
+            extra_env=extra_env,
         )
 
         return SessionSpec(

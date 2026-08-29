@@ -28,6 +28,9 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "message_reply",
         "memory_save",
         "memory_search",
+        "task_claim",
+        "create_task",
+        "project_ready",
     }
 )
 

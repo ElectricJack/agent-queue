@@ -157,6 +157,10 @@ class ProjectCommandsMixin:
         if not project:
             return {"error": f"Project '{pid}' not found"}
         await self.db.update_project(pid, status=ProjectStatus.ACTIVE)
+        # Wakes any ``task_claim`` long-poll blocked on ``not_admissible``
+        # (swarm-work-model §10) — a paused project resuming is exactly the
+        # kind of admission change a blocked claimer is waiting for.
+        await self.orchestrator.bus.emit("project.resumed", {"project_id": pid})
         return {"resumed": pid, "name": project.name}
 
     async def _cmd_set_project_constraint(self, args: dict) -> dict:
@@ -263,6 +267,7 @@ class ProjectCommandsMixin:
             # If all fields are now empty, remove the constraint entirely.
             if not exclusive and not pause_scheduling and not max_agents_by_type:
                 await self.db.delete_project_constraint(pid)
+                await self.orchestrator.bus.emit("constraint.released", {"project_id": pid})
                 return {"project_id": pid, "constraint_released": True, "fields": "all"}
 
             updated = ProjectConstraint(
@@ -274,6 +279,7 @@ class ProjectCommandsMixin:
                 created_at=_time.time(),
             )
             await self.db.set_project_constraint(updated)
+            await self.orchestrator.bus.emit("constraint.released", {"project_id": pid})
             return {
                 "project_id": pid,
                 "constraint_released": False,
@@ -291,6 +297,7 @@ class ProjectCommandsMixin:
 
         # Release the entire constraint.
         await self.db.delete_project_constraint(pid)
+        await self.orchestrator.bus.emit("constraint.released", {"project_id": pid})
         return {"project_id": pid, "constraint_released": True, "fields": "all"}
 
     async def _cmd_edit_project(self, args: dict) -> dict:

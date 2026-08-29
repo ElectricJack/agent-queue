@@ -12,6 +12,11 @@ and PIDs get recycled), kills are fenced on ``AQ_INSTANCE_TOKEN``, and the
 the other half of that handshake, so the names are load-bearing, not
 cosmetic.
 
+A push launch adds one more marker outside the fixed nine: ``AQ_CLAIM_EPOCH``,
+set via ``extra_env`` when the launch bumps the task's claim epoch and joins
+the fence (swarm-work-model §10) — the agent's writes are then checked
+against it the same way a pool session's are.
+
 Scrubbing is **not** implemented here.  :func:`src.env_scrub.scrub_env` owns
 the policy (trust-and-ops R6); this module supplies the ``explicit`` map it
 merges last and passes the daemon config through so the
@@ -110,14 +115,17 @@ def build_session_env(
     config=None,
     base: Mapping[str, str] | None = None,
     prompt_delivered: bool = False,
+    extra_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Build the full child environment for one session launch.
 
     Layering, outermost first: the daemon environment (scrubbed) → the
-    harness's own ``env`` map → the ``AQ_*`` markers.  Everything from the
-    second layer inward is ``explicit`` as far as
+    harness's own ``env`` map → the ``AQ_*`` markers → ``extra_env``.
+    Everything from the second layer inward is ``explicit`` as far as
     :func:`~src.env_scrub.scrub_env` is concerned, so an operator who names
-    a key in a harness file means it and it survives.
+    a key in a harness file means it and it survives.  ``extra_env`` is
+    applied last, after the markers and before scrubbing — e.g.
+    ``AQ_CLAIM_EPOCH`` for a push launch joining the claim fence.
 
     ``config`` is the daemon :class:`~src.config.AppConfig`.  Passing it is
     what makes ``security.env_scrub_enabled`` / ``security.env_allowlist``
@@ -143,6 +151,8 @@ def build_session_env(
     )
     if prompt_delivered:
         explicit[STARTUP_PROMPT_DELIVERED] = "1"
+    if extra_env:
+        explicit.update({str(k): str(v) for k, v in extra_env.items()})
 
     # A harness file naming a STRIP_ALWAYS key would defeat the nested-CLI
     # guard, and no legitimate harness does.  Drop it with a warning rather

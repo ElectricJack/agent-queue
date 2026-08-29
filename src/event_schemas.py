@@ -175,6 +175,15 @@ _WORK_GRAPH_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title"],
         "optional": ["reason"],
     },
+    # -- pull-based claiming (swarm-work-model §10) --------------------------
+    "task.claimed": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["session_id", "profile_id", "claim_epoch"],
+    },
+    "task.claim_conflict": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["session_id"],
+    },
     "dependency.added": {
         "required": ["task_id", "depends_on", "dep_type"],
         "optional": ["project_id"],
@@ -784,6 +793,26 @@ _SPEC_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Swarm claims (swarm-work-model §10) — admission events a blocked
+# ``task_claim`` long-poll wakes on, plus the scheduler-tick heartbeat.
+# ---------------------------------------------------------------------------
+
+_SWARM_SCHEMAS: dict[str, EventSchema] = {
+    "snapshot.refreshed": {
+        "required": ["tick"],
+        "optional": [],
+    },
+    "project.resumed": {
+        "required": ["project_id"],
+        "optional": [],
+    },
+    "constraint.released": {
+        "required": ["project_id"],
+        "optional": [],
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Command events (Phase 5 follow-up — command.invoked WS visibility)
 #
 # Emitted by ``CommandHandler.execute`` after every dispatch (success or
@@ -831,6 +860,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_TIMER_SCHEMAS,
     **_CRON_SCHEMAS,
     **_SPEC_SCHEMAS,
+    **_SWARM_SCHEMAS,
     **_COMMAND_SCHEMAS,
 }
 """Master registry of all event schemas.

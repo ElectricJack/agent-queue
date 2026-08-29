@@ -106,5 +106,8 @@ class TestCheckCommandScope:
             "message_reply",
             "memory_save",
             "memory_search",
+            "task_claim",
+            "create_task",
+            "project_ready",
         }
         assert set(AGENT_COMMAND_SET) == expected

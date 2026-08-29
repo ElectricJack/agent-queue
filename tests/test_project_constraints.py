@@ -367,13 +367,17 @@ async def db():
 @pytest.fixture
 async def handler(db):
     """Create a CommandHandler wired to the in-memory database."""
-    from unittest.mock import MagicMock
+    from unittest.mock import AsyncMock, MagicMock
 
     from src.commands.handler import CommandHandler
 
     config = MagicMock()
     orchestrator = MagicMock()
     orchestrator.db = db
+    # ``resume_project`` / ``release_project_constraint`` emit bus events
+    # (swarm-work-model §10) that a blocked ``task_claim`` long-poll wakes
+    # on — the bare MagicMock bus needs an async ``emit``.
+    orchestrator.bus.emit = AsyncMock()
     ch = CommandHandler(orchestrator=orchestrator, config=config)
     return ch
 

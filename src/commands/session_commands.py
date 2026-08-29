@@ -24,6 +24,8 @@ from __future__ import annotations
 import logging
 import time
 
+from src.commands.claim_commands import remove_claim_file
+from src.database.queries.task_queries import StaleClaim
 from src.models import TaskStatus
 from src.sessions.provider import (
     Cap,
@@ -498,6 +500,20 @@ class SessionCommandsMixin:
         if session is None:
             session = await self.db.get_session_for_task(str(task_id))
 
+        # --- claim fence (swarm-work-model §10) ----------------------------
+        # A session-scoped caller must hold the task under a current claim
+        # epoch: pool sessions are required to send ``claim_epoch`` (read
+        # from ``.aq/claim.json``), task sessions may omit it (legacy).
+        # Local/elevated callers (no session in scope) are not fenced.
+        claim_epoch = args.get("claim_epoch")
+        scope_session_id = (self._current_scope or {}).get("session_id")
+        fence_err = await self._assert_session_owns(
+            task_id, session_id=scope_session_id, claim_epoch=claim_epoch
+        )
+        if fence_err:
+            return fence_err
+        is_pool = bool(session and session.lifecycle == "pool")
+
         # --- close-with-summary enforcement (Dv2 Phase 2 §7) --------------
         # Tasks executed by workspace-needing profiles must carry a
         # summary at close time.  This is what feeds the reviewer, the
@@ -603,6 +619,7 @@ class SessionCommandsMixin:
         # owning another task, unknown session, ...) exit above and do
         # not revoke.
         try:
+            expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
             result = await self.orchestrator.complete_session_task(
                 task,
                 outcome=outcome,
@@ -610,16 +627,35 @@ class SessionCommandsMixin:
                 failure_class=failure_class,
                 commit=str(args.get("commit") or ""),
                 notes=str(args.get("notes") or ""),
+                expect_claim_epoch=expect_claim_epoch,
+                pool=is_pool,
             )
+        except StaleClaim as exc:
+            return {"success": False, "result": "stale_claim", "error": str(exc)}
         finally:
-            token_store = getattr(self.orchestrator, "token_store", None)
-            if token_store is not None and session is not None:
-                try:
-                    await token_store.revoke_session(session.id)
-                except Exception:
-                    # Revoke is best-effort — expiry is the safety net.
-                    pass
-        return {
+            # Pool sessions keep their instance token — the workflow keeps
+            # going (``claim_next``) so revoking here would kill it mid-loop.
+            if not is_pool:
+                token_store = getattr(self.orchestrator, "token_store", None)
+                if token_store is not None and session is not None:
+                    try:
+                        await token_store.revoke_session(session.id)
+                    except Exception:
+                        # Revoke is best-effort — expiry is the safety net.
+                        pass
+
+        if is_pool:
+            # The workspace agent-lock is retained (``terminate_pool_session``
+            # is the only path that drops it); only the task-hold is released.
+            await self.db.release_claim(
+                session.id,
+                task_status=TaskStatus(result["status"]),
+                context="session_close",
+                now=time.time(),
+            )
+            remove_claim_file(session.work_dir)
+
+        response = {
             "success": True,
             "task_id": task_id,
             "outcome": outcome,
@@ -628,6 +664,11 @@ class SessionCommandsMixin:
             "next_step": "run `aq session drain-ack` to release this session",
             **result,
         }
+        if args.get("claim_next"):
+            response["next"] = await self._cmd_task_claim(
+                {"next": True, "wait": int(args.get("wait") or 0)}
+            )
+        return response
 
     async def _cmd_task_heartbeat(self, args: dict) -> dict:
         """Refresh this task's agent lease.  Backs ``aq task heartbeat``.
@@ -645,6 +686,14 @@ class SessionCommandsMixin:
                 task_id = session.task_id
         if not task_id:
             return {"error": "task_id is required (or a session_id that owns one)"}
+
+        err = await self._assert_session_owns(
+            task_id,
+            session_id=(self._current_scope or {}).get("session_id"),
+            claim_epoch=args.get("claim_epoch"),
+        )
+        if err:
+            return err
 
         task = await self.db.get_task(str(task_id))
         if task is None:

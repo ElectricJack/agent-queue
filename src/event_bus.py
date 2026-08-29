@@ -164,21 +164,49 @@ class EventBus:
         timeout: float,
     ) -> dict | None:
         """Await the first event of any of *event_types* matching *filter*, or None on timeout."""
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future = loop.create_future()
-
-        async def _on(data):
-            if not fut.done():
-                fut.set_result(dict(data))
-
-        unsubs = [self.subscribe(t, _on, filter=filter) for t in event_types]
+        w = self.waiter(event_types, filter=filter)
         try:
-            return await asyncio.wait_for(fut, timeout=timeout)
-        except asyncio.TimeoutError:
-            return None
+            return await w.wait(timeout)
         finally:
-            for u in unsubs:
-                u()
+            w.close()
+
+    def waiter(
+        self,
+        event_types: Iterable[str],
+        *,
+        filter: dict[str, Any] | None = None,
+    ) -> "EventWaiter":
+        """Subscribe now, wait later — so no event emitted between the two is missed.
+
+        The long-poll pattern (``task_claim``, swarm-work-model §10) needs to
+        subscribe *before* checking whether the condition it cares about is
+        already true, otherwise an event landing in that gap is lost and the
+        caller blocks for the full timeout even though the work is ready.
+        """
+        return EventWaiter(self, event_types, filter=filter)
 
     def subscriber_count(self, event_type: str) -> int:
         return len(self._handlers.get(event_type, []))
+
+
+class EventWaiter:
+    """One-shot subscription created *before* a check so no event is missed."""
+
+    def __init__(self, bus: "EventBus", event_types: Iterable[str], filter=None):
+        self._fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._unsubs = [bus.subscribe(t, self._on, filter=filter) for t in event_types]
+
+    async def _on(self, data):
+        if not self._fut.done():
+            self._fut.set_result(dict(data))
+
+    async def wait(self, timeout: float) -> dict | None:
+        try:
+            return await asyncio.wait_for(asyncio.shield(self._fut), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+
+    def close(self) -> None:
+        for u in self._unsubs:
+            u()
+        self._unsubs = []

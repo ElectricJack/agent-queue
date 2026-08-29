@@ -127,6 +127,14 @@ class SurfaceCommandsMixin:
         if not task_id:
             return {"error": "task_id is required"}
 
+        err = await self._assert_session_owns(
+            task_id,
+            session_id=(self._current_scope or {}).get("session_id"),
+            claim_epoch=args.get("claim_epoch"),
+        )
+        if err:
+            return err
+
         task = await self.db.get_task(task_id)
         if not task:
             return {"error": f"Task '{task_id}' not found"}
@@ -201,9 +209,14 @@ class SurfaceCommandsMixin:
         build, this command only accepts whatever ``task_id`` it's given.
         """
         task_id = args.get("task_id")
+        scope = getattr(self, "_current_scope", None) or {}
         if not task_id:
-            scope = getattr(self, "_current_scope", None) or {}
             task_id = scope.get("task_id")
+        if not task_id and scope.get("session_id"):
+            # Pool sessions have no fixed task in scope — the current claim
+            # (``sessions.task_id``) is the only source of truth.
+            s = await self.db.get_session(scope["session_id"])
+            task_id = s.task_id if s else None
         if not task_id:
             return {
                 "error": (
@@ -265,6 +278,12 @@ class SurfaceCommandsMixin:
                     "explicitly or run inside a task session)"
                 )
             }
+
+        err = await self._assert_session_owns(
+            task_id, session_id=scope.get("session_id"), claim_epoch=args.get("claim_epoch")
+        )
+        if err:
+            return err
 
         task = await self.db.get_task(task_id)
         if not task:

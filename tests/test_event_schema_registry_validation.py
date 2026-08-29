@@ -590,6 +590,24 @@ _CANONICAL_PAYLOADS["session.token_revoked"] = {
     "count": 1,
     "reason": "expired",
 }
+# -- pull-based claiming (swarm-work-model §10) --------------------------
+_CANONICAL_PAYLOADS["task.claimed"] = {
+    "task_id": "t-1",
+    "project_id": "proj-1",
+    "title": "Implement feature X",
+    "session_id": "sess-1",
+    "profile_id": "worker",
+    "claim_epoch": 1,
+}
+_CANONICAL_PAYLOADS["task.claim_conflict"] = {
+    "task_id": "t-1",
+    "project_id": "proj-1",
+    "title": "Implement feature X",
+    "session_id": "sess-1",
+}
+_CANONICAL_PAYLOADS["snapshot.refreshed"] = {"tick": 1234567890.0}
+_CANONICAL_PAYLOADS["project.resumed"] = {"project_id": "proj-1"}
+_CANONICAL_PAYLOADS["constraint.released"] = {"project_id": "proj-1"}
 
 # -- session-runtime (lane 2A) -------------------------------------------
 _CANONICAL_PAYLOADS.update(
