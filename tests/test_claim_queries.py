@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -23,11 +24,29 @@ from src.models import (
 PROJECT_ID = "proj"
 NOW = 1_000_000.0
 
+#: Ruling P2-7: parametrise over the same ``any_db`` shape as the perf
+#: tests (``tests/perf/conftest.py``) -- SQLite always, Postgres when
+#: ``POSTGRES_TEST_DSN`` is set -- so ``test_exactly_once_under_concurrency``
+#: and ``test_reserve_filing_is_atomic`` prove the CAS under a genuine race
+#: on Postgres (SQLite's ``immediate()`` per-adapter lock serialises them
+#: instead, so it only proves the *result* is correct, not that the CAS
+#: itself is what enforced it).
+POSTGRES_TEST_DSN = os.environ.get("POSTGRES_TEST_DSN")
 
-@pytest.fixture
-async def db(tmp_path):
-    database = Database(str(tmp_path / "test.db"))
-    await database.initialize()
+
+@pytest.fixture(params=["sqlite", "postgres"])
+async def db(request, tmp_path):
+    if request.param == "postgres":
+        if not POSTGRES_TEST_DSN:
+            pytest.skip("POSTGRES_TEST_DSN not set")
+        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+        database = PostgreSQLDatabaseAdapter(POSTGRES_TEST_DSN)
+        await database.initialize()
+        await database.reset_for_tests()
+    else:
+        database = Database(str(tmp_path / "test.db"))
+        await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(AgentProfile(id="worker", name="Worker"))
     await database.create_profile(AgentProfile(id="reviewer", name="Reviewer"))

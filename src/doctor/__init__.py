@@ -17,6 +17,7 @@ from src.doctor.models import (
     DoctorContext,
     Severity,
 )
+from src.doctor.pool_checks import pool_checks as _pool_checks
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
 
 __all__ = [
@@ -39,5 +40,7 @@ def default_registry() -> DoctorRegistry:
     for check in builtin_checks():
         registry.register(check)
     for check in hierarchy_checks():
+        registry.register(check)
+    for check in _pool_checks():
         registry.register(check)
     return registry

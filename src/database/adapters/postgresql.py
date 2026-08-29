@@ -119,6 +119,32 @@ class PostgreSQLDatabaseAdapter(
         if self._engine:
             await self._engine.dispose()
 
+    async def reset_for_tests(self) -> None:
+        """Wipe every row for a clean slate between test modules.
+
+        ``initialize()`` already ran the migrations (idempotently, via
+        ``run_schema_setup``); dropping the schema and re-running Alembic's
+        full chain per parametrized perf test would dwarf the seeding cost
+        it's supposed to measure, so this truncates every table instead
+        (same statement ``tests/test_database_postgresql.py``'s per-test
+        teardown uses) and leaves the schema — and ``alembic_version`` —
+        untouched.
+        """
+        from sqlalchemy import text
+
+        if self._engine is None:
+            return
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "DO $$ DECLARE r RECORD; BEGIN "
+                    "FOR r IN (SELECT tablename FROM pg_tables "
+                    "WHERE schemaname = 'public' AND tablename != 'alembic_version') LOOP "
+                    "EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; "
+                    "END LOOP; END $$;"
+                )
+            )
+
     # --- Atomic Operations ---
     # Multi-table writes that must succeed or fail together.
 

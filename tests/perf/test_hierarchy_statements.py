@@ -103,8 +103,16 @@ SEED_EDGES = 2500
 PLAN_NODES = 200
 
 
-async def seed_scale(db, n_tasks: int = SEED_TASKS, n_edges: int = SEED_EDGES) -> None:
-    """Bulk-insert a §15.2-scale queue (raw inserts — this is fixture cost)."""
+async def seed_scale(
+    db, n_tasks: int = SEED_TASKS, n_edges: int = SEED_EDGES, profile_id: str | None = None
+) -> None:
+    """Bulk-insert a §15.2-scale queue (raw inserts — this is fixture cost).
+
+    ``profile_id``, when given, is stamped on every READY task so claim-path
+    perf tests can exercise ``select_ready_for_profile`` at scale (the caller
+    is responsible for the referenced ``agent_profiles`` row existing — this
+    is a raw insert, so the FK is enforced but not satisfied for you).
+    """
     now = time.time()
     rows = [
         {
@@ -113,6 +121,7 @@ async def seed_scale(db, n_tasks: int = SEED_TASKS, n_edges: int = SEED_EDGES) -
             "title": f"t{i}",
             "description": "d",
             "status": TaskStatus.COMPLETED.value if i % 2 else TaskStatus.READY.value,
+            "profile_id": profile_id if (i % 2 == 0) else None,
             "created_at": now,
             "updated_at": now,
         }

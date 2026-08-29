@@ -110,6 +110,7 @@ markers = [
     "functional_mcp: functional tests requiring npm/npx for MCP servers",
     "integration: tests requiring external dependencies (Milvus Lite, etc.)",
     "tmux: tests requiring a real tmux binary (POSIX only)",
+    "perf: latency-budget tests, skipped unless AQ_PERF_STRICT=1 (xdist load makes them flaky)",
 ]
 
 [tool.ruff]

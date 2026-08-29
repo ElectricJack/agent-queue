@@ -111,6 +111,31 @@ class SQLiteDatabaseAdapter(
         if self._engine:
             await self._engine.dispose()
 
+    async def reset_for_tests(self) -> None:
+        """Wipe every row for a clean slate between test modules.
+
+        Kept for parity with :meth:`PostgreSQLDatabaseAdapter.reset_for_tests`
+        (``tests/test_database_modular.py::TestAdapterParity`` requires both
+        adapters to expose the same public surface).  A fresh SQLite test
+        normally just points at a new ``tmp_path`` file instead, so this is
+        mostly for a caller sharing one adapter instance across cases (e.g.
+        ``tests/perf/conftest.py``'s ``any_db``, if ever adapted to reuse a
+        single SQLite file rather than a fresh one per parametrization).
+        """
+        if self._engine is None:
+            return
+        from sqlalchemy import text
+
+        async with self._engine.begin() as conn:
+            rows = await conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name != 'alembic_version'")
+            )
+            tables = [r[0] for r in rows.fetchall() if not r[0].startswith("sqlite_")]
+            await conn.execute(text("PRAGMA foreign_keys=OFF"))
+            for table in tables:
+                await conn.execute(text(f'DELETE FROM "{table}"'))
+            await conn.execute(text("PRAGMA foreign_keys=ON"))
+
     # --- Atomic Operations ---
     # Multi-table writes that must succeed or fail together.
 

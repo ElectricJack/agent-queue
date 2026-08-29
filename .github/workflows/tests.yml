@@ -17,6 +17,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # Postgres backend for the perf/claim-query suite's Postgres parametrisation
+    # (tests/perf/conftest.py's ``any_db``, tests/test_claim_queries.py's ``db``) —
+    # spec §15.2 asserts the statement/latency budgets on Postgres, not just SQLite.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: agent_queue
+          POSTGRES_PASSWORD: agent_queue
+          POSTGRES_DB: agent_queue
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      POSTGRES_TEST_DSN: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/agent_queue
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,7 +50,7 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install project
-        run: pip install -e ".[dev,cli]"
+        run: pip install -e ".[dev,cli,postgresql]"
 
       - name: Apply migrations to a scratch database
         env:

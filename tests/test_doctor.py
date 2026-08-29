@@ -73,9 +73,14 @@ class TestRegistry:
 
     def test_default_registry_has_all_builtins(self):
         from src.doctor.hierarchy_checks import hierarchy_checks
+        from src.doctor.pool_checks import pool_checks
 
         reg = default_registry()
-        expected = {c.id for c in builtin_checks()} | {c.id for c in hierarchy_checks()}
+        expected = (
+            {c.id for c in builtin_checks()}
+            | {c.id for c in hierarchy_checks()}
+            | {c.id for c in pool_checks()}
+        )
         assert set(reg.ids()) == expected
 
     def test_reserved_ids_are_not_preregistered(self):
