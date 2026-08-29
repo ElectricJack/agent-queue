@@ -118,10 +118,18 @@ def canonicalise(conn) -> CanonicalPlan:
             d += 1
         return d
 
-    # Deepest violators first so a single reject fixes a whole chain.
-    for child in sorted(parents, key=depth, reverse=True):
-        if child in parents and depth(child) > MAX_STRUCTURAL_DEPTH:
-            reject(child, "depth", f"structural depth {depth(child)}")
+    # Shallowest violator first (minimal detachment): severing the node
+    # closest to the root turns it into a root and carries its whole
+    # subtree one level shallower with it, so on a straight chain a single
+    # reject can clear every deeper node too instead of walking the chain
+    # leaf-first.  Depths are recomputed after every reject since severing
+    # one node changes everyone below it.
+    while True:
+        violators = [c for c in parents if depth(c) > MAX_STRUCTURAL_DEPTH]
+        if not violators:
+            break
+        victim = min(violators, key=depth)
+        reject(victim, "depth", f"structural depth {depth(victim)}")
 
     plan.parents = dict(parents)
 

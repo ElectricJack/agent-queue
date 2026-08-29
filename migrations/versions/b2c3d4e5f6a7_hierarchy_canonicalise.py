@@ -24,37 +24,26 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-def _open_preflight_connection(bind):
-    """A connection separate from ``bind`` so its commit survives an abort.
-
-    On SQLite's ``StaticPool`` (used by the in-process test suite),
-    ``bind.engine.connect()`` hands back the very connection the outer
-    migration transaction is using — a commit on it would still be undone
-    by the caller's rollback.  Detect that and fall back to a brand-new
-    engine over the same URL, which always gets its own connection.
-    """
-    candidate = bind.engine.connect()
-    if candidate.connection is bind.connection:
-        candidate.close()
-        engine = sa.create_engine(str(bind.engine.url))
-        return engine.connect(), engine
-    return candidate, None
-
-
 def upgrade() -> None:
     bind = op.get_bind()
     run_id = uuid.uuid4().hex[:12]
 
-    # Preflight on its own connection: the report commits even if we abort.
-    pre, extra_engine = _open_preflight_connection(bind)
-    try:
+    # Preflight, committed before we decide whether to abort.  On Postgres
+    # ``bind.engine.connect()`` opens a genuinely separate connection and
+    # transaction, independent of the outer migration transaction, so the
+    # commit below is durable even if ``upgrade`` later raises.  On SQLite's
+    # ``StaticPool`` (used by the in-process test suite and any embedded
+    # deployment) there is only ever one underlying DBAPI connection, so
+    # this "separate" connection is in fact the same one the outer
+    # migration transaction runs on — the commit here lands the rejects
+    # rows (and revision A's DDL) immediately, before the RuntimeError
+    # below aborts the *rest* of this migration.  That is the intended
+    # durability on both backends: the report and the rejects table always
+    # survive an abort.
+    with bind.engine.connect() as pre:
         with pre.begin():
             plan = hm.canonicalise(pre)
             hm.persist_rejects(pre, run_id, plan.rejects)
-    finally:
-        pre.close()
-        if extra_engine is not None:
-            extra_engine.dispose()
 
     report = os.path.expanduser(f"~/.agent-queue/logs/hierarchy-preflight-{run_id}.json")
     try:

@@ -3,18 +3,25 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import time
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import create_engine, inspect
 from sqlalchemy import text as sqltext
 
-from src.database import hierarchy_migration as hm
+from src.commands.handler import CommandHandler
+from src.config import AppConfig, DiscordConfig
+from src.database import Database, hierarchy_migration as hm
+from src.models import Project
+from src.orchestrator import Orchestrator
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ID = "proj"
 
 
 def _alembic(db_path: str, *args: str) -> subprocess.CompletedProcess:
@@ -152,7 +159,30 @@ class TestCanonicalise:
             plan = hm.canonicalise(conn)
         reasons = {(r.task_id, r.reason) for r in plan.rejects}
         assert ("d4", "depth") in reasons
-        assert any(t in ("a", "b") and r == "cycle" for t, r in reasons)
+        # Both members of the a<->b cycle lose their parent, not just one.
+        assert ("a", "cycle") in reasons
+        assert ("b", "cycle") in reasons
+
+    def test_depth_severs_shallowest_violator_first(self, engine_at_a):
+        # d1 <- d2 <- d3 <- d4 <- d5 (depths 1..5, MAX_STRUCTURAL_DEPTH=3).
+        # Severing d4 (the shallowest violator) turns it into a root and
+        # brings d5 down to depth 2 along with it, so d5 is never rejected.
+        _seed(
+            engine_at_a,
+            [
+                ("d1", "x", None, "IN_PROGRESS"),
+                ("d2", "x", None, "IN_PROGRESS"),
+                ("d3", "x", None, "IN_PROGRESS"),
+                ("d4", "x", None, "IN_PROGRESS"),
+                ("d5", "x", None, "READY"),
+            ],
+            [("d2", "d1"), ("d3", "d2"), ("d4", "d3"), ("d5", "d4")],
+        )
+        with engine_at_a.begin() as conn:
+            plan = hm.canonicalise(conn)
+        assert [r.task_id for r in plan.rejects if r.reason == "depth"] == ["d4"]
+        assert "d4" not in plan.parents
+        assert plan.parents["d5"] == "d4"
 
     def test_ordinals_backfill_by_id_prefix_across_archive(self, engine_at_a):
         _seed(engine_at_a, [("p", "x", None, "IN_PROGRESS"), ("p.3", "x", None, "READY")], [])
@@ -189,19 +219,44 @@ class TestRevisionB:
         )
 
     def test_allow_rejects_env_proceeds(self, db_path, engine_at_a, monkeypatch):
-        _seed(engine_at_a, [("p", "x", None, "IN_PROGRESS"), ("c", "y", "p", "READY")], [])
+        _seed(
+            engine_at_a,
+            [
+                ("p", "x", None, "IN_PROGRESS"),
+                ("c", "y", "p", "READY"),
+                ("p2", "x", None, "IN_PROGRESS"),
+                ("c2", "x", None, "READY"),
+            ],
+            [("c2", "p2")],
+        )
         monkeypatch.setenv("AQ_MIGRATION_ALLOW_REJECTS", "1")
         res = _alembic(db_path, "upgrade", "b2c3d4e5f6a7")
         assert res.returncode == 0, res.stderr
         with engine_at_a.begin() as conn:
+            # The rejected cross-project pointer never lands...
             assert (
                 conn.execute(sqltext("SELECT parent_task_id FROM tasks WHERE id='c'")).scalar()
                 is None
+            )
+            # ...but apply() still ran: the valid edge was rewritten.
+            assert (
+                conn.execute(sqltext("SELECT parent_task_id FROM tasks WHERE id='c2'")).scalar()
+                == "p2"
             )
         insp = inspect(engine_at_a)
         assert any(
             i["name"] == "uq_task_deps_single_parent" for i in insp.get_indexes("task_dependencies")
         )
+        # The index must be partial (parent-child rows only), not a
+        # blanket unique-per-task_id constraint over every dep_type.
+        with engine_at_a.begin() as conn:
+            idx_sql = conn.execute(
+                sqltext(
+                    "SELECT sql FROM sqlite_master WHERE type='index' "
+                    "AND name='uq_task_deps_single_parent'"
+                )
+            ).scalar()
+        assert "dep_type = 'parent-child'" in idx_sql
 
     def test_clean_data_migrates_and_flags_containers(self, db_path, engine_at_a):
         _seed(
@@ -219,3 +274,77 @@ class TestRevisionB:
                 ).scalar()
                 == "true"
             )
+
+
+class TestPreflightCommand:
+    @pytest.fixture
+    async def db(self, tmp_path):
+        database = Database(str(tmp_path / "test.db"))
+        await database.initialize()
+        await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
+        yield database
+        await database.close()
+
+    @pytest.fixture
+    def config(self, tmp_path):
+        return AppConfig(
+            discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            database_path=str(tmp_path / "test.db"),
+            data_dir=str(tmp_path / "data"),
+        )
+
+    @pytest.fixture
+    def handler(self, db, config):
+        orchestrator = Orchestrator(config)
+        orchestrator.db = db
+        orchestrator.git = MagicMock()
+        orchestrator.complete_session_task = AsyncMock(return_value={"status": "COMPLETED"})
+        return CommandHandler(orchestrator, config)
+
+    async def test_reports_rejects_and_persists_them(self, db, handler):
+        await db.create_project(Project(id="other", name="Other Project"))
+        now = time.time()
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                sqltext(
+                    "INSERT INTO tasks (id, project_id, parent_task_id, title, description, "
+                    "status, created_at, updated_at) "
+                    "VALUES ('p', :pid, NULL, 'p', 'p', 'IN_PROGRESS', :t, :t)"
+                ),
+                {"pid": PROJECT_ID, "t": now},
+            )
+            await conn.execute(
+                sqltext(
+                    "INSERT INTO tasks (id, project_id, parent_task_id, title, description, "
+                    "status, created_at, updated_at) "
+                    "VALUES ('c', 'other', 'p', 'c', 'c', 'READY', :t, :t)"
+                ),
+                {"t": now},
+            )
+
+        res = await handler._cmd_db_preflight_hierarchy({})
+
+        assert set(res) == {"success", "run_id", "parents_resolved", "rejects", "report_path"}
+        assert res["success"] is False
+        assert len(res["rejects"]) == 1
+        assert res["rejects"][0]["reason"] == "cross_project"
+
+        assert os.path.exists(res["report_path"])
+        with open(res["report_path"], encoding="utf-8") as fh:
+            report = json.load(fh)
+        assert report["run_id"] == res["run_id"]
+
+        async with db._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    sqltext("SELECT reason FROM hierarchy_migration_rejects WHERE run_id = :r"),
+                    {"r": res["run_id"]},
+                )
+            ).fetchall()
+        assert [r[0] for r in rows] == ["cross_project"]
+
+    async def test_clean_db_succeeds_with_no_rejects(self, db, handler):
+        res = await handler._cmd_db_preflight_hierarchy({})
+        assert res["success"] is True
+        assert res["rejects"] == []
