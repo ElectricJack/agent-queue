@@ -1282,7 +1282,7 @@ async def test_formula_cook_budget(handler, db):
                                                "vars": {"branch": "b"}})
         elapsed = time.perf_counter() - started
     assert res["success"], res
-    budget = 3 * PLAN_NODES + 23
+    budget = 3 * PLAN_NODES + 28  # write_plan (3N+20) + 3 provenance writes + ≤5 validate_graph reads
     print(f"\nformula_cook({PLAN_NODES}) : {c['n']} statements, {elapsed:.2f}s (budget {budget})")
     assert c["n"] <= budget and elapsed <= 4.0
 
@@ -1302,7 +1302,7 @@ async def test_formula_show_is_read_only(handler, db):
     finally:
         event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
     assert res["success"], res
-    assert writes == [] and c["n"] <= 4
+    assert writes == [] and c["n"] <= 10  # validate_graph reads only (profiles, needs)
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
