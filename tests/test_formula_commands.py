@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -22,6 +23,7 @@ async def setup(tmp_path):
     db = Database(str(tmp_path / "f.db"))
     await db.initialize()
     await db.create_project(Project(id="p1", name="test"))
+    await db.create_project(Project(id="p2", name="other"))
     for pid in ("coding", "reviewer"):
         await db.create_profile(AgentProfile(id=pid, name=pid))
     vault_root = tmp_path / "vault"
@@ -84,6 +86,23 @@ class TestShow:
         res = await h._cmd_formula_show({"name": "nope", "project_id": "p1"})
         assert res["success"] is False and "nope" in res["error"]
 
+    async def test_show_vars_must_be_a_mapping(self, setup):
+        h, *_ = setup
+        res = await h._cmd_formula_show({"name": "base-review", "project_id": "p1", "vars": "nope"})
+        assert res == {"success": False, "error": "vars must be an object of string values"}
+
+    async def test_show_writes_nothing(self, setup):
+        h, db, *_ = setup
+        cooked = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1",
+                                            "vars": {"branch": "b"}})
+        cid = cooked["container_id"]
+        task_count_before = len(await db.list_tasks("p1"))
+        context_count_before = len(await db.get_task_contexts(cid))
+        await h._cmd_formula_show({"name": "review-and-fix", "project_id": "p1",
+                                   "vars": {"branch": "feat/x"}})
+        assert len(await db.list_tasks("p1")) == task_count_before
+        assert len(await db.get_task_contexts(cid)) == context_count_before
+
 
 class TestCook:
     async def test_cook_creates_graph_with_provenance_and_event(self, setup):
@@ -133,6 +152,37 @@ class TestCook:
         res = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1", "vars": {"branch": "b"}})
         assert res["success"] is False
 
+    async def test_elevated_session_scope_allowed(self, setup):
+        h, *_ = setup
+        h._current_scope = {"kind": "session", "session_id": "s", "project_id": "p1", "elevated": True}
+        res = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1", "vars": {"branch": "b"}})
+        assert res["success"] is True
+
+    async def test_cook_project_not_found(self, setup):
+        h, *_ = setup
+        res = await h._cmd_formula_cook({"name": "base-review", "project_id": "ghost",
+                                         "vars": {"branch": "b"}})
+        assert res == {"success": False, "error": "Project 'ghost' not found"}
+
+    async def test_cook_vars_must_be_a_mapping(self, setup):
+        h, *_ = setup
+        res = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1", "vars": "nope"})
+        assert res == {"success": False, "error": "vars must be an object of string values"}
+
+    async def test_cook_cross_project_parent_rejected(self, setup):
+        h, *_ = setup
+        other = await h._cmd_formula_cook({"name": "base-review", "project_id": "p2",
+                                           "vars": {"branch": "b"}})
+        res = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1",
+                                         "vars": {"branch": "c"}, "parent_id": other["container_id"]})
+        assert res["success"] is False and res["code"] == "hierarchy.cross_project"
+
+    async def test_cook_report_has_project_id(self, setup):
+        h, *_ = setup
+        res = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1",
+                                         "vars": {"branch": "b"}})
+        assert res["project_id"] == "p1"
+
 
 class TestAsCooked:
     async def test_as_cooked_renders_snapshot_not_current_file(self, setup):
@@ -150,3 +200,23 @@ class TestAsCooked:
         assert shown["chain_sha"] == await db.get_task_meta(cid, "formula_chain_sha")
         assert await h._cmd_formula_show({"as_cooked": "nope"}) == {
             "success": False, "error": "no formula snapshot on nope"}
+
+    async def test_as_cooked_renders_the_second_cook(self, setup):
+        h, db, *_ = setup
+        first = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1",
+                                           "vars": {"branch": "b"}})
+        cid = first["container_id"]
+        await asyncio.sleep(0.01)
+        await h._cmd_formula_cook({"name": "base-review", "project_id": "p1",
+                                   "vars": {"branch": "second"}, "parent_id": cid})
+        shown = await h._cmd_formula_show({"as_cooked": cid})
+        titles = {n["key"]: n["title"] for n in shown["graph"]["nodes"]}
+        assert titles["review"] == "Review second"
+
+    async def test_as_cooked_out_of_scope_for_other_project(self, setup):
+        h, *_ = setup
+        other = await h._cmd_formula_cook({"name": "base-review", "project_id": "p2",
+                                           "vars": {"branch": "b"}})
+        h._current_scope = {"kind": "session", "session_id": "s", "project_id": "p1", "elevated": False}
+        res = await h._cmd_formula_show({"as_cooked": other["container_id"]})
+        assert res["success"] is False and res["result"] == "out_of_scope"

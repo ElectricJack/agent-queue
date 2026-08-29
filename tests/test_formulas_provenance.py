@@ -42,7 +42,11 @@ async def test_new_container_carries_provenance(db):
     assert json.loads(await db.get_task_meta(cid, "formula_vars")) == {"branch": "feat/x"}
     assert await db.get_task_meta(cid, "formula_chain_sha") == "ab" * 32
     ctx = [c for c in await db.get_task_contexts(cid) if c["type"] == "formula_snapshot"]
-    assert len(ctx) == 1 and json.loads(ctx[0]["content"])["nodes"][1]["key"] == "b"
+    assert len(ctx) == 1
+    payload = json.loads(ctx[0]["content"])
+    assert payload["document"]["nodes"][1]["key"] == "b"
+    assert payload["chain_sha"] == "ab" * 32
+    assert isinstance(payload["cooked_at"], float)
     assert "formula:review-and-fix" in await db.get_task_labels(cid)
 
 

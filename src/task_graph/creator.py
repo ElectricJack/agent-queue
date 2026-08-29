@@ -113,6 +113,13 @@ class FormulaProvenance:
     vars: dict[str, str]
     chain_sha: str
     snapshot: dict  # resolved document (post-extends, post-vars, pre-id)
+    #: Wall-clock time this provenance was constructed.  Stamped into the
+    #: ``formula_snapshot`` context row's ``content`` (see ``write_plan``) so
+    #: ``formula_show --as-cooked`` can pick the newest snapshot on a
+    #: container cooked more than once -- ``task_context`` has no timestamp
+    #: column and its ``id`` is random hex, so row order alone is not a
+    #: reliable "latest" signal (controller ruling P3-4).
+    cooked_at: float = field(default_factory=time.time)
 
     def metadata(self) -> dict[str, str]:
         """``task_metadata`` keys this provenance upserts onto the container."""
@@ -418,17 +425,20 @@ async def write_plan(
                     task_id=plan.parent_id,
                     type="formula_snapshot",
                     label=provenance.name,
-                    content=json.dumps(provenance.snapshot, sort_keys=True),
+                    content=json.dumps(
+                        {
+                            "cooked_at": provenance.cooked_at,
+                            "chain_sha": provenance.chain_sha,
+                            "document": provenance.snapshot,
+                        },
+                        sort_keys=True,
+                    ),
                 )
             )
             dialect = conn.dialect.name
             ins = pg_insert if dialect == "postgresql" else sqlite_insert
-            label_stmt = ins(task_labels).values(
-                task_id=plan.parent_id, label=provenance.label
-            )
-            label_stmt = label_stmt.on_conflict_do_nothing(
-                index_elements=["task_id", "label"]
-            )
+            label_stmt = ins(task_labels).values(task_id=plan.parent_id, label=provenance.label)
+            label_stmt = label_stmt.on_conflict_do_nothing(index_elements=["task_id", "label"])
             await conn.execute(label_stmt)
         await db.recompute_blocked(set(plan.task_ids), conn=conn)
 

@@ -80,6 +80,16 @@ class FormulaCommandsMixin:
             return scope.get("project_id")
         return args.get("project_id") or self._active_project_id
 
+    @staticmethod
+    def _formula_vars_arg(args: dict) -> tuple[dict, dict | None]:
+        """``(vars, error)`` — *error* is set when ``args["vars"]`` is present and not a mapping."""
+        raw = args.get("vars")
+        if raw is None:
+            return {}, None
+        if not isinstance(raw, dict):
+            return {}, {"success": False, "error": "vars must be an object of string values"}
+        return raw, None
+
     async def _resolve_formula_graph(self, name: str, project_id: str | None, supplied: dict):
         """resolve → parse → validate.
 
@@ -139,7 +149,9 @@ class FormulaCommandsMixin:
 
         name = args["name"]
         project_id = self._formula_scope_project(args)
-        supplied = args.get("vars") or {}
+        supplied, vars_error = self._formula_vars_arg(args)
+        if vars_error is not None:
+            return vars_error
 
         try:
             resolved, graph, errors, warnings = await self._resolve_formula_graph(
@@ -171,18 +183,34 @@ class FormulaCommandsMixin:
         """Render the ``formula_snapshot`` a previous cook wrote.
 
         No registry access, no validation, no writes — this renders exactly
-        what was cooked, even if the vault file has since changed.  When
+        what was cooked, even if the vault file has since changed.  A
+        non-elevated session scope may only read a snapshot on a container
+        in its own project (``_assert_task_in_scope``, claim mixin).  When
         several ``formula_snapshot`` rows exist (the container was cooked
-        more than once), ``task_context`` has no timestamp column, so the
-        LAST row ``get_task_contexts`` returns is taken as the newest.
+        more than once), the row's ``content`` carries a ``cooked_at``
+        timestamp (``write_plan``, controller ruling P3-4 — ``task_context``
+        has no timestamp column and its ``id`` is random hex, so row order
+        alone is not a reliable "latest" signal); the newest row wins, ties
+        broken by ``chain_sha`` then ``id``.
         """
+        container = await self.db.get_task(container_id)
+        out_of_scope = self._assert_task_in_scope(container)
+        if out_of_scope:
+            return out_of_scope
+
         contexts = await self.db.get_task_contexts(container_id)
         snapshots = [c for c in contexts if c["type"] == "formula_snapshot"]
         if not snapshots:
             return {"success": False, "error": f"no formula snapshot on {container_id}"}
-        snapshot_row = snapshots[-1]
 
-        snapshot = json.loads(snapshot_row["content"])
+        def _sort_key(row: dict) -> tuple:
+            payload = json.loads(row["content"])
+            return (payload.get("cooked_at", 0.0), payload.get("chain_sha", ""), row["id"])
+
+        snapshot_row = max(snapshots, key=_sort_key)
+        payload = json.loads(snapshot_row["content"])
+        snapshot = payload["document"]
+
         name = await self.db.get_task_meta(container_id, "formula")
         scope = await self.db.get_task_meta(container_id, "formula_scope")
         path = await self.db.get_task_meta(container_id, "formula_path")
@@ -215,7 +243,12 @@ class FormulaCommandsMixin:
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
             return {"success": False, "error": "project_id is required (no active project set)"}
-        supplied = args.get("vars") or {}
+        project = await self.db.get_project(project_id)
+        if not project:
+            return {"success": False, "error": f"Project '{project_id}' not found"}
+        supplied, vars_error = self._formula_vars_arg(args)
+        if vars_error is not None:
+            return vars_error
         parent_id = args.get("parent_id")
         dry_run = bool(args.get("dry_run", False))
 
@@ -273,5 +306,6 @@ class FormulaCommandsMixin:
 
         report["success"] = True
         report["container_id"] = report["parent_id"]
+        report["project_id"] = project_id
         report["warnings"] = [w.to_dict() for w in warnings]
         return report

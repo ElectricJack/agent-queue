@@ -8,8 +8,8 @@ owning subsystem has not landed yet are listed in
 contract those owners must follow.
 """
 
-from src.doctor import formula_checks as formula_checks_module
 from src.doctor.builtin import builtin_checks
+from src.doctor.formula_checks import formula_checks
 from src.doctor.hierarchy_checks import hierarchy_checks
 from src.doctor.models import (
     RESERVED_CHECK_IDS,
@@ -45,6 +45,6 @@ def default_registry() -> DoctorRegistry:
         registry.register(check)
     for check in pool_checks():
         registry.register(check)
-    for check in formula_checks_module.formula_checks():
+    for check in formula_checks():
         registry.register(check)
     return registry
