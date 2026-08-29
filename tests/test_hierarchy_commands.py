@@ -206,3 +206,77 @@ class TestAbandonChildren:
         res = await handler._cmd_task_close({"task_id": "p", "outcome": "pass", "summary": "x"})
         assert res["success"] is True
         assert res["abandoned"] == []
+
+
+class TestCascadeDeleteLiveDescendants:
+    """Cascade delete refuses rather than pulling a live session out from
+    under a grandchild (spec §7, controller ruling on task 7 review)."""
+
+    async def _grandchild_tree(self, db):
+        await mktask(db, "p", status=TaskStatus.DEFINED)
+        await mktask(db, "c", status=TaskStatus.READY)
+        await mktask(db, "gc", status=TaskStatus.READY)
+        await db.add_dependency("c", "p", "parent-child")
+        await db.add_dependency("gc", "c", "parent-child")
+
+    async def test_refused_while_grandchild_has_live_session(self, handler, db):
+        await self._grandchild_tree(db)
+        now = time.time()
+        await db.create_session(
+            SessionRecord(
+                id="s1",
+                task_id="gc",
+                project_id=PROJECT_ID,
+                profile_id="worker",
+                harness="claude",
+                provider="fake",
+                name="s-gc",
+                lifecycle="task",
+                state="running",
+                work_dir="/tmp",
+                epoch="e",
+                instance_token="t",
+                started_at=now,
+                last_activity=now,
+            )
+        )
+
+        res = await handler._cmd_delete_task({"task_id": "p", "cascade": True})
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.live_descendants"
+        assert res["sessions"] == [{"session_id": "s1", "task_id": "gc"}]
+
+        # Nothing was deleted.
+        assert await db.get_task("p") is not None
+        assert await db.get_task("c") is not None
+        assert await db.get_task("gc") is not None
+
+    async def test_succeeds_once_session_stopped(self, handler, db):
+        await self._grandchild_tree(db)
+        now = time.time()
+        await db.create_session(
+            SessionRecord(
+                id="s1",
+                task_id="gc",
+                project_id=PROJECT_ID,
+                profile_id="worker",
+                harness="claude",
+                provider="fake",
+                name="s-gc",
+                lifecycle="task",
+                state="running",
+                work_dir="/tmp",
+                epoch="e",
+                instance_token="t",
+                started_at=now,
+                last_activity=now,
+            )
+        )
+        await db.update_session("s1", state="stopped")
+
+        res = await handler._cmd_delete_task({"task_id": "p", "cascade": True})
+        assert res == {"deleted": "p", "title": "p"}
+
+        assert await db.get_task("p") is None
+        assert await db.get_task("c") is None
+        assert await db.get_task("gc") is None

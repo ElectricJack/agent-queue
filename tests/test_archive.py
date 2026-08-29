@@ -399,6 +399,35 @@ class TestArchiveCommands:
         assert await db.get_archived_task("t-2") is not None
         assert await db.get_archived_task("t-3") is not None
 
+    async def test_archive_bulk_skips_root_with_open_descendant(self, handler, db):
+        """A bulk selection lists every terminal task individually, but a
+        COMPLETED parent with an open child is refused by ``archive_task``'s
+        subtree check — the batch must not abort, just skip that root and
+        report it (controller ruling on task 7 review)."""
+        await _seed_project(db)
+        await _seed_task(db, "t-lone", status=TaskStatus.COMPLETED, title="Lone")
+        await _seed_task(db, "t-parent", status=TaskStatus.COMPLETED, title="Parent")
+        await _seed_task(
+            db,
+            "t-child",
+            status=TaskStatus.READY,
+            title="Child",
+            parent_task_id="t-parent",
+        )
+
+        result = await handler.execute("archive_task", {"project_id": "p-1"})
+        assert "error" not in result
+        assert result["archived_count"] == 1
+        assert result["archived_ids"] == ["t-lone"]
+        assert result["skipped"] == [
+            {"task_id": "t-parent", "code": "hierarchy.open_descendants", "detail": "t-child"}
+        ]
+
+        assert await db.get_archived_task("t-lone") is not None
+        assert await db.get_archived_task("t-parent") is None
+        assert await db.get_task("t-parent") is not None
+        assert await db.get_task("t-child") is not None
+
     async def test_archive_single_task(self, handler, db):
         await _seed_project(db)
         await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)

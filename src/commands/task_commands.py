@@ -1894,19 +1894,51 @@ class TaskCommandsMixin:
         }
 
     async def _cmd_delete_task(self, args: dict) -> dict:
-        task = await self.db.get_task(args["task_id"])
+        task_id = args["task_id"]
+        task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{args['task_id']}' not found"}
+            return {"error": f"Task '{task_id}' not found"}
         if task.status == TaskStatus.IN_PROGRESS:
-            error = await self.orchestrator.stop_task(args["task_id"])
+            error = await self.orchestrator.stop_task(task_id)
             if error:
                 return {"error": f"Could not stop task before deleting: {error}"}
         cascade = bool(args.get("cascade", False))
-        try:
-            await self.db.delete_task(args["task_id"], cascade=cascade)
-        except HierarchyError as exc:
-            return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
-        return {"deleted": args["task_id"], "title": task.title}
+
+        if cascade:
+            # A cascade delete removes the whole subtree; refuse rather than
+            # pull a live session out from under a grandchild (spec §7).
+            # Check and delete in the same transaction so no session can
+            # start holding a descendant between the check and the delete.
+            immediate = getattr(self.db, "immediate", None) or self.db._engine.begin
+            async with immediate() as conn:
+                live = await self.db.live_descendant_sessions(task_id, conn=conn)
+                if live:
+                    return {
+                        "success": False,
+                        "code": "hierarchy.live_descendants",
+                        "sessions": [{"session_id": s, "task_id": t} for s, t in live],
+                    }
+                try:
+                    result = await self.db.delete_task(task_id, cascade=True, conn=conn)
+                except HierarchyError as exc:
+                    return {
+                        "error": f"hierarchy.{exc.code}: {exc.detail}",
+                        "code": f"hierarchy.{exc.code}",
+                    }
+            # Post-commit, same sequencing as delete_task's own single-
+            # transaction path — a listener failure must not roll back the
+            # delete.
+            await self.db.log_blocked_flips(result.flipped)
+            await self.db._notify_settled(result.settled)
+        else:
+            try:
+                await self.db.delete_task(task_id, cascade=False)
+            except HierarchyError as exc:
+                return {
+                    "error": f"hierarchy.{exc.code}: {exc.detail}",
+                    "code": f"hierarchy.{exc.code}",
+                }
+        return {"deleted": task_id, "title": task.title}
 
     # -- Archive commands -----------------------------------------------------
     # Archive moves completed tasks out of the active view into the
@@ -1999,10 +2031,30 @@ class TaskCommandsMixin:
             task_data.append((task, result, deps))
 
         # Phase 2 — archive each task (DB table + optional markdown note).
+        #
+        # A bulk selection lists every terminal task individually, but
+        # ``archive_task`` archives a whole subtree atomically: a root with
+        # an open descendant raises (skip it, don't abort the batch), and a
+        # task already swept up as part of an earlier root's subtree comes
+        # back ``False`` (skip it too — no second event, no double count).
         archived: list[dict] = []
+        skipped: list[dict] = []
         for task, result, deps in task_data:
+            try:
+                success = await self.db.archive_task(task.id)
+            except HierarchyError as exc:
+                skipped.append(
+                    {
+                        "task_id": task.id,
+                        "code": f"hierarchy.{exc.code}",
+                        "detail": exc.detail,
+                    }
+                )
+                continue
+            if not success:
+                continue
+
             archive_path = await self._write_archive_note(task, result, deps)
-            await self.db.archive_task(task.id)
             await self.db.log_event(
                 "task_archived",
                 project_id=task.project_id,
@@ -2027,6 +2079,7 @@ class TaskCommandsMixin:
             "archived_count": len(archived),
             "archived_ids": [a["id"] for a in archived],
             "archived": archived,
+            "skipped": skipped,
             "archive_dir": archive_dir,
             "project_id": project_id,
         }

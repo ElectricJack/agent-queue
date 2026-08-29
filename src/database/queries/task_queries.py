@@ -461,33 +461,56 @@ class TaskQueryMixin:
             if own:
                 await ctx.__aexit__(None, None, None)
 
-    async def delete_task(self, task_id: str, *, cascade: bool = False) -> None:
+    async def delete_task(
+        self, task_id: str, *, cascade: bool = False, conn=None
+    ) -> TransitionResult:
         """Delete a task; with *cascade*, its whole subtree (spec §7).
 
         Refuses a container with children unless *cascade*.  One transaction:
         dependents are snapshotted while the edges exist, the subtree is
         removed deepest-first, the former container is settled, and the
         projection is recomputed.
+
+        When *conn* is supplied, the caller already owns the transaction
+        (e.g. to check ``live_descendant_sessions`` atomically with the
+        delete) — this method writes on it and returns the accumulated
+        ``TransitionResult`` instead of opening its own transaction and
+        firing the post-commit notifications itself; the caller is then
+        responsible for ``log_blocked_flips`` / ``_notify_settled`` once its
+        own transaction has committed.
         """
+        if conn is not None:
+            return await self._delete_task_body(task_id, cascade=cascade, conn=conn)
+
+        async with self._engine.begin() as c:
+            result = await self._delete_task_body(task_id, cascade=cascade, conn=c)
+        await self.log_blocked_flips(result.flipped)
+        await self._notify_settled(result.settled)
+        return result
+
+    async def _delete_task_body(
+        self, task_id: str, *, cascade: bool, conn
+    ) -> TransitionResult:
+        """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
-        async with self._engine.begin() as conn:
-            parent = (
-                await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
-            ).scalar()
-            ids = await self.subtree_ids(task_id, conn=conn)
-            if len(ids) > 1 and not cascade:
-                raise HierarchyError("has_children", f"{task_id} has {len(ids) - 1} descendant(s)")
-            affected = await self._collect_affected(set(ids), conn)
-            affected -= set(ids)
-            if parent:
-                affected.add(parent)
-            for tid in reversed(ids):  # deepest first (subtree_ids is shallow→deep)
-                await self._delete_one(tid, conn=conn)
-            flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
-            settle_result = await self.settle_containers({parent} if parent else set(), conn=conn)
-        await self.log_blocked_flips(flipped | settle_result.flipped)
-        await self._notify_settled(settle_result.settled)
+        parent = (
+            await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
+        ).scalar()
+        ids = await self.subtree_ids(task_id, conn=conn)
+        if len(ids) > 1 and not cascade:
+            raise HierarchyError("has_children", f"{task_id} has {len(ids) - 1} descendant(s)")
+        affected = await self._collect_affected(set(ids), conn)
+        affected -= set(ids)
+        if parent:
+            affected.add(parent)
+        for tid in reversed(ids):  # deepest first (subtree_ids is shallow→deep)
+            await self._delete_one(tid, conn=conn)
+        flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
+        settle_result = await self.settle_containers({parent} if parent else set(), conn=conn)
+        return TransitionResult(
+            flipped=flipped | settle_result.flipped, settled=settle_result.settled
+        )
 
     async def _delete_one(self, task_id: str, *, conn) -> None:
         """Delete a single task row and its related child rows.

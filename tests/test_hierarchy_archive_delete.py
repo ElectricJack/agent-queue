@@ -100,3 +100,31 @@ class TestArchive:
         assert archived == ["lone"]
         assert await db.get_task("p") is not None
         assert await db.get_task("c1") is not None
+
+    async def test_sweep_skips_root_with_open_grandchild(self, db):
+        """The sweep's EXISTS check only sees direct children — an open
+        grandchild is caught by ``archive_task``'s own subtree check, which
+        raises; the sweep must catch that, skip the root without raising
+        out, and keep archiving other roots (controller ruling on task 7
+        review)."""
+        await mktask(db, "root", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "child", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "grandchild", status=TaskStatus.READY)
+        await db.add_dependency("child", "root", "parent-child")
+        await db.add_dependency("grandchild", "child", "parent-child")
+        await _set_statuses(db, {"root": "COMPLETED", "child": "COMPLETED"})
+        await mktask(db, "lone", status=TaskStatus.COMPLETED)
+
+        async with db._engine.begin() as conn:
+            from sqlalchemy import update
+
+            from src.database.tables import tasks
+
+            await conn.execute(update(tasks).values(updated_at=time.time() - 10_000))
+
+        archived = await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=1)
+        assert archived == ["lone"]
+        assert await db.get_task("root") is not None
+        assert await db.get_task("child") is not None
+        assert await db.get_task("grandchild") is not None
+        assert await db.get_archived_task("lone") is not None

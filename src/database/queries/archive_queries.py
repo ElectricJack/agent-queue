@@ -55,6 +55,8 @@ class ArchiveQueryMixin:
             ).scalar()
             affected = await self._collect_affected(set(ids), conn)
             affected -= set(ids)
+            if parent:
+                affected.add(parent)
             for tid in reversed(ids):
                 task = await self._get_task_conn(tid, conn=conn)
                 if task is not None:
