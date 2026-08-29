@@ -74,6 +74,17 @@ class TestExistingParent:
         assert plan.task_ids == ["epic.1", "epic.2"]
         assert (await db.get_task("epic.2")).parent_task_id == "epic"
         assert ("epic.1", "blocks") in await db.get_typed_dependencies("epic.2")
+        from sqlalchemy import select
+
+        from src.database.tables import tasks as tasks_table
+
+        async with db._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    select(tasks_table.c.next_child_ordinal).where(tasks_table.c.id == "epic")
+                )
+            ).fetchone()
+        assert row[0] == 3
 
     async def test_dry_run_reserves_nothing(self, db):
         await db.create_task(

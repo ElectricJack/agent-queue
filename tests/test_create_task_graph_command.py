@@ -150,6 +150,19 @@ class TestParentValidation:
         )
         assert result["code"] == "hierarchy.depth"
 
+    async def test_parent_at_naming_depth_cap_is_refused_even_at_root(self, setup):
+        """A task named ``a.1.1`` reparented to root has structural depth 1 and
+        would pass the structural check, but its *naming* depth is already at
+        the cap — minting ``a.1.1.1`` would exceed MAX_NAMING_DEPTH (spec §6:
+        a graph cannot fall back to per-node root ids)."""
+        handler, db, _vault = setup
+        await db.create_task(Task(id="a.1.1", project_id="p1", title="e", description="e"))
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _simple_graph(), "parent_id": "a.1.1"}
+        )
+        assert result["code"] == "hierarchy.depth"
+        assert await db.list_tasks(project_id="p1") == [await db.get_task("a.1.1")]
+
     async def test_creates_under_existing_parent_with_dotted_ids(self, setup):
         handler, db, _vault = setup
         await db.create_task(

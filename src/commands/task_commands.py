@@ -26,7 +26,7 @@ from src.state_machine import (
     validate_waits_for,
 )
 from src.database.queries.hierarchy_queries import HierarchyError
-from src.task_names import MAX_STRUCTURAL_DEPTH, generate_task_id
+from src.task_names import MAX_NAMING_DEPTH, MAX_STRUCTURAL_DEPTH, generate_task_id, naming_depth
 
 from src.commands.helpers import (
     _collect_tree_task_ids,
@@ -1294,6 +1294,14 @@ class TaskCommandsMixin:
                     "error": f"parent at structural depth {depth}; cap is {MAX_STRUCTURAL_DEPTH}",
                     "code": "hierarchy.depth",
                 }
+            if naming_depth(parent_id) >= MAX_NAMING_DEPTH:
+                return {
+                    "error": (
+                        f"parent '{parent_id}' is at naming depth cap "
+                        f"{MAX_NAMING_DEPTH} — a graph cannot mint further dotted children"
+                    ),
+                    "code": "hierarchy.depth",
+                }
 
         vault_root = getattr(self.config, "vault_root", None)
 
@@ -1343,6 +1351,8 @@ class TaskCommandsMixin:
         )
         report["project_id"] = project_id
         report["warnings"] = [w.to_dict() for w in warnings]
+        if parent_id:
+            report["parent_title"] = parent.title
         if graph.spec:
             report["spec"] = graph.spec
         return report

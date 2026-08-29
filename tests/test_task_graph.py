@@ -716,7 +716,7 @@ class TestCreateGraph:
                 .fetchall()
             )
         # Plus the ``parent-child`` edge ``set_parent`` writes for every node.
-        assert {r["dep_type"] for r in rows} == {"waits-for", "parent-child"}
+        assert sorted(r["dep_type"] for r in rows) == ["parent-child", "waits-for"]
 
     async def test_spec_ref_context_content_shape(self, db, vault):
         graph = await _valid_graph(vault)
