@@ -351,6 +351,23 @@ Many-to-many tags on tasks.
 | `task_id` | TEXT | PRIMARY KEY REFERENCES tasks(id) | Composite PK part 1 |
 | `label` | TEXT | PRIMARY KEY | Composite PK part 2 |
 
+### Table: `hierarchy_migration_rejects`
+
+Preflight/reject log for the swarm-work-model hierarchy migration (revision B):
+one row per task the canonicalisation step could not cleanly assign a single
+parent-child edge to. Never written outside the migration.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Row id |
+| `run_id` | TEXT | NOT NULL | Groups rows from one migration run |
+| `task_id` | TEXT | NOT NULL | The task the rejection is about |
+| `parent_id` | TEXT | NULL | Candidate parent, if any |
+| `source` | TEXT | NOT NULL | `duplicate_edge` \| `column_only` \| `edge` |
+| `reason` | TEXT | NOT NULL | `cross_project` \| `cycle` \| `depth` \| `not_found` \| `duplicate` |
+| `detail` | TEXT | NULL | Free-text explanation |
+| `created_at` | FLOAT | NOT NULL | Unix timestamp |
+
 ### Table: `gates`
 
 Human-in-the-loop decision points. A gate is opened by a playbook or workflow and

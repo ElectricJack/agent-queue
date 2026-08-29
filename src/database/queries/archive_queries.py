@@ -77,6 +77,8 @@ class ArchiveQueryMixin:
                     # Carry the blocked-state projection across so archiving
                     # really is lossless (work-graph §2.2).
                     is_blocked=int(task.is_blocked),
+                    created_by_kind=task.created_by_kind,
+                    created_by_id=task.created_by_id,
                     created_at=0.0,
                     updated_at=0.0,
                     archived_at=now,
@@ -258,6 +260,8 @@ class ArchiveQueryMixin:
             "affinity_reason": row.get("affinity_reason"),
             "workspace_mode": row.get("workspace_mode"),
             "is_blocked": bool(row.get("is_blocked", 0)),
+            "created_by_kind": row.get("created_by_kind"),
+            "created_by_id": row.get("created_by_id"),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "archived_at": row["archived_at"],

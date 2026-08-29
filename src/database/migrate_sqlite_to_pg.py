@@ -28,6 +28,7 @@ from src.database.tables import (
     chat_analyzer_suggestions,
     events,
     gates,
+    hierarchy_migration_rejects,
     merge_slots,
     messages,
     playbook_runs,
@@ -104,6 +105,8 @@ _ORDERED_TABLES = [
     task_metadata,
     task_tools,
     task_labels,
+    # No FKs.
+    hierarchy_migration_rejects,
     task_workspace_requirements,
     # FK → gates, tasks
     task_gates,

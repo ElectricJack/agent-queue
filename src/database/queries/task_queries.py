@@ -74,6 +74,8 @@ class TaskQueryMixin:
                     dedup_key=task.dedup_key,
                     discord_thread_id=task.discord_thread_id,
                     intelligence_class=task.intelligence_class,
+                    created_by_kind=task.created_by_kind,
+                    created_by_id=task.created_by_id,
                     # A brand-new row has no edges yet, so it starts
                     # unblocked; the edges that follow recompute it
                     # (work-graph implementation spec §4.1).
@@ -798,6 +800,10 @@ class TaskQueryMixin:
             dedup_key=row.get("dedup_key"),
             discord_thread_id=row.get("discord_thread_id"),
             intelligence_class=row.get("intelligence_class"),
+            created_by_kind=row.get("created_by_kind"),
+            created_by_id=row.get("created_by_id"),
+            claim_epoch=int(row.get("claim_epoch") or 0),
+            filed_count=int(row.get("filed_count") or 0),
         )
 
     async def update_task_routing(

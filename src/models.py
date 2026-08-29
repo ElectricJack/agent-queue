@@ -210,6 +210,7 @@ class AgentState(Enum):
     BUSY = "BUSY"
     PAUSED = "PAUSED"
     ERROR = "ERROR"
+    RETIRED = "RETIRED"
 
 
 class AgentResult(Enum):
@@ -386,6 +387,13 @@ class Task:
     dedup_key: str | None = None
     discord_thread_id: str | None = None
     intelligence_class: str | None = None
+    # Provenance and swarm counters (swarm-work-model §9).  ``claim_epoch``
+    # and ``filed_count`` are written by Plan 2; they ride on the model so
+    # ``_row_to_task`` is complete from the first migration.
+    created_by_kind: str | None = None
+    created_by_id: str | None = None
+    claim_epoch: int = 0
+    filed_count: int = 0
     # Persisted blocked-state projection (work-graph design §4).  Pure
     # derived data: 1 iff some blocking edge is unsatisfied or an attached
     # gate is unresolved.  Recomputed in-transaction by the query layer —

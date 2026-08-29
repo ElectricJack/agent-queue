@@ -103,6 +103,19 @@ tasks = Table(
     # in-memory task->thread map is lost on every daemon restart, which used
     # to make it open a *new* thread for a task it had already threaded.
     Column("discord_thread_id", Text, nullable=True),
+    # Hierarchy (swarm-work-model §4, §6): per-parent ordinal counter for
+    # dotted child ids.  Incremented atomically by
+    # ``task_names.reserve_child_ordinal``; never read for anything else.
+    Column("next_child_ordinal", Integer, nullable=False, server_default="1"),
+    # Provenance (swarm-work-model §9): who created the row.  Stamped by
+    # CommandHandler.execute from the request scope (Plan 2); nullable so
+    # rows created by legacy paths stay valid.
+    Column("created_by_kind", Text, nullable=True),
+    Column("created_by_id", Text, nullable=True),
+    # Per-claim fence (swarm-work-model §10).  Plan 2 increments it.
+    Column("claim_epoch", Integer, nullable=False, server_default="0"),
+    # Worker-filing quota counter (swarm-work-model §12).  Plan 2 reserves it.
+    Column("filed_count", Integer, nullable=False, server_default="0"),
     Index("idx_tasks_project_dedup", "project_id", "dedup_key"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
@@ -110,6 +123,8 @@ tasks = Table(
     Index("idx_tasks_project_status_blocked", "project_id", "status", "is_blocked"),
     # Group progress and tree queries walk parent_task_id.
     Index("idx_tasks_parent", "parent_task_id"),
+    # Pool work query (swarm-work-model §10): ready tasks for a profile.
+    Index("idx_tasks_ready_by_profile", "project_id", "profile_id", "status", "is_blocked"),
 )
 
 task_criteria = Table(
@@ -241,6 +256,20 @@ task_labels = Table(
     Column("task_id", Text, ForeignKey("tasks.id"), primary_key=True),
     Column("label", Text, primary_key=True),
     Index("idx_task_labels_label", "label"),
+)
+
+hierarchy_migration_rejects = Table(
+    "hierarchy_migration_rejects",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("run_id", Text, nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("parent_id", Text, nullable=True),
+    Column("source", Text, nullable=False),  # duplicate_edge | column_only | edge
+    Column("reason", Text, nullable=False),  # cross_project | cycle | depth | not_found | duplicate
+    Column("detail", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Index("idx_hier_rejects_run", "run_id"),
 )
 
 # ---------------------------------------------------------------------------
@@ -503,6 +532,10 @@ agent_profiles = Table(
     Column("wake_mode", Text, nullable=True),
     Column("idle_timeout", Integer, nullable=True),
     Column("max_session_age", Integer, nullable=True),
+    # lifecycle: pool (swarm-work-model §9).  NULL = unlimited claims.
+    Column("min_active", Integer, nullable=True),
+    Column("max_active", Integer, nullable=True),
+    Column("max_claims_per_session", Integer, nullable=True),
     Column("default_class", Text, nullable=False, server_default="''"),
     Column("needs_workspace", Boolean, nullable=False, server_default=true()),
     # T3 reviewer follow-up: when True, workspace acquisition refuses to
@@ -546,6 +579,13 @@ sessions = Table(
     # which is why _step_named could only converge downward -- "sleeping"
     # and "should be sleeping" were the same value.
     Column("desired_state", Text, nullable=False, server_default="running"),
+    # Pool lifecycle (swarm-work-model §9–§11).  Plan 2 writes these.
+    Column("claims", Integer, nullable=False, server_default="0"),
+    Column("agent_id", Text, nullable=True),
+    Column("claim_phase", Text, nullable=True),
+    Column("claim_phase_at", Float, nullable=True),
+    Column("last_claim_epoch", Integer, nullable=True),
+    Column("last_claim_result", Text, nullable=True),
     Column("session_key", Text, nullable=True),  # harness resume key
     Column("work_dir", Text, nullable=False),
     Column("epoch", Text, nullable=False),  # AQ_DAEMON_EPOCH at launch
@@ -684,6 +724,8 @@ archived_tasks = Table(
     Column("is_blocked", Integer, nullable=False, server_default="0"),
     Column("dedup_key", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),
+    Column("created_by_kind", Text, nullable=True),
+    Column("created_by_id", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("archived_at", Float, nullable=False),
