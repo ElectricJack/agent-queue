@@ -26,7 +26,14 @@ from src.state_machine import (
     validate_waits_for,
 )
 from src.database.queries.hierarchy_queries import HierarchyError
-from src.task_names import MAX_NAMING_DEPTH, MAX_STRUCTURAL_DEPTH, generate_task_id, naming_depth
+from src.task_names import (
+    MAX_NAMING_DEPTH,
+    MAX_STRUCTURAL_DEPTH,
+    child_task_id,
+    fresh_root_id,
+    generate_task_id,
+    naming_depth,
+)
 
 from src.commands.helpers import (
     _collect_tree_task_ids,
@@ -94,6 +101,16 @@ def _check_capability_escalation(parent, child) -> str:
             f"parent's list: {extra_servers}"
         )
     return ""
+
+
+class _FilingQuota(Exception):
+    """Internal signal: ``reserve_filing`` refused — held task hit its quota.
+
+    Raised inside :meth:`TaskCommandsMixin._create_worker_filed_task`'s
+    ``immediate()`` block so the transaction rolls back nothing-written;
+    caught in ``_cmd_create_task`` to turn into the ``filing_quota_exceeded``
+    response.
+    """
 
 
 class TaskCommandsMixin:
@@ -876,7 +893,108 @@ class TaskCommandsMixin:
             "new_parent": new_parent,
         }
 
+    async def _create_worker_filed_task(
+        self,
+        task: Task,
+        *,
+        held_id: str,
+        parent_id: str | None,
+        discovered_from: str | None,
+        edges: list[tuple[str, str]],
+    ) -> tuple[str, str | None, str | None, bool]:
+        """Write a worker-filed task + its edges in one ``immediate()`` txn.
+
+        Order (swarm work model §12): ``reserve_filing`` first — ``False``
+        raises :class:`_FilingQuota` with nothing written — then the task
+        row, then the parent-child or ``discovered-from`` edge, then (root
+        filings only) the routing gate, then the ``depends_on`` edges. Any
+        exception rolls the whole transaction back untouched.
+
+        Returns ``(task_id, gate_id, discovered_from_origin, depth_cap_fallback)``.
+        ``gate_id`` and ``discovered_from_origin`` are only set for
+        root-level filings (no ``parent_id``) — a child filing gets a
+        ``parent-child`` edge instead and is routed by its container.
+        """
+        gate_id: str | None = None
+        origin: str | None = None
+        depth_cap_fallback = False
+        async with self.db.immediate() as conn:
+            if not await self.db.reserve_filing(
+                conn, held_id, max_filings=self.config.swarm.max_filings_per_task
+            ):
+                raise _FilingQuota()
+            if parent_id:
+                task.id, depth_cap_fallback = await child_task_id(conn, parent_id)
+            else:
+                task.id = await fresh_root_id(conn)
+            await self.db.create_task(task, conn=conn)
+            if parent_id and not depth_cap_fallback:
+                await self.db.set_parent(task.id, parent_id, conn=conn)
+            elif parent_id:
+                # Naming-depth cap: child_task_id already minted a root id;
+                # record provenance the same way create_task_under does,
+                # instead of a parent-child edge to the (too-deep) container.
+                await self.db.add_dependency(
+                    task.id, parent_id, DepType.DISCOVERED_FROM.value, conn=conn
+                )
+            else:
+                origin = discovered_from or held_id
+                await self.db.add_dependency(
+                    task.id, origin, DepType.DISCOVERED_FROM.value, conn=conn
+                )
+                gate_id, _ = await self.db.create_gate(
+                    task.project_id,
+                    "routing",
+                    f"Route: {task.title}",
+                    waiter_task_ids=[task.id],
+                    conn=conn,
+                )
+            for dep_id, dep_type in edges:
+                await self.db.add_dependency(task.id, dep_id, dep_type, conn=conn)
+        return task.id, gate_id, origin, depth_cap_fallback
+
     async def _cmd_create_task(self, args: dict) -> dict:
+        # ----- Worker-filed work (swarm work model §12) --------------------
+        # A session-scoped, non-elevated caller is a pool worker currently
+        # holding a task. Its filings are pinned to its own project, forced
+        # to start DEFINED, and constrained to the held task's subtree for
+        # the parent/discovered-from edge. ``filing_session``/``held_id``
+        # stay ``None`` for every other caller (elevated, local, MCP without
+        # session scope) — that path is completely untouched below.
+        scope = self._current_scope or {}
+        filing_session = None
+        held_id: str | None = None
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            filing_session = await self.db.get_session(scope.get("session_id") or "")
+            if filing_session is None:
+                return {"success": False, "error": "no session in scope"}
+            if args.get("project_id") and args["project_id"] != filing_session.project_id:
+                return {
+                    "success": False,
+                    "error": "worker-filed tasks are pinned to the session's project",
+                }
+            args["project_id"] = filing_session.project_id
+            if not filing_session.task_id:
+                return {
+                    "success": False,
+                    "code": "idle_session_cannot_file",
+                    "error": "idle sessions cannot file work; claim a task first",
+                }
+            args.pop("status", None)  # worker-filed work always starts DEFINED
+            held_id = filing_session.task_id
+            async with self.db._engine.begin() as _conn:
+                allowed = {held_id} | set(await self.db.subtree_ids(held_id, conn=_conn))
+            if args.get("discovered_from") and args["discovered_from"] not in allowed:
+                return {
+                    "success": False,
+                    "error": "discovered_from must be the held task or one of its descendants",
+                }
+            if args.get("parent_id") and args["parent_id"] not in allowed:
+                return {
+                    "success": False,
+                    "error": "parent must be the held task or one of its descendants",
+                }
+
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
@@ -1101,7 +1219,7 @@ class TaskCommandsMixin:
         )
         initial_status = (
             TaskStatus.DEFINED
-            if (self._plan_subtask_creation_mode or has_blocking_edge)
+            if (self._plan_subtask_creation_mode or has_blocking_edge or filing_session is not None)
             else TaskStatus.READY
         )
         auto_approve_plan = args.get("auto_approve_plan", False)
@@ -1129,8 +1247,33 @@ class TaskCommandsMixin:
             dedup_key=args.get("dedup_key"),
             intelligence_class=args.get("intelligence_class"),
         )
+        gate_id: str | None = None
+        discovered_from_origin: str | None = None
         depth_cap_fallback = False
-        if parent_id:
+        if filing_session is not None:
+            task.created_by_kind = "session"
+            task.created_by_id = filing_session.id
+            try:
+                task_id, gate_id, discovered_from_origin, depth_cap_fallback = (
+                    await self._create_worker_filed_task(
+                        task,
+                        held_id=held_id,
+                        parent_id=parent_id,
+                        discovered_from=args.get("discovered_from"),
+                        edges=edges,
+                    )
+                )
+            except _FilingQuota:
+                return {
+                    "success": False,
+                    "code": "filing_quota_exceeded",
+                    "error": (
+                        f"task {held_id} has already filed "
+                        f"{self.config.swarm.max_filings_per_task} tasks "
+                        "(swarm.max_filings_per_task)"
+                    ),
+                }
+        elif parent_id:
             try:
                 task_id, depth_cap_fallback = await self.db.create_task_under(task, parent_id)
             except HierarchyError as exc:
@@ -1150,19 +1293,23 @@ class TaskCommandsMixin:
         # Graph edges and labels, now that the FK target exists.  Each
         # ``add_dependency`` recomputes the blocked-state projection, so the
         # task's ``is_blocked`` is correct before anything can schedule it.
+        # Worker-filed edges were already written inside
+        # ``_create_worker_filed_task``'s transaction above — only log them
+        # here so the audit trail is identical either way.
         for dep_id, dep_type in edges:
-            try:
-                await self.db.add_dependency(task_id, dep_id, dep_type)
-            except HierarchyError as exc:
-                return {
-                    "error": (
-                        f"hierarchy.{exc.code}: {exc.detail} "
-                        f"(task '{task_id}' was already created; fix the edge with "
-                        f"'aq task deps')"
-                    ),
-                    "code": f"hierarchy.{exc.code}",
-                    "task_created": task_id,
-                }
+            if filing_session is None:
+                try:
+                    await self.db.add_dependency(task_id, dep_id, dep_type)
+                except HierarchyError as exc:
+                    return {
+                        "error": (
+                            f"hierarchy.{exc.code}: {exc.detail} "
+                            f"(task '{task_id}' was already created; fix the edge with "
+                            f"'aq task deps')"
+                        ),
+                        "code": f"hierarchy.{exc.code}",
+                        "task_created": task_id,
+                    }
             await self.db.log_event(
                 "dependency.added",
                 project_id=project_id,
@@ -1203,11 +1350,29 @@ class TaskCommandsMixin:
         # triage task would deadlock blocked on its own gate.
         if not args.get("_suppress_created_event"):
             try:
-                extras: dict[str, str] = {}
+                extras: dict[str, object] = {}
                 if profile_id:
                     extras["profile_id"] = profile_id
                 if task_type:
                     extras["task_type"] = task_type.value
+                # Worker-filed work (swarm work model §12): always present,
+                # ``None`` when not applicable — the default pipeline's
+                # ``worker-filed-triage`` rule keys off ``created_by_kind``
+                # and ``parent_task_id``. ``parent_id``/``depth_cap_fallback``
+                # reflect the real edge written above; ``task.parent_task_id``
+                # itself is never updated in-memory (``set_parent``/
+                # ``create_task_under`` own the DB column, not the object).
+                extras["created_by_kind"] = task.created_by_kind
+                extras["created_by_id"] = task.created_by_id
+                extras["filed_by_profile_id"] = (
+                    filing_session.profile_id if filing_session is not None else None
+                )
+                extras["discovered_from"] = (
+                    discovered_from_origin if filing_session is not None else None
+                )
+                extras["parent_task_id"] = (
+                    parent_id if (parent_id and not depth_cap_fallback) else None
+                )
                 await self.orchestrator._emit_task_event("task.created", task, **extras)
             except AttributeError as e:  # orchestrator missing hook (test doubles)
                 logger.warning("create_task: failed to emit task.created (missing hook): %s", e)
@@ -1250,6 +1415,10 @@ class TaskCommandsMixin:
 
         result = {
             "created": task_id,
+            "success": True,
+            "task_id": task_id,
+            "gate_id": gate_id,
+            "status": task.status.value,
             "title": task.title,
             "project_id": task.project_id,
         }

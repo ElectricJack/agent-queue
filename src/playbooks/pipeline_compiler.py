@@ -40,6 +40,7 @@ PIPELINE_COMMAND_WHITELIST: frozenset[str] = frozenset(
         "list_tasks",
         "get_downstream_tasks",
         "task_batch_commit",
+        "task_route",
     }
 )
 
@@ -414,6 +415,19 @@ def _validate_when(when: Any, rule_id: str) -> list[dict[str, Any]]:
         elif isinstance(clauses, list):
             for c in clauses:
                 errs.extend(_validate_when(c, rule_id))
+    if "field" in when:
+        comparators = [k for k in ("truthy", "not_null", "equals", "is_null") if k in when]
+        if len(comparators) != 1:
+            errs.append(
+                _err(
+                    rule_id,
+                    "when",
+                    "leaf 'when' clause must have exactly one of "
+                    f"truthy|not_null|equals|is_null; got {comparators or 'none'}",
+                )
+            )
+        elif "is_null" in when and not isinstance(when["is_null"], bool):
+            errs.append(_err(rule_id, "when.is_null", "'is_null' must be a boolean"))
     return errs
 
 

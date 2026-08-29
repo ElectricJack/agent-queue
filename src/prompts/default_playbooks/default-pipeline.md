@@ -41,6 +41,11 @@ Ships three rules:
 - **Proposal commit** (`gate.resolved`, filtered to `gate_type: human`) —
   once the gate is resolved, calls `task_batch_commit` for the awaited
   proposal so the approved batch is written into the task graph.
+- **Worker-filed triage** (`task.created`, session-filed root tasks only) —
+  routes a task a pool worker filed for itself (no `parent_id`) straight to
+  the filer's own profile via `task_route`, resolving the routing gate the
+  worker-filing constraint attached. Projects that want different triage for
+  worker-filed work override this rule.
 
 ```json
 {
@@ -249,6 +254,29 @@ Ships three rules:
           "command": "task_batch_commit",
           "args": {
             "proposal_id": "{{event.await_id}}"
+          },
+          "on_success": "done",
+          "on_failure": "done"
+        },
+        "done": {"terminal": true}
+      }
+    },
+    {
+      "id": "worker-filed-triage",
+      "on": "task.created",
+      "when": {
+        "all": [
+          {"field": "event.created_by_kind", "equals": "session"},
+          {"field": "event.parent_task_id", "is_null": true}
+        ]
+      },
+      "entry": "route",
+      "nodes": {
+        "route": {
+          "command": "task_route",
+          "args": {
+            "task_id": "{{event.task_id}}",
+            "profile_id": "{{event.filed_by_profile_id}}"
           },
           "on_success": "done",
           "on_failure": "done"

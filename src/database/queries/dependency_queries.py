@@ -30,6 +30,8 @@ class DependencyQueryMixin:
         task_id: str,
         depends_on: str,
         dep_type: str = DepType.BLOCKS.value,
+        *,
+        conn=None,
     ) -> None:
         """Add a typed dependency edge between two tasks.
 
@@ -42,17 +44,27 @@ class DependencyQueryMixin:
         ``parent-child`` edges are delegated to :meth:`HierarchyQueryMixin.set_parent`,
         the single writer that keeps the edge and the ``tasks.parent_task_id``
         cache in sync (spec Part I §5).
+
+        Pass ``conn`` to run inside a caller-owned transaction (e.g. worker
+        filing's ``immediate()`` block). The blocked-state projection is
+        still recomputed in that same transaction, but the caller then owns
+        any post-commit bookkeeping (``log_blocked_flips``, frontier /
+        ready notifications) — without ``conn`` this method does both here,
+        as before.
         """
         if dep_type == DepType.PARENT_CHILD.value:
-            async with self._engine.begin() as conn:
-                result = await self.set_parent(task_id, depends_on, conn=conn)
+            if conn is not None:
+                await self.set_parent(task_id, depends_on, conn=conn)
+                return
+            async with self._engine.begin() as owned_conn:
+                result = await self.set_parent(task_id, depends_on, conn=owned_conn)
             await self.log_blocked_flips(result.flipped)
             await self._notify_settled(result.settled)
             await self._notify_ready(result.ready)
             return
 
         _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
-        async with self._engine.begin() as conn:
+        if conn is not None:
             await conn.execute(
                 _insert(task_dependencies)
                 .values(
@@ -62,8 +74,23 @@ class DependencyQueryMixin:
                 )
                 .on_conflict_do_nothing()
             )
-            flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
-            ready_ids = await self._note_frontier_entry(conn, set(flipped), reason="unblocked")
+            await self.recompute_blocked({task_id, depends_on}, conn=conn)
+            return
+
+        async with self._engine.begin() as owned_conn:
+            await owned_conn.execute(
+                _insert(task_dependencies)
+                .values(
+                    task_id=task_id,
+                    depends_on_task_id=depends_on,
+                    dep_type=dep_type,
+                )
+                .on_conflict_do_nothing()
+            )
+            flipped = await self.recompute_blocked({task_id, depends_on}, conn=owned_conn)
+            ready_ids = await self._note_frontier_entry(
+                owned_conn, set(flipped), reason="unblocked"
+            )
         await self.log_blocked_flips(flipped)
         await self._notify_ready([(tid, "unblocked") for tid in ready_ids])
 

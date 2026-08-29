@@ -132,6 +132,14 @@ def _eval_pipeline_when(when: dict, event: dict) -> bool:
         {"field": "event.task.branch_name", "not_null": true}
             — pass when the dot-path resolves to a non-None / non-empty value.
 
+        {"field": "event.created_by_kind", "equals": "session"}
+            — pass when the dot-path resolves to a value ``== `` the given
+            comparator value (any type, compared with ``==``).
+
+        {"field": "event.parent_task_id", "is_null": true}
+            — pass when the dot-path resolving to ``None`` matches the
+            given boolean (``is_null: false`` passes when non-None).
+
         {"all": [<clause>, <clause>, ...]}
             — pass when every nested clause passes (AND).
 
@@ -189,6 +197,11 @@ def _eval_pipeline_when(when: dict, event: dict) -> bool:
 
     if when.get("truthy") or when.get("not_null"):
         return bool(val) if when.get("truthy") else val is not None and val != ""
+
+    if "equals" in when:
+        return val == when["equals"]
+    if "is_null" in when:
+        return (val is None) == bool(when["is_null"])
 
     # Unknown condition shape — permissive default
     return True

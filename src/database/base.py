@@ -86,7 +86,7 @@ class DatabaseBackend(Protocol):
 
     # --- Tasks ---
 
-    async def create_task(self, task: Task) -> None: ...
+    async def create_task(self, task: Task, *, conn=None) -> None: ...
     async def get_task(self, task_id: str) -> Task | None: ...
     async def list_tasks(
         self,
@@ -208,7 +208,7 @@ class DatabaseBackend(Protocol):
     # --- Dependencies ---
 
     async def add_dependency(
-        self, task_id: str, depends_on: str, dep_type: str = "blocks"
+        self, task_id: str, depends_on: str, dep_type: str = "blocks", *, conn=None
     ) -> None: ...
     async def get_dependencies(
         self, task_id: str, dep_types: frozenset[str] | None = None

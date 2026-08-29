@@ -90,8 +90,15 @@ class TransitionResult:
 class TaskQueryMixin:
     """Query mixin for task operations.  Expects ``self._engine``."""
 
-    async def create_task(self, task: Task) -> None:
-        """Insert a new task row."""
+    async def create_task(self, task: Task, *, conn=None) -> None:
+        """Insert a new task row.
+
+        Pass ``conn`` to run inside a caller-owned transaction (e.g. worker
+        filing's ``immediate()`` block); without it this opens its own.
+        """
+        if conn is not None:
+            await self._insert_task_row(task, conn=conn)
+            return
         async with self._engine.begin() as conn:
             await self._insert_task_row(task, conn=conn)
 

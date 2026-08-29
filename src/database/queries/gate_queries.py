@@ -61,6 +61,7 @@ class GateQueriesMixin:
         await_id: str | None = None,
         timeout_at: float | None = None,
         waiter_task_ids: Iterable[str] = (),
+        conn=None,
     ) -> tuple[str, bool]:
         """Insert a gate + its ``task_gates`` rows and recompute waiters.
 
@@ -72,74 +73,134 @@ class GateQueriesMixin:
         ``was_created=True``.  All writes happen in one transaction so a
         reader can never see the gate rows without the waiters' refreshed
         projection.
+
+        Pass ``conn`` to run inside a caller-owned transaction (e.g. worker
+        filing's ``immediate()`` block) — the caller is then responsible for
+        the surrounding commit/rollback and for calling
+        :meth:`log_blocked_flips` afterwards. Without ``conn`` this opens
+        (and commits) its own transaction as before.
+        """
+        if conn is not None:
+            gate_id, was_created, _flipped = await self._create_gate_on(
+                conn,
+                project_id,
+                gate_type,
+                title,
+                question=question,
+                await_id=await_id,
+                timeout_at=timeout_at,
+                waiter_task_ids=waiter_task_ids,
+                caller_owns_conn=True,
+            )
+            return gate_id, was_created
+
+        async with self._engine.begin() as owned_conn:
+            gate_id, was_created, flipped = await self._create_gate_on(
+                owned_conn,
+                project_id,
+                gate_type,
+                title,
+                question=question,
+                await_id=await_id,
+                timeout_at=timeout_at,
+                waiter_task_ids=waiter_task_ids,
+                caller_owns_conn=False,
+            )
+        await self.log_blocked_flips(flipped)
+        return gate_id, was_created
+
+    async def _create_gate_on(
+        self,
+        conn,
+        project_id: str,
+        gate_type: str,
+        title: str,
+        *,
+        question: str,
+        await_id: str | None,
+        timeout_at: float | None,
+        waiter_task_ids: Iterable[str],
+        caller_owns_conn: bool,
+    ) -> tuple[str, bool, set[str]]:
+        """Do the actual insert + dedup + recompute on *conn*.
+
+        Caller owns the transaction. Returns ``(gate_id, was_created,
+        flipped)`` — ``flipped`` is the ``is_blocked`` flip set from
+        :meth:`recompute_blocked`, left for the caller to log post-commit.
         """
         waiters = sorted(set(waiter_task_ids))
         waiter_set = set(waiters)
         now = time.time()
-        async with self._engine.begin() as conn:
-            # Dedup: match on (project_id, gate_type, await_id) among
-            # open gates, then compare waiter sets. NULL await_id
-            # requires an explicit IS NULL predicate (SQL NULL != NULL).
-            match_conds = [
-                gates.c.project_id == project_id,
-                gates.c.gate_type == gate_type,
-                gates.c.status == "open",
-            ]
-            if await_id is None:
-                match_conds.append(gates.c.await_id.is_(None))
-            else:
-                match_conds.append(gates.c.await_id == await_id)
-            candidate_rows = (
-                await conn.execute(select(gates.c.id).where(and_(*match_conds)))
-            ).fetchall()
-            for (cand_id,) in candidate_rows:
-                existing_waiters = {
-                    r[0]
-                    for r in (
-                        await conn.execute(
-                            select(task_gates.c.task_id).where(
-                                task_gates.c.gate_id == cand_id
-                            )
-                        )
-                    ).fetchall()
-                }
-                if existing_waiters == waiter_set:
-                    return cand_id, False
-
-            gate_id = "gate-" + uuid.uuid4().hex[:12]
-            try:
-                await conn.execute(
-                    insert(gates).values(
-                        id=gate_id,
-                        project_id=project_id,
-                        gate_type=gate_type,
-                        title=title,
-                        question=question,
-                        await_id=await_id,
-                        timeout_at=timeout_at,
-                        status="open",
-                        created_at=now,
+        # Dedup: match on (project_id, gate_type, await_id) among
+        # open gates, then compare waiter sets. NULL await_id
+        # requires an explicit IS NULL predicate (SQL NULL != NULL).
+        match_conds = [
+            gates.c.project_id == project_id,
+            gates.c.gate_type == gate_type,
+            gates.c.status == "open",
+        ]
+        if await_id is None:
+            match_conds.append(gates.c.await_id.is_(None))
+        else:
+            match_conds.append(gates.c.await_id == await_id)
+        candidate_rows = (
+            await conn.execute(select(gates.c.id).where(and_(*match_conds)))
+        ).fetchall()
+        for (cand_id,) in candidate_rows:
+            existing_waiters = {
+                r[0]
+                for r in (
+                    await conn.execute(
+                        select(task_gates.c.task_id).where(task_gates.c.gate_id == cand_id)
                     )
-                )
-            except IntegrityError:
-                # Partial unique index (uq_gates_open_dedup) fired — a
-                # concurrent tx inserted an open gate with the same
-                # (project_id, gate_type, await_id) between our SELECT and
-                # INSERT (Postgres READ COMMITTED). Return the winner.
-                # SQLite serializes writers so this arm is normally cold
-                # on SQLite (Postgres exercises the real race).
-                return await self._resolve_open_gate_winner(
+                ).fetchall()
+            }
+            if existing_waiters == waiter_set:
+                return cand_id, False, set()
+
+        gate_id = "gate-" + uuid.uuid4().hex[:12]
+        try:
+            await conn.execute(
+                insert(gates).values(
+                    id=gate_id,
                     project_id=project_id,
                     gate_type=gate_type,
+                    title=title,
+                    question=question,
                     await_id=await_id,
+                    timeout_at=timeout_at,
+                    status="open",
+                    created_at=now,
                 )
-            for tid in waiters:
-                await conn.execute(insert(task_gates).values(task_id=tid, gate_id=gate_id))
-            flipped: set[str] = set()
-            if waiters:
-                flipped = await self.recompute_blocked(set(waiters), conn=conn)
-        await self.log_blocked_flips(flipped)
-        return gate_id, True
+            )
+        except IntegrityError:
+            # Partial unique index (uq_gates_open_dedup) fired — a
+            # concurrent tx inserted an open gate with the same
+            # (project_id, gate_type, await_id) between our SELECT and
+            # INSERT (Postgres READ COMMITTED). Return the winner.
+            # SQLite serializes writers so this arm is normally cold
+            # on SQLite (Postgres exercises the real race).
+            #
+            # Recovery re-SELECTs on a *fresh* connection, which is only
+            # safe when we own the surrounding transaction — a caller-
+            # supplied ``conn`` (e.g. worker filing's ``immediate()``)
+            # cannot safely open a second write connection (SQLite holds
+            # a non-reentrant lock there), so re-raise and let the whole
+            # caller transaction roll back instead.
+            if caller_owns_conn:
+                raise
+            gate_id, was_created = await self._resolve_open_gate_winner(
+                project_id=project_id,
+                gate_type=gate_type,
+                await_id=await_id,
+            )
+            return gate_id, was_created, set()
+        for tid in waiters:
+            await conn.execute(insert(task_gates).values(task_id=tid, gate_id=gate_id))
+        flipped: set[str] = set()
+        if waiters:
+            flipped = await self.recompute_blocked(set(waiters), conn=conn)
+        return gate_id, True, flipped
 
     async def _resolve_open_gate_winner(
         self,

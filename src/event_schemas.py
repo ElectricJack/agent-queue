@@ -67,7 +67,21 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     # task gets a routing gate + coalesced triage task.
     "task.created": {
         "required": ["task_id", "project_id", "title"],
-        "optional": ["profile_id", "task_type"],
+        "optional": [
+            "profile_id",
+            "task_type",
+            # Worker-filed work (swarm work model §12): who filed the task
+            # (kind/id), which profile was running when it filed, the
+            # discovered-from origin (root filings only), and the parent
+            # (child filings only). Always present on the emit, ``None``
+            # when not applicable — the default pipeline's
+            # ``worker-filed-triage`` rule keys off these.
+            "created_by_kind",
+            "created_by_id",
+            "filed_by_profile_id",
+            "discovered_from",
+            "parent_task_id",
+        ],
     },
     "task.started": {
         "required": ["task_id", "project_id", "title"],
