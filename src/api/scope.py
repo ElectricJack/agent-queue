@@ -18,6 +18,8 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "task_show",
         "task_set",
         "task_close",
+        "task_children",
+        "task_progress",
         "task_heartbeat",
         "task_handoff",
         "ask_human",

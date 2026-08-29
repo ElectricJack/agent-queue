@@ -120,6 +120,10 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title", "question"],
         "optional": [],
     },
+    "task.reparented": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["old_parent", "new_parent"],
+    },
 }
 
 # ---------------------------------------------------------------------------

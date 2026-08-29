@@ -280,3 +280,49 @@ class TestCascadeDeleteLiveDescendants:
         assert await db.get_task("p") is None
         assert await db.get_task("c") is None
         assert await db.get_task("gc") is None
+
+
+class TestHierarchyCommands:
+    async def test_children_flat_and_recursive(self, handler, db):
+        await mktask(db, "r", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "r.1", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "r.1.1", status=TaskStatus.READY)
+        await db.add_dependency("r.1", "r", "parent-child")
+        await db.add_dependency("r.1.1", "r.1", "parent-child")
+        flat = await handler._cmd_task_children({"task_id": "r"})
+        assert [c["id"] for c in flat["children"]] == ["r.1"]
+        deep = await handler._cmd_task_children({"task_id": "r", "recursive": True})
+        assert [c["id"] for c in deep["children"]] == ["r.1", "r.1.1"]
+
+    async def test_progress(self, handler, db):
+        await mktask(db, "r", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "r.1", status=TaskStatus.READY)
+        await db.add_dependency("r.1", "r", "parent-child")
+        res = await handler._cmd_task_progress({"task_id": "r"})
+        assert res["success"] is True
+        assert res["total"] == 1 and res["ready"] == 1 and res["max_parallelism"] == 1
+
+    async def test_reparent_and_root(self, handler, db):
+        await mktask(db, "p1", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "p2", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "c")
+        await db.add_dependency("c", "p1", "parent-child")
+        res = await handler._cmd_reparent_task({"task_id": "c", "parent_id": "p2"})
+        assert res["success"] is True and res["old_parent"] == "p1"
+        assert (await db.get_task("c")).parent_task_id == "p2"
+        res = await handler._cmd_reparent_task({"task_id": "c", "root": True})
+        assert (await db.get_task("c")).parent_task_id is None
+
+    async def test_reparent_error_codes(self, handler, db):
+        await mktask(db, "a", status=TaskStatus.IN_PROGRESS)
+        res = await handler._cmd_reparent_task({"task_id": "a", "parent_id": "a"})
+        assert res["code"] == "hierarchy.self_parent"
+
+    async def test_schema_lists_hierarchy_codes(self, handler):
+        res = await handler._cmd_get_schema({})
+        assert "container_closed" in res["enums"]["hierarchy_error"]
+
+    async def test_agent_scope_includes_reads(self):
+        from src.api.scope import AGENT_COMMAND_SET
+
+        assert {"task_children", "task_progress"} <= AGENT_COMMAND_SET

@@ -261,6 +261,26 @@ def _register_all():
         extract=None,
         many=False,
     )
+    FORMATTERS["task_children"] = FormatterSpec(
+        render=format_task_table,
+        extract="children",
+        proxy=task_proxy,
+        many=True,
+        empty_message="No children.",
+    )
+
+    def _render_progress(p):
+        lines = [
+            f"{p.parent_id}: {p.done}/{p.total} done, {p.ready} ready, "
+            f"{p.blocked} blocked, {p.in_progress} in progress",
+            f"waves: {p.depth}, max parallelism: {p.max_parallelism}",
+        ]
+        for i, wave in enumerate(p.waves or [], 1):
+            lines.append(f"  {i}. " + ", ".join(wave))
+        return "\n".join(lines)
+
+    FORMATTERS["task_progress"] = FormatterSpec(render=_render_progress, extract=None, many=False)
+
     for _dep_cmd in ("task_deps", "get_task_dependencies"):
         FORMATTERS[_dep_cmd] = FormatterSpec(
             render=format_task_deps,

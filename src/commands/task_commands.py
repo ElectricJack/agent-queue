@@ -805,6 +805,69 @@ class TaskCommandsMixin:
 
         return result
 
+    async def _cmd_task_children(self, args: dict) -> dict:
+        """Direct or recursive children of a task.  Backs ``aq task children``."""
+        task_id = args.get("task_id")
+        if not task_id:
+            return {"error": "task_id is required"}
+        if await self.db.get_task(task_id) is None:
+            return {"error": f"Task '{task_id}' not found"}
+        children = await self.db.get_children(
+            task_id,
+            recursive=bool(args.get("recursive", False)),
+            status=args.get("status"),
+            limit=args.get("limit"),
+            offset=int(args.get("offset") or 0),
+        )
+        return {
+            "success": True,
+            "task_id": task_id,
+            "count": len(children),
+            "children": [self._task_to_dict(t) for t in children],
+        }
+
+    async def _cmd_task_progress(self, args: dict) -> dict:
+        """Computed group progress (counts, waves, max parallelism).  Backs ``aq task progress``."""
+        task_id = args.get("task_id")
+        if not task_id:
+            return {"error": "task_id is required"}
+        if await self.db.get_task(task_id) is None:
+            return {"error": f"Task '{task_id}' not found"}
+        progress = await self.db.get_group_progress(task_id)
+        return {"success": True, **progress}
+
+    async def _cmd_reparent_task(self, args: dict) -> dict:
+        """Move a task under another container, or to root.  Backs ``aq task reparent``."""
+        task_id = args.get("task_id")
+        if not task_id:
+            return {"error": "task_id is required"}
+        if bool(args.get("root")) == bool(args.get("parent_id")):
+            return {"error": "exactly one of parent_id or root is required"}
+        task = await self.db.get_task(task_id)
+        if task is None:
+            return {"error": f"Task '{task_id}' not found"}
+        new_parent = None if args.get("root") else args["parent_id"]
+        old_parent = task.parent_task_id
+        try:
+            async with self.db._engine.begin() as conn:
+                flipped, settled = await self.db.set_parent(task_id, new_parent, conn=conn)
+        except HierarchyError as exc:
+            return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
+        await self.db.log_blocked_flips(flipped)
+        await self.db._notify_settled(settled)
+        try:
+            await self.orchestrator._emit_task_event(
+                "task.reparented", task, old_parent=old_parent or "", new_parent=new_parent or ""
+            )
+        except AttributeError:
+            pass
+        return {
+            "success": True,
+            "task_id": task_id,
+            "old_parent": old_parent,
+            "new_parent": new_parent,
+        }
+
     async def _cmd_create_task(self, args: dict) -> dict:
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:

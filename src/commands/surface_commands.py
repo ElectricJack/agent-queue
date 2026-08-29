@@ -57,6 +57,18 @@ class SurfaceCommandsMixin:
                 "dependency_type": list(TASK_DEP_TYPES),
                 "gate_type": list(GATE_TYPES),
                 "gate_status": list(GATE_STATUSES),
+                "hierarchy_error": [
+                    "not_found",
+                    "cross_project",
+                    "cycle",
+                    "depth",
+                    "self_parent",
+                    "container_closed",
+                    "has_children",
+                    "open_children",
+                    "open_descendants",
+                    "live_descendants",
+                ],
             },
         }
 

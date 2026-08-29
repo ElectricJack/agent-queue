@@ -108,6 +108,13 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "title": "Implement feature X",
         "question": "Which database should I use?",
     },
+    "task.reparented": {
+        "task_id": "t-1",
+        "project_id": "proj-1",
+        "title": "Implement feature X",
+        "old_parent": "p-1",
+        "new_parent": "p-2",
+    },
     # Work graph (docs/specs/design/work-graph.md §10.2)
     "task.blocked": {
         "task_id": "t-1",

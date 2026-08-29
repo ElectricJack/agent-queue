@@ -105,6 +105,7 @@ class TestGetSchema:
             "dependency_type",
             "gate_type",
             "gate_status",
+            "hierarchy_error",
         }
 
     async def test_task_status_enum_matches_models(self, handler):

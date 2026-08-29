@@ -39,6 +39,8 @@ class TaskDetail(BaseModel):
     subtasks: list[TaskRef] = []
     created_at: float = 0.0
     updated_at: float = 0.0
+    parent: dict | None = None
+    children: dict | None = None
 
 
 class TaskDict(BaseModel):
@@ -229,6 +231,33 @@ class GetTaskTreeResponse(BaseModel):
     progress_bar: str | None = None
 
 
+class TaskChildrenResponse(BaseModel):
+    success: bool
+    task_id: str
+    count: int
+    children: list[TaskDict]
+
+
+class TaskProgressResponse(BaseModel):
+    success: bool
+    parent_id: str
+    total: int
+    done: int
+    ready: int
+    blocked: int
+    in_progress: int
+    waves: list[list[str]]
+    max_parallelism: int
+    depth: int
+
+
+class ReparentTaskResponse(BaseModel):
+    success: bool
+    task_id: str
+    old_parent: str | None = None
+    new_parent: str | None = None
+
+
 class GetChainHealthResponse(BaseModel):
     model_config = {"extra": "allow"}
     task_id: str | None = None
@@ -379,6 +408,9 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_task_diff": GetTaskDiffResponse,
     "get_task_result": GetTaskResultResponse,
     "get_task_tree": GetTaskTreeResponse,
+    "task_children": TaskChildrenResponse,
+    "task_progress": TaskProgressResponse,
+    "reparent_task": ReparentTaskResponse,
     "get_chain_health": GetChainHealthResponse,
     "list_active_tasks_all_projects": ListActiveTasksAllProjectsResponse,
     "process_plan": ProcessPlanResponse,

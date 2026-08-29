@@ -93,6 +93,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_archived": "task",
     "get_task_result": "task",
     "get_task_tree": "task",
+    "task_children": "task",
+    "task_progress": "task",
+    "reparent_task": "task",
     "get_task_dependencies": "task",
     "task_deps": "task",
     "add_dependency": "task",
@@ -638,6 +641,48 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "task_children",
+        "description": (
+            "List the children of a task (direct, or the whole subtree with recursive=true)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "recursive": {"type": "boolean", "default": False},
+                "status": {"type": "string", "description": "Filter by status"},
+                "limit": {"type": "integer"},
+                "offset": {"type": "integer", "default": 0},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "task_progress",
+        "description": "Computed progress for a container: counts, Kahn waves, max parallelism.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "reparent_task",
+        "description": (
+            "Move a task under another container (parent_id) or to the root (root=true). "
+            "Ids never change."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "parent_id": {"type": "string"},
+                "root": {"type": "boolean", "default": False},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
         "name": "create_task",
         "description": "Create a task for an agent to execute. This is your PRIMARY tool for getting work done — prefer creating tasks over doing file work yourself. Agents have full context windows, isolated workspaces, and can run in parallel. Task descriptions must be completely self-contained with all context the agent needs. If no project_id is given, it inherits from the active project.",
         "input_schema": {
@@ -772,6 +817,12 @@ _ALL_TOOL_DEFINITIONS = [
                         "requires 'project-repo' — preserving today's single-workspace "
                         "behavior. Each kind must resolve via project-scoped or "
                         "system-wide vault/workspace-kinds/<id>.md."
+                    ),
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": (
+                        "Create as a child of this container; the id becomes <parent>.<n>"
                     ),
                 },
             },
@@ -1264,6 +1315,7 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID to delete"},
+                "cascade": {"type": "boolean", "default": False},
             },
             "required": ["task_id"],
         },
@@ -3465,6 +3517,7 @@ _ALL_TOOL_DEFINITIONS = [
                         "(Dv2 Phase 2 §7 close contract)."
                     ),
                 },
+                "abandon_children": {"type": "boolean", "default": False},
             },
             "required": ["task_id", "outcome"],
         },
@@ -3720,6 +3773,7 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Validate and report assigned ids without writing",
                     "default": False,
                 },
+                "parent_id": {"type": "string"},
             },
         },
     },
