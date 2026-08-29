@@ -456,6 +456,9 @@ class Orchestrator(
         from src.sessions.transcripts.watcher import TranscriptWatcher
 
         self.harness_registry = HarnessRegistry()
+        from src.task_graph.formulas import FormulaRegistry
+
+        self.formula_registry = FormulaRegistry()
         self.session_providers = default_session_registry(config)
         from src.intelligence_classes import load_intelligence_classes
 
@@ -1500,6 +1503,15 @@ class Orchestrator(
         from src.sessions.harness_registry import register_harness_handlers
 
         register_harness_handlers(self.vault_watcher, self.harness_registry)
+        # Formulas ride the same watcher — vault/formulas/*.md and
+        # vault/projects/*/formulas/*.md, both scopes (swarm-work-model §13).
+        from src.task_graph.formulas import load_from_vault, register_formula_handlers
+
+        for err in load_from_vault(self.formula_registry, self.config.vault_root):
+            logger.warning("Formula registry: %s", err)
+        register_formula_handlers(
+            self.vault_watcher, self.formula_registry, vault_root=self.config.vault_root
+        )
         # Seed the synthetic agent-queue entry so the dashboard can show
         # "Built-in" plus its plugin tools, and profiles can reference it
         # by name.

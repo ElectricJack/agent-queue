@@ -103,6 +103,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_chain_health": "task",
     "list_active_tasks_all_projects": "task",
     "create_task_graph": "task",
+    "formula_list": "task",
+    "formula_show": "task",
+    "formula_cook": "task",
     # playbook — compilation, run management, human-in-the-loop resume
     "compile_playbook": "playbook",
     "run_playbook": "playbook",
@@ -3917,6 +3920,86 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "parent_id": {"type": "string"},
             },
+        },
+    },
+    {
+        "name": "formula_list",
+        "description": (
+            "List formulas (reusable task-graph templates) visible to a "
+            "project — system formulas plus any project overrides, with "
+            "project entries shadowing system entries of the same name. "
+            "A non-elevated agent session is pinned to its own project."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project scope (defaults to the active project)",
+                },
+            },
+        },
+    },
+    {
+        "name": "formula_show",
+        "description": (
+            "Resolve a formula's extends chain, substitute its vars and "
+            "validate the result — read-only, never writes. With "
+            "as_cooked=<container_id>, instead render back the "
+            "formula_snapshot a previous formula_cook actually wrote for "
+            "that container, ignoring the current vault file."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Formula name"},
+                "project_id": {
+                    "type": "string",
+                    "description": "Project scope (defaults to the active project)",
+                },
+                "vars": {
+                    "type": "object",
+                    "description": "Supplied var values, keyed by declared var name",
+                },
+                "as_cooked": {
+                    "type": "string",
+                    "description": (
+                        "Container task id: render its formula_snapshot "
+                        "instead of resolving 'name' from the registry"
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "formula_cook",
+        "description": (
+            "Resolve a formula, validate it, and create the resulting task "
+            "graph in one transaction, stamping formula provenance "
+            "(name/scope/path/vars/chain_sha and a formula_snapshot context "
+            "row) on the container. Emits formula.cooked after a real "
+            "(non-dry-run) commit. Not available to agent sessions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Formula name"},
+                "project_id": {"type": "string", "description": "Owning project"},
+                "vars": {
+                    "type": "object",
+                    "description": "Supplied var values, keyed by declared var name",
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": "Cook the graph under an existing container instead of a new one",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Validate and report without writing",
+                    "default": False,
+                },
+            },
+            "required": ["name", "project_id"],
         },
     },
     # dv2 phase 2 — review-policy commands

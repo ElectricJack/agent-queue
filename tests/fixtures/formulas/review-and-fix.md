@@ -18,7 +18,7 @@ nodes:
   - key: review
     title: Review branch {branch} (strict)
   - key: fix
-    title: Fix findings
+    title: Fix findings on {branch}
     needs: [review]
     profile: "{fixer}"
 ```
