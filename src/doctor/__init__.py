@@ -9,6 +9,7 @@ contract those owners must follow.
 """
 
 from src.doctor.builtin import builtin_checks
+from src.doctor.hierarchy_checks import hierarchy_checks
 from src.doctor.models import (
     RESERVED_CHECK_IDS,
     CheckResult,
@@ -36,5 +37,7 @@ def default_registry() -> DoctorRegistry:
     """A registry pre-populated with every built-in check."""
     registry = DoctorRegistry()
     for check in builtin_checks():
+        registry.register(check)
+    for check in hierarchy_checks():
         registry.register(check)
     return registry

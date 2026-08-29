@@ -72,8 +72,11 @@ class TestRegistry:
         assert reg.unregister("x.y") is False
 
     def test_default_registry_has_all_builtins(self):
+        from src.doctor.hierarchy_checks import hierarchy_checks
+
         reg = default_registry()
-        assert reg.ids() == sorted(c.id for c in builtin_checks())
+        expected = {c.id for c in builtin_checks()} | {c.id for c in hierarchy_checks()}
+        assert set(reg.ids()) == expected
 
     def test_reserved_ids_are_not_preregistered(self):
         """Reserved ids stay free so their owning subsystem can claim them."""
@@ -288,9 +291,7 @@ class TestUnknownCheckFilter:
         assert result["exit_code"] == 0
 
     async def test_one_bad_id_among_good_ones_still_errors(self, ctx):
-        result = await run_doctor(
-            default_registry(), ctx, only=["pauses.active", "nope.nope"]
-        )
+        result = await run_doctor(default_registry(), ctx, only=["pauses.active", "nope.nope"])
         assert result["exit_code"] == 2
         assert {c["id"] for c in result["checks"]} == {"pauses.active", "nope.nope"}
 
