@@ -829,6 +829,24 @@ class Orchestrator(
         )
         return chosen
 
+    async def _effective_default_profile_id(self, project: Any) -> str | None:
+        """Project's effective default profile id — rungs 2-3 of ``_resolve_profile``.
+
+        Rung 2 (``project.default_profile_id``) then rung 3
+        (:meth:`_backfill_default_profile_id`, persisted so it survives
+        restarts and agrees with whatever a task dispatch or
+        ``AgentReconciler`` pass computes independently).  Callers that need
+        a project's default once per tick — the push-scheduler pool
+        exclusion and pool demand measurement, both of which must treat an
+        unrouted READY task the same way ``_resolve_profile`` eventually
+        would — call this instead of reading ``project.default_profile_id``
+        raw, which skips rung 3 and can disagree with what a real dispatch
+        resolves.
+        """
+        if project.default_profile_id:
+            return project.default_profile_id
+        return await self._backfill_default_profile_id(project)
+
     async def _on_playbook_trigger(self, playbook: Any, event_data: dict) -> None:
         """PlaybookManager trigger dispatch — launch a run for a matched event.
 
@@ -3171,17 +3189,43 @@ class Orchestrator(
         # holds their sole workspace lock) are never handed an unrelated
         # task — the scheduler otherwise matches any idle agent to any
         # project's task with no profile check at all.
-        if self.config.swarm.enabled:
-            pool_ids_by_project: dict[str, set[str]] = {
-                p.id: await self._pool_profile_ids(p.id) for p in projects
-            }
-            default_profile_by_project = {p.id: p.default_profile_id for p in projects}
+        #
+        # Keyed on ``lifecycle`` alone, not ``swarm.enabled`` — same gate
+        # ``_is_session_routed`` and ``AgentReconciler`` use, so all three
+        # agree regardless of the swarm flag.  Cheap when no pool profile
+        # exists anywhere (the common case): ``_pool_profile_ids`` shares one
+        # ``list_profiles()`` call across every project instead of paying it
+        # per project, and the per-project default-profile backfill below
+        # only runs for a project that actually has a pool profile.
+        all_profiles = await self.db.list_profiles()
+        pool_ids_by_project: dict[str, set[str]] = {
+            p.id: await self._pool_profile_ids(p.id, system_profiles=all_profiles)
+            for p in projects
+        }
+        if any(pool_ids_by_project.values()):
+            # ``project.default_profile_id`` alone is rung 2 of
+            # ``_resolve_profile``; rung 3 (persisted backfill) is what
+            # decides where an unrouted READY task actually lands once
+            # dispatched, so using rung 2 only here could push-launch a task
+            # under a pool profile (or hide it from pool demand) that a real
+            # dispatch would resolve differently.  Computed once per project
+            # per tick, and skipped for projects with no pool profile at all
+            # — an install with no pools never touches ``default_profile_id``
+            # bookkeeping it wouldn't otherwise touch.
+            default_profile_by_project: dict[str, str | None] = {}
+            for p in projects:
+                if pool_ids_by_project.get(p.id):
+                    default_profile_by_project[p.id] = await self._effective_default_profile_id(p)
+                else:
+                    default_profile_by_project[p.id] = p.default_profile_id
             tasks = [
                 t
                 for t in tasks
                 if (t.profile_id or default_profile_by_project.get(t.project_id))
                 not in pool_ids_by_project.get(t.project_id, set())
             ]
+
+            all_pool_ids: set[str] = set().union(*pool_ids_by_project.values())
             ws_owner = {
                 w.locked_by_agent_id: w.project_id
                 for w in all_workspaces
@@ -3191,8 +3235,20 @@ class Orchestrator(
             def _is_idle_pool_agent(a) -> bool:
                 if a.state != AgentState.IDLE:
                     return False
+                if a.profile_id not in all_pool_ids:
+                    return False
+                # profile_id is a pool id in at least one project.  When the
+                # agent's own workspace lock names a project, defer to that
+                # project's pool set — a project-scoped override can make
+                # the same plain id push in one project and pool in
+                # another.  No locked workspace (e.g. mid-launch) falls
+                # through to the conservative "pool id somewhere" exclusion
+                # above, so an agent is never missed just for not holding a
+                # workspace yet.
                 pid = ws_owner.get(a.id)
-                return pid is not None and a.profile_id in pool_ids_by_project.get(pid, set())
+                if pid is None:
+                    return True
+                return a.profile_id in pool_ids_by_project.get(pid, set())
 
             agents = [a for a in agents if not _is_idle_pool_agent(a)]
 

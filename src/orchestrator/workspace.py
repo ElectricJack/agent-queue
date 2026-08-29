@@ -408,6 +408,60 @@ class WorkspaceMixin:
             return 1
         return max(1, getattr(project, "max_concurrent_agents", 1) or 1)
 
+    async def _ensure_worktree_slots(self, project, kind_id: str) -> bool:
+        """Lazily grow the slot pool for one worktree-mode kind.
+
+        Single-kind body of :meth:`_ensure_worktree_slots_for_task`'s loop,
+        factored out so a non-task caller — the pool launch path
+        (``PoolsMixin._launch_pool_session``), which has no ``Task`` to
+        synthesize requirements from — can warm slots for exactly the kind
+        it needs.  See that method's docstring for the growth policy (design
+        §3.1: one slot per dispatch, never fatal).
+
+        Returns True when the kind is still below its cap after growth —
+        i.e. a subsequent acquisition failure means "the pool is still
+        warming up" rather than a genuine shortage.
+        """
+        cap = self._project_slot_cap(project)
+
+        kind = await self.db.resolve_workspace_kind(project.id, kind_id)
+        if kind is None or not kind.is_git_repo or kind.mode != KIND_MODE_WORKTREE:
+            return False
+
+        base = await self.db.find_worktree_base(project.id, kind.id)
+        if base is None:
+            # No clone to hang worktrees off yet.  Provisioning the base
+            # itself stays the operator's job (spec §7.3).
+            logger.debug(
+                "No base workspace for worktree-mode kind %s in project %s",
+                kind.id,
+                project.id,
+            )
+            return False
+
+        slots = await self.db.list_slots_for_base(base.id)
+        self._register_slot_bases(slots, base.workspace_path)
+
+        in_cap = [s for s in slots if (s.slot_index or 0) < cap]
+        free = [s for s in in_cap if s.locked_by_agent_id is None]
+        warming = len(in_cap) < cap
+        if free or len(in_cap) >= cap:
+            return warming  # something is acquirable, or we are already at cap
+
+        try:
+            grown = await self._worktree_slots().ensure_slots(
+                project, base, kind, min(cap, len(in_cap) + 1)
+            )
+            self._register_slot_bases(grown, base.workspace_path)
+        except Exception as e:
+            logger.warning(
+                "Could not provision a worktree slot for kind %s in %s: %s",
+                kind.id,
+                project.id,
+                e,
+            )
+        return warming
+
     async def _ensure_worktree_slots_for_task(self, task: Task, project) -> bool:
         """Lazily grow the slot pool for every worktree-mode kind the task needs.
 
@@ -427,52 +481,14 @@ class WorkspaceMixin:
         """
         from src.orchestrator.workspace_attachments import effective_requirements
 
-        cap = self._project_slot_cap(project)
         warming = False
-
         seen: set[str] = set()
         for req in await effective_requirements(self.db, task):
             if req.kind_id in seen:
                 continue
             seen.add(req.kind_id)
-
-            kind = await self.db.resolve_workspace_kind(task.project_id, req.kind_id)
-            if kind is None or not kind.is_git_repo or kind.mode != KIND_MODE_WORKTREE:
-                continue
-
-            base = await self.db.find_worktree_base(task.project_id, kind.id)
-            if base is None:
-                # No clone to hang worktrees off yet.  Provisioning the base
-                # itself stays the operator's job (spec §7.3).
-                logger.debug(
-                    "No base workspace for worktree-mode kind %s in project %s",
-                    kind.id,
-                    task.project_id,
-                )
-                continue
-
-            slots = await self.db.list_slots_for_base(base.id)
-            self._register_slot_bases(slots, base.workspace_path)
-
-            in_cap = [s for s in slots if (s.slot_index or 0) < cap]
-            free = [s for s in in_cap if s.locked_by_agent_id is None]
-            if len(in_cap) < cap:
+            if await self._ensure_worktree_slots(project, req.kind_id):
                 warming = True
-            if free or len(in_cap) >= cap:
-                continue  # something is acquirable, or we are already at cap
-
-            try:
-                grown = await self._worktree_slots().ensure_slots(
-                    project, base, kind, min(cap, len(in_cap) + 1)
-                )
-                self._register_slot_bases(grown, base.workspace_path)
-            except Exception as e:
-                logger.warning(
-                    "Could not provision a worktree slot for kind %s in %s: %s",
-                    kind.id,
-                    task.project_id,
-                    e,
-                )
         return warming
 
     def _register_slot_bases(self, slots, base_path: str) -> None:

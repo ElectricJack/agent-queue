@@ -32,11 +32,20 @@ logger = logging.getLogger(__name__)
 #: and ``quarantined`` are terminal and excluded.
 _LIVE_STATES = ("starting", "running", "draining")
 
+#: How long a failed launch quarantines its ``(project_id, profile_id)`` key
+#: (seconds).  A bad harness or a raised exception from acquisition/mint is
+#: not going to self-heal between now and the next 5s tick, so retrying
+#: immediately just creates and deletes an agent row every cycle.  A starved
+#: workspace pool does *not* quarantine — see ``_launch_pool_session``.
+LAUNCH_BACKOFF = 60.0
+
 
 class PoolsMixin:
     """Worker-pool sizing and convergence, mixed into ``Orchestrator``."""
 
-    async def _pool_profiles(self, project_id: str) -> dict[str, AgentProfile]:
+    async def _pool_profiles(
+        self, project_id: str, *, system_profiles: list[AgentProfile] | None = None
+    ) -> dict[str, AgentProfile]:
         """Effective pool profiles for *project_id*, keyed by plain agent-type id.
 
         Project override wins: a project-scoped row (``project:{pid}:{type}``)
@@ -47,8 +56,15 @@ class PoolsMixin:
         agent-type — never the ``project:...`` scoped form — so downstream
         code (session naming, ``PoolKey``, env markers) never leaks the
         scoping prefix into a session id or a git identity.
+
+        *system_profiles* lets a caller iterating many projects in one tick
+        (``_measure_pools``, ``Orchestrator._schedule``) pass a single
+        pre-fetched ``list_profiles()`` instead of paying that query again
+        per project.
         """
-        all_profiles = await self.db.list_profiles()
+        all_profiles = (
+            system_profiles if system_profiles is not None else await self.db.list_profiles()
+        )
         scoped_prefix = f"project:{project_id}:"
         out: dict[str, AgentProfile] = {}
         for p in all_profiles:
@@ -66,8 +82,10 @@ class PoolsMixin:
                 out.pop(agent_type, None)
         return out
 
-    async def _pool_profile_ids(self, project_id: str) -> set[str]:
-        return set(await self._pool_profiles(project_id))
+    async def _pool_profile_ids(
+        self, project_id: str, *, system_profiles: list[AgentProfile] | None = None
+    ) -> set[str]:
+        return set(await self._pool_profiles(project_id, system_profiles=system_profiles))
 
     async def _measure_pools(self, project_ids: set[str] | None = None):
         """Supply/demand/bounds snapshot for every active project with a pool profile.
@@ -75,6 +93,10 @@ class PoolsMixin:
         Returns ``(supply, demand, bounds, profiles_by_key, project_caps, projects)``
         — ``projects`` and ``profiles_by_key`` are what ``_reconcile_pools``
         needs to actually launch a session for a ``PoolKey`` the sizer picked.
+
+        One ``list_profiles()`` for the whole tick (shared across every
+        project's ``_pool_profiles`` lookup), one ``count_ready_by_profile``
+        and one ``list_sessions`` per active project with a pool profile.
         """
         supply: dict[PoolKey, PoolSupply] = {}
         demand: dict[PoolKey, int] = {}
@@ -83,12 +105,14 @@ class PoolsMixin:
         project_caps: dict[str, int | None] = {}
         projects: dict[str, object] = {}
 
+        system_profiles = await self.db.list_profiles()
+
         for project in await self.db.list_projects():
             if project.status != ProjectStatus.ACTIVE:
                 continue
             if project_ids is not None and project.id not in project_ids:
                 continue
-            pool_profiles = await self._pool_profiles(project.id)
+            pool_profiles = await self._pool_profiles(project.id, system_profiles=system_profiles)
             if not pool_profiles:
                 continue
 
@@ -96,7 +120,7 @@ class PoolsMixin:
             project_caps[project.id] = project.max_concurrent_agents
             ready_by_profile = await self.db.count_ready_by_profile(project.id)
             unrouted_ready = ready_by_profile.get(None, 0)
-            default_profile_id = project.default_profile_id
+            default_profile_id = await self._effective_default_profile_id(project)
             sessions = await self.db.list_sessions(lifecycle="pool", project_id=project.id)
             sessions_by_profile: dict[str, list] = {}
             for s in sessions:
@@ -121,7 +145,7 @@ class PoolsMixin:
                         continue
                     if s.state == "starting":
                         sup.starting += 1
-                    elif s.desired_state == "stopped":
+                    elif s.state == "draining" or s.desired_state == "stopped":
                         sup.draining += 1
                     elif s.task_id or s.claim_phase:
                         sup.running_busy += 1
@@ -199,10 +223,19 @@ class PoolsMixin:
         acquired and locked to the *agent* (not a task), and the session
         bootstraps into a claim loop instead of one task's prompt.
 
-        Any failure after the agent row exists rolls it all the way back:
-        release the workspace, delete the agent, revoke the token.  Returns
-        the new session id, or ``None`` on any failure (including a starved
-        workspace pool — an expected, not exceptional, condition).
+        Everything from the moment the agent row exists onward runs inside
+        one ``try``/``except``: any failure — acquisition, spec build,
+        launch, or the session-row write — rolls all the way back (release
+        the workspace, delete the agent, revoke the token if one was
+        minted).  Returns the new session id, or ``None`` on any failure.
+
+        A starved pool (no workspace kind, no free workspace) is expected,
+        not exceptional, and does not quarantine the key — the next tick's
+        demand may simply find a workspace freed.  Every other failure
+        (bad harness, launch crash, a raised exception from acquisition or
+        the token mint) quarantines ``(project_id, profile_id)`` for
+        :data:`LAUNCH_BACKOFF` seconds so a persistently broken pool does
+        not create and immediately delete an agent row every tick.
         """
         from src.sessions.provider import SessionDiedDuringStartup, SessionHandle
 
@@ -216,6 +249,7 @@ class PoolsMixin:
                 profile.id,
                 harness_name,
             )
+            self._pool_quarantine[(project.id, profile.id)] = time.time() + LAUNCH_BACKOFF
             return None
 
         provider_name = self.config.sessions.provider
@@ -223,6 +257,7 @@ class PoolsMixin:
             provider = self.session_providers.create(provider_name, self.config)
         except ValueError as exc:
             logger.warning("pool %s/%s: %s", project.id, profile.id, exc)
+            self._pool_quarantine[(project.id, profile.id)] = time.time() + LAUNCH_BACKOFF
             return None
 
         agent = Agent(
@@ -234,54 +269,57 @@ class PoolsMixin:
         )
         await self.db.create_agent(agent)
 
-        kind = await self.db.resolve_workspace_kind(project.id, "project-repo")
-        if kind is None:
-            logger.info(
-                "pool %s/%s starved: no project-repo workspace kind", project.id, profile.id
-            )
-            await self.db.delete_agent(agent.id)
-            return None
-
-        worktrees_enabled = self._worktrees_enabled()
-        workspace = await self.db.acquire_one_unlocked(
-            project_id=project.id,
-            kind_id=kind.id,
-            mode=kind.default_lock_mode,
-            locked_by_task_id=None,
-            locked_by_agent_id=agent.id,
-            prefer_workspace_id=None,
-            kind_mode=(kind.mode if worktrees_enabled and kind.is_git_repo else None),
-            worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
-        )
-        if workspace is None:
-            logger.info("pool %s/%s starved: no free workspace", project.id, profile.id)
-            await self.db.delete_agent(agent.id)
-            return None
-
-        work_dir = workspace.workspace_path
-        session_id = pool_session_name(profile.id, project.id, uuid.uuid4().hex[:8])
-        instance_token = uuid.uuid4().hex
-
         token_store = getattr(self, "token_store", None)
-        api_token = None
-        if token_store is not None:
-            api_token = await token_store.mint(
-                session_id=session_id, task_id=None, project_id=project.id
-            )
-        else:
-            api_token = uuid.uuid4().hex
+        session_id = pool_session_name(profile.id, project.id, uuid.uuid4().hex[:8])
+        minted_token = False
 
-        async def _rollback(reason: str) -> None:
+        async def _rollback(reason: str, *, quarantine: bool) -> None:
             logger.warning("pool %s/%s: %s", project.id, profile.id, reason)
             await self.db.release_workspaces_for_agent(agent.id)
             await self.db.delete_agent(agent.id)
-            if token_store is not None:
+            if minted_token and token_store is not None:
                 try:
                     await token_store.revoke_session(session_id)
                 except Exception:
                     logger.debug("pool %s/%s: token revoke failed", project.id, profile.id)
+            if quarantine:
+                self._pool_quarantine[(project.id, profile.id)] = time.time() + LAUNCH_BACKOFF
 
         try:
+            kind = await self.db.resolve_workspace_kind(project.id, "project-repo")
+            if kind is None:
+                await _rollback("starved: no project-repo workspace kind", quarantine=False)
+                return None
+
+            worktrees_enabled = self._worktrees_enabled()
+            if worktrees_enabled and kind.is_git_repo:
+                await self._ensure_worktree_slots(project, kind.id)
+
+            workspace = await self.db.acquire_one_unlocked(
+                project_id=project.id,
+                kind_id=kind.id,
+                mode=kind.default_lock_mode,
+                locked_by_task_id=None,
+                locked_by_agent_id=agent.id,
+                prefer_workspace_id=None,
+                kind_mode=(kind.mode if worktrees_enabled and kind.is_git_repo else None),
+                worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
+            )
+            if workspace is None:
+                await _rollback("starved: no free workspace", quarantine=False)
+                return None
+
+            work_dir = workspace.workspace_path
+            instance_token = uuid.uuid4().hex
+
+            if token_store is not None:
+                api_token = await token_store.mint(
+                    session_id=session_id, task_id=None, project_id=project.id
+                )
+                minted_token = True
+            else:
+                api_token = uuid.uuid4().hex
+
             spec = self.session_spec_builder.build_pool_spec(
                 profile=profile,
                 project=project,
@@ -294,62 +332,64 @@ class PoolsMixin:
                 api_token=api_token,
                 workspace_source_type=workspace.source_type,
             )
-        except Exception as exc:
-            await _rollback(f"spec build failed: {exc}")
-            return None
 
-        try:
-            await provider.start(spec)
-        except SessionDiedDuringStartup as exc:
-            await _rollback(f"session died during startup: {exc}")
-            return None
-        except Exception as exc:
-            await _rollback(f"session launch failed: {exc}")
-            return None
-
-        now = time.time()
-        try:
-            await self.db.create_session(
-                SessionRecord(
-                    id=session_id,
-                    project_id=project.id,
-                    profile_id=profile.id,
-                    harness=harness.id,
-                    provider=provider.name,
-                    name=spec.session_name,
-                    lifecycle="pool",
-                    work_dir=work_dir,
-                    epoch=self.daemon_epoch,
-                    instance_token=instance_token,
-                    started_at=now,
-                    task_id=None,
-                    state="starting",
-                    agent_id=agent.id,
-                    last_activity=now,
-                )
-            )
-        except Exception as exc:
-            logger.error(
-                "pool %s/%s: session row insert failed", project.id, profile.id, exc_info=True
-            )
             try:
-                await provider.stop(
-                    SessionHandle(
-                        name=spec.session_name,
+                await provider.start(spec)
+            except SessionDiedDuringStartup as exc:
+                await _rollback(f"session died during startup: {exc}", quarantine=True)
+                return None
+
+            now = time.time()
+            try:
+                await self.db.create_session(
+                    SessionRecord(
+                        id=session_id,
+                        project_id=project.id,
+                        profile_id=profile.id,
+                        harness=harness.id,
                         provider=provider.name,
+                        name=spec.session_name,
+                        lifecycle="pool",
+                        work_dir=work_dir,
+                        epoch=self.daemon_epoch,
                         instance_token=instance_token,
-                    ),
-                    grace=2.0,
+                        started_at=now,
+                        task_id=None,
+                        state="running",
+                        agent_id=agent.id,
+                        last_activity=now,
+                    )
                 )
-            except Exception:
+            except Exception as exc:
                 logger.error(
-                    "pool %s/%s: could not stop the orphan session %s",
+                    "pool %s/%s: session row insert failed",
                     project.id,
                     profile.id,
-                    spec.session_name,
                     exc_info=True,
                 )
-            await _rollback(f"session started but its row could not be written: {exc}")
+                try:
+                    await provider.stop(
+                        SessionHandle(
+                            name=spec.session_name,
+                            provider=provider.name,
+                            instance_token=instance_token,
+                        ),
+                        grace=2.0,
+                    )
+                except Exception:
+                    logger.error(
+                        "pool %s/%s: could not stop the orphan session %s",
+                        project.id,
+                        profile.id,
+                        spec.session_name,
+                        exc_info=True,
+                    )
+                await _rollback(
+                    f"session started but its row could not be written: {exc}", quarantine=True
+                )
+                return None
+        except Exception as exc:
+            await _rollback(f"launch failed: {exc}", quarantine=True)
             return None
 
         logger.info(

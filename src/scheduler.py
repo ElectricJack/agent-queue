@@ -626,7 +626,7 @@ def size_pools(
     drains_left = max_drains_per_tick
     for key in keys:
         sup = supply.get(key, PoolSupply())
-        surplus = current[key] - sup.draining - desired[key]
+        surplus = current[key] - desired[key]
         if surplus <= 0:
             continue
         since = surplus_since.get(key, now)

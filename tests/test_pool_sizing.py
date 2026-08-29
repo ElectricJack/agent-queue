@@ -68,7 +68,15 @@ def test_draining_sessions_do_not_count_as_surplus_again():
     actions, _ = run(
         supply=sup, demand={K: 0}, bounds={K: (1, 5)}, surplus_since={K: 0.0}, now=500.0
     )
-    assert actions == []  # current(2) - draining(1) == desired(1)
+    assert actions == []  # current excludes draining: idle(1) == desired(1) -> no surplus
+
+
+def test_draining_sessions_excluded_from_current_so_idle_alone_drains():
+    sup = {K: PoolSupply(running_idle=2, draining=1, idle_session_ids=["a", "b"])}
+    actions, _ = run(
+        supply=sup, demand={K: 0}, bounds={K: (0, 5)}, surplus_since={K: 0.0}, now=500.0
+    )
+    assert [(a.kind, a.count, a.session_ids) for a in actions] == [("drain", 2, ("a", "b"))]
 
 
 def test_project_cap_is_fair_shared_across_pools():
