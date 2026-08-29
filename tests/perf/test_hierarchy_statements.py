@@ -115,22 +115,45 @@ async def seed_scale(
     """
     now = time.time()
     n_paired = min(n_edges, n_tasks // 2)
-    # Every dependent (odd i, up to n_paired pairs) is blocked: its
-    # predecessor (even i, always READY -- non-terminal) hasn't completed.
-    # ``is_blocked`` must agree with the edges below, not just default to 0
-    # from the raw insert, or the seeded queue doesn't reflect what
+    # Pair ``seed-{2i+1}`` (the dependent) with ``seed-{2i}`` (its
+    # predecessor).  Dependents are always READY -- a dependent is only
+    # interesting to the frontier query if it is otherwise schedulable.
+    # Predecessors alternate: half COMPLETED (so their dependent is
+    # unblocked) and half READY (non-terminal, so their dependent stays
+    # blocked).  That leaves half the dependents on the frontier and half
+    # held off it.
+    #
+    # ``is_blocked`` must agree with the edges, not just default to 0 from
+    # the raw insert, or the seeded queue doesn't reflect what
     # ``add_dependency`` would actually have projected and any perf number
     # that depends on the frontier query's ``is_blocked`` filter is
     # measuring an unrealistically-clean queue.
-    blocked_dependents = {2 * i + 1 for i in range(n_paired)}
+    def _is_dependent(i: int) -> bool:
+        return i % 2 == 1 and (i - 1) // 2 < n_paired
+
+    def _predecessor_completed(i: int) -> bool:
+        """Predecessors ``seed-{2j}`` with even *j* are COMPLETED."""
+        return (i // 2) % 2 == 0
+
+    def _status(i: int) -> str:
+        if _is_dependent(i):
+            return TaskStatus.READY.value
+        if i % 2 == 0 and (i // 2) < n_paired and _predecessor_completed(i):
+            return TaskStatus.COMPLETED.value
+        return TaskStatus.READY.value
+
+    blocked_dependents = {
+        2 * i + 1 for i in range(n_paired) if not _predecessor_completed(2 * i)
+    }
     rows = [
         {
             "id": f"seed-{i}",
             "project_id": PROJECT_ID,
             "title": f"t{i}",
             "description": "d",
-            "status": TaskStatus.COMPLETED.value if i % 2 else TaskStatus.READY.value,
-            "profile_id": profile_id if (i % 2 == 0) else None,
+            "status": _status(i),
+            # Stamped on every READY task, as the docstring says.
+            "profile_id": profile_id if _status(i) == TaskStatus.READY.value else None,
             "is_blocked": 1 if i in blocked_dependents else 0,
             "created_at": now,
             "updated_at": now,

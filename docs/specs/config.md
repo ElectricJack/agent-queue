@@ -396,7 +396,7 @@ fresh each tick/request, there is no restart-required subset.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | `bool` | `False` | Master switch. `false` disables `_reconcile_pools` and refuses new `lifecycle: pool` launches; `task_claim` itself stays callable (idempotent re-claim only) so the command surface is stable before pools turn on. |
+| `enabled` | `bool` | `False` | Master switch. `false` disables `_reconcile_pools`, refuses new `lifecycle: pool` launches, and makes `task_claim` return `not_admissible` with `reason: "swarm_disabled"` — the command surface stays present (so clients and schemas are stable before pools turn on) but hands out no work. |
 | `claim_wait_max` | `int` | `60` | Upper clamp on `task_claim`'s `--wait` seconds — both the frontier long-poll and the admission long-poll. |
 | `max_starts_per_tick` | `int` | `2` | Pool session launches `_reconcile_pools` may start in one cascade tick, across all `(project, profile)` keys. |
 | `max_drains_per_tick` | `int` | `5` | Idle pool sessions `_reconcile_pools` may mark `desired_state='stopped'` in one bulk update per tick. |
@@ -409,6 +409,18 @@ Validation (`SwarmConfig.validate`): every integer key must be `>= 0`.
 No global pool cap exists — sizing binds on each project's `max_concurrent_agents`
 and each profile's own `min_active`/`max_active` (profile markdown, pool-only
 keys — parse error on `lifecycle: task`/`named`).
+
+**Caveat — `enabled: false` strands pool profiles (ruling P2-17).** The push
+path's gates are keyed on `lifecycle` alone, deliberately: a `lifecycle: pool`
+profile is never push-assigned a task, flag or no flag. The pull path
+(`_reconcile_pools`, and now `task_claim` itself) is gated on this flag. So a
+`lifecycle: pool` profile configured while `swarm.enabled` is `false` gets work
+from neither side — its tasks sit in `READY` indefinitely. Both gates are
+correct as they stand; the consequence is simply that the two settings must
+agree. The daemon logs a warning once at startup when it sees pool profiles
+with the flag off, and `aq doctor` reports the same condition as
+`pools.disabled` (WARN, report-only — flipping the flag is an operator
+decision, not a repair).
 
 ---
 

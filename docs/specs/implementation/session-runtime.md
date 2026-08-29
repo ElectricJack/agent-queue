@@ -401,13 +401,16 @@ owns them. What differs from `lifecycle: task`:
 - **Claim phases.** `sessions.claim_phase` (`claiming → preparing → active`) and
   `claim_phase_at` track an in-flight claim; `claim_phase_at` is the clock
   `_step_prepare_timeout` reads (new reconciler step — releases a claim stuck in
-  `preparing` past `swarm.prepare_timeout`, default 120 s).
+  `claiming`/`preparing` past `swarm.prepare_timeout`, default 120 s; skipped entirely
+  when `swarm.enabled` is false, since pool sessions cannot exist then).
 - **Reconciler carve-outs** (design §11.3) — pool rows change the meaning of existing
   steps rather than adding new ones, except `_step_prepare_timeout`: `_step_orphans`
   releases the held task to `READY` instead of blocking; `_step_exits` runs
   `terminate_pool_session` (retires the agent row, clears both workspace lock columns,
-  revokes the token) instead of the task-session cleanup; the stall ladder applies only
-  while `task_id IS NOT NULL`; a pool session is **never restarted in place** — exit,
+  revokes the token) instead of the task-session cleanup; the stall ladder applies to a
+  pool session only while `task_id IS NOT NULL` **and** `claim_phase == 'active'` (a
+  session mid-claim is `_step_prepare_timeout`'s to time out, not the ladder's); a pool
+  session is **never restarted in place** — exit,
   orphan, or stall all terminate it and release the task, never resume the same row.
 - **Ownership fence.** `aq task close|heartbeat|set|handoff` verify ownership through
   `sessions.task_id == task_id AND tasks.claim_epoch == :epoch`, not the token's

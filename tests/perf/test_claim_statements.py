@@ -182,7 +182,8 @@ class TestClaimStatementBudgets:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
         dialect = any_db._engine.dialect.name
-        budget = 20 if dialect == "sqlite" else 18
+        # M10: tightened from 20/18 to the achieved 14 plus a small margin.
+        budget = 16 if dialect == "sqlite" else 15
         print(f"\ntask_claim happy path ({dialect}): {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 

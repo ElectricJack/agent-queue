@@ -27,6 +27,17 @@ import re
 
 _WORKER_ENV = "PYTEST_XDIST_WORKER"
 
+#: Sentinel distinguishing "not derived yet" from "derived, and the answer
+#: is ``None``" (no ``POSTGRES_TEST_DSN`` set).
+_UNSET = object()
+
+#: The derived DSN for this process, computed once.  Without this the
+#: second call re-derives from the *already rewritten* env var and appends
+#: another ``_master``/``_gwN`` suffix, so the three importing modules end
+#: up disagreeing about which database they are using and
+#: ``reset_for_tests`` refuses the mismatch.
+_CACHED_DSN: object | str | None = _UNSET
+
 
 def _worker_id() -> str:
     """xdist worker id (``gw0``, ``gw1``, ...), or ``master`` outside ``-n``."""
@@ -70,16 +81,20 @@ def ensure_worker_postgres_dsn() -> str | None:
     Creates that database first if it doesn't exist yet. Returns the
     (possibly unchanged) DSN, or ``None`` when ``POSTGRES_TEST_DSN`` isn't
     set at all (the common local-dev case — this never touches the network
-    then). Idempotent within one worker process: a module that's already
-    been rewritten by an earlier call in the same process is a no-op.
+    then). Idempotent within one worker process: the derived DSN is cached
+    on first call and returned verbatim thereafter, so the three importing
+    modules always agree.
     """
+    global _CACHED_DSN
+    if _CACHED_DSN is not _UNSET:
+        return _CACHED_DSN  # type: ignore[return-value]
     base = os.environ.get("POSTGRES_TEST_DSN")
     if not base:
+        _CACHED_DSN = None
         return None
     worker_dsn = _derive_worker_dsn(base)
-    if os.environ.get("POSTGRES_TEST_DSN") == worker_dsn:
-        return worker_dsn
     _, _, target_db = worker_dsn.rpartition("/")
     asyncio.run(_create_database_if_missing(base, target_db))
     os.environ["POSTGRES_TEST_DSN"] = worker_dsn
+    _CACHED_DSN = worker_dsn
     return worker_dsn
