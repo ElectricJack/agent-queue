@@ -19,6 +19,8 @@ class EventQueryMixin:
         task_id: str | None = None,
         agent_id: str | None = None,
         payload: str | None = None,
+        *,
+        conn=None,
     ) -> int:
         """Record a lifecycle event and return the inserted row id.
 
@@ -26,24 +28,36 @@ class EventQueryMixin:
         callers that persist-then-emit thread this id into the bus
         payload so a client reconnecting with ``after_seq=N`` can dedup
         live frames overlapping the replay window (WG-4 spec §8).
+
+        When *conn* is given, the insert runs on the caller's connection
+        instead of opening a new transaction — for callers that must write
+        the audit row in the same transaction as the state change it
+        records (e.g. ``task.ready`` frontier entries, spec §9).
         """
+        if conn is not None:
+            return await self._insert_event_row(conn, event_type, project_id, task_id, agent_id, payload)
         async with self._engine.begin() as conn:
-            result = await conn.execute(
-                insert(events).values(
-                    event_type=event_type,
-                    project_id=project_id,
-                    task_id=task_id,
-                    agent_id=agent_id,
-                    payload=payload,
-                    timestamp=time.time(),
-                )
+            return await self._insert_event_row(conn, event_type, project_id, task_id, agent_id, payload)
+
+    async def _insert_event_row(
+        self, conn, event_type, project_id, task_id, agent_id, payload
+    ) -> int:
+        result = await conn.execute(
+            insert(events).values(
+                event_type=event_type,
+                project_id=project_id,
+                task_id=task_id,
+                agent_id=agent_id,
+                payload=payload,
+                timestamp=time.time(),
             )
-            # ``inserted_primary_key`` works for both SQLite + Postgres
-            # under SQLAlchemy Core when the PK is auto-increment.
-            try:
-                return int(result.inserted_primary_key[0])
-            except Exception:
-                return 0
+        )
+        # ``inserted_primary_key`` works for both SQLite + Postgres
+        # under SQLAlchemy Core when the PK is auto-increment.
+        try:
+            return int(result.inserted_primary_key[0])
+        except Exception:
+            return 0
 
     async def get_recent_events(
         self,

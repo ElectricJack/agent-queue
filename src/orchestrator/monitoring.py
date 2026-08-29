@@ -303,6 +303,18 @@ class MonitoringMixin:
     def register_settlement_listener(self) -> None:
         """Wire ``db.transition_task``'s post-commit settlement callback to us."""
         self.db.set_settlement_listener(self._on_containers_settled)
+        self.db.set_ready_listener(self._on_frontier_entries)
+
+    async def _on_frontier_entries(self, entries: list[tuple[str, str]]) -> None:
+        """Post-commit fan-out for every entry into the ready frontier (spec §9)."""
+        for task_id, reason in entries:
+            task = await self.db.get_task(task_id)
+            if task is None:
+                continue
+            try:
+                await self._emit_task_event("task.ready", task, reason=reason)
+            except Exception:
+                logger.exception("task.ready emit failed for %s", task_id)
 
     async def _on_containers_settled(self, ids: list[str]) -> None:
         """Post-commit fan-out for containers completed by settlement (spec §7).

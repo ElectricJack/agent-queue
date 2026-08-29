@@ -157,10 +157,11 @@ class SurfaceCommandsMixin:
             fields_changed.append(f"+label:{label}")
 
         for label in args.get("labels_remove") or []:
-            await self.db.remove_task_label(task_id, label)
+            entered = await self.db.remove_task_label(task_id, label)
             await self.db.log_event(
                 "label.removed", project_id=task.project_id, task_id=task_id, payload=label
             )
+            await self.db._notify_ready([(t, "hold_removed") for t in entered])
             fields_changed.append(f"-label:{label}")
 
         if "work_dir" in args:

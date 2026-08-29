@@ -167,6 +167,14 @@ _WORK_GRAPH_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title"],
         "optional": ["reason"],
     },
+    # Emitted for every entry into the ready frontier — READY ∧ unblocked ∧
+    # no ``hold:*`` label (design §9). ``reason`` names how it got there:
+    # "promoted" | "restarted" | "released" | "resumed" | "unblocked" |
+    # "hold_removed".
+    "task.ready": {
+        "required": ["task_id", "project_id", "title"],
+        "optional": ["reason"],
+    },
     "dependency.added": {
         "required": ["task_id", "depends_on", "dep_type"],
         "optional": ["project_id"],

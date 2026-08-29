@@ -46,8 +46,9 @@ class DependencyQueryMixin:
         if dep_type == DepType.PARENT_CHILD.value:
             async with self._engine.begin() as conn:
                 flipped, settled = await self.set_parent(task_id, depends_on, conn=conn)
-            await self.log_blocked_flips(flipped)
+            entries = await self.log_blocked_flips(flipped, note_ready=True)
             await self._notify_settled(settled)
+            await self._notify_ready(entries)
             return
 
         _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
@@ -62,7 +63,8 @@ class DependencyQueryMixin:
                 .on_conflict_do_nothing()
             )
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
-        await self.log_blocked_flips(flipped)
+        entries = await self.log_blocked_flips(flipped, note_ready=True)
+        await self._notify_ready(entries)
 
     async def get_dependencies(
         self,
@@ -369,8 +371,9 @@ class DependencyQueryMixin:
                 if current is None or current[0] != depends_on:
                     return
                 flipped, settled = await self.set_parent(task_id, None, conn=conn)
-            await self.log_blocked_flips(flipped)
+            entries = await self.log_blocked_flips(flipped, note_ready=True)
             await self._notify_settled(settled)
+            await self._notify_ready(entries)
             return
 
         conditions = [
@@ -392,7 +395,9 @@ class DependencyQueryMixin:
             await conn.execute(delete(task_dependencies).where(and_(*conditions)))
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
             flipped |= parent_flipped
-        await self.log_blocked_flips(flipped)
+        entries = await self.log_blocked_flips(flipped, note_ready=True)
+        await self._notify_settled(parent_settled)
+        await self._notify_ready(entries)
         await self._notify_settled(parent_settled)
 
     async def get_transitive_dependents(

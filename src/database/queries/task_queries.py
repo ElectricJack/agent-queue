@@ -29,10 +29,26 @@ from src.database.queries.blocked_state import (
     PROJECTION_INPUT_COLUMNS,
     apply_label_filters,
 )
-from src.models import Task, TaskStatus, TaskType, VerificationType, WorkspaceMode
+from src.models import HOLD_LABEL_PREFIX, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode
 from src.state_machine import is_valid_status_transition
 
 logger = logging.getLogger(__name__)
+
+
+#: Maps ``transition_task``'s ``context`` to the ``task.ready`` audit reason
+#: (spec §9). Every context starting with ``session_`` maps to "released";
+#: unknown contexts default to "promoted".
+_READY_REASONS = {
+    "promotion": "promoted",
+    "reopen_with_feedback": "restarted",
+    "retry": "released",
+    "rate_limit": "resumed",
+    "resume_paused": "resumed",
+    "session_not_live": "released",
+    "slot_reset_failed": "released",
+    "prepare_timeout": "released",
+    "session_close": "released",
+}
 
 
 @dataclass
@@ -44,6 +60,9 @@ class TransitionResult:
     #: Descendant ids closed as ``abandoned`` — populated only by
     #: ``HierarchyQueryMixin.abandon_subtree`` (spec §7); empty otherwise.
     abandoned: list[str] = field(default_factory=list)
+    #: ``(task_id, reason)`` for every task that entered the ready frontier
+    #: in this transaction (spec §9).
+    ready: list[tuple[str, str]] = field(default_factory=list)
 
 
 class TaskQueryMixin:
@@ -239,6 +258,29 @@ class TaskQueryMixin:
         """
         self._sm_enforce = bool(enforce)
 
+    async def _note_frontier_entry(self, conn, task_ids: set[str], *, reason: str) -> list[str]:
+        """Record every id in *task_ids* that is now in the ready frontier (spec §9).
+
+        Callers pass ids whose pre-state was outside the frontier; this checks
+        the post-state in one statement and writes the ``task.ready`` audit row
+        on the caller's connection so a crash after commit cannot lose it.
+        """
+        if not task_ids:
+            return []
+
+        stmt = select(tasks.c.id, tasks.c.project_id, tasks.c.title).where(
+            and_(
+                tasks.c.id.in_(sorted(task_ids)),
+                tasks.c.status == TaskStatus.READY.value,
+                tasks.c.is_blocked == 0,
+            )
+        )
+        stmt = apply_label_filters(stmt, exclude_hold=True)
+        rows = (await conn.execute(stmt)).fetchall()
+        for tid, pid, _title in rows:
+            await self.log_event("task.ready", project_id=pid, task_id=tid, payload=reason, conn=conn)
+        return [r[0] for r in rows]
+
     async def _apply_transition(
         self,
         conn,
@@ -281,7 +323,11 @@ class TaskQueryMixin:
         values = self._coerce_task_values(kwargs)
         result = TransitionResult()
 
-        row = (await conn.execute(select(tasks.c.status).where(tasks.c.id == task_id))).fetchone()
+        row = (
+            await conn.execute(
+                select(tasks.c.status, tasks.c.is_blocked).where(tasks.c.id == task_id)
+            )
+        ).fetchone()
 
         if row is None:
             logger.warning("transition_task: task '%s' not found, cannot validate", task_id)
@@ -291,6 +337,7 @@ class TaskQueryMixin:
             return TransitionResult()
 
         current_status = TaskStatus(row[0])
+        was_frontier = current_status == TaskStatus.READY and not bool(row[1])
 
         if current_status == new_status:
             if values:
@@ -360,6 +407,17 @@ class TaskQueryMixin:
             values["updated_at"] = time.time()
             await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
             result.flipped = await self.recompute_blocked({task_id}, conn=conn)
+
+            if not was_frontier:
+                reason = _READY_REASONS.get(context, "promoted")
+                for tid in await self._note_frontier_entry(conn, {task_id}, reason=reason):
+                    result.ready.append((tid, reason))
+
+            for tid in await self._note_frontier_entry(
+                conn, {t for t in result.flipped if t != task_id}, reason="unblocked"
+            ):
+                result.ready.append((tid, "unblocked"))
+
             # A task that will not run again cannot satisfy a gate by
             # waiting, so retire any gate now left with only terminal
             # waiters. In the same transaction as the status write: a
@@ -398,6 +456,24 @@ class TaskQueryMixin:
             except Exception:  # a listener failure must not fail the transition
                 logger.exception("settlement listener failed for %s", settled)
 
+    def set_ready_listener(self, cb) -> None:
+        """Register the post-commit callback for ready-frontier entries (spec §9)."""
+        self._ready_listener = cb
+
+    async def _notify_ready(self, entries: list[tuple[str, str]]) -> None:
+        """Fire the ready listener, if any, with the ``(task_id, reason)`` pairs.
+
+        Called from :meth:`transition_task` below, and also directly by
+        ``DependencyQueryMixin`` (``add_dependency``, ``remove_dependency``)
+        and ``GateQueryMixin.resolve_gate``, which reach the frontier without
+        going through :meth:`_apply_transition`.
+        """
+        if entries and self._ready_listener is not None:
+            try:
+                await self._ready_listener(list(entries))
+            except Exception:  # a listener failure must not fail the transition
+                logger.exception("ready listener failed for %s", entries)
+
     async def transition_task(
         self,
         task_id: str,
@@ -419,6 +495,7 @@ class TaskQueryMixin:
             )
         await self.log_blocked_flips(result.flipped)
         await self._notify_settled(result.settled)
+        await self._notify_ready(result.ready)
         return result.flipped
 
     #: Statuses after which a task will not run again, so anything gated on
@@ -427,6 +504,9 @@ class TaskQueryMixin:
 
     #: Post-commit settlement callback, registered via ``set_settlement_listener``.
     _settlement_listener = None
+
+    #: Post-commit ready-frontier callback, registered via ``set_ready_listener``.
+    _ready_listener = None
 
     async def expire_satisfied_gates(self, task_id: str, *, conn=None) -> int:
         """Expire open gates whose every waiter has reached a terminal state.
@@ -745,14 +825,24 @@ class TaskQueryMixin:
             if existing.fetchone() is None:
                 await conn.execute(insert(task_labels).values(task_id=task_id, label=label))
 
-    async def remove_task_label(self, task_id: str, label: str) -> None:
-        """Detach a label from a task. No-op if not present."""
+    async def remove_task_label(self, task_id: str, label: str) -> list[str]:
+        """Detach a label from a task. No-op if not present.
+
+        Removing a ``hold:*`` label can expose the task to the ready
+        frontier (design §6), so this records the frontier entry (reason
+        ``hold_removed``) in the same transaction and returns the ids that
+        entered — empty for a non-hold label or a task that isn't now in
+        the frontier.
+        """
         async with self._engine.begin() as conn:
             await conn.execute(
                 delete(task_labels).where(
                     and_(task_labels.c.task_id == task_id, task_labels.c.label == label)
                 )
             )
+            if not label.startswith(HOLD_LABEL_PREFIX):
+                return []
+            return await self._note_frontier_entry(conn, {task_id}, reason="hold_removed")
 
     async def get_task_labels(self, task_id: str) -> list[str]:
         """Return all labels attached to a task, sorted."""

@@ -354,7 +354,9 @@ class BlockedStateMixin:
 
     # -- post-commit events ---------------------------------------------
 
-    async def log_blocked_flips(self, flipped: set[str]) -> None:
+    async def log_blocked_flips(
+        self, flipped: set[str], *, note_ready: bool = False
+    ) -> list[tuple[str, str]]:
         """Write ``task.blocked`` / ``task.unblocked`` for flipped rows.
 
         Called by mutating methods *after* their transaction commits, so the
@@ -368,21 +370,34 @@ class BlockedStateMixin:
         batched, against a 0.38 s recompute ``UPDATE`` (spec §11 budgets the
         full backfill at < 5 s, and ``recompute_all_blocked`` is the
         ``aq doctor`` repair path).
+
+        ``note_ready``: for callers that don't go through ``_apply_transition``
+        (``add_dependency``, ``remove_dependency``, ``resolve_gate``) — those
+        already recorded their own status write's frontier entry but never
+        checked whether *unblocking* put a flipped task into the ready
+        frontier.  When ``True``, also records a ``task.ready`` audit row
+        (reason ``unblocked``) for every flipped id now ``READY`` and
+        unblocked, in the same transaction, and returns the entries so the
+        caller can hand them to ``_notify_ready`` after commit.  Default
+        ``False`` — ``transition_task`` and every other caller already ran
+        ``_apply_transition``, which recorded those entries in-transaction;
+        double-counting would double-emit ``task.ready``.
         """
         if not flipped:
-            return
+            return []
         now = time.time()
+        entries: list[tuple[str, str]] = []
         try:
             async with self._engine.begin() as conn:
                 rows = (
                     await conn.execute(
-                        select(tasks.c.id, tasks.c.project_id, tasks.c.is_blocked).where(
-                            tasks.c.id.in_(sorted(flipped))
-                        )
+                        select(
+                            tasks.c.id, tasks.c.project_id, tasks.c.is_blocked, tasks.c.status
+                        ).where(tasks.c.id.in_(sorted(flipped)))
                     )
                 ).fetchall()
                 if not rows:
-                    return
+                    return []
                 await conn.execute(
                     insert(events),
                     [
@@ -394,11 +409,15 @@ class BlockedStateMixin:
                             "payload": "graph",
                             "timestamp": now,
                         }
-                        for task_id, project_id, is_blocked in rows
+                        for task_id, project_id, is_blocked, _status in rows
                     ],
                 )
+                if note_ready:
+                    ids = await self._note_frontier_entry(conn, set(flipped), reason="unblocked")
+                    entries = [(tid, "unblocked") for tid in ids]
         except Exception:  # pragma: no cover — defensive
             logger.debug("log_blocked_flips: could not write flip events", exc_info=True)
+        return entries
 
     # -- read side -------------------------------------------------------
 

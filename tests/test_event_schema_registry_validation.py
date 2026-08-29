@@ -134,6 +134,12 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "title": "Roll back the migration",
         "reason": "conditional-blocks dependency completed",
     },
+    "task.ready": {
+        "task_id": "t-1",
+        "project_id": "proj-1",
+        "title": "Implement feature X",
+        "reason": "promoted",
+    },
     "dependency.added": {
         "task_id": "t-2",
         "depends_on": "t-1",

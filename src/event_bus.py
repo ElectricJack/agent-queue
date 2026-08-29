@@ -22,11 +22,12 @@ See specs/event-bus.md for the full specification.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import uuid
 from collections import defaultdict
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from src.event_schemas import validate_event
 
@@ -154,3 +155,30 @@ class EventBus:
                 await handler(data)
             else:
                 handler(data)
+
+    async def wait_for(
+        self,
+        event_types: Iterable[str],
+        *,
+        filter: dict[str, Any] | None = None,
+        timeout: float,
+    ) -> dict | None:
+        """Await the first event of any of *event_types* matching *filter*, or None on timeout."""
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+
+        async def _on(data):
+            if not fut.done():
+                fut.set_result(dict(data))
+
+        unsubs = [self.subscribe(t, _on, filter=filter) for t in event_types]
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            for u in unsubs:
+                u()
+
+    def subscriber_count(self, event_type: str) -> int:
+        return len(self._handlers.get(event_type, []))
