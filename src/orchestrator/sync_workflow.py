@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.models import (
     AgentResult,
     AgentState,
@@ -156,11 +157,15 @@ class SyncWorkflowMixin:
                     task.id,
                     default_branch,
                 )
-                await self.db.transition_task(
-                    action.task_id,
-                    TaskStatus.COMPLETED,
-                    context="sync_already_synced",
-                )
+                try:
+                    await self.db.transition_task(
+                        action.task_id,
+                        TaskStatus.COMPLETED,
+                        context="sync_already_synced",
+                    )
+                except HierarchyError as exc:
+                    # Invariant 6 (spec §7) — open children hold it open.
+                    logger.warning("sync completion refused for %s: %s", task.id, exc)
                 await _notify(
                     f"✅ **Sync `{task.id}`** — All workspaces already on "
                     f"`{default_branch}` with no feature branches. Skipping merge."
@@ -391,5 +396,9 @@ For EACH workspace listed above, perform these steps IN ORDER:
                             f"⚠️ **Sync Workspaces finished:** `{task.id}` — "
                             f"Completed with warnings. Check thread for details."
                         )
+            except HierarchyError as exc:
+                # Invariant 6 (spec §7): the sync task has open children and
+                # stays IN_PROGRESS; it settles when they finish.
+                logger.warning("Sync workflow %s: completion refused: %s", task.id, exc)
             except Exception as e:
                 logger.error("Sync workflow %s: final status update failed: %s", task.id, e)

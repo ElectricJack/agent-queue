@@ -8,6 +8,7 @@ import os
 import time
 from typing import Any
 
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.logging_config import CorrelationContext
 from src.task_summary import write_task_summary
 from src.discord.notifications import format_task_started
@@ -1249,9 +1250,18 @@ class ExecutionMixin:
                 await _notify_brief(brief)
             elif completed_ok:
                 # No approval needed — mark completed
-                await self.db.transition_task(
-                    action.task_id, TaskStatus.COMPLETED, context="completed_no_approval"
-                )
+                try:
+                    await self.db.transition_task(
+                        action.task_id, TaskStatus.COMPLETED, context="completed_no_approval"
+                    )
+                except HierarchyError as exc:
+                    # Invariant 6 (spec §7): open children hold the container
+                    # open.  Leave the task as it was rather than crash the
+                    # cascade; it settles when the children finish.
+                    logger.warning(
+                        "completion refused for %s: %s", action.task_id, exc
+                    )
+                    return
                 await self.db.log_event(
                     "task_completed",
                     project_id=action.project_id,
@@ -2080,18 +2090,27 @@ class ExecutionMixin:
                 new_status = TaskStatus.READY
                 context = "retry"
 
-        if new_retry is not None:
-            await self.db.transition_task(
-                task.id,
-                new_status,
-                context=context,
-                retry_count=new_retry,
-                assigned_agent_id=None,
-            )
-        else:
-            await self.db.transition_task(
-                task.id, new_status, context=context, assigned_agent_id=None
-            )
+        try:
+            if new_retry is not None:
+                await self.db.transition_task(
+                    task.id,
+                    new_status,
+                    context=context,
+                    retry_count=new_retry,
+                    assigned_agent_id=None,
+                )
+            else:
+                await self.db.transition_task(
+                    task.id, new_status, context=context, assigned_agent_id=None
+                )
+        except HierarchyError as exc:
+            # Invariant 6 (spec §7): the task has open children, so it stays
+            # where it was.  The rest of the close (event, resource release)
+            # still runs — it reports the status the task actually has.
+            logger.warning("session-close transition refused for %s: %s", task.id, exc)
+            refreshed = await self.db.get_task(task.id)
+            if refreshed:
+                new_status = refreshed.status
         await self._emit_task_event(
             "task.closed",
             task,

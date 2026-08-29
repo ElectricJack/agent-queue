@@ -107,7 +107,7 @@ async def set_parent(self, task_id: str, parent_id: str | None, *, conn) -> set[
     Same transaction: delete any existing parent-child edge, insert the new one,
     write tasks.parent_task_id, recompute is_blocked over the affected set
     (old container's waits-for waiters ∪ new container's ∪ the task itself),
-    set task_metadata.container='1' on new_parent if not already set, then
+    set task_metadata.container=true on new_parent if not already set, then
     settle_containers({old_parent, new_parent}) (§7) so a container that just
     lost its last open child completes, and one that gained an open child is a
     valid target. Raises HierarchyError(code) for: not_found, cross_project,
@@ -168,7 +168,7 @@ recompute `is_blocked`, retire satisfied gates — everything it does now, on a 
 connection) and the public `transition_task`, which opens the transaction, calls it, and
 emits after commit. Nothing in this spec writes `tasks.status` with raw SQL.
 
-**Containers are marked, not inferred.** `task_metadata.container = '1'` is written in the
+**Containers are marked, not inferred.** `task_metadata.container = true` is written in the
 same transaction that gives a task its first child — by `set_parent` (any path),
 `create_task_graph`, `formula_cook`, `approve_plan`. It is never cleared: a container
 whose children were all moved away is still a container, which is what lets settlement
@@ -211,9 +211,14 @@ nothing to find).
 - A child ending `FAILED` or `BLOCKED` does not complete or fail the container; it stays
   `IN_PROGRESS`, `waits-for` waiters stay blocked, `explain` on the container lists the
   open children.
-- Explicit close of a container (`task_close`, `skip_task`, `set_task_status → COMPLETED`)
-  with non-terminal children is refused with `hierarchy.open_children` (beads'
-  `ErrCloseOpenChildren`). There is no force that leaves open children under a completed
+- **Every** transition to `COMPLETED` is refused while a child is non-terminal, unless it
+  is forced. The guard lives in `_apply_transition`, not only at the close surfaces:
+  `task_close`, `skip_task` and `set_task_status → COMPLETED` keep their own checks for
+  the friendlier error payload, but merge/approval completion (`pr_merged`,
+  `auto_complete_no_pr`, `completed_no_approval`, the sync workflow, session close) goes
+  straight to `transition_task` and would otherwise walk past invariant 6. The refusal is
+  `hierarchy.open_children` (beads' `ErrCloseOpenChildren`); `force=True` — used only by
+  abandonment and administrative closes — bypasses it. There is no force that leaves open children under a completed
   container — that would break invariant 6. The operator's option is
   `--abandon-children`, and it is **refused while any descendant has a live session**
   (`hierarchy.live_descendants`, listing them). A `task`-lifecycle descendant may be
@@ -998,7 +1003,7 @@ Data step — canonicalise from an **immutable snapshot** taken before any write
    pulls its whole subtree one level shallower, so a single reject can clear every deeper
    node in the chain too instead of the migration walking it node by node.
 4. Apply: delete every `parent-child` edge, insert the canonical set, write
-   `parent_task_id` from it, set `task_metadata.container='1'` for every task with a
+   `parent_task_id` from it, set `task_metadata.container=true` for every task with a
    child. Backfill `next_child_ordinal` **by id prefix, not by current parent**: for every
    id of the form `<prefix>.<n>[.…]` across `tasks ∪ archived_tasks`, `next_child_ordinal
    (prefix) = 1 + max(n)`. Grouping by `parent_task_id` would let a reparented child's

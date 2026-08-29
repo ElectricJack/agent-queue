@@ -299,6 +299,41 @@ class TaskQueryMixin:
                 if PROJECTION_INPUT_COLUMNS & values.keys():
                     result.flipped = await self.recompute_blocked({task_id}, conn=conn)
         else:
+            # Invariant 6 (spec §7): a container never reaches COMPLETED while
+            # a child is still open.  Enforced HERE rather than only at the
+            # close surfaces, because approval, execution and the workflow
+            # sync all complete tasks without passing through them.
+            # ``force=True`` (abandonment, administrative closes) bypasses it.
+            if new_status == TaskStatus.COMPLETED and not force:
+                from src.database.queries.hierarchy_queries import HierarchyError
+
+                open_ids = [
+                    r[0]
+                    for r in (
+                        await conn.execute(
+                            select(tasks.c.id)
+                            .where(
+                                and_(
+                                    tasks.c.parent_task_id == task_id,
+                                    tasks.c.status.notin_(
+                                        (
+                                            TaskStatus.COMPLETED.value,
+                                            TaskStatus.FAILED.value,
+                                        )
+                                    ),
+                                )
+                            )
+                            .order_by(tasks.c.id)
+                            .limit(10)
+                        )
+                    ).fetchall()
+                ]
+                if open_ids:
+                    raise HierarchyError(
+                        "open_children",
+                        f"{task_id} has open child(ren): {', '.join(open_ids)}",
+                    )
+
             if not is_valid_status_transition(current_status, new_status):
                 ctx = f" ({context})" if context else ""
                 # WG-5: enforce raises when the flag is on and the

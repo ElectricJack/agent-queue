@@ -1,7 +1,10 @@
 import pytest
 from src.models import TaskStatus, TaskEvent
 from src.state_machine import (
+    CyclicDependencyError,
     task_transition,
+    validate_dag,
+    validate_dag_with_new_edge,
     InvalidTransition,
     VALID_TASK_TRANSITIONS,
 )
@@ -73,8 +76,6 @@ class TestTransitionTableCompleteness:
         result = task_transition(TaskStatus.PAUSED, TaskEvent.RESUME_TIMER)
         assert result == TaskStatus.READY
 
-
-from src.state_machine import validate_dag, validate_dag_with_new_edge, CyclicDependencyError
 
 
 class TestDAGValidation:

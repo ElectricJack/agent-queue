@@ -389,3 +389,43 @@ class TestSetParentBulk:
             with pytest.raises(HierarchyError) as exc:
                 await db.set_parent_bulk(["p"], "p", conn=conn)
         assert exc.value.code == "self_parent"
+
+
+class TestOpenChildrenGuard:
+    """Invariant 6 lives in ``_apply_transition``, not only at the surfaces —
+    approval, execution and the workflow sync all complete tasks directly."""
+
+    async def test_transition_to_completed_refused_with_open_child(self, db):
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "p.1", status=TaskStatus.READY)
+        async with db._engine.begin() as conn:
+            await db.set_parent("p.1", "p", conn=conn)
+        with pytest.raises(HierarchyError) as exc:
+            await db.transition_task("p", TaskStatus.COMPLETED, context="pr_merged")
+        assert exc.value.code == "open_children"
+        assert "p.1" in exc.value.detail
+        # ... and the task is exactly where it was.
+        assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS
+
+    async def test_force_bypasses_the_guard(self, db):
+        """Abandonment is administrative and passes ``force=True``."""
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "p.1", status=TaskStatus.READY)
+        async with db._engine.begin() as conn:
+            await db.set_parent("p.1", "p", conn=conn)
+        await db.transition_task("p", TaskStatus.COMPLETED, context="admin", force=True)
+        assert (await db.get_task("p")).status == TaskStatus.COMPLETED
+
+    async def test_terminal_children_do_not_block(self, db):
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "p.1", status=TaskStatus.READY)
+        await mktask(db, "p.2", status=TaskStatus.READY)
+        async with db._engine.begin() as conn:
+            await db.set_parent("p.1", "p", conn=conn)
+            await db.set_parent("p.2", "p", conn=conn)
+        # FAILED last: a COMPLETED child would settle ``p`` on its own.
+        await db.transition_task("p.1", TaskStatus.COMPLETED, context="t")
+        await db.transition_task("p.2", TaskStatus.FAILED, context="t")
+        assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS
+        await db.transition_task("p", TaskStatus.COMPLETED, context="pr_merged")
+        assert (await db.get_task("p")).status == TaskStatus.COMPLETED

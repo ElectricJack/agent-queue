@@ -79,6 +79,7 @@ from typing import Any
 
 import sqlalchemy.exc
 
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.config import AppConfig, ConfigWatcher
 from src.llm_logger import LLMLogger
 from src.logging_config import CorrelationContext
@@ -1152,11 +1153,17 @@ class Orchestrator(
                 [],
             )
 
-        await self.db.transition_task(
-            task_id,
-            TaskStatus.COMPLETED,
-            context="skip_task",
-        )
+        try:
+            await self.db.transition_task(
+                task_id,
+                TaskStatus.COMPLETED,
+                context="skip_task",
+            )
+        except HierarchyError as exc:
+            # Invariant 6 (spec §7).  The surface check above already refuses
+            # open children; this catches the race where one appears between
+            # the two statements.
+            return f"Task has open children: {exc.detail}", []
         await self.db.log_event(
             "task_skipped",
             project_id=task.project_id,

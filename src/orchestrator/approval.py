@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.task_summary import write_task_summary
 from src.profiles.sync import underlying_agent_type
 from src.models import (
@@ -89,9 +90,16 @@ class ApprovalMixin:
         # --- Auto-complete path ---------------------------------------------------
         if not task.requires_approval:
             if age >= self._NO_PR_AUTO_COMPLETE_GRACE:
-                await self.db.transition_task(
-                    task.id, TaskStatus.COMPLETED, context="auto_complete_no_pr"
-                )
+                try:
+                    await self.db.transition_task(
+                        task.id, TaskStatus.COMPLETED, context="auto_complete_no_pr"
+                    )
+                except HierarchyError as exc:
+                    # Invariant 6 (spec §7): a container cannot complete while
+                    # a child is open.  Leave it as it was — the container
+                    # settles on its own once the children finish.
+                    logger.warning("auto-complete refused for %s: %s", task.id, exc)
+                    return
                 await self.db.log_event(
                     "task_completed",
                     project_id=task.project_id,
@@ -231,7 +239,13 @@ class ApprovalMixin:
             merged = await self._poll_pr_merged(task.pr_url, project_id=task.project_id)
 
         if merged is True:
-            await self.db.transition_task(task.id, TaskStatus.COMPLETED, context="pr_merged")
+            try:
+                await self.db.transition_task(task.id, TaskStatus.COMPLETED, context="pr_merged")
+            except HierarchyError as exc:
+                # Invariant 6 (spec §7).  The PR is merged but the container
+                # still has open children; it settles once they finish.
+                logger.warning("pr_merged completion refused for %s: %s", task.id, exc)
+                return
             await self.db.log_event("task_completed", project_id=task.project_id, task_id=task.id)
             await self._emit_text_notify(
                 f"**PR Merged:** Task `{task.id}` — {task.title} is now COMPLETED.",
