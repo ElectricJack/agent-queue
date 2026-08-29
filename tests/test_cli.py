@@ -848,6 +848,89 @@ class TestCLICommands:
         assert "profile_id" not in captured_args
         assert "agent_type" not in captured_args
 
+    def test_task_create_with_parent_flag(self, runner):
+        """--parent is passed through as parent_id in create_task args."""
+        from src.cli.app import cli
+
+        captured_args = {}
+
+        async def mock_execute(command, args=None):
+            if command == "create_task":
+                captured_args.update(args or {})
+                return {"created": "epic.1", "title": args.get("title", "")}
+            return {}
+
+        mock = self._mock_client({})
+        mock.execute = AsyncMock(side_effect=mock_execute)
+
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "task",
+                    "create",
+                    "--project",
+                    "proj",
+                    "--title",
+                    "T",
+                    "--description",
+                    "D",
+                    "--parent",
+                    "epic",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_args["parent_id"] == "epic"
+
+    def test_task_create_graph_with_parent_flag(self, runner):
+        """--parent with --graph is passed through as parent_id to create_task_graph."""
+        from src.cli.app import cli
+
+        captured_args = {}
+
+        async def mock_execute(command, args=None):
+            if command == "create_task_graph":
+                captured_args.update(args or {})
+                return {
+                    "parent_id": "epic",
+                    "parent_title": None,
+                    "provisional": True,
+                    "task_ids": ["epic.1"],
+                    "nodes": [],
+                    "dry_run": False,
+                    "created": True,
+                }
+            return {}
+
+        mock = self._mock_client({})
+        mock.execute = AsyncMock(side_effect=mock_execute)
+
+        import json
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
+            json.dump({"version": 1, "nodes": [{"key": "a", "title": "A"}]}, fh)
+            graph_path = fh.name
+
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(
+                cli,
+                [
+                    "task",
+                    "create",
+                    "--project",
+                    "proj",
+                    "--graph",
+                    graph_path,
+                    "--parent",
+                    "epic",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_args["parent_id"] == "epic"
+
     def test_project_list_with_formatter(self, runner):
         """Auto-generated list_projects should use Rich formatter."""
         from src.cli.app import cli

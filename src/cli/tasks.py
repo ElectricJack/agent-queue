@@ -54,8 +54,7 @@ def _load_graph_document(graph_file: str) -> dict:
 
     if len(text) > MAX_GRAPH_DOCUMENT_CHARS:
         raise click.UsageError(
-            f"graph document is {len(text)} characters, over the "
-            f"{MAX_GRAPH_DOCUMENT_CHARS} limit"
+            f"graph document is {len(text)} characters, over the {MAX_GRAPH_DOCUMENT_CHARS} limit"
         )
 
     # RecursionError is caught alongside the parse errors: this is the one
@@ -69,13 +68,9 @@ def _load_graph_document(graph_file: str) -> dict:
         except yaml.YAMLError as exc:
             raise click.UsageError(f"graph document is neither valid JSON nor YAML: {exc}") from exc
         except RecursionError as exc:
-            raise click.UsageError(
-                "graph document nesting is too deep to parse"
-            ) from exc
+            raise click.UsageError("graph document nesting is too deep to parse") from exc
     if not isinstance(data, dict):
-        raise click.UsageError(
-            f"graph document must be an object, got {type(data).__name__}"
-        )
+        raise click.UsageError(f"graph document must be an object, got {type(data).__name__}")
     return data
 
 
@@ -86,6 +81,7 @@ def _create_task_graph(
     graph_file: str | None,
     from_spec: str | None,
     dry_run: bool,
+    parent_id: str | None = None,
 ) -> None:
     """Back ``aq task create --graph|--from-spec|--dry-run``."""
     if graph_file and from_spec:
@@ -99,6 +95,8 @@ def _create_task_graph(
         params["graph"] = _load_graph_document(graph_file)
     else:
         params["spec_path"] = from_spec
+    if parent_id:
+        params["parent_id"] = parent_id
 
     async def _create():
         async with _get_client(api_url) as client:
@@ -122,9 +120,7 @@ def _create_task_graph(
             table.add_column("Title")
             table.add_column("Needs")
             for node in nodes:
-                needs = ", ".join(
-                    f"{n['on']}({n['dep_type']})" for n in node.get("needs", [])
-                )
+                needs = ", ".join(f"{n['on']}({n['dep_type']})" for n in node.get("needs", []))
                 table.add_row(
                     node.get("key", ""),
                     node.get("task_id", ""),
@@ -180,6 +176,12 @@ def _create_task_graph(
     default=False,
     help="With --graph/--from-spec: validate and report, create nothing",
 )
+@click.option(
+    "--parent",
+    "parent_id",
+    default=None,
+    help="Create under this container (single task or graph)",
+)
 @click.pass_context
 @_handle_errors
 def task_create(
@@ -195,6 +197,7 @@ def task_create(
     graph_file: str | None,
     from_spec: str | None,
     dry_run: bool,
+    parent_id: str | None,
 ) -> None:
     """Create a new task (interactive wizard or via flags).
 
@@ -215,6 +218,7 @@ def task_create(
             graph_file=graph_file,
             from_spec=from_spec,
             dry_run=dry_run,
+            parent_id=parent_id,
         )
         return
     if dry_run:
@@ -253,6 +257,9 @@ def task_create(
             params["profile_id"] = profile_id
         if agent_type and "agent_type" not in params:
             params["agent_type"] = agent_type
+
+    if parent_id and "parent_id" not in params:
+        params["parent_id"] = parent_id
 
     async def _create():
         async with _get_client(api_url) as client:

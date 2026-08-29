@@ -240,7 +240,11 @@ class TestSubstituteVars:
     def test_a_var_whose_value_is_a_var_resolves_fully(self):
         """Single-pass expansion left a literal ``{b}`` in the created task."""
         graph = parse_graph(
-            {"version": 1, "vars": {"a": "{b}", "b": "boom"}, "nodes": [{"key": "n", "title": "{a}"}]}
+            {
+                "version": 1,
+                "vars": {"a": "{b}", "b": "boom"},
+                "nodes": [{"key": "n", "title": "{a}"}],
+            }
         )
         used, unknown = substitute_vars(graph)
         assert graph.nodes[0].title == "boom"
@@ -251,7 +255,11 @@ class TestSubstituteVars:
 
     def test_circular_var_is_reported_not_silently_left_literal(self):
         graph = parse_graph(
-            {"version": 1, "vars": {"a": "{b}", "b": "{a}"}, "nodes": [{"key": "n", "title": "{a}"}]}
+            {
+                "version": 1,
+                "vars": {"a": "{b}", "b": "{a}"},
+                "nodes": [{"key": "n", "title": "{a}"}],
+            }
         )
         _used, unknown = substitute_vars(graph)
         assert unknown & {"a", "b"}
@@ -551,9 +559,7 @@ async def test_validation_matches_golden(case, vault):
     else:
         graph = parse_graph(path.read_text(encoding="utf-8"))
 
-    findings = await validate_graph(
-        graph, project_id="p1", db=_FakeDB(), vault_root=vault
-    )
+    findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
     assert _findings_signature(findings) == _golden(path.stem)
 
 
@@ -583,9 +589,7 @@ class TestValidatorDetails:
                 "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "needs": ["local-task"]}],
             }
         )
-        findings = await validate_graph(
-            graph, project_id="p1", db=_FakeDB(), vault_root=vault
-        )
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
         assert [f.rule for f in findings if f.is_error] == []
 
     async def test_spec_section_match_is_whitespace_and_case_insensitive(self, vault):
@@ -604,9 +608,7 @@ class TestValidatorDetails:
                 ],
             }
         )
-        findings = await validate_graph(
-            graph, project_id="p1", db=_FakeDB(), vault_root=vault
-        )
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
         assert [f.rule for f in findings if f.is_error] == []
 
     async def test_split_findings(self, vault):
@@ -617,9 +619,7 @@ class TestValidatorDetails:
                 "nodes": [{"key": "a", "title": "{ghost}"}],
             }
         )
-        findings = await validate_graph(
-            graph, project_id="p1", db=_FakeDB(), vault_root=vault
-        )
+        findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
         errors, warnings = split_findings(findings)
         assert {f.rule for f in errors} == {"unknown_var"}
         assert {f.rule for f in warnings} == {"unused_var", "no_acceptance"}
@@ -679,7 +679,9 @@ class TestCreateGraph:
 
         ids = {node["key"]: node["task_id"] for node in report["nodes"]}
         deps = await db.get_dependencies(ids["queries"])
-        assert deps == {ids["schema"]}
+        # ``set_parent`` (write_plan) writes a ``parent-child`` edge for
+        # every node alongside the ``blocks`` edge the graph declared.
+        assert deps == {ids["schema"], report["parent_id"]}
 
     async def test_dependency_rows_carry_dep_type(self, db, vault):
         graph = parse_graph(
@@ -705,11 +707,16 @@ class TestCreateGraph:
 
         async with db._engine.begin() as conn:
             rows = (
-                await conn.execute(
-                    select(task_dependencies).where(task_dependencies.c.task_id == ids["b"])
+                (
+                    await conn.execute(
+                        select(task_dependencies).where(task_dependencies.c.task_id == ids["b"])
+                    )
                 )
-            ).mappings().fetchall()
-        assert [r["dep_type"] for r in rows] == ["waits-for"]
+                .mappings()
+                .fetchall()
+            )
+        # Plus the ``parent-child`` edge ``set_parent`` writes for every node.
+        assert {r["dep_type"] for r in rows} == {"waits-for", "parent-child"}
 
     async def test_spec_ref_context_content_shape(self, db, vault):
         graph = await _valid_graph(vault)
@@ -737,12 +744,16 @@ class TestCreateGraph:
 
         async with db._engine.begin() as conn:
             rows = (
-                await conn.execute(
-                    select(task_criteria)
-                    .where(task_criteria.c.task_id == schema_id)
-                    .order_by(task_criteria.c.sort_order)
+                (
+                    await conn.execute(
+                        select(task_criteria)
+                        .where(task_criteria.c.task_id == schema_id)
+                        .order_by(task_criteria.c.sort_order)
+                    )
                 )
-            ).mappings().fetchall()
+                .mappings()
+                .fetchall()
+            )
         assert [r["content"] for r in rows] == [
             "alembic upgrade head clean on both backends",
             "pytest tests/test_database.py green",
@@ -825,10 +836,8 @@ class TestCreateGraph:
         graph = parse_graph(
             {
                 "version": 1,
-                "nodes": [
-                    {"key": "a", "title": "A", "acceptance": ["x"], "needs": ["upstream"]}
-                ],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "needs": ["upstream"]}],
             }
         )
         report = await create_graph(_Handler(db), graph, project_id="p1")
-        assert await db.get_dependencies(report["task_ids"][0]) == {"upstream"}
+        assert await db.get_dependencies(report["task_ids"][0]) == {"upstream", report["parent_id"]}

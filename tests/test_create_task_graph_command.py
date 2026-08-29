@@ -16,7 +16,7 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.database import Database
-from src.models import AgentProfile, Project, TaskStatus
+from src.models import AgentProfile, Project, Task, TaskStatus
 
 FIXTURES = Path(__file__).parent / "fixtures" / "task_graphs"
 
@@ -89,10 +89,108 @@ class TestArgumentHandling:
         outside.write_text("# Secret\n\n```aq-graph\n{}\n```\n", encoding="utf-8")
 
         for path in ("../secret.md", str(outside)):
-            result = await handler._cmd_create_task_graph(
-                {"project_id": "p1", "spec_path": path}
-            )
+            result = await handler._cmd_create_task_graph({"project_id": "p1", "spec_path": path})
             assert "outside the vault" in result["error"], path
+
+
+def _simple_graph() -> dict:
+    return {
+        "version": 1,
+        "parent": {"title": "Epic"},
+        "nodes": [
+            {"key": "a", "title": "A", "acceptance": ["x"]},
+            {"key": "b", "title": "B", "acceptance": ["x"], "needs": [{"on": "a"}]},
+        ],
+    }
+
+
+class TestParentValidation:
+    async def test_parent_not_found(self, setup):
+        handler, _db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _simple_graph(), "parent_id": "ghost"}
+        )
+        assert result["code"] == "hierarchy.not_found"
+
+    async def test_parent_in_another_project(self, setup):
+        handler, db, _vault = setup
+        await db.create_project(Project(id="p2", name="p2"))
+        await db.create_task(Task(id="other-epic", project_id="p2", title="e", description="e"))
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _simple_graph(), "parent_id": "other-epic"}
+        )
+        assert result["code"] == "hierarchy.cross_project"
+
+    async def test_parent_completed(self, setup):
+        handler, db, _vault = setup
+        await db.create_task(
+            Task(
+                id="done-epic",
+                project_id="p1",
+                title="e",
+                description="e",
+                status=TaskStatus.COMPLETED,
+            )
+        )
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _simple_graph(), "parent_id": "done-epic"}
+        )
+        assert result["code"] == "hierarchy.container_closed"
+
+    async def test_parent_over_structural_depth_cap(self, setup):
+        handler, db, _vault = setup
+        # Build a chain root -> mid -> leaf, structural depth 3 (the cap).
+        for tid in ("root", "mid", "leaf"):
+            await db.create_task(Task(id=tid, project_id="p1", title=tid, description=tid))
+        async with db._engine.begin() as conn:
+            await db.set_parent("mid", "root", conn=conn)
+            await db.set_parent("leaf", "mid", conn=conn)
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _simple_graph(), "parent_id": "leaf"}
+        )
+        assert result["code"] == "hierarchy.depth"
+
+    async def test_creates_under_existing_parent_with_dotted_ids(self, setup):
+        handler, db, _vault = setup
+        await db.create_task(
+            Task(
+                id="epic",
+                project_id="p1",
+                title="e",
+                description="e",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _simple_graph(), "parent_id": "epic"}
+        )
+        assert "error" not in result
+        assert result["provisional"] is True
+        assert result["task_ids"] == ["epic.1", "epic.2"]
+        assert (await db.get_task("epic.1")).parent_task_id == "epic"
+
+    async def test_dry_run_under_existing_parent_is_provisional_and_reserves_nothing(self, setup):
+        handler, db, _vault = setup
+        await db.create_task(
+            Task(
+                id="epic",
+                project_id="p1",
+                title="e",
+                description="e",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        result = await handler._cmd_create_task_graph(
+            {
+                "project_id": "p1",
+                "graph": _simple_graph(),
+                "parent_id": "epic",
+                "dry_run": True,
+            }
+        )
+        assert result["provisional"] is True
+        assert result["task_ids"] == ["epic.?", "epic.?"]
+        assert await db.get_task("epic.1") is None
 
 
 class TestGraphSource:
@@ -123,7 +221,8 @@ class TestGraphSource:
         assert len(result["task_ids"]) == 2
         assert result["spec"].endswith("messages-table.md")
         ids = {n["key"]: n["task_id"] for n in result["nodes"]}
-        assert await db.get_dependencies(ids["queries"]) == {ids["schema"]}
+        # Plus the ``parent-child`` edge ``set_parent`` writes for every node.
+        assert await db.get_dependencies(ids["queries"]) == {ids["schema"], result["parent_id"]}
 
     async def test_from_spec_records_spec_ref_context(self, setup):
         handler, db, _vault = setup

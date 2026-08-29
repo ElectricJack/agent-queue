@@ -26,7 +26,7 @@ from src.state_machine import (
     validate_waits_for,
 )
 from src.database.queries.hierarchy_queries import HierarchyError
-from src.task_names import generate_task_id
+from src.task_names import MAX_STRUCTURAL_DEPTH, generate_task_id
 
 from src.commands.helpers import (
     _collect_tree_task_ids,
@@ -1275,6 +1275,26 @@ class TaskCommandsMixin:
         if bool(raw_graph) == bool(spec_path):
             return {"error": "exactly one of 'graph' or 'spec_path' is required"}
 
+        parent_id = args.get("parent_id")
+        if parent_id:
+            parent = await self.db.get_task(parent_id)
+            if parent is None:
+                return {
+                    "error": f"Parent task '{parent_id}' not found",
+                    "code": "hierarchy.not_found",
+                }
+            if parent.project_id != project_id:
+                return {"error": "parent is in another project", "code": "hierarchy.cross_project"}
+            if parent.status == TaskStatus.COMPLETED:
+                return {"error": "parent is COMPLETED", "code": "hierarchy.container_closed"}
+            async with self.db._engine.begin() as conn:
+                depth = await self.db.structural_depth(parent_id, conn=conn)
+            if depth + 1 > MAX_STRUCTURAL_DEPTH:
+                return {
+                    "error": f"parent at structural depth {depth}; cap is {MAX_STRUCTURAL_DEPTH}",
+                    "code": "hierarchy.depth",
+                }
+
         vault_root = getattr(self.config, "vault_root", None)
 
         try:
@@ -1318,7 +1338,9 @@ class TaskCommandsMixin:
             }
 
         dry_run = bool(args.get("dry_run", False))
-        report = await create_graph(self, graph, project_id=project_id, dry_run=dry_run)
+        report = await create_graph(
+            self, graph, project_id=project_id, dry_run=dry_run, parent_id=parent_id
+        )
         report["project_id"] = project_id
         report["warnings"] = [w.to_dict() for w in warnings]
         if graph.spec:
