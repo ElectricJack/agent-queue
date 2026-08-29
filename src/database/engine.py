@@ -13,7 +13,7 @@ from pathlib import Path
 
 from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +43,28 @@ def create_postgres_engine(dsn: str, pool_min: int = 2, pool_max: int = 10) -> A
 def create_sqlite_engine(path: str) -> AsyncEngine:
     """Create an async SQLite engine with WAL mode and FK enforcement.
 
-    Uses ``StaticPool`` to keep a single connection open, matching the
-    previous aiosqlite single-connection behavior.
+    Pooling depends on whether the database is a real file or in-memory:
+
+    * **File databases use ``NullPool``** — every transaction checks out its
+      own ``sqlite3`` connection.  This matters for correctness, not just
+      throughput: with ``StaticPool`` the whole process shares *one* DBAPI
+      connection, so a plain ``engine.begin()`` writer running concurrently
+      with an in-flight ``BEGIN IMMEDIATE`` claim transaction (see
+      :mod:`src.database.queries.transaction_queries`) issues its ``COMMIT``
+      on the *same* raw connection.  That commits the claim's transaction
+      mid-way; the claim's own ``COMMIT`` then fails with "cannot commit -
+      no transaction is active" and can leave a half-recorded holder behind.
+      Separate connections make SQLite's own writer lock arbitrate instead,
+      with ``PRAGMA busy_timeout`` bounding the wait.
+    * **``:memory:`` databases keep ``StaticPool``** — a private in-memory
+      database vanishes when its connection closes, so a shared connection
+      is the only way the schema survives between checkouts.
     """
     url = f"sqlite+aiosqlite:///{path}"
+    is_memory = ":memory:" in path or path == "" or "mode=memory" in path
     engine = create_async_engine(
         url,
-        poolclass=StaticPool,
-        pool_pre_ping=True,
+        poolclass=StaticPool if is_memory else NullPool,
         connect_args={"check_same_thread": False},
     )
 
@@ -59,6 +73,7 @@ def create_sqlite_engine(path: str) -> AsyncEngine:
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=30000")
         cursor.close()
 
     return engine
@@ -123,6 +138,11 @@ def _run_alembic_upgrade(sync_connection) -> None:
     from alembic.config import Config
 
     _preflight_check_alembic_version(sync_connection)
+    # Close the implicit transaction those reads opened.  Alembic's
+    # ``begin_transaction()`` is a no-op while the connection is already
+    # in a transaction, which would defeat ``transaction_per_migration``
+    # (see ``run_schema_setup``).
+    sync_connection.commit()
     alembic_cfg = Config(str(_ALEMBIC_INI))
     alembic_cfg.attributes["connection"] = sync_connection
     command.upgrade(alembic_cfg, "head")
@@ -151,14 +171,26 @@ async def run_schema_setup(engine: AsyncEngine) -> None:
     For existing pre-Alembic databases (have tables but no
     ``alembic_version``), it stamps them at the baseline revision
     and then runs any newer migrations to bring the schema up to date.
+
+    Uses ``engine.connect()`` rather than ``engine.begin()`` so that
+    Alembic owns transaction boundaries: ``migrations/env.py`` configures
+    ``transaction_per_migration=True`` because revision ``b2c3d4e5f6a7``
+    opens a *second* connection to inspect the DDL revision
+    ``a1b2c3d4e5f6`` just applied.  An outer ``engine.begin()`` would
+    swallow those per-revision commits (Alembic's ``begin_transaction``
+    is a no-op inside an already-open transaction), leaving that second
+    connection unable to see the earlier revision's work.
     """
-    async with engine.begin() as conn:
+    async with engine.connect() as conn:
         # Check if this is a pre-Alembic database (has tables but no alembic_version)
         def _check_and_migrate(sync_conn):
             insp = inspect(sync_conn)
             existing_tables = set(insp.get_table_names())
             has_alembic = "alembic_version" in existing_tables
             has_data_tables = bool(existing_tables - {"alembic_version"})
+            # Reflection opened an implicit transaction — end it so Alembic
+            # can own the per-revision boundaries.
+            sync_conn.commit()
 
             if has_data_tables and not has_alembic:
                 # Existing DB from before Alembic — stamp at baseline,
@@ -171,6 +203,7 @@ async def run_schema_setup(engine: AsyncEngine) -> None:
                 _run_alembic_upgrade(sync_conn)
 
         await conn.run_sync(_check_and_migrate)
+        await conn.commit()
 
 
 async def run_startup_data_migrations(engine: AsyncEngine) -> None:

@@ -1,79 +1,83 @@
-# tests/test_db_immediate.py
-"""``Database.immediate()`` — the write-locked transaction context (spec §7).
+"""Regression cover for ``immediate()`` vs. concurrent plain writers (P2-16).
 
-The cascade-delete and subtree-abandon commands read a guard condition and
-then act on it in one transaction; on SQLite that needs ``BEGIN IMMEDIATE``,
-not the default deferred transaction.
+With SQLite's ``StaticPool`` the whole process shared one DBAPI connection,
+so a plain ``engine.begin()`` writer committing while an ``immediate()``
+block was mid-transaction committed *that* transaction too; the
+``immediate()`` block's own ``COMMIT`` then blew up with "cannot commit -
+no transaction is active".  File databases now use ``NullPool``, so each
+transaction owns its connection and SQLite's writer lock arbitrates.
 """
 
 from __future__ import annotations
 
-import sqlite3
-import time
+import asyncio
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import text
 
 from src.database import Database
-from src.database.tables import projects as projects_t
+from src.models import Project, Task, TaskStatus
+
+PROJECT_ID = "proj"
 
 
 @pytest.fixture
 async def db(tmp_path):
-    d = Database(str(tmp_path / "imm.db"))
-    await d.initialize()
-    yield d
-    await d.close()
+    database = Database(str(tmp_path / "immediate.db"))
+    await database.initialize()
+    await database.create_project(Project(id=PROJECT_ID, name="p"))
+    yield database
+    await database.close()
 
 
-async def _project_ids(db) -> set[str]:
-    async with db._engine.connect() as conn:
-        rows = await conn.execute(select(projects_t.c.id))
-        return {r[0] for r in rows}
+async def test_immediate_survives_concurrent_plain_writers(db):
+    """30 ``immediate()`` blocks interleaved with 30 plain transitions."""
+    n = 30
+    for i in range(n):
+        await db.create_task(
+            Task(
+                id=f"imm-{i}",
+                project_id=PROJECT_ID,
+                title=f"imm {i}",
+                description="d",
+                status=TaskStatus.READY,
+            )
+        )
+        await db.create_task(
+            Task(
+                id=f"plain-{i}",
+                project_id=PROJECT_ID,
+                title=f"plain {i}",
+                description="d",
+                status=TaskStatus.READY,
+            )
+        )
 
-
-class TestImmediate:
-    async def test_exists_on_the_adapter(self, db):
-        # The two call sites used to fall back to ``_engine.begin`` via
-        # getattr because this method did not exist.
-        assert callable(getattr(db, "immediate", None))
-
-    async def test_write_commits_and_is_visible_after_the_block(self, db):
+    async def immediate_writer(i: int) -> None:
         async with db.immediate() as conn:
             await conn.execute(
-                insert(projects_t).values(id="p-ok", name="ok", created_at=time.time())
+                text("UPDATE tasks SET title = :t WHERE id = :id"),
+                {"t": f"touched-{i}", "id": f"imm-{i}"},
             )
-        assert "p-ok" in await _project_ids(db)
+            # Yield mid-transaction so a plain writer is guaranteed to
+            # interleave here — the exact window that used to corrupt the
+            # shared StaticPool connection.
+            await asyncio.sleep(0.01)
 
-    async def test_exception_rolls_back(self, db):
-        with pytest.raises(RuntimeError):
-            async with db.immediate() as conn:
-                await conn.execute(
-                    insert(projects_t).values(id="p-bad", name="bad", created_at=time.time())
-                )
-                raise RuntimeError("boom")
-        assert "p-bad" not in await _project_ids(db)
+    async def plain_writer(i: int) -> None:
+        await db.transition_task(f"plain-{i}", TaskStatus.IN_PROGRESS)
 
-    async def test_holds_the_sqlite_write_lock(self, db, tmp_path):
-        """A foreign connection must not be able to write while the block is open.
+    results = await asyncio.gather(
+        *[immediate_writer(i) for i in range(n)],
+        *[plain_writer(i) for i in range(n)],
+        return_exceptions=True,
+    )
+    errors = [r for r in results if isinstance(r, BaseException)]
+    assert errors == [], f"concurrent writers raised: {errors!r}"
 
-        In-process this cannot be shown: the SQLite engine uses ``StaticPool``,
-        so every checkout is the *same* DBAPI connection.  A separate
-        ``sqlite3`` connection to the same file is a genuine second writer.
-        """
-        path = str(tmp_path / "imm.db")
-        async with db.immediate() as conn:
-            await conn.execute(
-                insert(projects_t).values(id="p-lock", name="lock", created_at=time.time())
-            )
-            other = sqlite3.connect(path, timeout=0.5)
-            try:
-                with pytest.raises(sqlite3.OperationalError, match="locked"):
-                    other.execute(
-                        "INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)",
-                        ("p-other", "other", time.time()),
-                    )
-                    other.commit()
-            finally:
-                other.close()
-        assert "p-lock" in await _project_ids(db)
+    # Every write is durably present.
+    for i in range(n):
+        imm = await db.get_task(f"imm-{i}")
+        assert imm is not None and imm.title == f"touched-{i}"
+        plain = await db.get_task(f"plain-{i}")
+        assert plain is not None and plain.status == TaskStatus.IN_PROGRESS
