@@ -22,7 +22,7 @@ Key method call hierarchy (read these to understand the full lifecycle)::
     │   └── _check_pr_status()            # Merged/closed/open detection
     ├── _resume_paused_tasks()            # Backoff timer expiry
     ├── _check_defined_tasks()            # Dependency promotion
-    ├── _check_plan_parent_completion()   # Auto-complete plan parents
+    ├── _sweep_container_completion()     # backstop only
     ├── _check_stuck_defined_tasks()      # Monitoring alerts
     ├── _check_failed_blocked_tasks()    # Periodic failed/blocked report
     ├── _schedule()                       # Proportional fair-share assignment
@@ -1319,6 +1319,7 @@ class Orchestrator(
         before the Discord bot connects.
         """
         await self.db.initialize()
+        self.register_settlement_listener()
         # aq-surface Phase S2: construct the session-token store now that
         # the DB is live.  The API layer prefers this instance so
         # revocations from the cascade sweep share the same cache as
@@ -2087,8 +2088,8 @@ class Orchestrator(
         # resulting git state. A graph parent stays IN_PROGRESS for the
         # entire graph lifetime, so the window is days, not minutes.
         #
-        # They still auto-complete correctly: _check_plan_parent_completion
-        # keys off *having subtasks*, not off is_plan_subtask.
+        # They still auto-complete correctly: settlement (spec §7) keys off
+        # the container flag, not off is_plan_subtask.
         tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
         for t in tasks:
             if t.id in skip_task_ids:
@@ -2442,10 +2443,10 @@ class Orchestrator(
             #    dependents within the same cycle.
             await self._check_defined_tasks()
 
-            # 3b. Auto-complete plan parents whose subtasks are all done.
-            #     Runs after step 1 (which may complete the last subtask via
-            #     PR merge) so plan parents can complete in the same cycle.
-            await self._check_plan_parent_completion()
+            # 3b. Backstop sweep for container settlement (spec §7). Settlement
+            #     itself is event-driven inside transition_task; this only
+            #     catches containers the event path somehow missed.
+            await self._sweep_container_completion()
 
             # 4. Monitoring: detect DEFINED tasks stuck beyond threshold.
             #    Runs after promotion so we don't false-alarm on tasks that

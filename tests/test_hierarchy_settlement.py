@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import time
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import and_, insert, select, update
 
+from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.database.tables import events, task_dependencies, tasks
 from src.models import DepType, Project, SessionRecord, Task, TaskStatus
+from src.orchestrator import Orchestrator
 
 PROJECT_ID = "proj"
 
@@ -186,3 +189,57 @@ class TestSettlement:
         await db.transition_task(kids[0], TaskStatus.COMPLETED)  # must not raise
 
         assert (await db.get_task("p")).status == TaskStatus.COMPLETED
+
+
+@pytest.fixture
+def config(tmp_path):
+    return AppConfig(
+        discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+        workspace_dir=str(tmp_path / "workspaces"),
+        database_path=str(tmp_path / "test.db"),
+        data_dir=str(tmp_path / "data"),
+    )
+
+
+@pytest.fixture
+async def orch(db, config):
+    o = Orchestrator(config)
+    o.db = db
+    o.git = MagicMock()
+    o.bus = MagicMock()
+    o.bus.emit = AsyncMock()
+    o._emit_text_notify = AsyncMock()
+    o._check_workflow_stage_completion = AsyncMock()
+    o.register_settlement_listener()
+    return o
+
+
+class TestOrchestratorSettlement:
+    async def test_listener_emits_task_completed_and_notifies(self, orch, db):
+        kids = await family(db, n=1)
+        await db.transition_task(kids[0], TaskStatus.COMPLETED)
+        emitted = [c.args[0] for c in orch.bus.emit.await_args_list]
+        assert "task.completed" in emitted
+        orch._emit_text_notify.assert_awaited()
+        orch._check_workflow_stage_completion.assert_awaited()
+
+    async def test_no_per_tick_scan_method_remains(self, orch):
+        assert not hasattr(orch, "_check_plan_parent_completion")
+
+    async def test_backstop_sweep_settles_and_warns(self, orch, db, caplog):
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "c", status=TaskStatus.COMPLETED)
+        # Bypass the event path: create the edge with a raw insert so nothing settled.
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(task_dependencies).values(
+                    task_id="c", depends_on_task_id="p", dep_type="parent-child"
+                )
+            )
+            await db.mark_container("p", conn=conn)
+            await conn.execute(update(tasks).where(tasks.c.id == "c").values(parent_task_id="p"))
+        orch._last_container_sweep = 0.0
+        with caplog.at_level("WARNING"):
+            await orch._sweep_container_completion()
+        assert (await db.get_task("p")).status == TaskStatus.COMPLETED
+        assert "backstop" in caplog.text

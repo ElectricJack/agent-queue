@@ -300,50 +300,55 @@ class MonitoringMixin:
             except Exception:
                 logger.error("conditional auto-close: failed to close %s", task_id, exc_info=True)
 
-    async def _check_plan_parent_completion(self) -> None:
-        """Auto-complete plan parent tasks when all their subtasks are done.
+    def register_settlement_listener(self) -> None:
+        """Wire ``db.transition_task``'s post-commit settlement callback to us."""
+        self.db.set_settlement_listener(self._on_containers_settled)
 
-        When a plan is approved, the parent transitions to IN_PROGRESS (not
-        COMPLETED) so its status accurately reflects that work is still in
-        progress.  This method checks all IN_PROGRESS tasks that have subtasks
-        and transitions them to COMPLETED once every subtask has finished.
+    async def _on_containers_settled(self, ids: list[str]) -> None:
+        """Post-commit fan-out for containers completed by settlement (spec §7).
 
-        Runs every cycle to catch all completion paths (agent completion,
-        PR merge, admin skip, etc.) without needing hooks in each path.
+        Everything the old per-tick scan did after the transition: bus event,
+        operator notification, vault summary, workflow-stage check.
         """
-        in_progress = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
-        for task in in_progress:
-            subtasks = await self.db.get_subtasks(task.id)
-            if not subtasks:
-                continue  # Not a plan parent — skip
-            if all(s.status == TaskStatus.COMPLETED for s in subtasks):
-                await self.db.transition_task(
-                    task.id, TaskStatus.COMPLETED, context="subtasks_completed"
-                )
-                await self.db.log_event(
-                    "plan_completed",
-                    project_id=task.project_id,
-                    task_id=task.id,
-                    payload=f"All {len(subtasks)} subtask(s) completed",
-                )
-                # Write task summary to vault
-                try:
-                    result = await self.db.get_task_result(task.id)
-                    write_task_summary(self.config.vault_root, task, result)
-                except Exception as e:
-                    logger.warning("Failed to write task summary for %s: %s", task.id, e)
-                await self._emit_text_notify(
-                    f"**Plan Completed:** `{task.id}` — {task.title} "
-                    f"(all {len(subtasks)} subtask(s) finished).",
-                    project_id=task.project_id,
-                )
-                logger.info(
-                    "Plan parent %s auto-completed: all %d subtasks finished",
-                    task.id,
-                    len(subtasks),
-                )
-                # Check if this plan-parent completion finishes a workflow stage
-                await self._check_workflow_stage_completion(task)
+        for cid in ids:
+            task = await self.db.get_task(cid)
+            if task is None:
+                continue
+            try:
+                await self._emit_task_event("task.completed", task)
+            except Exception:
+                logger.exception("task.completed emit failed for container %s", cid)
+            try:
+                result = await self.db.get_task_result(cid)
+                write_task_summary(self.config.vault_root, task, result)
+            except Exception as e:
+                logger.warning("Failed to write task summary for %s: %s", cid, e)
+            await self._emit_text_notify(
+                f"**Container completed:** `{task.id}` — {task.title} (all children finished).",
+                project_id=task.project_id,
+            )
+            await self._check_workflow_stage_completion(task)
+
+    _last_container_sweep: float = 0.0
+
+    async def _sweep_container_completion(self) -> None:
+        """Low-cadence backstop for the event-driven settlement (spec §7)."""
+        interval = self.config.work_graph.container_sweep_interval_seconds
+        if interval <= 0:
+            return
+        now = time.time()
+        if now - self._last_container_sweep < interval:
+            return
+        self._last_container_sweep = now
+        candidates = await self.db.settle_candidates()
+        if not candidates:
+            return
+        async with self.db._engine.begin() as conn:
+            result = await self.db.settle_containers(set(candidates), conn=conn)
+        await self.db.log_blocked_flips(result.flipped)
+        await self.db._notify_settled(result.settled)
+        for cid in result.settled:
+            logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
 
     async def _check_stuck_defined_tasks(self) -> None:
         """Monitoring: detect DEFINED tasks stuck waiting for dependencies.

@@ -385,6 +385,42 @@ class HierarchyQueryMixin:
             result.flipped |= res.flipped
         return result
 
+    async def settle_candidates(self) -> list[str]:
+        """Every container the §7 predicate would settle right now (backstop)."""
+        child = tasks.alias("child")
+        stmt = select(tasks.c.id).where(
+            and_(
+                tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                exists(
+                    select(literal(1)).where(
+                        and_(
+                            task_metadata.c.task_id == tasks.c.id,
+                            task_metadata.c.key == CONTAINER_KEY,
+                            task_metadata.c.value == CONTAINER_VALUE,
+                        )
+                    )
+                ),
+                ~exists(
+                    select(literal(1)).where(
+                        and_(
+                            sessions.c.task_id == tasks.c.id,
+                            sessions.c.state.in_(LIVE_SESSION_STATES),
+                        )
+                    )
+                ),
+                ~exists(
+                    select(literal(1)).where(
+                        and_(
+                            child.c.parent_task_id == tasks.c.id,
+                            child.c.status != TaskStatus.COMPLETED.value,
+                        )
+                    )
+                ),
+            )
+        )
+        async with self._engine.begin() as conn:
+            return [r[0] for r in (await conn.execute(stmt)).fetchall()]
+
     # -- creation -------------------------------------------------------
 
     async def create_task_under(self, task: Task, parent_id: str) -> tuple[str, bool]:

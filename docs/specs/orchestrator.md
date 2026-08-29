@@ -268,12 +268,13 @@ Tasks are promoted on the same cycle they become eligible.  There is no one-cycl
 (the re-check at the end of plan generation, step 4 of task execution, explicitly calls
 `_check_defined_tasks` again for freshly created subtasks).
 
-### `_check_plan_parent_completion`
+### Container settlement
 
-Runs every cycle after `_check_defined_tasks`.  Scans all `IN_PROGRESS` tasks
-that have subtasks (plan parents).  When all subtasks have reached `COMPLETED`,
-the parent is auto-transitioned to `COMPLETED` with context `"subtasks_completed"`.
-This ensures plan tasks only show as complete when all their work is truly done.
+Event-driven (spec §7, `hierarchy_queries.py`): `transition_task` settles a
+container in the same transaction as the last child's completion — no
+per-cycle scan is involved.  `_sweep_container_completion` runs every cycle
+after `_check_defined_tasks` purely as a backstop, in case the event path
+somehow missed a container; it should normally find nothing.
 
 ---
 
@@ -281,7 +282,7 @@ This ensures plan tasks only show as complete when all their work is truly done.
 
 ### `_check_stuck_defined_tasks`
 
-Runs every cycle after `_check_plan_parent_completion`.
+Runs every cycle after the container settlement backstop sweep.
 
 **Configuration.**  `config.monitoring.stuck_task_threshold_seconds` controls the
 threshold.  A value of `<= 0` disables this feature entirely.

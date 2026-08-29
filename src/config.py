@@ -1263,16 +1263,24 @@ class WorkGraphConfig:
         they rot in the queue forever.  ``conditional-blocks`` edges only
         exist where someone explicitly created one, so this is inert on a
         graph that uses none.
+    ``container_sweep_interval_seconds``
+        Backstop cadence for container settlement (swarm-work-model §7);
+        ``0`` disables.
     """
 
     blocked_state_authoritative: bool = False
     gate_sweep_interval_seconds: int = 30
     conditional_autoclose: bool = True
+    container_sweep_interval_seconds: int = 60
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if self.gate_sweep_interval_seconds < 0:
             errors.append(ConfigError("work_graph", "gate_sweep_interval_seconds", "must be >= 0"))
+        if self.container_sweep_interval_seconds < 0:
+            errors.append(
+                ConfigError("work_graph", "container_sweep_interval_seconds", "must be >= 0")
+            )
         return errors
 
 
@@ -2372,6 +2380,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             blocked_state_authoritative=bool(wg.get("blocked_state_authoritative", False)),
             gate_sweep_interval_seconds=int(wg.get("gate_sweep_interval_seconds", 30)),
             conditional_autoclose=bool(wg.get("conditional_autoclose", True)),
+            container_sweep_interval_seconds=int(wg.get("container_sweep_interval_seconds", 60)),
         )
 
     if "agent_profiles" in raw:

@@ -314,8 +314,9 @@ class TestRecoverStaleState:
         assert task.assigned_agent_id is None
 
     async def test_container_task_still_auto_completes(self, orch):
-        """`_check_plan_parent_completion` keys off *having subtasks*, so the
-        parent left IN_PROGRESS is not stranded."""
+        """Event-driven settlement (spec §7) keys off the container flag, so
+        the parent left IN_PROGRESS by recovery is not stranded — it settles
+        the instant its last child transitions to COMPLETED."""
         await orch.db.create_project(Project(id="p-1", name="alpha"))
         await orch.db.create_task(
             Task(
@@ -332,13 +333,13 @@ class TestRecoverStaleState:
                 project_id="p-1",
                 title="Child",
                 description="Child",
-                status=TaskStatus.COMPLETED,
-                parent_task_id="parent-1",
+                status=TaskStatus.READY,
             )
         )
+        await orch.db.add_dependency("child-1", "parent-1", "parent-child")
 
         await orch._recover_stale_state()
-        await orch._check_plan_parent_completion()
+        await orch.db.transition_task("child-1", TaskStatus.COMPLETED, context="test")
 
         assert (await orch.db.get_task("parent-1")).status == TaskStatus.COMPLETED
 
@@ -766,7 +767,9 @@ class TestPlanApprovalBlocking:
         assert s2.status == TaskStatus.DEFINED, "Sub 2 should stay DEFINED (deps not met)"
 
     async def test_plan_parent_auto_completes_when_subtasks_done(self, orch_with_workspace):
-        """Plan parent transitions to COMPLETED when all subtasks finish."""
+        """Plan parent settles to COMPLETED the instant its last subtask
+        transitions to COMPLETED (event-driven settlement, spec §7) — no
+        per-cycle scan involved."""
         orch, workspace = orch_with_workspace
 
         await _create_project_with_workspace(orch.db, workspace_path=str(workspace))
@@ -781,14 +784,14 @@ class TestPlanApprovalBlocking:
         )
         await orch.db.create_task(parent)
 
-        # Create subtasks
+        # Create subtasks, linked as real parent-child edges so the container
+        # flag is set and settlement can see them.
         sub1 = Task(
             id="t-sub-1",
             project_id="p-1",
             title="Sub 1",
             description="First subtask",
-            status=TaskStatus.COMPLETED,
-            parent_task_id="t-plan",
+            status=TaskStatus.READY,
             is_plan_subtask=True,
         )
         sub2 = Task(
@@ -796,24 +799,22 @@ class TestPlanApprovalBlocking:
             project_id="p-1",
             title="Sub 2",
             description="Second subtask",
-            status=TaskStatus.IN_PROGRESS,
-            parent_task_id="t-plan",
+            status=TaskStatus.READY,
             is_plan_subtask=True,
         )
         await orch.db.create_task(sub1)
         await orch.db.create_task(sub2)
+        await orch.db.add_dependency("t-sub-1", "t-plan", "parent-child")
+        await orch.db.add_dependency("t-sub-2", "t-plan", "parent-child")
 
-        # Not all subtasks done — parent should stay IN_PROGRESS
-        await orch._check_plan_parent_completion()
+        # Complete the first subtask — parent should stay IN_PROGRESS.
+        await orch.db.transition_task("t-sub-1", TaskStatus.COMPLETED, context="test")
         plan = await orch.db.get_task("t-plan")
         assert plan.status == TaskStatus.IN_PROGRESS, "Parent should stay IN_PROGRESS"
 
-        # Complete the last subtask
-        await orch.db.transition_task("t-sub-2", TaskStatus.COMPLETED, context="test")
-
-        # Now all subtasks are done — parent should auto-complete
+        # Complete the last subtask — parent auto-completes in the same call.
         orch._emit_text_notify = AsyncMock()
-        await orch._check_plan_parent_completion()
+        await orch.db.transition_task("t-sub-2", TaskStatus.COMPLETED, context="test")
         plan = await orch.db.get_task("t-plan")
         assert plan.status == TaskStatus.COMPLETED, "Parent should auto-complete"
 

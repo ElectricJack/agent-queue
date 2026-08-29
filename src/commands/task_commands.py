@@ -2578,7 +2578,7 @@ class TaskCommandsMixin:
 
         # Transition to IN_PROGRESS — the plan is approved and subtasks are
         # active.  The parent will auto-complete when all subtasks finish
-        # (see _check_plan_parent_completion in orchestrator.py).
+        # via event-driven container settlement (spec §7, hierarchy_queries.py).
         # Plan subtask dependency checking treats IN_PROGRESS plan parents
         # as satisfying the dependency.
         await self.db.transition_task(
