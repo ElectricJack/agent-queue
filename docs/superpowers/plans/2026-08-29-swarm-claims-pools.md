@@ -3346,3 +3346,65 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ## Execution handoff
 
 Plan complete and saved to `docs/superpowers/plans/2026-08-29-swarm-claims-pools.md`. Per the standing instruction, execution proceeds with **superpowers:subagent-driven-development** on branch `swarm/hierarchy` in this worktree: fresh implementer per task, task review after each, one whole-branch review at the end, then Plan 3.
+
+---
+
+### Task 11: Claim-path statement trimming (performance, spec §15)
+
+Added by controller ruling P2-15 after Task 9 measured the whole `task_claim` command at 38 statements / 82–127 ms p99 against the ≤14 / ≤50 ms budget. The Task 9 review traced every statement; this task removes the trimmable ones and tightens the budgets.
+
+**Files:**
+- Modify: `src/commands/claim_commands.py` (`_claimed_response`, `_cmd_task_claim` pre-reads, `_prepare_and_activate`)
+- Modify: `src/database/queries/claim_queries.py` (`take_claim_slot`, `take_task`, `record_holder`, `activate_claim`, `_release_claim_on`, `_after_release`)
+- Modify: `src/database/queries/task_queries.py` (`_apply_transition(..., projection_stable: bool = False)`)
+- Modify: `src/database/queries/hierarchy_queries.py` (`_upsert_meta_many(task_id, items, *, conn)` or equivalent batched upsert)
+- Modify: `tests/perf/test_claim_statements.py` (tightened budgets), `tests/test_claim_commands.py` (response shape), `tests/test_claim_queries.py`
+- Test: the perf file's budgets are the acceptance test
+
+**Interfaces:**
+- Consumes: the Task 9 review's statement trace (reproduced below), `count_statements`, `seed_scale(profile_id=)`.
+- Produces:
+  - `_apply_transition(..., projection_stable=False)`: when `True`, the caller asserts the write cannot change any task's `is_blocked` (READY→IN_PROGRESS on claim; IN_PROGRESS→READY on release) and the method skips `recompute_blocked` and `_note_frontier_entry` for dependents — but STILL records the task's own frontier entry when its post-state is READY∧unblocked (release path) using the one-select `_note_frontier_entry(conn, {task_id}, ...)`. A guard: if `new_status` is terminal (COMPLETED/FAILED/…) `projection_stable` is ignored (settlement and dependent unblocking must run).
+  - `take_claim_slot` uses `UPDATE … RETURNING` on both dialects for the happy path (SQLite ≥ 3.35 — check `sqlite3.sqlite_version_info` at import and fall back to the re-read when older); the re-read only on `rowcount == 0`.
+  - `take_task` merges the epoch bump into the status write: one `UPDATE tasks SET claim_epoch = claim_epoch + 1, status = 'IN_PROGRESS', assigned_agent_id = :a, updated_at = :t WHERE id = :id AND status = 'READY' AND is_blocked = 0 AND assigned_agent_id IS NULL RETURNING *` executed THROUGH `_apply_transition` (extend `_apply_transition` with `extra_where` / `extra_values` and a `returning=True` option so the write stays in the single sanctioned path; the returned row builds the `Task`).
+  - `record_holder` writes both metadata keys in one multi-row upsert; the workspace UPDATE uses `RETURNING` so `_prepare_and_activate` no longer calls `get_workspace_for_agent`.
+  - `activate_claim` uses `RETURNING` so the session block is built without a re-read.
+  - `_claimed_response` returns `{"task": <task row as dict incl. claim_epoch, labels if already loaded>}` — NOT the full `task_show` payload; document in the tool definition that `aq task show` gives the full view. Update `tests/test_claim_commands.py` assertions that relied on `task_show` keys.
+  - `_cmd_task_claim` skips `max_event_id` when `wait == 0`; reads session+profile in one join (`get_session_with_profile(session_id)` on `SessionQueryMixin`).
+  - `_release_claim_on` uses `projection_stable=True`, folds the `claim_epoch` read into the transition's `RETURNING`, and `_after_release` does not re-read the task (the `(id, project_id, title)` triple comes from the frontier select).
+  - Budgets (asserted): `task_claim` whole command ≤ 20 SQLite / ≤ 18 Postgres; claim transaction only (BEGIN..COMMIT) ≤ 9 SQLite / ≤ 8 Postgres; `no_ready_work` ≤ 8; `release_claim` ≤ 10 SQLite / ≤ 9 Postgres; p99 ≤ 60 ms at 5,000 tasks (`AQ_PERF_STRICT=1`). Measured numbers recorded in the docstrings.
+
+**The trace (SQLite, before this task — 38 statements):** (a) session read, profile read, project read, `max(events.id)`; (b) BEGIN, slot CAS, session re-read, work query, epoch CAS, transition pre-read, status UPDATE, `recompute_blocked` ×5 (two dependency selects, before-image, projection UPDATE, after-image), frontier select, task re-read, session UPDATE, agent UPDATE, workspace UPDATE, meta upsert ×2, COMMIT; (c) workspace read, BEGIN/activate UPDATE/COMMIT, session re-read, `task_show` ×9 (task, deps ×2, dep rows ×2, progress, context, labels, children). REQUIRED: a1, a3, b1–b2, b4, b5+b7 (merged), b18–b21, b22 (one), b24, c2–c4. Everything else is trimmable.
+
+- [ ] **Step 1: Tighten the budgets first (they fail)**
+
+Set the perf assertions to the budgets above. Run `pytest tests/perf/test_claim_statements.py -v` → the claim, `no_ready_work` and `release_claim` budgets FAIL with the current counts (38/10/17). Add a transaction-only measurement: `count_statements` around `_attempt_claim` only (stub `_prepare_and_activate`), asserted separately.
+
+- [ ] **Step 2: `projection_stable` in `_apply_transition`**
+
+Add the parameter; when True and `new_status` is non-terminal, skip `recompute_blocked` and the dependents' frontier bookkeeping; keep the task's own `_note_frontier_entry` when post-state is READY. Add a unit test in `tests/test_task_ready_event.py`: releasing IN_PROGRESS→READY with `projection_stable=True` still records the task's own `task.ready` (`released`) and runs no dependency statements (`count_statements`).
+
+- [ ] **Step 3: Merge and RETURNING**
+
+`take_task` → single fenced UPDATE with RETURNING through `_apply_transition(extra_where=..., extra_values=..., returning=True)`; `take_claim_slot`, `record_holder` (workspace), `activate_claim` → RETURNING with the SQLite version fallback; batched meta upsert. Keep every existing `tests/test_claim_queries.py` assertion green.
+
+- [ ] **Step 4: Trim the command**
+
+`_claimed_response` → task row; join session+profile; skip `max_event_id` when `wait == 0`; `_prepare_and_activate` uses the workspace row returned by `record_holder` (pass it out via the transaction's return) and the session row returned by `activate_claim`. Update the `task_claim` tool-definition description and `tests/test_claim_commands.py`.
+
+- [ ] **Step 5: Release path**
+
+`_release_claim_on` with `projection_stable=True`, epoch via RETURNING, `_after_release` without the task re-read.
+
+- [ ] **Step 6: Run tests**
+
+`pytest tests/perf -v` (budgets green; paste measured counts into docstrings), then `pytest tests/test_claim_queries.py tests/test_claim_commands.py tests/test_task_ready_event.py tests/test_swarm_integration.py tests/test_hierarchy_settlement.py -n auto`, then the full suite.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/commands/claim_commands.py src/database/queries/claim_queries.py src/database/queries/task_queries.py src/database/queries/hierarchy_queries.py src/database/queries/session_queries.py src/database/base.py src/tools/definitions.py tests/perf/test_claim_statements.py tests/test_claim_commands.py tests/test_claim_queries.py tests/test_task_ready_event.py
+git commit -m "perf(claims): trim the claim path to budget — projection_stable transitions, RETURNING, merged epoch bump, task-row response
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
