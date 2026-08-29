@@ -1901,7 +1901,11 @@ class TaskCommandsMixin:
             error = await self.orchestrator.stop_task(args["task_id"])
             if error:
                 return {"error": f"Could not stop task before deleting: {error}"}
-        await self.db.delete_task(args["task_id"])
+        cascade = bool(args.get("cascade", False))
+        try:
+            await self.db.delete_task(args["task_id"], cascade=cascade)
+        except HierarchyError as exc:
+            return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
         return {"deleted": args["task_id"], "title": task.title}
 
     # -- Archive commands -----------------------------------------------------
@@ -1949,7 +1953,13 @@ class TaskCommandsMixin:
             deps = await self.db.get_dependencies(task_id)
             await self._write_archive_note(task, result, deps)
 
-            success = await self.db.archive_task(task_id)
+            try:
+                success = await self.db.archive_task(task_id)
+            except HierarchyError as exc:
+                return {
+                    "error": f"hierarchy.{exc.code}: {exc.detail}",
+                    "code": f"hierarchy.{exc.code}",
+                }
             if not success:
                 return {"error": f"Failed to archive task '{task_id}'"}
 

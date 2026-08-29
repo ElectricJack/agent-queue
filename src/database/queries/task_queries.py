@@ -110,6 +110,14 @@ class TaskQueryMixin:
                 return None
             return self._row_to_task(row)
 
+    async def _get_task_conn(self, task_id: str, *, conn) -> Task | None:
+        """Fetch a single task by ID on a caller-supplied connection."""
+        result = await conn.execute(select(tasks).where(tasks.c.id == task_id))
+        row = result.mappings().fetchone()
+        if not row:
+            return None
+        return self._row_to_task(row)
+
     async def list_tasks(
         self,
         project_id: str | None = None,
@@ -453,12 +461,36 @@ class TaskQueryMixin:
             if own:
                 await ctx.__aexit__(None, None, None)
 
-    async def delete_task(self, task_id: str) -> None:
-        """Delete a task and all related child rows.
+    async def delete_task(self, task_id: str, *, cascade: bool = False) -> None:
+        """Delete a task; with *cascade*, its whole subtree (spec §7).
 
-        The former dependents (and any fan-in waiters that reach this task
-        through a container) are snapshotted before the edges disappear and
-        recomputed in the same transaction.
+        Refuses a container with children unless *cascade*.  One transaction:
+        dependents are snapshotted while the edges exist, the subtree is
+        removed deepest-first, the former container is settled, and the
+        projection is recomputed.
+        """
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        async with self._engine.begin() as conn:
+            parent = (
+                await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
+            ).scalar()
+            ids = await self.subtree_ids(task_id, conn=conn)
+            if len(ids) > 1 and not cascade:
+                raise HierarchyError("has_children", f"{task_id} has {len(ids) - 1} descendant(s)")
+            affected = await self._collect_affected(set(ids), conn)
+            affected -= set(ids)
+            if parent:
+                affected.add(parent)
+            for tid in reversed(ids):  # deepest first (subtree_ids is shallow→deep)
+                await self._delete_one(tid, conn=conn)
+            flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
+            settle_result = await self.settle_containers({parent} if parent else set(), conn=conn)
+        await self.log_blocked_flips(flipped | settle_result.flipped)
+        await self._notify_settled(settle_result.settled)
+
+    async def _delete_one(self, task_id: str, *, conn) -> None:
+        """Delete a single task row and its related child rows.
 
         Gates the task was waiting on are unhooked here too, and any gate
         left with no waiters at all is marked ``expired``. Without this the
@@ -467,83 +499,74 @@ class TaskQueryMixin:
         — which for a human gate means live Approve/Deny buttons in Discord
         for a task that no longer exists.
         """
-        async with self._engine.begin() as conn:
-            # Snapshot everything whose projection this deletion can change,
-            # *while the edges still exist*.
-            affected = await self._collect_affected({task_id}, conn)
-            affected.discard(task_id)
+        await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
+        # token_ledger rows survive task deletion: the tokens were really
+        # spent against the project's budget, so dropping them would
+        # understate cost.  `delete_project` remains the bulk escape hatch
+        # for actually purging a project's ledger.
+        await conn.execute(
+            delete(task_dependencies).where(
+                (task_dependencies.c.task_id == task_id)
+                | (task_dependencies.c.depends_on_task_id == task_id)
+            )
+        )
+        await conn.execute(delete(task_criteria).where(task_criteria.c.task_id == task_id))
+        await conn.execute(delete(task_context).where(task_context.c.task_id == task_id))
+        await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
+        await conn.execute(delete(task_labels).where(task_labels.c.task_id == task_id))
+        await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
 
-            await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
-            # token_ledger rows survive task deletion: the tokens were really
-            # spent against the project's budget, so dropping them would
-            # understate cost.  `delete_project` remains the bulk escape hatch
-            # for actually purging a project's ledger.
-            await conn.execute(
-                delete(task_dependencies).where(
-                    (task_dependencies.c.task_id == task_id)
-                    | (task_dependencies.c.depends_on_task_id == task_id)
+        # Gates: drop this task's waiter rows, then expire any gate that
+        # is left with nothing waiting on it.  Collect the candidates
+        # first — after the delete there is no way back to them.
+        gate_ids = {
+            r[0]
+            for r in (
+                await conn.execute(
+                    select(task_gates.c.gate_id).where(task_gates.c.task_id == task_id)
                 )
-            )
-            await conn.execute(delete(task_criteria).where(task_criteria.c.task_id == task_id))
-            await conn.execute(delete(task_context).where(task_context.c.task_id == task_id))
-            await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
-            await conn.execute(delete(task_labels).where(task_labels.c.task_id == task_id))
-            await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
-
-            # Gates: drop this task's waiter rows, then expire any gate that
-            # is left with nothing waiting on it.  Collect the candidates
-            # first — after the delete there is no way back to them.
-            gate_ids = {
-                r[0]
-                for r in (
-                    await conn.execute(
-                        select(task_gates.c.gate_id).where(task_gates.c.task_id == task_id)
-                    )
-                ).fetchall()
-            }
-            await conn.execute(delete(task_gates).where(task_gates.c.task_id == task_id))
-            for gate_id in gate_ids:
-                still_waiting = (
-                    await conn.execute(
-                        select(task_gates.c.task_id).where(task_gates.c.gate_id == gate_id).limit(1)
-                    )
-                ).fetchone()
-                if still_waiting is None:
-                    await conn.execute(
-                        update(gates)
-                        .where(and_(gates.c.id == gate_id, gates.c.status == "open"))
-                        .values(status="expired", resolution="last waiter task deleted")
-                    )
-
-            # Remaining FK holders. Without these the delete fails outright
-            # with a ForeignKeyViolationError naming one table at a time, so
-            # each is only discovered by hitting it.
-            #
-            # ``sessions`` is *nulled*, not deleted: a session row is the
-            # historical record of an agent run — how long it lived, what it
-            # cost — and that stays true after the task is gone. The other two
-            # describe the task's claim on resources and mean nothing without
-            # it, so the requirement rows go and the workspace lock is
-            # released rather than left pointing at a task that no longer
-            # exists.
-            await conn.execute(
-                update(sessions).where(sessions.c.task_id == task_id).values(task_id=None)
-            )
-            await conn.execute(
-                delete(task_workspace_requirements).where(
-                    task_workspace_requirements.c.task_id == task_id
+            ).fetchall()
+        }
+        await conn.execute(delete(task_gates).where(task_gates.c.task_id == task_id))
+        for gate_id in gate_ids:
+            still_waiting = (
+                await conn.execute(
+                    select(task_gates.c.task_id).where(task_gates.c.gate_id == gate_id).limit(1)
                 )
-            )
-            await conn.execute(
-                update(workspaces)
-                .where(workspaces.c.locked_by_task_id == task_id)
-                .values(locked_by_task_id=None, locked_by_agent_id=None)
-            )
+            ).fetchone()
+            if still_waiting is None:
+                await conn.execute(
+                    update(gates)
+                    .where(and_(gates.c.id == gate_id, gates.c.status == "open"))
+                    .values(status="expired", resolution="last waiter task deleted")
+                )
 
-            await conn.execute(delete(tasks).where(tasks.c.id == task_id))
+        # Remaining FK holders. Without these the delete fails outright
+        # with a ForeignKeyViolationError naming one table at a time, so
+        # each is only discovered by hitting it.
+        #
+        # ``sessions`` is *nulled*, not deleted: a session row is the
+        # historical record of an agent run — how long it lived, what it
+        # cost — and that stays true after the task is gone. The other two
+        # describe the task's claim on resources and mean nothing without
+        # it, so the requirement rows go and the workspace lock is
+        # released rather than left pointing at a task that no longer
+        # exists.
+        await conn.execute(
+            update(sessions).where(sessions.c.task_id == task_id).values(task_id=None)
+        )
+        await conn.execute(
+            delete(task_workspace_requirements).where(
+                task_workspace_requirements.c.task_id == task_id
+            )
+        )
+        await conn.execute(
+            update(workspaces)
+            .where(workspaces.c.locked_by_task_id == task_id)
+            .values(locked_by_task_id=None, locked_by_agent_id=None)
+        )
 
-            flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
-        await self.log_blocked_flips(flipped)
+        await conn.execute(delete(tasks).where(tasks.c.id == task_id))
 
     async def get_task_updated_at(self, task_id: str) -> float | None:
         """Return the ``updated_at`` timestamp for a task, or *None*."""

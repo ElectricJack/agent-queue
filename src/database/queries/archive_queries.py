@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import and_, delete, exists, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -24,121 +25,135 @@ from src.database.tables import (
 )
 from src.models import TaskStatus
 
+logger = logging.getLogger(__name__)
+
 
 class ArchiveQueryMixin:
     """Query mixin for archived task operations.  Expects ``self._engine``."""
 
     async def archive_task(self, task_id: str) -> bool:
-        """Move a task from ``tasks`` into ``archived_tasks``.
+        """Archive *task_id* and its whole subtree atomically (spec §7).
 
-        Returns *True* if the task was archived, *False* if not found.
+        Refuses unless every descendant is terminal.  Deepest first, root
+        last, so an archived child never points at a live parent.
         """
-        task = await self.get_task(task_id)
-        if task is None:
-            return False
+        from src.database.queries.hierarchy_queries import HierarchyError
 
-        now = time.time()
+        terminal = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.BLOCKED.value)
         async with self._engine.begin() as conn:
-            # Insert into archive (skip if already archived).
-            # on_conflict_do_nothing requires dialect-specific insert.
-            _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
-            await conn.execute(
-                _insert(archived_tasks)
-                .on_conflict_do_nothing()
-                .values(
-                    id=task.id,
-                    project_id=task.project_id,
-                    parent_task_id=task.parent_task_id,
-                    repo_id=task.repo_id,
-                    title=task.title,
-                    description=task.description,
-                    priority=task.priority,
-                    status=task.status.value,
-                    verification_type=task.verification_type.value,
-                    retry_count=task.retry_count,
-                    max_retries=task.max_retries,
-                    assigned_agent_id=task.assigned_agent_id,
-                    branch_name=task.branch_name,
-                    resume_after=task.resume_after,
-                    requires_approval=int(task.requires_approval),
-                    pr_url=task.pr_url,
-                    plan_source=task.plan_source,
-                    is_plan_subtask=int(task.is_plan_subtask),
-                    task_type=task.task_type.value if task.task_type else None,
-                    profile_id=task.profile_id,
-                    preferred_workspace_id=task.preferred_workspace_id,
-                    attachments=json.dumps(task.attachments) if task.attachments else "[]",
-                    auto_approve_plan=int(task.auto_approve_plan),
-                    skip_verification=int(task.skip_verification),
-                    workflow_id=task.workflow_id,
-                    affinity_agent_id=task.affinity_agent_id,
-                    affinity_reason=task.affinity_reason,
-                    workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
-                    # Carry the blocked-state projection across so archiving
-                    # really is lossless (work-graph §2.2).
-                    is_blocked=int(task.is_blocked),
-                    created_by_kind=task.created_by_kind,
-                    created_by_id=task.created_by_id,
-                    created_at=0.0,
-                    updated_at=0.0,
-                    archived_at=now,
-                )
-            )
-
-            # Copy original timestamps
-            result = await conn.execute(
-                select(tasks.c.created_at, tasks.c.updated_at).where(tasks.c.id == task_id)
-            )
-            row = result.fetchone()
-            if row:
-                await conn.execute(
-                    update(archived_tasks)
-                    .where(archived_tasks.c.id == task_id)
-                    .values(created_at=row[0], updated_at=row[1])
-                )
-
-            # Snapshot everything whose blocked-state this archive can
-            # change, while the edges that identify it still exist.
-            affected = await self._collect_affected({task_id}, conn)
-            affected.discard(task_id)
-
-            # Clean up child rows, then remove from active table
-            await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
-            # NOTE: token_ledger rows are deliberately NOT deleted here.
-            # Archiving is the normal end-of-life for a completed task, so
-            # cascading into the ledger erased the spend for every task that
-            # ever finished — which is why `token_audit` reported zero.  The
-            # ledger keeps the task_id as a best-effort attribution string.
-            await conn.execute(
-                delete(task_dependencies).where(
-                    (task_dependencies.c.task_id == task_id)
-                    | (task_dependencies.c.depends_on_task_id == task_id)
-                )
-            )
-            await conn.execute(delete(task_criteria).where(task_criteria.c.task_id == task_id))
-            await conn.execute(delete(task_context).where(task_context.c.task_id == task_id))
-            await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
-            await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
-            await conn.execute(
-                update(tasks).where(tasks.c.parent_task_id == task_id).values(parent_task_id=None)
-            )
-            await conn.execute(
-                update(agents)
-                .where(agents.c.current_task_id == task_id)
-                .values(current_task_id=None)
-            )
-            await conn.execute(
-                update(workspaces)
-                .where(workspaces.c.locked_by_task_id == task_id)
-                .values(locked_by_task_id=None, locked_at=None)
-            )
-            await conn.execute(delete(task_labels).where(task_labels.c.task_id == task_id))
-            await conn.execute(delete(tasks).where(tasks.c.id == task_id))
-
+            ids = await self.subtree_ids(task_id, conn=conn)
+            if not ids:
+                return False
+            rows = (
+                await conn.execute(select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(ids)))
+            ).fetchall()
+            open_ids = [r[0] for r in rows if r[1] not in terminal and r[0] != task_id]
+            if open_ids:
+                raise HierarchyError("open_descendants", ", ".join(sorted(open_ids)))
+            parent = (
+                await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
+            ).scalar()
+            affected = await self._collect_affected(set(ids), conn)
+            affected -= set(ids)
+            for tid in reversed(ids):
+                task = await self._get_task_conn(tid, conn=conn)
+                if task is not None:
+                    await self._archive_one(task, conn=conn)
             flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
-
-        await self.log_blocked_flips(flipped)
+            settle_result = await self.settle_containers({parent} if parent else set(), conn=conn)
+        await self.log_blocked_flips(flipped | settle_result.flipped)
+        await self._notify_settled(settle_result.settled)
         return True
+
+    async def _archive_one(self, task, *, conn) -> None:
+        """Move a single task row from ``tasks`` into ``archived_tasks``."""
+        task_id = task.id
+        now = time.time()
+        # Insert into archive (skip if already archived).
+        # on_conflict_do_nothing requires dialect-specific insert.
+        _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
+        await conn.execute(
+            _insert(archived_tasks)
+            .on_conflict_do_nothing()
+            .values(
+                id=task.id,
+                project_id=task.project_id,
+                parent_task_id=task.parent_task_id,
+                repo_id=task.repo_id,
+                title=task.title,
+                description=task.description,
+                priority=task.priority,
+                status=task.status.value,
+                verification_type=task.verification_type.value,
+                retry_count=task.retry_count,
+                max_retries=task.max_retries,
+                assigned_agent_id=task.assigned_agent_id,
+                branch_name=task.branch_name,
+                resume_after=task.resume_after,
+                requires_approval=int(task.requires_approval),
+                pr_url=task.pr_url,
+                plan_source=task.plan_source,
+                is_plan_subtask=int(task.is_plan_subtask),
+                task_type=task.task_type.value if task.task_type else None,
+                profile_id=task.profile_id,
+                preferred_workspace_id=task.preferred_workspace_id,
+                attachments=json.dumps(task.attachments) if task.attachments else "[]",
+                auto_approve_plan=int(task.auto_approve_plan),
+                skip_verification=int(task.skip_verification),
+                workflow_id=task.workflow_id,
+                affinity_agent_id=task.affinity_agent_id,
+                affinity_reason=task.affinity_reason,
+                workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
+                # Carry the blocked-state projection across so archiving
+                # really is lossless (work-graph §2.2).
+                is_blocked=int(task.is_blocked),
+                created_by_kind=task.created_by_kind,
+                created_by_id=task.created_by_id,
+                created_at=0.0,
+                updated_at=0.0,
+                archived_at=now,
+            )
+        )
+
+        # Copy original timestamps
+        result = await conn.execute(
+            select(tasks.c.created_at, tasks.c.updated_at).where(tasks.c.id == task_id)
+        )
+        row = result.fetchone()
+        if row:
+            await conn.execute(
+                update(archived_tasks)
+                .where(archived_tasks.c.id == task_id)
+                .values(created_at=row[0], updated_at=row[1])
+            )
+
+        # Clean up child rows, then remove from active table
+        await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
+        # NOTE: token_ledger rows are deliberately NOT deleted here.
+        # Archiving is the normal end-of-life for a completed task, so
+        # cascading into the ledger erased the spend for every task that
+        # ever finished — which is why `token_audit` reported zero.  The
+        # ledger keeps the task_id as a best-effort attribution string.
+        await conn.execute(
+            delete(task_dependencies).where(
+                (task_dependencies.c.task_id == task_id)
+                | (task_dependencies.c.depends_on_task_id == task_id)
+            )
+        )
+        await conn.execute(delete(task_criteria).where(task_criteria.c.task_id == task_id))
+        await conn.execute(delete(task_context).where(task_context.c.task_id == task_id))
+        await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
+        await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
+        await conn.execute(
+            update(agents).where(agents.c.current_task_id == task_id).values(current_task_id=None)
+        )
+        await conn.execute(
+            update(workspaces)
+            .where(workspaces.c.locked_by_task_id == task_id)
+            .values(locked_by_task_id=None, locked_at=None)
+        )
+        await conn.execute(delete(task_labels).where(task_labels.c.task_id == task_id))
+        await conn.execute(delete(tasks).where(tasks.c.id == task_id))
 
     async def archive_completed_tasks(
         self,
@@ -162,26 +177,56 @@ class ArchiveQueryMixin:
         statuses: list[str],
         older_than_seconds: float,
     ) -> list[str]:
-        """Archive terminal tasks older than the threshold. Returns archived IDs."""
+        """Archive terminal tasks older than the threshold. Returns archived IDs.
+
+        Selects only subtree roots of terminal subtrees — terminal, older
+        than cutoff, ``parent_task_id IS NULL``, and with no non-terminal
+        direct child. Children are archived by the root's own subtree
+        archive, not selected individually. Open grandchildren are caught
+        by ``archive_task``'s own subtree check, which raises; those roots
+        are logged and skipped.
+        """
+        from src.database.queries.hierarchy_queries import HierarchyError
+
         if not statuses:
             return []
 
         cutoff = time.time() - older_than_seconds
-        async with self._engine.begin() as conn:
-            result = await conn.execute(
-                select(tasks.c.id).where(
-                    and_(
-                        tasks.c.status.in_(statuses),
-                        tasks.c.updated_at <= cutoff,
+        child = tasks.alias("child")
+        stmt = select(tasks.c.id).where(
+            and_(
+                tasks.c.status.in_(statuses),
+                tasks.c.updated_at <= cutoff,
+                tasks.c.parent_task_id.is_(None),
+                ~exists(
+                    select(literal(1)).where(
+                        and_(
+                            child.c.parent_task_id == tasks.c.id,
+                            child.c.status.notin_(
+                                (
+                                    TaskStatus.COMPLETED.value,
+                                    TaskStatus.FAILED.value,
+                                    TaskStatus.BLOCKED.value,
+                                )
+                            ),
+                        )
                     )
-                )
+                ),
             )
+        )
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
             task_ids = [r[0] for r in result.fetchall()]
 
+        archived: list[str] = []
         for tid in task_ids:
-            await self.archive_task(tid)
+            try:
+                await self.archive_task(tid)
+                archived.append(tid)
+            except HierarchyError:
+                logger.debug("archive_old_terminal_tasks: skipping %s, open descendant", tid)
 
-        return task_ids
+        return archived
 
     async def list_archived_tasks(
         self,

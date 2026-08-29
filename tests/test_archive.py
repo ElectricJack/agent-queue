@@ -139,9 +139,12 @@ class TestArchiveTask:
         assert archived["pr_url"] == "https://github.com/pr/123"
         assert archived["description"] == "Lots of details"
 
-    async def test_archive_task_with_subtasks_nulls_parent_ref(self, db):
-        """Archiving a parent task should not fail due to FK constraints
-        from subtasks that still reference it via parent_task_id."""
+    async def test_archive_task_refuses_open_child(self, db):
+        """Archiving a parent with a non-terminal child is refused — the
+        subtree only archives together once every descendant is terminal
+        (spec §7)."""
+        from src.database.queries.hierarchy_queries import HierarchyError
+
         await _seed_project(db)
         await _seed_task(db, "t-parent", status=TaskStatus.COMPLETED)
         await _seed_task(
@@ -152,18 +155,41 @@ class TestArchiveTask:
             parent_task_id="t-parent",
         )
 
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("t-parent")
+        assert exc.value.code == "open_descendants"
+
+        # Nothing was archived or removed.
+        assert await db.get_task("t-parent") is not None
+        assert await db.get_task("t-child") is not None
+        assert await db.get_archived_task("t-parent") is None
+
+    async def test_archive_task_with_subtasks_archives_subtree_together(self, db):
+        """Archiving a parent task should not fail due to FK constraints
+        from subtasks that still reference it via parent_task_id — once
+        every descendant is terminal, the whole subtree archives together."""
+        await _seed_project(db)
+        await _seed_task(db, "t-parent", status=TaskStatus.COMPLETED)
+        await _seed_task(
+            db,
+            "t-child",
+            status=TaskStatus.COMPLETED,
+            title="Child",
+            parent_task_id="t-parent",
+        )
+
         # This used to raise "FOREIGN KEY constraint failed"
         result = await db.archive_task("t-parent")
         assert result is True
 
-        # Parent is archived
+        # Parent and child are both archived together.
         assert await db.get_task("t-parent") is None
         assert await db.get_archived_task("t-parent") is not None
 
-        # Child still exists but parent_task_id is now NULL
-        child = await db.get_task("t-child")
-        assert child is not None
-        assert child.parent_task_id is None
+        assert await db.get_task("t-child") is None
+        archived_child = await db.get_archived_task("t-child")
+        assert archived_child is not None
+        assert archived_child["parent_task_id"] == "t-parent"
 
     async def test_archive_task_clears_agent_current_task(self, db):
         """Archiving a task should NULL out agents.current_task_id
