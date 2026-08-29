@@ -15,7 +15,8 @@ from sqlalchemy import and_, delete, exists, insert, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from src.database.tables import task_dependencies, task_metadata, tasks
+from src.database.queries.task_queries import TransitionResult
+from src.database.tables import sessions, task_dependencies, task_metadata, tasks
 from src.models import DepType, Task, TaskStatus
 from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge
 from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
@@ -213,8 +214,11 @@ class HierarchyQueryMixin:
         )
         affected |= await self._collect_affected({task_id}, conn)
         flipped = await self.recompute_blocked(affected, conn=conn)
-        settled = await self.settle_containers({p for p in (old_parent, parent_id) if p}, conn=conn)
-        return flipped, settled
+        settle_result = await self.settle_containers(
+            {p for p in (old_parent, parent_id) if p}, conn=conn
+        )
+        flipped |= settle_result.flipped
+        return flipped, settle_result.settled
 
     async def _blocking_edges(self, conn) -> dict[str, set[str]]:
         from src.models import BLOCKING_DEP_TYPES
@@ -233,65 +237,74 @@ class HierarchyQueryMixin:
 
     # -- settlement -------------------------------------------------------
 
-    async def settle_containers(self, seeds: set[str], *, conn) -> list[str]:
+    async def settle_containers(self, seeds: set[str], *, conn, depth: int = 0) -> TransitionResult:
         """Complete every seeded container whose children are all done (spec §7).
 
         Predicate: container flag ∧ status = IN_PROGRESS ∧ no live session holds
         it ∧ no non-COMPLETED child (vacuously true when empty).  Each hit goes
-        through ``_apply_transition``, which seeds its own parent, so the walk
-        climbs at most ``MAX_STRUCTURAL_DEPTH`` levels.
+        through ``_apply_transition``, which — via its ``_settle_depth``
+        keyword — seeds its own parent back into this method one level
+        deeper; the climb is bounded by ``MAX_STRUCTURAL_DEPTH`` levels of
+        recursion, enforced by the ``depth`` guard below.  ``depth`` counts
+        the settlement hop about to run (the first hop, off the task that
+        actually transitioned, is ``depth=1``), so the guard is ``depth >
+        MAX_STRUCTURAL_DEPTH`` — not ``>=`` — or a 3-level cap would only
+        ever let 2 ancestors settle before blocking (see
+        ``test_settles_exactly_max_structural_depth_levels``).
         """
-        from src.database.tables import sessions
-
-        settled: list[str] = []
+        result = TransitionResult()
         pending = {s for s in seeds if s}
-        rounds = 0
-        while pending and rounds < MAX_STRUCTURAL_DEPTH:
-            rounds += 1
-            child = tasks.alias("child")
-            stmt = select(tasks.c.id).where(
-                and_(
-                    tasks.c.id.in_(sorted(pending)),
-                    tasks.c.status == TaskStatus.IN_PROGRESS.value,
-                    exists(
-                        select(literal(1)).where(
-                            and_(
-                                task_metadata.c.task_id == tasks.c.id,
-                                task_metadata.c.key == CONTAINER_KEY,
-                                task_metadata.c.value == CONTAINER_VALUE,
-                            )
+        if not pending or depth > MAX_STRUCTURAL_DEPTH:
+            return result
+
+        child = tasks.alias("child")
+        stmt = select(tasks.c.id).where(
+            and_(
+                tasks.c.id.in_(sorted(pending)),
+                tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                exists(
+                    select(literal(1)).where(
+                        and_(
+                            task_metadata.c.task_id == tasks.c.id,
+                            task_metadata.c.key == CONTAINER_KEY,
+                            task_metadata.c.value == CONTAINER_VALUE,
                         )
-                    ),
-                    ~exists(
-                        select(literal(1)).where(
-                            and_(
-                                sessions.c.task_id == tasks.c.id,
-                                sessions.c.state.in_(LIVE_SESSION_STATES),
-                            )
+                    )
+                ),
+                ~exists(
+                    select(literal(1)).where(
+                        and_(
+                            sessions.c.task_id == tasks.c.id,
+                            sessions.c.state.in_(LIVE_SESSION_STATES),
                         )
-                    ),
-                    ~exists(
-                        select(literal(1)).where(
-                            and_(
-                                child.c.parent_task_id == tasks.c.id,
-                                child.c.status != TaskStatus.COMPLETED.value,
-                            )
+                    )
+                ),
+                ~exists(
+                    select(literal(1)).where(
+                        and_(
+                            child.c.parent_task_id == tasks.c.id,
+                            child.c.status != TaskStatus.COMPLETED.value,
                         )
-                    ),
-                )
+                    )
+                ),
             )
-            hits = [r[0] for r in (await conn.execute(stmt)).fetchall()]
-            pending = set()
-            for cid in hits:
-                # _apply_transition seeds the container's own parent via
-                # settle_containers, so grandparents are handled by recursion;
-                # collect everything it settled.
-                res = await self._apply_transition(
-                    conn, cid, TaskStatus.COMPLETED, context="subtasks_completed"
-                )
-                settled.append(cid)
-                settled.extend(res.settled)
-        return settled
+        )
+        hits = [r[0] for r in (await conn.execute(stmt)).fetchall()]
+        for cid in hits:
+            # _apply_transition seeds the container's own parent back into
+            # this method at depth + 1, so grandparents are handled by
+            # recursion; merge everything it settled and flipped.
+            res = await self._apply_transition(
+                conn,
+                cid,
+                TaskStatus.COMPLETED,
+                context="subtasks_completed",
+                _settle_depth=depth,
+            )
+            result.settled.append(cid)
+            result.settled.extend(res.settled)
+            result.flipped |= res.flipped
+        return result
 
     # -- creation -------------------------------------------------------
 

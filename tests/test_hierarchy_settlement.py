@@ -5,9 +5,11 @@ from __future__ import annotations
 import time
 
 import pytest
+from sqlalchemy import and_, insert, select, update
 
 from src.database import Database
-from src.models import Project, SessionRecord, Task, TaskStatus
+from src.database.tables import events, task_dependencies, tasks
+from src.models import DepType, Project, SessionRecord, Task, TaskStatus
 
 PROJECT_ID = "proj"
 
@@ -107,6 +109,80 @@ class TestSettlement:
     async def test_non_container_in_progress_leaf_is_untouched(self, db):
         await mktask(db, "leaf", status=TaskStatus.IN_PROGRESS)
         async with db._engine.begin() as conn:
-            settled = await db.settle_containers({"leaf"}, conn=conn)
-        assert settled == []
+            result = await db.settle_containers({"leaf"}, conn=conn)
+        assert result.settled == []
+        assert result.flipped == set()
         assert (await db.get_task("leaf")).status == TaskStatus.IN_PROGRESS
+
+    async def test_settlement_flip_reaches_caller_and_audit_log(self, db):
+        """A ``waits-for`` waiter on ``p`` unblocks in the same call, and the
+        flip is both in ``transition_task``'s return value and in the
+        ``task.unblocked`` audit log — not dropped on the floor when the
+        flip was produced while settling a container (review finding #1).
+        """
+        kids = await family(db, n=1)
+        await mktask(db, "waiter", status=TaskStatus.DEFINED)
+        await db.add_dependency("waiter", "p", DepType.WAITS_FOR.value)
+        assert (await db.get_task("waiter")).is_blocked is True
+
+        flipped = await db.transition_task(kids[0], TaskStatus.COMPLETED)
+
+        assert "waiter" in flipped
+        assert (await db.get_task("p")).status == TaskStatus.COMPLETED
+        assert (await db.get_task("waiter")).is_blocked is False
+
+        async with db._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(events.c.event_type).where(
+                        and_(
+                            events.c.task_id == "waiter",
+                            events.c.event_type == "task.unblocked",
+                        )
+                    )
+                )
+            ).fetchall()
+        assert rows, "expected a task.unblocked audit row for 'waiter'"
+
+    async def test_settles_exactly_max_structural_depth_levels(self, db):
+        """A 4-deep container chain settles 3 levels up from the completed
+        leaf (``MAX_STRUCTURAL_DEPTH``) and stops — the topmost container is
+        left untouched (review finding #2).  Built with raw edge/pointer
+        inserts because :meth:`Database.set_parent` rejects a chain this
+        deep by design.
+        """
+        for tid in ("p1", "p2", "p3", "p4"):
+            await mktask(db, tid, status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "leaf", status=TaskStatus.READY)
+
+        async with db._engine.begin() as conn:
+            for child, parent in (("leaf", "p1"), ("p1", "p2"), ("p2", "p3"), ("p3", "p4")):
+                await conn.execute(
+                    insert(task_dependencies).values(
+                        task_id=child,
+                        depends_on_task_id=parent,
+                        dep_type=DepType.PARENT_CHILD.value,
+                    )
+                )
+                await conn.execute(
+                    update(tasks).where(tasks.c.id == child).values(parent_task_id=parent)
+                )
+                await db.mark_container(parent, conn=conn)
+
+        await db.transition_task("leaf", TaskStatus.COMPLETED)
+
+        assert (await db.get_task("p1")).status == TaskStatus.COMPLETED
+        assert (await db.get_task("p2")).status == TaskStatus.COMPLETED
+        assert (await db.get_task("p3")).status == TaskStatus.COMPLETED
+        assert (await db.get_task("p4")).status == TaskStatus.IN_PROGRESS
+
+    async def test_listener_exception_does_not_fail_transition(self, db):
+        async def bad_cb(ids):
+            raise RuntimeError("boom")
+
+        db.set_settlement_listener(bad_cb)
+        kids = await family(db, n=1)
+
+        await db.transition_task(kids[0], TaskStatus.COMPLETED)  # must not raise
+
+        assert (await db.get_task("p")).status == TaskStatus.COMPLETED

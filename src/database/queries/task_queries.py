@@ -237,6 +237,7 @@ class TaskQueryMixin:
         context: str = "",
         event=None,
         force: bool = False,
+        _settle_depth: int = 0,
         **kwargs,
     ) -> TransitionResult:
         """Update task status with state-machine validation, on a caller-owned connection.
@@ -248,10 +249,17 @@ class TaskQueryMixin:
         Validation stays warn-only in this phase — the ``state_machine.
         enforce`` flag and the ``force`` bypass land with WG-5.
 
-        Returns the set of task ids whose ``is_blocked`` flipped, plus any
-        containers settled by this write (spec §7); the matching
+        Returns the set of task ids whose ``is_blocked`` flipped — including
+        any flips caused by settling a container this write completed — plus
+        any containers settled by this write (spec §7); the matching
         ``task.blocked`` / ``task.unblocked`` audit rows and the settlement
         listener callback are the caller's job, after the transaction commits.
+
+        ``_settle_depth`` is private: it is only ever passed by
+        ``settle_containers`` recursing into its own parent one level
+        deeper, and is never a real task column, so it must stay a named
+        keyword rather than fall into ``**kwargs`` (which feeds
+        ``_coerce_task_values``).
 
         A same-status call is **not** a no-op for the projection: it can still
         carry a ``PROJECTION_INPUT_COLUMNS`` write (a FAILED task bumped to
@@ -318,17 +326,26 @@ class TaskQueryMixin:
                     await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
                 ).scalar()
                 if parent:
-                    result.settled.extend(await self.settle_containers({parent}, conn=conn))
+                    settle_result = await self.settle_containers(
+                        {parent}, conn=conn, depth=_settle_depth + 1
+                    )
+                    result.settled.extend(settle_result.settled)
+                    result.flipped |= settle_result.flipped
 
         return result
-
-    _settlement_listener = None
 
     def set_settlement_listener(self, cb) -> None:
         """Register the post-commit callback for settled containers (spec §7)."""
         self._settlement_listener = cb
 
     async def _notify_settled(self, settled: list[str]) -> None:
+        """Fire the settlement listener, if any, with the ids settled by one write.
+
+        Called from :meth:`transition_task` below, and also directly by
+        ``DependencyQueryMixin`` and ``HierarchyQueryMixin`` (``add_dependency``,
+        ``remove_dependency``) via the composed database adapter, since those
+        mixins reach ``set_parent`` without going through ``transition_task``.
+        """
         if settled and self._settlement_listener is not None:
             try:
                 await self._settlement_listener(list(settled))
@@ -361,6 +378,9 @@ class TaskQueryMixin:
     #: Statuses after which a task will not run again, so anything gated on
     #: it can never be satisfied by waiting.
     _TERMINAL_TASK_STATUSES = ("COMPLETED", "FAILED", "CANCELLED")
+
+    #: Post-commit settlement callback, registered via ``set_settlement_listener``.
+    _settlement_listener = None
 
     async def expire_satisfied_gates(self, task_id: str, *, conn=None) -> int:
         """Expire open gates whose every waiter has reached a terminal state.
