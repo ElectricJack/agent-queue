@@ -185,6 +185,20 @@ class TestCook:
 
 
 class TestAsCooked:
+    async def test_as_cooked_tolerates_legacy_bare_document_row(self, setup):
+        h, db, *_ = setup
+        res = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1",
+                                         "vars": {"branch": "b"}})
+        cid = res["container_id"]
+        # A pre-envelope row: the bare document with no cooked_at/chain_sha.
+        await db.add_task_context(
+            cid, type="formula_snapshot", label="base-review",
+            content=json.dumps({"version": 1, "nodes": [{"key": "legacy", "title": "L"}]}),
+        )
+        shown = await h._cmd_formula_show({"as_cooked": cid})
+        assert shown["success"] is True
+        assert {n["key"] for n in shown["graph"]["nodes"]} in ({"legacy"}, {"review"})
+
     async def test_as_cooked_renders_snapshot_not_current_file(self, setup):
         h, db, vault_root, registry = setup
         res = await h._cmd_formula_cook({"name": "review-and-fix", "project_id": "p1",

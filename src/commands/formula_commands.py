@@ -209,7 +209,9 @@ class FormulaCommandsMixin:
 
         snapshot_row = max(snapshots, key=_sort_key)
         payload = json.loads(snapshot_row["content"])
-        snapshot = payload["document"]
+        # Rows written before the {cooked_at, chain_sha, document} envelope
+        # hold the bare document; render those as-is rather than raising.
+        snapshot = payload.get("document", payload) if isinstance(payload, dict) else payload
 
         name = await self.db.get_task_meta(container_id, "formula")
         scope = await self.db.get_task_meta(container_id, "formula_scope")
