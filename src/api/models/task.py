@@ -413,6 +413,37 @@ class TaskBatchCommitResponse(BaseModel):
     task_ids: list[str] = []
 
 
+class PoolStatusRow(BaseModel):
+    """One (project, profile) worker-pool row — swarm-work-model §11."""
+
+    project_id: str
+    profile_id: str
+    min_active: int
+    max_active: int | None = None
+    desired: int
+    running_idle: int
+    running_busy: int
+    starting: int
+    draining: int
+    ready: int
+    quarantined_until: float | None = None
+
+
+class PoolStatusResponse(BaseModel):
+    success: bool = True
+    pools: list[PoolStatusRow] = []
+
+
+class PoolScaleResponse(BaseModel):
+    success: bool
+    project_id: str | None = None
+    profile_id: str | None = None
+    min_active: int | None = None
+    max_active: int | None = None
+    terminated: list[str] = []
+    error: str | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_tasks": ListTasksResponse,
     "create_task": CreateTaskResponse,
@@ -458,4 +489,6 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_commit": TaskBatchCommitResponse,
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
+    "pool_status": PoolStatusResponse,
+    "pool_scale": PoolScaleResponse,
 }

@@ -553,6 +553,13 @@ def task_details_alias(ctx: click.Context, task_id: str) -> None:
     metavar="KEY=VALUE",
     help="Set a metadata key; repeatable.",
 )
+@click.option(
+    "--claim-epoch",
+    "claim_epoch",
+    type=int,
+    default=None,
+    help="Claim epoch for a pool session (defaults to .aq/claim.json / $AQ_CLAIM_EPOCH).",
+)
 @click.pass_context
 @_handle_errors
 def task_set(
@@ -564,6 +571,7 @@ def task_set(
     note: str | None,
     labels: tuple[str, ...],
     meta_kv: tuple[str, ...],
+    claim_epoch: int | None,
 ) -> None:
     """Work-state contract writes: branch, PR URL, work dir, notes, labels, metadata.
 
@@ -604,6 +612,13 @@ def task_set(
         args["labels_remove"] = labels_remove
     if meta:
         args["meta"] = meta
+    resolved_epoch = claim_epoch
+    if resolved_epoch is None:
+        from .agent_surface import read_claim_epoch
+
+        resolved_epoch = read_claim_epoch()
+    if resolved_epoch is not None:
+        args["claim_epoch"] = resolved_epoch
 
     async def _set():
         async with _get_client(api_url) as client:

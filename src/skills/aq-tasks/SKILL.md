@@ -35,22 +35,20 @@ aq task progress <id>               # computed group progress: counts, waves,
 
 ## The close-a-task loop
 
-Every assigned task ends with `aq task close`. Two common shapes:
+Every assigned task ends with `aq task close --outcome pass|fail` — those are
+the only two outcomes (`aq schema`'s `outcome` enum). If you're missing
+context to finish, say so in `--summary` and close `--outcome fail`. Two
+common shapes:
 
 ```bash
-# Success — commit + push happened, PR opened, summary explains what changed.
-aq task close --task-id <id> \
-  --outcome success \
+# Passed — commit + push happened, PR opened, summary explains what changed.
+aq task close <id> \
+  --outcome pass \
   --summary "Refactored X to use Y. Tests: 42/42. Commits: abc123, def456."
 
-# Blocked — you couldn't complete because of missing context.
-aq task close --task-id <id> \
-  --outcome needs_context \
-  --summary "Task references spec §7 but the spec file is not in the vault."
-
-# Failed — you tried, it broke, and the failure needs human eyes.
-aq task close --task-id <id> \
-  --outcome failure \
+# Failed — you tried, it broke (or you're missing context), and it needs human eyes.
+aq task close <id> \
+  --outcome fail \
   --summary "Test suite deadlocks under xdist. Reproducer in tests/xxx."
 ```
 
@@ -60,6 +58,44 @@ Rules the daemon enforces:
   `summary is required`.
 - Every terminal close also captures the git commit HEAD of the
   workspace automatically. Don't try to pass a `--commit-sha` flag.
+
+## The pool worker loop (swarm-work-model §10)
+
+A `lifecycle: pool` session never gets a task pushed to it — it pulls work
+in a loop instead:
+
+```bash
+aq task claim --next --wait 60        # block up to 60s for the next ready task
+aq prime                              # load the claimed task's context
+# ... do the work ...
+aq task close --outcome pass|fail --summary "..." --claim-next --wait 60
+```
+
+`aq task claim` writes `<work_dir>/.aq/claim.json` with
+`{"task_id", "claim_epoch", "session_id", "claimed_at"}` and returns a
+`result` code (`aq schema`'s `claim_result` enum):
+
+| Result | Meaning |
+|---|---|
+| `claimed` | got a task; `.aq/claim.json` now holds it |
+| `no_ready_work` | nothing matched (after `wait`, if given) |
+| `claim_conflict` | another session claimed it first — retry |
+| `prepare_failed` | claimed but workspace/setup prep failed |
+| `claim_in_progress` | a claim is already being prepared for this session |
+| `not_admissible` | the task isn't currently claimable (paused project, etc.) |
+| `session_exhausted` | this session hit its per-session claim cap |
+| `drain_requested` | the session is draining — stop claiming |
+| `stale_claim` | a mutator's `claim_epoch` no longer matches the task's current one |
+| `out_of_scope` | the caller isn't allowed to claim (not a pool session) |
+
+`task_close --claim-next` chains straight into the next claim after closing,
+so the loop above is really one command per iteration. `aq task heartbeat`,
+`aq task set`, and `aq handoff` all accept `--claim-epoch` too — every one of
+them reads it from `.aq/claim.json` (falling back to `$AQ_CLAIM_EPOCH`)
+automatically, so you don't normally need to pass it by hand. A pool session
+whose `claim_epoch` no longer matches (task reassigned, claim expired) gets
+`stale_claim` back from any of these — read the correct one from
+`.aq/claim.json` and stop, rather than retrying blindly.
 
 ## Reopen + provide input (rejection loop)
 
@@ -107,8 +143,8 @@ capped at 3 (root = 1).
 aq task reparent <task_id> --parent <new_parent_id>   # move under another container
 aq task reparent <task_id> --root                     # detach to root (clears parent)
 aq task delete <task_id> --cascade                    # delete a container + its whole subtree
-aq task close --task-id <id> --abandon-children \
-  --outcome ... --summary "..."                       # close a container, abandoning
+aq task close <id> --abandon-children \
+  --outcome pass|fail --summary "..."                 # close a container, abandoning
                                                         # any still-open descendants
 ```
 
@@ -162,7 +198,7 @@ aq task restore <task_id>
 ## Rules of thumb
 
 - Read before writing. `aq task get` / `aq task show` before any mutation.
-- Explain non-obvious moves. When you close a task with `success`, the
+- Explain non-obvious moves. When you close a task with `--outcome pass`, the
   summary is your one chance to tell the reviewer what you did and why.
 - Don't create tasks from a worker session. That's the supervisor's
   job — message the supervisor if you notice missing work.

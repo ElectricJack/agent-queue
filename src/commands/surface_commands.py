@@ -46,8 +46,10 @@ class SurfaceCommandsMixin:
         they will appear automatically once those subsystems add their
         constants and this method is extended to read them.
         """
+        from src.commands.session_commands import VALID_OUTCOMES
+        from src.database.queries.session_queries import _SESSION_TRANSITIONS
         from src.database.tables import GATE_STATUSES, GATE_TYPES, TASK_DEP_TYPES
-        from src.models import TaskStatus, TaskType
+        from src.models import AgentState, ClaimResult, CLAIM_PHASES, TaskStatus, TaskType
 
         return {
             "schema_version": 1,
@@ -70,6 +72,13 @@ class SurfaceCommandsMixin:
                     "live_descendants",
                     "cycle_check_skipped",
                 ],
+                # Swarm work model — claims and pools (§10, §11).
+                "claim_result": [r.value for r in ClaimResult],
+                "claim_phase": list(CLAIM_PHASES),
+                "lifecycle": ["task", "named", "pool"],
+                "session_state": list(_SESSION_TRANSITIONS),
+                "agent_state": [s.value for s in AgentState],
+                "outcome": list(VALID_OUTCOMES),
             },
         }
 

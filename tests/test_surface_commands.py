@@ -106,6 +106,12 @@ class TestGetSchema:
             "gate_type",
             "gate_status",
             "hierarchy_error",
+            "claim_result",
+            "claim_phase",
+            "lifecycle",
+            "session_state",
+            "agent_state",
+            "outcome",
         }
 
     async def test_task_status_enum_matches_models(self, handler):

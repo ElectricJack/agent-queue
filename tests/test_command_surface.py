@@ -50,7 +50,6 @@ KNOWN_AUTO_REGISTERED: frozenset[str] = frozenset(
         # given a rich schema — mirrors tests/test_mcp_server.py's
         # known_auto_discovered treatment of the same two names.
         "prime",
-        "task_handoff",
         # session-runtime Phase S2 (src/commands/session_commands.py) --
         # operator/CLI surface (list, show, peek, attach, nudge, logs,
         # kill) plus the agent-facing drain-ack.  Not part of the nine-

@@ -15,12 +15,42 @@ the caller must pass ``--task-id`` explicitly (or export the env var).
 
 from __future__ import annotations
 
+import json
 import os
 
 import click
 
 from .app import cli, console, _run, _get_client, _handle_errors
 from .envelope import emit
+from .tasks import task
+
+
+def read_claim_epoch(cwd: str | None = None) -> int | None:
+    """Resolve the calling session's current claim epoch (swarm-work-model §10).
+
+    Reads ``<cwd>/.aq/claim.json`` (written server-side by ``task_claim``)
+    first, falling back to the ``AQ_CLAIM_EPOCH`` env var push launches
+    export. Returns ``None`` when neither resolves — the mutator commands
+    below only send ``claim_epoch`` when this returns a value, so a task
+    (non-pool) session's calls are unaffected.
+    """
+    base = cwd or os.getcwd()
+    path = os.path.join(base, ".aq", "claim.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        epoch = data.get("claim_epoch")
+        if epoch is not None:
+            return int(epoch)
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+        pass
+    raw = os.environ.get("AQ_CLAIM_EPOCH")
+    if raw is not None:
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+    return None
 
 
 @cli.command("schema")
@@ -142,12 +172,20 @@ def prime(ctx: click.Context, task_id, session_id, work_dir, hook_json, hook_for
 @click.option(
     "--session-id", "session_id", default=None, help="Session ID (defaults to $AQ_SESSION_ID)."
 )
+@click.option(
+    "--claim-epoch",
+    "claim_epoch",
+    type=int,
+    default=None,
+    help="Claim epoch for a pool session (defaults to .aq/claim.json / $AQ_CLAIM_EPOCH).",
+)
 @click.pass_context
 @_handle_errors
-def handoff(ctx: click.Context, subject, detail, auto, task_id, session_id) -> None:
+def handoff(ctx: click.Context, subject, detail, auto, task_id, session_id, claim_epoch) -> None:
     """Record a handoff note; request a session restart unless ``--auto`` (design §6.1)."""
     resolved_task_id = task_id or os.environ.get("AQ_TASK_ID")
     resolved_session_id = session_id or os.environ.get("AQ_SESSION_ID")
+    resolved_epoch = claim_epoch if claim_epoch is not None else read_claim_epoch()
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
     async def _handoff():
@@ -160,6 +198,8 @@ def handoff(ctx: click.Context, subject, detail, auto, task_id, session_id) -> N
             args["subject"] = subject
         if detail:
             args["detail"] = detail
+        if resolved_epoch is not None:
+            args["claim_epoch"] = resolved_epoch
         async with _get_client(api_url) as client:
             return await client.execute("task_handoff", args)
 
@@ -195,3 +235,174 @@ def handoff(ctx: click.Context, subject, detail, auto, task_id, session_id) -> N
 def inbox(inject: bool) -> None:
     """Print pending messages for this session's task (stub — see module docstring)."""
     return
+
+
+# ---------------------------------------------------------------------------
+# aq task claim|close|heartbeat|set — pull-based work selection
+# (swarm-work-model §10). Hand-crafted (not auto-generated) because the CLI
+# ergonomics (a positional TASK_ID, and reading claim_epoch from
+# .aq/claim.json / $AQ_CLAIM_EPOCH rather than making the caller pass it)
+# don't fit the generic ``--property-name`` auto layer.  Registered on the
+# ``task`` group tasks.py defines, before ``register_auto_commands`` runs
+# (see app.py's import order), so these win over any auto-generated
+# ``aq task claim|close|heartbeat|set``.
+# ---------------------------------------------------------------------------
+
+
+@task.command("claim")
+@click.argument("task_id", required=False)
+@click.option(
+    "--next", "claim_next", is_flag=True, help="Claim whatever ready task matches this profile."
+)
+@click.option(
+    "--wait",
+    type=int,
+    default=None,
+    help="Seconds to long-poll for ready work before returning no_ready_work (optional).",
+)
+@click.pass_context
+@_handle_errors
+def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
+    """Claim a ready task for this session (pull-based work selection, §10)."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    args: dict = {}
+    if task_id:
+        args["task_id"] = task_id
+    if claim_next:
+        args["next"] = True
+    if wait is not None:
+        args["wait"] = wait
+
+    async def _claim():
+        async with _get_client(api_url) as client:
+            return await client.execute("task_claim", args)
+
+    result = _run(_claim())
+
+    def _render(data: dict) -> None:
+        result_code = data.get("result", "?")
+        t = data.get("task") or {}
+        line = f"[bold]{result_code}[/]"
+        if t:
+            line += f": {t.get('id')} — {t.get('title', '')}"
+        console.print(line)
+        if data.get("claim_epoch") is not None:
+            console.print(f"claim_epoch={data['claim_epoch']}")
+        if data.get("reason"):
+            console.print(f"[dim]{data['reason']}[/]")
+
+    emit(ctx, result, render=_render)
+
+
+@task.command("close")
+@click.argument("task_id")
+@click.option(
+    "--outcome", type=click.Choice(["pass", "fail"]), required=True, help="Overall task outcome."
+)
+@click.option("--summary", default=None, help="Summary for the reviewer/dashboard/vault note.")
+@click.option(
+    "--failure-class",
+    "failure_class",
+    type=click.Choice(["transient", "hard"]),
+    default=None,
+    help="Failure classification, when --outcome fail.",
+)
+@click.option(
+    "--work-outcome",
+    "work_outcome",
+    type=click.Choice(["shipped", "no-op", "blocked", "abandoned"]),
+    default=None,
+)
+@click.option("--commit", default=None, help="Commit SHA (optional).")
+@click.option("--notes", default=None, help="Closing notes (optional).")
+@click.option("--abandon-children", is_flag=True, help="Abandon open child tasks.")
+@click.option(
+    "--claim-next",
+    "claim_next",
+    is_flag=True,
+    help="Immediately claim the next ready task after closing (pool worker loop).",
+)
+@click.option(
+    "--wait", type=int, default=None, help="Seconds to long-poll for the next claim (optional)."
+)
+@click.option(
+    "--claim-epoch",
+    "claim_epoch",
+    type=int,
+    default=None,
+    help="Claim epoch for a pool session (defaults to .aq/claim.json / $AQ_CLAIM_EPOCH).",
+)
+@click.pass_context
+@_handle_errors
+def task_close(
+    ctx: click.Context,
+    task_id,
+    outcome,
+    summary,
+    failure_class,
+    work_outcome,
+    commit,
+    notes,
+    abandon_children,
+    claim_next,
+    wait,
+    claim_epoch,
+) -> None:
+    """Close TASK_ID with an outcome; only way a session-run task reaches COMPLETED."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    resolved_epoch = claim_epoch if claim_epoch is not None else read_claim_epoch()
+    args: dict = {"task_id": task_id, "outcome": outcome}
+    if summary:
+        args["summary"] = summary
+    if failure_class:
+        args["failure_class"] = failure_class
+    if work_outcome:
+        args["work_outcome"] = work_outcome
+    if commit:
+        args["commit"] = commit
+    if notes:
+        args["notes"] = notes
+    if abandon_children:
+        args["abandon_children"] = True
+    if claim_next:
+        args["claim_next"] = True
+    if wait is not None:
+        args["wait"] = wait
+    if resolved_epoch is not None:
+        args["claim_epoch"] = resolved_epoch
+
+    async def _close():
+        async with _get_client(api_url) as client:
+            return await client.execute("task_close", args)
+
+    result = _run(_close())
+    emit(ctx, result)
+
+
+@task.command("heartbeat")
+@click.argument("task_id", required=False)
+@click.option(
+    "--claim-epoch",
+    "claim_epoch",
+    type=int,
+    default=None,
+    help="Claim epoch for a pool session (defaults to .aq/claim.json / $AQ_CLAIM_EPOCH).",
+)
+@click.pass_context
+@_handle_errors
+def task_heartbeat(ctx: click.Context, task_id, claim_epoch) -> None:
+    """Refresh this task's agent lease so the stall ladder doesn't climb."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    resolved_epoch = claim_epoch if claim_epoch is not None else read_claim_epoch()
+    args: dict = {}
+    if task_id:
+        args["task_id"] = task_id
+    if resolved_epoch is not None:
+        args["claim_epoch"] = resolved_epoch
+
+    async def _heartbeat():
+        async with _get_client(api_url) as client:
+            return await client.execute("task_heartbeat", args)
+
+    result = _run(_heartbeat())
+    emit(ctx, result)

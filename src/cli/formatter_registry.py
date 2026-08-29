@@ -168,6 +168,7 @@ def _register_all():
         format_event_list,
         format_key_value,
         format_playbook_graph,
+        format_pool_table,
         format_profile_detail,
         format_profile_list,
         format_prompt_list,
@@ -396,6 +397,15 @@ def _register_all():
         proxy=project_proxy,
         many=True,
         empty_message="No projects found.",
+    )
+
+    # -- Worker pools (swarm-work-model §11) ---------------------------------
+
+    FORMATTERS["pool_status"] = FormatterSpec(
+        render=format_pool_table,
+        extract="pools",
+        many=True,
+        empty_message="No worker pools configured.",
     )
     FORMATTERS["list_workspaces"] = FormatterSpec(
         render=format_workspace_list,

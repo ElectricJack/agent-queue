@@ -121,6 +121,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "list, create, edit, delete, and re-probe servers"
         ),
     ),
+    "pool": CategoryMeta(
+        name="pool",
+        description=("Worker pool sizing — supply/demand status and min/max bounds"),
+    ),
 }
 
 

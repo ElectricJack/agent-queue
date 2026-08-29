@@ -1044,3 +1044,50 @@ def format_active_tasks_all(data: dict) -> Group:
         parts.append(table)
 
     return Group(*parts)
+
+
+# ---------------------------------------------------------------------------
+# Worker pools (swarm-work-model §11)
+# ---------------------------------------------------------------------------
+
+
+def format_pool_table(pools: list[dict]) -> Table:
+    """Format ``pool_status`` rows (one per project/profile) as a Rich table."""
+    table = Table(
+        title="Worker pools",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Project", style="bold bright_magenta", no_wrap=True)
+    table.add_column("Profile", style="cyan", no_wrap=True)
+    table.add_column("Min", justify="right")
+    table.add_column("Max", justify="right")
+    table.add_column("Desired", justify="right")
+    table.add_column("Idle", justify="right")
+    table.add_column("Busy", justify="right")
+    table.add_column("Starting", justify="right")
+    table.add_column("Draining", justify="right")
+    table.add_column("Ready", justify="right")
+    table.add_column("Quarantined", style="yellow")
+
+    for row in pools:
+        quarantined_until = row.get("quarantined_until")
+        quarantined = time.strftime("%H:%M:%S", time.localtime(quarantined_until)) if (
+            quarantined_until
+        ) else "—"
+        table.add_row(
+            row.get("project_id", ""),
+            row.get("profile_id", ""),
+            str(row.get("min_active", 0)),
+            "∞" if row.get("max_active") is None else str(row.get("max_active")),
+            str(row.get("desired", 0)),
+            str(row.get("running_idle", 0)),
+            str(row.get("running_busy", 0)),
+            str(row.get("starting", 0)),
+            str(row.get("draining", 0)),
+            str(row.get("ready", 0)),
+            quarantined,
+        )
+
+    return table

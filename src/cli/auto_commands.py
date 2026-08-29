@@ -40,6 +40,13 @@ HANDCRAFTED_COVERAGE = {
     "restart_task",
     # tasks.py — `aq task create --graph|--from-spec|--dry-run`
     "create_task_graph",
+    # agent_surface.py — claim-aware worker-loop commands: positional task
+    # ids, --claim-epoch fenced against .aq/claim.json (swarm-work-model §10).
+    "task_claim",
+    "task_close",
+    "task_heartbeat",
+    "task_set",
+    "task_handoff",
     # messages.py — hand-crafted so every message command routes through
     # emit() and shares the versioned JSON envelope (aq-surface §4).
     "message_send",
@@ -91,6 +98,7 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "mcp": "mcp",
     "message": "message",
     "discord": "discord",
+    "pool": "pool",
 }
 
 # Human-readable group descriptions for newly created groups.
@@ -103,6 +111,7 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "mcp": "MCP server registry and tool catalog.",
     "message": "Inter-agent and user message queue.",
     "discord": "Discord channel and thread housekeeping.",
+    "pool": "Worker pool sizing — status and scale.",
 }
 
 

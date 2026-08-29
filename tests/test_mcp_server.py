@@ -528,7 +528,6 @@ class TestDriftDetection:
             # rich schema here — see docs/specs/implementation/aq-surface.md
             # §3, §9.
             "prime",
-            "task_handoff",
             # session-runtime Phase S2 (src/commands/session_commands.py) --
             # operator/CLI surface (list, show, peek, attach, nudge, logs,
             # kill) plus the agent-facing drain-ack.  Not part of the nine-
@@ -625,7 +624,6 @@ class TestDriftDetection:
             # rich schema here — see docs/specs/implementation/aq-surface.md
             # §3, §9.
             "prime",
-            "task_handoff",
             # session-runtime Phase S2 (src/commands/session_commands.py) --
             # operator/CLI surface (list, show, peek, attach, nudge, logs,
             # kill) plus the agent-facing drain-ack.  Not part of the nine-

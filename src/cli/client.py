@@ -81,6 +81,10 @@ _DEFAULT_TIMEOUT = 30.0
 # long operations server-side. Anything not listed uses _DEFAULT_TIMEOUT.
 _COMMAND_TIMEOUTS: dict[str, float] = {
     "compile_playbook": 300.0,
+    # Both long-poll (clamped to swarm.claim_wait_max, default well under
+    # this) — see src/cli/agent_surface.py's task_claim/task_close commands.
+    "task_claim": 180.0,
+    "task_close": 180.0,
 }
 
 

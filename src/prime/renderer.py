@@ -71,6 +71,7 @@ class PrimeRenderer:
         # in narrow tests) or no session exists yet, we silently skip the
         # session-inbox fetch per the fix spec.
         session_name: str | None = None
+        session_lifecycle: str | None = None
         get_session_for_task = getattr(self.db, "get_session_for_task", None)
         if get_session_for_task is not None:
             try:
@@ -79,6 +80,7 @@ class PrimeRenderer:
                 sess = None
             if sess is not None:
                 session_name = getattr(sess, "name", None)
+                session_lifecycle = getattr(sess, "lifecycle", None)
 
         section_tuple = (
             await _sections.build_role_section(self.config, task.profile_id),
@@ -99,7 +101,7 @@ class PrimeRenderer:
             _sections.build_l1_facts_section(self.config),
             _sections.build_l2_context_section(self.config),
             _sections.build_tool_guidance_section(),
-            _sections.build_completion_protocol_section(task_id),
+            _sections.build_completion_protocol_section(task_id, lifecycle=session_lifecycle),
         )
 
         doc = PrimeDocument(

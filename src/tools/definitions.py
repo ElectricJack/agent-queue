@@ -220,6 +220,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_route": "task",
     # review policy — dv2 phase 2
     "pr_merge": "git",
+    # worker pools — sizing and bounds (swarm-work-model §11)
+    "pool_status": "pool",
+    "pool_scale": "pool",
     # NOTE: send_message, reply_to_user are intentionally NOT categorized —
     # they are "core" tools always available to the supervisor LLM.
     # NOTE: browse_tools / load_tools are intentionally NOT categorized —
@@ -825,6 +828,24 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": (
                         "Create as a child of this container; the id becomes <parent>.<n>"
+                    ),
+                },
+                "depends_on": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Task IDs this task depends on (optional).",
+                },
+                "discovered_from": {
+                    "type": "string",
+                    "description": (
+                        "Task ID this work was discovered from (provenance, swarm-work-model "
+                        "§9; a worker-filed caller is restricted to the held task's subtree)."
+                    ),
+                },
+                "dedup_key": {
+                    "type": "string",
+                    "description": (
+                        "Idempotency key for find-or-create semantics (see ensure_task)."
                     ),
                 },
             },
@@ -3492,6 +3513,13 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "object",
                     "description": "Arbitrary key/value task metadata to set (optional).",
                 },
+                "claim_epoch": {
+                    "type": "integer",
+                    "description": (
+                        "Current claim epoch for a pool-session caller (optional — the CLI "
+                        "reads it from .aq/claim.json)."
+                    ),
+                },
             },
             "required": ["task_id"],
         },
@@ -3534,6 +3562,27 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
                 "abandon_children": {"type": "boolean", "default": False},
+                "claim_epoch": {
+                    "type": "integer",
+                    "description": (
+                        "Current claim epoch for a pool-session caller (optional — the CLI "
+                        "reads it from .aq/claim.json)."
+                    ),
+                },
+                "claim_next": {
+                    "type": "boolean",
+                    "description": (
+                        "After closing, immediately claim the next ready task matching this "
+                        "session's profile (pool worker loop, swarm-work-model §10)."
+                    ),
+                },
+                "wait": {
+                    "type": "integer",
+                    "description": (
+                        "Seconds to long-poll for the next claim when claim_next is set "
+                        "(optional, clamped to swarm.claim_wait_max)."
+                    ),
+                },
             },
             "required": ["task_id", "outcome"],
         },
@@ -3552,11 +3601,19 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Task ID (optional — defaults to the caller's session scope)",
                 },
+                "claim_epoch": {
+                    "type": "integer",
+                    "description": (
+                        "Current claim epoch for a pool-session caller (optional — the CLI "
+                        "reads it from .aq/claim.json)."
+                    ),
+                },
             },
         },
     },
     {
         "name": "task_claim",
+        "category": "tasks",
         "description": (
             "Claim a ready task for the calling pool/task session (pull-based work "
             "selection, swarm-work-model §10). Pass `next: true` for the next available "
@@ -3582,6 +3639,42 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": (
                         "Seconds to long-poll for ready work before returning "
                         "`no_ready_work` (optional, clamped to `swarm.claim_wait_max`)."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "task_handoff",
+        "description": (
+            "Record a handoff note on the current task; requests a session restart "
+            "unless `auto` is set (design §6.1). `auto` is wired to the PreCompact "
+            "hook and never requests a restart. Backs `aq handoff`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID (optional — defaults to $AQ_TASK_ID / session scope).",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID (optional — defaults to $AQ_SESSION_ID).",
+                },
+                "subject": {"type": "string", "description": "Short handoff subject (optional)."},
+                "detail": {"type": "string", "description": "Handoff detail (optional)."},
+                "auto": {
+                    "type": "boolean",
+                    "description": (
+                        "Note only, never requests a restart (wired to the PreCompact hook)."
+                    ),
+                },
+                "claim_epoch": {
+                    "type": "integer",
+                    "description": (
+                        "Current claim epoch for a pool-session caller (optional — the CLI "
+                        "reads it from .aq/claim.json)."
                     ),
                 },
             },
@@ -4095,5 +4188,50 @@ _ALL_TOOL_DEFINITIONS = [
             "provider→config mapping each one resolves to. Read-only."
         ),
         "input_schema": {"type": "object", "properties": {}},
+    },
+    # -----------------------------------------------------------------
+    # Worker pools — sizing and bounds (swarm-work-model §11).
+    # -----------------------------------------------------------------
+    {
+        "name": "pool_status",
+        "category": "ops",
+        "description": (
+            "Supply/demand/bounds snapshot for every worker pool (one row per "
+            "project, profile). Backs `aq pool status`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Limit to this project (optional — defaults to all).",
+                },
+            },
+        },
+    },
+    {
+        "name": "pool_scale",
+        "category": "ops",
+        "description": (
+            "Set a pool profile's min/max active-session bounds. Validates "
+            "min >= 0, max >= 1, min <= max. With `now: true`, also terminates "
+            "idle sessions above the new max, oldest first. Backs `aq pool scale`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project ID."},
+                "profile_id": {"type": "string", "description": "Pool profile (agent-type) ID."},
+                "min": {"type": "integer", "description": "New min_active bound (optional)."},
+                "max": {"type": "integer", "description": "New max_active bound (optional)."},
+                "now": {
+                    "type": "boolean",
+                    "description": (
+                        "Immediately terminate idle sessions above the new max, oldest first."
+                    ),
+                },
+            },
+            "required": ["project_id", "profile_id"],
+        },
     },
 ]
