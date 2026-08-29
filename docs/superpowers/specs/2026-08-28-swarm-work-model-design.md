@@ -1,6 +1,6 @@
 ---
 tags: [design, swarm, hierarchy, claim, pools, formulas, performance]
-status: approved design — awaiting implementation plan
+status: approved design, revised after adversarial review (2026-08-28) — awaiting implementation plan
 date: 2026-08-28
 related:
   - ../../specs/design/work-graph.md
@@ -35,8 +35,8 @@ containers — a single-authority **hierarchy** model with the two known defects
 | D2 | **The `parent-child` edge is the truth; `tasks.parent_task_id` is a derived cache written only by the query layer, in the same transaction.** | Readiness already depends on the edge. One writer makes drift impossible by construction; the column keeps O(1) parent lookup and the indexed children scan. Dropping the column would touch ~19 source files, the dashboard/Discord field contract and `archived_tasks` for no behavioural gain. |
 | D3 | **Ids are immutable.** `<parent>.<n>` records where a task was born; the edge records where it lives. | Branch names (`aq/<id>`), sessions, logs and threads key on the id. |
 | D4 | **Hybrid dispatch.** The daemon decides how many sessions exist per `(project, profile)` and what is admissible; pool sessions decide which ready item they take. `lifecycle: task` keeps push. | The consumer is the only party that knows precisely when it is free (work-stealing result, Blumofe & Leiserson 1999; Celery's `prefetch_multiplier=1` guidance for long tasks). Pushing into a *live* session rides the nudge path, which the repo documents as fragile; pushing into a *fresh* session is reliable but costs a cold start. Fair-share stays at the capacity layer, which is what preserves it under pull. Gas City's model. |
-| D5 | **Bounded worker loop, configured per profile.** `max_claims_per_session` = 1 gives one-per-claim; 0 gives run-until-age/idle. | Both long-context and short-context workers are needed. The cap turns the context-bleed vs cold-start trade into a dial. |
-| D6 | **Claim is one atomic statement.** `FOR UPDATE SKIP LOCKED` on Postgres; CAS-and-retry on SQLite. | Only shape that meets the latency budget; beads/Gas City's shape. |
+| D5 | **Bounded worker loop, configured per profile.** `max_claims_per_session` = 1 gives one-per-claim; `NULL` (unset) gives run-until-age/idle; `0` is rejected. | Both long-context and short-context workers are needed. The cap turns the context-bleed vs cold-start trade into a dial. |
+| D6 | **Claim is one transaction that records the holder.** Session row locked, task taken with `FOR UPDATE SKIP LOCKED` (CAS-and-retry on SQLite), session/agent/workspace updated together; a per-claim `claim_epoch` fences every later mutation. | Only shape that meets the latency budget *and* leaves a consistent holder after any crash; beads' `row_lock` + Gas City's session fencing, combined. |
 | D7 | **Pool sizing is one cascade step** (`_reconcile_pools`) reusing `sessions.desired_state` and the session lens. | The representational prerequisite landed 2026-08-27; the session-runtime comparison named this as the missing half. |
 | D8 | **Workers may file work; policy is a playbook.** Mechanism in code (project pinned, provenance edge automatic, starts `DEFINED`, `created_by` stamped); what happens next is a `task.created` pipeline rule. | Keeps D2 of the framework overhaul ("the supervisor decides what runs") while letting the graph grow from work. |
 | D9 | **Formulas are markdown + `aq-graph`**, in the vault, project-shadowed by name. | Reuses the existing parser/validator/creator and the vault watcher; no second format. |
@@ -53,8 +53,9 @@ overhaul D9 (one daemon, N projects, single DB).
 - Control steps in formulas (retry-with-class, check loops, fan-out over a runtime set) —
   comparison §9.2, a later spec.
 - Multiple parents, wave-driven scheduling, ephemeral/wisp tier, cross-machine sync.
-- Changing the merge pipeline. Each claim still gets its own branch and goes through
-  `_phase_integrate` under the merge slot.
+- Changing the merge pipeline. Every pullable task has its own branch and goes through
+  `_phase_integrate` under the merge slot; plan subtasks, which share their parent's
+  branch, are excluded from pull (§10) rather than given branch-per-child integration.
 - Agentic rework on merge conflict (`REWORK_REQUEST` analogue) — separate spec.
 
 ---
@@ -75,15 +76,27 @@ overhaul D9 (one daemon, N projects, single DB).
 `set_parent` writes it.** `archived_tasks` gains `created_by_kind/created_by_id` (lossless
 copy rule).
 
-**Invariants** (all tested; `aq doctor` checks in §12):
+**Two depths, defined separately** (they diverge after a reparent because ids are
+immutable, D3):
+
+- **Structural depth** — the length of the live `parent-child` chain from a task to its
+  root (root = 1). This is the invariant: ≤ `MAX_STRUCTURAL_DEPTH` (3). `reparent_task`
+  validates `new_parent.structural_depth + subtree_height(task) ≤ 3`.
+- **Naming depth** — the number of dot-segments in the id. It governs only whether a
+  *dotted* child id can be minted: a parent whose id already has 3 segments mints root ids
+  for its children (with a `discovered-from` edge, existing fallback), even if its
+  structural depth is 1 after a move to root. Naming depth never blocks a structural
+  operation.
+
+**Invariants** (all tested; `aq doctor` checks in §16):
 
 1. `parent_task_id = p` ⇔ an edge `(task_id, p, 'parent-child')` exists. Both null/absent
    together.
 2. At most one `parent-child` out-edge per task (index-enforced).
 3. `parent.project_id = child.project_id`.
-4. Depth (dot-segments of the id) ≤ `_MAX_HIERARCHY_DEPTH` (3). A child of a depth-3 parent
-   gets a root id and a `discovered-from` edge instead (existing fallback).
+4. Structural depth ≤ 3.
 5. No `parent-child` cycles (existing `validate_dag_with_new_edge` covers blocking types).
+6. A `COMPLETED` container has no non-terminal child (§7, container-close semantics).
 
 ### 5. The single writer: `set_parent`
 
@@ -93,11 +106,16 @@ async def set_parent(self, task_id: str, parent_id: str | None, *, conn) -> set[
 
     Same transaction: delete any existing parent-child edge, insert the new one,
     write tasks.parent_task_id, recompute is_blocked over the affected set
-    (old container's waits-for waiters ∪ new container's ∪ the task itself).
-    Raises HierarchyError(code) for: not_found, cross_project, cycle, depth,
-    self_parent.
+    (old container's waits-for waiters ∪ new container's ∪ the task itself),
+    then settle_containers({old_parent, new_parent}) (§7) so a container that
+    just lost its last open child completes, and one that gained an open child
+    is a valid target. Raises HierarchyError(code) for: not_found,
+    cross_project, cycle, depth, self_parent, container_closed.
     """
 ```
+
+`conn` is mandatory: `set_parent` never opens its own transaction, so every caller's
+membership change, blocked recompute and container settlement commit together.
 
 Callers, and only these: `create_task` (when `parent_id` is given), `add_dependency` and
 `remove_dependency` when `dep_type == 'parent-child'` (they delegate instead of inserting
@@ -142,33 +160,54 @@ stubbed:
 **Release.** Children are withheld while the container is `DEFINED` or
 `AWAITING_PLAN_APPROVAL` (`_parent_child_unsat`, unchanged).
 
-**Auto-completion — event-driven.** In `transition_task`, when a task reaches
-`COMPLETED` and has a parent:
+**Transition machinery refactor (prerequisite).** `transition_task` today opens its own
+transaction and has no `conn` parameter. It is split into `_apply_transition(conn, task_id,
+new_status, *, context, event, force, **cols) -> TransitionResult` (read, validate, apply,
+recompute `is_blocked`, retire satisfied gates — everything it does now, on a caller-owned
+connection) and the public `transition_task`, which opens the transaction, calls it, and
+emits after commit. Nothing in this spec writes `tasks.status` with raw SQL.
 
-```sql
-UPDATE tasks p SET status = 'COMPLETED', updated_at = :now
-WHERE p.id = :parent
-  AND p.status = 'IN_PROGRESS'
-  AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = p.id
-                  AND s.state IN ('starting','running','draining'))
-  AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_task_id = p.id
-                  AND c.status <> 'COMPLETED')
+**Container settlement — one set-based fixpoint.** `settle_containers(seeds: set[str],
+conn) -> TransitionResult` evaluates, for every container id in `seeds` (deduplicated,
+bounded by depth 3 as it walks up), the predicate
+
+```
+status = IN_PROGRESS
+∧ no live session holds it        (sessions.task_id = id ∧ state ∈ starting|running|draining)
+∧ has ≥ 1 child                   (EXISTS tasks c WHERE c.parent_task_id = id)
+∧ no non-COMPLETED child
 ```
 
-executed in the same transaction, then (if it flipped) the parent's own parent is checked
-the same way, bounded by depth 3. The completion logs `context="subtasks_completed"` and
-emits `task.completed` for the container after commit. The **no-live-session guard** is
-what lets a worker that spawned subtasks keep ownership of its own task until it closes
-it explicitly.
+and applies `_apply_transition(conn, id, COMPLETED, context="subtasks_completed")` to each
+hit, adding its parent to the next round. It is called in the same transaction by: the
+child's own `_apply_transition` when the new status is `COMPLETED` (seed = parent);
+`set_parent` (seeds = old and new parent); `delete_task` / `archive_task` (seed = parent).
+The **no-live-session guard** is what lets a worker that spawned subtasks keep ownership
+of its own task until it closes it explicitly. The container's `task.completed` is emitted
+after commit like any other transition.
 
 `_check_plan_parent_completion` is **deleted**. A backstop `_sweep_container_completion`
-runs every `work_graph.container_sweep_interval_seconds` (default 60) as one aggregate
-statement — the same predicate over all `IN_PROGRESS` containers — and logs any hit as a
-divergence (it should find nothing).
+runs every `work_graph.container_sweep_interval_seconds` (default 60): one aggregate
+statement selects containers matching the predicate, then `settle_containers` on that set
+in one transaction, logging every hit as a divergence (the event path should leave it
+nothing to find).
 
-A child ending `FAILED` or `BLOCKED` does not complete or fail the container; it stays
-`IN_PROGRESS`, `waits-for` waiters stay blocked, and `explain` on the container lists the
-open children.
+**Container-close semantics** (closes the lifecycle under every mutation):
+
+- A child ending `FAILED` or `BLOCKED` does not complete or fail the container; it stays
+  `IN_PROGRESS`, `waits-for` waiters stay blocked, `explain` on the container lists the
+  open children.
+- Explicit close of a container (`task_close`, `skip_task`, `set_task_status → COMPLETED`)
+  with non-terminal children is refused with `hierarchy.open_children` (beads'
+  `ErrCloseOpenChildren`); `force: true` closes it and leaves the children as they are
+  (they remain runnable — the container is a grouping, not a gate on its children).
+- A `COMPLETED` container cannot receive children: `create_task --parent`,
+  `reparent_task`, `add_dependency(parent-child)` and `formula_cook --parent` fail with
+  `hierarchy.container_closed`. The operator path is `reopen_with_feedback` on the
+  container (→ `IN_PROGRESS`), then add the work. This resolves the conflict between
+  explicit and child-derived completion in favour of explicit: settlement never reopens.
+- Reparenting or deleting the last open child settles the *old* container immediately
+  (same transaction), not at the next sweep.
 
 **Delete.** `delete_task` refuses a container with children (`hierarchy.has_children`);
 `cascade: true` deletes the subtree depth-first in one transaction, snapshotting affected
@@ -181,8 +220,9 @@ last. `_auto_archive_tasks` selects only roots-of-terminal-subtrees. The current
 removed.
 
 **Reparent.** `reparent_task(task_id, parent_id | None)` → `set_parent`. Rejections:
-`cross_project`, `cycle` (new parent is a descendant), `depth` (task's subtree height +
-new depth > 3), `not_found`. The id does not change (D3).
+`cross_project`, `cycle` (new parent is a descendant), `depth` (structural: new parent's
+depth + the task's subtree height > 3), `container_closed`, `not_found`. The id does not
+change (D3). Both the old and the new container are settled in the same transaction.
 
 ### 8. Reads
 
@@ -202,13 +242,24 @@ new depth > 3), `not_found`. The id does not change (D3).
 
 | Table | Change |
 |---|---|
-| `agent_profiles` | `lifecycle` accepts `pool`; new `min_active INTEGER NULL`, `max_active INTEGER NULL`, `max_claims_per_session INTEGER NULL` (pool-only; parser rejects them on other lifecycles like it does `mode`/`wake_mode`) |
-| `sessions` | `task_id` is mutable for `lifecycle = 'pool'`; new `claims INTEGER NOT NULL DEFAULT 0`; new `agent_id TEXT NULL` (soft ref to the agent row a pool session owns, §11.1) |
-| `tasks` | new index `idx_tasks_ready_by_profile (project_id, profile_id, status, is_blocked)` |
-| `events` (schema registry) | `task.claimed` `{task_id, project_id, title, session_id, profile_id}`; `task.claim_conflict` `{task_id, project_id, session_id}` (debug); `pool.scaled` `{project_id, profile_id, desired, active, reason}` |
+| `agent_profiles` | `lifecycle` accepts `pool`; new `min_active INTEGER NULL`, `max_active INTEGER NULL`, `max_claims_per_session INTEGER NULL` (pool-only; parser rejects them on other lifecycles like it does `mode`/`wake_mode`). **`NULL` = unlimited; `0` is a parse error** — everywhere (parser, storage, sizing, API, tests). |
+| `sessions` | `task_id` is mutable for `lifecycle = 'pool'`; new `claims INTEGER NOT NULL DEFAULT 0`; new `agent_id TEXT NULL` (soft ref to the agent row a pool session owns, §11.1); new `claim_phase TEXT NULL` (`preparing \| active`, §10 step 3) |
+| `tasks` | new `claim_epoch INTEGER NOT NULL DEFAULT 0` (the per-claim fence, §10); new index `idx_tasks_ready_by_profile (project_id, profile_id, status, is_blocked)` |
+| `events` (schema registry) | `task.ready` `{task_id, project_id, title, reason}` — emitted post-commit on **every** entry into the frontier (§10 long-poll); `task.claimed` `{task_id, project_id, title, session_id, profile_id, claim_epoch}`; `task.claim_conflict` `{task_id, project_id, session_id}` (debug); `pool.scaled` `{project_id, profile_id, desired, active, reason}` |
 
-No claim columns on `tasks`: the holder is `assigned_agent_id` (each pool session owns an
-agent row for its lifetime, §11), held-since is the `task.claimed` event.
+The holder of a claim is `(assigned_agent_id, claim_epoch)`. Each pool session owns an
+agent row for its lifetime (§11.1), so `assigned_agent_id` stays the identity every
+existing reader (scheduler snapshot, dashboard, Discord) already understands; the epoch
+is what makes a claim distinguishable from an earlier claim of the same task by the same
+session.
+
+**`task.ready`.** Today promotion emits only `task.unblocked`, and only when `is_blocked`
+flips; a `DEFINED → READY` promotion of an unblocked task is silent
+(`monitoring.py:100-107`). `_apply_transition` records "entered the frontier" whenever the
+post-state is `READY ∧ is_blocked = 0 ∧ no hold label` and the pre-state was not, and
+`transition_task` emits `task.ready` for that set after commit (reasons: `promoted`,
+`unblocked`, `gate_resolved`, `restarted`, `released`, `resumed`). `task.unblocked` keeps
+its current meaning for playbook triggers.
 
 ### 10. Claim — `task_claim`
 
@@ -216,11 +267,10 @@ agent row for its lifetime, §11), held-since is the `task.claimed` event.
 `swarm.claim_wait_max`, default 60). `session_id`, `project_id`, `profile_id` come from the
 token scope — a caller-supplied value that disagrees is `out_of_scope`.
 
-**Preconditions** (cheap, from the per-tick cached scheduler snapshot; no recompute):
-project `ACTIVE`; no `pause_scheduling` constraint; global and project budget not
-exhausted. Session preconditions: `lifecycle in ('pool','task')`; for pool, `claims <
-max_claims_per_session` when the cap is set, and `desired_state = 'running'`. A pool
-session that already holds a task may only re-claim that same task (idempotent).
+**Admission preconditions** (cheap, from the per-tick cached scheduler snapshot; no
+recompute): project `ACTIVE`; no `pause_scheduling` constraint; global and project budget
+not exhausted. Checked before the transaction; they are policy, not correctness, so a
+stale snapshot costs at most one extra task within a tick.
 
 **Work query** — what a pool session may take:
 
@@ -231,86 +281,154 @@ AND NOT EXISTS (SELECT 1 FROM task_labels l WHERE l.task_id = tasks.id AND l.lab
 AND (profile_id = :profile OR (profile_id IS NULL AND :profile = :project_default_profile))
 AND NOT EXISTS (SELECT 1 FROM task_workspace_requirements r
                 WHERE r.task_id = tasks.id AND r.kind_id <> 'project-repo')
+AND is_plan_subtask = 0
 ```
 
-Tasks with non-default workspace requirements stay on the push path (a pool session holds
-exactly one `project-repo` slot). Ordering: `(affinity_agent_id = :agent) DESC,
-priority ASC, created_at ASC`. Affinity is a preference under pull, not a hold; the 120 s
-affinity wait remains push-only.
+Two exclusions keep pull inside what a single `project-repo` slot can honour:
+tasks with other workspace kinds, and **plan subtasks**, which share their parent's branch
+and therefore serialise (`worktree-execution.md` §4.4; `workspace.py:547` resumes
+`parent.branch_name` for `is_plan_subtask`). Git refuses a branch checked out in two
+worktrees, so two pool sessions claiming sibling plan subtasks would each mark one
+`IN_PROGRESS` and one would fail its slot reset. Both classes stay on the push path, whose
+branch-busy handling already exists. Graph-creator and formula nodes are
+`is_plan_subtask = 0` with their own branches and are pullable. Branch-per-child
+integration for plans remains the follow-up worktree-execution §4.4 named.
 
-**Postgres** (one transaction, ≤ 3 statements):
+Ordering: `CASE WHEN affinity_agent_id = :agent THEN 0 ELSE 1 END ASC, priority ASC,
+created_at ASC` (a bare boolean `DESC` sorts `NULL` affinity first on Postgres).
+Affinity is a preference under pull, not a hold; the 120 s affinity wait remains push-only.
+
+**The claim transaction — one transaction, holder included.** Everything that records
+*who holds what* commits together; the only thing outside is the git reset.
 
 ```sql
+-- 1. lock the holder (serialises concurrent claims from one session; Postgres row lock,
+--    SQLite writer lock)
+SELECT id, lifecycle, task_id, claims, desired_state, agent_id
+FROM sessions WHERE id = :session FOR UPDATE;
+--    → session_exhausted if claims >= max_claims_per_session (NULL = unlimited)
+--    → drain_requested   if desired_state <> 'running'
+--    → claimed (idempotent, same epoch) if task_id = :task_id / task_id IS NOT NULL
+
+-- 2. pick + take the task
 WITH cand AS (
   SELECT id FROM tasks WHERE <work query> [AND id = :task_id]
-  ORDER BY <ordering> LIMIT 1
-  FOR UPDATE SKIP LOCKED
+  ORDER BY <ordering> LIMIT 1 FOR UPDATE SKIP LOCKED
 )
-UPDATE tasks t SET status = 'IN_PROGRESS', assigned_agent_id = :agent, updated_at = :now
+UPDATE tasks t SET status = 'IN_PROGRESS', assigned_agent_id = :agent,
+                   claim_epoch = claim_epoch + 1, updated_at = :now
 FROM cand WHERE t.id = cand.id
 RETURNING t.*;
+--    → no_ready_work if 0 rows and --next; claim_conflict if 0 rows and explicit id
+
+-- 3. record the holder
+UPDATE sessions SET task_id = :task, claims = claims + 1, claim_phase = 'preparing'
+WHERE id = :session;
+UPDATE agents   SET state = 'BUSY', current_task_id = :task WHERE id = :agent;
+UPDATE workspaces SET locked_by_task_id = :task WHERE locked_by_agent_id = :agent;
+INSERT INTO task_metadata (claimed_by_session, work_dir) …;   -- upsert
 ```
 
-**SQLite:** `SELECT id … LIMIT 1` then
+Step 2 goes through `_apply_transition` (so validation, `is_blocked` recompute and the
+`task.ready` bookkeeping run) with the candidate-selection statement supplying the id.
+**SQLite:** step 1 is a plain `SELECT` (the connection holds the writer lock for the
+transaction), step 2 is `SELECT id … LIMIT 1` then
 `UPDATE tasks SET … WHERE id = :id AND status = 'READY' AND is_blocked = 0 AND assigned_agent_id IS NULL`;
-`rowcount = 0` → re-select, up to 5 attempts, then `claim_conflict`.
+`rowcount = 0` → re-select, up to 5 attempts inside the same transaction.
 
-**After the DB transaction** (in order, each idempotent):
-1. `sessions.task_id = :task, claims = claims + 1` (pool only; `task` lifecycle already
-   has it).
-2. `task_metadata`: `claimed_by_session`, `work_dir`.
-3. `reset_slot_for_task(slot, task)` on the session's worktree slot. Failure → task is
-   released back to `READY` with `needs_attention = slot_reset_failed`, the session gets
-   `slot_reset_failed`, and the reconciler's ladder takes over.
-4. `task.claimed` then `task.started` on the bus (the latter keeps every existing
-   subscriber — dashboard, Discord, playbooks — working unchanged).
+Consequences the reviewer asked for: two concurrent requests from one session serialise on
+its row and the second sees `task_id IS NOT NULL` → idempotent `claimed` with the same
+epoch; a crash after commit leaves a consistent holder (session, agent, workspace lock and
+task all agree); the cap is checked under the lock; the agent row is `BUSY` from the same
+instant the task is `IN_PROGRESS`.
 
-**Result** — `{"result": <code>, "task": <task_show shape> | null, "session": {claims, cap, desired_state}}` with codes:
+**Step 4 — outside the transaction: the git reset, with a recoverable phase.**
+`reset_slot_for_task(slot, task)` runs after commit while `sessions.claim_phase =
+'preparing'`. On success: `claim_phase = 'active'`, then `task.claimed` and `task.started`
+are emitted (the latter keeps every existing subscriber — dashboard, Discord, playbooks —
+working unchanged). On failure, or if the reconciler finds a session still `preparing`
+after `swarm.prepare_timeout` (default 120 s, e.g. daemon crash mid-reset): the claim is
+**released** in one transaction — task back to `READY` (`_apply_transition`, context
+`slot_reset_failed`, `assigned_agent_id = NULL`, `claim_epoch` unchanged), session
+`task_id = NULL, claim_phase = NULL`, agent `IDLE`, workspace `locked_by_task_id = NULL`,
+`task_metadata.needs_attention = slot_reset_failed` — and the response is
+`prepare_failed`. Three consecutive `prepare_failed` on one session quarantine it via the
+existing ladder.
+
+**Per-claim fence.** Every mutation that acts on a held task — `task_close`,
+`task_heartbeat`, `task_set`, `task_handoff`, `close --claim-next` — takes `claim_epoch`
+(the CLI passes it from `AQ_CLAIM_EPOCH`, which the daemon writes into provider meta and
+`aq prime` prints; the agent never types it) and applies its writes with
+`… WHERE id = :task AND assigned_agent_id = :agent AND claim_epoch = :epoch`;
+`rowcount = 0` → `stale_claim`. A delayed close from an earlier attempt therefore cannot
+land on a later re-claim of the same task by the same session. Ownership is
+`sessions.task_id = task ∧ claim_epoch match`; the token still pins project and session.
+
+**Result** — `{"result": <code>, "task": <task_show shape> | null, "claim_epoch": int | null, "session": {claims, cap, desired_state, claim_phase}}` with codes:
 
 | Code | Meaning | Agent's move |
 |---|---|---|
-| `claimed` | task is yours | `aq prime --task <id>`, work |
-| `no_ready_work` | frontier empty (after `wait`) | pool: drain-ack unless you want to wait again |
+| `claimed` | task is yours (`claim_epoch` returned; idempotent repeat returns the same) | `aq prime --task <id>`, work |
+| `no_ready_work` | frontier empty (after `wait`) | pool: claim again or drain-ack |
 | `claim_conflict` | explicit `task_id` was taken | try `--next` |
+| `prepare_failed` | claimed but the slot reset failed; task released | claim again; after 3 the ladder quarantines |
 | `session_exhausted` | `max_claims_per_session` reached | `aq session drain-ack` |
 | `drain_requested` | pool scaled down | `aq session drain-ack` |
+| `stale_claim` | (on mutations) epoch mismatch | stop; the task is no longer yours |
 | `out_of_scope` | token mismatch / not a claimable lifecycle | stop |
 
-**Long-poll.** With `wait > 0` and an empty frontier, the handler subscribes to
-`task.unblocked`, `task.created`, `task.restarted`, `gate.resolved` filtered on
-`project_id`, retries the claim on each event, and returns `no_ready_work` on timeout.
-Cost: one waiting HTTP request per idle session; no polling.
+**Long-poll — subscribe first, then check.** With `wait > 0`: (1) subscribe to `task.ready`
+filtered on `project_id` (plus `gate.resolved`, `task.restarted` for belt-and-braces);
+(2) read `events.max(id)` as `seq0`; (3) run the claim; (4) if `no_ready_work`, wait on the
+subscription **or** until `select count(*) from events where id > seq0 and type='task.ready'
+and project_id = :p` is non-zero (checked once immediately after subscribing, which closes
+the window between (1) and (3)); on wake, go to (3). Return `no_ready_work` on timeout.
+`task.ready` exists precisely because `DEFINED → READY` promotion of an unblocked task
+emits nothing today (§9). Cost: one waiting HTTP request per idle session; no polling.
 
 **`close --claim-next`.** `task_close` gains `claim_next: bool`. It runs the existing close
-(outcome metadata, completion pipeline, token revoke is **skipped** for pool sessions
-because the token is session-scoped, not task-scoped) and then `task_claim(next=True)`,
-returning `{…close result…, "next": <claim result>}`. A failed close never claims.
+(fenced by `claim_epoch`; outcome metadata, completion pipeline; token revoke is
+**skipped** for pool sessions because the token is session-scoped) and, only if the close
+succeeded, `task_claim(next=True)` in a **separate** transaction, returning
+`{…close result…, "next": <claim result>}`. A failed close never claims.
 
 ### 11. Pool reconciler — `_reconcile_pools`
 
 New cascade step, after `_reconcile_sessions`, gated by `swarm.enabled`. Per tick:
 
-1. **Demand** (1 statement): ready count grouped by `(project_id, COALESCE(profile_id,
-   project.default_profile_id))` over the work query minus the profile term.
-2. **Supply** (1 statement): live pool sessions grouped by `(project_id, profile_id)` with
-   `state`, `desired_state`, `task_id IS NULL` (idle) counts.
+1. **Demand** (1 statement): `ready` = count of tasks matching the work query minus the
+   profile term, grouped by `(project_id, COALESCE(profile_id, project.default_profile_id))`.
+2. **Supply** (1 statement): pool sessions grouped by `(project_id, profile_id)` into
+   `busy` (holding a task, `state ∈ starting|running|draining`), `idle` (live, no task),
+   `starting` (row exists, not yet observed live), `draining_requested`
+   (`desired_state = 'stopped'`). Plus, per project, the count of **every** agent row that
+   occupies a slot (`state ∈ BUSY|IDLE`, any lifecycle) so caps count what actually
+   consumes capacity.
 3. **Desired** — pure function `size_pools(demand, supply, profiles, projects, caps,
    deficits) -> list[PoolAction]` in `src/scheduler.py` beside `Scheduler.schedule`
-   (table-tested, no I/O):
-   - `desired = clamp(demand, min_active, max_active)` per `(project, profile)`;
-   - project bound: `Σ desired over profiles ≤ project.max_concurrent_agents −
-     non-pool BUSY agents`; when it binds, marginal sessions go to the profile with the
-     largest unmet demand;
+   (table-tested, no I/O). Per `(project, profile)`:
+   - `want = busy + ready` — sessions that are working plus tasks waiting; the previous
+     draft compared ready tasks against total sessions and under-provisioned by exactly
+     the busy count;
+   - `desired = clamp(want, min_active, max_active)`, then `desired = max(desired,
+     busy + starting)` — a session holding a task or mid-launch is never a scale-down
+     candidate, so the floor is the non-drainable supply;
+   - project bound: `Σ desired over pool profiles ≤ project.max_concurrent_agents −
+     (agent rows not owned by pool sessions)`; when it binds, marginal sessions above each
+     profile's floor go to the profile with the largest `want − desired`;
    - global bound: `Σ ≤ global cap − others`, plus the usage-aware headroom hook
      (`headroom_fn: (project) -> int | None`, default None); when it binds, marginal
      sessions go to the project with the largest `BudgetManager` deficit — fair-share at
      the capacity layer;
-   - hysteresis: scale-up at most `swarm.max_starts_per_tick` (default 2) sessions per
-     tick; scale-down only for surplus that has persisted `swarm.scale_down_grace`
-     seconds (default 120), tracked in memory per key.
+   - hysteresis: scale-up at most `swarm.max_starts_per_tick` (default 2) per tick;
+     scale-down only for surplus (`idle − (desired − busy − starting)`) that has persisted
+     `swarm.scale_down_grace` seconds (default 120), tracked in memory per key.
+   Worked example from the review: one busy worker, two ready tasks, `max_active = 3` →
+   `want = 3`, `desired = 3`, start two.
 4. **Converge**: for each `start` action → `_launch_pool_session` (§11.1); for each
    `drain` action → `update_session(desired_state='stopped')` on an **idle** pool session
-   (never one holding a task; the next `claim` returns `drain_requested`).
+   (never one holding a task; the next `claim` returns `drain_requested`). A session in
+   `claim_phase = 'preparing'` counts as busy.
 5. Emit `pool.scaled` when desired or active changed for a key.
 
 `AgentReconciler` is taught `lifecycle='pool'`: it neither creates nor reaps agent rows
@@ -322,8 +440,10 @@ for pool profiles — pool sessions own their rows (§11.1) — and counts them 
 Mirrors `_launch_session_for_task` step for step, differences only:
 
 - creates an `agents` row (`profile_id`, `state=IDLE`) first; the session references it
-  via `sessions.agent_id` — **new column** `sessions.agent_id TEXT NULL` (soft ref) so the
-  claim can set `assigned_agent_id` without a lookup;
+  via `sessions.agent_id` (§9) so the claim can set `assigned_agent_id` without a lookup.
+  The claim transaction flips the row to `BUSY` with `current_task_id`; release/close
+  flips it back to `IDLE` — so `project_active_agent_counts`, `_idle_by_project` and the
+  dashboard's agent tiles see pool workers exactly as they see push workers;
 - acquires one `project-repo` worktree slot for the **session** via
   `acquire_for_holder(db, project_id, holder_agent_id, kinds=['project-repo'])` — a thin
   generalisation of `acquire_for_task` whose lock columns already use `agent_id`; the lock
@@ -357,14 +477,16 @@ Exiting without closing your task is treated as a failure, not a success.
 |---|---|---|
 | `_step_orphans` (a) live session, task closed | drain | **normal between claims**; drain only if `desired_state='stopped'`, or idle (`task_id IS NULL`) longer than `profile.idle_timeout` |
 | `_step_orphans` (b) open task, no live row | BLOCKED + release | same (task released to `READY` — pool tasks are retried, not blocked, unless the verdict was `PRODUCTIVE_DEATH`) |
-| `_step_exits` | verdicts as today | same; on any verdict with a held task, the task is released via `_release_task` and `sessions.task_id` cleared |
+| new: `_step_prepare_timeout` | — | a pool session with `claim_phase='preparing'` for longer than `swarm.prepare_timeout` has its claim released (§10 step 4) |
+| `_step_exits` | verdicts as today | same; on any verdict with a held task, the task is released via `_release_task` (one transaction: task `READY`/`BLOCKED`, `sessions.task_id = NULL`, agent `IDLE`, workspace `locked_by_task_id = NULL`) |
 | stall ladder | applies | applies **only while `task_id IS NOT NULL`** |
 | `_step_drain_ack` premature-drain guard | ack with open task → nudge | same |
 | `_step_backstop` | `stuck_timeout_seconds` | same, per held task |
 
-`_cmd_task_close`, `task_set`, `task_heartbeat` verify ownership through
-`sessions.task_id == task_id` (`_assert_session_owns`), not the token's `task_id`, which is
-null for pools. Token revoke on close is skipped for pools; the token is revoked at drain.
+`_cmd_task_close`, `task_set`, `task_heartbeat`, `task_handoff` verify ownership through
+`sessions.task_id == task_id ∧ tasks.claim_epoch == :epoch` (`_assert_session_owns`,
+§10 per-claim fence), not the token's `task_id`, which is null for pools. Token revoke on
+close is skipped for pools; the token is revoked at drain.
 
 ### 12. Worker-filed work
 
@@ -372,40 +494,49 @@ null for pools. Token revoke on close is skipped for pools; the token is revoked
 `task_progress`, `project_ready`, `formula_list`, `formula_show`.
 
 **Server-enforced constraints on `create_task` for non-elevated sessions** (in
-`enforce_scope` + `_cmd_create_task`):
+`enforce_scope` + `_cmd_create_task`), all in the creation transaction:
 
 - `project_id` := token project (mismatch → `out_of_scope`);
 - `created_by_kind='session'`, `created_by_id=<session_id>`;
-- if the session holds a task `T`: when `parent_id` is given it must be `T` or a
-  descendant of `T` (else `hierarchy.parent_out_of_scope`); when absent, a
-  `discovered-from` edge to `T` is added automatically;
-- initial status **`DEFINED`** regardless of edges (the cascade promotes it);
+- **holding a task `T`:** `parent_id`, if given, must be `T` or a descendant of `T`
+  (else `hierarchy.parent_out_of_scope`); if absent, a `discovered-from` edge to `T` is
+  added automatically. **Idle (no held task):** `parent_id` must be absent
+  (`hierarchy.parent_out_of_scope`) — an idle worker may only file root-level work;
+- initial status **`DEFINED`** regardless of edges;
+- **root-level worker-filed tasks get a `routing` gate in the same transaction**
+  (`create_gate(gate_type='routing', await_id=<task_id>)` + `task_gates` row, via the
+  existing routing-gate code path that `task-created-routing` uses today). The task is
+  therefore blocked by a durable record from the instant it exists; nothing about its
+  safety depends on a playbook running. Subtasks of the held task get no gate: they
+  inherit the container's profile (or `profile_id` = the session's own profile) and
+  proceed once the cascade promotes them;
 - `profile_id` may be omitted (routing decides) or set only to the session's own profile.
 
-**Policy lives in the default pipeline.** `task.created` gains optional payload fields
-`created_by_kind`, `created_by_id`, `parent_task_id`, `discovered_from` (schema registry
-updated; required triple unchanged). The shipped `default-pipeline.md` rule:
+**Policy lives in the default pipeline — it resolves the hold, it does not create it.**
+`task.created` gains optional payload fields `created_by_kind`, `created_by_id`,
+`parent_task_id`, `discovered_from`, `routing_gate_id` (schema registry updated; required
+triple unchanged). The shipped `default-pipeline.md` rule:
 
 ```yaml
-- id: worker-filed-routing
+- id: worker-filed-triage
   on: task.created
-  when: { created_by_kind: session }
+  when: { created_by_kind: session, parent_task_id: null }
   steps:
-    - when: { parent_task_id: null }          # root-level discovered work
-      action: gate_create
-      args: { gate_type: routing, waiter_task_ids: ["{{event.task_id}}"] }
-    - when: { parent_task_id: null }
-      action: ensure_task
+    - action: ensure_task
       args: { dedup_key: triage-open, profile_id: triage, title: "Triage open work" }
-    # subtasks of the creator's own task: no step — they inherit and proceed
+    # triage resolves the routing gate with `aq task route`; a project that wants
+    # auto-routing replaces this step with `task_route` directly.
 ```
 
-**Ordering guarantee.** `task.created` is emitted inside `_cmd_create_task` before it
-returns; the pipeline runner dispatches on the same event loop; promotion `DEFINED →
-READY` happens no earlier than the next cascade tick (≥ 5 s later, and `_check_defined_tasks`
-is one statement under `blocked_state_authoritative`). A gate or `hold:` label attached
-by the rule therefore always lands before the task can enter the frontier. Tested with a
-fake clock: create → assert not claimable until the tick after the gate resolves.
+If the pipeline never runs (dispatch failure, concurrency cap, daemon crash — dispatch is
+`asyncio.create_task` fire-and-forget, `core.py:1026`), the task stays gated; `explain`
+reports `blocked_gate routing`, `project_ready` lists it under withheld, and the
+`pools.stuck` / existing `tasks.stuck` doctor checks surface it. Failure mode is "work
+waits for a human", never "unrouted work runs".
+
+**Ordering.** No timing argument is needed: the gate is created in the same transaction
+as the task. The former claim that a fire-and-forget pipeline "always lands" before the
+next tick is withdrawn.
 
 ---
 
@@ -446,7 +577,17 @@ and the file is skipped.
 |---|---|---|
 | `formula_list` | `project_id?` | names, descriptions, scope (`system`/`project`), var declarations |
 | `formula_show` | `name`, `project_id?`, `vars?` | resolved graph + validation findings; **no writes** |
-| `formula_cook` | `name`, `project_id`, `vars`, `parent_id?`, `dry_run?` | `create_task_graph` under a new container or `--parent`; container gets `task_metadata` `formula=<name>`, `formula_vars=<json>`, label `formula:<name>` |
+| `formula_cook` | `name`, `project_id`, `vars`, `parent_id?`, `dry_run?` | `create_task_graph` under a new container or `--parent`, **in one transaction with** the provenance writes below |
+
+**Provenance (reproducibility).** Formulas are mutable files, project-shadowed, with an
+inheritance chain, so name + vars is not enough to say what was cooked. The container
+carries, written in the creation transaction: `task_metadata` `formula=<name>`,
+`formula_scope=<system|project:<pid>>`, `formula_path=<vault-relative path>`,
+`formula_vars=<json>`, `formula_chain_sha=<sha256 over the resolved chain's file
+contents, root→leaf>`; a `task_context` row `type='formula_snapshot'` holding the fully
+resolved graph document (post-`extends`, post-vars, pre-id) as JSON; and label
+`formula:<name>`. `formula_show --as-cooked <container_id>` re-renders from the snapshot,
+not from the current file.
 
 CLI: `aq formula list [-p]`, `aq formula show <name> [--var k=v]…`,
 `aq formula cook <name> -p <pid> [--var k=v]… [--parent <id>] [--dry-run]`.
@@ -517,25 +658,53 @@ with provider-side change feeds.
 Scale: 5,000 active tasks, 10 projects, 25 concurrent sessions, containers ≤ 200 children,
 depth ≤ 3, 5,000 archived tasks, 50,000 events.
 
-| Path | Budget |
-|---|---|
-| `task_claim --next` DB portion, p99 | ≤ 50 ms; ≤ 3 statements |
-| `task_claim` end-to-end incl. slot reset, p99 | ≤ 3 s (git-bound; reported separately) |
-| 20 concurrent `claim --next` on a 10-task frontier | exactly 10 `claimed` + 10 `no_ready_work`; 0 double-claims; both dialects |
-| `_reconcile_pools` per tick | ≤ 2 statements + starts; ≤ 20 ms DB |
-| Cascade tick DB time (promotion + gates + sessions + pools + messages) | ≤ 250 ms |
-| `get_task_tree` / `task_children --recursive` / `task_progress` | ≤ 3 statements, size-independent |
-| `set_parent`, `create_task --parent` | ≤ 4 statements, one transaction |
-| `create_task_graph`, 200 nodes | one transaction, ≤ 1 s |
-| container auto-complete after last child | same transaction as the child's close; 0 extra round trips |
-| `aq prime` per claim | ≤ 2,000 tokens, logged |
-| push-vs-pull A/B (same 50-task set, `lifecycle: task` vs `pool` cap 5) | report wall-clock, tokens, cold starts; no threshold — it is the measurement D4 asks for |
+Three budgets are kept apart, because they measure different things and cannot all be
+"identical across dialects":
+
+- **Logical statements** — the statements issued on the happy path, with no retries and no
+  extra actions. Identical on Postgres and SQLite; asserted exactly.
+- **Transactions** — how many commits a path performs. Asserted exactly.
+- **Worst case** — retries (SQLite CAS), per-action convergence (`_reconcile_pools` issues
+  one statement per start/drain action), ancestor settlement (up to depth 3). Asserted as
+  an upper bound.
+
+| Path | Logical statements | Transactions | Worst case / timing (Postgres, p99) |
+|---|---|---|---|
+| `task_claim --next`, DB portion | ≤ 6 (lock session, select+take, session, agent, workspace, metadata) | 1 | SQLite: + ≤ 5 CAS retries; ≤ 50 ms |
+| `task_claim` end-to-end incl. slot reset | — | 1 + phase update | ≤ 3 s (git-bound; reported separately) |
+| 20 concurrent `claim --next`, 10-task frontier | — | — | exactly 10 `claimed` + 10 `no_ready_work`; 0 double-claims; both dialects |
+| `_reconcile_pools` per tick | 2 | 0 (reads) | + 1 statement per action, ≤ `max_starts_per_tick` starts; ≤ 20 ms DB excluding launches |
+| Cascade tick DB time (promotion + gates + sessions + pools + messages) | — | — | ≤ 250 ms |
+| `get_task_tree` / `task_children --recursive` / `task_progress` | ≤ 3, size-independent | 0 | — |
+| `set_parent`, `create_task --parent` | ≤ 5 (edge delete/insert, pointer, recompute, settle) | 1 | + settlement of ≤ 2 ancestors |
+| `create_task_graph`, 200 nodes | batched inserts | 1 | ≤ 1 s |
+| container settlement after last child closes | + 2 per settled container (predicate, transition) | 0 extra — same transaction as the child's close | ≤ depth-3 ancestors |
+| worker-filed root `create_task` | + 2 (gate, task_gates) | 1 | — |
+| `aq prime` per claim | — | — | ≤ 2,000 tokens, logged |
+| push-vs-pull A/B (same 50-task set, `lifecycle: task` vs `pool` cap 5) | — | — | report wall-clock, tokens, cold starts; no threshold — the measurement D4 asks for |
 
 `tests/perf/` seeds this scale (fixture reused by all perf tests), runs on a Postgres
-service in CI, and asserts the table. SQLite runs the same suite with timing relaxed 4×
-and statement counts identical.
+service in CI, and asserts the table. SQLite runs the same suite with timing relaxed 4×,
+logical statement and transaction counts identical, and its own worst-case bounds.
 
 ### 16. Testing
+
+**Concurrency and durability (the review's scenarios, each a named test).**
+Two concurrent `claim --next` from one session → one task, one epoch, second call
+idempotent. Crash injected after the claim transaction commits but before the slot reset →
+holder consistent (session/agent/workspace/task agree), `claim_phase='preparing'`,
+`_step_prepare_timeout` releases it, task claimable again. Cap check under load: 10
+concurrent claims against `max_claims_per_session=1` → exactly one `claimed`, nine
+`session_exhausted`. Delayed close from epoch *n* after re-claim at epoch *n+1* →
+`stale_claim`, epoch *n+1* work untouched. Worker-filed root with the pipeline runner
+disabled → task exists, gated, never promoted; `explain` says `blocked_gate routing`.
+Long-poll: a `task.ready` emitted between the subscribe and the first check is not lost
+(the seq check catches it); a `DEFINED→READY` promotion of an unblocked task wakes a
+waiter. Sizing: `busy=1, ready=2, max_active=3` → two starts. Two pool sessions racing for
+sibling plan subtasks → neither claims (excluded from the work query); both remain on push.
+Migration: two parent edges where one matches the column → column's edge kept; two edges,
+no column → oldest kept; column-only parent in another project → rejected, task becomes
+root, migration fails without `AQ_MIGRATION_ALLOW_REJECTS=1`.
 
 **Unit.** `set_parent` invariants (edge ⇔ pointer, single parent index, cycle/depth/
 cross-project rejection, affected-set includes both containers' `waits-for` waiters);
@@ -556,9 +725,13 @@ delete refuses/cascades; reparent re-evaluates waiters; adoption of `p-` session
 daemon restart; push-vs-pull A/B.
 
 **Doctor checks.** `hierarchy.parent_pointer` (edge ⇔ column, `--fix` rewrites the column
-from edges), `hierarchy.single_parent`, `hierarchy.depth`, `formulas.parse`, `pools.stuck`
-(desired > active for > 10 ticks), `pools.orphan_agents` (agent rows with no live pool
-session).
+from edges), `hierarchy.single_parent`, `hierarchy.depth` (structural),
+`hierarchy.closed_container_children` (invariant 6), `hierarchy.migration_rejects`,
+`formulas.parse`, `pools.stuck` (desired > active for > 10 ticks), `pools.orphan_agents`
+(agent rows with no live pool session), `pools.preparing_stuck` (sessions past
+`prepare_timeout` — should be empty if the reconciler step runs), `claims.holder_consistency`
+(for every `IN_PROGRESS` task held by a pool session: `sessions.task_id`,
+`agents.current_task_id`, `workspaces.locked_by_task_id` all agree).
 
 **Invariant tests.** Every new event type registered with a payload; every new `_cmd_*`
 has a tool definition or is in the exclusion list; `AGENT_COMMAND_SET` entries all exist;
@@ -578,6 +751,7 @@ swarm:
   claim_wait_max: 60
   max_starts_per_tick: 2
   scale_down_grace: 120
+  prepare_timeout: 120      # claim_phase='preparing' longer than this → claim released
 work_graph:
   container_sweep_interval_seconds: 60
 ```
@@ -586,24 +760,41 @@ Hierarchy changes (Part I) ship **ungated** — they fix drift and remove a per-
 `task_claim` is callable by `lifecycle: task` sessions even with `swarm.enabled: false`
 (idempotent re-claim only), so the command surface is stable before pools turn on.
 
-**Migration** (one revision, DDL + one data step):
+**Migration** (one revision: DDL, then a data step, then the constraint):
 
-- `tasks`: `next_child_ordinal`, `created_by_kind`, `created_by_id`; index
-  `idx_tasks_ready_by_profile`; `archived_tasks` mirrors the two provenance columns.
-- `task_dependencies`: `uq_task_deps_single_parent` partial unique index (SQLite and
-  Postgres both support partial indexes; written by hand in the revision).
-- `sessions`: `claims`, `agent_id`.
-- `agent_profiles`: `min_active`, `max_active`, `max_claims_per_session`.
-- Data step: for every `parent-child` edge set `parent_task_id`; for every non-null
-  `parent_task_id` with no edge, insert the edge; where a task has **two** parent edges,
-  keep the one matching the column (or the oldest) and log the rest to a report — the
-  unique index is created *after* this step; backfill `next_child_ordinal = 1 + max
-  existing ordinal` per parent.
+DDL first — `tasks`: `next_child_ordinal`, `created_by_kind`, `created_by_id`,
+`claim_epoch`; index `idx_tasks_ready_by_profile`; `archived_tasks` mirrors the provenance
+columns. `sessions`: `claims`, `agent_id`, `claim_phase`. `agent_profiles`: `min_active`,
+`max_active`, `max_claims_per_session`. A remediation table
+`hierarchy_migration_rejects (task_id, parent_id, source, reason, detail, created_at)`.
+
+Data step — canonicalise from an **immutable snapshot** taken before any write:
+
+1. Snapshot `S_col = {(task, parent_task_id)}` and
+   `S_edge = {(task, depends_on) | dep_type = 'parent-child'}` into temp tables.
+2. For each task, choose its canonical parent: the single edge if there is one; if there
+   are several, the one equal to `S_col` (the column is the evidence, read from the
+   snapshot, so update order cannot destroy it), else the oldest edge by `created_at`,
+   else none. Every non-chosen edge → `hierarchy_migration_rejects(source='duplicate_edge')`.
+   Tasks with a column value and no edge → candidate edge from the column
+   (`source='column_only'`).
+3. **Validate the candidate graph as a whole** before writing it: cross-project parent,
+   cycle, structural depth > 3, parent not found. Each failure → rejects table with the
+   reason; the candidate is dropped (task becomes a root).
+4. Apply: delete every `parent-child` edge, insert the canonical set, write
+   `parent_task_id` from it, backfill `next_child_ordinal = 1 + max existing dotted
+   ordinal` per parent.
+5. Create `uq_task_deps_single_parent`.
+6. If the rejects table is non-empty the migration **fails** (transaction rolls back)
+   unless `AQ_MIGRATION_ALLOW_REJECTS=1`, in which case it commits with the rejects
+   persisted and `aq doctor` reports `hierarchy.migration_rejects` until they are cleared.
+   Rejected edges are re-attachable by hand (`aq task reparent`) or kept as
+   `discovered-from` provenance by the operator.
 
 **Shipped profile defaults** (inert until `swarm.enabled`): `worker-fast`
 (`lifecycle: pool, max_claims_per_session: 2, max_active: 3`), `worker-standard`
-(`pool, 5, 3`), `worker-deep` (`pool, 0, max_session_age: 14400, max_active: 1`).
-`min_active: 0` everywhere.
+(`pool, 5, 3`), `worker-deep` (`pool, max_claims_per_session` unset = unlimited,
+`max_session_age: 14400, max_active: 1`). `min_active: 0` everywhere.
 
 **Implementation plan split** (each independently mergeable):
 1. Part I — hierarchy, graph creator, migration, doctor checks, `children/progress/reparent`.
@@ -616,7 +807,7 @@ Hierarchy changes (Part I) ship **ungated** — they fix drift and remove a per-
 | Beads property (parity doc) | Delivered by |
 |---|---|
 | P1 graph decides | `blocked_state_authoritative` flip + claim over `get_ready_frontier` |
-| P2 fenced claim + leases | §10 (token-fenced, CAS/SKIP LOCKED); existing leases |
+| P2 fenced claim + leases | §10 (holder recorded in the claim transaction; `claim_epoch` fences every later mutation; token pins session/project); existing leases |
 | P4 typed close | `--claim-next` on the existing typed close |
 | P5 agents file work | §12 |
 | P6 ordering primitives | Part I (single parent, subtree archive/delete, event-driven completion) |
