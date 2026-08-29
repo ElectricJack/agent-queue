@@ -49,6 +49,10 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         render_as_batch=True,  # SQLite compatibility
+        # No ``transaction_per_migration`` here: offline mode only emits SQL
+        # text and never executes a revision body against a live bind, so
+        # revision b2c3d4e5f6a7's preflight (which needs a second, committed
+        # connection — see ``_do_run_migrations``) cannot run offline at all.
     )
 
     with context.begin_transaction():
@@ -63,6 +67,14 @@ def _do_run_migrations(connection) -> None:
         target_metadata=target_metadata,
         render_as_batch=is_sqlite,  # batch mode for SQLite ALTER TABLE
         compare_type=True,  # detect column type changes
+        # One transaction PER revision, not one around the whole chain.
+        # Required by revision b2c3d4e5f6a7 (hierarchy canonicalise): its
+        # preflight opens a SECOND connection to inspect and repair the
+        # tables created by revision a1b2c3d4e5f6.  Under a single
+        # chain-wide transaction that second connection cannot see
+        # revision A's uncommitted DDL on a fresh Postgres database, and
+        # blocks on A's ACCESS EXCLUSIVE locks on an existing one.
+        transaction_per_migration=True,
     )
 
     with context.begin_transaction():

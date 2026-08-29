@@ -348,3 +348,33 @@ class TestPreflightCommand:
         res = await handler._cmd_db_preflight_hierarchy({})
         assert res["success"] is True
         assert res["rejects"] == []
+
+
+class TestEnvTransactionPerMigration:
+    """Revision B's preflight needs revision A committed before it opens its
+    second connection — that only holds with one transaction per migration."""
+
+    def test_online_configure_sets_transaction_per_migration(self):
+        import ast
+
+        src = open(os.path.join(ROOT, "migrations", "env.py")).read()
+        tree = ast.parse(src)
+        fn = next(
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "_do_run_migrations"
+        )
+        calls = [
+            n
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "configure"
+        ]
+        assert calls, "env.py._do_run_migrations must call context.configure()"
+        kwargs = {k.arg: k.value for k in calls[0].keywords}
+        assert "transaction_per_migration" in kwargs, (
+            "migrations/env.py must pass transaction_per_migration=True "
+            "(revision b2c3d4e5f6a7's preflight opens a second connection)"
+        )
+        assert kwargs["transaction_per_migration"].value is True

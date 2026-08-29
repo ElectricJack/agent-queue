@@ -7,6 +7,14 @@ Create Date: 2026-08-28
 
 Runs the preflight on a separate autocommit connection first so the rejects
 report survives an abort (spec §17).
+
+REQUIRES ``transaction_per_migration=True`` in ``migrations/env.py``.  The
+preflight below opens a second connection via ``bind.engine.connect()``.  If
+Alembic wrapped the whole revision chain in one transaction, that second
+connection could not see revision a1b2c3d4e5f6's still-uncommitted DDL on a
+fresh Postgres database, and would block on its ACCESS EXCLUSIVE locks on an
+existing one.  With one transaction per migration, revision A is committed
+before this revision starts.
 """
 
 import os
