@@ -859,8 +859,15 @@ class TaskCommandsMixin:
             await self.orchestrator._emit_task_event(
                 "task.reparented", task, old_parent=old_parent or "", new_parent=new_parent or ""
             )
-        except AttributeError:
-            pass
+        except AttributeError as e:  # orchestrator missing hook (test doubles)
+            logger.warning("reparent_task: failed to emit task.reparented (missing hook): %s", e)
+        except Exception as e:
+            logger.error(
+                "reparent_task: task.reparented emission failed (task=%s): %s",
+                task_id,
+                e,
+                exc_info=True,
+            )
         return {
             "success": True,
             "task_id": task_id,

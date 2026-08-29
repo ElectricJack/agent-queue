@@ -318,6 +318,16 @@ class TestHierarchyCommands:
         res = await handler._cmd_reparent_task({"task_id": "a", "parent_id": "a"})
         assert res["code"] == "hierarchy.self_parent"
 
+    async def test_reparent_to_current_parent_is_idempotent(self, handler, db):
+        await mktask(db, "p1", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "c")
+        await db.add_dependency("c", "p1", "parent-child")
+        res = await handler._cmd_reparent_task({"task_id": "c", "parent_id": "p1"})
+        assert res["success"] is True
+        assert res["old_parent"] == res["new_parent"] == "p1"
+        assert "code" not in res
+        assert (await db.get_task("c")).parent_task_id == "p1"
+
     async def test_schema_lists_hierarchy_codes(self, handler):
         res = await handler._cmd_get_schema({})
         assert "container_closed" in res["enums"]["hierarchy_error"]
