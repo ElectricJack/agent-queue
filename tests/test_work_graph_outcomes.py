@@ -18,7 +18,7 @@ import pytest
 from src.database import SQLiteDatabaseAdapter
 from src.models import DepType, Project, Task, TaskStatus
 from src.state_machine import InvalidTransition
-from src.task_names import _hierarchy_depth, generate_task_id
+from src.task_names import generate_task_id, naming_depth
 
 
 PROJECT = "p-wg5"
@@ -83,27 +83,30 @@ class TestHierarchicalIds:
         cid = await generate_task_id(db, parent_id="root-a")
         assert cid == "root-a.1"
 
-    async def test_child_ordinals_fill_after_max(self, db):
+    async def test_child_ordinals_are_sequential_and_never_reused(self, db):
         await mktask(db, "root-a")
-        # Create children manually with gaps: root-a.1, root-a.3 exist.
-        await mktask(db, "root-a.1", parent_task_id="root-a")
-        await mktask(db, "root-a.3", parent_task_id="root-a")
-        cid = await generate_task_id(db, parent_id="root-a")
-        # Next ordinal is max + 1 = 4 (gap at 2 is *not* refilled).
-        assert cid == "root-a.4"
+        # The counter fills sequentially from 1 regardless of what ids
+        # already exist under the parent — it never scans siblings.
+        first = await generate_task_id(db, parent_id="root-a")
+        second = await generate_task_id(db, parent_id="root-a")
+        assert (first, second) == ("root-a.1", "root-a.2")
+        # A deleted child's ordinal is not reused: the counter keeps
+        # advancing even though "root-a.1" no longer exists.
+        await db.delete_task("root-a.1")
+        third = await generate_task_id(db, parent_id="root-a")
+        assert third == "root-a.3"
 
     async def test_depth_cap_falls_back_to_root(self, db, caplog):
         """A depth-3 parent hits the cap: the helper returns a fresh root id
-        (adjective-noun) and warns; the caller is expected to add a
-        ``discovered-from`` edge."""
+        and logs; the caller is expected to add a ``discovered-from`` edge."""
         # Depth 3: "a.1.2" (3 segments).
-        assert _hierarchy_depth("a.1.2") == 3
+        assert naming_depth("a.1.2") == 3
         await mktask(db, "a")
         await mktask(db, "a.1", parent_task_id="a")
         await mktask(db, "a.1.2", parent_task_id="a.1")
         import logging as _lg
 
-        caplog.set_level(_lg.WARNING, logger="src.task_names")
+        caplog.set_level(_lg.INFO, logger="src.task_names")
         cid = await generate_task_id(db, parent_id="a.1.2")
         # Fallback root id: has a hyphen (adjective-noun), no dot prefix
         # tying it to the parent.

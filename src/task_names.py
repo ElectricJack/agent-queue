@@ -12,6 +12,7 @@ fallback.
 
 from __future__ import annotations
 
+import logging
 import random
 
 ADJECTIVES = [
@@ -82,110 +83,93 @@ NOUNS = [
 
 _MAX_RETRIES = 10
 
-# Depth cap on hierarchical child ids (work-graph §7).  A child of a
-# depth-``_MAX_HIERARCHY_DEPTH`` task falls back to a fresh root id and
-# gets a ``discovered-from`` edge to its notional parent, with a warning.
-_MAX_HIERARCHY_DEPTH = 3
+#: Naming depth cap (swarm-work-model §4): a parent whose id already has this
+#: many dot-segments mints *root* ids for its children (plus a
+#: ``discovered-from`` edge, added by the caller).  Naming depth never blocks
+#: a structural operation; structural depth is enforced by the query layer.
+MAX_NAMING_DEPTH = 3
+
+#: Structural depth cap — the live ``parent-child`` chain length, root = 1.
+MAX_STRUCTURAL_DEPTH = 3
 
 
-def _hierarchy_depth(task_id: str) -> int:
-    """Number of dot-separated segments in *task_id* (depth of the id)."""
+def naming_depth(task_id: str) -> int:
+    """Number of dot-separated segments in *task_id*."""
     return task_id.count(".") + 1
 
 
-async def _next_child_ordinal(db, parent_id: str) -> int:
-    """Return the next sibling ordinal for children of *parent_id*.
+async def fresh_root_id(conn) -> str:
+    """A fresh adjective-noun root id, collision-checked on *conn*."""
+    from sqlalchemy import select
 
-    Children carry ids of the form ``{parent}.{n}``; ordinals fill upward
-    from the max existing sibling to avoid reusing gaps left by deletes.
-    """
-    # ``get_subtasks`` filters by ``parent_task_id``; we only need the
-    # numeric suffix of each child id under the dot form.
-    try:
-        children = await db.get_subtasks(parent_id)
-    except Exception:
-        children = []
-    max_ord = 0
-    prefix = f"{parent_id}."
-    for child in children:
-        cid = child.id if hasattr(child, "id") else child
-        if not isinstance(cid, str) or not cid.startswith(prefix):
-            continue
-        tail = cid[len(prefix):]
-        # Only pure-integer segments count as ordinals under this scheme.
-        seg = tail.split(".", 1)[0]
-        try:
-            n = int(seg)
-        except ValueError:
-            continue
-        if n > max_ord:
-            max_ord = n
-    return max_ord + 1
+    from src.database.tables import tasks
 
+    async def _exists(name: str) -> bool:
+        row = (await conn.execute(select(tasks.c.id).where(tasks.c.id == name))).fetchone()
+        return row is not None
 
-async def _fresh_root_id(db) -> str:
-    """Generate a fresh adjective-noun root id, colliding-safe against the DB."""
     for _ in range(_MAX_RETRIES):
         name = f"{random.choice(ADJECTIVES)}-{random.choice(NOUNS)}"
-        existing = await db.get_task(name)
-        if not existing:
+        if not await _exists(name):
             return name
     while True:
         name = f"{random.choice(ADJECTIVES)}-{random.choice(NOUNS)}-{random.randint(10, 99)}"
-        existing = await db.get_task(name)
-        if not existing:
+        if not await _exists(name):
             return name
 
 
-async def child_task_id(db, parent_id: str) -> tuple[str, bool]:
-    """Return ``(id, capped)`` for a child of *parent_id* (work-graph §7).
+async def reserve_child_ordinal(conn, parent_id: str) -> int:
+    """Atomically take the next child ordinal from the parent row (spec §6).
 
-    * ``capped=False`` — hierarchical child ``f"{parent_id}.{n}"`` where
-      ``n`` is the next sibling ordinal.
-    * ``capped=True`` — parent is at ``_MAX_HIERARCHY_DEPTH`` so we return
-      a fresh root id; the caller is expected to add a ``discovered-from``
-      edge to *parent_id* so provenance survives.
-
-    ``_cmd_create_task`` is the sole caller that needs the ``capped`` flag
-    (it has the DB handle to add the edge).  ``generate_task_id`` remains
-    the shorthand for callers that don't care about the fallback signal.
+    ``UPDATE … RETURNING`` on both dialects (SQLite ≥ 3.35 supports
+    RETURNING; the bundled library is newer).  The row update is the
+    serialisation point: two concurrent reservations cannot return the same
+    number because the second UPDATE sees the first's increment.  Ordinals
+    are never reused — deletes leave gaps on purpose (an id must never be
+    re-minted).
     """
-    if _hierarchy_depth(parent_id) >= _MAX_HIERARCHY_DEPTH:
-        import logging as _logging
+    from sqlalchemy import update
 
-        _logging.getLogger(__name__).warning(
-            "child_task_id: parent '%s' at depth %d hits cap %d — "
-            "falling back to root id (caller should add a "
-            "'discovered-from' edge)",
-            parent_id,
-            _hierarchy_depth(parent_id),
-            _MAX_HIERARCHY_DEPTH,
+    from src.database.tables import tasks
+
+    stmt = (
+        update(tasks)
+        .where(tasks.c.id == parent_id)
+        .values(next_child_ordinal=tasks.c.next_child_ordinal + 1)
+        .returning(tasks.c.next_child_ordinal)
+    )
+    row = (await conn.execute(stmt)).fetchone()
+    if row is None:
+        raise KeyError(parent_id)
+    return int(row[0]) - 1
+
+
+async def child_task_id(conn, parent_id: str) -> tuple[str, bool]:
+    """Return ``(id, capped)`` for a new child of *parent_id* (spec §6).
+
+    ``capped=False`` — ``f"{parent_id}.{n}"`` with *n* reserved atomically.
+    ``capped=True``  — the parent is at :data:`MAX_NAMING_DEPTH`; a fresh
+    root id is returned and the caller adds a ``discovered-from`` edge so
+    provenance survives without extending the dotted chain.
+    """
+    if naming_depth(parent_id) >= MAX_NAMING_DEPTH:
+        logging.getLogger(__name__).info(
+            "child_task_id: parent '%s' at naming depth cap — minting a root id", parent_id
         )
-        return (await _fresh_root_id(db), True)
-
-    n = await _next_child_ordinal(db, parent_id)
-    candidate = f"{parent_id}.{n}"
-    existing = await db.get_task(candidate)
-    while existing is not None:
-        n += 1
-        candidate = f"{parent_id}.{n}"
-        existing = await db.get_task(candidate)
-    return (candidate, False)
+        return (await fresh_root_id(conn), True)
+    n = await reserve_child_ordinal(conn, parent_id)
+    return (f"{parent_id}.{n}", False)
 
 
 async def generate_task_id(db, parent_id: str | None = None) -> str:
-    """Generate a unique task ID, checking the DB for collisions.
+    """Generate a unique task id.
 
-    When *parent_id* is set, returns a hierarchical child id
-    ``f"{parent_id}.{n}"`` (work-graph §7).  At depth cap the helper
-    falls back to a fresh root id and logs a warning — callers that need
-    to know about the fallback should use :func:`child_task_id` instead,
-    which returns ``(id, capped)`` so it can wire the ``discovered-from``
-    edge.
-
-    Otherwise (root id) returns the classic adjective-noun form.
+    With *parent_id* this opens its own transaction and delegates to
+    :func:`child_task_id`; callers that already hold a connection (the
+    hierarchy mixin, the graph creator) call that directly instead.
     """
-    if parent_id is not None:
-        cid, _capped = await child_task_id(db, parent_id)
-        return cid
-    return await _fresh_root_id(db)
+    async with db._engine.begin() as conn:
+        if parent_id is not None:
+            cid, _capped = await child_task_id(conn, parent_id)
+            return cid
+        return await fresh_root_id(conn)

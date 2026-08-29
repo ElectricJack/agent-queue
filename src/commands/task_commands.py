@@ -1024,7 +1024,8 @@ class TaskCommandsMixin:
         # ``parent-child`` edge for ``discovered-from`` so provenance
         # survives without extending the depth chain.
         if parent_id:
-            task_id, depth_cap_fallback = await child_task_id(self.db, parent_id)
+            async with self.db._engine.begin() as _conn:
+                task_id, depth_cap_fallback = await child_task_id(_conn, parent_id)
             if depth_cap_fallback:
                 if (parent_id, DepType.DISCOVERED_FROM.value) not in edges:
                     edges.append((parent_id, DepType.DISCOVERED_FROM.value))
