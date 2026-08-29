@@ -136,6 +136,21 @@ class AgentReconciler:
                 report.skipped.append((project.id, reason))
                 continue
 
+            # Pull-model pools (swarm-work-model §11) claim their own work;
+            # push agent rows are never created for them.  ``lifecycle``
+            # lives on the profile row, so a project-scoped override is
+            # checked first, mirroring Orchestrator._resolve_profile.  A
+            # project whose only READY work is pool-routed has nothing left
+            # to do here — that is expected routing, not a skip to report.
+            def _is_pool(pid: str) -> bool:
+                scoped = profiles.get(f"project:{project.id}:{pid}")
+                prof = scoped or profiles.get(pid)
+                return bool(prof and getattr(prof, "lifecycle", "task") == "pool")
+
+            needed_profiles = {pid for pid in needed_profiles if not _is_pool(pid)}
+            if not needed_profiles:
+                continue
+
             project_agents = agents_by_project.get(project.id, [])
             existing_profiles = {
                 a.profile_id for a in project_agents if a.state == AgentState.IDLE

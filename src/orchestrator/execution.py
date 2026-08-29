@@ -1716,8 +1716,15 @@ class ExecutionMixin:
         flag, and a ``harness`` on the resolved profile.  Rollback is
         therefore either flipping the flag or removing ``harness:`` from one
         profile -- no code change, and live sessions drain naturally.
+
+        A ``lifecycle: pool`` profile is never push-routed (swarm-work-model
+        §11): its work is claimed by long-lived pool sessions, not launched
+        per task.  ``lifecycle`` lives on the profile row itself, so this
+        check needs no project context even for a project-scoped override.
         """
         if not self.config.sessions.enabled:
+            return False
+        if getattr(profile, "lifecycle", "task") == "pool":
             return False
         return bool(getattr(profile, "harness", "") or "")
 

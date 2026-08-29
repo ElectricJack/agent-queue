@@ -116,6 +116,7 @@ from src.orchestrator.approval import ApprovalMixin
 from src.orchestrator.context import ContextMixin
 from src.orchestrator.events import EventsMixin
 from src.orchestrator.sync_workflow import SyncWorkflowMixin
+from src.orchestrator.pools import PoolsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +257,7 @@ class Orchestrator(
     ContextMixin,
     EventsMixin,
     SyncWorkflowMixin,
+    PoolsMixin,
 ):
     """Coordinates the full task lifecycle across multiple projects and agents.
 
@@ -384,6 +386,14 @@ class Orchestrator(
         # ``(session_id, claim_epoch)``; resolved by
         # ``ClaimCommandsMixin._resolve_claim_waiters``.
         self.claim_waiters: dict[tuple[str, int | None], asyncio.Future] = {}
+        # Worker-pool sizing state (swarm-work-model §11), owned by
+        # ``PoolsMixin``.  ``_pool_surplus_since`` tracks how long each
+        # ``(project_id, profile_id)`` key has been in continuous surplus,
+        # so scale-down waits out ``swarm.scale_down_grace`` before draining.
+        # ``_pool_quarantine`` holds a key's until-timestamp for a pool a
+        # launch failure has temporarily stopped starting into.
+        self._pool_surplus_since: dict = {}
+        self._pool_quarantine: dict = {}
         # EventBus subscription that resolves ``event`` gates live.  Set by
         # ``_subscribe_event_gates`` on initialize; kept as an attribute so
         # tests can toggle it deterministically.
@@ -2033,6 +2043,34 @@ class Orchestrator(
                 )
                 await self.db.delete_agent(a.id)
 
+        # RETIRED agents (swarm-work-model §9): terminate_pool_session marks
+        # the agent RETIRED once its session's claim fence closes, and
+        # nothing revives a RETIRED agent — the startup reaper deletes them
+        # unconditionally, releasing whatever workspace they still hold.
+        for a in agents:
+            if a.state == AgentState.RETIRED:
+                logger.info("Recovery: deleting RETIRED agent '%s'", a.name)
+                await self.db.release_workspaces_for_agent(a.id)
+                await self.db.delete_agent(a.id)
+
+        # Pool-profile agents with no session row (swarm-work-model §11): a
+        # launch that died between the agent row and the session row, or a
+        # session row independently removed, leaves an orphan pool agent
+        # holding a workspace lock forever.  Release the lock and drop it.
+        pool_agent_types = {
+            p.id.rsplit(":", 1)[-1]
+            for p in await self.db.list_profiles()
+            if getattr(p, "lifecycle", "task") == "pool"
+        }
+        for a in agents:
+            if a.state == AgentState.RETIRED or a.profile_id not in pool_agent_types:
+                continue
+            if await self.db.list_sessions(agent_id=a.id):
+                continue
+            logger.info("Recovery: deleting orphan pool agent '%s' (no session row)", a.name)
+            await self.db.release_workspaces_for_agent(a.id)
+            await self.db.delete_agent(a.id)
+
         # Release all workspace locks and clean orphaned sentinels.
         # After a restart no agents are running, so all DB locks are stale.
         # Also remove sentinel files from ALL workspaces — they may exist
@@ -2493,6 +2531,11 @@ class Orchestrator(
                     continue  # Already running — skip double-launch
                 bg = asyncio.create_task(self._execute_task_safe(action))
                 self._running_tasks[action.task_id] = bg
+
+            # 6b. Reconcile worker pools (swarm-work-model §11): size each
+            #     (project, profile) pool against ready work and start/drain
+            #     sessions to converge.  No-op unless swarm.enabled.
+            await self._reconcile_pools()
 
             # ── Phase 3: Housekeeping ───────────────────────────────────────
 
@@ -3119,6 +3162,39 @@ class Orchestrator(
         # workspace is unlocked.
         all_workspaces = await self.db.list_workspaces()
         workspace_locks = {ws.id: ws.locked_by_task_id for ws in all_workspaces}
+
+        # Push-scheduler exclusion (swarm-work-model §11): pool-profile work
+        # is claimed by long-lived pool sessions, never assigned by the push
+        # scheduler.  Drop both sides so neither can cross-contaminate the
+        # other: pool-profile READY tasks never enter ``ready_by_project``,
+        # and idle pool agents (created by ``_launch_pool_session``, which
+        # holds their sole workspace lock) are never handed an unrelated
+        # task — the scheduler otherwise matches any idle agent to any
+        # project's task with no profile check at all.
+        if self.config.swarm.enabled:
+            pool_ids_by_project: dict[str, set[str]] = {
+                p.id: await self._pool_profile_ids(p.id) for p in projects
+            }
+            default_profile_by_project = {p.id: p.default_profile_id for p in projects}
+            tasks = [
+                t
+                for t in tasks
+                if (t.profile_id or default_profile_by_project.get(t.project_id))
+                not in pool_ids_by_project.get(t.project_id, set())
+            ]
+            ws_owner = {
+                w.locked_by_agent_id: w.project_id
+                for w in all_workspaces
+                if w.locked_by_agent_id
+            }
+
+            def _is_idle_pool_agent(a) -> bool:
+                if a.state != AgentState.IDLE:
+                    return False
+                pid = ws_owner.get(a.id)
+                return pid is not None and a.profile_id in pool_ids_by_project.get(pid, set())
+
+            agents = [a for a in agents if not _is_idle_pool_agent(a)]
 
         # Load active project constraints (exclusive, pause_scheduling,
         # max_agents_by_type) so the scheduler can enforce them.

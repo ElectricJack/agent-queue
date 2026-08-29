@@ -209,7 +209,7 @@ class SessionReconciler:
         by_name = {r.name: r for r in rows}
 
         observed: dict[str, SessionHandle] = {}
-        for prefix in ("s-", "n-"):
+        for prefix in ("s-", "n-", "p-"):
             provider = self.providers.create(self.sessions_config.provider, self.config)
             try:
                 for handle in await provider.list_running(prefix):

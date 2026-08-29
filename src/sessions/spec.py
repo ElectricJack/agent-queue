@@ -42,9 +42,11 @@ __all__ = [
     "sanitize_name",
     "task_session_name",
     "named_session_name",
+    "pool_session_name",
     "skip_permissions_allowed",
     "BYPASS_PERMISSION_MODE",
     "BOOTSTRAP_PROMPT",
+    "POOL_BOOTSTRAP_PROMPT",
 ]
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -121,6 +123,18 @@ NAMED_BOOTSTRAP_PROMPT = (
     "Do not run `aq prime` — it is task-scoped and there is no task here."
 )
 
+#: Bootstrap for a pool worker session (swarm-work-model §11.3) — no task in
+#: scope at launch; the worker claims its own work in a loop.  ``{}`` fields:
+#: project_name, profile_id.
+POOL_BOOTSTRAP_PROMPT = (
+    "You are a pool worker for project {project_name} (profile {profile_id}).\n"
+    "Loop: run `aq task claim --next --wait 60`. On `claimed`, run `aq prime`, do the\n"
+    "work, then `aq task close --outcome pass|fail --summary \"...\" --claim-next --wait 60`.\n"
+    "On `no_ready_work`, claim again. On `session_exhausted` or `drain_requested`, exit 0.\n"
+    "On `not_admissible`, wait as instructed and claim again. Never touch tasks you do not\n"
+    "hold; .aq/claim.json in your workspace is the proof of what you hold."
+)
+
 #: The ``sh -c`` script used for oversized prompts.  ``$1`` is the prompt
 #: file; everything after it is the harness argv.
 _PROMPT_FILE_SCRIPT = '__aq_prompt=$(cat "$1"); shift; exec "$@" "$__aq_prompt"'
@@ -162,6 +176,16 @@ def named_session_name(profile_id: str, project_id: str | None = None) -> str:
     if project_id:
         base = f"{base}--{sanitize_name(project_id)}"
     return base
+
+
+def pool_session_name(profile_id: str, project_id: str, nonce: str) -> str:
+    """Provider name for a pool worker session — also its ``session_id``.
+
+    Unlike task and named sessions, a pool session has no separate id/name
+    split: ``p-<profile>--<project>--<nonce>`` is both (swarm-work-model
+    §11.2), so adoption and ``list_sessions`` can key on either.
+    """
+    return f"p-{sanitize_name(profile_id)}--{sanitize_name(project_id)}--{sanitize_name(nonce)}"
 
 
 class SessionSpecBuilder:
@@ -279,6 +303,66 @@ class SessionSpecBuilder:
             # explicit ``permission_mode: bypassPermissions`` opt-in
             # (trust-and-ops §4) can grant the skip-permissions flag.
             allow_skip_permissions=skip_permissions_allowed(profile, None),
+        )
+
+    def build_pool_spec(
+        self,
+        *,
+        profile,
+        project,
+        agent_id: str,
+        harness: Harness,
+        work_dir: str,
+        session_id: str,
+        instance_token: str,
+        epoch: str = "",
+        api_url: str = "",
+        api_token: str = "",
+        resume_key: str | None = None,
+        prompt: str | None = None,
+        workspace_source_type=None,
+    ) -> SessionSpec:
+        """Spec for a pool worker session (``lifecycle="pool"``, §11).
+
+        *session_id* **is** the provider name — :func:`pool_session_name`
+        already derived it, so there is no separate id/name split to
+        reconcile the way task and named sessions have.  The bootstrap
+        prompt and env markers identify the launch as a pool worker rather
+        than a one-task or persistent session, per §11.2/§11.3.
+        """
+        profile_id = getattr(profile, "id", "") or ""
+        project_id = getattr(project, "id", "") or ""
+        project_name = getattr(project, "name", "") or project_id
+        bootstrap = prompt if prompt is not None else POOL_BOOTSTRAP_PROMPT.format(
+            project_name=project_name, profile_id=profile_id
+        )
+        extra_env = {
+            "AQ_SESSION_KIND": "pool",
+            "AQ_AGENT_ID": agent_id,
+            "AQ_PROFILE_ID": profile_id,
+            "GIT_AUTHOR_NAME": f"aq {profile_id}",
+            "GIT_COMMITTER_NAME": f"aq {profile_id}",
+            "GIT_AUTHOR_EMAIL": f"{profile_id}@agent-queue.local",
+            "GIT_COMMITTER_EMAIL": f"{profile_id}@agent-queue.local",
+        }
+        return self._build(
+            harness=harness,
+            profile=profile,
+            session_name=session_id,
+            work_dir=work_dir,
+            session_id=session_id,
+            task_id=None,
+            project_id=project_id,
+            profile_id=profile_id,
+            instance_token=instance_token,
+            epoch=epoch,
+            api_url=api_url,
+            api_token=api_token,
+            resume_key=resume_key,
+            bootstrap=bootstrap,
+            lifecycle="pool",
+            allow_skip_permissions=skip_permissions_allowed(profile, workspace_source_type),
+            extra_env=extra_env,
         )
 
     # -- internals ---------------------------------------------------------

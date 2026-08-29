@@ -608,6 +608,12 @@ _CANONICAL_PAYLOADS["task.claim_conflict"] = {
 _CANONICAL_PAYLOADS["snapshot.refreshed"] = {"tick": 1234567890.0}
 _CANONICAL_PAYLOADS["project.resumed"] = {"project_id": "proj-1"}
 _CANONICAL_PAYLOADS["constraint.released"] = {"project_id": "proj-1"}
+_CANONICAL_PAYLOADS["pool.scaled"] = {
+    "project_id": "proj-1",
+    "profile_id": "worker",
+    "kind": "start",
+    "count": 1,
+}
 
 # -- session-runtime (lane 2A) -------------------------------------------
 _CANONICAL_PAYLOADS.update(

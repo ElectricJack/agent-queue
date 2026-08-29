@@ -810,6 +810,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
         "required": ["project_id"],
         "optional": [],
     },
+    "pool.scaled": {
+        "required": ["project_id", "profile_id", "kind", "count"],
+        "optional": [],
+    },
 }
 
 # ---------------------------------------------------------------------------

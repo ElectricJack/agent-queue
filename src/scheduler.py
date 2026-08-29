@@ -507,3 +507,137 @@ class Scheduler:
                 break
 
         return actions
+
+
+# ---------------------------------------------------------------------------
+# Worker pools (swarm-work-model §11) — desired-state pool sizing.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PoolKey:
+    """Identifies one (project, profile) worker pool."""
+
+    project_id: str
+    profile_id: str
+
+
+@dataclass
+class PoolSupply:
+    """Observed pool session counts for one :class:`PoolKey`, this tick."""
+
+    running_idle: int = 0  # running, claim_phase NULL, task_id NULL
+    running_busy: int = 0  # running, task_id set (any claim_phase)
+    starting: int = 0  # state == 'starting'
+    draining: int = 0  # desired_state == 'stopped'
+    idle_session_ids: list[str] = field(default_factory=list)  # oldest first
+
+
+@dataclass(frozen=True)
+class PoolAction:
+    """One start or drain to execute for a pool this tick."""
+
+    key: PoolKey
+    kind: str  # "start" | "drain"
+    count: int
+    session_ids: tuple[str, ...] = ()  # for drains
+
+
+def size_pools(
+    *,
+    supply: dict[PoolKey, PoolSupply],
+    demand: dict[PoolKey, int],
+    bounds: dict[PoolKey, tuple[int, int | None]],  # (min_active, max_active)
+    project_caps: dict[str, int | None],
+    global_cap: int | None,
+    surplus_since: dict[PoolKey, float],
+    now: float,
+    scale_down_grace: float,
+    max_starts_per_tick: int,
+    max_drains_per_tick: int,
+) -> tuple[list[PoolAction], dict[PoolKey, float]]:
+    """Desired-state pool sizing (swarm-work-model §11.1).  Pure — no I/O, no clock.
+
+    ``want = busy + ready``; ``desired = clamp(want, min_active, max_active)``
+    (``max_active=None`` is unbounded); ``desired`` is then floored at
+    ``busy + starting`` so a launch already in flight or a task already
+    claimed never gets undercut mid-task.
+
+    Scale-up hands out ``max_starts_per_tick`` one start at a time,
+    round-robin across pools that still want more, bounded first by each
+    pool's project cap (the sum of that project's pools) and then by the
+    global cap (everything) — so a saturated cap fair-shares whatever
+    headroom remains instead of starving later pools in iteration order.
+
+    Scale-down only touches idle sessions, oldest first, and only after a
+    pool has been in continuous surplus for ``scale_down_grace`` seconds
+    (tracked via ``surplus_since``, returned updated) — never mid-task, and
+    never flapping on a one-tick dip in demand.
+    """
+    actions: list[PoolAction] = []
+    new_surplus: dict[PoolKey, float] = {}
+    keys = sorted(
+        set(supply) | set(demand) | set(bounds), key=lambda k: (k.project_id, k.profile_id)
+    )
+    desired: dict[PoolKey, int] = {}
+    current: dict[PoolKey, int] = {}
+    for key in keys:
+        sup = supply.get(key, PoolSupply())
+        lo, hi = bounds.get(key, (0, None))
+        want = sup.running_busy + demand.get(key, 0)
+        d = max(lo, want)
+        if hi is not None:
+            d = min(d, hi)
+        d = max(d, sup.running_busy + sup.starting)
+        desired[key] = d
+        current[key] = sup.running_idle + sup.running_busy + sup.starting
+
+    # --- scale up: round-robin under project caps, then the global cap ----
+    starts: dict[PoolKey, int] = {k: 0 for k in keys}
+    used_project = {
+        p: sum(current[k] for k in keys if k.project_id == p)
+        for p in {k.project_id for k in keys}
+    }
+    used_global = sum(current.values())
+    budget = max_starts_per_tick
+    progressed = True
+    while budget > 0 and progressed:
+        progressed = False
+        for key in keys:
+            if current[key] + starts[key] >= desired[key]:
+                continue
+            cap = project_caps.get(key.project_id)
+            if cap is not None and used_project[key.project_id] >= cap:
+                continue
+            if global_cap is not None and used_global >= global_cap:
+                continue
+            starts[key] += 1
+            used_project[key.project_id] += 1
+            used_global += 1
+            budget -= 1
+            progressed = True
+            if budget == 0:
+                break
+    for key in keys:
+        if starts[key]:
+            actions.append(PoolAction(key=key, kind="start", count=starts[key]))
+
+    # --- scale down: grace, then idle sessions oldest-first, bounded per tick
+    drains_left = max_drains_per_tick
+    for key in keys:
+        sup = supply.get(key, PoolSupply())
+        surplus = current[key] - sup.draining - desired[key]
+        if surplus <= 0:
+            continue
+        since = surplus_since.get(key, now)
+        new_surplus[key] = since
+        if now - since < scale_down_grace or drains_left == 0:
+            continue
+        n = min(surplus, sup.running_idle, drains_left)
+        if n <= 0:
+            continue
+        actions.append(
+            PoolAction(key=key, kind="drain", count=n, session_ids=tuple(sup.idle_session_ids[:n]))
+        )
+        drains_left -= n
+    return actions, new_surplus
