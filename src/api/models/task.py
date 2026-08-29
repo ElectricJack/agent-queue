@@ -78,6 +78,12 @@ class CreateTaskResponse(BaseModel):
     auto_approve_plan: bool = False
     skip_verification: bool = False
     warning: str | None = None
+    # Worker-filed work (swarm work model §12) — always present on every
+    # ``_cmd_create_task`` response, not just worker-filed ones.
+    success: bool | None = None
+    task_id: str | None = None
+    gate_id: str | None = None
+    status: str | None = None
 
 
 class GetTaskResponse(TaskDetail):

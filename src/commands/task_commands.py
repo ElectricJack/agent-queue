@@ -911,13 +911,22 @@ class TaskCommandsMixin:
         exception rolls the whole transaction back untouched.
 
         Returns ``(task_id, gate_id, discovered_from_origin, depth_cap_fallback)``.
-        ``gate_id`` and ``discovered_from_origin`` are only set for
-        root-level filings (no ``parent_id``) — a child filing gets a
-        ``parent-child`` edge instead and is routed by its container.
+        ``gate_id`` is only set for root-level filings (no ``parent_id``);
+        ``discovered_from_origin`` is set whenever a ``discovered-from`` edge
+        was written — root filings (origin = ``discovered_from`` or the held
+        task) and depth-cap-fallback child filings alike (origin = the
+        would-be container).
+
+        The ``is_blocked`` flip set from every write below (task-row
+        creation never flips anything; the edge, and the gate if any, can)
+        is accumulated and logged via :meth:`log_blocked_flips` once, after
+        the transaction commits — mirrors what ``add_dependency``/
+        ``create_gate`` do for their own single-write callers.
         """
         gate_id: str | None = None
         origin: str | None = None
         depth_cap_fallback = False
+        flipped: set[str] = set()
         async with self.db.immediate() as conn:
             if not await self.db.reserve_filing(
                 conn, held_id, max_filings=self.config.swarm.max_filings_per_task
@@ -929,28 +938,43 @@ class TaskCommandsMixin:
                 task.id = await fresh_root_id(conn)
             await self.db.create_task(task, conn=conn)
             if parent_id and not depth_cap_fallback:
-                await self.db.set_parent(task.id, parent_id, conn=conn)
+                result = await self.db.set_parent(task.id, parent_id, conn=conn)
+                flipped |= result.flipped
             elif parent_id:
                 # Naming-depth cap: child_task_id already minted a root id;
                 # record provenance the same way create_task_under does,
                 # instead of a parent-child edge to the (too-deep) container.
-                await self.db.add_dependency(
-                    task.id, parent_id, DepType.DISCOVERED_FROM.value, conn=conn
-                )
+                origin = parent_id
+                flipped |= await self.db.add_dependency(
+                    task.id, origin, DepType.DISCOVERED_FROM.value, conn=conn
+                ) or set()
             else:
                 origin = discovered_from or held_id
-                await self.db.add_dependency(
+                flipped |= await self.db.add_dependency(
                     task.id, origin, DepType.DISCOVERED_FROM.value, conn=conn
-                )
-                gate_id, _ = await self.db.create_gate(
+                ) or set()
+                # ``create_gate``'s own conn-path deliberately does not log
+                # blocked flips (the caller's transaction hasn't committed
+                # yet) — call the same underlying writer directly so we get
+                # the flip set back to fold into our own post-commit log,
+                # instead of discarding it.
+                gate_id, _created, gate_flipped = await self.db._create_gate_on(
+                    conn,
                     task.project_id,
                     "routing",
                     f"Route: {task.title}",
+                    question="",
+                    await_id=None,
+                    timeout_at=None,
                     waiter_task_ids=[task.id],
-                    conn=conn,
+                    caller_owns_conn=True,
                 )
+                flipped |= gate_flipped
             for dep_id, dep_type in edges:
-                await self.db.add_dependency(task.id, dep_id, dep_type, conn=conn)
+                flipped |= await self.db.add_dependency(
+                    task.id, dep_id, dep_type, conn=conn
+                ) or set()
+        await self.db.log_blocked_flips(flipped)
         return task.id, gate_id, origin, depth_cap_fallback
 
     async def _cmd_create_task(self, args: dict) -> dict:
@@ -1198,6 +1222,18 @@ class TaskCommandsMixin:
                     "error": f"Invalid dep_type '{dep_type}'. "
                     f"Allowed: {', '.join(sorted(DEP_TYPE_VALUES))}"
                 }
+            if filing_session is not None and dep_type == DepType.PARENT_CHILD.value:
+                # §12: worker-filed parenting goes through ``parent_id`` only
+                # — that's the single code path the subtree constraint above
+                # guards. A ``parent-child`` entry smuggled in via
+                # ``depends_on`` would otherwise bypass it entirely.
+                return {
+                    "success": False,
+                    "error": (
+                        "worker-filed tasks cannot set a parent-child edge via "
+                        "'depends_on'; use 'parent_id' instead"
+                    ),
+                }
             if await self.db.get_task(dep_id) is None:
                 return {"error": f"Dependency task '{dep_id}' not found"}
             edges.append((dep_id, dep_type))
@@ -1272,6 +1308,18 @@ class TaskCommandsMixin:
                         f"{self.config.swarm.max_filings_per_task} tasks "
                         "(swarm.max_filings_per_task)"
                     ),
+                }
+            except HierarchyError as exc:
+                # e.g. ``container_closed`` — the held task's subtree
+                # container closed between the earlier subtree check and
+                # ``set_parent``'s write. ``immediate()`` already rolled the
+                # whole transaction back (reserve_filing included), so
+                # nothing was written — mirror the elevated path's shape
+                # below plus ``success: False`` for the worker-filed caller.
+                return {
+                    "success": False,
+                    "error": f"hierarchy.{exc.code}: {exc.detail}",
+                    "code": f"hierarchy.{exc.code}",
                 }
         elif parent_id:
             try:

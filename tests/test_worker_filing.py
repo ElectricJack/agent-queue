@@ -74,6 +74,9 @@ class TestFiling:
         new = await db.get_task(res["task_id"])
         assert (new.status, new.created_by_kind, new.created_by_id, new.project_id) == (
             TaskStatus.DEFINED, "session", sid, PROJECT_ID)
+        # The routing gate attaches inside the same transaction, so the new
+        # task is blocked by it as soon as the create returns.
+        assert new.is_blocked is True
         deps = await db.get_typed_dependencies(new.id)
         assert deps == [("held", "discovered-from")]
         gates = await db.get_gates_for_task(new.id)
@@ -82,12 +85,18 @@ class TestFiling:
         ev = created_events(handler)[0]
         assert (ev["created_by_kind"], ev["filed_by_profile_id"], ev["discovered_from"],
                 ev["parent_task_id"]) == ("session", "worker", "held", None)
+        # ``log_blocked_flips`` post-commit audit row for the flip the gate
+        # caused (task_commands._create_worker_filed_task must collect and
+        # log the gate's flip set, not discard it).
+        events = await db.get_recent_events(limit=50, task_id=new.id)
+        assert "task.blocked" in [e["event_type"] for e in events]
 
     async def test_child_filing_under_held_task_has_no_gate(self, handler, db):
         sid = await holding_session(db)
         res = await scoped(handler, sid)._cmd_create_task({"title": "sub", "description": "d",
                                                             "parent_id": "held"})
         assert res["success"] is True and res.get("gate_id") is None
+        assert res["task_id"] == "held.1"
         new = await db.get_task(res["task_id"])
         assert new.parent_task_id == "held" and new.id.startswith("held.")
 
@@ -111,6 +120,23 @@ class TestFiling:
                                                             "parent_id": "elsewhere"})
         assert res["success"] is False
 
+    async def test_depends_on_parent_child_edge_rejected(self, handler, db):
+        """§12: parenting worker-filed work must go through ``parent_id`` —
+        a ``parent-child`` entry smuggled into ``depends_on`` would bypass
+        the subtree constraint entirely and must be rejected outright."""
+        sid = await holding_session(db)
+        await db.create_task(Task(id="elsewhere", project_id=PROJECT_ID, title="e",
+                                  description="e", status=TaskStatus.READY))
+        res = await scoped(handler, sid)._cmd_create_task({
+            "title": "x", "description": "d",
+            "depends_on": [{"task_id": "elsewhere", "dep_type": "parent-child"}],
+        })
+        assert res["success"] is False
+        assert "parent_id" in res["error"] or "parent-child" in res["error"]
+        # Nothing written at all — this is rejected before the transaction.
+        # (held + the pre-existing "elsewhere" task only.)
+        assert len(await db.list_tasks(PROJECT_ID)) == 2
+
     async def test_quota_is_enforced_atomically(self, handler, db):
         sid = await holding_session(db)
         h = scoped(handler, sid)
@@ -126,9 +152,27 @@ class TestFiling:
         async def boom(*a, **k):
             raise RuntimeError("gate write failed")
 
-        monkeypatch.setattr(db, "create_gate", boom)
+        # ``_create_worker_filed_task`` calls the private ``_create_gate_on``
+        # writer directly (not the public ``create_gate`` wrapper) so it can
+        # fold the gate's own ``is_blocked`` flip set into its own
+        # post-commit log — patch that entry point.
+        monkeypatch.setattr(db, "_create_gate_on", boom)
         with pytest.raises(RuntimeError):
             await scoped(handler, sid)._cmd_create_task({"title": "x", "description": "d"})
+        assert len(await db.list_tasks(PROJECT_ID)) == 1
+        assert (await db.get_task("held")).filed_count == 0
+
+    async def test_filing_under_completed_container_rolls_back(self, handler, db):
+        """A hierarchy error (``container_closed``) from ``set_parent`` must
+        surface as a structured error, not a bare ``{"error": ...}``, and
+        must not leave partial writes (reserve_filing included)."""
+        sid = await holding_session(db)
+        await db.transition_task("held", TaskStatus.COMPLETED)
+        res = await scoped(handler, sid)._cmd_create_task({"title": "x", "description": "d",
+                                                            "parent_id": "held"})
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.container_closed"
+        assert "container_closed" in res["error"]
         assert len(await db.list_tasks(PROJECT_ID)) == 1
         assert (await db.get_task("held")).filed_count == 0
 

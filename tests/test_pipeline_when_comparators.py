@@ -41,6 +41,11 @@ def test_validator_accepts_new_and_rejects_two_comparators():
     assert errs, "two comparators on one leaf must be rejected"
 
 
+def test_validator_rejects_non_bool_is_null():
+    errs = _validate_when({"field": "event.x", "is_null": "yes"}, "rule")
+    assert errs, "'is_null' must be a boolean"
+
+
 def test_default_pipeline_triage_rule_present():
     text = Path("src/prompts/default_playbooks/default-pipeline.md").read_text(encoding="utf-8")
     block = re.search(r"```json\n(.*?)\n```", text, re.S).group(1)

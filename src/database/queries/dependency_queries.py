@@ -32,7 +32,7 @@ class DependencyQueryMixin:
         dep_type: str = DepType.BLOCKS.value,
         *,
         conn=None,
-    ) -> None:
+    ) -> set[str] | None:
         """Add a typed dependency edge between two tasks.
 
         Insert + blocked-state recompute in one transaction (design §4.2).
@@ -47,21 +47,24 @@ class DependencyQueryMixin:
 
         Pass ``conn`` to run inside a caller-owned transaction (e.g. worker
         filing's ``immediate()`` block). The blocked-state projection is
-        still recomputed in that same transaction, but the caller then owns
-        any post-commit bookkeeping (``log_blocked_flips``, frontier /
-        ready notifications) — without ``conn`` this method does both here,
-        as before.
+        still recomputed in that same transaction and the resulting
+        ``is_blocked`` flip set is *returned* (rather than logged), so the
+        caller can accumulate it across several conn-scoped calls and log it
+        once with :meth:`log_blocked_flips` after its own commit — frontier
+        / ready notifications are the caller's job too on this path. Without
+        ``conn`` this method does all three here, as before, and returns
+        ``None``.
         """
         if dep_type == DepType.PARENT_CHILD.value:
             if conn is not None:
-                await self.set_parent(task_id, depends_on, conn=conn)
-                return
+                result = await self.set_parent(task_id, depends_on, conn=conn)
+                return result.flipped
             async with self._engine.begin() as owned_conn:
                 result = await self.set_parent(task_id, depends_on, conn=owned_conn)
             await self.log_blocked_flips(result.flipped)
             await self._notify_settled(result.settled)
             await self._notify_ready(result.ready)
-            return
+            return None
 
         _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
         if conn is not None:
@@ -74,8 +77,7 @@ class DependencyQueryMixin:
                 )
                 .on_conflict_do_nothing()
             )
-            await self.recompute_blocked({task_id, depends_on}, conn=conn)
-            return
+            return await self.recompute_blocked({task_id, depends_on}, conn=conn)
 
         async with self._engine.begin() as owned_conn:
             await owned_conn.execute(
