@@ -71,6 +71,9 @@ async def api_execute(
         "session_id": scope.session_id,
         "task_id": scope.task_id,
         "project_id": scope.project_id,
+        # Commands that fence reads on the scope need to know whether this
+        # is a plain agent session or an elevated supervisor one.
+        "elevated": scope.elevated,
     }
 
     try:

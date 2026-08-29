@@ -80,6 +80,37 @@ class ClaimCommandsMixin:
 
     # -- fence ---------------------------------------------------------------
 
+    def _assert_task_in_scope(self, task) -> dict | None:
+        """``None`` when *task* is readable by the scoped session; else an error.
+
+        A pool worker's token carries ``task_id=None`` (its task changes
+        with every claim), so ``check_command_scope``'s ``task_id`` pin is
+        vacuous for it -- without this the read commands would happily
+        serve any task in any project.  ``project_id`` is the fence that
+        *is* meaningful on such a token, so a plain (non-elevated) session
+        scope with no task pinned may only read tasks in its own project.
+
+        Local callers, elevated supervisor tokens, and session scopes that
+        *do* pin a ``task_id`` (already enforced by
+        ``check_command_scope``) are unaffected.
+        """
+        scope = getattr(self, "_current_scope", None) or {}
+        if scope.get("kind") != "session" or scope.get("elevated"):
+            return None
+        if scope.get("task_id") is not None:
+            return None
+        project_id = scope.get("project_id")
+        if project_id is None or task is None or task.project_id == project_id:
+            return None
+        return {
+            "success": False,
+            "result": ClaimResult.OUT_OF_SCOPE.value,
+            "error": (
+                f"task '{task.id}' belongs to project '{task.project_id}', "
+                f"outside this session's scope ('{project_id}')"
+            ),
+        }
+
     async def _assert_session_owns(self, task_id, *, session_id, claim_epoch) -> dict | None:
         """``None`` when the caller holds *task_id*; else an error dict.
 
@@ -149,6 +180,18 @@ class ClaimCommandsMixin:
 
     async def _cmd_task_claim(self, args: dict) -> dict:
         """Claim a ready task for the calling session (``aq task claim``)."""
+        # M8: the command surface stays present when ``swarm.enabled`` is
+        # false, but it does not hand out work -- otherwise the flag that
+        # stops ``_reconcile_pools`` from launching pool workers would still
+        # let an already-running one keep pulling tasks.
+        if not getattr(self.config.swarm, "enabled", True):
+            return {
+                "success": False,
+                "result": ClaimResult.NOT_ADMISSIBLE.value,
+                "reason": "swarm_disabled",
+                "task": None,
+                "claim_epoch": None,
+            }
         scope = self._current_scope or {}
         session_id = scope.get("session_id") or (
             args.get("session_id") if scope.get("elevated", True) else None
@@ -278,6 +321,17 @@ class ClaimCommandsMixin:
                         ClaimResult.OUT_OF_SCOPE, "session already holds a task", row, cap
                     )
                 task = await self.db._get_task_conn(row.task_id, conn=conn)
+                if task is None:
+                    # The held task row is gone (deleted out from under the
+                    # session).  There is nothing to re-serve, and dropping
+                    # through would raise ``AttributeError`` on
+                    # ``task.claim_epoch``.
+                    return self._simple(
+                        ClaimResult.OUT_OF_SCOPE,
+                        f"session holds task '{row.task_id}', which no longer exists",
+                        row,
+                        cap,
+                    )
                 active_claim = (task, task.claim_epoch, row)
             elif kind in ("preparing", "claiming"):
                 epoch = None
@@ -334,10 +388,20 @@ class ClaimCommandsMixin:
             row, task, slot = new_claim
             # A concurrent ``claim_in_progress`` caller (``_await_attempt``)
             # can await this instead of polling once the row settles.
-            self.orchestrator.claim_waiters[(session.id, task.claim_epoch)] = (
-                asyncio.get_running_loop().create_future()
-            )
-            return await self._prepare_and_activate(session, row, task, cap, slot=slot)
+            key = (session.id, task.claim_epoch)
+            self.orchestrator.claim_waiters[key] = asyncio.get_running_loop().create_future()
+            try:
+                return await self._prepare_and_activate(session, row, task, cap, slot=slot)
+            finally:
+                # Every ordinary exit already resolved and popped the future
+                # via ``_resolve_claim_waiters``; this covers the paths that
+                # don't -- an unexpected exception, and cancellation (the
+                # caller's ``--wait`` deadline firing mid-prepare).  Leaving
+                # a pending future in the dict would strand every
+                # ``claim_in_progress`` poller on it until its own deadline.
+                stale = self.orchestrator.claim_waiters.pop(key, None)
+                if stale is not None and not stale.done():
+                    stale.set_result("prepare_failed")
         if conflict_task_id is not None:
             conflict_task = await self.db.get_task(conflict_task_id)
             if conflict_task is not None:

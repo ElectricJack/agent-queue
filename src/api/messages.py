@@ -167,6 +167,7 @@ async def post_session_message(
         "session_id": scope.session_id,
         "task_id": scope.task_id,
         "project_id": scope.project_id,
+        "elevated": scope.elevated,
     }
 
     result = await ch.execute("message_send", args)
@@ -214,6 +215,7 @@ async def get_session_messages(
         "session_id": scope.session_id,
         "task_id": scope.task_id,
         "project_id": scope.project_id,
+        "elevated": scope.elevated,
     }
 
     result = await ch.execute("message_list", args)

@@ -99,6 +99,8 @@ class SurfaceCommandsMixin:
         if not task_id:
             return {"error": "task_id is required"}
 
+        # ``_cmd_get_task`` applies ``_assert_task_in_scope`` itself; the
+        # composed sections below must not run when it refused.
         info = await self._cmd_get_task({"task_id": task_id})
         if "error" in info:
             return info

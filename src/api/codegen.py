@@ -375,6 +375,7 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
             "session_id": scope.session_id,
             "task_id": scope.task_id,
             "project_id": scope.project_id,
+            "elevated": scope.elevated,
         }
 
         result = await ch.execute(cmd_name, args)

@@ -366,6 +366,88 @@ class TestFence:
         assert "t1" in body and "Claim epoch: 1" in body
 
 
+class TestReadScope:
+    """I6: a pool token pins no ``task_id``, so ``project_id`` is the fence."""
+
+    async def setup_other_project(self, db):
+        await db.create_project(Project(id="other", name="o"))
+        await db.create_task(
+            Task(
+                id="foreign",
+                project_id="other",
+                title="foreign",
+                description="d",
+                status=TaskStatus.READY,
+            )
+        )
+
+    @pytest.mark.parametrize(
+        "command", ["_cmd_get_task", "_cmd_task_show", "_cmd_task_children", "_cmd_task_progress"]
+    )
+    async def test_cross_project_read_refused(self, handler, db, tmp_path, command):
+        await self.setup_other_project(db)
+        sid, _ = await pool_session(db, tmp_path)
+        res = await getattr(scoped(handler, sid), command)({"task_id": "foreign"})
+        assert res["result"] == "out_of_scope"
+        assert res["success"] is False
+
+    @pytest.mark.parametrize(
+        "command", ["_cmd_get_task", "_cmd_task_show", "_cmd_task_children", "_cmd_task_progress"]
+    )
+    async def test_same_project_read_allowed(self, handler, db, tmp_path, command):
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        res = await getattr(scoped(handler, sid), command)({"task_id": "t1"})
+        assert res.get("result") != "out_of_scope"
+        assert "error" not in res
+
+    async def test_local_scope_reads_any_project(self, handler, db, tmp_path):
+        await self.setup_other_project(db)
+        handler._current_scope = None
+        res = await handler._cmd_get_task({"task_id": "foreign"})
+        assert res["id"] == "foreign"
+
+    async def test_elevated_session_reads_any_project(self, handler, db, tmp_path):
+        await self.setup_other_project(db)
+        sid, _ = await pool_session(db, tmp_path)
+        scoped(handler, sid)
+        handler._current_scope["elevated"] = True
+        res = await handler._cmd_get_task({"task_id": "foreign"})
+        assert res["id"] == "foreign"
+
+
+class TestSwarmDisabledGate:
+    async def test_claim_refused_when_swarm_disabled(self, handler, db, tmp_path):
+        """M8: the command stays callable but hands out no work."""
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        handler.config.swarm.enabled = False
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert (res["result"], res["reason"]) == ("not_admissible", "swarm_disabled")
+        assert (await db.get_task("t1")).status == TaskStatus.READY
+
+
+class TestActiveClaimWithDeletedTask:
+    async def test_missing_held_task_returns_out_of_scope(self, handler, db, tmp_path):
+        """M4: a held task row gone underneath the session must not AttributeError.
+
+        ``sessions.task_id`` is a plain FK, so a straight ``delete_task``
+        is refused while the session still points at it -- the row can only
+        vanish through a path that clears the reference first (or on a
+        backend/ordering where it does).  The re-claim's ``active`` branch
+        has to survive the read coming back ``None`` either way, so the
+        read is stubbed rather than the row contrived away.
+        """
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        assert (await h._cmd_task_claim({"next": True}))["result"] == "claimed"
+        db._get_task_conn = AsyncMock(return_value=None)
+        res = await h._cmd_task_claim({"next": True})
+        assert res["result"] == "out_of_scope"
+        assert "no longer exists" in res["reason"]
+
+
 class TestEventWaiter:
     async def test_waiter_subscribes_before_check(self):
         from src.event_bus import EventBus

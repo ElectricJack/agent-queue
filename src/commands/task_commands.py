@@ -827,8 +827,12 @@ class TaskCommandsMixin:
         task_id = args.get("task_id")
         if not task_id:
             return {"error": "task_id is required"}
-        if await self.db.get_task(task_id) is None:
+        task = await self.db.get_task(task_id)
+        if task is None:
             return {"error": f"Task '{task_id}' not found"}
+        out_of_scope = self._assert_task_in_scope(task)
+        if out_of_scope:
+            return out_of_scope
         children = await self.db.get_children(
             task_id,
             recursive=bool(args.get("recursive", False)),
@@ -848,8 +852,12 @@ class TaskCommandsMixin:
         task_id = args.get("task_id")
         if not task_id:
             return {"error": "task_id is required"}
-        if await self.db.get_task(task_id) is None:
+        task = await self.db.get_task(task_id)
+        if task is None:
             return {"error": f"Task '{task_id}' not found"}
+        out_of_scope = self._assert_task_in_scope(task)
+        if out_of_scope:
+            return out_of_scope
         progress = await self.db.get_group_progress(task_id)
         return {"success": True, **progress}
 
@@ -1649,6 +1657,9 @@ class TaskCommandsMixin:
         task = await self.db.get_task(args["task_id"])
         if not task:
             return {"error": f"Task '{args['task_id']}' not found"}
+        out_of_scope = self._assert_task_in_scope(task)
+        if out_of_scope:
+            return out_of_scope
         info = {
             "id": task.id,
             "project_id": task.project_id,
