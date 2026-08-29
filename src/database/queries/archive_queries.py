@@ -161,7 +161,16 @@ class ArchiveQueryMixin:
         self,
         project_id: str | None = None,
     ) -> list[str]:
-        """Archive all COMPLETED tasks. Returns list of archived task IDs."""
+        """Archive all COMPLETED tasks. Returns list of archived task IDs.
+
+        A COMPLETED task can still have a non-terminal *descendant* (a
+        grandchild left open under a completed child).  ``archive_task``
+        refuses those with ``hierarchy.open_descendants``; like
+        ``archive_old_terminal_tasks``, the bulk path skips them rather than
+        aborting the whole sweep — and reports only what it actually archived.
+        """
+        from src.database.queries.hierarchy_queries import HierarchyError
+
         stmt = select(tasks.c.id).where(tasks.c.status == TaskStatus.COMPLETED.value)
         if project_id:
             stmt = stmt.where(tasks.c.project_id == project_id)
@@ -169,10 +178,15 @@ class ArchiveQueryMixin:
             result = await conn.execute(stmt)
             task_ids = [r[0] for r in result.fetchall()]
 
+        archived: list[str] = []
         for tid in task_ids:
-            await self.archive_task(tid)
+            try:
+                await self.archive_task(tid)
+                archived.append(tid)
+            except HierarchyError:
+                logger.debug("archive_completed_tasks: skipping %s, open descendant", tid)
 
-        return task_ids
+        return archived
 
     async def archive_old_terminal_tasks(
         self,

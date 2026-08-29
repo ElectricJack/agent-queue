@@ -135,6 +135,21 @@ class TestCanonicalise:
         assert plan.parents == {"c": "p"}
         assert plan.rejects == []
 
+    def test_orphan_edge_is_rejected_not_dropped(self, engine_at_a):
+        """``apply`` deletes every parent-child edge and reinserts only the
+        plan's, so an edge whose task row is gone must be recorded."""
+        _seed(engine_at_a, [("p", "x", None, "IN_PROGRESS")], [("ghost", "p")])
+        with engine_at_a.begin() as conn:
+            plan = hm.canonicalise(conn)
+        orphans = [r for r in plan.rejects if r.task_id == "ghost"]
+        assert len(orphans) == 1
+        assert (orphans[0].parent_id, orphans[0].source, orphans[0].reason) == (
+            "p",
+            "edge",
+            "not_found",
+        )
+        assert "ghost" not in plan.parents
+
     def test_cross_project_parent_is_rejected(self, engine_at_a):
         _seed(engine_at_a, [("p", "x", None, "IN_PROGRESS"), ("c", "y", "p", "READY")], [])
         with engine_at_a.begin() as conn:

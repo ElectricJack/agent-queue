@@ -128,3 +128,24 @@ class TestArchive:
         assert await db.get_task("child") is not None
         assert await db.get_task("grandchild") is not None
         assert await db.get_archived_task("lone") is not None
+
+
+class TestArchiveCompletedBulk:
+    async def test_skips_root_with_open_grandchild_and_keeps_going(self, db):
+        """``archive_completed_tasks`` gets the same guard as the age sweep:
+        one refused subtree must not abort the bulk archive."""
+        await mktask(db, "root", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "child", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "grandchild", status=TaskStatus.READY)
+        await db.add_dependency("child", "root", "parent-child")
+        await db.add_dependency("grandchild", "child", "parent-child")
+        await _set_statuses(db, {"root": "COMPLETED", "child": "COMPLETED"})
+        await mktask(db, "lone", status=TaskStatus.COMPLETED)
+
+        archived = await db.archive_completed_tasks()
+
+        assert "lone" in archived
+        assert "root" not in archived and "child" not in archived
+        assert await db.get_task("root") is not None
+        assert await db.get_task("grandchild") is not None
+        assert await db.get_archived_task("lone") is not None

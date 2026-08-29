@@ -68,6 +68,27 @@ class TestParentPointer:
         assert fixed.fix_applied
         assert (await db.get_task("c")).parent_task_id == "p"
 
+    async def test_fix_touches_only_the_drifted_row(self, db, ctx):
+        """The repair used to rewrite every task row in the database."""
+        await mktask(db, "p", TaskStatus.IN_PROGRESS)
+        await mktask(db, "c")
+        await mktask(db, "bystander")
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(task_dependencies).values(
+                    task_id="c", depends_on_task_id="p", dep_type="parent-child"
+                )
+            )
+        before = {tid: (await db.get_task(tid)).updated_at for tid in ("p", "c", "bystander")}
+
+        fixed = await check("hierarchy.parent_pointer").fix(ctx)
+
+        assert fixed.fix_applied
+        after = {tid: (await db.get_task(tid)).updated_at for tid in ("p", "c", "bystander")}
+        assert after["c"] > before["c"]
+        assert after["p"] == before["p"]
+        assert after["bystander"] == before["bystander"]
+
 
 class TestSingleParent:
     async def test_ok_on_consistent_db(self, db, ctx):

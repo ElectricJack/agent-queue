@@ -243,3 +243,32 @@ class TestOrchestratorSettlement:
             await orch._sweep_container_completion()
         assert (await db.get_task("p")).status == TaskStatus.COMPLETED
         assert "backstop" in caplog.text
+
+
+class TestSettlementFanOutIsolation:
+    """One container's fan-out failure must not cost the next one its own."""
+
+    async def test_failing_container_does_not_abort_the_batch(self, orch, db):
+        await mktask(db, "p1", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "p2", status=TaskStatus.IN_PROGRESS)
+        async with db._engine.begin() as conn:
+            await db.mark_container("p1", conn=conn)
+            await db.mark_container("p2", conn=conn)
+
+        calls: list[str] = []
+
+        async def flaky(text, project_id=None):
+            calls.append(text)
+            if "p1" in text:
+                raise RuntimeError("notify exploded")
+
+        orch._emit_text_notify = flaky
+        await orch._on_containers_settled(["p1", "p2"])
+
+        emitted = [
+            c.kwargs.get("task_id") or (c.args[1] if len(c.args) > 1 else None)
+            for c in orch.bus.emit.await_args_list
+        ]
+        # p2's task.completed still went out after p1 blew up.
+        assert any("p1" in t for t in calls) and any("p2" in t for t in calls)
+        assert len(orch.bus.emit.await_args_list) == 2, emitted

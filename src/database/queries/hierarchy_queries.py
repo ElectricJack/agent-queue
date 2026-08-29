@@ -516,8 +516,20 @@ class HierarchyQueryMixin:
                 context="subtasks_completed",
                 _settle_depth=depth,
             )
-            result.settled.append(cid)
-            result.settled.extend(res.settled)
+            # Report the container as settled only if the write actually
+            # landed: ``_apply_transition`` can decline (a missing row, an
+            # enforced invalid transition).  Announcing a completion that did
+            # not happen would emit ``task.completed`` for a task still
+            # IN_PROGRESS.  Recursion may also have settled it already, so
+            # the id is only appended once.
+            landed = (
+                await conn.execute(select(tasks.c.status).where(tasks.c.id == cid))
+            ).scalar()
+            if landed == TaskStatus.COMPLETED.value and cid not in result.settled:
+                result.settled.append(cid)
+            for sid in res.settled:
+                if sid not in result.settled:
+                    result.settled.append(sid)
             result.flipped |= res.flipped
         return result
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from sqlalchemy import and_, exists, func, literal, select, text, update
 
 from src.database.tables import task_dependencies, tasks
@@ -69,11 +71,20 @@ async def _fix_parent_pointer(ctx: DoctorContext) -> CheckResult:
     if engine is None:
         return _no_db_result("hierarchy.parent_pointer")
     async with engine.begin() as conn:
-        res = await conn.execute(update(tasks).values(parent_task_id=edge_parent))
+        # Only the drifted rows: the same predicate the check reports on.
+        # An unfiltered UPDATE rewrote every task in the database and left
+        # ``rowcount`` meaningless as a repair count.  ``updated_at`` is
+        # bumped because this *is* a write to the row, unlike a projection
+        # refresh.
+        res = await conn.execute(
+            update(tasks)
+            .where(func.coalesce(tasks.c.parent_task_id, "") != func.coalesce(edge_parent, ""))
+            .values(parent_task_id=edge_parent, updated_at=time.time())
+        )
     return CheckResult(
         id="hierarchy.parent_pointer",
         severity=Severity.OK,
-        detail=f"rewrote parent_task_id from edges ({res.rowcount} row(s) touched)",
+        detail=f"rewrote parent_task_id from edges ({res.rowcount} drifted row(s))",
         fixable=True,
         fix_applied=True,
     )

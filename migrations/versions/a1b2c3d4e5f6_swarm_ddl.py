@@ -8,6 +8,7 @@ DDL only (spec §17).  The hierarchy data step and the single-parent partial
 unique index are revision B, so that a rejected canonicalisation never rolls
 back the columns the preflight report lives in.
 """
+
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -21,7 +22,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     with op.batch_alter_table("tasks", schema=None) as b:
-        b.add_column(sa.Column("next_child_ordinal", sa.Integer(), server_default="1", nullable=False))
+        b.add_column(
+            sa.Column("next_child_ordinal", sa.Integer(), server_default="1", nullable=False)
+        )
         b.add_column(sa.Column("created_by_kind", sa.Text(), nullable=True))
         b.add_column(sa.Column("created_by_id", sa.Text(), nullable=True))
         b.add_column(sa.Column("claim_epoch", sa.Integer(), server_default="0", nullable=False))
@@ -66,14 +69,25 @@ def downgrade() -> None:
         b.drop_column("max_active")
         b.drop_column("min_active")
     with op.batch_alter_table("sessions", schema=None) as b:
-        for col in ("last_claim_result", "last_claim_epoch", "claim_phase_at",
-                    "claim_phase", "agent_id", "claims"):
+        for col in (
+            "last_claim_result",
+            "last_claim_epoch",
+            "claim_phase_at",
+            "claim_phase",
+            "agent_id",
+            "claims",
+        ):
             b.drop_column(col)
     with op.batch_alter_table("archived_tasks", schema=None) as b:
         b.drop_column("created_by_id")
         b.drop_column("created_by_kind")
     with op.batch_alter_table("tasks", schema=None) as b:
         b.drop_index("idx_tasks_ready_by_profile")
-        for col in ("filed_count", "claim_epoch", "created_by_id", "created_by_kind",
-                    "next_child_ordinal"):
+        for col in (
+            "filed_count",
+            "claim_epoch",
+            "created_by_id",
+            "created_by_kind",
+            "next_child_ordinal",
+        ):
             b.drop_column(col)

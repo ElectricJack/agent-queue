@@ -84,6 +84,15 @@ def canonicalise(conn) -> CanonicalPlan:
         elif col:
             candidates[tid] = (col, "column_only")
 
+    # An edge whose ``task_id`` has no ``tasks`` row cannot become a
+    # candidate at all (the loop above walks live tasks).  ``apply`` deletes
+    # every parent-child edge and reinserts only the plan's, so without this
+    # such an edge would vanish with no record of it ever having existed.
+    for tid, es in edges.items():
+        if tid not in tasks:
+            for p, _ in es:
+                plan.rejects.append(Reject(tid, p, "edge", "not_found", "task row missing"))
+
     # Validate: existence, project, cycle, depth.
     parents = {c: p for c, (p, _) in candidates.items()}
 

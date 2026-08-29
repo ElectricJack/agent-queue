@@ -309,25 +309,32 @@ class MonitoringMixin:
 
         Everything the old per-tick scan did after the transition: bus event,
         operator notification, vault summary, workflow-stage check.
+
+        The whole per-container body is wrapped: one container's notification
+        or stage check blowing up must not cost every container after it in
+        the same batch its fan-out.
         """
         for cid in ids:
-            task = await self.db.get_task(cid)
-            if task is None:
-                continue
             try:
-                await self._emit_task_event("task.completed", task)
+                task = await self.db.get_task(cid)
+                if task is None:
+                    continue
+                try:
+                    await self._emit_task_event("task.completed", task)
+                except Exception:
+                    logger.exception("task.completed emit failed for container %s", cid)
+                try:
+                    result = await self.db.get_task_result(cid)
+                    write_task_summary(self.config.vault_root, task, result)
+                except Exception as e:
+                    logger.warning("Failed to write task summary for %s: %s", cid, e)
+                await self._emit_text_notify(
+                    f"**Container completed:** `{task.id}` — {task.title} (all children finished).",
+                    project_id=task.project_id,
+                )
+                await self._check_workflow_stage_completion(task)
             except Exception:
-                logger.exception("task.completed emit failed for container %s", cid)
-            try:
-                result = await self.db.get_task_result(cid)
-                write_task_summary(self.config.vault_root, task, result)
-            except Exception as e:
-                logger.warning("Failed to write task summary for %s: %s", cid, e)
-            await self._emit_text_notify(
-                f"**Container completed:** `{task.id}` — {task.title} (all children finished).",
-                project_id=task.project_id,
-            )
-            await self._check_workflow_stage_completion(task)
+                logger.exception("settlement fan-out failed for container %s", cid)
 
     _last_container_sweep: float = 0.0
 
