@@ -8,6 +8,15 @@ recorded in each test's docstring.
 Ruling P2-7: ``any_db`` (``tests/perf/conftest.py``) parametrises SQLite
 (always) and Postgres (only when ``POSTGRES_TEST_DSN`` is set), at
 ``seed_scale(n_tasks=5000, profile_id="worker")``.
+
+Scope note: every fixture below stubs ``orch.bus.emit = AsyncMock()``, so
+event fan-out (whatever a real subscriber -- a playbook trigger, message
+delivery, a Discord notifier -- would do in response to ``task.claimed``
+etc.) costs zero statements here and is invisible to every budget in this
+file. That's deliberate, not an oversight: these budgets measure the
+command's *own* statements, not what arbitrary subscriber code might do:
+that a claim event ends up on a plugin's playbook trigger does not obligate
+that plugin's handler to a statement budget owned by the claim path.
 """
 
 from __future__ import annotations
@@ -121,7 +130,7 @@ class TestClaimStatementBudgets:
     async def test_claim_happy_path_statement_budget(self, any_db, tmp_path):
         """Whole ``task_claim`` happy path (slot reset stubbed).
 
-        Measured on SQLite: 38 statements — well above the ``<= 14``
+        Measured on SQLite: 37-38 statements — well above the ``<= 14``
         (SQLite) / ``<= 13`` (Postgres) figure in the task brief, which
         covers the spec's DB-portion-only budget (session CAS, CTE/select
         take, session/agent/workspace/metadata writes — spec §15.2's ``PG

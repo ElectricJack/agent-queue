@@ -114,6 +114,15 @@ async def seed_scale(
     is a raw insert, so the FK is enforced but not satisfied for you).
     """
     now = time.time()
+    n_paired = min(n_edges, n_tasks // 2)
+    # Every dependent (odd i, up to n_paired pairs) is blocked: its
+    # predecessor (even i, always READY -- non-terminal) hasn't completed.
+    # ``is_blocked`` must agree with the edges below, not just default to 0
+    # from the raw insert, or the seeded queue doesn't reflect what
+    # ``add_dependency`` would actually have projected and any perf number
+    # that depends on the frontier query's ``is_blocked`` filter is
+    # measuring an unrealistically-clean queue.
+    blocked_dependents = {2 * i + 1 for i in range(n_paired)}
     rows = [
         {
             "id": f"seed-{i}",
@@ -122,6 +131,7 @@ async def seed_scale(
             "description": "d",
             "status": TaskStatus.COMPLETED.value if i % 2 else TaskStatus.READY.value,
             "profile_id": profile_id if (i % 2 == 0) else None,
+            "is_blocked": 1 if i in blocked_dependents else 0,
             "created_at": now,
             "updated_at": now,
         }
@@ -133,7 +143,7 @@ async def seed_scale(
             "depends_on_task_id": f"seed-{2 * i}",
             "dep_type": "blocks",
         }
-        for i in range(min(n_edges, n_tasks // 2))
+        for i in range(n_paired)
     ]
     async with db._engine.begin() as conn:
         await conn.execute(insert(tasks_t), rows)

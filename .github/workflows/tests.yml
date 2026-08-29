@@ -36,6 +36,14 @@ jobs:
           --health-retries 5
 
     env:
+      # Base DSN -- ``tests/pg_dsn.py`` rewrites this per xdist worker
+      # process (``postgresql+asyncpg://.../agent_queue_gw0``, ``..._gw1``,
+      # ...), creating each worker's database on first use. With
+      # ``-n auto`` and three suites (tests/perf, tests/test_claim_queries.py,
+      # tests/test_database_postgresql.py) each truncating/reseting a
+      # Postgres database against this DSN, sharing one database across
+      # concurrent workers would let one worker's reset_for_tests() truncate
+      # race another's in-flight seed/assert -- see tests/pg_dsn.py.
       POSTGRES_TEST_DSN: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/agent_queue
 
     steps:

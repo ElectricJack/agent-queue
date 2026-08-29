@@ -121,17 +121,45 @@ class SQLiteDatabaseAdapter(
         mostly for a caller sharing one adapter instance across cases (e.g.
         ``tests/perf/conftest.py``'s ``any_db``, if ever adapted to reuse a
         single SQLite file rather than a fresh one per parametrization).
+
+        Refuses unless this adapter's file is plausibly a test target: the
+        path must be under ``tempfile.gettempdir()``, or ``AQ_ALLOW_DB_RESET=1``
+        is set. A truncate-everything call reachable against a real database
+        file by accident is a data-loss bug waiting to happen.
+
+        The ``PRAGMA foreign_keys`` toggles run on their own connection,
+        outside ``engine.begin()``'s transaction — SQLite's docs are explicit
+        that this pragma is a no-op when set inside a transaction, so doing
+        it there (the first cut of this method did) silently left FK
+        enforcement untouched around the deletes.
         """
+        import os
+        import tempfile
+
+        if not str(self._path).startswith(tempfile.gettempdir()) and os.environ.get(
+            "AQ_ALLOW_DB_RESET"
+        ) != "1":
+            raise RuntimeError(
+                f"reset_for_tests refused: {self._path!r} is not under "
+                f"{tempfile.gettempdir()!r} (set AQ_ALLOW_DB_RESET=1 to override)"
+            )
         if self._engine is None:
             return
         from sqlalchemy import text
 
-        async with self._engine.begin() as conn:
+        # AUTOCOMMIT: SQLite's docs are explicit that ``PRAGMA foreign_keys``
+        # is a no-op when set inside a transaction -- SQLAlchemy's async
+        # connections auto-begin one on first execute otherwise, so the
+        # pragma would silently do nothing and leave FK enforcement (and the
+        # deletes below, which then fail on FK violations, or "succeed"
+        # without ever having disabled the check) in an unpredictable state.
+        autocommit = self._engine.execution_options(isolation_level="AUTOCOMMIT")
+        async with autocommit.connect() as conn:
+            await conn.execute(text("PRAGMA foreign_keys=OFF"))
             rows = await conn.execute(
                 text("SELECT name FROM sqlite_master WHERE type='table' AND name != 'alembic_version'")
             )
             tables = [r[0] for r in rows.fetchall() if not r[0].startswith("sqlite_")]
-            await conn.execute(text("PRAGMA foreign_keys=OFF"))
             for table in tables:
                 await conn.execute(text(f'DELETE FROM "{table}"'))
             await conn.execute(text("PRAGMA foreign_keys=ON"))

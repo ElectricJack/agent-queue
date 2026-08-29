@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 
 import pytest
 
@@ -20,6 +19,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from tests.pg_dsn import ensure_worker_postgres_dsn
 
 PROJECT_ID = "proj"
 NOW = 1_000_000.0
@@ -30,8 +30,10 @@ NOW = 1_000_000.0
 #: and ``test_reserve_filing_is_atomic`` prove the CAS under a genuine race
 #: on Postgres (SQLite's ``immediate()`` per-adapter lock serialises them
 #: instead, so it only proves the *result* is correct, not that the CAS
-#: itself is what enforced it).
-POSTGRES_TEST_DSN = os.environ.get("POSTGRES_TEST_DSN")
+#: itself is what enforced it). Per-xdist-worker DSN (tests/pg_dsn.py) --
+#: this suite's own database, separate from tests/perf and
+#: tests/test_database_postgresql.py's, so concurrent truncates don't race.
+POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture(params=["sqlite", "postgres"])

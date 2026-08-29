@@ -8,11 +8,15 @@ the CAS semantics under a real second connection/backend.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-POSTGRES_TEST_DSN = os.environ.get("POSTGRES_TEST_DSN")
+from tests.pg_dsn import ensure_worker_postgres_dsn
+
+#: Per-xdist-worker DSN (tests/pg_dsn.py) -- this suite and
+#: tests/test_claim_queries.py / tests/test_database_postgresql.py each get
+#: their own Postgres database so concurrent ``reset_for_tests()`` truncates
+#: under ``-n auto`` don't race each other.
+POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture(params=["sqlite", "postgres"])

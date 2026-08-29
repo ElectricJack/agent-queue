@@ -129,9 +129,22 @@ class PostgreSQLDatabaseAdapter(
         (same statement ``tests/test_database_postgresql.py``'s per-test
         teardown uses) and leaves the schema — and ``alembic_version`` —
         untouched.
+
+        Refuses unless this adapter is plausibly a test target: its DSN must
+        equal ``POSTGRES_TEST_DSN``, or ``AQ_ALLOW_DB_RESET=1`` is set. A
+        truncate-everything call reachable against a production DSN by
+        accident is a data-loss bug waiting to happen.
         """
+        import os
+
         from sqlalchemy import text
 
+        if self._dsn != os.environ.get("POSTGRES_TEST_DSN") and os.environ.get(
+            "AQ_ALLOW_DB_RESET"
+        ) != "1":
+            raise RuntimeError(
+                "reset_for_tests refused: not the configured POSTGRES_TEST_DSN"
+            )
         if self._engine is None:
             return
         async with self._engine.begin() as conn:

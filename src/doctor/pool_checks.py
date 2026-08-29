@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
-from src.doctor.runner import _apply_fix
+from src.doctor.runner import apply_fix
 from src.models import TaskStatus
 
 OWNER = "swarm-work-model"
@@ -98,13 +98,26 @@ async def _fix_pools_stuck(ctx: DoctorContext) -> CheckResult:
 
 
 async def _find_orphan_agents(ctx: DoctorContext):
+    """Pool-profile agents with no session row -- but only once they're old.
+
+    A pool launch creates the agent row first, then acquires a workspace,
+    then writes the session row (``_launch_pool_session``) -- there is a
+    real window, seconds wide, where a perfectly healthy in-flight launch
+    has an agent with no session yet. Flagging on that window would make
+    the check (and ``--fix``) race the launch and delete an agent mid-boot.
+    Gate on the same ``2 x prepare_timeout`` staleness ``pools.preparing_stuck``
+    uses for its own "this has been mid-flight too long" judgment call.
+    """
     profiles = await ctx.db.list_profiles()
     pool_profile_ids = {p.id for p in profiles if p.lifecycle == "pool"}
     if not pool_profile_ids:
         return []
+    threshold = time.time() - 2 * _prepare_timeout(ctx)
     bad = []
     for agent in await ctx.db.list_agents():
         if agent.profile_id not in pool_profile_ids:
+            continue
+        if (agent.created_at or 0.0) > threshold:
             continue
         sessions = await ctx.db.list_sessions(agent_id=agent.id)
         if not sessions:
@@ -208,20 +221,35 @@ async def _fix_preparing_stuck(ctx: DoctorContext) -> CheckResult:
 
 
 async def _check_holder_consistency(ctx: DoctorContext) -> CheckResult:
+    """Report-only: ``get_session_for_task`` deliberately hides duplicates.
+
+    It ranks by state/recency and returns its single best guess -- exactly
+    the wrong tool here, since "two sessions both think they hold this
+    task" is itself the anomaly this check exists to catch. Counts every
+    session whose ``task_id`` matches instead of asking for "the" one, and
+    a missing ``claimed_by_session`` meta value is treated as an anomaly
+    (not a free pass) -- a claim that ever went through ``record_holder``
+    always has one.
+    """
     if ctx.db is None:
         return _no_db_result("claims.holder_consistency")
+    sessions_by_task: dict[str, list[str]] = {}
+    for s in await ctx.db.list_sessions():
+        if s.task_id:
+            sessions_by_task.setdefault(s.task_id, []).append(s.id)
     bad = []
     for task in await ctx.db.list_tasks(status=TaskStatus.IN_PROGRESS):
         if not task.assigned_agent_id:
             continue
         agent = await ctx.db.get_agent(task.assigned_agent_id)
-        session = await ctx.db.get_session_for_task(task.id)
+        holders = sessions_by_task.get(task.id, [])
         meta = await ctx.db.get_task_meta(task.id, "claimed_by_session")
         ok = (
             agent is not None
             and agent.current_task_id == task.id
-            and session is not None
-            and (meta is None or meta == session.id)
+            and len(holders) == 1
+            and meta is not None
+            and meta == holders[0]
         )
         if not ok:
             bad.append(task.id)
@@ -269,10 +297,10 @@ async def run_check(db, check_id: str, *, config=None, repair: bool = False) -> 
     """Run one pool/claim check directly against *db* (no registry needed).
 
     ``repair=True`` runs the check's ``fix`` (if any) then re-runs the check,
-    mirroring :func:`src.doctor.runner._apply_fix`.
+    mirroring :func:`src.doctor.runner.apply_fix`.
     """
     check = _BY_ID[check_id]
     ctx = DoctorContext(config=config, db=db)
     if repair and check.fix is not None:
-        return await _apply_fix(check, ctx)
+        return await apply_fix(check, ctx)
     return await check.run(ctx)

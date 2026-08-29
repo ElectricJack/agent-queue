@@ -13,7 +13,6 @@ To run locally::
 
 from __future__ import annotations
 
-import os
 import uuid
 
 import pytest
@@ -28,8 +27,12 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from tests.pg_dsn import ensure_worker_postgres_dsn
 
-POSTGRES_DSN = os.environ.get("POSTGRES_TEST_DSN", "")
+#: Per-xdist-worker DSN (tests/pg_dsn.py) -- this suite's own database,
+#: separate from tests/perf and tests/test_claim_queries.py's, so
+#: concurrent truncates under ``-n auto`` don't race each other.
+POSTGRES_DSN = ensure_worker_postgres_dsn() or ""
 
 pytestmark = [
     pytest.mark.integration,

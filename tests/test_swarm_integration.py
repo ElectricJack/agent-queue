@@ -232,16 +232,22 @@ class TestSwarmWorkerLoopEndToEnd:
         third = await h2._cmd_task_claim({"next": True})
         assert (third["result"], third["task"]["id"]) == ("claimed", "t3")
 
-        # Every task.ready/task.claimed/task.completed event carries the
-        # base triple (task_id, project_id, title) -- event schema (spec
-        # §14).  ``task.completed`` is not fired on this pool/session-close
-        # path (that's ``task.closed`` -- see src/orchestrator/execution.py);
-        # the loop still checks all three so the invariant holds for
-        # whichever of them actually fired.
-        for etype in ("task.ready", "task.claimed", "task.completed", "task.closed"):
-            for payload in emitted_payloads(orch, etype):
+        # Every event this path actually fires carries the base triple
+        # (task_id, project_id, title) -- event schema (spec §14). Narrowed
+        # to the two event types this pool/session-close path fires:
+        # ``task.claimed`` (src/commands/claim_commands.py's
+        # ``_prepare_and_activate``) and ``task.closed`` (the session-close
+        # transition, src/orchestrator/execution.py's
+        # ``complete_session_task`` -- NOT ``task.completed``, which is a
+        # different, monitoring-loop-only event this path never emits).
+        # ``task.ready`` doesn't fire either: t1/t2/t3 are seeded directly
+        # as READY rather than promoted from DEFINED, so there's no
+        # promotion transition to emit it from.
+        for etype in ("task.claimed", "task.closed"):
+            payloads = emitted_payloads(orch, etype)
+            assert payloads, f"expected at least one {etype!r} event"
+            for payload in payloads:
                 assert {"task_id", "project_id", "title"} <= payload.keys()
-        assert emitted_payloads(orch, "task.claimed")  # sanity: the loop above isn't vacuous
 
     async def test_worker_filed_task_lands_defined_with_routing_gate(self, orch, handler, db):
         await mktask(db, "t1")

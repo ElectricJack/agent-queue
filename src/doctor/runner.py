@@ -111,8 +111,14 @@ async def _run_one(check: DoctorCheck, ctx: DoctorContext) -> CheckResult:
     return result
 
 
-async def _apply_fix(check: DoctorCheck, ctx: DoctorContext) -> CheckResult:
-    """Run a check's fix then re-run the check, reporting the post-fix state."""
+async def apply_fix(check: DoctorCheck, ctx: DoctorContext) -> CheckResult:
+    """Run a check's fix then re-run the check, reporting the post-fix state.
+
+    Public: any caller that wants "run this one check's fix and tell me the
+    post-fix state" without spinning up a full :class:`DoctorRegistry` /
+    :func:`run_doctor` pass reuses this directly (``src.doctor.pool_checks
+    .run_check``'s ``repair=True`` path does exactly that).
+    """
     try:
         await asyncio.wait_for(check.fix(ctx), timeout=check.timeout_s)  # type: ignore[misc]
     except asyncio.CancelledError:  # pragma: no cover
@@ -191,7 +197,7 @@ async def run_doctor(
         ]
         if fix_targets:
             fixed = await asyncio.gather(
-                *(_apply_fix(by_id[r.id], ctx) for r in fix_targets)
+                *(apply_fix(by_id[r.id], ctx) for r in fix_targets)
             )
             fixed_by_id = {r.id: r for r in fixed}
             results = [fixed_by_id.get(r.id, r) for r in results]
