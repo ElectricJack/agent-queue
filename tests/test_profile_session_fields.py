@@ -73,7 +73,7 @@ class TestKnownKeys:
         } <= CONFIG_KNOWN_KEYS
 
     def test_enum_sets_match_the_spec(self):
-        assert VALID_LIFECYCLES == {"task", "named"}
+        assert VALID_LIFECYCLES == {"task", "named", "pool"}
         assert VALID_MODES == {"always", "on_demand"}
         assert VALID_WAKE_MODES == {"resume", "fresh"}
 

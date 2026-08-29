@@ -213,6 +213,24 @@ class AgentState(Enum):
     RETIRED = "RETIRED"
 
 
+class ClaimResult(Enum):
+    """Result codes of ``task_claim`` (swarm-work-model §10)."""
+
+    CLAIMED = "claimed"
+    NO_READY_WORK = "no_ready_work"
+    CLAIM_CONFLICT = "claim_conflict"
+    PREPARE_FAILED = "prepare_failed"
+    CLAIM_IN_PROGRESS = "claim_in_progress"
+    NOT_ADMISSIBLE = "not_admissible"
+    SESSION_EXHAUSTED = "session_exhausted"
+    DRAIN_REQUESTED = "drain_requested"
+    STALE_CLAIM = "stale_claim"
+    OUT_OF_SCOPE = "out_of_scope"
+
+
+CLAIM_PHASES = ("claiming", "preparing", "active")
+
+
 class AgentResult(Enum):
     """The outcome reported by an agent adapter when a task execution finishes.
 
@@ -420,6 +438,7 @@ class Agent:
     last_heartbeat: float | None = None
     total_tokens_used: int = 0
     session_tokens_used: int = 0
+    created_at: float = 0.0
 
 
 @dataclass
@@ -770,6 +789,10 @@ class AgentProfile:
     # is the belt-and-braces defense.
     read_only: bool = False
     max_session_age: int | None = None
+    # lifecycle: pool (swarm-work-model §9).  NULL = unlimited claims.
+    min_active: int | None = None
+    max_active: int | None = None
+    max_claims_per_session: int | None = None
 
 
 @dataclass
@@ -1245,3 +1268,10 @@ class SessionRecord:
     restarts: int = 0
     quarantined_at: float | None = None
     sleep_reason: str | None = None
+    # Pool lifecycle (swarm-work-model §9–§11).
+    claims: int = 0
+    agent_id: str | None = None
+    claim_phase: str | None = None  # claiming | preparing | active
+    claim_phase_at: float | None = None
+    last_claim_epoch: int | None = None
+    last_claim_result: str | None = None  # claimed | prepare_failed | released

@@ -376,6 +376,7 @@ events = Table(
     Column("agent_id", Text, nullable=True),
     Column("payload", Text, nullable=True),
     Column("timestamp", Float, nullable=False),
+    Index("idx_events_type_project_id", "event_type", "project_id", "id"),
 )
 
 rate_limits = Table(
@@ -608,6 +609,7 @@ sessions = Table(
     Index("idx_sessions_task_id", "task_id"),
     Index("idx_sessions_state", "state"),
     Index("idx_sessions_name", "name"),
+    Index("idx_sessions_pool", "lifecycle", "project_id", "profile_id", "state"),
 )
 
 messages = Table(

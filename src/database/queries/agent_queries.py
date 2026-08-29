@@ -106,4 +106,5 @@ class AgentQueryMixin:
             last_heartbeat=row["last_heartbeat"],
             total_tokens_used=row["total_tokens_used"],
             session_tokens_used=row["session_tokens_used"],
+            created_at=row.get("created_at", 0.0) or 0.0,
         )

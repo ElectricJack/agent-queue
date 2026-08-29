@@ -40,6 +40,9 @@ class ProfileQueryMixin:
                     read_only=profile.read_only,
                     max_session_age=profile.max_session_age,
                     default_class=profile.default_class or "",
+                    min_active=profile.min_active,
+                    max_active=profile.max_active,
+                    max_claims_per_session=profile.max_claims_per_session,
                     created_at=now,
                     updated_at=now,
                 )
@@ -112,6 +115,9 @@ class ProfileQueryMixin:
                 read_only=profile.read_only,
                 max_session_age=profile.max_session_age,
                 default_class=profile.default_class or "",
+                min_active=profile.min_active,
+                max_active=profile.max_active,
+                max_claims_per_session=profile.max_claims_per_session,
             )
             return "updated"
         else:
@@ -168,4 +174,7 @@ class ProfileQueryMixin:
             needs_workspace=bool(row.get("needs_workspace", 1)),
             read_only=bool(row.get("read_only", 0)),
             max_session_age=row.get("max_session_age"),
+            min_active=row.get("min_active"),
+            max_active=row.get("max_active"),
+            max_claims_per_session=row.get("max_claims_per_session"),
         )

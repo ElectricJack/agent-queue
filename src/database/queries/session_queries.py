@@ -124,6 +124,12 @@ def _row_to_session(row) -> SessionRecord:
         restarts=row["restarts"] or 0,
         quarantined_at=row["quarantined_at"],
         sleep_reason=row["sleep_reason"],
+        claims=int(row.get("claims") or 0),
+        agent_id=row.get("agent_id"),
+        claim_phase=row.get("claim_phase"),
+        claim_phase_at=row.get("claim_phase_at"),
+        last_claim_epoch=row.get("last_claim_epoch"),
+        last_claim_result=row.get("last_claim_result"),
     )
 
 
@@ -172,6 +178,12 @@ class SessionQueryMixin:
                     restarts=session.restarts,
                     quarantined_at=session.quarantined_at,
                     sleep_reason=session.sleep_reason,
+                    claims=session.claims,
+                    agent_id=session.agent_id,
+                    claim_phase=session.claim_phase,
+                    claim_phase_at=session.claim_phase_at,
+                    last_claim_epoch=session.last_claim_epoch,
+                    last_claim_result=session.last_claim_result,
                 )
             )
 
@@ -216,6 +228,8 @@ class SessionQueryMixin:
         project_id: str | None = None,
         name: str | None = None,
         live_only: bool = False,
+        agent_id: str | None = None,
+        claim_phase: str | None = None,
     ) -> list[SessionRecord]:
         """List sessions, newest first.
 
@@ -237,6 +251,10 @@ class SessionQueryMixin:
             query = query.where(sessions.c.project_id == project_id)
         if name is not None:
             query = query.where(sessions.c.name == name)
+        if agent_id is not None:
+            query = query.where(sessions.c.agent_id == agent_id)
+        if claim_phase is not None:
+            query = query.where(sessions.c.claim_phase == claim_phase)
         query = query.order_by(sessions.c.started_at.desc())
         async with self._engine.begin() as conn:
             result = await conn.execute(query)

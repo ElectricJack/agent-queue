@@ -1450,8 +1450,10 @@ class TestValidateConfig:
         """CONFIG_KNOWN_KEYS contains the spec-defined fields, including
         ``runtime`` (selects the Runtime implementation at dispatch
         time), ``read_only`` (profile may not write to its workspace),
-        and the named-session fields from
-        docs/specs/implementation/supervisor-agent.md §7.
+        the named-session fields from
+        docs/specs/implementation/supervisor-agent.md §7, and the
+        pool-only sizing fields (``min_active``, ``max_active``,
+        ``max_claims_per_session``) from swarm-work-model §9.
 
         Note: ``agent_name`` is deliberately *not* a known key. It was
         retired together with the ``acpx`` runtime; the parser now
@@ -1473,6 +1475,9 @@ class TestValidateConfig:
             "default_class",
             "needs_workspace",
             "read_only",
+            "min_active",
+            "max_active",
+            "max_claims_per_session",
         }
 
     def test_config_agent_name_rejected(self):

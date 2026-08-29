@@ -46,6 +46,7 @@ SECTION_NOTES: dict[str, str] = {
     "surface": "Framework overhaul: agent-surface ergonomics knobs.",
     "state_machine": "Framework overhaul: task state-machine enforcement (warn-only while off).",
     "work_graph": "Framework overhaul: blocked-state projection, gates, typed edges.",
+    "swarm": "Framework overhaul: pull-based worker pools (claims, pool reconciliation).",
 }
 
 # Individual flags that gate a whole subsystem at construction time.  Keys are

@@ -1285,6 +1285,31 @@ class WorkGraphConfig:
 
 
 @dataclass
+class SwarmConfig:
+    """Pull-based worker pools (swarm-work-model §10–§12, §17).
+
+    ``enabled`` gates ``_reconcile_pools`` and ``lifecycle: pool`` launches.
+    Everything else is a tunable read each tick — hot-reloadable.
+    """
+
+    enabled: bool = False
+    claim_wait_max: int = 60  # seconds a `task_claim --wait` may block
+    max_starts_per_tick: int = 2
+    max_drains_per_tick: int = 5
+    scale_down_grace: int = 120  # seconds of surplus before a drain
+    prepare_timeout: int = 120  # claim_phase='preparing' older than this is released
+    max_filings_per_task: int = 20  # worker-filed tasks per held task
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for key in ("claim_wait_max", "max_starts_per_tick", "max_drains_per_tick",
+                    "scale_down_grace", "prepare_timeout", "max_filings_per_task"):
+            if getattr(self, key) < 0:
+                errors.append(ConfigError("swarm", key, "must be >= 0"))
+        return errors
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -1341,6 +1366,7 @@ class AppConfig:
     surface: SurfaceConfig = field(default_factory=SurfaceConfig)
     state_machine: StateMachineConfig = field(default_factory=StateMachineConfig)
     work_graph: WorkGraphConfig = field(default_factory=WorkGraphConfig)
+    swarm: SwarmConfig = field(default_factory=SwarmConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     max_daily_playbook_tokens: int | None = None
@@ -1519,6 +1545,7 @@ class AppConfig:
         errors.extend(self.surface.validate())
         errors.extend(self.state_machine.validate())
         errors.extend(self.work_graph.validate())
+        errors.extend(self.swarm.validate())
         # ``supervisor_agent.enabled`` needs the message queue and named
         # sessions to exist (supervisor-agent spec §10).
         if self.supervisor_agent.enabled and not (self.messages.enabled and self.sessions.enabled):
@@ -1621,6 +1648,7 @@ class AppConfig:
         # trust-and-ops §2).  Inert until their owning lane lands.
         updated.state_machine = fresh.state_machine
         updated.work_graph = fresh.work_graph
+        updated.swarm = fresh.swarm
         updated.pricing = fresh.pricing
         updated.surface = fresh.surface
 
@@ -1648,6 +1676,7 @@ HOT_RELOADABLE_SECTIONS = {
     # -- Framework-overhaul substrate sections (inert until their lane) ----
     "state_machine",
     "work_graph",
+    "swarm",
     "pricing",
     "surface",
 }
@@ -1713,6 +1742,7 @@ _SECTION_FIELDS = {
     "surface",
     "state_machine",
     "work_graph",
+    "swarm",
     "agent_profiles",
     "global_token_budget_daily",
     "max_daily_playbook_tokens",
@@ -2381,6 +2411,18 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             gate_sweep_interval_seconds=int(wg.get("gate_sweep_interval_seconds", 30)),
             conditional_autoclose=bool(wg.get("conditional_autoclose", True)),
             container_sweep_interval_seconds=int(wg.get("container_sweep_interval_seconds", 60)),
+        )
+
+    if "swarm" in raw and isinstance(raw["swarm"], dict):
+        sw = raw["swarm"]
+        config.swarm = SwarmConfig(
+            enabled=bool(sw.get("enabled", False)),
+            claim_wait_max=int(sw.get("claim_wait_max", 60)),
+            max_starts_per_tick=int(sw.get("max_starts_per_tick", 2)),
+            max_drains_per_tick=int(sw.get("max_drains_per_tick", 5)),
+            scale_down_grace=int(sw.get("scale_down_grace", 120)),
+            prepare_timeout=int(sw.get("prepare_timeout", 120)),
+            max_filings_per_task=int(sw.get("max_filings_per_task", 20)),
         )
 
     if "agent_profiles" in raw:

@@ -63,13 +63,16 @@ CONFIG_KNOWN_KEYS = frozenset(
         "default_class",
         "needs_workspace",
         "read_only",
+        "min_active",
+        "max_active",
+        "max_claims_per_session",
     }
 )
 
 # Valid ``lifecycle`` values.  ``task`` is the default (one session per
 # task); ``named`` is a long-lived session addressed by name (mechanics
 # owned by the session-runtime spec).
-VALID_LIFECYCLES = frozenset({"task", "named"})
+VALID_LIFECYCLES = frozenset({"task", "named", "pool"})
 
 # Valid ``mode`` values — meaningful only with ``lifecycle: named``.
 VALID_MODES = frozenset({"always", "on_demand"})
@@ -658,6 +661,28 @@ def _validate_session_config(config: dict) -> list[str]:
                         f"Config 'workspaces' entries must be non-empty strings, got {entry!r}"
                     )
 
+    # Pool-only sizing keys (swarm-work-model §9).  NULL/absent = unlimited
+    # for max_claims_per_session; 0 is a parse error everywhere.
+    for key in ("min_active", "max_active", "max_claims_per_session"):
+        if key not in config:
+            continue
+        value = config[key]
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            errors.append(f"Config '{key}' must be an integer, got {type(value).__name__}")
+            continue
+        if key == "min_active":
+            if value < 0:
+                errors.append(f"Config 'min_active' must be >= 0, got {value}")
+        elif value <= 0:
+            errors.append(f"Config '{key}' must be positive (omit it for unlimited), got {value}")
+        if lifecycle != "pool":
+            errors.append(
+                f"Config '{key}' is only valid with lifecycle 'pool' "
+                f"(this profile's lifecycle is '{lifecycle}')"
+            )
+
     return errors
 
 
@@ -975,6 +1000,10 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
         if parsed.config.get(key):
             result[key] = parsed.config[key]
     for key in ("idle_timeout", "max_session_age"):
+        value = parsed.config.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            result[key] = value
+    for key in ("min_active", "max_active", "max_claims_per_session"):
         value = parsed.config.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             result[key] = value
