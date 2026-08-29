@@ -438,6 +438,72 @@ class PoolStatusResponse(BaseModel):
     pools: list[PoolStatusRow] = []
 
 
+class FormulaSummary(BaseModel):
+    """One entry in ``formula_list``'s ``formulas`` array."""
+
+    model_config = {"extra": "allow"}
+    name: str
+    description: str = ""
+    scope: str = ""
+    extends: str | None = None
+    vars: dict = {}
+    path: str = ""
+
+
+class FormulaListResponse(BaseModel):
+    success: bool = True
+    formulas: list[FormulaSummary] = []
+
+
+class FormulaShowResponse(BaseModel):
+    """``formula_show``'s shape varies by outcome (same reasoning as
+    ``create_task_graph``): a validation failure reports ``errors`` and the
+    raw merged document, ``as_cooked`` omits ``chain``/``chain_sha`` details
+    that only apply to a live registry resolution.  ``extra="allow"`` plus
+    all-optional fields keeps the model honest about that without pinning
+    down a shape narrower than what the command actually returns.
+    """
+
+    model_config = {"extra": "allow"}
+    success: bool
+    error: str | None = None
+    name: str | None = None
+    scope: str | None = None
+    path: str | None = None
+    chain: list[str] | None = None
+    chain_sha: str | None = None
+    vars: dict | None = None
+    graph: dict | None = None
+    errors: list[dict] = []
+    warnings: list[dict] = []
+    as_cooked: str | None = None
+
+
+class FormulaCookResponse(BaseModel):
+    """``formula_cook`` shares ``create_task_graph``'s build_report envelope
+    (``parent_id``/``nodes``/``dry_run``/...) plus formula-specific fields
+    (``container_id``, ``provenance``) and an error envelope on failure.
+    """
+
+    model_config = {"extra": "allow"}
+    success: bool
+    error: str | None = None
+    errors: list[dict] = []
+    warnings: list[dict] = []
+    container_id: str | None = None
+    project_id: str | None = None
+    parent_id: str | None = None
+    parent_title: str | None = None
+    provisional: bool | None = None
+    task_ids: list[str] = []
+    nodes: list[dict] = []
+    dependency_count: int | None = None
+    context_count: int | None = None
+    dry_run: bool | None = None
+    created: bool | None = None
+    provenance: dict | None = None
+
+
 class PoolScaleResponse(BaseModel):
     success: bool
     project_id: str | None = None
@@ -495,4 +561,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,
     "pool_scale": PoolScaleResponse,
+    "formula_list": FormulaListResponse,
+    "formula_show": FormulaShowResponse,
+    "formula_cook": FormulaCookResponse,
 }

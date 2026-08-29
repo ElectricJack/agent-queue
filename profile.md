@@ -163,6 +163,18 @@ Part II claims/pools/worker-filed work). Off by default (`swarm.enabled: false`)
 | `src/doctor/pool_checks.py` | `pools.stuck`, `pools.orphan_agents`, `pools.preparing_stuck`, `claims.holder_consistency` (report-only) |
 | `src/profiles/parser.py` | (also) `lifecycle: pool` + `min_active`/`max_active`/`max_claims_per_session` parsing |
 
+### Formulas (Swarm Work Model, Part III)
+
+Design: `docs/specs/design/formulas.md`; crosswalk row: swarm-work-model design spec §18 (P7).
+
+| File | Purpose |
+|------|---------|
+| `src/task_graph/formulas.py` | Registry, vault loading + watcher, `extends` chain resolution, document merge, var validation, `chain_sha` |
+| `src/task_graph/creator.py` | `FormulaProvenance` (also carries `create_task_graph`'s plan/report builders); `write_plan` stamps provenance metadata + `formula_snapshot` context row + `formula:<name>` label |
+| `src/commands/formula_commands.py` | `formula_list` / `formula_show` (incl. `as_cooked`, read-only) / `formula_cook` (one-transaction create, not agent-scoped) |
+| `src/cli/formulas.py` | `aq formula show` / `aq formula cook` — hand-crafted for repeatable `--var k=v`; `aq formula list` is auto-generated |
+| `src/doctor/formula_checks.py` | `formulas.parse` — report-only, warns on any formula file that failed to parse |
+
 ### Memory & Knowledge
 
 Memory is provided by the **external `aq-memory` plugin** (install via `aq plugin install`). The plugin owns its memsearch/Milvus backend, the auto-extractor, and all `memory_*` tool/command handlers. Only the in-tree parsers below remain in core.

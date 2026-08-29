@@ -69,6 +69,11 @@ HANDCRAFTED_COVERAGE = {
     "plugin_config",
     "plugin_prompts",
     "plugin_reset_prompts",
+    # formulas.py — hand-crafted for repeatable ``--var k=v`` collection,
+    # which Click has no built-in support for. ``formula_list`` is left to
+    # auto-generation (no interesting args).
+    "formula_show",
+    "formula_cook",
 }
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
@@ -99,6 +104,7 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "message": "message",
     "discord": "discord",
     "pool": "pool",
+    "formula": "formula",
 }
 
 # Human-readable group descriptions for newly created groups.
@@ -112,6 +118,7 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "message": "Inter-agent and user message queue.",
     "discord": "Discord channel and thread housekeeping.",
     "pool": "Worker pool sizing — status and scale.",
+    "formula": "Reusable task-graph templates — list, resolve, and cook.",
 }
 
 

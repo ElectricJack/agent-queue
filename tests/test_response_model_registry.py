@@ -36,15 +36,6 @@ _UNSTRUCTURED_EXEMPT: set[str] = {
     "task_show",
     "workspace_doctor",
     "workspace_reap",
-    # formulas (swarm-work-model §13): formula_show/formula_cook share
-    # create_task_graph's shape-varies-by-outcome envelope (errors/warnings
-    # on failure, a full graph report on success) -- same reasoning as
-    # create_task_graph's exemption above. formula_list's response is a
-    # simple homogeneous list but is exempted alongside its siblings rather
-    # than given a one-off model for a single read command.
-    "formula_cook",
-    "formula_list",
-    "formula_show",
 }
 
 

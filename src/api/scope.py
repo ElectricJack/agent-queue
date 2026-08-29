@@ -31,6 +31,8 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "task_claim",
         "create_task",
         "project_ready",
+        "formula_list",
+        "formula_show",
     }
 )
 

@@ -1091,3 +1091,30 @@ def format_pool_table(pools: list[dict]) -> Table:
         )
 
     return table
+
+
+def format_formula_list(data: dict) -> Table:
+    """Format ``formula_list``'s ``formulas`` array as a Rich table."""
+    table = Table(
+        title="Formulas",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Name", style="bold bright_cyan", no_wrap=True)
+    table.add_column("Scope", style="magenta", no_wrap=True)
+    table.add_column("Extends", style="dim", no_wrap=True)
+    table.add_column("Vars")
+    table.add_column("Description")
+
+    for formula in data.get("formulas", []):
+        var_names = ", ".join(sorted(formula.get("vars", {}) or {})) or "-"
+        table.add_row(
+            formula.get("name", ""),
+            formula.get("scope", ""),
+            formula.get("extends") or "-",
+            var_names,
+            _truncate(formula.get("description", ""), 60),
+        )
+
+    return table

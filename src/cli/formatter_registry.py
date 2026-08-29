@@ -166,6 +166,7 @@ def _register_all():
         format_confirmation,
         format_entity_detail,
         format_event_list,
+        format_formula_list,
         format_key_value,
         format_playbook_graph,
         format_pool_table,
@@ -406,6 +407,14 @@ def _register_all():
         extract="pools",
         many=True,
         empty_message="No worker pools configured.",
+    )
+
+    # -- Formulas (swarm-work-model §13) -------------------------------------
+
+    FORMATTERS["formula_list"] = FormatterSpec(
+        render=format_formula_list,
+        extract=None,
+        many=False,
     )
     FORMATTERS["list_workspaces"] = FormatterSpec(
         render=format_workspace_list,

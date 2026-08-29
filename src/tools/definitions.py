@@ -103,9 +103,10 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_chain_health": "task",
     "list_active_tasks_all_projects": "task",
     "create_task_graph": "task",
-    "formula_list": "task",
-    "formula_show": "task",
-    "formula_cook": "task",
+    # formula — reusable task-graph templates (swarm-work-model §13)
+    "formula_list": "formula",
+    "formula_show": "formula",
+    "formula_cook": "formula",
     # playbook — compilation, run management, human-in-the-loop resume
     "compile_playbook": "playbook",
     "run_playbook": "playbook",

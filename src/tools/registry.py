@@ -125,6 +125,13 @@ CATEGORIES: dict[str, CategoryMeta] = {
         name="pool",
         description=("Worker pool sizing — supply/demand status and min/max bounds"),
     ),
+    "formula": CategoryMeta(
+        name="formula",
+        description=(
+            "Reusable task-graph templates — list, resolve/validate (read-only), "
+            "and cook (create the resulting graph in one transaction)"
+        ),
+    ),
 }
 
 

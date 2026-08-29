@@ -135,6 +135,22 @@ aq task create --project <pid> --title "..." --description "..." \
   --profile worker-standard --parent <container_task_id>
 ```
 
+## Cooking a formula
+
+A formula is a reusable, parameterised task-graph template in the vault
+(`vault/[projects/<pid>/]formulas/<name>.md` — see
+`docs/specs/design/formulas.md`). `formula_list` and `formula_show` are
+read-only and available to any session; `formula_cook` **creates** the
+graph and is **not** agent-scoped — it is elevated/supervisor-only, same
+restriction as `create_task_graph`:
+
+```bash
+aq formula list -p <pid>                          # what's available
+aq formula show review-and-fix --var branch=feat/x # resolve + validate, no write
+aq formula cook review-and-fix -p <pid> \
+  --var branch=feat/x --var fixer=coding --dry-run  # then drop --dry-run
+```
+
 ## Hierarchy
 
 Any task can become a **container** just by gaining a child — there is no
