@@ -9,6 +9,7 @@ transaction.
 
 from __future__ import annotations
 
+import json
 import time
 
 from sqlalchemy import and_, delete, exists, insert, literal, select, update
@@ -362,12 +363,20 @@ class HierarchyQueryMixin:
             stmt = stmt.with_for_update()
         return [(r[0], r[1]) for r in (await conn.execute(stmt)).fetchall()]
 
-    async def abandon_subtree(self, task_id: str, *, conn) -> list[str]:
-        """Close every non-terminal descendant as ``abandoned`` (spec §7)."""
+    async def abandon_subtree(self, task_id: str, *, conn) -> TransitionResult:
+        """Close every non-terminal descendant as ``abandoned`` (spec §7).
+
+        Administrative close: ``force=True`` on every transition, since a
+        descendant may be sitting in a state (``PAUSED``, ``ASSIGNED``,
+        ``WAITING_INPUT``, ...) with no ordinary edge to ``COMPLETED``.
+        Accumulates ``.flipped`` / ``.settled`` across every descendant so
+        the caller can run one post-commit ``log_blocked_flips`` /
+        ``_notify_settled`` pass instead of dropping them.
+        """
         ids = await self.subtree_ids(task_id, conn=conn)
         ids = [i for i in ids if i != task_id]
         if not ids:
-            return []
+            return TransitionResult()
         stmt = select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(ids))
         if conn.dialect.name == "postgresql":
             stmt = stmt.with_for_update()
@@ -376,29 +385,29 @@ class HierarchyQueryMixin:
         # Deepest first so each container settles naturally after its children.
         depth = {tid: i for i, tid in enumerate(ids)}
         open_ids = sorted((r[0] for r in rows if r[1] not in terminal), key=lambda t: -depth[t])
-        abandoned: list[str] = []
+        result = TransitionResult()
         for tid in open_ids:
             await self._upsert_meta(tid, "work_outcome", "abandoned", conn=conn)
-            await self._apply_transition(
+            res = await self._apply_transition(
                 conn,
                 tid,
                 TaskStatus.COMPLETED,
                 context="abandoned_by_container",
                 assigned_agent_id=None,
+                force=True,
             )
-            abandoned.append(tid)
-        return abandoned
+            result.settled.extend(res.settled)
+            result.flipped |= res.flipped
+            result.abandoned.append(tid)
+        return result
 
     async def _upsert_meta(self, task_id: str, key: str, value, *, conn) -> None:
-        import json
-
+        """Set ``task_metadata[key] = value`` (JSON-encoded), insert-or-update."""
         encoded = json.dumps(value)
-        res = await conn.execute(
-            update(task_metadata)
-            .where(and_(task_metadata.c.task_id == task_id, task_metadata.c.key == key))
-            .values(value=encoded)
+        dialect = conn.dialect.name
+        ins = pg_insert if dialect == "postgresql" else sqlite_insert
+        stmt = ins(task_metadata).values(task_id=task_id, key=key, value=encoded)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["task_id", "key"], set_={"value": encoded}
         )
-        if res.rowcount == 0:
-            await conn.execute(
-                insert(task_metadata).values(task_id=task_id, key=key, value=encoded)
-            )
+        await conn.execute(stmt)

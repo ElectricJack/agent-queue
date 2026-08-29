@@ -41,6 +41,9 @@ class TransitionResult:
 
     flipped: set[str] = field(default_factory=set)
     settled: list[str] = field(default_factory=list)
+    #: Descendant ids closed as ``abandoned`` — populated only by
+    #: ``HierarchyQueryMixin.abandon_subtree`` (spec §7); empty otherwise.
+    abandoned: list[str] = field(default_factory=list)
 
 
 class TaskQueryMixin:

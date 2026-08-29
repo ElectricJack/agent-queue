@@ -498,6 +498,28 @@ class SessionCommandsMixin:
         if session is None:
             session = await self.db.get_session_for_task(str(task_id))
 
+        # --- close-with-summary enforcement (Dv2 Phase 2 §7) --------------
+        # Tasks executed by workspace-needing profiles must carry a
+        # summary at close time.  This is what feeds the reviewer, the
+        # dashboard completion card, and the task-summary note in the
+        # vault.  Supervisor / chat-only profiles skip the requirement
+        # because they never touch a repo.  Checked *before* the
+        # container-close block below: a refused close must never abandon
+        # a single descendant (spec §7).
+        summary = str(args.get("summary") or "").strip()
+        profile = None
+        if task.profile_id:
+            profile = await self.db.get_profile(task.profile_id)
+        needs_ws = profile.needs_workspace if profile else False
+        if needs_ws and not summary:
+            return {
+                "success": False,
+                "error": (
+                    "summary is required for tasks whose profile has "
+                    "needs_workspace: true (Dv2 Phase 2 §7 close contract)"
+                ),
+            }
+
         # Container-close semantics (swarm-work-model §7).
         open_children = await self.db.open_children(task_id)
         abandoned: list[str] = []
@@ -523,27 +545,13 @@ class SessionCommandsMixin:
                         "(aq task stop <id> / aq session kill <name>)",
                         "sessions": [{"session_id": s, "task_id": t} for s, t in live],
                     }
-                abandoned = await self.db.abandon_subtree(task_id, conn=conn)
-
-        # --- close-with-summary enforcement (Dv2 Phase 2 §7) --------------
-        # Tasks executed by workspace-needing profiles must carry a
-        # summary at close time.  This is what feeds the reviewer, the
-        # dashboard completion card, and the task-summary note in the
-        # vault.  Supervisor / chat-only profiles skip the requirement
-        # because they never touch a repo.
-        summary = str(args.get("summary") or "").strip()
-        profile = None
-        if task.profile_id:
-            profile = await self.db.get_profile(task.profile_id)
-        needs_ws = profile.needs_workspace if profile else False
-        if needs_ws and not summary:
-            return {
-                "success": False,
-                "error": (
-                    "summary is required for tasks whose profile has "
-                    "needs_workspace: true (Dv2 Phase 2 §7 close contract)"
-                ),
-            }
+                abandon_result = await self.db.abandon_subtree(task_id, conn=conn)
+            # Post-commit: audit rows and settlement notification, same
+            # sequencing as ``transition_task`` (never inside the write
+            # transaction — a listener failure must not roll back the abandon).
+            await self.db.log_blocked_flips(abandon_result.flipped)
+            await self.db._notify_settled(abandon_result.settled)
+            abandoned = abandon_result.abandoned
 
         # Outcome metadata is written first: it must survive even if the
         # pipeline explodes, because it is the record of what the agent
