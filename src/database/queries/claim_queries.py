@@ -16,9 +16,9 @@ from sqlalchemy import and_, case, exists, func, literal, select, update
 
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.session_queries import _row_to_session
-from src.database.queries.task_queries import TransitionResult
+from src.database.queries.task_queries import TransitionResult, supports_returning
 from src.database.tables import agents, sessions, task_workspace_requirements, tasks, workspaces
-from src.models import AgentState, Task, TaskEvent, TaskStatus
+from src.models import AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
 
 
 def _frontier_where(project_id: str):
@@ -32,9 +32,20 @@ def _frontier_where(project_id: str):
 
 
 class ClaimQueryMixin:
-    """Expects ``self._engine`` plus Task/Session/Workspace/Hierarchy mixins."""
+    """Expects ``self._engine`` plus Task/Session/Workspace/Hierarchy mixins.
+
+    ``_row_to_workspace`` (WorkspaceQueryMixin), ``_apply_transition`` /
+    ``_row_to_task`` (TaskQueryMixin) and ``_upsert_meta[_many]``
+    (HierarchyQueryMixin) all come from the composed adapter.
+    """
 
     async def take_claim_slot(self, conn, session_id: str, *, now: float, cap: int | None):
+        """CAS the session into ``claiming``; ``(kind, session_or_None)``.
+
+        The happy path is **one** statement: ``UPDATE … RETURNING`` hands
+        back the row it just took, so the re-read below only runs when the
+        CAS lost (or the dialect predates RETURNING — SQLite < 3.35).
+        """
         cond = [
             sessions.c.id == session_id,
             sessions.c.task_id.is_(None),
@@ -43,18 +54,25 @@ class ClaimQueryMixin:
         ]
         if cap is not None:
             cond.append(sessions.c.claims < cap)
-        res = await conn.execute(
+        stmt = (
             update(sessions).where(and_(*cond)).values(claim_phase="claiming", claim_phase_at=now)
         )
-        row = (
-            (await conn.execute(select(sessions).where(sessions.c.id == session_id)))
-            .mappings()
-            .fetchone()
-        )
+        row = None
+        if supports_returning(conn):
+            row = (await conn.execute(stmt.returning(*sessions.c))).mappings().fetchone()
+            took = row is not None
+        else:
+            took = (await conn.execute(stmt)).rowcount == 1
+        if row is None:
+            row = (
+                (await conn.execute(select(sessions).where(sessions.c.id == session_id)))
+                .mappings()
+                .fetchone()
+            )
         if row is None:
             return "not_found", None
         record = _row_to_session(row)
-        if res.rowcount == 1:
+        if took:
             return "slot", record
         if record.claim_phase in ("active", "preparing", "claiming"):
             return record.claim_phase, record
@@ -108,30 +126,39 @@ class ClaimQueryMixin:
         return row[0] if row else None
 
     async def take_task(self, conn, task_id: str, *, agent_id: str, now: float) -> Task | None:
-        res = await conn.execute(
-            update(tasks)
-            .where(
-                and_(
-                    tasks.c.id == task_id,
-                    tasks.c.status == TaskStatus.READY.value,
-                    tasks.c.is_blocked == 0,
-                    tasks.c.assigned_agent_id.is_(None),
-                )
-            )
-            .values(claim_epoch=tasks.c.claim_epoch + 1)
-        )
-        if res.rowcount != 1:
-            return None
-        await self._apply_transition(
+        """Fence + epoch bump + status write in **one** statement (spec §15).
+
+        The fence (``READY``, unblocked, unassigned) rides the same UPDATE as
+        the epoch bump and the ``IN_PROGRESS`` write, so exactly one racer
+        can match it; a matched row proves the pre-state, which is what lets
+        ``_apply_transition`` skip its pre-read (``assume_pre_state``).  The
+        write still goes through ``_apply_transition`` — the single
+        sanctioned status-write path — which validates
+        ``READY --CLAIMED--> IN_PROGRESS`` on the state machine and skips the
+        blocked-state recompute: no clause of ``blocked_predicate()`` can
+        tell READY from IN_PROGRESS, so nothing's projection can move
+        (``projection_stable``).  Returns ``None`` when the fence lost.
+        """
+        out = await self._apply_transition(
             conn,
             task_id,
             TaskStatus.IN_PROGRESS,
             context="claim",
             event=TaskEvent.CLAIMED,
             assigned_agent_id=agent_id,
+            projection_stable=True,
+            assume_pre_state=(TaskStatus.READY, False),
+            extra_where=and_(
+                tasks.c.status == TaskStatus.READY.value,
+                tasks.c.is_blocked == 0,
+                tasks.c.assigned_agent_id.is_(None),
+            ),
+            extra_values={"claim_epoch": tasks.c.claim_epoch + 1},
+            returning=True,
         )
-        row = (await conn.execute(select(tasks).where(tasks.c.id == task_id))).mappings().fetchone()
-        return self._row_to_task(row)
+        if out.row is None:
+            return None
+        return self._row_to_task(out.row)
 
     async def bump_claim_epoch(self, task_id: str, *, conn=None) -> int:
         async def _run(c):
@@ -149,31 +176,66 @@ class ClaimQueryMixin:
         async with self.immediate() as conn:
             return await _run(conn)
 
-    async def record_holder(self, conn, *, session_id, task_id, agent_id, work_dir, now) -> None:
+    async def record_holder(
+        self, conn, *, session_id, task_id, agent_id, work_dir, now
+    ) -> Workspace | None:
+        """Write the holder rows; return the agent's workspace slot.
+
+        The workspace UPDATE uses ``RETURNING`` so the caller
+        (``_prepare_and_activate``) does not have to re-read the slot it
+        just stamped, and both metadata keys go out in one multi-row upsert
+        (spec §15).
+        """
         await conn.execute(
             update(sessions)
             .where(sessions.c.id == session_id)
             .values(task_id=task_id, claim_phase="preparing", claim_phase_at=now)
         )
+        slot = None
         if agent_id:
             await conn.execute(
                 update(agents)
                 .where(agents.c.id == agent_id)
                 .values(state=AgentState.BUSY.value, current_task_id=task_id)
             )
-            await conn.execute(
+            stmt = (
                 update(workspaces)
                 .where(workspaces.c.locked_by_agent_id == agent_id)
                 .values(locked_by_task_id=task_id)
             )
-        await self._upsert_meta(task_id, "claimed_by_session", session_id, conn=conn)
-        await self._upsert_meta(task_id, "work_dir", work_dir, conn=conn)
+            if supports_returning(conn):
+                row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
+                slot = self._row_to_workspace(row) if row is not None else None
+            else:
+                await conn.execute(stmt)
+                row = (
+                    (
+                        await conn.execute(
+                            select(workspaces).where(workspaces.c.locked_by_agent_id == agent_id)
+                        )
+                    )
+                    .mappings()
+                    .fetchone()
+                )
+                slot = self._row_to_workspace(row) if row is not None else None
+        await self._upsert_meta_many(
+            task_id, {"claimed_by_session": session_id, "work_dir": work_dir}, conn=conn
+        )
+        return slot
 
     async def activate_claim(
         self, session_id, task_id, *, epoch: int, now: float, conn=None
-    ) -> bool:
+    ) -> SessionRecord | None:
+        """Flip ``preparing`` -> ``active``; the updated row, or ``None``.
+
+        Returning the row (via ``RETURNING`` where the dialect has it) saves
+        the caller a re-read to build the response's session block.  Falsy
+        on failure, so the old ``if not await activate_claim(...)`` callers
+        read unchanged.
+        """
+
         async def _run(c):
-            res = await c.execute(
+            stmt = (
                 update(sessions)
                 .where(
                     and_(
@@ -190,7 +252,17 @@ class ClaimQueryMixin:
                     last_claim_result="claimed",
                 )
             )
-            return res.rowcount == 1
+            if supports_returning(c):
+                row = (await c.execute(stmt.returning(*sessions.c))).mappings().fetchone()
+                return _row_to_session(row) if row is not None else None
+            if (await c.execute(stmt)).rowcount != 1:
+                return None
+            row = (
+                (await c.execute(select(sessions).where(sessions.c.id == session_id)))
+                .mappings()
+                .fetchone()
+            )
+            return _row_to_session(row) if row is not None else None
 
         if conn is not None:
             return await _run(conn)
@@ -211,12 +283,22 @@ class ClaimQueryMixin:
         task_id, agent_id = row["task_id"], row["agent_id"]
         epoch = None
         if task_id:
-            epoch = (
-                await conn.execute(select(tasks.c.claim_epoch).where(tasks.c.id == task_id))
-            ).scalar()
+            # ``projection_stable``: IN_PROGRESS -> READY cannot move any
+            # task's ``is_blocked`` (see ``_PROJECTION_NEUTRAL_STATUSES``);
+            # it is ignored for every other target status, so the FAILED /
+            # BLOCKED releases keep the full recompute.  ``returning`` folds
+            # what used to be a separate ``claim_epoch`` read into the write.
             out = await self._apply_transition(
-                conn, task_id, task_status, context=context, force=True, assigned_agent_id=None
+                conn,
+                task_id,
+                task_status,
+                context=context,
+                force=True,
+                assigned_agent_id=None,
+                projection_stable=True,
+                returning=True,
             )
+            epoch = (out.row or {}).get("claim_epoch")
             if needs_attention:
                 await self._upsert_meta(task_id, "needs_attention", needs_attention, conn=conn)
         if agent_id:

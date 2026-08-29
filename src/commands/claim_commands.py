@@ -27,6 +27,47 @@ def write_claim_file(work_dir: str, payload: dict) -> str:
     return path
 
 
+def _task_block(task) -> dict:
+    """The claimed task's own row, field-for-field with ``task_show``'s core.
+
+    Same key names and value shapes as ``_cmd_get_task``'s scalar fields, so
+    a caller reading ``result["task"]["status"]`` is unaffected by the §15
+    trim — only the *joined* sections (``depends_on``, ``blocks``,
+    ``subtasks``, ``children``, ``context``, ``labels``, ``parent``) are
+    gone, and ``aq task show`` still has them.  ``claim_epoch`` is added:
+    the claim protocol's fence lives on the row.
+    """
+    info = {
+        "id": task.id,
+        "project_id": task.project_id,
+        "title": task.title,
+        "description": task.description,
+        "status": task.status.value,
+        "priority": task.priority,
+        "assigned_agent": task.assigned_agent_id,
+        "retry_count": task.retry_count,
+        "max_retries": task.max_retries,
+        "requires_approval": task.requires_approval,
+        "is_blocked": task.is_blocked,
+        "is_plan_subtask": task.is_plan_subtask,
+        "task_type": task.task_type.value if task.task_type else None,
+        "parent_task_id": task.parent_task_id,
+        "profile_id": task.profile_id,
+        "auto_approve_plan": task.auto_approve_plan,
+        "skip_verification": task.skip_verification,
+        "workflow_id": task.workflow_id,
+        "affinity_agent_id": task.affinity_agent_id,
+        "affinity_reason": task.affinity_reason,
+        "workspace_mode": task.workspace_mode.value if task.workspace_mode else None,
+        "claim_epoch": task.claim_epoch,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+    }
+    if task.pr_url:
+        info["pr_url"] = task.pr_url
+    return info
+
+
 def remove_claim_file(work_dir: str) -> None:
     try:
         os.remove(os.path.join(work_dir, CLAIM_FILE))
@@ -118,7 +159,9 @@ class ClaimCommandsMixin:
                 "result": ClaimResult.OUT_OF_SCOPE.value,
                 "error": "task_claim needs a session in scope",
             }
-        session = await self.db.get_session(session_id)
+        # One statement for both (spec §15): the profile is only needed on
+        # the pool path below, but reading it in the same join costs nothing.
+        session, profile = await self.db.get_session_with_profile(session_id)
         if session is None or session.lifecycle not in ("pool", "task"):
             return {
                 "success": False,
@@ -147,7 +190,6 @@ class ClaimCommandsMixin:
                 "error": "task sessions cannot claim other work",
             }
 
-        profile = await self.db.get_profile(session.profile_id)
         cap = getattr(profile, "max_claims_per_session", None)
         project = await self.db.get_project(session.project_id)
         default_profile = getattr(project, "default_profile_id", None)
@@ -180,7 +222,10 @@ class ClaimCommandsMixin:
                 _FRONTIER_EVENTS, filter={"project_id": session.project_id}
             )
             try:
-                seq0 = await self.db.max_event_id()
+                # The sequence watermark only feeds the ``wait`` branch's
+                # missed-``task.ready`` check below; a non-waiting claim
+                # never reads it (spec §15).
+                seq0 = await self.db.max_event_id() if wait else 0
                 outcome = await self._attempt_claim(session, want_id, cap, default_profile)
                 result = outcome["result"]
                 if result == ClaimResult.NO_READY_WORK.value and wait:
@@ -272,7 +317,7 @@ class ClaimCommandsMixin:
                     if want_id:
                         conflict_task_id = want_id
                 else:
-                    await self.db.record_holder(
+                    slot = await self.db.record_holder(
                         conn,
                         session_id=session.id,
                         task_id=tid,
@@ -280,19 +325,19 @@ class ClaimCommandsMixin:
                         work_dir=row.work_dir,
                         now=now,
                     )
-                    new_claim = (row, task)
+                    new_claim = (row, task, slot)
 
         if active_claim is not None:
             task, epoch, row = active_claim
             return await self._claimed_response(task, epoch, row, cap)
         if new_claim is not None:
-            row, task = new_claim
+            row, task, slot = new_claim
             # A concurrent ``claim_in_progress`` caller (``_await_attempt``)
             # can await this instead of polling once the row settles.
             self.orchestrator.claim_waiters[(session.id, task.claim_epoch)] = (
                 asyncio.get_running_loop().create_future()
             )
-            return await self._prepare_and_activate(session, row, task, cap)
+            return await self._prepare_and_activate(session, row, task, cap, slot=slot)
         if conflict_task_id is not None:
             conflict_task = await self.db.get_task(conflict_task_id)
             if conflict_task is not None:
@@ -302,10 +347,17 @@ class ClaimCommandsMixin:
             return self._simple(ClaimResult.CLAIM_CONFLICT, "", row, cap)
         return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
 
-    async def _prepare_and_activate(self, session, row, task, cap=None) -> dict:
+    async def _prepare_and_activate(self, session, row, task, cap=None, *, slot=None) -> dict:
+        """Reset the slot, write the claim file, activate.
+
+        *slot* is the workspace row ``record_holder`` already returned from
+        inside the claim transaction (spec §15); it is only re-read here for
+        callers that did not have one.
+        """
         epoch = task.claim_epoch
         try:
-            slot = await self.db.get_workspace_for_agent(row.agent_id)
+            if slot is None:
+                slot = await self.db.get_workspace_for_agent(row.agent_id)
             if slot is None:
                 raise RuntimeError("session holds no workspace slot")
             await self.orchestrator._worktree_slots().reset_slot_for_task(slot, task)
@@ -335,7 +387,8 @@ class ClaimCommandsMixin:
             )
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
             return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
-        if not await self.db.activate_claim(session.id, task.id, epoch=epoch, now=time.time()):
+        fresh = await self.db.activate_claim(session.id, task.id, epoch=epoch, now=time.time())
+        if not fresh:
             remove_claim_file(row.work_dir)
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
             return self._simple(ClaimResult.PREPARE_FAILED, "released before activation", row, cap)
@@ -348,7 +401,7 @@ class ClaimCommandsMixin:
             claim_epoch=epoch,
         )
         await self.orchestrator._emit_task_event("task.started", task, agent_id=row.agent_id)
-        fresh = await self.db.get_session(session.id)
+        # ``activate_claim`` returned the row it just wrote — no re-read.
         return await self._claimed_response(task, epoch, fresh, cap)
 
     # -- helpers -------------------------------------------------------------------
@@ -377,11 +430,19 @@ class ClaimCommandsMixin:
         return out
 
     async def _claimed_response(self, task, epoch: int, row, cap=None) -> dict:
-        shown = await self._cmd_task_show({"task_id": task.id})
+        """The claimed payload: the task **row**, not the ``task_show`` view.
+
+        Spec §15: building the full ``task_show`` payload (dependencies,
+        dependents, children, progress, context, labels) cost ~10 statements
+        on every claim for data the worker rarely reads at claim time.  The
+        row carries everything the claim protocol needs (id, status,
+        ``claim_epoch``, workspace mode, …); ``aq task show <id>`` is the
+        full view and the tool definition says so.
+        """
         return {
             "success": True,
             "result": ClaimResult.CLAIMED.value,
-            "task": shown.get("task", shown),
+            "task": _task_block(task),
             "claim_epoch": epoch,
             "session": self._session_block(row, cap),
         }

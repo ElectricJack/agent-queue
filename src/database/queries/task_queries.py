@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
 
-from sqlalchemy import delete, insert, select, update, func, and_
+from sqlalchemy import delete, insert, literal, select, update, func, and_
 
 from src.database.tables import (
+    events,
     gates,
     sessions,
     task_context,
@@ -40,6 +42,27 @@ from src.models import (
 from src.state_machine import is_valid_status_transition
 
 logger = logging.getLogger(__name__)
+
+
+#: ``UPDATE … RETURNING`` / ``INSERT … RETURNING`` landed in SQLite 3.35.
+#: PostgreSQL has always had it.  Every RETURNING-based fast path in the
+#: claim path (spec §15) keeps a two-statement fallback for older SQLite.
+SQLITE_RETURNING = sqlite3.sqlite_version_info >= (3, 35, 0)
+
+
+def supports_returning(conn) -> bool:
+    """True when *conn*'s dialect can run ``… RETURNING`` (see above)."""
+    return conn.dialect.name != "sqlite" or SQLITE_RETURNING
+
+
+#: Statuses that no clause of ``blocked_predicate()`` can distinguish: the
+#: predicate reads only COMPLETED (``blocks`` / ``waits-for``), DEFINED and
+#: AWAITING_PLAN_APPROVAL (``parent-child``) and BLOCKED / terminal FAILED
+#: (``conditional-blocks``).  A move *between* two of these statuses can
+#: therefore never change any task's ``is_blocked`` — which is exactly the
+#: assertion ``projection_stable=True`` makes (READY→IN_PROGRESS on claim,
+#: IN_PROGRESS→READY on release).
+_PROJECTION_NEUTRAL_STATUSES = frozenset({TaskStatus.READY, TaskStatus.IN_PROGRESS})
 
 
 #: Maps ``transition_task``'s ``context`` to the ``task.ready`` audit reason
@@ -85,6 +108,12 @@ class TransitionResult:
     #: ``(task_id, reason)`` for every task that entered the ready frontier
     #: in this transaction (spec §9).
     ready: list[tuple[str, str]] = field(default_factory=list)
+    #: The task row as it stands after the write — populated only when the
+    #: caller passed ``returning=True`` to ``_apply_transition`` (spec §15's
+    #: claim/release fast paths, which build their ``Task`` from it instead
+    #: of re-reading).  ``None`` also means "the guarded UPDATE matched no
+    #: row" for callers that passed ``extra_where``.
+    row: dict | None = None
 
 
 class TaskQueryMixin:
@@ -293,18 +322,47 @@ class TaskQueryMixin:
         Callers pass ids whose pre-state was outside the frontier; this checks
         the post-state in one statement and writes the ``task.ready`` audit row
         on the caller's connection so a crash after commit cannot lose it.
+
+        Where the dialect supports it (SQLite >= 3.35, always on PostgreSQL)
+        the check and the audit insert are the *same* statement — an
+        ``INSERT … SELECT … RETURNING task_id`` — which is what keeps the
+        release path inside its spec §15 budget.  The two-statement form is
+        kept verbatim for older SQLite.
         """
         if not task_ids:
             return []
 
-        stmt = select(tasks.c.id, tasks.c.project_id, tasks.c.title).where(
-            and_(
-                tasks.c.id.in_(sorted(task_ids)),
-                tasks.c.status == TaskStatus.READY.value,
-                tasks.c.is_blocked == 0,
-            )
+        frontier = and_(
+            tasks.c.id.in_(sorted(task_ids)),
+            tasks.c.status == TaskStatus.READY.value,
+            tasks.c.is_blocked == 0,
         )
-        stmt = apply_label_filters(stmt, exclude_hold=True)
+        if supports_returning(conn):
+            src = apply_label_filters(
+                select(
+                    literal("task.ready"),
+                    tasks.c.project_id,
+                    tasks.c.id,
+                    literal(None),
+                    literal(reason),
+                    literal(time.time()),
+                ).where(frontier),
+                exclude_hold=True,
+            )
+            stmt = (
+                insert(events)
+                .from_select(
+                    ["event_type", "project_id", "task_id", "agent_id", "payload", "timestamp"],
+                    src,
+                )
+                .returning(events.c.task_id)
+            )
+            return [r[0] for r in (await conn.execute(stmt)).fetchall()]
+
+        stmt = apply_label_filters(
+            select(tasks.c.id, tasks.c.project_id, tasks.c.title).where(frontier),
+            exclude_hold=True,
+        )
         rows = (await conn.execute(stmt)).fetchall()
         for tid, pid, _title in rows:
             await self.log_event(
@@ -323,6 +381,11 @@ class TaskQueryMixin:
         force: bool = False,
         _settle_depth: int = 0,
         expect_claim_epoch: int | None = None,
+        projection_stable: bool = False,
+        extra_where=None,
+        extra_values: dict | None = None,
+        returning: bool = False,
+        assume_pre_state: tuple[TaskStatus, bool] | None = None,
         **kwargs,
     ) -> TransitionResult:
         """Update task status with state-machine validation, on a caller-owned connection.
@@ -351,43 +414,102 @@ class TaskQueryMixin:
         ``retry_count == max_retries`` turns a transient failure terminal,
         satisfying every ``conditional-blocks`` edge pointing at it), so it
         recomputes too.
+
+        The remaining keywords are the spec §15 claim-path fast paths.  All
+        are additive; every pre-existing caller keeps the behaviour above.
+
+        ``projection_stable=True`` is the caller's **assertion** that this
+        write cannot change any task's ``is_blocked``.  It is honoured only
+        when both the pre- and post-status are in
+        ``_PROJECTION_NEUTRAL_STATUSES`` (READY / IN_PROGRESS) — every other
+        move, terminal ones included, silently falls back to the full
+        recompute, so a mistaken assertion cannot corrupt the projection.
+        When honoured, ``recompute_blocked`` and the *dependents'* frontier
+        bookkeeping are skipped; the task's **own** frontier entry is still
+        recorded when its post-state is READY and unblocked (that is the
+        release path's ``task.ready`` / ``released`` audit row).
+
+        ``extra_where`` / ``extra_values`` fold a caller's guard and extra
+        columns into the single status UPDATE (the claim's epoch bump and
+        its ``status = READY AND is_blocked = 0 AND assigned_agent_id IS
+        NULL`` fence), so the write still goes through this one sanctioned
+        path.  With ``returning=True`` the updated row comes back in
+        ``TransitionResult.row`` (``None`` when the guard matched nothing)
+        and the caller builds its ``Task`` from it instead of re-reading.
+
+        ``assume_pre_state`` is ``(status, is_blocked)`` asserted by the
+        caller *in the same statement* via ``extra_where``; it skips the
+        pre-read.  Only pass it when ``extra_where`` pins both values, so
+        that a matched UPDATE proves the assertion.
         """
         values = self._coerce_task_values(kwargs)
         result = TransitionResult()
 
-        row = (
-            await conn.execute(
-                select(tasks.c.status, tasks.c.is_blocked).where(tasks.c.id == task_id)
+        if assume_pre_state is not None:
+            current_status, pre_blocked = assume_pre_state
+        else:
+            row = (
+                await conn.execute(
+                    select(tasks.c.status, tasks.c.is_blocked).where(tasks.c.id == task_id)
+                )
+            ).fetchone()
+
+            if row is None:
+                logger.warning("transition_task: task '%s' not found, cannot validate", task_id)
+                values["status"] = new_status.value
+                values["updated_at"] = time.time()
+                await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
+                return TransitionResult()
+
+            current_status = TaskStatus(row[0])
+            pre_blocked = bool(row[1])
+
+        was_frontier = current_status == TaskStatus.READY and not pre_blocked
+        stable = (
+            projection_stable
+            and current_status in _PROJECTION_NEUTRAL_STATUSES
+            and new_status in _PROJECTION_NEUTRAL_STATUSES
+        )
+
+        async def _write(values: dict):
+            """Run the guarded UPDATE; return ``(matched, row_or_None)``."""
+            stmt = update(tasks).where(tasks.c.id == task_id)
+            if expect_claim_epoch is not None:
+                stmt = stmt.where(
+                    and_(
+                        tasks.c.claim_epoch == expect_claim_epoch,
+                        tasks.c.assigned_agent_id.isnot(None),
+                    )
+                )
+            if extra_where is not None:
+                stmt = stmt.where(extra_where)
+            if extra_values:
+                values = {**values, **extra_values}
+            stmt = stmt.values(**values)
+            if returning and supports_returning(conn):
+                out = (await conn.execute(stmt.returning(*tasks.c))).mappings().fetchone()
+                return out is not None, (dict(out) if out is not None else None)
+            res = await conn.execute(stmt)
+            if res.rowcount == 0:
+                return False, None
+            if not returning:
+                return True, None
+            out = (
+                (await conn.execute(select(tasks).where(tasks.c.id == task_id)))
+                .mappings()
+                .fetchone()
             )
-        ).fetchone()
-
-        if row is None:
-            logger.warning("transition_task: task '%s' not found, cannot validate", task_id)
-            values["status"] = new_status.value
-            values["updated_at"] = time.time()
-            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
-            return TransitionResult()
-
-        current_status = TaskStatus(row[0])
-        was_frontier = current_status == TaskStatus.READY and not bool(row[1])
+            return True, (dict(out) if out is not None else None)
 
         if current_status == new_status:
-            if values:
+            if values or extra_values:
                 values["updated_at"] = time.time()
-                stmt = update(tasks).where(tasks.c.id == task_id)
-                if expect_claim_epoch is not None:
-                    stmt = stmt.where(
-                        and_(
-                            tasks.c.claim_epoch == expect_claim_epoch,
-                            tasks.c.assigned_agent_id.isnot(None),
-                        )
-                    )
-                res = await conn.execute(stmt.values(**values))
-                if expect_claim_epoch is not None and res.rowcount == 0:
-                    raise StaleClaim(
-                        f"{task_id}: claim epoch {expect_claim_epoch} is not current"
-                    )
-                if PROJECTION_INPUT_COLUMNS & values.keys():
+                matched, result.row = await _write(values)
+                if not matched and expect_claim_epoch is not None:
+                    raise StaleClaim(f"{task_id}: claim epoch {expect_claim_epoch} is not current")
+                if not matched:
+                    return result
+                if not stable and PROJECTION_INPUT_COLUMNS & values.keys():
                     result.flipped = await self.recompute_blocked({task_id}, conn=conn)
                     # A same-status write can still flip is_blocked (e.g. a
                     # FAILED task's retry_count reaching max_retries turns a
@@ -462,18 +584,16 @@ class TaskQueryMixin:
 
             values["status"] = new_status.value
             values["updated_at"] = time.time()
-            stmt = update(tasks).where(tasks.c.id == task_id)
-            if expect_claim_epoch is not None:
-                stmt = stmt.where(
-                    and_(
-                        tasks.c.claim_epoch == expect_claim_epoch,
-                        tasks.c.assigned_agent_id.isnot(None),
-                    )
-                )
-            res = await conn.execute(stmt.values(**values))
-            if expect_claim_epoch is not None and res.rowcount == 0:
+            matched, result.row = await _write(values)
+            if not matched and expect_claim_epoch is not None:
                 raise StaleClaim(f"{task_id}: claim epoch {expect_claim_epoch} is not current")
-            result.flipped = await self.recompute_blocked({task_id}, conn=conn)
+            if not matched:
+                # A caller-supplied ``extra_where`` guard lost its race (the
+                # claim fence).  Nothing was written, so there is nothing to
+                # project or announce.
+                return result
+            if not stable:
+                result.flipped = await self.recompute_blocked({task_id}, conn=conn)
 
             if not was_frontier:
                 reason = _ready_reason(context)

@@ -3618,9 +3618,11 @@ _ALL_TOOL_DEFINITIONS = [
             "selection, swarm-work-model §10). Pass `next: true` for the next available "
             "task matching the session's profile, or `task_id` for a specific one. `wait` "
             "long-polls (clamped to `swarm.claim_wait_max`) instead of returning "
-            "`no_ready_work` immediately. Writes `.aq/claim.json` and returns the task plus "
-            "`claim_epoch`, which subsequent `task_close` / `task_heartbeat` / `task_set` / "
-            "`task_handoff` calls must echo back."
+            "`no_ready_work` immediately. Writes `.aq/claim.json` and returns the task's own "
+            "row plus `claim_epoch`, which subsequent `task_close` / `task_heartbeat` / "
+            "`task_set` / `task_handoff` calls must echo back. The returned task is the row "
+            "only — for dependencies, dependents, subtasks, children, context and labels, "
+            "call `task_show` (`aq task show <id>`), which is the full view."
         ),
         "input_schema": {
             "type": "object",

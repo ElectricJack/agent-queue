@@ -11,6 +11,7 @@ from src.database import Database
 from src.database.tables import events
 from src.event_bus import EventBus
 from src.models import Project, Task, TaskStatus
+from tests.perf.test_hierarchy_statements import count_statements
 
 PROJECT_ID = "proj"
 
@@ -150,6 +151,66 @@ class TestSettlementFrontierEntry:
         assert (await db.get_task("d")).is_blocked is False
         assert await ready_rows(db, "d") == ["unblocked"]
         assert seen == [[("d", "unblocked")]]
+
+
+class TestProjectionStable:
+    """``_apply_transition(projection_stable=True)`` — spec §15's claim trim."""
+
+    async def test_release_still_records_own_ready_and_runs_no_dependency_work(self, db):
+        # ``d`` depends on ``a``: with the full recompute the release below
+        # touches the dependency tables; ``projection_stable`` must not.
+        await mktask(db, "a", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "d", status=TaskStatus.READY)
+        await db.add_dependency("d", "a", "blocks")
+
+        seen = []
+
+        async def listener(entries):
+            seen.append(list(entries))
+
+        db.set_ready_listener(listener)
+
+        async with count_statements(db) as c:
+            async with db.immediate() as conn:
+                out = await db._apply_transition(
+                    conn,
+                    "a",
+                    TaskStatus.READY,
+                    context="session_close",
+                    force=True,
+                    assigned_agent_id=None,
+                    projection_stable=True,
+                    returning=True,
+                )
+            await db._notify_ready(out.ready)
+
+        assert out.ready == [("a", "released")]
+        assert out.flipped == set()
+        assert out.row is not None and out.row["status"] == TaskStatus.READY.value
+        assert await ready_rows(db, "a") == ["released"]
+        assert seen == [[("a", "released")]]
+        # ``d`` was and stays blocked; nothing announced it.
+        assert (await db.get_task("d")).is_blocked is True
+        assert await ready_rows(db, "d") == []
+        # BEGIN, the transition pre-read, the UPDATE…RETURNING, the merged
+        # frontier INSERT…SELECT…RETURNING, COMMIT — and no dependency
+        # statement (the recompute alone is 5).
+        assert c["n"] <= 5, f"{c['n']} statements — the recompute is back"
+
+    async def test_terminal_status_ignores_projection_stable(self, db):
+        """COMPLETED is outside the neutral pair: the recompute still runs."""
+        await mktask(db, "a", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "d", status=TaskStatus.READY)
+        await db.add_dependency("d", "a", "blocks")
+        assert (await db.get_task("d")).is_blocked is True
+
+        async with db.immediate() as conn:
+            out = await db._apply_transition(
+                conn, "a", TaskStatus.COMPLETED, context="close", projection_stable=True
+            )
+        assert out.flipped == {"d"}
+        assert out.ready == [("d", "unblocked")]
+        assert (await db.get_task("d")).is_blocked is False
 
 
 class TestWaitFor:

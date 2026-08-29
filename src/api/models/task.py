@@ -393,8 +393,12 @@ class ClaimSessionSummary(BaseModel):
 class TaskClaimResponse(BaseModel):
     """``task_claim`` — pull-based work selection (swarm-work-model §10).
 
-    ``task`` mirrors ``GetTaskResponse`` on a successful claim and is
-    ``None`` for every non-``claimed`` result code.
+    ``task`` is the claimed task's own **row** — the scalar fields of
+    ``GetTaskResponse`` plus ``claim_epoch``, without the joined
+    ``depends_on`` / ``blocks`` / ``subtasks`` / ``children`` / ``context``
+    / ``labels`` sections (spec §15: building those cost ~10 statements on
+    every claim; ``task_show`` remains the full view).  ``None`` for every
+    non-``claimed`` result code.
     """
 
     success: bool

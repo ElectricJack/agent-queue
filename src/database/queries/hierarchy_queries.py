@@ -707,3 +707,26 @@ class HierarchyQueryMixin:
             index_elements=["task_id", "key"], set_={"value": encoded}
         )
         await conn.execute(stmt)
+
+    async def _upsert_meta_many(self, task_id: str, items: dict, *, conn) -> None:
+        """``_upsert_meta`` for several keys of one task in a single statement.
+
+        The claim path writes ``claimed_by_session`` and ``work_dir``
+        together; one multi-row upsert keeps that inside the spec §15
+        transaction budget.  ``set_`` reads from ``excluded`` so each row
+        updates with its own value.
+        """
+        if not items:
+            return
+        dialect = conn.dialect.name
+        ins = pg_insert if dialect == "postgresql" else sqlite_insert
+        stmt = ins(task_metadata).values(
+            [
+                {"task_id": task_id, "key": key, "value": json.dumps(value)}
+                for key, value in items.items()
+            ]
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["task_id", "key"], set_={"value": stmt.excluded.value}
+        )
+        await conn.execute(stmt)

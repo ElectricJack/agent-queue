@@ -21,6 +21,7 @@ that plugin's handler to a statement budget owned by the claim path.
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -126,29 +127,53 @@ async def _seed_worker_scale(any_db):
     await seed_scale(any_db, profile_id="worker")
 
 
+def _require_returning(any_db):
+    """The budgets below assume the ``RETURNING`` fast paths are live.
+
+    SQLite only grew ``RETURNING`` in 3.35; the production code keeps a
+    two-statement fallback for older builds, and those extra re-reads are
+    exactly what these budgets forbid.  Skipping (loudly) beats asserting
+    a number the fallback path cannot hit.
+    """
+    from src.database.queries.task_queries import SQLITE_RETURNING
+
+    if any_db._engine.dialect.name == "sqlite" and not SQLITE_RETURNING:
+        pytest.skip(
+            f"sqlite {sqlite3.sqlite_version} < 3.35 has no RETURNING; the claim path "
+            "runs its two-statement fallback, which these budgets deliberately exclude"
+        )
+
+
 class TestClaimStatementBudgets:
     async def test_claim_happy_path_statement_budget(self, any_db, tmp_path):
         """Whole ``task_claim`` happy path (slot reset stubbed).
 
-        Measured on SQLite: 37-38 statements — well above the ``<= 14``
-        (SQLite) / ``<= 13`` (Postgres) figure in the task brief, which
-        covers the spec's DB-portion-only budget (session CAS, CTE/select
-        take, session/agent/workspace/metadata writes — spec §15.2's ``PG
-        <= 6``/``SQLite <= 7``, ``task_claim --next, DB portion`` row).
-        The measured 38 also includes: the outer admission-loop's session/
-        profile/project/``max_event_id`` reads (4, run once per attempt
-        here since nothing blocks), ``_apply_transition``'s blocked-state
-        recompute for the claimed task (~7 statements — bounded by direct
-        dependents, not data-scale-dependent, but not in the spec's DB-
-        portion count either), the separate ``activate_claim`` transaction
-        (3), and ``_claimed_response``'s full ``task_show`` payload build
-        (~10 — children/labels/context/progress for the response the
-        caller sees). None of that is a per-task-count regression risk at
-        this seed scale (flat regardless of 5,000 vs. 50,000 tasks); the
-        budget below is a real regression guard around the measured
-        number, not the brief's literal 14/13 — see the task-9 report for
-        the full breakdown and the flag to the controller.
+        **Measured on SQLite after the task-11 trim: 14** (was 37-38).
+        The trace, in order: the session+profile join and the project read
+        (2, outer admission loop — ``max_event_id`` is skipped because
+        ``wait == 0``); the claim transaction (9, asserted separately by
+        ``test_claim_transaction_statement_budget`` below); and
+        ``activate_claim``'s own BEGIN/UPDATE…RETURNING/COMMIT (3).
+
+        What went: the separate ``get_profile`` read; ``max_event_id``;
+        ``take_claim_slot``'s re-read (now ``UPDATE … RETURNING``); the
+        epoch-bump CAS and the transition pre-read and the post-write task
+        re-read (all folded into one fenced ``UPDATE … RETURNING`` through
+        ``_apply_transition``); ``_apply_transition``'s 5-statement
+        blocked-state recompute (``projection_stable`` — no clause of
+        ``blocked_predicate()`` can tell READY from IN_PROGRESS); one of
+        the two metadata upserts (batched); ``get_workspace_for_agent``
+        (``record_holder`` returns the row); the post-activation session
+        re-read (``activate_claim`` returns the row); and
+        ``_claimed_response``'s whole ``task_show`` payload build (~10 —
+        it now returns the task row; ``aq task show`` is the full view).
+
+        Postgres is 2 lower (no BEGIN/COMMIT cursor statements); it is
+        asserted through the same ``any_db`` parametrisation and runs in CI
+        where ``POSTGRES_TEST_DSN`` is set — Docker is unavailable on the
+        machine this was measured on.
         """
+        _require_returning(any_db)
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
         handler = await build_handler(any_db, tmp_path)
@@ -157,20 +182,61 @@ class TestClaimStatementBudgets:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
         dialect = any_db._engine.dialect.name
-        budget = 40
+        budget = 20 if dialect == "sqlite" else 18
         print(f"\ntask_claim happy path ({dialect}): {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
+
+    async def test_claim_transaction_statement_budget(self, any_db, tmp_path):
+        """The claim transaction alone — spec §15's "≤ 6 logical statements".
+
+        ``_prepare_and_activate`` is stubbed out, so this counts exactly
+        ``_attempt_claim``'s ``immediate()`` block plus the outer loop's two
+        pre-reads, which are then subtracted.
+
+        **Measured on SQLite: 9** — BEGIN, the slot CAS
+        (``UPDATE … RETURNING``), the §10 work query, the fenced
+        take (``UPDATE tasks SET status, assigned_agent_id, claim_epoch+1
+        … RETURNING``), the session / agent / workspace holder writes, the
+        batched two-key metadata upsert, COMMIT.  Seven of those are the
+        spec's logical statements; BEGIN and COMMIT are SQLite's explicit
+        ``BEGIN IMMEDIATE`` / ``COMMIT`` (PostgreSQL does not emit them as
+        cursor statements, hence the lower budget there).
+        """
+        _require_returning(any_db)
+        await _seed_worker_scale(any_db)
+        sid, _wd = await pool_session(any_db, tmp_path)
+        handler = await build_handler(any_db, tmp_path)
+        h = scoped(handler, sid)
+
+        prepared = {}
+
+        async def _fake_prepare(session, row, task, cap=None, *, slot=None):
+            prepared["task"] = task
+            return {"success": True, "result": "claimed", "task": None, "claim_epoch": None}
+
+        h._prepare_and_activate = _fake_prepare
+        async with count_statements(any_db) as c:
+            res = await h._cmd_task_claim({"next": True})
+        assert res["result"] == "claimed"
+        assert prepared["task"] is not None
+        dialect = any_db._engine.dialect.name
+        # The two outer-loop pre-reads (session+profile join, project) are
+        # not part of the transaction.
+        n = c["n"] - 2
+        budget = 9 if dialect == "sqlite" else 8
+        print(f"\nclaim transaction only ({dialect}): {n} statements (budget {budget})")
+        assert n <= budget, f"{n} statements > budget {budget}"
 
     async def test_no_ready_work_statement_budget(self, any_db, tmp_path):
         """No matching ready task.
 
-        Measured on SQLite: 10 (4 outer-loop admission reads + the
-        6-statement ``_attempt_claim`` transaction: BEGIN, take-slot
-        UPDATE, re-read SELECT, the ready-task SELECT that finds nothing,
-        the release-slot UPDATE, COMMIT) — the brief's ``<= 6`` is exactly
-        that inner transaction; see the claim-happy-path docstring above
-        for why the whole-command number is higher.
+        **Measured on SQLite after the task-11 trim: 7** (was 10) — the two
+        outer-loop pre-reads plus the 5-statement ``_attempt_claim``
+        transaction: BEGIN, the slot CAS (``UPDATE … RETURNING`` — no
+        re-read), the ready-task SELECT that finds nothing, the
+        release-slot UPDATE, COMMIT.
         """
+        _require_returning(any_db)
         await any_db.create_profile(
             AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
         )
@@ -185,21 +251,29 @@ class TestClaimStatementBudgets:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "no_ready_work"
         dialect = any_db._engine.dialect.name
-        budget = 10
+        budget = 8
         print(f"\nno_ready_work ({dialect}): {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 
     async def test_release_claim_statement_budget(self, any_db, tmp_path):
         """``release_claim`` on an active claim.
 
-        Measured on SQLite: 17 — the release transaction itself (session
-        read, epoch read, ``_apply_transition`` back to READY including
-        the same blocked-state recompute as the claim path, workspace/
-        agent/session writes, COMMIT: 16 statements) plus one post-commit
-        settlement read in ``_after_release``.  The brief's ``<= 9``
-        again reads as the transaction's "core" writes only, before this
-        was measured against the real ``_apply_transition`` path.
+        **Measured on SQLite after the task-11 trim: 10** (was 17) —
+        BEGIN, the session read, ``_apply_transition``'s pre-read, the
+        status ``UPDATE … RETURNING`` (which also carries back the
+        ``claim_epoch`` that used to be a separate read), the merged
+        ``task.ready`` frontier ``INSERT … SELECT … RETURNING``, the
+        workspace / agent / session writes, COMMIT — plus the ready
+        listener's one post-commit task read for the ``task.ready``
+        fan-out.
+
+        The 5-statement blocked-state recompute is gone:
+        IN_PROGRESS → READY is invisible to every clause of
+        ``blocked_predicate()``, which is what ``projection_stable=True``
+        asserts (and ``_apply_transition`` re-checks — a release to a
+        terminal or BLOCKED status still recomputes in full).
         """
+        _require_returning(any_db)
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
         handler = await build_handler(any_db, tmp_path)
@@ -211,7 +285,7 @@ class TestClaimStatementBudgets:
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
         dialect = any_db._engine.dialect.name
-        budget = 18
+        budget = 10 if dialect == "sqlite" else 9
         print(f"\nrelease_claim ({dialect}): {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 
@@ -277,20 +351,12 @@ class TestClaimLatency:
         """Claim/release p99 over 50 iterations at 5,000 tasks (SQLite).
 
         The spec's ``<= 50 ms`` (§15.2, ``task_claim --next, DB portion``
-        row) is the claim transaction alone; measured end-to-end (claim +
-        release, through the handler, including ``_claimed_response``'s
-        full ``task_show``) is 80-130ms on this machine across runs --
-        consistent with
-        the statement-count gap documented in
-        ``test_claim_happy_path_statement_budget`` above (task_show and
-        ``_apply_transition``'s blocked-state recompute are real DB round
-        trips the spec's DB-portion figure doesn't count). The threshold
-        below is set against that measured reality, not the spec's literal
-        50ms, and is unusually generous besides -- see this file's docstring
-        note and the task-9 report for the full explanation and the flag to
-        the controller.  ``xdist`` load makes wall-clock latency flaky under
-        parallel test execution, so this only runs with ``AQ_PERF_STRICT=1``
-        set.
+        row) is the claim transaction alone; this measures claim + release
+        end-to-end through the handler.  Before the task-11 trim that was
+        82-127 ms across runs (38 + 17 statements); after it the same loop
+        runs well inside the ``<= 60 ms`` budget below.  ``xdist`` load
+        makes wall-clock latency flaky under parallel test execution, so
+        this only runs with ``AQ_PERF_STRICT=1`` set.
         """
         import os
 
@@ -312,7 +378,7 @@ class TestClaimLatency:
             times.append(time.perf_counter() - started)
         times.sort()
         p99 = times[48]
-        budget_s = 0.25
+        budget_s = 0.060
         print(
             f"\nclaim/release p99 over 50 iters: {p99 * 1000:.2f}ms (budget {budget_s * 1000:.0f}ms)"
         )

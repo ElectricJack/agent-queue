@@ -148,7 +148,11 @@ class TestClaimTransaction:
         async with db.immediate() as conn:
             kind, _ = await db.take_claim_slot(conn, sid, now=NOW, cap=None)
         assert kind == "preparing"
-        assert await db.activate_claim(sid, "t1", epoch=1, now=NOW) is True
+        # activate_claim returns the row it wrote (spec §15: the caller
+        # builds its session block from it instead of re-reading).
+        activated = await db.activate_claim(sid, "t1", epoch=1, now=NOW)
+        assert activated is not None
+        assert (activated.claim_phase, activated.claims) == ("active", 1)
         async with db.immediate() as conn:
             kind, _ = await db.take_claim_slot(conn, sid, now=NOW, cap=None)
         assert kind == "active"
@@ -231,7 +235,7 @@ class TestClaimTransaction:
             result="prepare_failed",
             needs_attention="slot_reset_failed",
         )
-        assert await db.activate_claim(sid, "t1", epoch=1, now=NOW) is False
+        assert await db.activate_claim(sid, "t1", epoch=1, now=NOW) is None
         s = await db.get_session(sid)
         assert (s.task_id, s.claim_phase, s.last_claim_epoch, s.last_claim_result) == (
             None,

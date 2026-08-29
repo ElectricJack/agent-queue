@@ -40,7 +40,7 @@ import logging
 
 from sqlalchemy import delete, insert, select, update
 
-from src.database.tables import sessions
+from src.database.tables import agent_profiles, sessions
 from src.models import SessionRecord
 
 logger = logging.getLogger(__name__)
@@ -192,6 +192,32 @@ class SessionQueryMixin:
             result = await conn.execute(select(sessions).where(sessions.c.id == session_id))
             row = result.mappings().fetchone()
             return _row_to_session(row) if row else None
+
+    async def get_session_with_profile(self, session_id: str):
+        """``(session, profile)`` in one statement — the claim path's pre-read.
+
+        ``sessions`` LEFT JOINs ``agent_profiles`` on ``profile_id``; the
+        profile half is ``None`` when the session names no (or an unknown)
+        profile.  Column names collide across the two tables, so the row is
+        split by ``Column`` identity rather than by name (spec §15).
+        """
+        stmt = (
+            select(sessions, agent_profiles)
+            .select_from(
+                sessions.outerjoin(agent_profiles, agent_profiles.c.id == sessions.c.profile_id)
+            )
+            .where(sessions.c.id == session_id)
+        )
+        async with self._engine.begin() as conn:
+            row = (await conn.execute(stmt)).fetchone()
+        if row is None:
+            return None, None
+        mapping = row._mapping
+        session = _row_to_session({c.name: mapping[c] for c in sessions.c})
+        profile = None
+        if mapping[agent_profiles.c.id] is not None:
+            profile = self._row_to_profile({c.name: mapping[c] for c in agent_profiles.c})
+        return session, profile
 
     async def get_session_by_name(self, name: str) -> SessionRecord | None:
         """Resolve a provider session name to its current row.
