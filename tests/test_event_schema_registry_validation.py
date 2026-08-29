@@ -614,6 +614,13 @@ _CANONICAL_PAYLOADS["pool.scaled"] = {
     "kind": "start",
     "count": 1,
 }
+_CANONICAL_PAYLOADS["formula.cooked"] = {
+    "container_id": "t-1",
+    "project_id": "proj-1",
+    "formula": "review-and-fix",
+    "scope": "system",
+    "chain_sha": "ab" * 32,
+}
 
 # -- session-runtime (lane 2A) -------------------------------------------
 _CANONICAL_PAYLOADS.update(

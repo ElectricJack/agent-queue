@@ -860,6 +860,22 @@ _COMMAND_SCHEMAS: dict[str, EventSchema] = {
 
 
 # ---------------------------------------------------------------------------
+# Formula events (swarm work model Plan 3 — formulas)
+#
+# Emitted after ``create_graph`` commits a cooked formula (Task 4's job; this
+# module only registers the schema). ``container_id`` is the (new or
+# existing) container the formula's provenance was written to.
+# ---------------------------------------------------------------------------
+
+_FORMULA_SCHEMAS: dict[str, EventSchema] = {
+    "formula.cooked": {
+        "required": ["container_id", "project_id", "formula", "scope", "chain_sha"],
+        "optional": ["parent_id", "node_count"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Combined registry
 # ---------------------------------------------------------------------------
 
@@ -884,6 +900,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_SPEC_SCHEMAS,
     **_SWARM_SCHEMAS,
     **_COMMAND_SCHEMAS,
+    **_FORMULA_SCHEMAS,
 }
 """Master registry of all event schemas.
 

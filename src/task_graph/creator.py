@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.tables import (
     task_context,
@@ -91,6 +93,40 @@ class GraphPlan:
     @property
     def task_ids(self) -> list[str]:
         return [row["id"] for row in self.node_rows]
+
+
+@dataclass(frozen=True)
+class FormulaProvenance:
+    """What a cooked formula stamps onto its container (spec §13).
+
+    Carried through ``write_plan`` so the same transaction that writes the
+    graph also writes where it came from: the resolved formula's name,
+    scope, vault-relative path, substituted vars and the sha of its
+    ``extends`` chain, plus the fully-resolved document (``snapshot``) that
+    ``formula_show --as-cooked`` renders back.  ``snapshot`` never appears in
+    a report — only in the ``task_context`` row it is written to.
+    """
+
+    name: str
+    scope: str  # "system" | "project:<pid>"
+    path: str  # vault-relative leaf path
+    vars: dict[str, str]
+    chain_sha: str
+    snapshot: dict  # resolved document (post-extends, post-vars, pre-id)
+
+    def metadata(self) -> dict[str, str]:
+        """``task_metadata`` keys this provenance upserts onto the container."""
+        return {
+            "formula": self.name,
+            "formula_scope": self.scope,
+            "formula_path": self.path,
+            "formula_vars": json.dumps(self.vars, sort_keys=True),
+            "formula_chain_sha": self.chain_sha,
+        }
+
+    @property
+    def label(self) -> str:
+        return f"formula:{self.name}"
 
 
 def _context_row(task_id: str, ctx, graph: TaskGraph) -> dict:
@@ -305,7 +341,9 @@ def _rewrite_ids(plan: GraphPlan, real: dict[str, str]) -> None:
             row["task_id"] = real.get(row.get("_key"), row["task_id"])
 
 
-async def write_plan(db: Any, plan: GraphPlan) -> None:
+async def write_plan(
+    db: Any, plan: GraphPlan, *, provenance: FormulaProvenance | None = None
+) -> None:
     """Persist a :class:`GraphPlan` in exactly one transaction.
 
     Any exception propagates with the transaction rolled back, so no partial
@@ -319,6 +357,14 @@ async def write_plan(db: Any, plan: GraphPlan) -> None:
     recomputes/settles once for the batch; the returned flip/settle info is
     ignored here because a brand new (or still-open) container has nothing
     left to settle.
+
+    *provenance* is written to ``plan.parent_id`` — the container, whether
+    brand new or pre-existing — after every other row and before
+    ``recompute_blocked`` (spec §13): metadata keys upserted (latest cook
+    wins), a new ``formula_snapshot`` context row appended (one per cook, so
+    a container cooked twice keeps both), and the ``formula:<name>`` label
+    ensured with insert-or-ignore semantics (a repeat cook must not violate
+    the ``(task_id, label)`` primary key).
     """
     async with db._engine.begin() as conn:
         if plan.parent_row is not None:
@@ -364,12 +410,43 @@ async def write_plan(db: Any, plan: GraphPlan) -> None:
                 seen.add(key)
                 unique.append(clean)
             await conn.execute(insert(task_labels), unique)
+        if provenance is not None:
+            await db._upsert_meta_many(plan.parent_id, provenance.metadata(), conn=conn)
+            await conn.execute(
+                insert(task_context).values(
+                    id=uuid.uuid4().hex[:12],
+                    task_id=plan.parent_id,
+                    type="formula_snapshot",
+                    label=provenance.name,
+                    content=json.dumps(provenance.snapshot, sort_keys=True),
+                )
+            )
+            dialect = conn.dialect.name
+            ins = pg_insert if dialect == "postgresql" else sqlite_insert
+            label_stmt = ins(task_labels).values(
+                task_id=plan.parent_id, label=provenance.label
+            )
+            label_stmt = label_stmt.on_conflict_do_nothing(
+                index_elements=["task_id", "label"]
+            )
+            await conn.execute(label_stmt)
         await db.recompute_blocked(set(plan.task_ids), conn=conn)
 
 
-def build_report(graph: TaskGraph, plan: GraphPlan, *, dry_run: bool) -> dict:
-    """The shape ``_cmd_create_task_graph`` returns on success."""
-    return {
+def build_report(
+    graph: TaskGraph,
+    plan: GraphPlan,
+    *,
+    dry_run: bool,
+    provenance: FormulaProvenance | None = None,
+) -> dict:
+    """The shape ``_cmd_create_task_graph`` returns on success.
+
+    ``provenance``, when given, adds a ``"provenance"`` block of
+    ``{name, scope, path, vars, chain_sha}`` — never ``snapshot``, which can
+    be large and is only ever persisted, not reported.
+    """
+    report = {
         "parent_id": plan.parent_id,
         "parent_title": plan.parent_row["title"] if plan.parent_row is not None else None,
         "provisional": plan.provisional,
@@ -395,6 +472,15 @@ def build_report(graph: TaskGraph, plan: GraphPlan, *, dry_run: bool) -> dict:
         "dry_run": dry_run,
         "created": not dry_run,
     }
+    if provenance is not None:
+        report["provenance"] = {
+            "name": provenance.name,
+            "scope": provenance.scope,
+            "path": provenance.path,
+            "vars": provenance.vars,
+            "chain_sha": provenance.chain_sha,
+        }
+    return report
 
 
 async def create_graph(
@@ -404,19 +490,22 @@ async def create_graph(
     project_id: str,
     dry_run: bool = False,
     parent_id: str | None = None,
+    provenance: FormulaProvenance | None = None,
 ) -> dict:
     """Create the graph, or report what creating it would do.
 
     *handler* is the ``CommandHandler`` (its ``db`` property is the only
     thing used).  Returns the report from :func:`build_report`; the caller
     layers validation warnings on top.  *parent_id* creates the graph under
-    an existing container instead of minting a new one.
+    an existing container instead of minting a new one.  *provenance*, when
+    given, is written inside ``write_plan``'s transaction (spec §13) and
+    surfaced in the report — never persisted or reported on a dry run.
     """
     db = handler.db
     plan = await build_plan(db, graph, project_id=project_id, parent_id=parent_id)
     if dry_run:
-        return build_report(graph, plan, dry_run=True)
-    await write_plan(db, plan)
+        return build_report(graph, plan, dry_run=True, provenance=provenance)
+    await write_plan(db, plan, provenance=provenance)
     logger.info(
         "Created task graph parent=%s nodes=%d deps=%d project=%s",
         plan.parent_id,
@@ -424,4 +513,4 @@ async def create_graph(
         len(plan.dependency_rows),
         project_id,
     )
-    return build_report(graph, plan, dry_run=False)
+    return build_report(graph, plan, dry_run=False, provenance=provenance)
