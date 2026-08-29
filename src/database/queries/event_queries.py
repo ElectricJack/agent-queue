@@ -35,9 +35,13 @@ class EventQueryMixin:
         records (e.g. ``task.ready`` frontier entries, spec §9).
         """
         if conn is not None:
-            return await self._insert_event_row(conn, event_type, project_id, task_id, agent_id, payload)
+            return await self._insert_event_row(
+                conn, event_type, project_id, task_id, agent_id, payload
+            )
         async with self._engine.begin() as conn:
-            return await self._insert_event_row(conn, event_type, project_id, task_id, agent_id, payload)
+            return await self._insert_event_row(
+                conn, event_type, project_id, task_id, agent_id, payload
+            )
 
     async def _insert_event_row(
         self, conn, event_type, project_id, task_id, agent_id, payload

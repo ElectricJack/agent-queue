@@ -45,10 +45,10 @@ class DependencyQueryMixin:
         """
         if dep_type == DepType.PARENT_CHILD.value:
             async with self._engine.begin() as conn:
-                flipped, settled = await self.set_parent(task_id, depends_on, conn=conn)
-            entries = await self.log_blocked_flips(flipped, note_ready=True)
-            await self._notify_settled(settled)
-            await self._notify_ready(entries)
+                result = await self.set_parent(task_id, depends_on, conn=conn)
+            await self.log_blocked_flips(result.flipped)
+            await self._notify_settled(result.settled)
+            await self._notify_ready(result.ready)
             return
 
         _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
@@ -63,8 +63,9 @@ class DependencyQueryMixin:
                 .on_conflict_do_nothing()
             )
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
-        entries = await self.log_blocked_flips(flipped, note_ready=True)
-        await self._notify_ready(entries)
+            ready_ids = await self._note_frontier_entry(conn, set(flipped), reason="unblocked")
+        await self.log_blocked_flips(flipped)
+        await self._notify_ready([(tid, "unblocked") for tid in ready_ids])
 
     async def get_dependencies(
         self,
@@ -370,10 +371,10 @@ class DependencyQueryMixin:
                 ).fetchone()
                 if current is None or current[0] != depends_on:
                     return
-                flipped, settled = await self.set_parent(task_id, None, conn=conn)
-            entries = await self.log_blocked_flips(flipped, note_ready=True)
-            await self._notify_settled(settled)
-            await self._notify_ready(entries)
+                result = await self.set_parent(task_id, None, conn=conn)
+            await self.log_blocked_flips(result.flipped)
+            await self._notify_settled(result.settled)
+            await self._notify_ready(result.ready)
             return
 
         conditions = [
@@ -384,21 +385,29 @@ class DependencyQueryMixin:
             conditions.append(task_dependencies.c.dep_type == dep_type)
         parent_flipped: set[str] = set()
         parent_settled: list[str] = []
+        parent_ready: list[tuple[str, str]] = []
         async with self._engine.begin() as conn:
             if dep_type is None:
                 current = (
                     await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
                 ).fetchone()
                 if current is not None and current[0] == depends_on:
-                    parent_flipped, parent_settled = await self.set_parent(task_id, None, conn=conn)
+                    parent_result = await self.set_parent(task_id, None, conn=conn)
+                    parent_flipped = parent_result.flipped
+                    parent_settled = parent_result.settled
+                    parent_ready = parent_result.ready
                     conditions.append(task_dependencies.c.dep_type != DepType.PARENT_CHILD.value)
             await conn.execute(delete(task_dependencies).where(and_(*conditions)))
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
             flipped |= parent_flipped
-        entries = await self.log_blocked_flips(flipped, note_ready=True)
+            already_noted = {tid for tid, _ in parent_ready}
+            own_ready_ids = await self._note_frontier_entry(
+                conn, flipped - already_noted, reason="unblocked"
+            )
+        entries = list(parent_ready) + [(tid, "unblocked") for tid in own_ready_ids]
+        await self.log_blocked_flips(flipped)
         await self._notify_settled(parent_settled)
         await self._notify_ready(entries)
-        await self._notify_settled(parent_settled)
 
     async def get_transitive_dependents(
         self, task_id: str, edge_types: tuple[str, ...]
@@ -448,4 +457,6 @@ class DependencyQueryMixin:
                 )
             )
             flipped = await self.recompute_blocked(former | {depends_on_task_id}, conn=conn)
+            ready_ids = await self._note_frontier_entry(conn, set(flipped), reason="unblocked")
         await self.log_blocked_flips(flipped)
+        await self._notify_ready([(tid, "unblocked") for tid in ready_ids])

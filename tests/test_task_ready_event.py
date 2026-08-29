@@ -76,6 +76,82 @@ class TestFrontierEntry:
         assert await ready_rows(db, "a") == []
 
 
+class TestSettlementFrontierEntry:
+    """Frontier entries produced by container settlement and gate/dep bypass
+    callers must be recorded exactly once — see R1-R4 review fixes."""
+
+    async def test_settle_via_add_dependency_unblocks_dependent_records_one_entry(self, db):
+        await mktask(db, "container", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "child", status=TaskStatus.COMPLETED)
+        await mktask(db, "d", status=TaskStatus.READY)
+        await db.add_dependency("d", "container", "blocks")
+        assert (await db.get_task("d")).is_blocked is True
+
+        seen = []
+        async def listener(entries):
+            seen.append(list(entries))
+        db.set_ready_listener(listener)
+
+        await db.add_dependency("child", "container", "parent-child")
+
+        assert (await db.get_task("container")).status == TaskStatus.COMPLETED
+        assert await ready_rows(db, "d") == ["unblocked"]
+        assert seen == [[("d", "unblocked")]]
+
+    async def test_child_completion_settles_parent_and_unblocks_dependent(self, db):
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "c0", status=TaskStatus.READY)
+        await db.add_dependency("c0", "p", "parent-child")
+        await mktask(db, "d", status=TaskStatus.READY)
+        await db.add_dependency("d", "p", "blocks")
+        assert (await db.get_task("d")).is_blocked is True
+
+        seen = []
+        async def listener(entries):
+            seen.append(list(entries))
+        db.set_ready_listener(listener)
+
+        await db.transition_task("c0", TaskStatus.COMPLETED)
+
+        assert (await db.get_task("p")).status == TaskStatus.COMPLETED
+        assert await ready_rows(db, "d") == ["unblocked"]
+        assert seen == [[("d", "unblocked")]]
+
+    async def test_resolve_gate_unblocks_waiter_records_one_entry(self, db):
+        await mktask(db, "d", status=TaskStatus.READY)
+        gate_id, _created = await db.create_gate(
+            PROJECT_ID, "human", "t", waiter_task_ids=["d"]
+        )
+        assert (await db.get_task("d")).is_blocked is True
+
+        seen = []
+        async def listener(entries):
+            seen.append(list(entries))
+        db.set_ready_listener(listener)
+
+        await db.resolve_gate(gate_id, resolved_by="test")
+
+        assert await ready_rows(db, "d") == ["unblocked"]
+        assert seen == [[("d", "unblocked")]]
+
+    async def test_same_status_projection_write_unblocks_conditional_dependent(self, db):
+        await mktask(db, "a", status=TaskStatus.FAILED, retry_count=2, max_retries=3)
+        await mktask(db, "d", status=TaskStatus.READY)
+        await db.add_dependency("d", "a", "conditional-blocks")
+        assert (await db.get_task("d")).is_blocked is True
+
+        seen = []
+        async def listener(entries):
+            seen.append(list(entries))
+        db.set_ready_listener(listener)
+
+        await db.transition_task("a", TaskStatus.FAILED, retry_count=3)
+
+        assert (await db.get_task("d")).is_blocked is False
+        assert await ready_rows(db, "d") == ["unblocked"]
+        assert seen == [[("d", "unblocked")]]
+
+
 class TestWaitFor:
     async def test_wait_for_returns_matching_event(self):
         bus = EventBus()

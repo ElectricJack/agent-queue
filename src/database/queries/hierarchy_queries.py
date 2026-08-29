@@ -210,13 +210,18 @@ class HierarchyQueryMixin:
 
     async def set_parent(
         self, task_id: str, parent_id: str | None, *, conn
-    ) -> tuple[set[str], list[str]]:
+    ) -> TransitionResult:
         """Move *task_id* under *parent_id* (``None`` = root).  Spec §5.
 
         Same transaction: delete any existing parent-child edge, insert the
         new one, write ``tasks.parent_task_id``, recompute ``is_blocked``
         over the affected set, mark the new parent a container, settle both
-        the old and the new container.  Returns the blocked-state flips.
+        the old and the new container, and record any ``task.ready``
+        frontier entries the reparent produced (spec §9) — the settlement
+        recursion already recorded its own entries in-transaction, so this
+        only notes ids in ``flipped`` that settlement did not already
+        cover.  Returns a ``TransitionResult`` (``flipped``, ``settled``,
+        ``ready``).
         """
         task_row = (
             await conn.execute(
@@ -304,7 +309,16 @@ class HierarchyQueryMixin:
             {p for p in (old_parent, parent_id) if p}, conn=conn
         )
         flipped |= settle_result.flipped
-        return flipped, settle_result.settled
+
+        already_noted = {tid for tid, _ in settle_result.ready}
+        own_ready_ids = await self._note_frontier_entry(
+            conn, flipped - already_noted, reason="unblocked"
+        )
+        ready = list(settle_result.ready) + [(tid, "unblocked") for tid in own_ready_ids]
+
+        return TransitionResult(
+            flipped=flipped, settled=settle_result.settled, ready=ready
+        )
 
     async def set_parent_bulk(
         self, child_ids: list[str], parent_id: str, *, conn
@@ -531,6 +545,7 @@ class HierarchyQueryMixin:
                 if sid not in result.settled:
                     result.settled.append(sid)
             result.flipped |= res.flipped
+            result.ready.extend(res.ready)
         return result
 
     async def settle_candidates(self) -> list[str]:

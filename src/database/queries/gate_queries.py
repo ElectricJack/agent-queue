@@ -209,8 +209,9 @@ class GateQueriesMixin:
                 .values(status="resolved", resolved_by=resolved_by, resolution=resolution)
             )
             flipped = await self.recompute_blocked(waiters, conn=conn) if waiters else set()
-        entries = await self.log_blocked_flips(flipped, note_ready=True)
-        await self._notify_ready(entries)
+            ready_ids = await self._note_frontier_entry(conn, set(flipped), reason="unblocked")
+        await self.log_blocked_flips(flipped)
+        await self._notify_ready([(tid, "unblocked") for tid in ready_ids])
         return flipped
 
     async def expire_open_gates(self, now: float) -> list[str]:

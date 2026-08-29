@@ -208,12 +208,12 @@ class TestSetParentReblocksWaitsFor:
         assert (await db.get_task("finalize")).is_blocked is True
 
         async with db._engine.begin() as conn:
-            flipped, settled = await db.set_parent("worker", None, conn=conn)
-        assert "finalize" in flipped
+            result = await db.set_parent("worker", None, conn=conn)
+        assert "finalize" in result.flipped
         # c1 is now a childless container still IN_PROGRESS — spec §7 settles
         # it as soon as its last child leaves, same as reparenting the last
         # open child away (see test_hierarchy_settlement.py).
-        assert settled == ["c1"]
+        assert result.settled == ["c1"]
         assert (await db.get_task("finalize")).is_blocked is False
         assert (await db.get_task("c1")).status == TaskStatus.COMPLETED
 

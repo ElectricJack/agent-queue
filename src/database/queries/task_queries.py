@@ -29,26 +29,44 @@ from src.database.queries.blocked_state import (
     PROJECTION_INPUT_COLUMNS,
     apply_label_filters,
 )
-from src.models import HOLD_LABEL_PREFIX, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode
+from src.models import (
+    HOLD_LABEL_PREFIX,
+    Task,
+    TaskStatus,
+    TaskType,
+    VerificationType,
+    WorkspaceMode,
+)
 from src.state_machine import is_valid_status_transition
 
 logger = logging.getLogger(__name__)
 
 
 #: Maps ``transition_task``'s ``context`` to the ``task.ready`` audit reason
-#: (spec §9). Every context starting with ``session_`` maps to "released";
-#: unknown contexts default to "promoted".
+#: (spec §9). Every context starting with ``session_`` maps to "released"
+#: (see ``_ready_reason`` below — covers ``session_exited_without_close``,
+#: ``session_launch_failed``, ``session_rapid_crash``,
+#: ``session_stalled_restart``, ``session_not_live``, ``session_close`` and
+#: any future ``session_*`` context without needing a new entry here);
+#: unknown non-``session_`` contexts default to "promoted".
 _READY_REASONS = {
     "promotion": "promoted",
     "reopen_with_feedback": "restarted",
     "retry": "released",
     "rate_limit": "resumed",
     "resume_paused": "resumed",
-    "session_not_live": "released",
     "slot_reset_failed": "released",
     "prepare_timeout": "released",
-    "session_close": "released",
 }
+
+
+def _ready_reason(context: str) -> str:
+    """Resolve a ``transition_task`` context to its ``task.ready`` reason."""
+    if context in _READY_REASONS:
+        return _READY_REASONS[context]
+    if context.startswith("session_"):
+        return "released"
+    return "promoted"
 
 
 @dataclass
@@ -278,7 +296,9 @@ class TaskQueryMixin:
         stmt = apply_label_filters(stmt, exclude_hold=True)
         rows = (await conn.execute(stmt)).fetchall()
         for tid, pid, _title in rows:
-            await self.log_event("task.ready", project_id=pid, task_id=tid, payload=reason, conn=conn)
+            await self.log_event(
+                "task.ready", project_id=pid, task_id=tid, payload=reason, conn=conn
+            )
         return [r[0] for r in rows]
 
     async def _apply_transition(
@@ -345,6 +365,19 @@ class TaskQueryMixin:
                 await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
                 if PROJECTION_INPUT_COLUMNS & values.keys():
                     result.flipped = await self.recompute_blocked({task_id}, conn=conn)
+                    # A same-status write can still flip is_blocked (e.g. a
+                    # FAILED task's retry_count reaching max_retries turns a
+                    # transient failure terminal — see the docstring above).
+                    # ``was_frontier`` already keeps a plain READY->READY
+                    # write silent: the task itself only shows up in
+                    # ``result.flipped`` here if its own ``is_blocked``
+                    # actually changed, so this single call covers both the
+                    # task entering the frontier and any dependent it
+                    # unblocks.
+                    for tid in await self._note_frontier_entry(
+                        conn, set(result.flipped), reason="unblocked"
+                    ):
+                        result.ready.append((tid, "unblocked"))
         else:
             # Invariant 6 (spec §7): a container never reaches COMPLETED while
             # a child is still open.  Enforced HERE rather than only at the
@@ -409,7 +442,7 @@ class TaskQueryMixin:
             result.flipped = await self.recompute_blocked({task_id}, conn=conn)
 
             if not was_frontier:
-                reason = _READY_REASONS.get(context, "promoted")
+                reason = _ready_reason(context)
                 for tid in await self._note_frontier_entry(conn, {task_id}, reason=reason):
                     result.ready.append((tid, reason))
 
@@ -435,6 +468,7 @@ class TaskQueryMixin:
                     )
                     result.settled.extend(settle_result.settled)
                     result.flipped |= settle_result.flipped
+                    result.ready.extend(settle_result.ready)
 
         return result
 

@@ -850,11 +850,12 @@ class TaskCommandsMixin:
         old_parent = task.parent_task_id
         try:
             async with self.db._engine.begin() as conn:
-                flipped, settled = await self.db.set_parent(task_id, new_parent, conn=conn)
+                result = await self.db.set_parent(task_id, new_parent, conn=conn)
         except HierarchyError as exc:
             return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
-        await self.db.log_blocked_flips(flipped)
-        await self.db._notify_settled(settled)
+        await self.db.log_blocked_flips(result.flipped)
+        await self.db._notify_settled(result.settled)
+        await self.db._notify_ready(result.ready)
         try:
             await self.orchestrator._emit_task_event(
                 "task.reparented", task, old_parent=old_parent or "", new_parent=new_parent or ""
