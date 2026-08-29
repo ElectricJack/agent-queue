@@ -1,0 +1,423 @@
+"""Formulas — reusable task-graph templates in the vault (swarm-work-model §13).
+
+A formula is a markdown file with YAML frontmatter (``name``, ``description``,
+``vars`` declarations, optional single ``extends``) and exactly one fenced
+``aq-graph`` block.  Files live at ``vault/formulas/<name>.md`` (system) or
+``vault/projects/<pid>/formulas/<name>.md`` (project shadows system by name).
+
+The registry is in-memory and vault-watched, mirroring
+:class:`src.sessions.harness_registry.HarnessRegistry`: a file that fails to
+parse is logged, remembered in ``registry.errors`` for ``aq doctor``, and —
+on a watcher re-parse — leaves the previous good entry in place so a
+half-saved edit never takes a formula offline.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import re
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import yaml
+
+from src.profiles.parser import parse_frontmatter
+from src.task_graph.models import GraphError, GraphParseError
+from src.task_graph.parser import GRAPH_FENCE_LANG, extract_graph_block, parse_graph
+
+if TYPE_CHECKING:  # pragma: no cover
+    from src.vault_watcher import VaultChange, VaultWatcher
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "FORMULA_PATTERNS",
+    "Formula",
+    "FormulaError",
+    "FormulaRegistry",
+    "VarDecl",
+    "derive_formula_id",
+    "load_from_vault",
+    "parse_formula",
+    "register_formula_handlers",
+    "vault_path_for",
+]
+
+#: Glob patterns handed to the vault watcher.
+FORMULA_PATTERNS: list[str] = ["formulas/*.md", "projects/*/formulas/*.md"]
+
+_FENCE_RE = re.compile(
+    r"^(`{3,}|~{3,})[ \t]*" + GRAPH_FENCE_LANG + r"[ \t]*\r?$",
+    re.MULTILINE,
+)
+
+OnReloadHook = Callable[[list[tuple[str | None, str]]], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class VarDecl:
+    name: str
+    required: bool = False
+    default: str | None = None
+    enum: tuple[str, ...] | None = None
+
+
+@dataclass
+class Formula:
+    name: str
+    description: str
+    scope: str  # "system" | "project:<pid>"
+    project_id: str | None
+    rel_path: str  # vault-relative, e.g. "formulas/base-review.md"
+    vars: dict[str, VarDecl]
+    extends: str | None
+    graph_block: str  # raw text of the aq-graph block
+    graph_doc: dict  # parsed block (JSON/YAML -> dict), unvalidated
+    content_sha: str  # sha256 of the whole file text
+
+
+class FormulaError(Exception):
+    def __init__(self, errors: list[GraphError]):
+        self.errors = errors
+        super().__init__("; ".join(f"{e.rule}: {e.detail}" for e in errors) or "invalid formula")
+
+
+def derive_formula_id(rel_path: str) -> tuple[str | None, str] | None:
+    """``(project_id, name)`` from a vault-relative path, or None."""
+    parts = rel_path.replace("\\", "/").split("/")
+    if (
+        len(parts) == 4
+        and parts[0] == "projects"
+        and parts[2] == "formulas"
+        and parts[-1].endswith(".md")
+    ):
+        return (parts[1], parts[-1][:-3])
+    if len(parts) == 2 and parts[0] == "formulas" and parts[-1].endswith(".md"):
+        return (None, parts[-1][:-3])
+    return None
+
+
+def vault_path_for(vault_root: str, name: str, project_id: str | None) -> str:
+    if project_id:
+        return os.path.join(vault_root, "projects", project_id, "formulas", f"{name}.md")
+    return os.path.join(vault_root, "formulas", f"{name}.md")
+
+
+def _parse_var_decls(raw, errors: list[GraphError]) -> dict[str, VarDecl]:
+    out: dict[str, VarDecl] = {}
+    if raw is None:
+        return out
+    if not isinstance(raw, dict):
+        errors.append(GraphError(rule="formula.var_decl", detail="vars must be a mapping"))
+        return out
+    for name, spec in raw.items():
+        spec = spec or {}
+        if not isinstance(spec, dict):
+            errors.append(
+                GraphError(rule="formula.var_decl", detail=f"{name}: declaration must be a mapping")
+            )
+            continue
+        required = bool(spec.get("required", False))
+        default = spec.get("default")
+        default = None if default is None else str(default)
+        enum = spec.get("enum")
+        if enum is not None:
+            if not isinstance(enum, list) or not all(
+                isinstance(v, (str, int, float, bool)) for v in enum
+            ):
+                errors.append(
+                    GraphError(
+                        rule="formula.var_decl", detail=f"{name}: enum must be a list of scalars"
+                    )
+                )
+                continue
+            enum = tuple(str(v) for v in enum)
+        if required and default is not None:
+            errors.append(
+                GraphError(
+                    rule="formula.var_decl",
+                    detail=f"{name}: required vars cannot have a default",
+                )
+            )
+            continue
+        if enum is not None and default is not None and default not in enum:
+            errors.append(
+                GraphError(
+                    rule="formula.var_decl", detail=f"{name}: default {default!r} not in enum"
+                )
+            )
+            continue
+        out[str(name)] = VarDecl(name=str(name), required=required, default=default, enum=enum)
+    return out
+
+
+def parse_formula(text: str, *, rel_path: str) -> Formula:
+    """Parse formula markdown *text*.  Raises :class:`FormulaError`."""
+    errors: list[GraphError] = []
+    ident = derive_formula_id(rel_path)
+    stem = ident[1] if ident else os.path.splitext(os.path.basename(rel_path))[0]
+    project_id = ident[0] if ident else None
+
+    fm, body = parse_frontmatter(text)
+    if body == text or not fm.name:
+        raise FormulaError(
+            [GraphError(rule="formula.frontmatter", detail="frontmatter with a `name` is required")]
+        )
+
+    if fm.name != stem:
+        errors.append(
+            GraphError(
+                rule="formula.name_mismatch",
+                detail=f"name {fm.name!r} does not match file stem {stem!r}",
+            )
+        )
+
+    extends = fm.extra.get("extends")
+    extends = str(extends) if extends else None
+    if extends == fm.name:
+        errors.append(
+            GraphError(rule="formula.extends_self", detail="a formula cannot extend itself")
+        )
+
+    var_decls = _parse_var_decls(fm.extra.get("vars"), errors)
+
+    fence_count = len(_FENCE_RE.findall(body))
+    block = extract_graph_block(body)
+    if block is None or fence_count == 0:
+        errors.append(
+            GraphError(rule="formula.no_graph", detail="exactly one aq-graph block is required")
+        )
+        block = ""
+    elif fence_count > 1:
+        errors.append(
+            GraphError(rule="formula.multiple_graphs", detail=f"{fence_count} aq-graph blocks")
+        )
+
+    graph_doc: dict = {}
+    if block:
+        try:
+            graph_doc = parse_graph(block).to_dict()
+        except GraphParseError as exc:
+            errors.append(
+                GraphError(
+                    rule="formula.graph_parse", detail="; ".join(e.detail for e in exc.errors)
+                )
+            )
+        else:
+            try:
+                raw_doc = yaml.safe_load(block)
+            except yaml.YAMLError:
+                raw_doc = None
+            if isinstance(raw_doc, dict) and "vars" in raw_doc:
+                errors.append(
+                    GraphError(
+                        rule="formula.vars_in_body",
+                        detail="declare vars in frontmatter, not in the aq-graph block",
+                    )
+                )
+
+    if errors:
+        raise FormulaError(errors)
+
+    return Formula(
+        name=fm.name,
+        description=str(fm.extra.get("description") or ""),
+        scope=f"project:{project_id}" if project_id else "system",
+        project_id=project_id,
+        rel_path=rel_path.replace(os.sep, "/"),
+        vars=var_decls,
+        extends=extends,
+        graph_block=block,
+        graph_doc=graph_doc,
+        content_sha=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    )
+
+
+class FormulaRegistry:
+    """Project-first, system-fallback lookup of :class:`Formula` entries."""
+
+    def __init__(self) -> None:
+        self._formulas: dict[tuple[str | None, str], Formula] = {}
+        self.errors: dict[str, str] = {}
+
+    # -- mutation ----------------------------------------------------------
+
+    def upsert(self, formula: Formula) -> None:
+        self._formulas[(formula.project_id, formula.name)] = formula
+
+    def remove(self, name: str, project_id: str | None = None) -> bool:
+        return self._formulas.pop((project_id, name), None) is not None
+
+    def clear(self) -> None:
+        self._formulas.clear()
+        self.errors.clear()
+
+    # -- lookup --------------------------------------------------------
+
+    def get(self, name: str, project_id: str | None = None) -> Formula | None:
+        if project_id is not None:
+            formula = self._formulas.get((project_id, name))
+            if formula is not None:
+                return formula
+        return self._formulas.get((None, name))
+
+    def list_for_scope(self, project_id: str | None = None) -> list[Formula]:
+        if project_id is None:
+            return sorted(
+                (f for (pid, _), f in self._formulas.items() if pid is None),
+                key=lambda f: f.name,
+            )
+        project_names = {n for (pid, n) in self._formulas if pid == project_id}
+        out: list[Formula] = []
+        for (pid, name), formula in self._formulas.items():
+            if pid == project_id or (pid is None and name not in project_names):
+                out.append(formula)
+        return sorted(out, key=lambda f: f.name)
+
+    def list_all(self) -> list[Formula]:
+        return sorted(self._formulas.values(), key=lambda f: ((f.project_id or ""), f.name))
+
+    def __len__(self) -> int:
+        return len(self._formulas)
+
+    def __contains__(self, key: tuple[str | None, str]) -> bool:
+        return key in self._formulas
+
+
+# ---------------------------------------------------------------------------
+# Vault scan + watcher integration
+# ---------------------------------------------------------------------------
+
+
+def _iter_formula_files(vault_root: str):
+    """Yield ``(abs_path, rel_path)`` for every formula file in the vault."""
+    if not os.path.isdir(vault_root):
+        return
+
+    sys_dir = os.path.join(vault_root, "formulas")
+    if os.path.isdir(sys_dir):
+        for fname in sorted(os.listdir(sys_dir)):
+            if fname.startswith(".") or not fname.endswith(".md"):
+                continue
+            abs_path = os.path.join(sys_dir, fname)
+            if os.path.isfile(abs_path):
+                yield abs_path, f"formulas/{fname}"
+
+    projects_dir = os.path.join(vault_root, "projects")
+    if not os.path.isdir(projects_dir):
+        return
+    for project_name in sorted(os.listdir(projects_dir)):
+        if project_name.startswith("."):
+            continue
+        pdir = os.path.join(projects_dir, project_name, "formulas")
+        if not os.path.isdir(pdir):
+            continue
+        for fname in sorted(os.listdir(pdir)):
+            if fname.startswith(".") or not fname.endswith(".md"):
+                continue
+            abs_path = os.path.join(pdir, fname)
+            if os.path.isfile(abs_path):
+                yield abs_path, f"projects/{project_name}/formulas/{fname}"
+
+
+def load_from_vault(registry: FormulaRegistry, vault_root: str) -> list[str]:
+    """Populate *registry* from every formula file under *vault_root*.
+
+    Full reload: existing entries are dropped first.  Returns one error
+    string per malformed file (the file is skipped, the load continues).
+    """
+    errors: list[str] = []
+    registry.clear()
+
+    for abs_path, rel_path in _iter_formula_files(vault_root):
+        try:
+            text = Path(abs_path).read_text(encoding="utf-8")
+        except OSError as exc:
+            msg = f"{rel_path}: read failed: {exc}"
+            errors.append(msg)
+            registry.errors[rel_path] = msg
+            continue
+        try:
+            formula = parse_formula(text, rel_path=rel_path)
+        except FormulaError as exc:
+            msg = f"{rel_path}: {exc}"
+            errors.append(msg)
+            registry.errors[rel_path] = msg
+            logger.warning("Formula registry: skipping %s: %s", rel_path, exc)
+            continue
+        registry.upsert(formula)
+
+    logger.info("Formula registry loaded: %d entries (%d errors)", len(registry), len(errors))
+    return errors
+
+
+async def _on_formula_changed(
+    changes: list["VaultChange"],
+    *,
+    registry: FormulaRegistry,
+    vault_root: str,
+) -> None:
+    """Watcher callback — reparse changed files, update the registry."""
+    for change in changes:
+        derived = derive_formula_id(change.rel_path)
+        if derived is None:
+            continue
+        project_id, name = derived
+
+        if change.operation == "deleted":
+            registry.remove(name, project_id)
+            registry.errors.pop(change.rel_path, None)
+            logger.info("Formula registry: removed %s (scope=%s)", name, project_id or "system")
+            continue
+
+        try:
+            text = Path(change.path).read_text(encoding="utf-8")
+        except OSError as exc:
+            msg = f"{change.rel_path}: read failed: {exc}"
+            registry.errors[change.rel_path] = msg
+            logger.error("Formula registry: cannot read %s", change.path, exc_info=True)
+            continue
+
+        try:
+            formula = parse_formula(text, rel_path=change.rel_path)
+        except FormulaError as exc:
+            # Keep the previous entry: a file being edited must not take a
+            # running formula offline halfway through a save.
+            msg = f"{change.rel_path}: {exc}"
+            registry.errors[change.rel_path] = msg
+            logger.warning(
+                "Formula registry: %s parse failed: %s — keeping previous entry",
+                change.rel_path,
+                exc,
+            )
+            continue
+
+        registry.upsert(formula)
+        registry.errors.pop(change.rel_path, None)
+        logger.info(
+            "Formula registry: %s %s (scope=%s)", change.operation, name, project_id or "system"
+        )
+
+
+def register_formula_handlers(
+    watcher: "VaultWatcher",
+    registry: FormulaRegistry,
+    *,
+    vault_root: str,
+) -> list[str]:
+    """Register vault-watcher handlers for both formula scopes."""
+
+    async def _handler(changes: list["VaultChange"]) -> None:
+        await _on_formula_changed(changes, registry=registry, vault_root=vault_root)
+
+    handler_ids: list[str] = []
+    for pattern in FORMULA_PATTERNS:
+        handler_ids.append(
+            watcher.register_handler(pattern, _handler, handler_id=f"formula:{pattern}")
+        )
+    logger.info("Formula registry: registered %d handler(s)", len(handler_ids))
+    return handler_ids
