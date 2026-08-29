@@ -11,8 +11,10 @@ Review the branch for correctness.
 
 ```aq-graph
 version: 1
+defaults:
+  profile: "{reviewer}"
 nodes:
   - key: review
-    title: Review {{branch}}
-    profile: "{{reviewer}}"
+    title: Review {branch}
+    acceptance: ["findings written"]
 ```

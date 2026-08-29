@@ -14,6 +14,7 @@ half-saved edit never takes a formula offline.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import os
@@ -39,11 +40,19 @@ __all__ = [
     "Formula",
     "FormulaError",
     "FormulaRegistry",
+    "ResolvedFormula",
     "VarDecl",
+    "apply_defaults",
+    "chain_sha",
     "derive_formula_id",
     "load_from_vault",
+    "merge_documents",
+    "merged_var_decls",
     "parse_formula",
     "register_formula_handlers",
+    "resolve_chain",
+    "resolve_formula",
+    "validate_vars",
     "vault_path_for",
 ]
 
@@ -421,3 +430,194 @@ def register_formula_handlers(
         )
     logger.info("Formula registry: registered %d handler(s)", len(handler_ids))
     return handler_ids
+
+
+# ---------------------------------------------------------------------------
+# Chain resolution, document merge, var validation, chain hash (part 2)
+# ---------------------------------------------------------------------------
+
+
+def resolve_chain(
+    registry: FormulaRegistry, name: str, *, project_id: str | None
+) -> list[Formula]:
+    """Resolve the ``extends`` chain for *name*, root first.
+
+    Every hop is looked up with the same *project_id* — project shadows
+    system at every level of the chain, not just the leaf.
+
+    Raises :class:`FormulaError` with ``formula.extends_missing`` (a named
+    parent does not exist in this scope) or ``formula.extends_cycle`` (a
+    formula extends one of its own ancestors).
+    """
+    chain: list[Formula] = []
+    seen: list[str] = []
+    current: str | None = name
+    while current is not None:
+        if current in seen:
+            raise FormulaError(
+                [
+                    GraphError(
+                        rule="formula.extends_cycle",
+                        detail=" -> ".join(seen + [current]),
+                    )
+                ]
+            )
+        formula = registry.get(current, project_id)
+        if formula is None:
+            parent = seen[-1] if seen else name
+            raise FormulaError(
+                [
+                    GraphError(
+                        rule="formula.extends_missing",
+                        detail=f"{current!r} (required by {parent!r})",
+                    )
+                ]
+            )
+        seen.append(current)
+        chain.append(formula)
+        current = formula.extends
+    chain.reverse()
+    return chain
+
+
+def _clean(mapping: dict) -> dict:
+    """Drop keys whose value is falsy-empty (``None``, ``[]``, ``""``).
+
+    Used so a child's ``to_dict()`` output — which always populates every
+    dataclass field, set or not — only overrides fields the child actually
+    authored, letting unset fields inherit from the parent.
+    """
+    return {k: v for k, v in mapping.items() if v not in (None, [], "")}
+
+
+def merge_documents(chain: list[Formula]) -> dict:
+    """Merge a resolved ``extends`` chain (root first) into one graph document.
+
+    - ``defaults``: merged key-wise, child wins.
+    - ``parent``: merged field-wise, child keys override, missing keys
+      inherited from the parent formula(s).
+    - ``nodes``: merged by ``key``. A child node replaces the fields it sets
+      on the same-keyed parent node (field-wise, child wins); ``needs``,
+      ``labels``, ``acceptance`` and ``context`` are REPLACED, never
+      concatenated, when the child sets them. New keys are appended in the
+      order the child introduces them.
+    - ``spec``: child wins.
+
+    Returns a new dict — never mutates any ``Formula.graph_doc``.
+    """
+    doc: dict = {"version": 1, "defaults": {}, "parent": {}, "nodes": []}
+    index: dict[str, int] = {}
+    for formula in chain:
+        src = copy.deepcopy(formula.graph_doc)
+        if src.get("spec"):
+            doc["spec"] = src["spec"]
+        doc["defaults"].update(src.get("defaults") or {})
+        doc["parent"].update(_clean(src.get("parent") or {}))
+        for node in src.get("nodes") or []:
+            key = node["key"]
+            clean = _clean(node)
+            if key in index:
+                doc["nodes"][index[key]].update(clean)
+            else:
+                index[key] = len(doc["nodes"])
+                doc["nodes"].append(clean)
+    if not doc["parent"]:
+        doc.pop("parent")
+    return doc
+
+
+def merged_var_decls(chain: list[Formula]) -> dict[str, VarDecl]:
+    """Var declarations across the chain (root first) — child redeclares wins."""
+    decls: dict[str, VarDecl] = {}
+    for formula in chain:
+        decls.update(formula.vars)
+    return decls
+
+
+def validate_vars(decls: dict[str, VarDecl], supplied: dict[str, str]) -> list[GraphError]:
+    """Validate *supplied* values against declared vars.
+
+    ``formula.var_required`` — declared required and absent from *supplied*.
+    ``formula.var_enum`` — a supplied value is not one of the declared enum.
+    ``formula.var_unknown`` — supplied but not declared anywhere in the chain.
+    """
+    errors: list[GraphError] = []
+    for name, decl in decls.items():
+        if decl.required and name not in supplied:
+            errors.append(
+                GraphError(rule="formula.var_required", detail=f"{name!r} is required")
+            )
+            continue
+        if name in supplied and decl.enum is not None and str(supplied[name]) not in decl.enum:
+            errors.append(
+                GraphError(
+                    rule="formula.var_enum",
+                    detail=f"{name}={supplied[name]!r} not in {decl.enum}",
+                )
+            )
+    for name in supplied:
+        if name not in decls:
+            errors.append(
+                GraphError(rule="formula.var_unknown", detail=f"{name!r} is not declared")
+            )
+    return errors
+
+
+def apply_defaults(decls: dict[str, VarDecl], supplied: dict[str, str]) -> dict[str, str]:
+    """Effective values: *supplied* (``str()``-coerced) over declared defaults.
+
+    Only declared names appear in the result.
+    """
+    out: dict[str, str] = {}
+    for name, decl in decls.items():
+        if name in supplied:
+            out[name] = str(supplied[name])
+        elif decl.default is not None:
+            out[name] = str(decl.default)
+    return out
+
+
+def chain_sha(chain: list[Formula]) -> str:
+    """sha256 over ``"\\n".join(content_sha for f in chain)``, root to leaf."""
+    return hashlib.sha256(
+        "\n".join(formula.content_sha for formula in chain).encode("utf-8")
+    ).hexdigest()
+
+
+@dataclass
+class ResolvedFormula:
+    leaf: Formula
+    chain: list[Formula]
+    vars: dict[str, str]  # effective values
+    document: dict  # merged, with "vars" injected for substitute_vars
+    chain_sha: str
+    findings: list[GraphError]  # var validation findings (errors block cooking)
+
+
+def resolve_formula(
+    registry: FormulaRegistry,
+    name: str,
+    *,
+    project_id: str | None,
+    supplied_vars: dict[str, str],
+) -> ResolvedFormula:
+    """Resolve, merge and validate a formula end to end.
+
+    Raises :class:`FormulaError` only for chain problems (missing parent,
+    cycle) — var problems are returned as findings, never raised, so a
+    caller can report them without losing the rest of the resolution.
+    """
+    chain = resolve_chain(registry, name, project_id=project_id)
+    decls = merged_var_decls(chain)
+    findings = validate_vars(decls, supplied_vars)
+    effective = apply_defaults(decls, supplied_vars)
+    document = merge_documents(chain)
+    document["vars"] = dict(effective)
+    return ResolvedFormula(
+        leaf=chain[-1],
+        chain=chain,
+        vars=effective,
+        document=document,
+        chain_sha=chain_sha(chain),
+        findings=findings,
+    )
