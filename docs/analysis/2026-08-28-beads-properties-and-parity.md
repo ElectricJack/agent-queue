@@ -190,11 +190,23 @@ product"). That is a trade, not a defect — noted in §3 as P15.
   swept every 30 s; `resume_after` (≈ `defer_until`); any task is a container;
   `get_group_progress` computes done/ready/blocked, Kahn waves and max parallelism on
   demand (`task_queries.py:613`) — the `bd swarm` rule, adopted verbatim.
-- **Lack:** hierarchical child ids are stubbed flat (`creator.py:57-63`); provenance edges
-  are writable but have no read path (`implementation/work-graph.md:264`); a generic
-  `defer_until` on an *open* task (today only via PAUSED).
-- **Close:** small: read path for non-blocking edges, `--defer-until` on `edit_task`.
-  *Effort: ~200 LOC.* **Parity: yes; superset on gates.**
+- **Have (children):** two layers kept in sync by `create_task --parent-id` — the
+  blocking `parent-child` edge (released when the container leaves DEFINED /
+  AWAITING_PLAN_APPROVAL; `waits-for` fans in over it dynamically) and the denormalised
+  `tasks.parent_task_id` pointer that `get_subtasks` / `get_task_tree` /
+  `_check_plan_parent_completion` read. Hierarchical ids `<parent>.<n>` with a depth cap
+  that falls back to a root id + `discovered-from` (`task_names.py:140`,
+  `task_commands.py:1027-1033`).
+- **Lack:** `create_task_graph` still assigns flat ids (`creator.py:57-63`); an
+  `add_dependency(dep_type='parent-child')` added after creation sets the edge without the
+  pointer, so that child is invisible to tree/auto-completion (column↔edge drift);
+  `get_group_progress` has no CLI verb; provenance edges are writable but have no read
+  path (`implementation/work-graph.md:264`); no generic `defer_until` on an *open* task
+  (today only via PAUSED).
+- **Close:** derive tree/completion from the edge (or sync the pointer in
+  `add_dependency`), dotted ids in the graph creator, `aq task children`, read path for
+  non-blocking edges, `--defer-until` on `edit_task`. *Effort: ~300 LOC.*
+  **Parity: yes; superset on gates.**
 
 ### P7 — workflows as data
 - **Have:** `aq-graph` blocks in specs → `parse_graph` → `validate_graph` (with
