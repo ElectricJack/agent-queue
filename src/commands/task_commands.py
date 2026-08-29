@@ -3064,6 +3064,14 @@ class TaskCommandsMixin:
         if not task:
             return {"error": f"Task '{task_id}' not found"}
         old_status = task.status.value
+        if new_status == TaskStatus.COMPLETED.value:
+            open_children = await self.db.open_children(task_id)
+            if open_children:
+                return {
+                    "error": f"task {task_id} has open children: {', '.join(open_children)}",
+                    "code": "hierarchy.open_children",
+                    "open_children": open_children,
+                }
         await self.db.transition_task(task_id, TaskStatus(new_status), context="admin_set_status")
         return {
             "task_id": task_id,

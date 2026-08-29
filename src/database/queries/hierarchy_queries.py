@@ -331,3 +331,74 @@ class HierarchyQueryMixin:
             else:
                 await self.set_parent(task_id, parent_id, conn=conn)
         return task_id, capped
+
+    # -- container-close semantics ---------------------------------------
+
+    async def open_children(self, task_id: str, *, conn=None) -> list[str]:
+        """Direct children not yet terminal (spec §7 close rule)."""
+        terminal = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)
+        stmt = (
+            select(tasks.c.id)
+            .where(and_(tasks.c.parent_task_id == task_id, tasks.c.status.notin_(terminal)))
+            .order_by(tasks.c.id)
+        )
+        if conn is not None:
+            return [r[0] for r in (await conn.execute(stmt)).fetchall()]
+        async with self._engine.begin() as c:
+            return [r[0] for r in (await c.execute(stmt)).fetchall()]
+
+    async def live_descendant_sessions(self, task_id: str, *, conn) -> list[tuple[str, str]]:
+        """Live sessions holding any task in *task_id*'s subtree.
+
+        Lock order is sessions-before-tasks to match the claim path (spec §7):
+        on Postgres the rows are taken ``FOR UPDATE`` so a session cannot
+        start holding a descendant between this check and the abandonment.
+        """
+        ids = await self.subtree_ids(task_id, conn=conn)
+        stmt = select(sessions.c.id, sessions.c.task_id).where(
+            and_(sessions.c.task_id.in_(ids), sessions.c.state.in_(LIVE_SESSION_STATES))
+        )
+        if conn.dialect.name == "postgresql":
+            stmt = stmt.with_for_update()
+        return [(r[0], r[1]) for r in (await conn.execute(stmt)).fetchall()]
+
+    async def abandon_subtree(self, task_id: str, *, conn) -> list[str]:
+        """Close every non-terminal descendant as ``abandoned`` (spec §7)."""
+        ids = await self.subtree_ids(task_id, conn=conn)
+        ids = [i for i in ids if i != task_id]
+        if not ids:
+            return []
+        stmt = select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(ids))
+        if conn.dialect.name == "postgresql":
+            stmt = stmt.with_for_update()
+        rows = (await conn.execute(stmt)).fetchall()
+        terminal = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)
+        # Deepest first so each container settles naturally after its children.
+        depth = {tid: i for i, tid in enumerate(ids)}
+        open_ids = sorted((r[0] for r in rows if r[1] not in terminal), key=lambda t: -depth[t])
+        abandoned: list[str] = []
+        for tid in open_ids:
+            await self._upsert_meta(tid, "work_outcome", "abandoned", conn=conn)
+            await self._apply_transition(
+                conn,
+                tid,
+                TaskStatus.COMPLETED,
+                context="abandoned_by_container",
+                assigned_agent_id=None,
+            )
+            abandoned.append(tid)
+        return abandoned
+
+    async def _upsert_meta(self, task_id: str, key: str, value, *, conn) -> None:
+        import json
+
+        encoded = json.dumps(value)
+        res = await conn.execute(
+            update(task_metadata)
+            .where(and_(task_metadata.c.task_id == task_id, task_metadata.c.key == key))
+            .values(value=encoded)
+        )
+        if res.rowcount == 0:
+            await conn.execute(
+                insert(task_metadata).values(task_id=task_id, key=key, value=encoded)
+            )

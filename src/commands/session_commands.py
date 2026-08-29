@@ -498,6 +498,33 @@ class SessionCommandsMixin:
         if session is None:
             session = await self.db.get_session_for_task(str(task_id))
 
+        # Container-close semantics (swarm-work-model §7).
+        open_children = await self.db.open_children(task_id)
+        abandoned: list[str] = []
+        if open_children:
+            if not args.get("abandon_children"):
+                return {
+                    "success": False,
+                    "code": "hierarchy.open_children",
+                    "error": (
+                        f"task {task_id} has {len(open_children)} open child(ren); close them "
+                        "first or pass abandon_children=true"
+                    ),
+                    "open_children": open_children,
+                }
+            immediate = getattr(self.db, "immediate", None) or self.db._engine.begin
+            async with immediate() as conn:
+                live = await self.db.live_descendant_sessions(task_id, conn=conn)
+                if live:
+                    return {
+                        "success": False,
+                        "code": "hierarchy.live_descendants",
+                        "error": "descendants are held by live sessions; stop them first "
+                        "(aq task stop <id> / aq session kill <name>)",
+                        "sessions": [{"session_id": s, "task_id": t} for s, t in live],
+                    }
+                abandoned = await self.db.abandon_subtree(task_id, conn=conn)
+
         # --- close-with-summary enforcement (Dv2 Phase 2 §7) --------------
         # Tasks executed by workspace-needing profiles must carry a
         # summary at close time.  This is what feeds the reviewer, the
@@ -583,6 +610,7 @@ class SessionCommandsMixin:
             "task_id": task_id,
             "outcome": outcome,
             "work_outcome": work_outcome or None,
+            "abandoned": abandoned,
             "next_step": "run `aq session drain-ack` to release this session",
             **result,
         }

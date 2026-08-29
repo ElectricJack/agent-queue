@@ -1144,6 +1144,14 @@ class Orchestrator(
                 [],
             )
 
+        open_children = await self.db.open_children(task_id)
+        if open_children:
+            return (
+                f"Task has open_children ({', '.join(open_children)}); close or "
+                "abandon them first.",
+                [],
+            )
+
         await self.db.transition_task(
             task_id,
             TaskStatus.COMPLETED,
