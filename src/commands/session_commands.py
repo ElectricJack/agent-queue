@@ -618,6 +618,7 @@ class SessionCommandsMixin:
         # after caller-validation passed — early rejects (wrong session
         # owning another task, unknown session, ...) exit above and do
         # not revoke.
+        stale = False
         try:
             expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
             result = await self.orchestrator.complete_session_task(
@@ -631,11 +632,16 @@ class SessionCommandsMixin:
                 pool=is_pool,
             )
         except StaleClaim as exc:
+            # The up-front fence (``_assert_session_owns``) makes this a
+            # narrow race — only a concurrent claim between that check and
+            # this call reaches it. The session is still live and holds
+            # nothing to clean up, so it keeps its token.
+            stale = True
             return {"success": False, "result": "stale_claim", "error": str(exc)}
         finally:
             # Pool sessions keep their instance token — the workflow keeps
             # going (``claim_next``) so revoking here would kill it mid-loop.
-            if not is_pool:
+            if not is_pool and not stale:
                 token_store = getattr(self.orchestrator, "token_store", None)
                 if token_store is not None and session is not None:
                     try:
@@ -653,6 +659,11 @@ class SessionCommandsMixin:
                 context="session_close",
                 now=time.time(),
             )
+            remove_claim_file(session.work_dir)
+        elif session is not None and session.lifecycle == "task" and session.work_dir:
+            # Push launches join the claim fence too (execution.py) and
+            # write the same claim file — clean it up on a task-session
+            # close just like the pool-release path does.
             remove_claim_file(session.work_dir)
 
         response = {

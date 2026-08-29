@@ -187,6 +187,29 @@ class TestClaim:
         s = await db.get_session(sid)
         assert (s.claims, s.last_claim_result, s.claim_phase) == (0, "prepare_failed", None)
 
+    async def test_claim_file_write_failure_releases_and_reports(
+        self, handler, db, tmp_path, monkeypatch
+    ):
+        """Any failure after ``record_holder`` committed — including an OSError
+        writing the claim file — must release the claim and leave no claim
+        file behind, same as a slot-reset failure (review finding #1)."""
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        import src.commands.claim_commands as claim_commands
+
+        monkeypatch.setattr(
+            claim_commands,
+            "write_claim_file",
+            MagicMock(side_effect=OSError("disk full")),
+        )
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert res["result"] == "prepare_failed"
+        assert not (wd / ".aq" / "claim.json").exists()
+        t = await db.get_task("t1")
+        assert (t.status, t.assigned_agent_id) == (TaskStatus.READY, None)
+        s = await db.get_session(sid)
+        assert (s.claims, s.last_claim_result, s.claim_phase) == (0, "prepare_failed", None)
+
     async def test_duplicate_claim_is_idempotent_once_active(self, handler, db, tmp_path):
         await mktask(db, "t1", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
@@ -231,6 +254,25 @@ class TestClaim:
         await db.update_project(PROJECT_ID, status="PAUSED")
         res = await scoped(handler, sid)._cmd_task_claim({"next": True})
         assert (res["result"], res["reason"]) == ("not_admissible", "project_inactive")
+
+    async def test_not_admissible_when_budget_exhausted(self, handler, db, tmp_path):
+        """review finding #2 — ``_admission_reason`` must read ``Project.budget_limit``,
+        not the nonexistent ``token_budget``."""
+        from src.scheduler import SchedulerState
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        await db.update_project(PROJECT_ID, budget_limit=50)
+        handler.orchestrator._last_scheduler_state = SchedulerState(
+            projects=[],
+            tasks=[],
+            agents=[],
+            project_token_usage={PROJECT_ID: 100},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert (res["result"], res["reason"]) == ("not_admissible", "budget_exhausted")
 
     async def test_task_lifecycle_session_reclaims_own_task_only(self, handler, db, tmp_path):
         await db.create_agent(

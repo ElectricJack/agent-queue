@@ -99,7 +99,7 @@ class ClaimCommandsMixin:
             return "scheduling_paused"
         if state.global_budget is not None and state.global_tokens_used >= state.global_budget:
             return "budget_exhausted"
-        limit = getattr(project, "token_budget", None)
+        limit = getattr(project, "budget_limit", None)
         if limit and state.project_token_usage.get(project.id, 0) >= limit:
             return "budget_exhausted"
         return None
@@ -153,23 +153,28 @@ class ClaimCommandsMixin:
         default_profile = getattr(project, "default_profile_id", None)
 
         while True:
-            reason = self._admission_reason(project)
-            if reason:
-                if time.monotonic() >= deadline:
-                    return {
-                        "success": False,
-                        "result": ClaimResult.NOT_ADMISSIBLE.value,
-                        "reason": reason,
-                        "task": None,
-                        "claim_epoch": None,
-                    }
-                w = self.orchestrator.bus.waiter(_ADMISSION_EVENTS)
-                try:
-                    await w.wait(max(0.0, deadline - time.monotonic()))
-                finally:
-                    w.close()
-                project = await self.db.get_project(session.project_id)
-                continue
+            # Subscribe before checking admissibility (same discipline as
+            # the frontier waiter below) — otherwise a ``project.resumed`` /
+            # ``constraint.released`` / ``snapshot.refreshed`` landing
+            # between the check and the subscribe is lost and this call
+            # blocks for the full wait even though it could have woken up.
+            admission_waiter = self.orchestrator.bus.waiter(_ADMISSION_EVENTS)
+            try:
+                reason = self._admission_reason(project)
+                if reason:
+                    if time.monotonic() >= deadline:
+                        return {
+                            "success": False,
+                            "result": ClaimResult.NOT_ADMISSIBLE.value,
+                            "reason": reason,
+                            "task": None,
+                            "claim_epoch": None,
+                        }
+                    await admission_waiter.wait(max(0.0, deadline - time.monotonic()))
+                    project = await self.db.get_project(session.project_id)
+                    continue
+            finally:
+                admission_waiter.close()
 
             waiter = self.orchestrator.bus.waiter(
                 _FRONTIER_EVENTS, filter={"project_id": session.project_id}
@@ -185,6 +190,7 @@ class ClaimCommandsMixin:
                     if await self.db.count_events_after(
                         seq0, event_type="task.ready", project_id=session.project_id
                     ):
+                        await asyncio.sleep(0)
                         continue
                     if await waiter.wait(remaining) is None:
                         return outcome
@@ -209,20 +215,22 @@ class ClaimCommandsMixin:
         would auto-commit and cut this one's ``BEGIN IMMEDIATE`` out from
         under it (see ``immediate()``'s docstring).  Anything that needs
         its own connection (``_claimed_response`` → ``task_show``, the
-        slot-reset + activation in ``_prepare_and_activate``) is deferred
-        until after the ``async with`` block closes.
+        slot-reset + activation in ``_prepare_and_activate``, the
+        ``claim_conflict`` event's task lookup) is deferred until after the
+        ``async with`` block closes.
         """
         now = time.time()
         # What to do once the transaction has committed — set inside the
         # block, acted on outside it.
         active_claim: tuple | None = None  # (task, epoch, row) — already active
         new_claim: tuple | None = None  # (row, task) — a fresh "slot" claim
+        conflict_task_id: str | None = None  # a specific task_id held by someone else
         async with self.db.immediate() as conn:
             kind, row = await self.db.take_claim_slot(conn, session.id, now=now, cap=cap)
             if kind == "active":
                 if want_id and want_id != row.task_id:
                     return self._simple(
-                        ClaimResult.OUT_OF_SCOPE, "session already holds a task", row
+                        ClaimResult.OUT_OF_SCOPE, "session already holds a task", row, cap
                     )
                 task = await self.db._get_task_conn(row.task_id, conn=conn)
                 active_claim = (task, task.claim_epoch, row)
@@ -231,7 +239,7 @@ class ClaimCommandsMixin:
                 if row.task_id:
                     held = await self.db._get_task_conn(row.task_id, conn=conn)
                     epoch = held.claim_epoch if held else None
-                out = self._simple(ClaimResult.CLAIM_IN_PROGRESS, kind, row)
+                out = self._simple(ClaimResult.CLAIM_IN_PROGRESS, kind, row, cap)
                 out.update(
                     task_id=row.task_id,
                     claim_epoch=epoch,
@@ -241,12 +249,12 @@ class ClaimCommandsMixin:
                 return out
             elif kind == "session_exhausted":
                 return self._simple(
-                    ClaimResult.SESSION_EXHAUSTED, "max_claims_per_session reached", row
+                    ClaimResult.SESSION_EXHAUSTED, "max_claims_per_session reached", row, cap
                 )
             elif kind == "drain_requested":
-                return self._simple(ClaimResult.DRAIN_REQUESTED, "pool scaled down", row)
+                return self._simple(ClaimResult.DRAIN_REQUESTED, "pool scaled down", row, cap)
             elif kind != "slot":
-                return self._simple(ClaimResult.OUT_OF_SCOPE, kind, row)
+                return self._simple(ClaimResult.OUT_OF_SCOPE, kind, row, cap)
             else:
                 tid = await self.db.select_ready_for_profile(
                     conn,
@@ -261,33 +269,62 @@ class ClaimCommandsMixin:
                     task = await self.db.take_task(conn, tid, agent_id=row.agent_id, now=now)
                 if task is None:
                     await self.db.release_claim_slot(conn, session.id)
-                    miss = ClaimResult.CLAIM_CONFLICT if want_id else ClaimResult.NO_READY_WORK
-                    return self._simple(miss, "", row)
-                await self.db.record_holder(
-                    conn,
-                    session_id=session.id,
-                    task_id=tid,
-                    agent_id=row.agent_id,
-                    work_dir=row.work_dir,
-                    now=now,
-                )
-                new_claim = (row, task)
+                    if want_id:
+                        conflict_task_id = want_id
+                else:
+                    await self.db.record_holder(
+                        conn,
+                        session_id=session.id,
+                        task_id=tid,
+                        agent_id=row.agent_id,
+                        work_dir=row.work_dir,
+                        now=now,
+                    )
+                    new_claim = (row, task)
 
         if active_claim is not None:
             task, epoch, row = active_claim
-            return await self._claimed_response(task, epoch, row)
-        row, task = new_claim
-        return await self._prepare_and_activate(session, row, task)
+            return await self._claimed_response(task, epoch, row, cap)
+        if new_claim is not None:
+            row, task = new_claim
+            # A concurrent ``claim_in_progress`` caller (``_await_attempt``)
+            # can await this instead of polling once the row settles.
+            self.orchestrator.claim_waiters[(session.id, task.claim_epoch)] = (
+                asyncio.get_running_loop().create_future()
+            )
+            return await self._prepare_and_activate(session, row, task, cap)
+        if conflict_task_id is not None:
+            conflict_task = await self.db.get_task(conflict_task_id)
+            if conflict_task is not None:
+                await self.orchestrator._emit_task_event(
+                    "task.claim_conflict", conflict_task, session_id=session.id
+                )
+            return self._simple(ClaimResult.CLAIM_CONFLICT, "", row, cap)
+        return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
 
-    async def _prepare_and_activate(self, session, row, task) -> dict:
+    async def _prepare_and_activate(self, session, row, task, cap=None) -> dict:
         epoch = task.claim_epoch
         try:
             slot = await self.db.get_workspace_for_agent(row.agent_id)
             if slot is None:
                 raise RuntimeError("session holds no workspace slot")
             await self.orchestrator._worktree_slots().reset_slot_for_task(slot, task)
+            # Writing the claim file joins the same guard as the slot
+            # reset: any failure after ``record_holder`` committed — a slot
+            # reset error or an OSError on this write — must release the
+            # claim and leave no claim file behind.
+            write_claim_file(
+                row.work_dir,
+                {
+                    "task_id": task.id,
+                    "claim_epoch": epoch,
+                    "session_id": session.id,
+                    "claimed_at": time.time(),
+                },
+            )
         except Exception as exc:
-            logger.warning("claim %s/%s: slot reset failed: %s", session.id, task.id, exc)
+            logger.warning("claim %s/%s: prepare failed: %s", session.id, task.id, exc)
+            remove_claim_file(row.work_dir)
             await self.db.release_claim(
                 session.id,
                 task_status=TaskStatus.READY,
@@ -297,20 +334,11 @@ class ClaimCommandsMixin:
                 needs_attention="slot_reset_failed",
             )
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
-            return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row)
-        write_claim_file(
-            row.work_dir,
-            {
-                "task_id": task.id,
-                "claim_epoch": epoch,
-                "session_id": session.id,
-                "claimed_at": time.time(),
-            },
-        )
+            return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
         if not await self.db.activate_claim(session.id, task.id, epoch=epoch, now=time.time()):
             remove_claim_file(row.work_dir)
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
-            return self._simple(ClaimResult.PREPARE_FAILED, "released before activation", row)
+            return self._simple(ClaimResult.PREPARE_FAILED, "released before activation", row, cap)
         self._resolve_claim_waiters(session.id, epoch, "claimed")
         await self.orchestrator._emit_task_event(
             "task.claimed",
@@ -321,41 +349,41 @@ class ClaimCommandsMixin:
         )
         await self.orchestrator._emit_task_event("task.started", task, agent_id=row.agent_id)
         fresh = await self.db.get_session(session.id)
-        return await self._claimed_response(task, epoch, fresh)
+        return await self._claimed_response(task, epoch, fresh, cap)
 
     # -- helpers -------------------------------------------------------------------
 
-    def _session_block(self, row) -> dict:
+    def _session_block(self, row, cap=None) -> dict:
         if row is None:
             return {}
         return {
             "id": row.id,
             "claims": row.claims,
-            "cap": None,
+            "cap": cap,
             "desired_state": row.desired_state,
             "claim_phase": row.claim_phase,
         }
 
-    def _simple(self, result: ClaimResult, reason: str, row=None) -> dict:
+    def _simple(self, result: ClaimResult, reason: str, row=None, cap=None) -> dict:
         out = {
             "success": False,
             "result": result.value,
             "task": None,
             "claim_epoch": None,
-            "session": self._session_block(row),
+            "session": self._session_block(row, cap),
         }
         if reason:
             out["reason"] = reason
         return out
 
-    async def _claimed_response(self, task, epoch: int, row) -> dict:
+    async def _claimed_response(self, task, epoch: int, row, cap=None) -> dict:
         shown = await self._cmd_task_show({"task_id": task.id})
         return {
             "success": True,
             "result": ClaimResult.CLAIMED.value,
             "task": shown.get("task", shown),
             "claim_epoch": epoch,
-            "session": self._session_block(row),
+            "session": self._session_block(row, cap),
         }
 
     def _resolve_claim_waiters(self, session_id: str, epoch: int | None, result: str) -> None:
