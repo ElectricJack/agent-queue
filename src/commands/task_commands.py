@@ -1063,7 +1063,10 @@ class TaskCommandsMixin:
             try:
                 task_id, depth_cap_fallback = await self.db.create_task_under(task, parent_id)
             except HierarchyError as exc:
-                return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
+                return {
+                    "error": f"hierarchy.{exc.code}: {exc.detail}",
+                    "code": f"hierarchy.{exc.code}",
+                }
         else:
             task_id = await generate_task_id(self.db)
             task.id = task_id
@@ -1077,7 +1080,18 @@ class TaskCommandsMixin:
         # ``add_dependency`` recomputes the blocked-state projection, so the
         # task's ``is_blocked`` is correct before anything can schedule it.
         for dep_id, dep_type in edges:
-            await self.db.add_dependency(task_id, dep_id, dep_type)
+            try:
+                await self.db.add_dependency(task_id, dep_id, dep_type)
+            except HierarchyError as exc:
+                return {
+                    "error": (
+                        f"hierarchy.{exc.code}: {exc.detail} "
+                        f"(task '{task_id}' was already created; fix the edge with "
+                        f"'aq task deps')"
+                    ),
+                    "code": f"hierarchy.{exc.code}",
+                    "task_created": task_id,
+                }
             await self.db.log_event(
                 "dependency.added",
                 project_id=project_id,
@@ -1526,7 +1540,10 @@ class TaskCommandsMixin:
                     )
                 }
 
-        await self.db.add_dependency(task_id, depends_on, dep_type)
+        try:
+            await self.db.add_dependency(task_id, depends_on, dep_type)
+        except HierarchyError as exc:
+            return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
         await self.db.log_event(
             "dependency.added",
             project_id=task.project_id,

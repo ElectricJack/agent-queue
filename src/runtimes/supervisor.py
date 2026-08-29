@@ -1686,6 +1686,7 @@ class Supervisor(Runtime):
         #
         # Tasks are already created as DEFINED (via _plan_subtask_creation_mode)
         # so no demotion is needed.
+        from src.database.queries.hierarchy_queries import HierarchyError
         from src.models import DepType
 
         created_info = []
@@ -1693,19 +1694,49 @@ class Supervisor(Runtime):
             try:
                 await self.handler.db.update_task(
                     task.id,
-                    parent_task_id=parent_task_id,
                     is_plan_subtask=1,
                 )
-                for dep_type in (
-                    DepType.PARENT_CHILD.value,
-                    DepType.DISCOVERED_FROM.value,
-                ):
+                # ``add_dependency(parent-child)`` is the single writer for
+                # both the edge and the ``tasks.parent_task_id`` cache
+                # (HierarchyQueryMixin.set_parent) — never write the pointer
+                # by hand.  If the container rejects the child (closed,
+                # cyclic, cross-project, too deep), fall back to a
+                # ``discovered-from`` edge so provenance survives without a
+                # dangling pointer.
+                try:
+                    await self.handler.db.add_dependency(
+                        task.id, parent_task_id, DepType.PARENT_CHILD.value
+                    )
+                except HierarchyError as e:
+                    logger.warning(
+                        "break_plan_into_tasks: parent-child edge %s -> %s rejected "
+                        "(hierarchy.%s: %s); falling back to discovered-from",
+                        task.id,
+                        parent_task_id,
+                        e.code,
+                        e.detail,
+                    )
                     try:
-                        await self.handler.db.add_dependency(task.id, parent_task_id, dep_type)
+                        await self.handler.db.add_dependency(
+                            task.id, parent_task_id, DepType.DISCOVERED_FROM.value
+                        )
+                    except Exception as e2:
+                        logger.warning(
+                            "break_plan_into_tasks: failed to add discovered-from "
+                            "fallback edge %s -> %s: %s",
+                            task.id,
+                            parent_task_id,
+                            e2,
+                        )
+                else:
+                    try:
+                        await self.handler.db.add_dependency(
+                            task.id, parent_task_id, DepType.DISCOVERED_FROM.value
+                        )
                     except Exception as e:
                         logger.warning(
-                            "break_plan_into_tasks: failed to add %s edge %s -> %s: %s",
-                            dep_type,
+                            "break_plan_into_tasks: failed to add discovered-from "
+                            "edge %s -> %s: %s",
                             task.id,
                             parent_task_id,
                             e,

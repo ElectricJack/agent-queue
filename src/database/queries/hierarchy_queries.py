@@ -9,7 +9,6 @@ transaction.
 
 from __future__ import annotations
 
-import logging
 import time
 
 from sqlalchemy import and_, delete, insert, literal, select, update
@@ -21,13 +20,10 @@ from src.models import DepType, Task, TaskStatus
 from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge
 from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
 
-logger = logging.getLogger(__name__)
-
-#: Container statuses that withhold their children (work-graph §3.1).
-WITHHOLDING_PARENT_STATUSES = (
-    TaskStatus.DEFINED.value,
-    TaskStatus.AWAITING_PLAN_APPROVAL.value,
-)
+# Container statuses that withhold their children (work-graph §3.1) are
+# enforced by BlockedStateMixin's satisfaction table
+# (``_WITHHOLDING_PARENT_STATUSES`` in blocked_state.py) — this module only
+# needs the terminal ``COMPLETED`` check for ``container_closed``.
 
 CONTAINER_KEY = "container"
 CONTAINER_VALUE = "true"  # json.dumps(True); matches set_task_meta's encoding
@@ -100,13 +96,17 @@ class HierarchyQueryMixin:
     async def structural_depth(self, task_id: str, *, conn) -> int:
         """Live parent-child chain length from *task_id* to its root (root = 1)."""
         cte = self._ancestor_cte(task_id)
-        row = (await conn.execute(select(cte.c.depth).order_by(cte.c.depth.desc()).limit(1))).fetchone()
+        row = (
+            await conn.execute(select(cte.c.depth).order_by(cte.c.depth.desc()).limit(1))
+        ).fetchone()
         return int(row[0]) if row else 0
 
     async def subtree_height(self, task_id: str, *, conn) -> int:
         """Height of the subtree rooted at *task_id* (leaf = 1)."""
         cte = self._descendant_cte(task_id)
-        row = (await conn.execute(select(cte.c.depth).order_by(cte.c.depth.desc()).limit(1))).fetchone()
+        row = (
+            await conn.execute(select(cte.c.depth).order_by(cte.c.depth.desc()).limit(1))
+        ).fetchone()
         return int(row[0]) if row else 0
 
     async def subtree_ids(self, root_id: str, *, conn) -> list[str]:
@@ -153,26 +153,31 @@ class HierarchyQueryMixin:
             if parent_row.project_id != task_row.project_id:
                 raise HierarchyError(
                     "cross_project",
-                    f"{task_id} is in {task_row.project_id}, {parent_id} in {parent_row.project_id}",
+                    f"{task_id} is in {task_row.project_id}, "
+                    f"{parent_id} in {parent_row.project_id}",
                 )
             if parent_row.status == TaskStatus.COMPLETED.value:
                 raise HierarchyError("container_closed", parent_id)
             # Cycle: the new parent must not be inside task_id's subtree.
             if parent_id in await self.subtree_ids(task_id, conn=conn):
                 raise HierarchyError("cycle", f"{parent_id} is a descendant of {task_id}")
-            depth = await self.structural_depth(parent_id, conn=conn)
-            height = await self.subtree_height(task_id, conn=conn)
-            if depth + height > MAX_STRUCTURAL_DEPTH:
-                raise HierarchyError(
-                    "depth", f"parent depth {depth} + subtree height {height} > {MAX_STRUCTURAL_DEPTH}"
-                )
             # Blocking-edge DAG check (waits-for / blocks edges could loop
-            # through the new parent-child edge).
+            # through the new parent-child edge).  Runs before the depth
+            # check so a cyclic request reports ``cycle``, not ``depth``
+            # (spec order: self_parent, not_found, cross_project,
+            # container_closed, cycle, depth).
             deps = await self._blocking_edges(conn)
             try:
                 validate_dag_with_new_edge(deps, task_id, parent_id, DepType.PARENT_CHILD.value)
             except CyclicDependencyError as exc:
                 raise HierarchyError("cycle", str(exc)) from exc
+            depth = await self.structural_depth(parent_id, conn=conn)
+            height = await self.subtree_height(task_id, conn=conn)
+            if depth + height > MAX_STRUCTURAL_DEPTH:
+                raise HierarchyError(
+                    "depth",
+                    f"parent depth {depth} + subtree height {height} > {MAX_STRUCTURAL_DEPTH}",
+                )
 
         affected = await self._collect_affected({task_id}, conn)
         if old_parent:
@@ -198,15 +203,13 @@ class HierarchyQueryMixin:
             )
             await self.mark_container(parent_id, conn=conn)
         await conn.execute(
-            update(tasks).where(tasks.c.id == task_id).values(
-                parent_task_id=parent_id, updated_at=time.time()
-            )
+            update(tasks)
+            .where(tasks.c.id == task_id)
+            .values(parent_task_id=parent_id, updated_at=time.time())
         )
         affected |= await self._collect_affected({task_id}, conn)
         flipped = await self.recompute_blocked(affected, conn=conn)
-        settled = await self.settle_containers(
-            {p for p in (old_parent, parent_id) if p}, conn=conn
-        )
+        settled = await self.settle_containers({p for p in (old_parent, parent_id) if p}, conn=conn)
         return flipped, settled
 
     async def _blocking_edges(self, conn) -> dict[str, set[str]]:

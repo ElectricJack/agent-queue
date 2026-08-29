@@ -3,11 +3,18 @@
 
 from __future__ import annotations
 
-import pytest
+from unittest.mock import MagicMock
 
+import pytest
+from sqlalchemy import select
+
+from src.commands.handler import CommandHandler
+from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
-from src.models import AgentState, Project, Task, TaskStatus
+from src.database.tables import task_metadata
+from src.models import AgentState, DepType, Project, Task, TaskStatus
+from src.orchestrator import Orchestrator
 
 PROJECT_ID = "proj"
 
@@ -19,6 +26,24 @@ async def db(tmp_path):
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
     await database.close()
+
+
+@pytest.fixture
+def config(tmp_path):
+    return AppConfig(
+        discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+        workspace_dir=str(tmp_path / "workspaces"),
+        database_path=str(tmp_path / "test.db"),
+        data_dir=str(tmp_path / "data"),
+    )
+
+
+@pytest.fixture
+async def handler(db, config):
+    orchestrator = Orchestrator(config)
+    orchestrator.db = db
+    orchestrator.git = MagicMock()
+    return CommandHandler(orchestrator, config)
 
 
 async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
@@ -139,12 +164,18 @@ class TestCreateTaskUnder:
 
     async def test_naming_cap_uses_discovered_from(self, db):
         await mktask(db, "a", status=TaskStatus.IN_PROGRESS)
-        b, _ = await db.create_task_under(Task(id="", project_id=PROJECT_ID, title="b", description="b"), "a")
-        c, _ = await db.create_task_under(Task(id="", project_id=PROJECT_ID, title="c", description="c"), b)
+        b, _ = await db.create_task_under(
+            Task(id="", project_id=PROJECT_ID, title="b", description="b"), "a"
+        )
+        c, _ = await db.create_task_under(
+            Task(id="", project_id=PROJECT_ID, title="c", description="c"), b
+        )
         # c is "a.1.1" — naming depth 3.  Its child gets a root id + discovered-from.
         await db.transition_task(b, TaskStatus.IN_PROGRESS)
         await db.transition_task(c, TaskStatus.IN_PROGRESS)
-        d, capped = await db.create_task_under(Task(id="", project_id=PROJECT_ID, title="d", description="d"), c)
+        d, capped = await db.create_task_under(
+            Task(id="", project_id=PROJECT_ID, title="d", description="d"), c
+        )
         assert capped is True and "." not in d
         assert (await db.get_task(d)).parent_task_id is None
         assert await db.get_typed_dependencies(d) == [(c, "discovered-from")]
@@ -164,3 +195,68 @@ class TestDependencyDelegation:
         await db.remove_dependency("c", "p", "parent-child")
         assert (await db.get_task("c")).parent_task_id is None
         assert await db.get_typed_dependencies("c") == []
+
+
+class TestSetParentReblocksWaitsFor:
+    async def test_moving_the_last_open_child_away_unblocks_the_old_waiter(self, db):
+        await mktask(db, "c1", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "finalize", status=TaskStatus.READY)
+        await mktask(db, "worker", status=TaskStatus.IN_PROGRESS)
+        await db.add_dependency("finalize", "c1", DepType.WAITS_FOR.value)
+        async with db._engine.begin() as conn:
+            await db.set_parent("worker", "c1", conn=conn)
+        assert (await db.get_task("finalize")).is_blocked is True
+
+        async with db._engine.begin() as conn:
+            flipped, settled = await db.set_parent("worker", None, conn=conn)
+        assert "finalize" in flipped
+        assert settled == []
+        assert (await db.get_task("finalize")).is_blocked is False
+
+
+class TestCreateTaskCommandHierarchyErrors:
+    async def test_completed_parent_returns_hierarchy_error(self, handler, db):
+        await mktask(db, "p", status=TaskStatus.COMPLETED)
+        res = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "t", "parent_id": "p"}
+        )
+        assert res["code"] == "hierarchy.container_closed"
+
+
+class TestMarkContainerIdempotent:
+    async def test_called_twice_leaves_one_row(self, db):
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        async with db._engine.begin() as conn:
+            await db.mark_container("p", conn=conn)
+            await db.mark_container("p", conn=conn)
+        async with db._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_metadata).where(
+                        task_metadata.c.task_id == "p",
+                        task_metadata.c.key == "container",
+                    )
+                )
+            ).fetchall()
+        assert len(rows) == 1
+
+
+class TestStructureReads:
+    async def test_depth_height_and_subtree_on_a_three_level_chain(self, db):
+        await mktask(db, "root", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "mid", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "leaf")
+        async with db._engine.begin() as conn:
+            await db.set_parent("mid", "root", conn=conn)
+            await db.set_parent("leaf", "mid", conn=conn)
+
+        async with db._engine.begin() as conn:
+            assert await db.structural_depth("root", conn=conn) == 1
+            assert await db.structural_depth("mid", conn=conn) == 2
+            assert await db.structural_depth("leaf", conn=conn) == 3
+
+            assert await db.subtree_height("leaf", conn=conn) == 1
+            assert await db.subtree_height("mid", conn=conn) == 2
+            assert await db.subtree_height("root", conn=conn) == 3
+
+            assert await db.subtree_ids("root", conn=conn) == ["root", "mid", "leaf"]

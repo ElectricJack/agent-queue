@@ -377,16 +377,18 @@ class DependencyQueryMixin:
         ]
         if dep_type is not None:
             conditions.append(task_dependencies.c.dep_type == dep_type)
+        parent_flipped: set[str] = set()
         async with self._engine.begin() as conn:
             if dep_type is None:
                 current = (
                     await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
                 ).fetchone()
                 if current is not None and current[0] == depends_on:
-                    await self.set_parent(task_id, None, conn=conn)
+                    parent_flipped, _settled = await self.set_parent(task_id, None, conn=conn)
                     conditions.append(task_dependencies.c.dep_type != DepType.PARENT_CHILD.value)
             await conn.execute(delete(task_dependencies).where(and_(*conditions)))
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
+            flipped |= parent_flipped
         await self.log_blocked_flips(flipped)
 
     async def get_transitive_dependents(
