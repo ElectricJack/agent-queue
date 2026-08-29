@@ -534,18 +534,24 @@ class SessionCommandsMixin:
                     ),
                     "open_children": open_children,
                 }
-            immediate = getattr(self.db, "immediate", None) or self.db._engine.begin
-            async with immediate() as conn:
+            # The refusal is decided INSIDE the transaction (so no session can
+            # start between the check and the abandon) but returned OUTSIDE it
+            # — returning from within ``async with`` would commit the
+            # transaction rather than leave it untouched.
+            live: list = []
+            abandon_result = None
+            async with self.db.immediate() as conn:
                 live = await self.db.live_descendant_sessions(task_id, conn=conn)
-                if live:
-                    return {
-                        "success": False,
-                        "code": "hierarchy.live_descendants",
-                        "error": "descendants are held by live sessions; stop them first "
-                        "(aq task stop <id> / aq session kill <name>)",
-                        "sessions": [{"session_id": s, "task_id": t} for s, t in live],
-                    }
-                abandon_result = await self.db.abandon_subtree(task_id, conn=conn)
+                if not live:
+                    abandon_result = await self.db.abandon_subtree(task_id, conn=conn)
+            if live:
+                return {
+                    "success": False,
+                    "code": "hierarchy.live_descendants",
+                    "error": "descendants are held by live sessions; stop them first "
+                    "(aq task stop <id> / aq session kill <name>)",
+                    "sessions": [{"session_id": s, "task_id": t} for s, t in live],
+                }
             # Post-commit: audit rows and settlement notification, same
             # sequencing as ``transition_task`` (never inside the write
             # transaction — a listener failure must not roll back the abandon).

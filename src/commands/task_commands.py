@@ -2008,22 +2008,28 @@ class TaskCommandsMixin:
             # pull a live session out from under a grandchild (spec §7).
             # Check and delete in the same transaction so no session can
             # start holding a descendant between the check and the delete.
-            immediate = getattr(self.db, "immediate", None) or self.db._engine.begin
-            async with immediate() as conn:
-                live = await self.db.live_descendant_sessions(task_id, conn=conn)
-                if live:
-                    return {
-                        "success": False,
-                        "code": "hierarchy.live_descendants",
-                        "sessions": [{"session_id": s, "task_id": t} for s, t in live],
-                    }
-                try:
-                    result = await self.db.delete_task(task_id, cascade=True, conn=conn)
-                except HierarchyError as exc:
-                    return {
-                        "error": f"hierarchy.{exc.code}: {exc.detail}",
-                        "code": f"hierarchy.{exc.code}",
-                    }
+            # Both the refusal and the HierarchyError are handled OUTSIDE the
+            # transaction: returning from inside ``async with`` would commit
+            # it, and swallowing the error inside would commit a half-done
+            # cascade instead of rolling it back.
+            live: list = []
+            result = None
+            try:
+                async with self.db.immediate() as conn:
+                    live = await self.db.live_descendant_sessions(task_id, conn=conn)
+                    if not live:
+                        result = await self.db.delete_task(task_id, cascade=True, conn=conn)
+            except HierarchyError as exc:
+                return {
+                    "error": f"hierarchy.{exc.code}: {exc.detail}",
+                    "code": f"hierarchy.{exc.code}",
+                }
+            if live:
+                return {
+                    "success": False,
+                    "code": "hierarchy.live_descendants",
+                    "sessions": [{"session_id": s, "task_id": t} for s, t in live],
+                }
             # Post-commit, same sequencing as delete_task's own single-
             # transaction path — a listener failure must not roll back the
             # delete.

@@ -43,6 +43,7 @@ from src.database.queries.session_queries import SessionQueryMixin
 from src.database.queries.task_queries import TaskQueryMixin
 from src.database.queries.task_requirements_queries import TaskRequirementsQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
+from src.database.queries.transaction_queries import TransactionQueryMixin
 from src.database.queries.playbook_queries import PlaybookQueryMixin
 from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.workflow_queries import WorkflowQueryMixin
@@ -80,6 +81,7 @@ class PostgreSQLDatabaseAdapter(
     PlaybookQueryMixin,
     WorkflowQueryMixin,
     ApiSessionTokenQueriesMixin,
+    TransactionQueryMixin,
 ):
     """Async PostgreSQL persistence layer using SQLAlchemy Core.
 
