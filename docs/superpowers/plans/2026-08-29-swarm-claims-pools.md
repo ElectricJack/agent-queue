@@ -3262,6 +3262,8 @@ async def any_db(request, tmp_path):
     await db.close()
 ```
 
+Also parametrise `tests/test_claim_queries.py`'s `db` fixture over the same `any_db` shape (SQLite always; Postgres when `POSTGRES_TEST_DSN` is set) so `test_exactly_once_under_concurrency` and `test_reserve_filing_is_atomic` prove the CAS under a genuine race on Postgres — on SQLite the `immediate()` lock serialises them (controller ruling P2-7).
+
 `tests/perf/test_claim_statements.py` — one test per budget in Interfaces using `count_statements(any_db, coro)`; the claim happy path drives `handler._cmd_task_claim` with `_worktree_slots` stubbed as in `tests/test_claim_commands.py`; the latency test uses `time.perf_counter` around 50 claim/release cycles.
 
 `tests/test_swarm_integration.py` — one test with commented phases per the Interfaces narrative plus one for worker filing; build the orchestrator with the fake provider as `tests/test_session_lens.py` does and drive `run_one_cycle()`.
