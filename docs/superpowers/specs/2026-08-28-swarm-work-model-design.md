@@ -216,13 +216,21 @@ nothing to find).
   mid-write in its worktree with a valid token; closing its row first would let it keep
   writing against abandoned work. The operator stops those sessions through the existing
   paths (`aq task stop <id>` / `aq session kill <name>`, both of which run the salvage and
-  release logic that already exists for a stopped task), then re-runs the close. With no
-  live descendants, one transaction closes every non-terminal descendant `COMPLETED` with
-  `work_outcome = abandoned` (releasing any pool-held ones via `release_claim` — a pool
-  session between claims is not "live on" the task, so this cannot race a worker), then
-  the container closes normally. Invariant 6 and its doctor check stand unweakened. A
-  two-phase "request termination, then abandon" convenience can be layered on later; the
-  refuse-then-retry shape is correct without it.
+  release logic that already exists for a stopped task), then re-runs the close. The
+  check and the abandonment are **one transaction** (`BEGIN IMMEDIATE` on SQLite), in
+  claim-compatible lock order — sessions before tasks: (1) `SELECT … FROM sessions
+  WHERE task_id IN (<subtree>) AND state IN (live) FOR UPDATE` — any row → roll back,
+  `hierarchy.live_descendants`; (2) `SELECT id FROM tasks WHERE id IN (<subtree>) FOR
+  UPDATE` — a claim racing for one of them uses `SKIP LOCKED` and simply does not see it,
+  and a claim already holding its own session row never waits on tasks, so no cycle is
+  possible; (3) for each non-terminal descendant, `release_claim` semantics inline for
+  any pool holder (a pool session between claims is not "live on" the task) then
+  `_apply_transition(conn, id, COMPLETED, work_outcome=abandoned)`; (4) the container
+  closes normally. The subtree is computed inside the transaction from the locked rows,
+  so a child added concurrently either lands after the container is `COMPLETED` (and is
+  refused by `container_closed`) or is included. Invariant 6 and its doctor check stand
+  unweakened. A two-phase "request termination, then abandon" convenience can be layered
+  on later; the refuse-then-retry shape is correct without it.
 - A `COMPLETED` container cannot receive children: `create_task --parent`,
   `reparent_task`, `add_dependency(parent-child)` and `formula_cook --parent` fail with
   `hierarchy.container_closed`. The operator path is `reopen_with_feedback` on the
@@ -265,9 +273,10 @@ change (D3). Both the old and the new container are settled in the same transact
 | Table | Change |
 |---|---|
 | `agent_profiles` | `lifecycle` accepts `pool`; new `min_active INTEGER NULL`, `max_active INTEGER NULL`, `max_claims_per_session INTEGER NULL` (pool-only; parser rejects them on other lifecycles like it does `mode`/`wake_mode`). **`NULL` = unlimited; `0` is a parse error** — everywhere (parser, storage, sizing, API, tests). |
-| `sessions` | `task_id` is mutable for `lifecycle = 'pool'`; new `claims INTEGER NOT NULL DEFAULT 0`; new `agent_id TEXT NULL` (soft ref to the agent row a pool session owns, §11.1); new `claim_phase TEXT NULL` (`claiming \| preparing \| active`, §10) and `claim_phase_at FLOAT NULL` (when the phase was entered — the timeout clock) |
+| `sessions` | `task_id` is mutable for `lifecycle = 'pool'`; new `claims INTEGER NOT NULL DEFAULT 0`; new `agent_id TEXT NULL` (soft ref to the agent row a pool session owns, §11.1); new `claim_phase TEXT NULL` (`claiming \| preparing \| active`, §10) and `claim_phase_at FLOAT NULL` (when the phase was entered — the timeout clock); new `last_claim_epoch INTEGER NULL`, `last_claim_result TEXT NULL` (the persisted outcome of the most recent attempt, §10 "Attempt outcomes") |
+| `tasks` | new `filed_count INTEGER NOT NULL DEFAULT 0` (worker-filing quota, §12) |
 | `tasks` | new `claim_epoch INTEGER NOT NULL DEFAULT 0` (the per-claim fence, §10); new index `idx_tasks_ready_by_profile (project_id, profile_id, status, is_blocked)` |
-| `events` (schema registry) | `task.ready` `{task_id, project_id, title, reason}` — emitted post-commit on **every** entry into the frontier (§10 long-poll); `task.claimed` `{task_id, project_id, title, session_id, profile_id, claim_epoch}`; `task.claim_conflict` `{task_id, project_id, session_id}` (debug); `pool.scaled` `{project_id, profile_id, desired, active, reason}` |
+| `events` (schema registry) | `task.ready` `{task_id, project_id, title, reason}` — emitted post-commit on **every** entry into the frontier (§10 long-poll); `task.claimed` `{task_id, project_id, title, session_id, profile_id, claim_epoch}`; `task.claim_conflict` `{task_id, project_id, session_id}` (debug); `pool.scaled` `{project_id, profile_id, desired, active, reason}`; admission signals for the long-poll (§10): `project.resumed` `{project_id}` (from `resume_project`), `constraint.released` `{project_id}` (from `release_project_constraint` and constraint expiry), `budget.window_reset` `{project_id \| null}` (from the rolling-window sweep), and the in-process `snapshot.refreshed` signal raised by `_schedule` each tick (not persisted — a wake-up, not an event) |
 
 The holder of a claim is `(assigned_agent_id, claim_epoch)`. Each pool session owns an
 agent row for its lifetime (§11.1), so `assigned_agent_id` stays the identity every
@@ -347,13 +356,12 @@ WHERE id = :session AND task_id IS NULL AND claim_phase IS NULL
 --    writer lock), commit nothing, and classify by claim_phase:
 --      active    → claimed (idempotent, same epoch, same task)
 --      preparing → the slot is still being reset: do NOT return claimed.  Leave the
---                  transaction and wait (bounded by the request's `wait`, default
---                  swarm.prepare_timeout) for the phase to become active (→ claimed,
---                  same epoch), NULL (released → re-run the claim from step 1), or the
---                  session to be terminated (→ out_of_scope).
+--                  transaction and wait for the attempt's outcome (see "Attempt
+--                  outcomes" below) for at most the request's `wait`; `wait = 0`
+--                  returns claim_in_progress immediately.
 --      claiming  → another request from this session is inside its transaction
 --                  (only observable on Postgres, where the row lock is what we wait
---                  on); wait for it and classify its result the same way.
+--                  on); once it commits, classify by the phase it left behind.
 --      NULL with desired_state <> running → drain_requested;
 --      NULL with claims >= cap            → session_exhausted.
 
@@ -444,20 +452,52 @@ stale shell in a reset slot finds no file and gets `stale_claim` too. Ownership 
 | `no_ready_work` | frontier empty (after `wait`) | pool: claim again or drain-ack |
 | `claim_conflict` | explicit `task_id` was taken | try `--next` |
 | `prepare_failed` | claimed but the slot reset failed; task released | claim again; after 3 the ladder quarantines |
+| `claim_in_progress` | this session's attempt is still `preparing` and `wait` elapsed (`task_id`, `claim_epoch`, `claim_phase_at` returned) | claim again with `--wait` |
 | `not_admissible` | project paused / budget exhausted (`reason` given) | wait (`--wait`) or drain-ack |
 | `session_exhausted` | `max_claims_per_session` reached | `aq session drain-ack` |
 | `drain_requested` | pool scaled down | `aq session drain-ack` |
 | `stale_claim` | (on mutations) epoch mismatch | stop; the task is no longer yours |
 | `out_of_scope` | token mismatch / not a claimable lifecycle | stop |
 
-**Long-poll — subscribe first, then check.** With `wait > 0`: (1) subscribe to `task.ready`
-filtered on `project_id` (plus `gate.resolved`, `task.restarted` for belt-and-braces);
-(2) read `events.max(id)` as `seq0`; (3) run the claim; (4) if `no_ready_work`, wait on the
-subscription **or** until `select count(*) from events where id > seq0 and type='task.ready'
-and project_id = :p` is non-zero (checked once immediately after subscribing, which closes
-the window between (1) and (3)); on wake, go to (3). Return `no_ready_work` on timeout.
-`task.ready` exists precisely because `DEFINED → READY` promotion of an unblocked task
-emits nothing today (§9). Cost: one waiting HTTP request per idle session; no polling.
+**Attempt outcomes — every waiter sees the same result.** A claim attempt is identified
+by `(session_id, claim_epoch)`. Its outcome is recorded **persistently** on the session
+row when it resolves — `sessions.last_claim_epoch`, `sessions.last_claim_result`
+(`claimed | prepare_failed | released`), written in the activation transaction (§10 step
+4b) or by `release_claim` — and, in-process, on an `asyncio.Future` keyed by the same
+pair that the daemon resolves at the same moment. A duplicate request that finds
+`preparing` reads the epoch from the row, then awaits the future (or, after a daemon
+restart, polls the row every 200 ms — the in-process future is an optimisation, the row
+is the contract). When the phase resolves:
+
+- `active` → `claimed`, same epoch, same task;
+- `NULL` with `last_claim_epoch = epoch` → return **that attempt's** `last_claim_result`
+  (`prepare_failed` / `released`), never a different task — the waiter asked about this
+  attempt, and switching it to another task silently would let a worker start work its
+  transcript never claimed;
+- session terminated → `out_of_scope`;
+- `wait` elapsed → `claim_in_progress` `{task_id, claim_epoch, claim_phase,
+  claim_phase_at}`; the caller retries. `wait = 0` returns this immediately.
+
+**Long-poll — subscribe first, then check.** With `wait > 0`, two waits share the budget:
+
+- *Frontier wait* (after `no_ready_work`): (1) subscribe to `task.ready` filtered on
+  `project_id` (plus `gate.resolved`, `task.restarted` for belt-and-braces); (2) read
+  `events.max(id)` as `seq0`; (3) run the claim; (4) if `no_ready_work`, wait on the
+  subscription **or** until `select count(*) from events where id > seq0 and
+  type='task.ready' and project_id = :p` is non-zero (checked once immediately after
+  subscribing, which closes the window between (1) and (3)); on wake, go to (3). Return
+  `no_ready_work` when `wait` elapses. `task.ready` exists precisely because `DEFINED →
+  READY` promotion of an unblocked task emits nothing today (§9).
+- *Admission wait* (after `not_admissible`): subscribe to `project.resumed`,
+  `constraint.released`, `budget.window_reset` (new registry entries emitted by the
+  commands/sweeps that change those facts) and to the orchestrator's per-tick
+  `snapshot.refreshed` signal; on each wake re-check admission against the fresh
+  snapshot; return `not_admissible` when `wait` elapses. There is never a hot loop:
+  without `--wait` the code is returned once and the bootstrap prompt (§11.1) always
+  passes `--wait 60`, so a paused project costs one waiting request per idle session per
+  minute.
+
+Cost: one waiting HTTP request per idle session; no polling.
 
 **`close --claim-next`.** `task_close` gains `claim_next: bool`. It runs the existing close
 (fenced by `claim_epoch`; outcome metadata, completion pipeline; token revoke is
@@ -498,7 +538,9 @@ New cascade step, after `_reconcile_sessions`, gated by `swarm.enabled`. Per tic
      sessions go to the project with the largest `BudgetManager` deficit — fair-share at
      the capacity layer;
    - hysteresis: scale-up at most `swarm.max_starts_per_tick` (default 2) per tick;
-     scale-down only for surplus (`idle − (desired − busy − starting)`) that has persisted
+     scale-down at most `swarm.max_drains_per_tick` (default 5) per tick, applied as
+     **one bulk** `UPDATE sessions SET desired_state='stopped' WHERE id IN (…)` per tick,
+     and only for surplus (`idle − (desired − busy − starting)`) that has persisted
      `swarm.scale_down_grace` seconds (default 120), tracked in memory per key.
    Worked example from the review: one busy worker, two ready tasks, `max_active = 3` →
    `want = 3`, `desired = 3`, start two.
@@ -623,11 +665,13 @@ close is skipped for pools; the token is revoked at drain.
   (`filing_requires_held_task`) — every worker-filed task has a provenance edge to the
   work that surfaced it, and an idle session has none to give. Anything a worker wants
   to file it files before closing;
-- **quota:** at most `swarm.max_filings_per_claim` (default 20) tasks per
-  `(session, claim_epoch)`; beyond it `filing_quota_exceeded`. Durable routing gates stop
-  gated work from *running*; the quota stops a looping worker from growing the queue and
-  the triage backlog without bound. Counted in `task_metadata` on the held task
-  (`filed_count`), incremented in the creation transaction;
+- **quota:** at most `swarm.max_filings_per_task` (default 20) tasks filed from one held
+  task, across all of its claims; beyond it `filing_quota_exceeded`. Durable routing gates
+  stop gated work from *running*; the quota stops a looping worker from growing the queue
+  and the triage backlog without bound. Reserved **atomically** as the first statement of
+  the creation transaction: `UPDATE tasks SET filed_count = filed_count + 1 WHERE id =
+  :held AND filed_count < :max` (`tasks.filed_count INTEGER NOT NULL DEFAULT 0`, §9);
+  `rowcount = 0` → quota exceeded, nothing created. Concurrent creates cannot overshoot;
 - initial status **`DEFINED`** regardless of edges;
 - **root-level worker-filed tasks get a `routing` gate in the same transaction**
   (`create_gate(gate_type='routing', await_id=<task_id>)` + `task_gates` row, via the
@@ -702,7 +746,7 @@ and the file is skipped.
 | Command | Args | Effect |
 |---|---|---|
 | `formula_list` | `project_id?` | names, descriptions, scope (`system`/`project`), var declarations |
-| `formula_show` | `name`, `project_id?`, `vars?` | resolved graph + validation findings; **no writes** |
+| `formula_show` | `name`, `project_id?`, `vars?` **or** `as_cooked: <container_id>` | resolved graph + validation findings; with `as_cooked`, re-rendered from the container's `formula_snapshot` context row, not the current file; **no writes** |
 | `formula_cook` | `name`, `project_id`, `vars`, `parent_id?`, `dry_run?` | `create_task_graph` under a new container or `--parent`, **in one transaction with** the provenance writes below |
 
 **Provenance (reproducibility).** Formulas are mutable files, project-shadowed, with an
@@ -716,6 +760,7 @@ resolved graph document (post-`extends`, post-vars, pre-id) as JSON; and label
 not from the current file.
 
 CLI: `aq formula list [-p]`, `aq formula show <name> [--var k=v]…`,
+`aq formula show --as-cooked <container_id>`,
 `aq formula cook <name> -p <pid> [--var k=v]… [--parent <id>] [--dry-run]`.
 
 ---
@@ -801,7 +846,7 @@ Three budgets are kept apart, because they measure different things and cannot a
 
 | Path | Logical statements | Transactions | Worst case / timing (Postgres, p99) |
 |---|---|---|---|
-| `task_claim --next`, DB portion | ≤ 6 (lock session, select+take, session, agent, workspace, metadata) | 1 | SQLite: + ≤ 5 CAS retries; ≤ 50 ms |
+| `task_claim --next`, DB portion | PG ≤ 6 (session CAS, CTE take, session, agent, workspace, metadata); SQLite ≤ 7 (select + CAS) | 1 | SQLite: + ≤ 1 reselect; ≤ 50 ms |
 | `task_claim` end-to-end incl. slot reset | — | 1 + phase update | ≤ 3 s (git-bound; reported separately) |
 | 20 concurrent `claim --next`, 10-task frontier | — | — | exactly 10 `claimed` + 10 `no_ready_work`; 0 double-claims; both dialects |
 | `_reconcile_pools` per tick | 2 | 0 (reads) | + 1 statement per action, ≤ `max_starts_per_tick` starts; ≤ 20 ms DB excluding launches |
@@ -832,7 +877,8 @@ proves the waiters block; a release racing the activation flip yields `prepare_f
 to every waiter and no claim file on disk). `--abandon-children` with a live
 `task`-lifecycle descendant → `hierarchy.live_descendants`; after `aq task stop` on it →
 succeeds, descendants `abandoned`, container `COMPLETED`. Idle pool session
-`create_task` → `filing_requires_held_task`; 21st filing under one claim →
+`create_task` → `filing_requires_held_task`; 25 concurrent filings against a quota of 20 →
+exactly 20 created, 5 `filing_quota_exceeded`; 21st filing from one held task →
 `filing_quota_exceeded`. Cap: `max_claims_per_session=1`, claim → close
 `--claim-next` → `session_exhausted`; a `prepare_failed` in between does not count.
 SQLite serialisation: two sessions racing on a one-task frontier under `BEGIN IMMEDIATE`
@@ -897,7 +943,8 @@ swarm:
   max_starts_per_tick: 2
   scale_down_grace: 120
   prepare_timeout: 120      # claim_phase='preparing' longer than this → claim released
-  max_filings_per_claim: 20 # worker-filed tasks per (session, claim_epoch)
+  max_filings_per_task: 20  # worker-filed tasks per held task, reserved atomically
+  max_drains_per_tick: 5    # bulk desired_state='stopped' per tick
 work_graph:
   container_sweep_interval_seconds: 60
 ```
