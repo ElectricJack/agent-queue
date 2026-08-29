@@ -25,7 +25,8 @@ from src.state_machine import (
     validate_dag_with_new_edge,
     validate_waits_for,
 )
-from src.task_names import child_task_id, generate_task_id
+from src.database.queries.hierarchy_queries import HierarchyError
+from src.task_names import generate_task_id
 
 from src.commands.helpers import (
     _collect_tree_task_ids,
@@ -1018,27 +1019,15 @@ class TaskCommandsMixin:
             if parent is None:
                 return {"error": f"Parent task '{parent_id}' not found"}
 
-        # Wire hierarchical child ids (work-graph §7).  When ``parent_id``
-        # is set we prefer a dotted child id ({parent}.{n}); at depth cap
-        # the helper falls back to a fresh root id and we swap the
-        # ``parent-child`` edge for ``discovered-from`` so provenance
-        # survives without extending the depth chain.
-        if parent_id:
-            async with self.db._engine.begin() as _conn:
-                task_id, depth_cap_fallback = await child_task_id(_conn, parent_id)
-            if depth_cap_fallback:
-                if (parent_id, DepType.DISCOVERED_FROM.value) not in edges:
-                    edges.append((parent_id, DepType.DISCOVERED_FROM.value))
-            else:
-                if (parent_id, DepType.PARENT_CHILD.value) not in edges:
-                    edges.append((parent_id, DepType.PARENT_CHILD.value))
-        else:
-            task_id = await generate_task_id(self.db)
-
         # A task created *with* blocking edges starts DEFINED so the
         # promotion cascade decides when it becomes runnable — creating it
         # READY-but-blocked would hand the scheduler a task it must not run.
-        has_blocking_edge = any(dep_type in BLOCKING_DEP_TYPES for _, dep_type in edges)
+        # A parented task is always withheld until ``set_parent``/
+        # ``create_task_under`` recomputes it against the (possibly-DEFINED)
+        # container (work-graph §7).
+        has_blocking_edge = bool(parent_id) or any(
+            dep_type in BLOCKING_DEP_TYPES for _, dep_type in edges
+        )
         initial_status = (
             TaskStatus.DEFINED
             if (self._plan_subtask_creation_mode or has_blocking_edge)
@@ -1048,7 +1037,7 @@ class TaskCommandsMixin:
         skip_verification = args.get("skip_verification", False)
         workflow_id = args.get("workflow_id")
         task = Task(
-            id=task_id,
+            id="",
             project_id=project_id,
             title=args["title"],
             description=args.get("description", args["title"]),
@@ -1065,11 +1054,20 @@ class TaskCommandsMixin:
             affinity_agent_id=affinity_agent_id,
             affinity_reason=affinity_reason,
             workspace_mode=workspace_mode,
-            parent_task_id=(parent_id if (parent_id and not depth_cap_fallback) else None),
+            parent_task_id=None,
             dedup_key=args.get("dedup_key"),
             intelligence_class=args.get("intelligence_class"),
         )
-        await self.db.create_task(task)
+        depth_cap_fallback = False
+        if parent_id:
+            try:
+                task_id, depth_cap_fallback = await self.db.create_task_under(task, parent_id)
+            except HierarchyError as exc:
+                return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
+        else:
+            task_id = await generate_task_id(self.db)
+            task.id = task_id
+            await self.db.create_task(task)
 
         # Persist requires_kinds rows now that the FK target exists.
         if normalized_requirements:

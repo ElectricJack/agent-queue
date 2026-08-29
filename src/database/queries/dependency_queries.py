@@ -38,7 +38,17 @@ class DependencyQueryMixin:
         ``(task_id, depends_on_task_id, dep_type)`` — the composite PK on
         ``task_dependencies``) is a no-op that does not raise.  Callers
         can safely retry (e.g. pipeline reruns) without workarounds.
+
+        ``parent-child`` edges are delegated to :meth:`HierarchyQueryMixin.set_parent`,
+        the single writer that keeps the edge and the ``tasks.parent_task_id``
+        cache in sync (spec Part I §5).
         """
+        if dep_type == DepType.PARENT_CHILD.value:
+            async with self._engine.begin() as conn:
+                flipped, _settled = await self.set_parent(task_id, depends_on, conn=conn)
+            await self.log_blocked_flips(flipped)
+            return
+
         _insert = pg_insert if self._engine.dialect.name == "postgresql" else sqlite_insert
         async with self._engine.begin() as conn:
             await conn.execute(
@@ -346,7 +356,21 @@ class DependencyQueryMixin:
 
         ``dep_type=None`` removes every edge kind between the pair.
         Delete + recompute in one transaction.
+
+        ``parent-child`` edges are delegated to :meth:`HierarchyQueryMixin.set_parent`
+        so the ``tasks.parent_task_id`` cache never lags the edge.
         """
+        if dep_type == DepType.PARENT_CHILD.value:
+            async with self._engine.begin() as conn:
+                current = (
+                    await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
+                ).fetchone()
+                if current is None or current[0] != depends_on:
+                    return
+                flipped, _settled = await self.set_parent(task_id, None, conn=conn)
+            await self.log_blocked_flips(flipped)
+            return
+
         conditions = [
             task_dependencies.c.task_id == task_id,
             task_dependencies.c.depends_on_task_id == depends_on,
@@ -354,6 +378,13 @@ class DependencyQueryMixin:
         if dep_type is not None:
             conditions.append(task_dependencies.c.dep_type == dep_type)
         async with self._engine.begin() as conn:
+            if dep_type is None:
+                current = (
+                    await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
+                ).fetchone()
+                if current is not None and current[0] == depends_on:
+                    await self.set_parent(task_id, None, conn=conn)
+                    conditions.append(task_dependencies.c.dep_type != DepType.PARENT_CHILD.value)
             await conn.execute(delete(task_dependencies).where(and_(*conditions)))
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
         await self.log_blocked_flips(flipped)

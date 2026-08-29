@@ -39,51 +39,55 @@ class TaskQueryMixin:
 
     async def create_task(self, task: Task) -> None:
         """Insert a new task row."""
-        now = time.time()
         async with self._engine.begin() as conn:
-            await conn.execute(
-                insert(tasks).values(
-                    id=task.id,
-                    project_id=task.project_id,
-                    parent_task_id=task.parent_task_id,
-                    repo_id=task.repo_id,
-                    title=task.title,
-                    description=task.description,
-                    priority=task.priority,
-                    status=task.status.value,
-                    verification_type=task.verification_type.value,
-                    retry_count=task.retry_count,
-                    max_retries=task.max_retries,
-                    assigned_agent_id=task.assigned_agent_id,
-                    branch_name=task.branch_name,
-                    resume_after=task.resume_after,
-                    requires_approval=int(task.requires_approval),
-                    pr_url=task.pr_url,
-                    plan_source=task.plan_source,
-                    is_plan_subtask=int(task.is_plan_subtask),
-                    task_type=task.task_type.value if task.task_type else None,
-                    profile_id=task.profile_id,
-                    preferred_workspace_id=task.preferred_workspace_id,
-                    attachments=json.dumps(task.attachments) if task.attachments else "[]",
-                    auto_approve_plan=int(task.auto_approve_plan),
-                    skip_verification=int(task.skip_verification),
-                    workflow_id=task.workflow_id,
-                    affinity_agent_id=task.affinity_agent_id,
-                    affinity_reason=task.affinity_reason,
-                    workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
-                    dedup_key=task.dedup_key,
-                    discord_thread_id=task.discord_thread_id,
-                    intelligence_class=task.intelligence_class,
-                    created_by_kind=task.created_by_kind,
-                    created_by_id=task.created_by_id,
-                    # A brand-new row has no edges yet, so it starts
-                    # unblocked; the edges that follow recompute it
-                    # (work-graph implementation spec §4.1).
-                    is_blocked=0,
-                    created_at=now,
-                    updated_at=now,
-                )
+            await self._insert_task_row(task, conn=conn)
+
+    async def _insert_task_row(self, task: Task, *, conn) -> None:
+        """Insert a single task row.  Caller owns the transaction."""
+        now = time.time()
+        await conn.execute(
+            insert(tasks).values(
+                id=task.id,
+                project_id=task.project_id,
+                parent_task_id=task.parent_task_id,
+                repo_id=task.repo_id,
+                title=task.title,
+                description=task.description,
+                priority=task.priority,
+                status=task.status.value,
+                verification_type=task.verification_type.value,
+                retry_count=task.retry_count,
+                max_retries=task.max_retries,
+                assigned_agent_id=task.assigned_agent_id,
+                branch_name=task.branch_name,
+                resume_after=task.resume_after,
+                requires_approval=int(task.requires_approval),
+                pr_url=task.pr_url,
+                plan_source=task.plan_source,
+                is_plan_subtask=int(task.is_plan_subtask),
+                task_type=task.task_type.value if task.task_type else None,
+                profile_id=task.profile_id,
+                preferred_workspace_id=task.preferred_workspace_id,
+                attachments=json.dumps(task.attachments) if task.attachments else "[]",
+                auto_approve_plan=int(task.auto_approve_plan),
+                skip_verification=int(task.skip_verification),
+                workflow_id=task.workflow_id,
+                affinity_agent_id=task.affinity_agent_id,
+                affinity_reason=task.affinity_reason,
+                workspace_mode=(task.workspace_mode.value if task.workspace_mode else None),
+                dedup_key=task.dedup_key,
+                discord_thread_id=task.discord_thread_id,
+                intelligence_class=task.intelligence_class,
+                created_by_kind=task.created_by_kind,
+                created_by_id=task.created_by_id,
+                # A brand-new row has no edges yet, so it starts
+                # unblocked; the edges that follow recompute it
+                # (work-graph implementation spec §4.1).
+                is_blocked=0,
+                created_at=now,
+                updated_at=now,
             )
+        )
 
     async def get_task(self, task_id: str) -> Task | None:
         """Fetch a single task by ID."""
@@ -347,9 +351,7 @@ class TaskQueryMixin:
                 live = (
                     await conn.execute(
                         select(task_gates.c.task_id)
-                        .select_from(
-                            task_gates.join(tasks, tasks.c.id == task_gates.c.task_id)
-                        )
+                        .select_from(task_gates.join(tasks, tasks.c.id == task_gates.c.task_id))
                         .where(
                             and_(
                                 task_gates.c.gate_id == gate_id,
@@ -430,9 +432,7 @@ class TaskQueryMixin:
             for gate_id in gate_ids:
                 still_waiting = (
                     await conn.execute(
-                        select(task_gates.c.task_id)
-                        .where(task_gates.c.gate_id == gate_id)
-                        .limit(1)
+                        select(task_gates.c.task_id).where(task_gates.c.gate_id == gate_id).limit(1)
                     )
                 ).fetchone()
                 if still_waiting is None:
@@ -454,9 +454,7 @@ class TaskQueryMixin:
             # released rather than left pointing at a task that no longer
             # exists.
             await conn.execute(
-                update(sessions)
-                .where(sessions.c.task_id == task_id)
-                .values(task_id=None)
+                update(sessions).where(sessions.c.task_id == task_id).values(task_id=None)
             )
             await conn.execute(
                 delete(task_workspace_requirements).where(
@@ -730,9 +728,7 @@ class TaskQueryMixin:
             result = await conn.execute(stmt)
             return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
-    async def find_task_by_dedup_key(
-        self, project_id: str, dedup_key: str
-    ) -> "Task | None":
+    async def find_task_by_dedup_key(self, project_id: str, dedup_key: str) -> "Task | None":
         """Return the non-terminal task with (project_id, dedup_key), or None.
 
         Terminal statuses (COMPLETED / FAILED) are ignored so a
@@ -828,6 +824,4 @@ class TaskQueryMixin:
         if preferred_workspace_id is not None:
             vals["preferred_workspace_id"] = preferred_workspace_id
         async with self._engine.begin() as conn:
-            await conn.execute(
-                update(tasks).where(tasks.c.id == task_id).values(**vals)
-            )
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**vals))

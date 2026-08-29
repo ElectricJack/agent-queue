@@ -24,7 +24,7 @@ from sqlalchemy import insert, select, text
 
 from src.database import SQLiteDatabaseAdapter
 from src.database.queries.blocked_state import blocked_predicate
-from src.database.tables import gates, task_gates, tasks as tasks_t
+from src.database.tables import gates, task_dependencies, task_gates, tasks as tasks_t
 from src.models import DepType, Project, Task, TaskStatus
 from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge, validate_waits_for
 
@@ -115,9 +115,21 @@ class TestSatisfactionTruthTable:
         ],
     )
     async def test_parent_child_edge(self, db, parent_status, expect_blocked):
+        # Written directly (not via ``add_dependency``/``set_parent``) so this
+        # exercises the satisfaction truth table in isolation from the
+        # HierarchyQueryMixin write-path guards (e.g. ``container_closed``
+        # for a COMPLETED parent — see test_hierarchy_queries.py).
         await mktask(db, "parent", status=parent_status)
         await mktask(db, "child")
-        await db.add_dependency("child", "parent", DepType.PARENT_CHILD.value)
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(task_dependencies).values(
+                    task_id="child",
+                    depends_on_task_id="parent",
+                    dep_type=DepType.PARENT_CHILD.value,
+                )
+            )
+            await db.recompute_blocked({"child"}, conn=conn)
         assert await blocked(db, "child") is expect_blocked
 
     async def test_waits_for_is_vacuously_satisfied_without_children(self, db):
