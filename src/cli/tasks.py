@@ -12,6 +12,7 @@ from typing import Any
 import click
 
 from .app import cli, console, _run, _get_client, _handle_errors
+from .claim_epoch import claim_epoch_option, resolve_claim_epoch
 from .envelope import emit
 
 
@@ -553,13 +554,7 @@ def task_details_alias(ctx: click.Context, task_id: str) -> None:
     metavar="KEY=VALUE",
     help="Set a metadata key; repeatable.",
 )
-@click.option(
-    "--claim-epoch",
-    "claim_epoch",
-    type=int,
-    default=None,
-    help="Claim epoch for a pool session (defaults to .aq/claim.json / $AQ_CLAIM_EPOCH).",
-)
+@claim_epoch_option
 @click.pass_context
 @_handle_errors
 def task_set(
@@ -612,11 +607,7 @@ def task_set(
         args["labels_remove"] = labels_remove
     if meta:
         args["meta"] = meta
-    resolved_epoch = claim_epoch
-    if resolved_epoch is None:
-        from .agent_surface import read_claim_epoch
-
-        resolved_epoch = read_claim_epoch()
+    resolved_epoch = resolve_claim_epoch(claim_epoch)
     if resolved_epoch is not None:
         args["claim_epoch"] = resolved_epoch
 

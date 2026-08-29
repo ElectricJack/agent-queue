@@ -13,7 +13,7 @@ from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Project
 from src.orchestrator import Orchestrator
-from src.tools.definitions import _ALL_TOOL_DEFINITIONS
+from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
 PROJECT_ID = "proj"
 
@@ -25,7 +25,7 @@ def defs():
 def test_task_claim_definition():
     d = defs()["task_claim"]
     assert set(d["input_schema"]["properties"]) >= {"task_id", "next", "wait"}
-    assert d.get("category") == "tasks"
+    assert _TOOL_CATEGORIES["task_claim"] == "task"
 
 
 def test_close_and_mutators_carry_claim_epoch():
@@ -42,7 +42,7 @@ def test_create_task_accepts_swarm_fields():
 
 def test_pool_commands_defined():
     d = defs()
-    assert d["pool_status"]["category"] == "ops"
+    assert _TOOL_CATEGORIES["pool_status"] == _TOOL_CATEGORIES["pool_scale"] == "pool"
     assert {"project_id", "profile_id", "min", "max", "now"} <= set(
         d["pool_scale"]["input_schema"]["properties"]
     )
@@ -121,6 +121,11 @@ async def test_schema_enums(handler):
 async def test_pool_status_empty(handler):
     res = await handler._cmd_pool_status({})
     assert res == {"success": True, "pools": []}
+
+
+async def test_pool_scale_requires_min_or_max(handler):
+    res = await handler._cmd_pool_scale({"project_id": PROJECT_ID, "profile_id": "worker"})
+    assert res == {"success": False, "error": "nothing to change: pass min and/or max"}
 
 
 def test_skill_documents_worker_loop():

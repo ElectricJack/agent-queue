@@ -315,6 +315,8 @@ class OpsCommandsMixin:
         if not project_id or not profile_id:
             return {"success": False, "error": "project_id and profile_id are required"}
         lo, hi = args.get("min"), args.get("max")
+        if lo is None and hi is None:
+            return {"success": False, "error": "nothing to change: pass min and/or max"}
         if lo is not None and lo < 0:
             return {"success": False, "error": "min must be >= 0"}
         if hi is not None and hi < 1:

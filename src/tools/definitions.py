@@ -3613,7 +3613,6 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "task_claim",
-        "category": "tasks",
         "description": (
             "Claim a ready task for the calling pool/task session (pull-based work "
             "selection, swarm-work-model §10). Pass `next: true` for the next available "
@@ -4194,7 +4193,6 @@ _ALL_TOOL_DEFINITIONS = [
     # -----------------------------------------------------------------
     {
         "name": "pool_status",
-        "category": "ops",
         "description": (
             "Supply/demand/bounds snapshot for every worker pool (one row per "
             "project, profile). Backs `aq pool status`."
@@ -4211,7 +4209,6 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "pool_scale",
-        "category": "ops",
         "description": (
             "Set a pool profile's min/max active-session bounds. Validates "
             "min >= 0, max >= 1, min <= max. With `now: true`, also terminates "
