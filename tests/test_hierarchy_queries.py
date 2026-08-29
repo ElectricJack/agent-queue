@@ -429,3 +429,67 @@ class TestOpenChildrenGuard:
         assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS
         await db.transition_task("p", TaskStatus.COMPLETED, context="pr_merged")
         assert (await db.get_task("p")).status == TaskStatus.COMPLETED
+
+
+class TestAbandonReleasesResources:
+    """An abandoned descendant holds nothing (spec §7)."""
+
+    async def test_workspace_lock_and_agent_pointer_are_cleared(self, db):
+        from sqlalchemy import insert as sa_insert, select as sa_select
+
+        from src.database.tables import agents as agents_t, workspaces as workspaces_t
+        from src.models import Agent
+
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "p.1", status=TaskStatus.IN_PROGRESS)
+        async with db._engine.begin() as conn:
+            await db.set_parent("p.1", "p", conn=conn)
+
+        await db.create_agent(
+            Agent(
+                id="ag",
+                name="ag",
+                profile_id="claude",
+                state=AgentState.BUSY,
+                current_task_id="p.1",
+            )
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                sa_insert(workspaces_t).values(
+                    id="ws",
+                    project_id=PROJECT_ID,
+                    workspace_path="/tmp/ws",
+                    locked_by_task_id="p.1",
+                    locked_by_agent_id="ag",
+                    locked_at=1.0,
+                    lock_mode="exclusive",
+                    created_at=1.0,
+                )
+            )
+
+        async with db._engine.begin() as conn:
+            res = await db.abandon_subtree("p", conn=conn)
+        assert res.abandoned == ["p.1"]
+
+        async with db._engine.begin() as conn:
+            ws = (
+                await conn.execute(
+                    sa_select(
+                        workspaces_t.c.locked_by_task_id,
+                        workspaces_t.c.locked_by_agent_id,
+                        workspaces_t.c.locked_at,
+                        workspaces_t.c.lock_mode,
+                    ).where(workspaces_t.c.id == "ws")
+                )
+            ).fetchone()
+            ag = (
+                await conn.execute(
+                    sa_select(agents_t.c.current_task_id, agents_t.c.state).where(
+                        agents_t.c.id == "ag"
+                    )
+                )
+            ).fetchone()
+        assert tuple(ws) == (None, None, None, None)
+        assert ag.current_task_id is None
+        assert ag.state == AgentState.IDLE.value

@@ -17,8 +17,15 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.database.queries.task_queries import TransitionResult
-from src.database.tables import sessions, task_dependencies, task_metadata, tasks
-from src.models import DepType, Task, TaskStatus
+from src.database.tables import (
+    agents,
+    sessions,
+    task_dependencies,
+    task_metadata,
+    tasks,
+    workspaces,
+)
+from src.models import AgentState, DepType, Task, TaskStatus
 from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge
 from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
 
@@ -638,6 +645,25 @@ class HierarchyQueryMixin:
                 context="abandoned_by_container",
                 assigned_agent_id=None,
                 force=True,
+            )
+            # An abandoned task holds nothing.  Same transaction as the
+            # status write, mirroring ``_delete_one``'s release: a lock or an
+            # agent pointer left behind would strand a workspace and keep an
+            # agent BUSY on work nobody is doing.
+            await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.locked_by_task_id == tid)
+                .values(
+                    locked_by_task_id=None,
+                    locked_by_agent_id=None,
+                    locked_at=None,
+                    lock_mode=None,
+                )
+            )
+            await conn.execute(
+                update(agents)
+                .where(agents.c.current_task_id == tid)
+                .values(current_task_id=None, state=AgentState.IDLE.value)
             )
             result.settled.extend(res.settled)
             result.flipped |= res.flipped
