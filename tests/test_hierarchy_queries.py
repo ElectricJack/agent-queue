@@ -302,3 +302,90 @@ class TestReads:
         assert p["waves"] == [["r.1", "r.2"], ["r.3"]]
         assert p["max_parallelism"] == 2
         assert p["depth"] == 2
+
+
+class TestSetParentBulk:
+    """The bulk twin used by ``write_plan`` (spec §5, §15.2)."""
+
+    async def test_links_every_child_and_marks_the_container(self, db):
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        kids = [await mktask(db, f"p.{i}") for i in (1, 2, 3)]
+        async with db._engine.begin() as conn:
+            await db.set_parent_bulk(kids, "p", conn=conn)
+        for k in kids:
+            assert (await db.get_task(k)).parent_task_id == "p"
+            assert ("p", DepType.PARENT_CHILD.value) in await db.get_typed_dependencies(k)
+        async with db._engine.begin() as conn:
+            assert await db.is_container("p", conn=conn)
+
+    async def test_empty_batch_is_a_no_op(self, db):
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        async with db._engine.begin() as conn:
+            assert await db.set_parent_bulk([], "p", conn=conn) == (set(), [])
+
+    async def test_missing_parent_rejected(self, db):
+        await mktask(db, "a")
+        async with db._engine.begin() as conn:
+            with pytest.raises(HierarchyError) as exc:
+                await db.set_parent_bulk(["a"], "nope", conn=conn)
+        assert exc.value.code == "not_found"
+
+    async def test_completed_parent_rejected(self, db):
+        await mktask(db, "p", status=TaskStatus.COMPLETED)
+        await mktask(db, "a")
+        async with db._engine.begin() as conn:
+            with pytest.raises(HierarchyError) as exc:
+                await db.set_parent_bulk(["a"], "p", conn=conn)
+        assert exc.value.code == "container_closed"
+
+    async def test_cross_project_child_rejected(self, db):
+        await db.create_project(Project(id="other", name="Other"))
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await db.create_task(
+            Task(id="x", project_id="other", title="x", description="x", status=TaskStatus.DEFINED)
+        )
+        async with db._engine.begin() as conn:
+            with pytest.raises(HierarchyError) as exc:
+                await db.set_parent_bulk(["x"], "p", conn=conn)
+        assert exc.value.code == "cross_project"
+
+    async def test_depth_cap_enforced(self, db):
+        await mktask(db, "a", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "a.1", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "a.1.1", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "leaf")
+        async with db._engine.begin() as conn:
+            await db.set_parent("a.1", "a", conn=conn)
+            await db.set_parent("a.1.1", "a.1", conn=conn)
+            with pytest.raises(HierarchyError) as exc:
+                await db.set_parent_bulk(["leaf"], "a.1.1", conn=conn)
+        assert exc.value.code == "depth"
+
+    async def test_child_with_blocking_edges_refuses_the_shortcut(self, db):
+        """The skipped DAG walk is only sound for edge-free leaves."""
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "a")
+        await mktask(db, "b")
+        await db.add_dependency("b", "a", DepType.BLOCKS.value)
+        async with db._engine.begin() as conn:
+            with pytest.raises(HierarchyError) as exc:
+                await db.set_parent_bulk(["b"], "p", conn=conn)
+        assert exc.value.code == "cycle_check_skipped"
+
+    async def test_child_with_children_refuses_the_shortcut(self, db):
+        """... and only for leaves: a taller subtree would break the depth check."""
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "a", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "a.1")
+        async with db._engine.begin() as conn:
+            await db.set_parent("a.1", "a", conn=conn)
+            with pytest.raises(HierarchyError) as exc:
+                await db.set_parent_bulk(["a"], "p", conn=conn)
+        assert exc.value.code == "cycle_check_skipped"
+
+    async def test_parent_in_the_batch_rejected(self, db):
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        async with db._engine.begin() as conn:
+            with pytest.raises(HierarchyError) as exc:
+                await db.set_parent_bulk(["p"], "p", conn=conn)
+        assert exc.value.code == "self_parent"

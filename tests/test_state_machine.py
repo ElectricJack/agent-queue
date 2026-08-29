@@ -114,6 +114,18 @@ class TestDAGValidation:
         with pytest.raises(CyclicDependencyError):
             validate_dag(deps)
 
+    def test_five_thousand_long_chain_does_not_recurse(self):
+        """A long chain is ordinary data at spec §15.2 scale — the walk is
+        iterative, so it must not hit Python's recursion limit."""
+        deps = {f"t-{i + 1}": {f"t-{i}"} for i in range(1, 5000)}
+        validate_dag(deps)  # should not raise (RecursionError included)
+
+    def test_cycle_at_the_end_of_a_long_chain_is_still_found(self):
+        deps = {f"t-{i + 1}": {f"t-{i}"} for i in range(1, 5000)}
+        deps["t-1"] = {"t-4999"}
+        with pytest.raises(CyclicDependencyError):
+            validate_dag(deps)
+
     def test_add_dependency_validates(self):
         """Adding a dependency that would create a cycle is rejected."""
         existing = {"t-2": {"t-1"}, "t-3": {"t-2"}}

@@ -16,6 +16,8 @@ See specs/models-and-state-machine.md for the full behavioral specification.
 
 from __future__ import annotations
 
+from typing import Iterator
+
 from src.models import BLOCKING_DEP_TYPES, DepType, TaskStatus, TaskEvent
 
 __all__ = [
@@ -175,6 +177,10 @@ def validate_dag(deps: dict[str, set[str]]) -> None:
     edges to prevent circular chains that would leave tasks stuck in DEFINED
     forever.
 
+    The walk is **iterative** (an explicit stack of ``(node, iterator)``
+    frames): a long dependency chain is ordinary data — a 5,000-task chain at
+    spec §15.2 scale would blow Python's recursion limit in a recursive DFS.
+
     Raises CyclicDependencyError if a cycle is found.
     """
     WHITE, GRAY, BLACK = 0, 1, 2
@@ -183,19 +189,29 @@ def validate_dag(deps: dict[str, set[str]]) -> None:
         all_nodes.update(targets)
 
     color: dict[str, int] = {n: WHITE for n in all_nodes}
+    empty: set[str] = set()
 
-    def dfs(node: str) -> None:
-        color[node] = GRAY
-        for dep in deps.get(node, set()):
-            if color[dep] == GRAY:
-                raise CyclicDependencyError([node, dep])
-            if color[dep] == WHITE:
-                dfs(dep)
-        color[node] = BLACK
-
-    for node in all_nodes:
-        if color[node] == WHITE:
-            dfs(node)
+    for root in all_nodes:
+        if color[root] != WHITE:
+            continue
+        color[root] = GRAY
+        stack: list[tuple[str, Iterator[str]]] = [(root, iter(deps.get(root, empty)))]
+        while stack:
+            node, remaining = stack[-1]
+            descended = False
+            for dep in remaining:
+                if color[dep] == GRAY:
+                    raise CyclicDependencyError([node, dep])
+                if color[dep] == WHITE:
+                    color[dep] = GRAY
+                    # ``remaining`` is kept in the frame, so this node
+                    # resumes exactly where it left off when we come back up.
+                    stack.append((dep, iter(deps.get(dep, empty))))
+                    descended = True
+                    break
+            if not descended:
+                color[node] = BLACK
+                stack.pop()
 
 
 def validate_dag_with_new_edge(

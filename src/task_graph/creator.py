@@ -313,11 +313,12 @@ async def write_plan(db: Any, plan: GraphPlan) -> None:
     and flagged (spec §6); an existing one is left untouched.  When the plan
     is provisional, ordinals are reserved here — inside this transaction —
     and every provisional id is rewritten to the real one before anything
-    else is inserted.  Every node is then linked to the container via
-    :meth:`HierarchyQueryMixin.set_parent`, which writes the ``parent-child``
-    edge, the ``tasks.parent_task_id`` cache and recomputes/settles as it
-    goes; the returned flip/settle info is ignored here because a brand new
-    (or still-open) container has nothing left to settle.
+    else is inserted.  Every node is then linked to the container in one
+    :meth:`HierarchyQueryMixin.set_parent_bulk` call, which writes the
+    ``parent-child`` edges, the ``tasks.parent_task_id`` cache and
+    recomputes/settles once for the batch; the returned flip/settle info is
+    ignored here because a brand new (or still-open) container has nothing
+    left to settle.
     """
     async with db._engine.begin() as conn:
         if plan.parent_row is not None:
@@ -331,8 +332,15 @@ async def write_plan(db: Any, plan: GraphPlan) -> None:
             _rewrite_ids(plan, real)
         for row in plan.node_rows:
             await _insert_task(conn, row)
-        for row in plan.node_rows:
-            await db.set_parent(row["id"], plan.parent_id, conn=conn)
+        # One bulk link for the whole batch: the nodes were just inserted as
+        # childless leaves with no edges yet, which is exactly the
+        # precondition ``set_parent_bulk`` asserts.  Per-node ``set_parent``
+        # re-validated the parent and re-read every blocking edge in the
+        # database once per node — ~23 statements per node at §15.2 scale.
+        if plan.node_rows:
+            await db.set_parent_bulk(
+                [row["id"] for row in plan.node_rows], plan.parent_id, conn=conn
+            )
         if plan.dependency_rows:
             await conn.execute(
                 insert(task_dependencies), [_strip_private(r) for r in plan.dependency_rows]

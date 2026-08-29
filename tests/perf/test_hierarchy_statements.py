@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, insert
 
 from src.database import Database
+from src.database.tables import task_dependencies as task_dependencies_t, tasks as tasks_t
 from src.models import Project, Task, TaskStatus
+from src.task_graph import parse_graph
+from src.task_graph.creator import build_plan, write_plan
 
 PROJECT_ID = "proj"
 
@@ -87,3 +91,76 @@ async def test_tree_children_progress_are_size_independent(db, width):
     async with count_statements(db) as c:
         await db.get_children_summary("root")
     assert c["n"] <= 1
+
+
+# --- write side (spec §15.2 scale) ----------------------------------------
+
+#: §15.2 reference scale: 5,000 live tasks and ~2,500 blocking edges.
+SEED_TASKS = 5000
+SEED_EDGES = 2500
+
+#: Graph size the write-side budget is stated for.
+PLAN_NODES = 200
+
+
+async def seed_scale(db, n_tasks: int = SEED_TASKS, n_edges: int = SEED_EDGES) -> None:
+    """Bulk-insert a §15.2-scale queue (raw inserts — this is fixture cost)."""
+    now = time.time()
+    rows = [
+        {
+            "id": f"seed-{i}",
+            "project_id": PROJECT_ID,
+            "title": f"t{i}",
+            "description": "d",
+            "status": TaskStatus.COMPLETED.value if i % 2 else TaskStatus.READY.value,
+            "created_at": now,
+            "updated_at": now,
+        }
+        for i in range(n_tasks)
+    ]
+    edges = [
+        {
+            "task_id": f"seed-{2 * i + 1}",
+            "depends_on_task_id": f"seed-{2 * i}",
+            "dep_type": "blocks",
+        }
+        for i in range(min(n_edges, n_tasks // 2))
+    ]
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(tasks_t), rows)
+        await conn.execute(insert(task_dependencies_t), edges)
+
+
+def _graph(n: int) -> dict:
+    """A graph of *n* nodes in a chain of pairs (~n/2 blocking edges)."""
+    nodes = []
+    for i in range(n):
+        node = {"key": f"n{i}", "title": f"N{i}"}
+        if i % 2:
+            node["needs"] = [{"on": f"n{i - 1}"}]
+        nodes.append(node)
+    return {"version": 1, "parent": {"title": "Epic"}, "nodes": nodes}
+
+
+async def test_write_plan_is_bulk_at_scale(db):
+    """A 200-node ``write_plan`` must not re-validate the parent per node.
+
+    Before ``set_parent_bulk`` this issued ~23 statements per node (each
+    ``set_parent`` re-read *every* blocking edge in the database for its DAG
+    check) — 4,609 statements and 5.4 s at this scale.
+    """
+    await seed_scale(db)
+    plan = await build_plan(db, parse_graph(_graph(PLAN_NODES)), project_id=PROJECT_ID)
+    async with count_statements(db) as c:
+        started = time.perf_counter()
+        await write_plan(db, plan)
+        elapsed = time.perf_counter() - started
+    print(
+        f"\nwrite_plan({PLAN_NODES} nodes) at {SEED_TASKS} tasks / "
+        f"{SEED_EDGES} edges: {c['n']} statements, {elapsed:.2f}s"
+    )
+    budget = 3 * PLAN_NODES + 20
+    assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
+    assert elapsed <= 4.0, f"{elapsed:.2f}s > 4s"
+    # ... and it actually linked them.
+    assert (await db.get_task(plan.task_ids[0])).parent_task_id == plan.parent_id

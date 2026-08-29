@@ -299,6 +299,135 @@ class HierarchyQueryMixin:
         flipped |= settle_result.flipped
         return flipped, settle_result.settled
 
+    async def set_parent_bulk(
+        self, child_ids: list[str], parent_id: str, *, conn
+    ) -> tuple[set[str], list[str]]:
+        """Link many freshly inserted leaves under one parent (spec §5, §15.2).
+
+        The bulk twin of :meth:`set_parent` for the graph-creation path: the
+        parent is validated **once**, the edges are written in two statements
+        and the projection is recomputed and settled once, so a 200-node
+        graph costs a constant handful of statements instead of ~23 per node.
+
+        The shortcut is only sound for *freshly inserted leaves* — a childless
+        node with no blocking out-edges cannot close a cycle and cannot make
+        the subtree taller than one level.  Both preconditions are asserted
+        here (one statement each) and raise ``cycle_check_skipped`` rather
+        than silently skipping the DAG walk.  Use :meth:`set_parent` for
+        anything that already sits in the graph.
+        """
+        ids = list(dict.fromkeys(child_ids))
+        if not ids:
+            return set(), []
+        if parent_id in ids:
+            raise HierarchyError("self_parent", parent_id)
+
+        parent_row = (
+            await conn.execute(
+                select(tasks.c.id, tasks.c.project_id, tasks.c.status).where(
+                    tasks.c.id == parent_id
+                )
+            )
+        ).fetchone()
+        if parent_row is None:
+            raise HierarchyError("not_found", parent_id)
+        if parent_row.status == TaskStatus.COMPLETED.value:
+            raise HierarchyError("container_closed", parent_id)
+
+        child_rows = (
+            await conn.execute(
+                select(tasks.c.id, tasks.c.project_id, tasks.c.parent_task_id).where(
+                    tasks.c.id.in_(sorted(ids))
+                )
+            )
+        ).fetchall()
+        found = {r.id for r in child_rows}
+        missing = [i for i in ids if i not in found]
+        if missing:
+            raise HierarchyError("not_found", missing[0])
+        wrong = [r.id for r in child_rows if r.project_id != parent_row.project_id]
+        if wrong:
+            raise HierarchyError(
+                "cross_project",
+                f"{wrong[0]} is in another project than {parent_id}",
+            )
+
+        # Leaf preconditions — these are what make the skipped DAG walk honest.
+        from src.models import BLOCKING_DEP_TYPES
+
+        has_edge = (
+            await conn.execute(
+                select(task_dependencies.c.task_id)
+                .where(
+                    and_(
+                        task_dependencies.c.task_id.in_(sorted(ids)),
+                        task_dependencies.c.dep_type.in_(sorted(BLOCKING_DEP_TYPES)),
+                    )
+                )
+                .limit(1)
+            )
+        ).fetchone()
+        if has_edge is not None:
+            raise HierarchyError(
+                "cycle_check_skipped",
+                f"{has_edge[0]} already has blocking edges; use set_parent",
+            )
+        has_child = (
+            await conn.execute(
+                select(tasks.c.id).where(tasks.c.parent_task_id.in_(sorted(ids))).limit(1)
+            )
+        ).fetchone()
+        if has_child is not None:
+            raise HierarchyError(
+                "cycle_check_skipped",
+                f"{has_child[0]}'s parent is one of the children; use set_parent",
+            )
+
+        # Subtree height is 1 for every child (asserted above), so one depth
+        # read covers the whole batch.
+        depth = await self.structural_depth(parent_id, conn=conn)
+        if depth + 1 > MAX_STRUCTURAL_DEPTH:
+            raise HierarchyError(
+                "depth",
+                f"parent depth {depth} + subtree height 1 > {MAX_STRUCTURAL_DEPTH}",
+            )
+
+        old_parents = {r.parent_task_id for r in child_rows if r.parent_task_id}
+        now = time.time()
+        await conn.execute(
+            delete(task_dependencies).where(
+                and_(
+                    task_dependencies.c.task_id.in_(sorted(ids)),
+                    task_dependencies.c.dep_type == DepType.PARENT_CHILD.value,
+                )
+            )
+        )
+        await conn.execute(
+            insert(task_dependencies),
+            [
+                {
+                    "task_id": cid,
+                    "depends_on_task_id": parent_id,
+                    "dep_type": DepType.PARENT_CHILD.value,
+                }
+                for cid in ids
+            ],
+        )
+        await self.mark_container(parent_id, conn=conn)
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id.in_(sorted(ids)))
+            .values(parent_task_id=parent_id, updated_at=now)
+        )
+
+        affected = await self._collect_affected(set(ids), conn)
+        affected.add(parent_id)
+        affected |= old_parents
+        flipped = await self.recompute_blocked(affected, conn=conn)
+        settle_result = await self.settle_containers({parent_id} | old_parents, conn=conn)
+        flipped |= settle_result.flipped
+        return flipped, settle_result.settled
+
     async def _blocking_edges(self, conn) -> dict[str, set[str]]:
         from src.models import BLOCKING_DEP_TYPES
 
