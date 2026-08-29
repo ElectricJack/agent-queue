@@ -163,10 +163,14 @@ class SessionReconciler:
         if not provider.supports(Cap.PEEK):
             return ""
         try:
-            return await provider.peek(self._handle(session), lines)
+            result = await provider.peek(self._handle(session), lines)
         except Exception:
             logger.debug("peek failed for session %s", session.id, exc_info=True)
             return ""
+        # ``classify_exit`` regex-searches this -- a provider (or a test
+        # double) that returns something other than text is not evidence of
+        # anything, so it degrades to "no text" rather than crashing.
+        return result if isinstance(result, str) else ""
 
     # -- public API --------------------------------------------------------
 
@@ -180,6 +184,7 @@ class SessionReconciler:
         live = await self._step_observe(now)
         for step in (
             self._step_drain_ack,
+            self._step_prepare_timeout,
             self._step_exits,
             self._step_orphans,
             self._step_stall_ladder,
@@ -187,7 +192,10 @@ class SessionReconciler:
             self._step_backstop,
         ):
             try:
-                await step(live, now)
+                if step is self._step_prepare_timeout:
+                    await step()
+                else:
+                    await step(live, now)
             except Exception:
                 logger.error("Session reconciler step %s failed", step.__name__, exc_info=True)
 
@@ -347,7 +355,9 @@ class SessionReconciler:
 
     # -- step 2: drain-ack -------------------------------------------------
 
-    async def _step_drain_ack(self, live: list[SessionRecord], now: float) -> None:
+    async def _step_drain_ack(
+        self, live: list[SessionRecord] | None = None, now: float | None = None
+    ) -> None:
         """Honour the second half of the completion protocol.
 
         ``aq task close`` transitions the task; ``aq session drain-ack``
@@ -355,7 +365,17 @@ class SessionReconciler:
         with the task still open is a *premature* drain and gets one nudge
         before being treated as an exit.
         """
+        now = now if now is not None else time.time()
+        if live is None:
+            live = await self._step_observe(now)
         for row in live:
+            if row.lifecycle == "pool":
+                # Pool sessions never send a provider-side drain ack -- an
+                # idle one (no held task) marked ``desired_state="stopped"``
+                # is simply done and gets torn down the pool way.
+                if row.desired_state == "stopped" and row.task_id is None:
+                    await self.orchestrator._terminate_pool_session(row, reason="drained")
+                continue
             provider = self._provider_for(row)
             if provider is None:
                 continue
@@ -412,9 +432,53 @@ class SessionReconciler:
             except Exception:
                 logger.debug("could not clear drain ack on %s", row.id, exc_info=True)
 
+    # -- pool: prepare-timeout ----------------------------------------------
+
+    async def _step_prepare_timeout(self) -> None:
+        """Release claims stuck in claiming/preparing (swarm-work-model §10.4).
+
+        Pool-only: a task-lifecycle session has no ``claim_phase`` dance --
+        its task is assigned at launch.  A pool session sits in
+        ``claiming``/``preparing`` while it resolves and boots into a
+        claimed task; a session that never leaves that window (crashed
+        mid-prepare, workspace setup hung) would otherwise hold the task
+        and the agent forever.
+        """
+        timeout = self.config.swarm.prepare_timeout
+        now = time.time()
+        for phase in ("claiming", "preparing"):
+            for s in await self.db.list_sessions(lifecycle="pool", claim_phase=phase):
+                if (s.claim_phase_at or now) > now - timeout:
+                    continue
+                if s.task_id:
+                    await self.db.release_claim(
+                        s.id,
+                        task_status=TaskStatus.READY,
+                        context="prepare_timeout",
+                        now=now,
+                        result="prepare_failed",
+                        needs_attention="prepare_timeout",
+                    )
+                else:
+                    await self.db.update_session(s.id, claim_phase=None, claim_phase_at=None)
+                if self.orchestrator is not None:
+                    waiters = getattr(self.orchestrator, "claim_waiters", None) or {}
+                    for key in [k for k in waiters if k[0] == s.id]:
+                        fut = waiters.pop(key, None)
+                        if fut is not None and not fut.done():
+                            fut.set_result("prepare_failed")
+                await self._emit(
+                    "session.claim_timeout", session_id=s.id, task_id=s.task_id
+                )
+
     # -- step 3: exits -----------------------------------------------------
 
-    async def _step_exits(self, live: list[SessionRecord], now: float) -> None:
+    async def _step_exits(
+        self, live: list[SessionRecord] | None = None, now: float | None = None
+    ) -> None:
+        now = now if now is not None else time.time()
+        if live is None:
+            live = await self._step_observe(now)
         for row in live:
             provider = self._provider_for(row)
             if provider is None:
@@ -459,14 +523,15 @@ class SessionReconciler:
             reason=verdict.reason,
         )
 
+        if row.lifecycle == "pool":
+            return await self._apply_pool_verdict(row, verdict, task)
+
         if verdict.verdict is Verdict.DRAINED:
             await self._stop_session(provider, row, reason="drained")
             return
 
         if verdict.verdict is Verdict.RATE_LIMIT:
-            await self.db.update_session(
-                row.id, state="sleeping", desired_state="sleeping", sleep_reason="rate_limit"
-            )
+            await self._apply_rate_limit_cooldown(row)
             if task is not None:
                 await self.db.transition_task(
                     task.id,
@@ -476,7 +541,7 @@ class SessionReconciler:
                     assigned_agent_id=None,
                 )
                 await self._carry_resume_key(row, task)
-                await self._release_task(task)
+                await self._release_task(task, row, reason="rate_limit")
                 await self._emit(
                     "task.paused",
                     task_id=task.id,
@@ -506,7 +571,7 @@ class SessionReconciler:
                     assigned_agent_id=None,
                 )
                 await self._carry_resume_key(row, task)
-                await self._release_task(task)
+                await self._release_task(task, row, reason="rapid_crash")
                 await self._emit(
                     "task.restarted",
                     task_id=task.id,
@@ -530,7 +595,7 @@ class SessionReconciler:
                 assigned_agent_id=None,
             )
             await self._carry_resume_key(row, task)
-            await self._release_task(task)
+            await self._release_task(task, row, reason="session_exited_open")
             await self._emit(
                 "task.needs_attention",
                 task_id=task.id,
@@ -538,6 +603,33 @@ class SessionReconciler:
                 title=task.title,
                 reason=verdict.reason,
             )
+
+    async def _apply_rate_limit_cooldown(self, row: SessionRecord) -> None:
+        """Sleep-state write shared by the task and pool RATE_LIMIT paths."""
+        await self.db.update_session(
+            row.id, state="sleeping", desired_state="sleeping", sleep_reason="rate_limit"
+        )
+
+    async def _apply_pool_verdict(self, row: SessionRecord, verdict: ExitVerdict, task) -> None:
+        """Pool sessions are never restarted in place.
+
+        Every verdict ends in ``_terminate_pool_session``, which returns any
+        held task to the frontier and starts a fresh session next tick.
+        Rapid-crash also quarantines the pool key so the replacement does
+        not launch straight back into the same failure.
+        """
+        now = time.time()
+        orch = self.orchestrator
+        if task is not None:
+            note = {"RAPID_CRASH": "rapid_crash"}.get(verdict.verdict.name, "exited_holding_task")
+            await self.db.set_task_meta(task.id, "needs_attention", note)
+        if verdict.verdict is Verdict.RAPID_CRASH:
+            orch._pool_quarantine[(row.project_id, row.profile_id)] = (
+                now + self.sessions_config.restart_window_seconds
+            )
+        elif verdict.verdict is Verdict.RATE_LIMIT:
+            await self._apply_rate_limit_cooldown(row)
+        await orch._terminate_pool_session(row, reason=verdict.verdict.name.lower())
 
     # -- step 4: stall ladder ---------------------------------------------
 
@@ -551,7 +643,9 @@ class SessionReconciler:
         if ttl <= 0:
             return
         for row in live:
-            if row.lifecycle != "task" or not row.task_id or row.state != "running":
+            if row.lifecycle not in ("task", "pool") or not row.task_id or row.state != "running":
+                continue
+            if row.lifecycle == "pool" and row.claim_phase != "active":
                 continue
             last = row.last_activity or row.started_at
             if now - last <= ttl:
@@ -612,6 +706,17 @@ class SessionReconciler:
 
             # Rungs exhausted: interrupt, kill, and let the scheduler
             # relaunch with the harness resume key so context survives.
+            if row.lifecycle == "pool":
+                # No in-place restart for a pool session -- the pool step
+                # starts a fresh one next tick; this one's claim (and the
+                # task it holds) goes back through the normal termination
+                # path.
+                try:
+                    await provider.interrupt(self._handle(row))
+                except Exception:
+                    logger.debug("interrupt failed for %s", row.id, exc_info=True)
+                await self.orchestrator._terminate_pool_session(row, reason="stalled")
+                continue
             count = await self.db.bump_session_restarts(row.id)
             # ``>=``, matching the rapid-crash branch.  ``>`` here allowed
             # exactly one restart more than ``max_restarts`` before
@@ -635,7 +740,7 @@ class SessionReconciler:
                 assigned_agent_id=None,
             )
             await self._carry_resume_key(row, task)
-            await self._release_task(task)
+            await self._release_task(task, row, reason="stall")
             await self._emit(
                 "task.restarted",
                 task_id=row.task_id,
@@ -678,8 +783,10 @@ class SessionReconciler:
         """
         # (a) live session, task closed or gone.
         for row in live:
-            if row.lifecycle != "task":
+            if row.lifecycle not in ("task", "pool"):
                 continue
+            if row.lifecycle == "pool" and row.task_id is None:
+                continue  # idle pool session -- nothing to orphan-check
             if self._is_deferred(row.name):
                 continue
             fresh = await self._still_live(row)
@@ -692,6 +799,9 @@ class SessionReconciler:
                 TaskStatus.ASSIGNED,
             )
             if still_open:
+                continue
+            if row.lifecycle == "pool":
+                await self.orchestrator._terminate_pool_session(row, reason="orphaned")
                 continue
             provider = self._provider_for(row)
             if provider is None:
@@ -758,7 +868,7 @@ class SessionReconciler:
                 context="session_not_live",
                 assigned_agent_id=None,
             )
-            await self._release_task(task)
+            await self._release_task(task, row, reason="session_not_live")
             await self._emit(
                 "task.needs_attention",
                 task_id=task.id,
@@ -912,18 +1022,27 @@ class SessionReconciler:
 
     # -- step 6: backstop --------------------------------------------------
 
-    async def _step_backstop(self, live: list[SessionRecord], now: float) -> None:
+    async def _step_backstop(
+        self, live: list[SessionRecord] | None = None, now: float | None = None
+    ) -> None:
         """The final net above the ladder — not the primary defense.
 
         ``agents.stuck_timeout_seconds`` used to be an ``asyncio.wait_for``
         that killed work outright.  Here it only fires after the ladder has
         had its full run, and it force-kills rather than silently dropping.
+
+        An idle pool session (``task_id is None``) is never stale here — it
+        is not holding anyone's work, so there is nothing this backstop is
+        protecting against.
         """
+        now = now if now is not None else time.time()
+        if live is None:
+            live = await self._step_observe(now)
         limit = float(getattr(self.config.agents_config, "stuck_timeout_seconds", 0) or 0)
         if limit <= 0:
             return
         for row in live:
-            if row.lifecycle != "task" or not row.task_id:
+            if row.lifecycle not in ("task", "pool") or not row.task_id:
                 continue
             if now - (row.started_at or now) <= limit:
                 continue
@@ -931,6 +1050,17 @@ class SessionReconciler:
             if fresh is None:
                 continue  # already stopped/slept/quarantined this tick
             row = fresh
+            if row.lifecycle == "pool":
+                task = await self.db.get_task(row.task_id)
+                logger.warning(
+                    "Pool session %s exceeded stuck_timeout_seconds (%ss) — terminating",
+                    row.id,
+                    limit,
+                )
+                if task is not None:
+                    await self.db.set_task_meta(task.id, "needs_attention", "stuck_timeout")
+                await self.orchestrator._terminate_pool_session(row, reason="stuck_timeout")
+                continue
             provider = self._provider_for(row)
             if provider is None:
                 continue
@@ -949,7 +1079,7 @@ class SessionReconciler:
                     context="stuck_timeout",
                     assigned_agent_id=None,
                 )
-                await self._release_task(task)
+                await self._release_task(task, row, reason="stuck_timeout")
                 await self._emit(
                     "task.quarantined",
                     task_id=task.id,
@@ -980,7 +1110,8 @@ class SessionReconciler:
             return None
         return fresh
 
-    async def _release_task(self, task) -> None:
+    async def _release_task(self, task, session: SessionRecord | None = None, *,
+                             reason: str = "released") -> None:
         """Free the agent and the workspace lock a terminal task was holding.
 
         Every non-DRAINED verdict owes this.  The legacy runtime always did
@@ -996,8 +1127,16 @@ class SessionReconciler:
         is N agents and N workspaces burned, and the re-queued task cannot
         acquire a workspace because its own dead predecessor still holds
         the lock.
+
+        A pool session is never the generic release path: it goes through
+        ``_terminate_pool_session`` so the agent is retired (not IDLEd back
+        into a pool that no longer wants it) and the row itself is torn
+        down, not just its claim.
         """
         if task is None or self.orchestrator is None:
+            return
+        if session is not None and session.lifecycle == "pool":
+            await self.orchestrator._terminate_pool_session(session, reason=reason)
             return
         release = getattr(self.orchestrator, "release_session_task_resources", None)
         if release is None:
@@ -1097,7 +1236,7 @@ class SessionReconciler:
                 context=f"session_{reason}",
                 assigned_agent_id=None,
             )
-            await self._release_task(task)
+            await self._release_task(task, row, reason=reason)
             await self._emit(
                 "task.quarantined",
                 task_id=task.id,

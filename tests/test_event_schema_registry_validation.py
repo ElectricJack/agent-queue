@@ -644,6 +644,9 @@ _CANONICAL_PAYLOADS.update(
         "session.premature_drain": {
             "session_id": "sess-1",
         },
+        "session.claim_timeout": {
+            "session_id": "sess-1",
+        },
         "session.sleeping": {
             "session_id": "sess-1",
             "name": "n-supervisor",

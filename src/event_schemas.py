@@ -706,6 +706,10 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
         "required": ["session_id"],
         "optional": ["task_id", "project_id"],
     },
+    "session.claim_timeout": {
+        "required": ["session_id"],
+        "optional": ["task_id"],
+    },
     "session.sleeping": {
         "required": ["session_id", "name", "reason"],
         "optional": ["project_id"],
