@@ -84,7 +84,15 @@ tasks = Table(
     Column("task_type", Text, nullable=True),
     Column("profile_id", Text, ForeignKey("agent_profiles.id"), nullable=True),
     Column(
-        "preferred_workspace_id", Text, ForeignKey("workspaces.id", use_alter=True), nullable=True
+        "preferred_workspace_id",
+        Text,
+        ForeignKey(
+            "workspaces.id",
+            use_alter=True,
+            name="fk_tasks_preferred_workspace",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
     ),
     Column("attachments", Text, nullable=True, server_default="'[]'"),
     Column("auto_approve_plan", Integer, nullable=False, server_default="0"),
@@ -328,7 +336,12 @@ agents = Table(
     Column("name", Text, nullable=False),
     Column("profile_id", Text, nullable=False),  # soft reference to agent_profiles.id
     Column("state", Text, nullable=False, server_default="'IDLE'"),
-    Column("current_task_id", Text, ForeignKey("tasks.id", use_alter=True), nullable=True),
+    Column(
+        "current_task_id",
+        Text,
+        ForeignKey("tasks.id", use_alter=True, name="fk_agents_current_task", ondelete="SET NULL"),
+        nullable=True,
+    ),
     Column("checkout_path", Text, nullable=True),
     Column("repo_id", Text, ForeignKey("repos.id"), nullable=True),
     Column("pid", Integer, nullable=True),
