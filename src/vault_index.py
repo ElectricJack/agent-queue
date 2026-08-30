@@ -145,7 +145,7 @@ class VaultIndexGenerator:
         logger.info("Generated %d vault hub files", len(written))
         return written
 
-    async def generate_all_with_summaries(self, chat_provider: object) -> list[str]:
+    async def generate_all_with_summaries(self, llm: object) -> list[str]:
         """Full rebuild with LLM-generated summaries of folder contents.
 
         Like :meth:`generate_all` but reads child files in each hub
@@ -185,7 +185,7 @@ class VaultIndexGenerator:
 
         # Pass 2: generate summaries and write hubs
         for dirpath, rel_dir in hub_dirs:
-            summary = await self._generate_summary(dirpath, chat_provider)
+            summary = await self._generate_summary(dirpath, llm)
             result = self._generate_hub_for_dir(dirpath, rel_dir, summary=summary)
             if result:
                 written.append(result)
@@ -202,12 +202,10 @@ class VaultIndexGenerator:
         logger.info("Generated %d vault hub files with summaries", len(written))
         return written
 
-    async def _generate_summary(
-        self, abs_dir: str, chat_provider: object
-    ) -> str:
+    async def _generate_summary(self, abs_dir: str, llm: object) -> str:
         """Generate a short summary of the knowledge in a directory.
 
-        Uses ``ChatProvider.create_message()`` to ask the LLM for a
+        Uses ``LLMClient.complete()`` to ask the LLM for a
         one-sentence summary based on file names and content snippets.
         """
         dir_path = Path(abs_dir)
@@ -250,15 +248,21 @@ class VaultIndexGenerator:
         )
 
         try:
-            response = await chat_provider.create_message(
-                messages=[{"role": "user", "content": user_msg}],
-                system="You are a concise technical writer. Respond with only the requested sentence, nothing else.",
-                max_tokens=1024,
+            from src.llm import LLMCallSpec
+
+            resp = await llm.complete(
+                [{"role": "user", "content": user_msg}],
+                system=(
+                    "You are a concise technical writer. Respond with only the "
+                    "requested sentence, nothing else."
+                ),
+                spec=LLMCallSpec(max_tokens=1024, caller="vault-index"),
             )
-            # ChatResponse has text_parts -> list[str]
-            # Take the LAST text part (thinking parts come first)
-            parts = response.text_parts
-            text = parts[-1].strip().strip('"').strip("'") if parts else ""
+            text = (
+                resp.text.strip().splitlines()[-1].strip().strip('"').strip("'")
+                if resp.text.strip()
+                else ""
+            )
             if text and len(text) < 200:
                 return text
         except Exception:

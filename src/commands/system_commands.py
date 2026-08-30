@@ -1037,20 +1037,15 @@ class SystemCommandsMixin:
         with_summaries = args.get("with_summaries", False)
 
         if with_summaries:
-            # Get the chat provider from the orchestrator
-            provider = getattr(self, "_chat_provider", None)
-            if provider is None:
-                try:
-                    from src.chat_providers import create_chat_provider
-
-                    provider = create_chat_provider(self.config.chat_provider)
-                except Exception:
-                    pass
-
-            if provider is None:
-                return {"error": "No chat provider available for summary generation."}
-
-            written = await gen.generate_all_with_summaries(provider)
+            llm = getattr(self.orchestrator, "llm", None)
+            if llm is None or not llm.is_configured():
+                return {
+                    "error": (
+                        "LLM is not configured (config.llm) — cannot generate "
+                        "summaries."
+                    )
+                }
+            written = await gen.generate_all_with_summaries(llm)
         else:
             written = gen.generate_all()
 
