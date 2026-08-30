@@ -22,6 +22,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -1238,6 +1239,27 @@ class PlannerConfig:
         return []
 
 
+def _is_http_origin(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    if any(ord(char) <= 32 or ord(char) == 127 for char in value):
+        return False
+    if any(char in value for char in ("\\", "*", "?", "#", "%")):
+        return False
+    try:
+        parts = urlsplit(value)
+        parts.port  # Validate the port range and syntax.
+        return (
+            parts.scheme in {"http", "https"}
+            and bool(parts.hostname)
+            and parts.username is None
+            and parts.password is None
+            and not parts.path
+        )
+    except ValueError:
+        return False
+
+
 @dataclass
 class ApiAuthConfig:
     """Session-token auth for the local HTTP API.
@@ -1247,11 +1269,20 @@ class ApiAuthConfig:
 
     token_ttl_hours: int = 72  # backstop expiry for session tokens
     require_session_token: bool = False  # reserved enforcement hook
+    # Additional browser origins allowed to attach interactive terminals.
+    # Same-origin dashboards need no entry; this never grants token privileges.
+    trusted_dashboard_origins: list[str] = field(default_factory=list)
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if self.token_ttl_hours <= 0:
             errors.append(ConfigError("api_auth", "token_ttl_hours", "must be > 0"))
+        origins = self.trusted_dashboard_origins
+        if not isinstance(origins, list) or any(not _is_http_origin(value) for value in origins):
+            errors.append(ConfigError(
+                "api_auth", "trusted_dashboard_origins",
+                "must be a list of explicit http(s) origins without paths, credentials or wildcards",
+            ))
         return errors
 
 
@@ -2437,6 +2468,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.api_auth = ApiAuthConfig(
             token_ttl_hours=int(aa.get("token_ttl_hours", 72)),
             require_session_token=bool(aa.get("require_session_token", False)),
+            trusted_dashboard_origins=aa.get("trusted_dashboard_origins", []),
         )
 
     if "surface" in raw and isinstance(raw["surface"], dict):
