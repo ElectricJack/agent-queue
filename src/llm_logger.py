@@ -1,8 +1,10 @@
 """LLM interaction logging for prompt optimization and debugging.
 
-Writes JSONL entries to date-organized files under ``logs/llm/``.  Three log
+Writes JSONL entries to date-organized files under ``logs/llm/``.  Log
 streams are maintained:
 
+- ``llm.jsonl`` — every ``LLMClient.complete()`` call (the direct LLM path
+  in ``src/llm``).
 - ``chat_provider.jsonl`` — every ``ChatProvider.create_message()`` call
   (chat bot, hooks, plan parsing, summarization).
 - ``claude_agent.jsonl`` — Claude Code agent task sessions (one entry per
@@ -101,8 +103,8 @@ class LLMLogger:
     """Append-only JSONL logger for LLM interactions.
 
     Provides three levels of logging detail:
-    1. **Full call logs** (chat_provider.jsonl, claude_agent.jsonl) — every
-       LLM interaction with input/output summaries for debugging.
+    1. **Full call logs** (llm.jsonl, chat_provider.jsonl, claude_agent.jsonl) —
+       every LLM interaction with input/output summaries for debugging.
     2. **Per-task logs** (tasks/{task_id}.jsonl) — all LLM calls for a
        specific task, enabling task-level prompt analysis.
     3. **Analytics** (prompt_analytics.jsonl) — aggregated metrics for
@@ -134,9 +136,68 @@ class LLMLogger:
         error: str | None = None,
         duration_ms: int = 0,
     ) -> None:
-        """Log a ChatProvider.create_message() call.
+        """Log a ChatProvider.create_message() call."""
+        self._log_provider_call(
+            filename="chat_provider.jsonl",
+            caller=caller,
+            model=model,
+            provider=provider,
+            messages=messages,
+            system=system,
+            tools=tools,
+            max_tokens=max_tokens,
+            response=response,
+            error=error,
+            duration_ms=duration_ms,
+        )
 
-        Captures the full request/response cycle for a chat provider call,
+    def log_llm_call(
+        self,
+        *,
+        caller: str,
+        model: str,
+        provider: str,
+        messages: list[dict],
+        system: str,
+        tools: list[dict] | None = None,
+        max_tokens: int = 1024,
+        response: Any = None,
+        error: str | None = None,
+        duration_ms: int = 0,
+    ) -> None:
+        """Log one direct-LLM call (``src/llm``) to ``llm.jsonl``."""
+        self._log_provider_call(
+            filename="llm.jsonl",
+            caller=caller,
+            model=model,
+            provider=provider,
+            messages=messages,
+            system=system,
+            tools=tools,
+            max_tokens=max_tokens,
+            response=response,
+            error=error,
+            duration_ms=duration_ms,
+        )
+
+    def _log_provider_call(
+        self,
+        *,
+        filename: str,
+        caller: str,
+        model: str,
+        provider: str,
+        messages: list[dict],
+        system: str,
+        tools: list[dict] | None = None,
+        max_tokens: int = 1024,
+        response: Any = None,
+        error: str | None = None,
+        duration_ms: int = 0,
+    ) -> None:
+        """Log one provider call to *filename*.
+
+        Captures the full request/response cycle for a provider call,
         including timing, input summary, output summary, and any errors.
         Also feeds data into the prompt analytics aggregator for token
         efficiency monitoring.
@@ -198,7 +259,7 @@ class LLMLogger:
             "error": error,
         }
 
-        self._append("chat_provider.jsonl", entry)
+        self._append(filename, entry)
 
         # Feed analytics aggregator
         self._analytics.record(
