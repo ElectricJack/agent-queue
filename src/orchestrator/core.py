@@ -1783,9 +1783,10 @@ class Orchestrator(
                 bus=self.bus,
                 vault_projects_dir=self.config.vault_projects,
                 config=self.config.memory,
+                llm=self.llm,
                 enabled=True,
                 max_source_chars=self.config.memory.stub_enrichment_max_source_chars,
-                max_tokens=self.config.chat_provider.max_tokens,
+                max_tokens=self.config.llm.max_tokens,
             )
             self.reference_stub_enricher.subscribe()
             logger.info("ReferenceStubEnricher initialized and subscribed")

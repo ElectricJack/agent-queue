@@ -360,8 +360,7 @@ class MemoryConfig:
     spec_watcher_max_excerpt_lines: int = 30  # lines of source to include in stub
     # Reference stub LLM enrichment (roadmap 6.3.2 — vault.md §4)
     stub_enrichment_enabled: bool = True  # enrich stubs with LLM summaries
-    stub_enrichment_provider: str = ""  # LLM provider (falls back to revision_provider)
-    stub_enrichment_model: str = ""  # model override for enrichment
+    stub_enrichment_class: str = ""  # intelligence class for enrichment (empty = llm.default_class)
     stub_enrichment_max_source_chars: int = 20_000  # max chars sent to LLM (~5k tokens)
 
     def validate(self) -> list[ConfigError]:
@@ -2404,6 +2403,11 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             compact_interval_hours=mem.get("compact_interval_hours", 24),
             index_notes=mem.get("index_notes", True),
             index_sessions=mem.get("index_sessions", False),
+            stub_enrichment_enabled=mem.get("stub_enrichment_enabled", True),
+            stub_enrichment_class=str(mem.get("stub_enrichment_class", "") or ""),
+            stub_enrichment_max_source_chars=int(
+                mem.get("stub_enrichment_max_source_chars", 20_000)
+            ),
         )
 
     if "mcp_server" in raw:
