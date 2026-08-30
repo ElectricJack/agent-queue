@@ -7,7 +7,7 @@ results, and constructing per-node LLM context.
 
 The mixin expects the following attributes on ``self``:
 - ``node_outputs`` — dict of stored node outputs
-- ``supervisor`` — :class:`Supervisor` instance
+- ``services`` — :class:`PlaybookServices` bundle
 - ``on_progress`` — optional progress callback
 - ``_seed_message`` — seed message string
 - ``_llm_config`` — playbook-level LLM config
@@ -89,7 +89,8 @@ class ContextMixin:
 
     # Attributes expected from PlaybookRunner (for type checking purposes)
     node_outputs: dict[str, Any]
-    supervisor: Any  # Supervisor
+    services: Any  # PlaybookServices
+    _last_transcript: list[dict]
     on_progress: Callable[[str, str | None], Awaitable[None]] | None
     _seed_message: str
     _llm_config: dict | None
@@ -114,7 +115,7 @@ class ContextMixin:
         Returns
         -------
         str
-            The fully constructed prompt to send to the Supervisor.
+            The fully constructed prompt to send to the model.
         """
         raw = node.get("prompt", "")
         if "{{" in raw:
@@ -245,13 +246,13 @@ class ContextMixin:
         When the node has an ``output.extract`` directive, search for the
         key first in the assistant's text response (that is the LLM's
         *conclusion* after any filtering/transformation), then fall back
-        to the last ``tool_result`` in ``supervisor._last_messages`` (raw
+        to the last ``tool_result`` in ``self._last_transcript`` (raw
         tool input).  When neither yields the key, the raw text response
         is returned.
 
         Text-first priority prevents a common class of bug: when a node's
         prompt asks the LLM to filter or transform a tool result, the raw
-        tool result is still present in ``_last_messages`` but it is *not*
+        tool result is still present in the transcript but it is *not*
         what the playbook author intends to propagate downstream.
         """
         output_spec = node.get("output")
@@ -282,7 +283,7 @@ class ContextMixin:
                 return val
 
         # 2. Fall back to the last matching tool_result.
-        last_messages = getattr(self.supervisor, "_last_messages", None) or []
+        last_messages = self._last_transcript
         if last_messages:
             logger.info(
                 "_extract_output: searching %d messages for key '%s' (text fallback)",
@@ -386,7 +387,7 @@ class ContextMixin:
         """Resolve the effective LLM config for a node.
 
         Node-level ``llm_config`` overrides playbook-level ``llm_config``.
-        When neither is set, returns *None* to use the Supervisor's default
+        When neither is set, returns *None* to use the client's default
         provider.
 
         Parameters
@@ -397,7 +398,7 @@ class ContextMixin:
         Returns
         -------
         dict or None
-            LLM config dict suitable for passing to ``supervisor.chat()``,
+            LLM config dict suitable for ``spec_from_llm_config()``,
             or *None* for default behaviour.
         """
         return node.get("llm_config") or self._llm_config
@@ -406,21 +407,21 @@ class ContextMixin:
         self,
         node_id: str,
     ) -> Callable[[str, str | None], Awaitable[None]] | None:
-        """Create a progress callback bridge for a supervisor.chat() call.
+        """Create a progress callback bridge for an ``llm.run_tools()`` call.
 
-        Maps supervisor-level progress events (``"thinking"``, ``"tool_use"``,
+        Maps tool-loop progress events (``"thinking"``, ``"tool_use"``,
         ``"responding"``) into node-scoped events that the runner's
         ``on_progress`` callback can forward to the UI.
 
         Emits events of the form ``("node_tool_use", "node_id:tool_name")``.
 
         Returns *None* when no ``on_progress`` callback is configured (so the
-        Supervisor skips progress reporting entirely, avoiding overhead).
+        client skips progress reporting entirely, avoiding overhead).
 
         Parameters
         ----------
         node_id:
-            The node this supervisor call is executing, used as a prefix.
+            The node this LLM call is executing, used as a prefix.
         """
         if not self.on_progress:
             return None
@@ -428,7 +429,7 @@ class ContextMixin:
         on_progress = self.on_progress  # capture for closure
 
         async def _bridge(event: str, detail: str | None) -> None:
-            # Map supervisor events to node-scoped events
+            # Map tool-loop events to node-scoped events
             await on_progress(f"node_{event}", f"{node_id}:{detail}" if detail else node_id)
 
         return _bridge

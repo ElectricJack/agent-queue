@@ -376,23 +376,27 @@ class PlaybookCommandsMixin:
             # Handle timeout — may transition to a timeout node if configured
             event_bus = getattr(self.orchestrator, "bus", None)
 
-            # Try to create a Supervisor for timeout node execution
-            supervisor = None
+            # PlaybookServices are only needed when an on_timeout node runs.
+            services = None
             paused_node = (timeout_graph or {}).get("nodes", {}).get(db_run.current_node or "", {})
             on_timeout_node = paused_node.get("on_timeout")
             if on_timeout_node:
-                from src.runtimes.supervisor import Supervisor as SupervisorCls
+                from src.playbooks.services import PlaybookServices
 
-                supervisor = SupervisorCls(self.orchestrator, self.config)
-                if not supervisor.initialize():
-                    supervisor = None
+                services = PlaybookServices(
+                    llm=self.orchestrator.llm,
+                    handler=self,
+                    tool_registry=self.orchestrator._tool_registry,
+                    llm_logger=self.orchestrator.llm_logger,
+                    runtimes=self.orchestrator._runtimes,
+                )
 
             try:
                 with CorrelationContext(run_id=db_run.run_id):
                     result = await PlaybookRunner.handle_timeout(
                         db_run=db_run,
                         graph=timeout_graph or {},
-                        supervisor=supervisor,
+                        services=services,
                         db=self.db,
                         event_bus=event_bus,
                     )
@@ -1793,21 +1797,20 @@ class PlaybookCommandsMixin:
                 timeout_seconds,
             )
 
-            # Check if a Supervisor is needed (on_timeout node present)
-            supervisor = None
+            # PlaybookServices are only needed when an on_timeout node runs.
             paused_node = graph.get("nodes", {}).get(db_run.current_node or "", {})
             on_timeout_node = paused_node.get("on_timeout")
+            services = None
             if on_timeout_node and on_timeout_node in graph.get("nodes", {}):
-                from src.runtimes.supervisor import Supervisor
+                from src.playbooks.services import PlaybookServices
 
-                supervisor = Supervisor(self.orchestrator, self.config)
-                if not supervisor.initialize():
-                    logger.warning(
-                        "Failed to create Supervisor for timeout transition "
-                        "on run %s — will mark as timed_out",
-                        db_run.run_id,
-                    )
-                    supervisor = None
+                services = PlaybookServices(
+                    llm=self.orchestrator.llm,
+                    handler=self,
+                    tool_registry=self.orchestrator._tool_registry,
+                    llm_logger=self.orchestrator.llm_logger,
+                    runtimes=self.orchestrator._runtimes,
+                )
 
             event_bus = getattr(self.orchestrator, "bus", None)
 
@@ -1816,7 +1819,7 @@ class PlaybookCommandsMixin:
                     result = await PlaybookRunner.handle_timeout(
                         db_run=db_run,
                         graph=graph,
-                        supervisor=supervisor,
+                        services=services,
                         db=self.db,
                         event_bus=event_bus,
                     )

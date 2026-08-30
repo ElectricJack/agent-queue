@@ -2,14 +2,14 @@
 
 Implements the playbook execution model from docs/specs/design/playbooks.md §6.
 The runner walks a compiled playbook graph (JSON), executing each node's prompt
-via :meth:`Supervisor.chat` and maintaining a ``messages`` list across nodes so
-that downstream nodes naturally see prior context.
+via :meth:`LLMClient.run_tools` and maintaining a ``messages`` list across nodes
+so that downstream nodes naturally see prior context.
 
 **Design decisions:**
 
-- **Executor history vs. Supervisor history.**  The runner's ``messages`` list
-  contains only node prompts and the Supervisor's final responses — NOT the raw
-  tool-call/result messages from inside each ``supervisor.chat()`` call.  This
+- **Executor history vs. tool-loop history.**  The runner's ``messages`` list
+  contains only node prompts and the model's final responses — NOT the raw
+  tool-call/result messages from inside each ``llm.run_tools()`` call.  This
   keeps the context lean.  If a downstream node needs specific tool output, the
   node prompt should instruct the LLM to include those details in its response.
 
@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 from src.models import AgentProfile, PlaybookRun, PlaybookRunEvent, PlaybookRunStatus
 from src.playbooks.runner_context import ContextMixin, _parse_json_from_text
 from src.playbooks.runner_events import EventsMixin
+from src.playbooks.services import PlaybookServices
 from src.playbooks.runner_transitions import TransitionMixin, _event_to_fallback_status
 from src.playbooks.state_machine import (
     InvalidPlaybookRunTransition,
@@ -61,7 +62,6 @@ from src.playbooks.runner_transitions import (  # noqa: F401
 if TYPE_CHECKING:
     from src.database.base import DatabaseBackend
     from src.event_bus import EventBus
-    from src.runtimes.supervisor import Supervisor
 
 logger = logging.getLogger(__name__)
 
@@ -106,16 +106,14 @@ class RunResult:
     final_response: str | None = None
 
 
-class _DummySupervisor:
-    """Placeholder supervisor used when timeout handling doesn't need LLM calls.
-
-    Only used by :meth:`PlaybookRunner.handle_timeout` for the simple
-    timed_out-without-timeout-node path, where the runner constructor
-    requires a supervisor but no LLM calls are made.
-    """
-
-    async def chat(self, **kwargs: Any) -> str:
-        raise RuntimeError("_DummySupervisor does not support chat()")
+def _fold_context(context: list[dict], prompt: str) -> list[dict]:
+    """Per-node context (prior node summaries) plus the node prompt as one message list."""
+    messages = [dict(m) for m in context]
+    if messages and messages[-1].get("role") == "user":
+        messages[-1]["content"] = f"{messages[-1]['content']}\n{prompt}"
+    else:
+        messages.append({"role": "user", "content": prompt})
+    return messages
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +122,7 @@ class _DummySupervisor:
 
 
 class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
-    """Walk a compiled playbook graph, executing nodes via the Supervisor.
+    """Walk a compiled playbook graph, executing nodes via the LLM client.
 
     Parameters
     ----------
@@ -133,8 +131,9 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         ``nodes`` keys.  See docs/specs/design/playbooks.md §5 for schema.
     event:
         The trigger event data (dict) that started this run.
-    supervisor:
-        A :class:`~src.runtimes.supervisor.Supervisor` instance for LLM calls.
+    services:
+        A :class:`~src.playbooks.services.PlaybookServices` bundle supplying
+        the LLM client, command handler and tool registry.
     db:
         Database backend for persisting the :class:`PlaybookRun` record.
         When *None*, run state is not persisted (useful for testing).
@@ -147,29 +146,31 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         self,
         graph: dict,
         event: dict,
-        supervisor: Supervisor,
+        services: PlaybookServices,
         db: DatabaseBackend | None = None,
         on_progress: Callable[[str, str | None], Awaitable[None]] | None = None,
         max_daily_playbook_tokens: int | None = None,
         daily_token_tracker: DailyTokenTracker | None = None,
         daily_token_cap: int | None = None,
         event_bus: EventBus | None = None,
-        runtimes: Any = None,
     ):
         self.graph = graph
         self.event = event
-        self.supervisor = supervisor
+        self.services = services
         self.db = db
         self.on_progress = on_progress
         self._daily_token_tracker = daily_token_tracker
         self._daily_token_cap = daily_token_cap
         self.event_bus = event_bus
         # Optional RuntimeRegistry used by ``_execute_single_node`` to
-        # dispatch nodes whose profile.runtime isn't ``"supervisor"`` —
-        # those run as one-shot subprocess sessions per node.  When *None*
-        # and a node profile asks for non-supervisor dispatch, the runner
-        # raises a clear configuration error.
-        self._runtimes = runtimes
+        # dispatch nodes whose profile declares a ``harness`` — those run as
+        # one-shot sessions per node.  When *None* the node runs in-process
+        # on the LLM client instead.
+        self._runtimes = services.runtimes if services is not None else None
+
+        # Raw transcript of the most recent node's tool loop — the fallback
+        # source for ``output.extract`` (see ``_extract_output``).
+        self._last_transcript: list[dict] = []
 
         # Conversation history — kept for DB persistence and backward compat.
         # NOT used as LLM context between nodes (per-node context is built fresh).
@@ -203,10 +204,10 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         self._transition_llm_config: dict | None = graph.get("transition_llm_config")
 
         # Capability-scoped profile (sandboxed playbooks).  When set, every
-        # supervisor.chat() call for this run is restricted to
+        # LLM call for this run is restricted to
         # ``profile.allowed_tools`` — the LLM literally cannot call anything
         # else, even if prompt-injected.  Loaded lazily on first ``run()``
-        # call (db lookup is async).  ``None`` means full supervisor scope.
+        # call (db lookup is async).  ``None`` means the registry's core tools.
         self._profile_id_raw: str | None = graph.get("profile_id")
         self._profile: AgentProfile | None = None
         self._tool_overrides: list[str] | None = None
@@ -235,7 +236,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
           slug) verbatim.
         * **Fails closed** — if a profile_id is declared but cannot be
           loaded, returns an error string instead of letting the
-          playbook run with the full unsandboxed supervisor scope.
+          playbook run with the registry's core tools.
 
         Returns ``None`` on success (profile loaded, or no profile_id
         declared); a human-readable error string on failure.
@@ -270,7 +271,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             if prof is not None:
                 self._profile = prof
                 # An empty allowed_tools list means "no tools at all".  We
-                # represent that as ``[]`` (not ``None``) so supervisor.chat
+                # represent that as ``[]`` (not ``None``) so the node
                 # honours the empty whitelist instead of falling back to
                 # default tool set.
                 self._tool_overrides = list(prof.allowed_tools)
@@ -422,7 +423,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         # Sandboxed playbooks (frontmatter ``profile_id:``) must resolve
         # their profile before any LLM call.  Fail closed: if the profile
         # is declared but can't be loaded, refuse to execute the playbook
-        # rather than silently running with full supervisor scope.
+        # rather than silently running with the core tool set.
         profile_load_error = await self._load_profile_or_error()
         if profile_load_error is not None:
             logger.warning(
@@ -708,7 +709,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         cls,
         db_run: PlaybookRun,
         graph: dict,
-        supervisor: Supervisor,
+        services: PlaybookServices,
         human_input: str,
         db: DatabaseBackend | None = None,
         on_progress: Callable[[str, str | None], Awaitable[None]] | None = None,
@@ -736,8 +737,8 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             The compiled playbook graph — used as a fallback when no
             ``pinned_graph`` is stored in the run record (backward
             compatibility with pre-5.2.12 runs).
-        supervisor:
-            Supervisor instance for LLM calls.
+        services:
+            :class:`PlaybookServices` bundle for LLM calls.
         human_input:
             The human reviewer's response / decision text.
         db:
@@ -766,7 +767,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         runner = cls(
             effective_graph,
             json.loads(db_run.trigger_event),
-            supervisor,
+            services,
             db,
             on_progress,
             event_bus=event_bus,
@@ -999,7 +1000,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         cls,
         db_run: PlaybookRun,
         graph: dict,
-        supervisor: Supervisor,
+        services: PlaybookServices,
         event_data: dict,
         db: DatabaseBackend | None = None,
         on_progress: Callable[[str, str | None], Awaitable[None]] | None = None,
@@ -1026,8 +1027,8 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         graph:
             Fallback compiled playbook graph (used when no ``pinned_graph``
             is stored in the run record).
-        supervisor:
-            Supervisor instance for LLM calls.
+        services:
+            :class:`PlaybookServices` bundle for LLM calls.
         event_data:
             The event payload that triggered the resume (e.g.,
             ``{"workflow_id": ..., "stage": ..., "task_ids": [...]}``)
@@ -1057,7 +1058,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         runner = cls(
             effective_graph,
             json.loads(db_run.trigger_event),
-            supervisor,
+            services,
             db,
             on_progress,
             event_bus=event_bus,
@@ -1290,7 +1291,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         cls,
         db_run: PlaybookRun,
         graph: dict,
-        supervisor: Supervisor | None = None,
+        services: PlaybookServices | None = None,
         db: DatabaseBackend | None = None,
         on_progress: Callable[[str, str | None], Awaitable[None]] | None = None,
         event_bus: EventBus | None = None,
@@ -1311,8 +1312,8 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             The persisted :class:`PlaybookRun` with status ``"paused"``.
         graph:
             The compiled playbook graph (fallback if no pinned_graph).
-        supervisor:
-            Supervisor instance — only needed when an ``on_timeout`` node
+        services:
+            :class:`PlaybookServices` — only needed when an ``on_timeout`` node
             requires LLM calls.  May be *None* for simple timeout-to-fail.
         db:
             Database backend for persisting updates.
@@ -1341,10 +1342,11 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
 
         if on_timeout_node and on_timeout_node in effective_graph.get("nodes", {}):
             # Transition to the timeout node and continue graph execution
-            if supervisor is None:
-                # Cannot transition without a supervisor — fall through to fail
+            if services is None:
+                # Cannot transition without services — fall through to fail
                 logger.warning(
-                    "Run %s has on_timeout='%s' but no Supervisor available — marking as timed_out",
+                    "Run %s has on_timeout='%s' but no PlaybookServices available — "
+                    "marking as timed_out",
                     db_run.run_id,
                     on_timeout_node,
                 )
@@ -1352,7 +1354,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 return await cls._resume_at_timeout_node(
                     db_run=db_run,
                     effective_graph=effective_graph,
-                    supervisor=supervisor,
+                    services=services,
                     timeout_node_id=on_timeout_node,
                     paused_node_id=paused_node_id,
                     paused_at=paused_at,
@@ -1366,7 +1368,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         runner = cls(
             effective_graph,
             json.loads(db_run.trigger_event),
-            supervisor or _DummySupervisor(),  # type: ignore[arg-type]
+            services,  # type: ignore[arg-type]
             db,
             on_progress,
             event_bus=event_bus,
@@ -1414,7 +1416,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         *,
         db_run: PlaybookRun,
         effective_graph: dict,
-        supervisor: Supervisor,
+        services: PlaybookServices,
         timeout_node_id: str,
         paused_node_id: str | None,
         paused_at: float,
@@ -1431,7 +1433,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         runner = cls(
             effective_graph,
             json.loads(db_run.trigger_event),
-            supervisor,
+            services,
             db,
             on_progress,
             event_bus=event_bus,
@@ -1624,7 +1626,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         node: dict,
         db_run: PlaybookRun,
     ) -> str:
-        """Execute a single node and return the Supervisor's response.
+        """Execute a single node and return the model's response.
 
         Each node gets a fresh LLM context built from the seed message
         and compact prior node outputs — NOT the accumulated transcript.
@@ -1707,6 +1709,19 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
 
         return response
 
+    def _build_node_system_prompt(self) -> str:
+        parts = [
+            "You are executing one step of an Agent Queue playbook. Use the tools you are "
+            "given to read and change system state. When the step is finished, answer in "
+            "plain text without further tool calls."
+        ]
+        if self._profile is not None and self._profile.system_prompt_suffix:
+            parts.append(self._profile.system_prompt_suffix)
+        project_id = self.event.get("project_id")
+        if project_id:
+            parts.append(f"Active project: {project_id}")
+        return "\n\n".join(parts)
+
     async def _execute_single_node(
         self,
         node_id: str,
@@ -1721,61 +1736,55 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         """
         prompt = self._build_node_prompt(node_id, node, extra_vars)
 
-        # Resolve per-node LLM config, defaulting to higher max_tokens for playbooks
-        pb_max = self.supervisor.config.chat_provider.playbook_max_tokens
-        node_llm_config = self._resolve_node_llm_config(node)
-        if node_llm_config is None:
-            node_llm_config = {"max_tokens": pb_max}
-        elif "max_tokens" not in node_llm_config:
-            node_llm_config = {**node_llm_config, "max_tokens": pb_max}
+        from src.llm import spec_from_llm_config
 
+        node_spec = spec_from_llm_config(
+            self._resolve_node_llm_config(node),
+            caller=f"playbook:{self._playbook_id}:{node_id}",
+            max_tokens=self.services.llm.config.max_tokens,
+        )
         supervisor_progress = self._make_supervisor_progress(node_id)
-
-        # Build fresh per-node context (NOT the accumulated transcript)
         context = self._build_node_context()
-
         timeout = node.get("timeout_seconds")
+
         # Bind caller profile so any create_task tool call from inside this
-        # supervisor turn inherits / is bounded by the playbook's profile.
-        # Cleared in finally so an exception can't leak it across runs.
-        handler = getattr(self.supervisor, "handler", None)
+        # node inherits / is bounded by the playbook's profile.  Cleared in
+        # finally so an exception can't leak it across runs.
+        handler = self.services.handler
         caller_pid = self._profile.id if self._profile is not None else None
-        if handler is not None:
-            handler.set_caller_profile(caller_pid)
+        handler.set_caller_profile(caller_pid)
+        project_id = self.event.get("project_id")
+        if project_id:
+            handler.set_active_project(project_id)
         try:
-            # Dispatch on the playbook profile's platform: ``"supervisor"``
-            # (the default for playbooks) runs in-process via the existing
-            # supervisor.chat() path; any other platform spawns a one-shot
-            # subprocess session for this single node.
-            platform_name = (
-                self._profile.runtime if self._profile is not None else "supervisor"
-            )
-            if platform_name == "supervisor":
-                coro = self.supervisor.chat(
-                    text=prompt,
-                    user_name=f"playbook-runner:{node_id}",
-                    history=context,
-                    on_progress=supervisor_progress,
-                    llm_config=node_llm_config,
-                    tool_overrides=self._tool_overrides,
-                )
-                if timeout:
-                    response = await asyncio.wait_for(coro, timeout=timeout)
-                else:
-                    response = await coro
-            else:
+            if (
+                self._profile is not None
+                and getattr(self._profile, "harness", "")
+                and self._runtimes is not None
+            ):
                 response = await self._execute_node_via_platform(
                     node_id=node_id,
                     prompt=prompt,
                     timeout=timeout,
                     on_progress=supervisor_progress,
                 )
+            else:
+                coro = self.services.llm.run_tools(
+                    _fold_context(context, prompt),
+                    self.services.node_tools(self._tool_overrides),
+                    handler.execute,
+                    system=self._build_node_system_prompt(),
+                    spec=node_spec,
+                    on_progress=supervisor_progress,
+                )
+                run = await (asyncio.wait_for(coro, timeout=timeout) if timeout else coro)
+                self._last_transcript = run.transcript
+                response = run.text
         except asyncio.TimeoutError:
             trace_entry.status = "failed"
             raise TimeoutError(f"Node '{node_id}' timed out after {timeout}s") from None
         finally:
-            if handler is not None:
-                handler.set_caller_profile(None)
+            handler.set_caller_profile(None)
 
         # Extract structured output from tool results
         output = self._extract_output(node, response)
@@ -1801,7 +1810,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         timeout: float | None,
         on_progress: Callable[[str, str | None], Awaitable[None]] | None,
     ) -> str:
-        """Dispatch a non-supervisor-platform playbook node via RuntimeRegistry.
+        """Dispatch a harness-backed playbook node via RuntimeRegistry.
 
         Spawns a one-shot subprocess session for this single node:
         ``platform.start(ctx) → wait() → stop()``.  The node's prompt
@@ -1809,20 +1818,20 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         (``self._profile``) supplies platform name, allowed_tools, and
         model.  Returns the agent's summary so the caller can feed it
         into ``_extract_output`` and the messages log just like the
-        supervisor path.
+        in-process path.
 
         Raises ``RuntimeError`` if no RuntimeRegistry was wired into
-        the runner (callers using non-supervisor playbook platforms must
-        construct the runner with ``runtimes=...``).
+        the runner (callers using harness-backed playbook nodes must
+        construct the runner with ``services.runtimes`` set).
         """
         from src.models import AgentResult, TaskContext
 
         if self._runtimes is None:
             raise RuntimeError(
-                f"Playbook node '{node_id}' has profile.runtime="
-                f"{self._profile.runtime!r} but PlaybookRunner was constructed "
-                "without runtimes= — wire it up at the construction site "
-                "(orchestrator/core.py)."
+                f"Playbook node '{node_id}' has profile.harness="
+                f"{self._profile.harness!r} but PlaybookRunner was constructed "
+                "without services.runtimes — wire it up at the construction "
+                "site (orchestrator/core.py)."
             )
 
         ctx = TaskContext(
@@ -1837,7 +1846,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         platform = self._runtimes.create(
             self._profile.runtime,
             profile=self._profile,
-            llm_logger=getattr(self.supervisor, "_llm_logger", None),
+            llm_logger=self.services.llm_logger,
         )
         await platform.start(ctx)
         try:
@@ -2239,10 +2248,13 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         :meth:`run` : The real execution method.
         docs/specs/design/playbooks.md §15, §19 (Open Questions #2).
         """
+        from src.llm import LLMClient
+        from src.llm.fake import FakeProvider
+
         runner = cls(
             graph,
             event,
-            _DummySupervisor(),  # type: ignore[arg-type]
+            PlaybookServices.for_tests(LLMClient.with_provider(FakeProvider())),
             db=None,
             on_progress=on_progress,
             event_bus=None,
