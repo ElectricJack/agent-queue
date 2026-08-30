@@ -401,4 +401,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # ``python -m src.cli.app`` executes this file as ``__main__`` and then
+    # imports it AGAIN as ``src.cli.app`` when the submodules above run
+    # ``from .app import cli`` — so every hand-crafted command (inbox, reply,
+    # message, schema, prime, handoff, …) registers on the *other* module's
+    # ``cli`` group and silently vanishes from this one.  Delegate to the
+    # canonical module so both entry points see the same command set.
+    from src.cli.app import main as _canonical_main
+
+    _canonical_main()
