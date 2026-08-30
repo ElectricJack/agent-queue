@@ -17,7 +17,9 @@ async def _check(ctx: DoctorContext) -> CheckResult:
     rows = await ctx.db.list_tasks(status=TaskStatus.AWAITING_PLAN_APPROVAL)
     ids = [t.id for t in rows]
     if not ids:
-        return CheckResult(id=CHECK_ID, severity=Severity.OK, detail="no stranded plan-approval tasks")
+        return CheckResult(
+            id=CHECK_ID, severity=Severity.OK, detail="no stranded plan-approval tasks"
+        )
     return CheckResult(
         id=CHECK_ID,
         severity=Severity.WARN,

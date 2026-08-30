@@ -274,7 +274,7 @@ class PlaybookManager:
         self.system_notification_channel_id: str | None = None
 
         # Compiler instance — post Phase 6 the compiler is deterministic
-        # (pipeline-only); the LLM compile path (and its ``chat_provider``
+        # (pipeline-only); the LLM compile path (and its provider config
         # / ``playbook_max_tokens`` inputs) have been removed.
         self._compiler: PlaybookCompiler = PlaybookCompiler(config=config)
 

@@ -95,6 +95,15 @@ class TestLoadLLMBlock:
         assert cfg.llm.base_url == "http://localhost:11434/v1"
         assert cfg.llm.model == "qwen3"
 
+    def test_legacy_ollama_without_base_url_defaults(self, tmp_path):
+        path = _write(
+            tmp_path, {"chat_provider": {"provider": "ollama", "model": "qwen3"}}
+        )
+        cfg = load_config(path)
+        assert cfg.llm.provider == "openai"
+        assert cfg.llm.base_url == "http://localhost:11434/v1"
+        assert cfg.llm.model == "qwen3"
+
     def test_both_blocks_llm_wins(self, tmp_path, caplog):
         path = _write(
             tmp_path,

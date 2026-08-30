@@ -3245,7 +3245,6 @@ class TestBranchingTransitionEvaluation:
         calls = mock_services.llm.run_tools.call_args_list
 
         # First call (node execution) — uses main llm_config (Sonnet).
-        # Runner auto-injects max_tokens from config.chat_provider.playbook_max_tokens.
         node_call = calls[0]
         assert node_call.kwargs["spec"].model == "claude-sonnet-4-20250514"
         assert node_call.kwargs["spec"].provider == "anthropic"

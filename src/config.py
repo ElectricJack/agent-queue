@@ -278,7 +278,7 @@ class MemoryConfig:
     compact_enabled: bool = False  # periodic LLM compaction
     compact_interval_hours: int = 24
     compact_llm_provider: str = (
-        ""  # LLM for compaction (defaults to revision_provider or chat_provider)
+        ""  # LLM for compaction (defaults to revision_provider or llm)
     )
     compact_llm_model: str = ""  # model override for compaction
     compact_recent_days: int = 7  # task memories younger than this are kept as-is
@@ -294,7 +294,7 @@ class MemoryConfig:
     profile_max_size: int = 5000  # max chars for profile content
     # Phase 2: Post-Task Revision
     revision_enabled: bool = True  # toggle post-task profile revision
-    revision_provider: str = ""  # LLM provider for revision (defaults to chat_provider)
+    revision_provider: str = ""  # LLM provider for revision (defaults to llm)
     revision_model: str = ""  # model override for revision
     # Phase 3: Notes Integration
     auto_generate_notes: bool = False  # auto-note generation (off by default, can be noisy)
@@ -565,48 +565,6 @@ class LLMConfig:
                     "base_url",
                     "provider 'openai' needs base_url (a local OpenAI-compatible endpoint) "
                     "or an API key (api_key / OPENAI_API_KEY)",
-                )
-            )
-        return errors
-
-
-@dataclass
-class ChatProviderConfig:
-    """LLM provider settings for the Discord chat agent (not the coding agents)."""
-
-    provider: str = "anthropic"  # "anthropic", "ollama", or "gemini"
-    model: str = ""  # Empty = provider default
-    base_url: str = ""  # For Ollama
-    api_key: str = ""  # For Gemini (falls back to GEMINI_API_KEY / GOOGLE_API_KEY env vars)
-    keep_alive: str = "1h"  # Ollama: how long to keep model loaded after last request
-    num_ctx: int = 0  # Ollama: context window size (0 = model default)
-    max_tokens: int = 2048  # Default response token budget for LLM calls
-    playbook_max_tokens: int = 4096  # Response token budget for playbook compilation & nodes
-    thinking_budget: int = 8192  # Thinking/reasoning token budget (Gemini models)
-
-    def __post_init__(self) -> None:
-        # YAML may parse numeric model names (e.g. ``model: 4``) as int/float.
-        # LLM APIs require the model field to be a string, so coerce here to
-        # prevent "cannot unmarshal number … of type string" errors from
-        # OpenAI-compatible servers (Ollama, vLLM, etc.).
-        if self.model and not isinstance(self.model, str):
-            object.__setattr__(self, "model", str(self.model))
-
-    def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        valid_providers = {"anthropic", "ollama", "gemini"}
-        if self.provider and self.provider not in valid_providers:
-            errors.append(
-                ConfigError(
-                    "chat_provider",
-                    "provider",
-                    f"must be one of {sorted(valid_providers)}, got '{self.provider}'",
-                )
-            )
-        if self.provider == "ollama" and not self.base_url:
-            errors.append(
-                ConfigError(
-                    "chat_provider", "base_url", "base_url is required when provider is 'ollama'"
                 )
             )
         return errors
@@ -1359,7 +1317,6 @@ class AppConfig:
     agents_config: AgentsDefaultConfig = field(default_factory=AgentsDefaultConfig)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
-    chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     chat_analyzer: ChatAnalyzerConfig = field(default_factory=ChatAnalyzerConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
@@ -1536,7 +1493,6 @@ class AppConfig:
         errors.extend(self.agents_config.validate())
         errors.extend(self.scheduling.validate())
         errors.extend(self.pause_retry.validate())
-        errors.extend(self.chat_provider.validate())
         errors.extend(self.llm.validate())
         errors.extend(self.chat_analyzer.validate())
         errors.extend(self.supervisor.validate())
@@ -1612,7 +1568,7 @@ class AppConfig:
         - llm_logging
 
         Critical settings (NOT reloaded — require restart):
-        - discord, database_path, workspace_dir, chat_provider, memory,
+        - discord, database_path, workspace_dir, llm, memory,
           health_check
 
         Returns a new AppConfig instance; the caller is responsible for
@@ -1683,7 +1639,6 @@ RESTART_REQUIRED_SECTIONS = {
     "data_dir",
     "workspace_dir",
     "database_path",
-    "chat_provider",
     "llm",
     "memory",
     "health_check",
@@ -1715,7 +1670,6 @@ _SECTION_FIELDS = {
     "agents_config",
     "scheduling",
     "pause_retry",
-    "chat_provider",
     "llm",
     "chat_analyzer",
     "health_check",
@@ -2180,21 +2134,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             path,
         )
         config.llm = _llm_config_from_mapping(legacy_raw, legacy=True)
-
-    if "chat_provider" in raw:
-        cp = raw["chat_provider"]
-        raw_model = cp.get("model", "")
-        config.chat_provider = ChatProviderConfig(
-            provider=cp.get("provider", "anthropic"),
-            model=str(raw_model) if raw_model else "",
-            base_url=cp.get("base_url", ""),
-            api_key=cp.get("api_key", ""),
-            keep_alive=cp.get("keep_alive", "1h"),
-            num_ctx=cp.get("num_ctx", 0),
-            max_tokens=cp.get("max_tokens", 2048),
-            playbook_max_tokens=cp.get("playbook_max_tokens", 4096),
-            thinking_budget=cp.get("thinking_budget", 8192),
-        )
 
     if "supervisor" in raw:
         s = raw["supervisor"]

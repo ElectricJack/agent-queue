@@ -92,7 +92,7 @@ VALID_COMPILED_NODES = {
 
 def _make_mock_provider(responses: list[str] | None = None) -> AsyncMock:
     """Create a mock ChatProvider returning fenced JSON."""
-    from src.chat_providers.types import ChatResponse, TextBlock
+    from src.llm.types import ChatResponse, TextBlock
 
     provider = AsyncMock()
     provider.model_name = "test-model"

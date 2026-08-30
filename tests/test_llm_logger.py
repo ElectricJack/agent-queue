@@ -27,9 +27,9 @@ def disabled_logger(log_dir):
     return LLMLogger(base_dir=log_dir, enabled=False, retention_days=30)
 
 
-class TestLLMLoggerChatProvider:
+class TestLLMLoggerCall:
     def test_writes_valid_jsonl(self, logger, log_dir):
-        logger.log_chat_provider_call(
+        logger.log_llm_call(
             caller="test",
             model="test-model",
             provider="TestProvider",
@@ -42,7 +42,7 @@ class TestLLMLoggerChatProvider:
         )
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        file_path = os.path.join(log_dir, today, "chat_provider.jsonl")
+        file_path = os.path.join(log_dir, today, "llm.jsonl")
         assert os.path.isfile(file_path)
 
         with open(file_path) as f:
@@ -56,7 +56,7 @@ class TestLLMLoggerChatProvider:
         assert entry["duration_ms"] == 150
 
     def test_contains_expected_fields(self, logger, log_dir):
-        logger.log_chat_provider_call(
+        logger.log_llm_call(
             caller="playbook_node.chat",
             model="claude-sonnet-4-20250514",
             provider="AnthropicChatProvider",
@@ -70,7 +70,7 @@ class TestLLMLoggerChatProvider:
         )
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        file_path = os.path.join(log_dir, today, "chat_provider.jsonl")
+        file_path = os.path.join(log_dir, today, "llm.jsonl")
 
         with open(file_path) as f:
             entry = json.loads(f.readline())
@@ -91,7 +91,7 @@ class TestLLMLoggerChatProvider:
             },
             {"name": "list_tasks", "input_schema": {"type": "object"}},
         ]
-        logger.log_chat_provider_call(
+        logger.log_llm_call(
             caller="test",
             model="m",
             provider="p",
@@ -102,7 +102,7 @@ class TestLLMLoggerChatProvider:
         )
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        file_path = os.path.join(log_dir, today, "chat_provider.jsonl")
+        file_path = os.path.join(log_dir, today, "llm.jsonl")
 
         with open(file_path) as f:
             entry = json.loads(f.readline())
@@ -110,7 +110,7 @@ class TestLLMLoggerChatProvider:
         assert entry["input"]["tool_names"] == ["create_task", "list_tasks"]
 
     def test_logs_error(self, logger, log_dir):
-        logger.log_chat_provider_call(
+        logger.log_llm_call(
             caller="test",
             model="m",
             provider="p",
@@ -121,7 +121,7 @@ class TestLLMLoggerChatProvider:
         )
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        file_path = os.path.join(log_dir, today, "chat_provider.jsonl")
+        file_path = os.path.join(log_dir, today, "llm.jsonl")
 
         with open(file_path) as f:
             entry = json.loads(f.readline())
@@ -130,7 +130,7 @@ class TestLLMLoggerChatProvider:
 
     def test_multiple_entries_appended(self, logger, log_dir):
         for i in range(3):
-            logger.log_chat_provider_call(
+            logger.log_llm_call(
                 caller=f"test_{i}",
                 model="m",
                 provider="p",
@@ -140,7 +140,7 @@ class TestLLMLoggerChatProvider:
             )
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        file_path = os.path.join(log_dir, today, "chat_provider.jsonl")
+        file_path = os.path.join(log_dir, today, "llm.jsonl")
 
         with open(file_path) as f:
             lines = f.readlines()
@@ -194,7 +194,7 @@ class TestLLMLoggerAgentSession:
 
 class TestLLMLoggerDisabled:
     def test_disabled_writes_nothing(self, disabled_logger, log_dir):
-        disabled_logger.log_chat_provider_call(
+        disabled_logger.log_llm_call(
             caller="test",
             model="m",
             provider="p",
@@ -220,12 +220,12 @@ class TestLLMLoggerCleanup:
         os.makedirs(log_dir, exist_ok=True)
         old_dir = os.path.join(log_dir, "2020-01-01")
         os.makedirs(old_dir)
-        with open(os.path.join(old_dir, "chat_provider.jsonl"), "w") as f:
+        with open(os.path.join(old_dir, "llm.jsonl"), "w") as f:
             f.write('{"test": true}\n')
 
         recent_dir = os.path.join(log_dir, "2099-12-31")
         os.makedirs(recent_dir)
-        with open(os.path.join(recent_dir, "chat_provider.jsonl"), "w") as f:
+        with open(os.path.join(recent_dir, "llm.jsonl"), "w") as f:
             f.write('{"test": true}\n')
 
         removed = logger.cleanup_old_logs()

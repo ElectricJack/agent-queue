@@ -503,7 +503,7 @@ scope: {scope}
 
 def _make_mock_provider(responses: list[str] | None = None) -> AsyncMock:
     """Create a mock ChatProvider returning fenced JSON."""
-    from src.chat_providers.types import ChatResponse, TextBlock
+    from src.llm.types import ChatResponse, TextBlock
 
     provider = AsyncMock()
     provider.model_name = "test-model"
@@ -585,7 +585,7 @@ class TestEndToEndCompilation:
     @pytest.mark.asyncio
     async def test_modify_file_triggers_recompilation(self, tmp_path):
         """Modifying a playbook .md file triggers recompilation."""
-        from src.chat_providers.types import ChatResponse, TextBlock
+        from src.llm.types import ChatResponse, TextBlock
         from src.playbooks.manager import PlaybookManager
 
         vault = tmp_path / "vault"
@@ -761,7 +761,7 @@ class TestEndToEndCompilation:
     @pytest.mark.asyncio
     async def test_compilation_failure_keeps_previous_version(self, tmp_path):
         """Failed recompilation keeps the previous version active in the full pipeline."""
-        from src.chat_providers.types import ChatResponse, TextBlock
+        from src.llm.types import ChatResponse, TextBlock
         from src.playbooks.manager import PlaybookManager
 
         vault = tmp_path / "vault"
@@ -812,7 +812,7 @@ class TestEndToEndCompilation:
     @pytest.mark.asyncio
     async def test_multiple_scopes_compiled_independently(self, tmp_path):
         """Playbooks in different scopes compile independently via the pipeline."""
-        from src.chat_providers.types import ChatResponse, TextBlock
+        from src.llm.types import ChatResponse, TextBlock
         from src.playbooks.manager import PlaybookManager
 
         vault = tmp_path / "vault"

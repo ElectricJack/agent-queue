@@ -92,3 +92,11 @@ def test_orchestrator_playbook_services(tmp_path):
     o._tool_registry = MagicMock()
     s = o.playbook_services()
     assert s.llm is o.llm and s.handler is o._command_handler and s.tool_registry is o._tool_registry
+
+
+def test_compiler_never_imports_llm():
+    import inspect
+    import src.playbooks.compiler as compiler
+
+    src_text = inspect.getsource(compiler)
+    assert "src.llm" not in src_text and "create_message" not in src_text

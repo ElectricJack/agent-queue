@@ -27,7 +27,7 @@ _VALID_COMPILED_NODES = {
 
 
 def _make_mock_provider(num_compilations: int) -> AsyncMock:
-    from src.chat_providers.types import ChatResponse, TextBlock
+    from src.llm.types import ChatResponse, TextBlock
 
     provider = AsyncMock()
     provider.model_name = "test-model"

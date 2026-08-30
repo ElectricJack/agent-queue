@@ -287,13 +287,9 @@ class ReflectionMockSupervisor:
             "Always set max_retries with jitter to avoid thundering herd",
         ]
         self._call_index = 0
-        # PlaybookRunner reads supervisor.config.chat_provider.playbook_max_tokens
-        # (runner.py:1537) — provide a minimal stand-in.
         from types import SimpleNamespace
 
-        self.config = SimpleNamespace(
-            chat_provider=SimpleNamespace(playbook_max_tokens=2048)
-        )
+        self.config = SimpleNamespace(max_tokens=2048)
 
     async def chat(self, **kwargs) -> str:
         """Record the call and return a simulated response."""
@@ -369,13 +365,9 @@ class ToolTrackingSupervisor:
     def __init__(self):
         self.chat_calls: list[dict] = []
         self.tool_calls: list[dict] = []
-        # PlaybookRunner reads supervisor.config.chat_provider.playbook_max_tokens
-        # (runner.py:1537) — provide a minimal stand-in.
         from types import SimpleNamespace
 
-        self.config = SimpleNamespace(
-            chat_provider=SimpleNamespace(playbook_max_tokens=2048)
-        )
+        self.config = SimpleNamespace(max_tokens=2048)
         self._node_tool_mapping: dict[str, list[dict]] = {
             "review_task": [
                 {"tool": "get_task", "args": {"task_id": "t-100"}},

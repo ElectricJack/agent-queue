@@ -28,7 +28,7 @@ _VALID_COMPILED_NODES = {
 
 def _make_mock_provider(num_compilations: int) -> AsyncMock:
     """Create a mock ChatProvider that returns a valid compiled JSON N times."""
-    from src.chat_providers.types import ChatResponse, TextBlock
+    from src.llm.types import ChatResponse, TextBlock
 
     provider = AsyncMock()
     provider.model_name = "test-model"
