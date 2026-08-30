@@ -16,6 +16,7 @@ even when the daemon is down.  Execution still goes through the REST API.
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 
 import click
@@ -122,12 +123,70 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-def _schema_to_click_type(prop_schema: dict) -> type | click.Choice | None:
+class StructuredParam(click.ParamType):
+    """A JSON object/array argument, parsed rather than passed through.
+
+    Without this, an ``object``- or ``array``-typed schema property fell
+    through to ``str`` and the *text* was sent as the argument value.  The
+    daemon then stored a string where a mapping belonged.  For
+    ``update_config`` that is silent corruption of the user's YAML: the
+    section becomes a quoted one-line string, ``load_config``'s
+    ``isinstance(raw[section], dict)`` guard stops matching, and every
+    field in it reverts to its dataclass default with nothing logged.
+    Observed on ``aq system update-config --section swarm --data
+    '{"enabled": true}'``, which turned the swarm off instead of on.
+
+    An array also accepts a bare comma-separated list, since that is what
+    people type: ``--waiter-task-ids a,b`` is the same as ``'["a","b"]'``.
+    """
+
+    def __init__(self, kind: str) -> None:
+        #: ``"object"`` / ``"array"`` are strict; ``"json"`` is the union
+        #: case (``update_config``'s ``data`` accepts a mapping, a list or
+        #: a bare scalar) and falls back to the literal text.
+        self.kind = kind
+        self.name = kind
+
+    def convert(self, value, param, ctx):
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            if self.kind == "array":
+                return [part.strip() for part in text.split(",") if part.strip()]
+            if self.kind == "json":
+                return value  # a bare string is a legal value here
+            self.fail(f"{text!r} is not valid JSON for a {self.kind} argument", param, ctx)
+            return None
+        # `--data null` is how update_config deletes a section; keep it.
+        if parsed is None:
+            return None
+        if self.kind == "json":
+            return parsed
+        expected = dict if self.kind == "object" else list
+        if not isinstance(parsed, expected):
+            self.fail(
+                f"expected a JSON {self.kind}, got {type(parsed).__name__}: {text!r}", param, ctx
+            )
+        return parsed
+
+
+def _schema_to_click_type(prop_schema: dict) -> type | click.Choice | click.ParamType | None:
     """Map a JSON Schema property to a Click parameter type."""
     if "enum" in prop_schema:
         return click.Choice(prop_schema["enum"], case_sensitive=False)
 
     schema_type = prop_schema.get("type", "string")
+    if isinstance(schema_type, list):
+        # A union (``update_config``'s ``data`` is
+        # object|array|string|number|boolean|null).  If a structured value
+        # is legal at all, the text has to be parsed — otherwise the one
+        # spelling that matters most gets sent as a string.
+        if {"object", "array"} & set(schema_type):
+            return StructuredParam("json")
+        schema_type = next((t for t in schema_type if t != "null"), "string")
     if schema_type == "integer":
         return int
     elif schema_type == "number":
@@ -136,6 +195,8 @@ def _schema_to_click_type(prop_schema: dict) -> type | click.Choice | None:
         return bool
     elif schema_type == "string":
         return str
+    elif schema_type in ("object", "array"):
+        return StructuredParam(schema_type)
     return str
 
 
