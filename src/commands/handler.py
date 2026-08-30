@@ -88,6 +88,21 @@ _caller_profile_id_var: contextvars.ContextVar[str | None] = contextvars.Context
 _plan_subtask_creation_mode_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "_plan_subtask_creation_mode_var", default=False
 )
+#: The server-derived :class:`~src.api.auth.RequestScope`, as a dict.
+#:
+#: A ContextVar for the same reason as the four above, but the stakes are
+#: higher: this one carries *identity*.  As a plain instance attribute it
+#: was shared by every in-flight request, and ``execute``'s ``finally``
+#: cleared it unconditionally — so any command that started while another
+#: was awaiting (the 5s cascade, a second agent, a dashboard poll) blanked
+#: the first one's scope mid-flight.  Observed as ``aq task close
+#: --claim-next`` answering ``out_of_scope: task_claim needs a session in
+#: scope``: ``task_close`` awaits the whole completion pipeline (git ops
+#: included) before calling ``_cmd_task_claim``, which is ample time for a
+#: concurrent command to land.
+_current_scope_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "_current_scope_var", default=None
+)
 
 
 # Re-export helper functions from helpers module for backward compatibility
@@ -386,7 +401,16 @@ class CommandHandler(
         # /api/execute (never client-supplied — stripped from args before
         # dispatch).  Handlers that need it (e.g. ``_cmd_prime``) read
         # ``self._current_scope`` explicitly; everything else ignores it.
-        self._current_scope: dict | None = None
+        # Backed by ``_current_scope_var`` — see its docstring.
+        self._current_scope = None
+
+    @property
+    def _current_scope(self) -> dict | None:
+        return _current_scope_var.get()
+
+    @_current_scope.setter
+    def _current_scope(self, value: dict | None) -> None:
+        _current_scope_var.set(value)
 
     # The following four properties are backed by module-level ContextVars
     # so concurrent callers (Discord, supervisor-platform tasks, playbook
@@ -635,7 +659,13 @@ class CommandHandler(
             if isinstance(args, dict) and "_scope" in args:
                 args = dict(args)
                 scope = args.pop("_scope")
-            self._current_scope = scope
+            # Save/restore rather than set/clear: a command can dispatch
+            # another one inside its own body (``task_close --claim-next``
+            # calls ``_cmd_task_claim``; the playbook runner and supervisor
+            # re-enter ``execute`` outright), and an unconditional clear in
+            # the ``finally`` would strip the outer command's identity the
+            # moment the inner one returned.
+            _scope_token = _current_scope_var.set(scope)
             mutating = self._is_mutating(name)
             if mutating:
                 logger.info("cmd %s args=%s", name, self._preview(args))
@@ -729,7 +759,7 @@ class CommandHandler(
                 return {"error": str(e)}
             finally:
                 # Ensure scope does not leak across commands.
-                self._current_scope = None
+                _current_scope_var.reset(_scope_token)
                 # Emit ``command.invoked`` for dashboard live-activity chips
                 # and future observability surfaces. Gated on the config flag;
                 # any failure is swallowed so a broken bus never breaks
