@@ -70,7 +70,7 @@ ollama = [
     "openai>=1.0.0",
 ]
 mcp = [
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",
 ]
 cli = [
     "click>=8.1",
