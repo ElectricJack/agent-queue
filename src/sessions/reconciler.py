@@ -234,7 +234,18 @@ class SessionReconciler:
                 continue
             handle = observed.get(name)
             if handle is not None and handle.instance_token == row.instance_token:
-                await self.db.update_session(row.id, epoch=self.epoch)
+                links = {}
+                if row.agent_id is None:
+                    if row.name == "n-supervisor--global" and row.project_id is None:
+                        from src.agents.configuration import ensure_supervisor_agent
+                        links["agent_id"] = (await ensure_supervisor_agent(self.db)).id
+                    elif row.task_id:
+                        task = await self.db.get_task(row.task_id)
+                        if task and task.assigned_agent_id:
+                            agent = await self.db.get_agent(task.assigned_agent_id)
+                            if agent and agent.current_task_id == task.id:
+                                links["agent_id"] = agent.id
+                await self.db.update_session(row.id, epoch=self.epoch, **links)
                 report.adopted.append(row.id)
                 await self._emit(
                     "session.adopted",
@@ -307,7 +318,7 @@ class SessionReconciler:
         ids: set[str] = set()
         for session_id in report.adopted:
             row = await self.db.get_session(session_id)
-            if row is not None and row.lifecycle == "task" and row.task_id:
+            if row is not None and row.lifecycle in ("task", "pool") and row.task_id:
                 ids.add(row.task_id)
         return ids
 
@@ -1167,9 +1178,8 @@ class SessionReconciler:
         the lock.
 
         A pool session is never the generic release path: it goes through
-        ``_terminate_pool_session`` so the agent is retired (not IDLEd back
-        into a pool that no longer wants it) and the row itself is torn
-        down, not just its claim.
+        ``_terminate_pool_session`` so its process is confirmed stopped before
+        the durable worker becomes available for another session.
         """
         if task is None or self.orchestrator is None:
             return

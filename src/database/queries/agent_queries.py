@@ -6,8 +6,8 @@ import time
 
 from sqlalchemy import delete, insert, select, update
 
-from src.database.tables import agents, task_results, tasks, workspaces
-from src.models import Agent, AgentState
+from src.database.tables import agents, events, sessions, task_results, tasks, workspaces
+from src.models import Agent, AgentState, TaskStatus
 
 
 class AgentQueryMixin:
@@ -21,6 +21,11 @@ class AgentQueryMixin:
                     id=agent.id,
                     name=agent.name,
                     profile_id=agent.profile_id,
+                    role=agent.role,
+                    enabled=agent.enabled,
+                    harness=agent.harness,
+                    model=agent.model,
+                    intelligence_class=agent.intelligence_class,
                     state=agent.state.value,
                     current_task_id=agent.current_task_id,
                     pid=agent.pid,
@@ -62,6 +67,112 @@ class AgentQueryMixin:
         async with self._engine.begin() as conn:
             await conn.execute(update(agents).where(agents.c.id == agent_id).values(**values))
 
+    async def release_agent_for_task(self, agent_id: str, task_id: str) -> bool:
+        """Release only the assignment owned by this completing task."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                update(agents)
+                .where(
+                    agents.c.id == agent_id,
+                    agents.c.current_task_id == task_id,
+                )
+                .values(state=AgentState.IDLE.value, current_task_id=None)
+            )
+            return result.rowcount == 1
+
+    async def _reserve_idle_agent_on(self, conn, agent_id: str) -> bool:
+        live = (
+            select(sessions.c.id)
+            .where(
+                sessions.c.agent_id == agent_id,
+                sessions.c.state.in_(("starting", "running", "draining")),
+            )
+            .exists()
+        )
+        result = await conn.execute(
+            update(agents)
+            .where(
+                agents.c.id == agent_id,
+                agents.c.state == AgentState.IDLE.value,
+                agents.c.current_task_id.is_(None),
+                agents.c.enabled.is_(True),
+                agents.c.role == "worker",
+                ~live,
+            )
+            .values(state=AgentState.BUSY.value, last_heartbeat=time.time())
+        )
+        return result.rowcount == 1
+
+    async def reserve_idle_agent(self, agent_id: str) -> bool:
+        """Reserve a global identity while its next session is being launched."""
+        async with self.immediate() as conn:
+            return await self._reserve_idle_agent_on(conn, agent_id)
+
+    async def _assign_task_to_agent(self, task_id: str, agent_id: str) -> bool:
+        """One conditional transaction binds a ready task and available worker."""
+
+        class AssignmentConflict(Exception):
+            pass
+
+        try:
+            async with self.immediate() as conn:
+                if not await self._reserve_idle_agent_on(conn, agent_id):
+                    return False
+                # READY can retain historical assigned_agent_id (for example
+                # a human reply). Only active execution, not that stale label,
+                # blocks a fresh assignment.
+                live_task = (
+                    select(sessions.c.id)
+                    .where(
+                        sessions.c.task_id == task_id,
+                        sessions.c.state.in_(("starting", "running", "draining")),
+                    )
+                    .exists()
+                )
+                busy_owner = (
+                    select(agents.c.id)
+                    .where(
+                        agents.c.current_task_id == task_id,
+                        agents.c.state == AgentState.BUSY.value,
+                        agents.c.id != agent_id,
+                    )
+                    .exists()
+                )
+                result = await conn.execute(
+                    update(tasks)
+                    .where(
+                        tasks.c.id == task_id,
+                        tasks.c.status == TaskStatus.READY.value,
+                        ~live_task,
+                        ~busy_owner,
+                    )
+                    .values(
+                        status=TaskStatus.ASSIGNED.value,
+                        assigned_agent_id=agent_id,
+                        updated_at=time.time(),
+                    )
+                )
+                if result.rowcount != 1:
+                    raise AssignmentConflict
+                await conn.execute(
+                    update(agents).where(agents.c.id == agent_id).values(current_task_id=task_id)
+                )
+                await conn.execute(
+                    insert(events).values(
+                        event_type="task_assigned",
+                        project_id=select(tasks.c.project_id)
+                        .where(tasks.c.id == task_id)
+                        .scalar_subquery(),
+                        task_id=task_id,
+                        agent_id=agent_id,
+                        timestamp=time.time(),
+                    )
+                )
+                await self.recompute_blocked({task_id}, conn=conn)
+        except AssignmentConflict:
+            return False
+        return True
+
     async def delete_agent(self, agent_id: str) -> None:
         """Delete an agent and all dependent records.
 
@@ -71,13 +182,9 @@ class AgentQueryMixin:
         3. tasks.assigned_agent_id (NULLify)
         4. agent record
 
-        ``token_ledger`` rows are intentionally left behind.  Agents are
-        ephemeral — the startup reconciler reaps any whose profile no longer
-        resolves, plus any idle agents over a project's concurrency cap — and
-        cascading into the ledger meant each reap silently destroyed that
-        agent's entire spend history.  ``agent_id`` survives as a best-effort
-        attribution string; ``get_cost_rollup`` already outer-joins ``agents``
-        so unresolvable ids roll up under "(unknown)".
+        Token-ledger rows retain their historical attribution if an operator
+        explicitly deletes a definition. Automatic lifecycle management never
+        deletes durable workers.
         """
         async with self._engine.begin() as conn:
             await conn.execute(delete(task_results).where(task_results.c.agent_id == agent_id))
@@ -100,6 +207,11 @@ class AgentQueryMixin:
             id=row["id"],
             name=row["name"],
             profile_id=row["profile_id"],
+            role=row.get("role", "worker"),
+            enabled=bool(row.get("enabled", True)),
+            harness=row.get("harness"),
+            model=row.get("model"),
+            intelligence_class=row.get("intelligence_class"),
             state=AgentState(row["state"]),
             current_task_id=row["current_task_id"],
             pid=row["pid"],

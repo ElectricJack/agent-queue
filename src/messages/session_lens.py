@@ -256,6 +256,15 @@ class SessionLens:
             logger.warning("supervisor profile not found; cannot start session")
             return False
 
+        from src.agents.configuration import (
+            apply_agent_overrides, ensure_supervisor_agent, resolve_launch_settings,
+        )
+        agent = await ensure_supervisor_agent(self._db) if is_global else None
+        if agent is not None:
+            if not agent.enabled:
+                return False
+            profile = apply_agent_overrides(profile, agent)
+
         harness_name = getattr(profile, "harness", None) or "claude"
         # For the global supervisor there is no per-project harness
         # registration to consult — resolve against the system-scoped
@@ -399,6 +408,8 @@ class SessionLens:
                     # harness's own conversation id and the resume key line
                     # up on restart.
                     id=session_id,
+                    agent_id=agent.id if agent is not None else None,
+                    **resolve_launch_settings(profile, harness, self._spec_builder),
                     project_id=harness_project,
                     profile_id=getattr(profile, "id", "") or "supervisor",
                     harness=harness.id,

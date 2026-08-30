@@ -16,6 +16,7 @@ pool of long-lived ``lifecycle: pool`` sessions claims work in a loop via
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import time
@@ -251,19 +252,16 @@ class PoolsMixin:
         """
         from src.sessions.provider import SessionDiedDuringStartup, SessionHandle
 
-        harness_name = getattr(profile, "harness", "") or ""
-        harness = self.harness_registry.get(harness_name, project.id)
-        if harness is None:
-            logger.warning(
-                "pool %s/%s: profile declares harness '%s' but no such harness "
-                "file exists in the vault",
-                project.id,
-                profile.id,
-                harness_name,
-            )
-            self._pool_quarantine[(project.id, profile.id)] = time.time() + LAUNCH_BACKOFF
-            return None
+        from src.agents.configuration import apply_agent_overrides, resolve_launch_settings
 
+        # Don't manufacture a durable definition when no execution workspace
+        # could be acquired. Worktree slots still count as lazy capacity.
+        available = await self.db.count_available_workspaces(
+            project.id,
+            worktree_slot_cap=(self._project_slot_cap(project) if self._worktrees_enabled() else None),
+        )
+        if not available:
+            return None
         provider_name = self.config.sessions.provider
         try:
             provider = self.session_providers.create(provider_name, self.config)
@@ -272,14 +270,30 @@ class PoolsMixin:
             self._pool_quarantine[(project.id, profile.id)] = time.time() + LAUNCH_BACKOFF
             return None
 
-        agent = Agent(
-            id=f"agent-{uuid.uuid4().hex[:12]}",
-            name=f"{profile.id}-{uuid.uuid4().hex[:4]}",
-            profile_id=profile.id,
-            state=AgentState.IDLE,
-            created_at=time.time(),
-        )
-        await self.db.create_agent(agent)
+        # Reserve the identity before any await that starts a process. A live
+        # session owns its worker even while it has no currently claimed task.
+        candidates = await self.db.list_agents(state=AgentState.IDLE)
+        candidates.sort(key=lambda candidate: (candidate.profile_id != profile.id, candidate.created_at))
+        agent = None
+        for candidate in candidates:
+            if candidate.enabled and candidate.role == "worker":
+                if await self.db.reserve_idle_agent(candidate.id):
+                    agent = candidate
+                    break
+        if agent is None:
+            agent = Agent(id=f"agent-{uuid.uuid4().hex[:12]}",
+                          name=f"{profile.id}-{uuid.uuid4().hex[:4]}", profile_id=profile.id)
+            await self.db.create_agent(agent)
+            if not await self.db.reserve_idle_agent(agent.id):
+                return None
+        profile = apply_agent_overrides(profile, agent)
+        harness_name = getattr(profile, "harness", "") or ""
+        harness = self.harness_registry.get(harness_name, project.id)
+        if harness is None:
+            await self.db.update_agent(agent.id, state=AgentState.IDLE, current_task_id=None)
+            self._pool_quarantine[(project.id, profile.id)] = time.time() + LAUNCH_BACKOFF
+            logger.warning("pool %s/%s: unknown harness %s", project.id, profile.id, harness_name)
+            return None
 
         token_store = getattr(self, "token_store", None)
         session_id = pool_session_name(profile.id, project.id, uuid.uuid4().hex[:8])
@@ -288,7 +302,7 @@ class PoolsMixin:
         async def _rollback(reason: str, *, quarantine: bool) -> None:
             logger.warning("pool %s/%s: %s", project.id, profile.id, reason)
             await self.db.release_workspaces_for_agent(agent.id)
-            await self.db.delete_agent(agent.id)
+            await self.db.update_agent(agent.id, state=AgentState.IDLE, current_task_id=None)
             if minted_token and token_store is not None:
                 try:
                     await token_store.revoke_session(session_id)
@@ -369,8 +383,10 @@ class PoolsMixin:
                         task_id=None,
                         state="running",
                         agent_id=agent.id,
+                        **resolve_launch_settings(profile, harness, self.session_spec_builder),
                         last_activity=now,
-                    )
+                    ),
+                    release_agent_reservation=True,
                 )
             except Exception as exc:
                 logger.error(
@@ -396,6 +412,8 @@ class PoolsMixin:
                         spec.session_name,
                         exc_info=True,
                     )
+                    await self.db.update_agent(agent.id, state=AgentState.ERROR)
+                    return None
                 await _rollback(
                     f"session started but its row could not be written: {exc}", quarantine=True
                 )
@@ -418,49 +436,56 @@ class PoolsMixin:
     async def _terminate_pool_session(
         self, session, *, reason: str, task_status=TaskStatus.READY
     ) -> None:
-        """Tear down one pool session: release its claim, stop it, drop its trail.
+        """Serialize teardown so late callers cannot clear a reused worker."""
+        locks = getattr(self, "_pool_teardown_locks", None)
+        if locks is None:
+            locks = self._pool_teardown_locks = {}
+        lock = locks.setdefault(session.id, asyncio.Lock())
+        async with lock:
+            await self._terminate_pool_session_locked(
+                session, reason=reason, task_status=task_status
+            )
 
-        ``db.terminate_pool_session`` releases any task the session was
-        holding (back to *task_status*), retires the agent row, and
-        releases its workspace lock.  This method covers the rest: token
-        revocation, the claim file, the provider process, and the session
-        row's terminal state.
-        """
-        await self.db.terminate_pool_session(session.id, reason=reason, task_status=task_status)
-
+    async def _terminate_pool_session_locked(
+        self, session, *, reason: str, task_status=TaskStatus.READY
+    ) -> None:
+        """Stop the process before making its durable worker or workspace reusable."""
+        # Callers may hold an old in-memory row after its worker has already
+        # been reserved for a new launch. Completed teardown is idempotent.
+        current = await self.db.get_session(session.id)
+        if current is None or current.state == "stopped":
+            return
+        session = current
+        await self.db.update_session(session.id, desired_state="stopped")
+        other_live = [row for row in await self.db.list_sessions(agent_id=session.agent_id, live_only=True)
+                      if row.id != session.id] if session.agent_id else []
+        if session.agent_id and not other_live:
+            await self.db.update_agent(session.agent_id, state=AgentState.RETIRED)
         token_store = getattr(self, "token_store", None)
         if token_store is not None:
             try:
                 await token_store.revoke_session(session.id)
             except Exception:
-                logger.debug("pool session %s: token revoke failed", session.id)
-
-        from src.commands.claim_commands import remove_claim_file
-
-        try:
-            remove_claim_file(session.work_dir)
-        except Exception:
-            logger.debug("pool session %s: claim file removal failed", session.id)
-
-        if session.state not in ("stopped", "quarantined"):
+                logger.warning("pool session %s: token revoke failed", session.id)
+        if session.state != "stopped":
+            from src.sessions.provider import SessionHandle
             try:
                 provider = self.session_providers.create(session.provider, self.config)
-            except ValueError:
-                provider = None
-            if provider is not None:
-                from src.sessions.provider import SessionHandle
-
-                try:
-                    await provider.stop(
-                        SessionHandle(
-                            name=session.name,
-                            provider=session.provider,
-                            instance_token=session.instance_token,
-                        ),
-                        grace=2.0,
-                    )
-                except Exception:
-                    logger.warning(
-                        "pool session %s: provider stop failed", session.id, exc_info=True
-                    )
+                await provider.stop(SessionHandle(name=session.name, provider=session.provider,
+                                                  instance_token=session.instance_token), grace=2.0)
+            except Exception:
+                logger.warning("pool session %s: provider stop unconfirmed; retaining resources", session.id, exc_info=True)
+                return
+        # Repeated teardown of old history must not release a newer session's
+        # workspace or overwrite the shared worker's current assignment.
+        if not other_live:
+            await self.db.terminate_pool_session(session.id, reason=reason, task_status=task_status)
+            from src.commands.claim_commands import remove_claim_file
+            try:
+                remove_claim_file(session.work_dir)
+            except Exception:
+                logger.debug("pool session %s: claim file removal failed", session.id)
+        if session.state not in ("stopped", "quarantined"):
             await self.db.update_session(session.id, state="stopped", desired_state="stopped")
+        if session.agent_id and not other_live:
+            await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)

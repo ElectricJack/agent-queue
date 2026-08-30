@@ -138,10 +138,7 @@ def project_proxy(d: Any) -> DictProxy | TypedProxy:
 
 
 def agent_proxy(d: Any) -> DictProxy | TypedProxy:
-    """Wrap an agent/workspace response for formatters.
-
-    Aliases ``workspace_id`` → ``id`` for formatters that use ``agent.id``.
-    """
+    """Preserve global worker IDs while accepting older workspace responses."""
     if isinstance(d, dict):
         patched = dict(d)
         state = d.get("state")
@@ -150,8 +147,11 @@ def agent_proxy(d: Any) -> DictProxy | TypedProxy:
         patched.setdefault("session_tokens_used", 0)
         patched.setdefault("agent_type", "claude")
         patched.setdefault("last_heartbeat", None)
-        return DictProxy(patched, aliases={"id": "workspace_id"})
-    return TypedProxy(d, aliases={"id": "workspace_id"})
+        aliases = {} if patched.get("id") else {"id": "workspace_id"}
+        return DictProxy(patched, aliases=aliases)
+    identity = getattr(d, "id", None)
+    aliases = {} if identity and not _is_unset(identity) else {"id": "workspace_id"}
+    return TypedProxy(d, aliases=aliases)
 
 
 

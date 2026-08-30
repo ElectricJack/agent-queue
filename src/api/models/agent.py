@@ -7,13 +7,41 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class AgentSettings(BaseModel):
+    name: str
+    profile_id: str
+    harness: str | None = None
+    model: str | None = None
+    intelligence_class: str | None = None
+    enabled: bool = True
+
+
 class AgentSummary(BaseModel):
-    workspace_id: str
-    project_id: str
-    name: str = ""
-    state: str = ""
+    id: str
+    name: str
+    profile_id: str
+    role: str = "worker"
+    enabled: bool = True
+    state: str = "idle"
+    provider: str | None = None
+    harness: str | None = None
+    model: str | None = None
+    intelligence_class: str | None = None
     current_task_id: str | None = None
     current_task_title: str | None = None
+    current_project_id: str | None = None
+    project_id: str | None = None
+    workspace_id: str | None = None
+    session_id: str | None = None
+    session_state: str | None = None
+    session_provider: str | None = None
+    active_subagent_count: int | None = None
+    subagent_count_complete: bool = False
+    aq_subagent_count: int = 0
+    native_subagent_count: int | None = None
+    settings: AgentSettings
+    last_heartbeat: float | None = None
+    session_tokens_used: int = 0
 
 
 class ProfileSummary(BaseModel):
@@ -29,7 +57,8 @@ class ProfileSummary(BaseModel):
 
 class ListAgentsResponse(BaseModel):
     agents: list[AgentSummary] = []
-    project_id: str = ""
+    count: int = 0
+    project_id: str | None = None
 
 
 class GetAgentErrorResponse(BaseModel):
@@ -188,8 +217,9 @@ class ShowEffectiveProfileResponse(BaseModel):
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_agents": ListAgentsResponse,
-    "create_agent": ListAgentsResponse,  # deprecated, returns error
-    "edit_agent": ListAgentsResponse,  # deprecated, returns error
+    "get_agent": AgentSummary,
+    "create_agent": AgentSummary,
+    "edit_agent": AgentSummary,
     "delete_agent": ListAgentsResponse,  # deprecated, returns error
     "pause_agent": ListAgentsResponse,  # deprecated, returns error
     "resume_agent": ListAgentsResponse,  # deprecated, returns error

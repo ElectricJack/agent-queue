@@ -216,7 +216,7 @@ class TestSwarmWorkerLoopEndToEnd:
         await orch.run_one_cycle()
 
         agent = await db.get_agent(agent_id)
-        assert agent.state == AgentState.RETIRED
+        assert agent.state == AgentState.IDLE
         assert await db.get_workspace_for_agent(agent_id) is None
 
         # Phase 6: the *next* cycle's pool reconcile sees the gap the
@@ -228,6 +228,8 @@ class TestSwarmWorkerLoopEndToEnd:
         assert len(live) == 1
         new_sid = live[0].id
         assert new_sid != sid
+        assert live[0].agent_id == agent_id
+        assert (await db.get_agent(agent_id)).profile_id == "worker"
         h2 = scoped(handler, new_sid)
         third = await h2._cmd_task_claim({"next": True})
         assert (third["result"], third["task"]["id"]) == ("claimed", "t3")

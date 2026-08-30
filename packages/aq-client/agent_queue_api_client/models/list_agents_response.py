@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -20,11 +20,13 @@ class ListAgentsResponse:
     """
     Attributes:
         agents (list[AgentSummary] | Unset):
-        project_id (str | Unset):  Default: ''.
+        count (int | Unset):  Default: 0.
+        project_id (None | str | Unset):
     """
 
     agents: list[AgentSummary] | Unset = UNSET
-    project_id: str | Unset = ""
+    count: int | Unset = 0
+    project_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -35,13 +37,21 @@ class ListAgentsResponse:
                 agents_item = agents_item_data.to_dict()
                 agents.append(agents_item)
 
-        project_id = self.project_id
+        count = self.count
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
         if agents is not UNSET:
             field_dict["agents"] = agents
+        if count is not UNSET:
+            field_dict["count"] = count
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
 
@@ -61,10 +71,20 @@ class ListAgentsResponse:
 
                 agents.append(agents_item)
 
-        project_id = d.pop("project_id", UNSET)
+        count = d.pop("count", UNSET)
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         list_agents_response = cls(
             agents=agents,
+            count=count,
             project_id=project_id,
         )
 

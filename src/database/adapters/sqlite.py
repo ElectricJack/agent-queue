@@ -15,9 +15,7 @@ Usage::
 from __future__ import annotations
 
 import logging
-import time
 
-from sqlalchemy import select, update, insert
 
 from src.database.engine import (
     create_sqlite_engine,
@@ -50,9 +48,6 @@ from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.workflow_queries import WorkflowQueryMixin
 from src.database.queries.workspace_kinds_queries import WorkspaceKindQueryMixin
 from src.database.queries.workspace_queries import WorkspaceQueryMixin
-from src.database.tables import agents as agents_t, events as events_t, tasks as tasks_t
-from src.models import AgentState, TaskStatus
-from src.state_machine import is_valid_status_transition
 
 logger = logging.getLogger(__name__)
 
@@ -167,51 +162,5 @@ class SQLiteDatabaseAdapter(
     # --- Atomic Operations ---
     # Multi-table writes that must succeed or fail together.
 
-    async def assign_task_to_agent(self, task_id: str, agent_id: str) -> None:
-        """Atomically bind a task to an agent, updating both sides.
-
-        In a single transaction:
-        1. Transitions the task from READY to ASSIGNED
-        2. Transitions the agent from IDLE to BUSY
-        3. Logs a ``task_assigned`` event
-        """
-        task = await self.get_task(task_id)
-        if task and not is_valid_status_transition(task.status, TaskStatus.ASSIGNED):
-            logger.warning(
-                "Invalid task status transition: %s -> ASSIGNED for task '%s' "
-                "(assign_task_to_agent)",
-                task.status.value,
-                task_id,
-            )
-
-        now = time.time()
-        async with self._engine.begin() as conn:
-            await conn.execute(
-                update(tasks_t)
-                .where(tasks_t.c.id == task_id)
-                .values(
-                    status=TaskStatus.ASSIGNED.value,
-                    assigned_agent_id=agent_id,
-                    updated_at=now,
-                )
-            )
-            await conn.execute(
-                update(agents_t)
-                .where(agents_t.c.id == agent_id)
-                .values(state=AgentState.BUSY.value, current_task_id=task_id)
-            )
-            await conn.execute(
-                insert(events_t).values(
-                    event_type="task_assigned",
-                    project_id=select(tasks_t.c.project_id)
-                    .where(tasks_t.c.id == task_id)
-                    .scalar_subquery(),
-                    task_id=task_id,
-                    agent_id=agent_id,
-                    timestamp=now,
-                )
-            )
-            # READY -> ASSIGNED cannot flip anyone's blockedness today, but
-            # the projection stays maintained from *every* status write so
-            # the invariant survives future rule changes (work-graph §4.2).
-            await self.recompute_blocked({task_id}, conn=conn)
+    async def assign_task_to_agent(self, task_id: str, agent_id: str) -> bool:
+        return await self._assign_task_to_agent(task_id, agent_id)

@@ -200,7 +200,7 @@ class TestReconcilePools:
         profile = await orch._resolve_profile(task)
         assert orch._is_session_routed(profile) is False
 
-    async def test_launch_failure_rolls_back_fully_and_quarantines(self, orch, db, monkeypatch):
+    async def test_launch_failure_releases_resources_and_preserves_definition(self, orch, db, monkeypatch):
         async def _boom(**kwargs):
             raise RuntimeError("boom")
 
@@ -208,7 +208,9 @@ class TestReconcilePools:
         await ready(db, "t1")
         await orch._reconcile_pools()
 
-        assert await db.list_agents() == []
+        workers = await db.list_agents()
+        assert len(workers) == 1 and workers[0].state == AgentState.IDLE
+        assert workers[0].profile_id == "worker"
         assert await db.list_sessions(lifecycle="pool") == []
         for ws in await db.list_workspaces(PROJECT_ID):
             assert ws.locked_by_agent_id is None
@@ -255,7 +257,7 @@ class TestReconcilePools:
         await orch._terminate_pool_session(session, reason="test_teardown")
 
         agent = await db.get_agent(session.agent_id)
-        assert agent.state == AgentState.RETIRED
+        assert agent.state == AgentState.IDLE
         assert await db.get_workspace_for_agent(session.agent_id) is None
         updated = await db.get_session(session.id)
         assert updated.state == "stopped"
@@ -310,3 +312,99 @@ class TestReconcilePools:
         assert pool_agent_id not in assigned_agent_ids
         assert "t1" not in assigned_task_ids
         assert "t2" in assigned_task_ids
+
+
+async def test_durable_pool_reuses_definition_after_teardown(orch, db):
+    from src.models import Agent
+    await db.create_agent(Agent(id="configured-worker", name="Keeper", profile_id="worker", model="fixed-model"))
+    await ready(db, "task-a")
+    await orch._reconcile_pools()
+    first = (await db.list_sessions(lifecycle="pool"))[0]
+    assert first.agent_id == "configured-worker"
+    assert first.model == "fixed-model" and first.llm_provider == "anthropic"
+    await orch._terminate_pool_session(first, reason="rotation")
+    assert (await db.get_agent("configured-worker")).state == AgentState.IDLE
+    assert (await db.get_agent("configured-worker")).model == "fixed-model"
+    await db.create_project(Project(id="second", name="Second"))
+    await db.create_workspace(Workspace(id="second-ws", project_id="second", workspace_path="/tmp/second-ws", source_type=RepoSourceType.LINK, kind_id="project-repo"))
+    new_id = await orch._launch_pool_session(await db.get_project("second"), await db.get_profile("worker"))
+    second = await db.get_session(new_id)
+    assert second.agent_id == "configured-worker" and second.project_id == "second"
+    assert first.id != second.id
+    assert len(await db.list_agents()) == 1
+
+
+async def test_pool_stop_failure_keeps_worker_and_workspace_unavailable(orch, db, monkeypatch):
+    await ready(db, "task-a")
+    await orch._reconcile_pools()
+    record = (await db.list_sessions(lifecycle="pool"))[0]
+    provider = orch.session_providers.create(record.provider, orch.config)
+    monkeypatch.setattr(provider, "stop", AsyncMock(side_effect=RuntimeError("cannot confirm exit")))
+    await orch._terminate_pool_session(record, reason="test")
+    assert (await db.get_session(record.id)).state != "stopped"
+    assert (await db.get_agent(record.agent_id)).state != AgentState.IDLE
+    assert (await db.get_workspace_for_agent(record.agent_id)) is not None
+
+
+async def test_stopped_pool_worker_can_take_push_task_without_reprofile(orch, db):
+    await ready(db, "pooled")
+    await orch._reconcile_pools()
+    row = (await db.list_sessions(lifecycle="pool"))[0]
+    await orch._terminate_pool_session(row, reason="rotate")
+    await db.create_profile(AgentProfile(id="reviewer", name="Review", harness="claude"))
+    await ready(db, "push", profile_id="reviewer")
+    actions = await orch._schedule()
+    assert [(a.task_id, a.agent_id) for a in actions] == [("push", row.agent_id)]
+    assert (await db.get_agent(row.agent_id)).profile_id == "worker"
+
+
+async def test_repeated_pool_teardown_does_not_steal_new_launch_reservation(orch, db):
+    await ready(db, "pooled")
+    await orch._reconcile_pools()
+    row = (await db.list_sessions(lifecycle="pool"))[0]
+    await orch._terminate_pool_session(row, reason="rotate")
+    assert await db.reserve_idle_agent(row.agent_id)
+    await orch._terminate_pool_session(row, reason="old-history")
+    assert (await db.get_agent(row.agent_id)).state == AgentState.BUSY
+
+
+async def test_first_pool_claim_survives_launch_completion(orch, db, monkeypatch):
+    await ready(db, "pooled")
+    original = db.create_session
+    visible_states = []
+
+    async def claim_immediately_after_insert(row, **kwargs):
+        await original(row, **kwargs)
+        visible_states.append((await db.get_agent(row.agent_id)).state)
+        async with db.immediate() as conn:
+            await db.record_holder(conn, session_id=row.id, task_id="pooled",
+                                   agent_id=row.agent_id, work_dir=row.work_dir, now=time.time())
+
+    monkeypatch.setattr(db, "create_session", claim_immediately_after_insert)
+    await orch._reconcile_pools()
+    row = (await db.list_sessions(lifecycle="pool"))[0]
+    agent = await db.get_agent(row.agent_id)
+    assert agent.state == AgentState.BUSY and agent.current_task_id == "pooled"
+    assert visible_states == [AgentState.IDLE]
+
+
+async def test_concurrent_pool_teardown_stops_and_releases_only_once(orch, db, monkeypatch):
+    import asyncio
+    await ready(db, "pooled")
+    await orch._reconcile_pools()
+    row = (await db.list_sessions(lifecycle="pool"))[0]
+    provider = orch.session_providers.create(row.provider, orch.config)
+    original_stop = provider.stop
+
+    async def slow_stop(*args, **kwargs):
+        await asyncio.sleep(0.1)
+        await original_stop(*args, **kwargs)
+
+    stop = AsyncMock(side_effect=slow_stop)
+    monkeypatch.setattr(provider, "stop", stop)
+    await asyncio.gather(
+        orch._terminate_pool_session(row, reason="reconciler"),
+        orch._terminate_pool_session(row, reason="operator"),
+    )
+    assert stop.await_count == 1
+    assert (await db.get_agent(row.agent_id)).state == AgentState.IDLE

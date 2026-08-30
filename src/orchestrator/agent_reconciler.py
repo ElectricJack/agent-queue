@@ -1,6 +1,7 @@
 """Lazy agent supply — see
 docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md §4.1.
 """
+
 from __future__ import annotations
 
 import logging
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ReconcileReport:
     """Outcome of one AgentReconciler.reconcile() pass."""
+
     created: list[tuple[str, str]] = field(default_factory=list)  # [(project_id, profile_id)]
     reassigned: list[tuple[str, str, str]] = field(default_factory=list)  # [(agent_id, old, new)]
     skipped: list[tuple[str, str]] = field(default_factory=list)  # [(project_id, reason)]
@@ -37,203 +39,118 @@ class AgentReconciler:
         # gate below counts inventory exactly as it does today.
         self._worktrees_enabled = worktrees_enabled
 
-    async def reconcile(self) -> ReconcileReport:
+    async def reconcile(
+        self, *, provider_cooldowns: dict[str, float] | None = None
+    ) -> ReconcileReport:
+        """Supply durable global workers without changing any existing definition."""
+        import time
         import uuid
-
         from src.models import Agent, AgentState, ProjectStatus, TaskStatus
 
         report = ReconcileReport()
-
+        cooldowns = provider_cooldowns or {}
+        now = time.time()
         projects = await self._db.list_projects()
         tasks = await self._db.list_tasks()
         agents = await self._db.list_agents()
-        workspaces = await self._db.list_workspaces()
         profiles = {p.id: p for p in await self._db.list_profiles()}
-
-        # Sweep orphan BUSY agents (state=BUSY but task missing) → reset to IDLE.
-        for a in agents:
-            if a.state != AgentState.BUSY:
+        live = await self._db.list_sessions(live_only=True)
+        live_agents = {row.agent_id for row in live if row.agent_id}
+        # Legacy task sessions may not have been linked before adoption.
+        live_tasks = {row.task_id for row in live if row.task_id}
+        by_task = {task.id: task for task in tasks}
+        for agent in agents:
+            if agent.state != AgentState.BUSY or agent.id in live_agents:
                 continue
-            ok = False
-            if a.current_task_id:
-                t = await self._db.get_task(a.current_task_id)
-                ok = t is not None
-            if not ok:
-                await self._db.update_agent(
-                    a.id, state=AgentState.IDLE, current_task_id=None
-                )
-                a.state = AgentState.IDLE
-                a.current_task_id = None
-                logger.warning("reconciler: reset orphan BUSY agent %s", a.id)
-
-        # Per-agent project attribution: BUSY agents via current_task_id;
-        # IDLE agents via the workspace lock.
-        ws_owner: dict[str, str] = {}  # agent_id -> project_id
-        for w in workspaces:
-            if w.locked_by_agent_id:
-                ws_owner[w.locked_by_agent_id] = w.project_id
-
-        agents_by_project: dict[str, list] = {}
-        unassigned_idle: list = []
-        for a in agents:
-            pid = None
-            if a.current_task_id:
-                t = await self._db.get_task(a.current_task_id)
-                if t:
-                    pid = t.project_id
-            if pid is None:
-                pid = ws_owner.get(a.id)
-            if pid is None:
-                if a.state == AgentState.IDLE:
-                    unassigned_idle.append(a)
+            if agent.current_task_id in by_task or agent.current_task_id in live_tasks:
                 continue
-            agents_by_project.setdefault(pid, []).append(a)
+            # Pool launch reservations have no task yet; do not steal an
+            # identity while its provider is still starting the process.
+            if agent.last_heartbeat and time.time() - agent.last_heartbeat < 120:
+                continue
+            await self._db.update_agent(agent.id, state=AgentState.IDLE, current_task_id=None)
+            agent.state = AgentState.IDLE
+            agent.current_task_id = None
 
-        # Group READY tasks by project.
-        ready_by_project: dict[str, list] = {}
-        for t in tasks:
-            if t.status == TaskStatus.READY:
-                ready_by_project.setdefault(t.project_id, []).append(t)
-
-        # Track per-tick reassignment cap: one reassignment per agent.
-        reassigned_this_tick: set[str] = set()
-
+        idle = [
+            agent
+            for agent in agents
+            if agent.state == AgentState.IDLE
+            and agent.current_task_id is None
+            and agent.enabled
+            and agent.role == "worker"
+            and cooldowns.get(agent.profile_id, 0) <= now
+            and agent.id not in live_agents
+            and agent.profile_id in profiles
+        ]
+        supplied = bool(idle)
         for project in projects:
             if project.status != ProjectStatus.ACTIVE:
                 continue
-            ready = ready_by_project.get(project.id, [])
+            ready = [
+                task
+                for task in tasks
+                if task.project_id == project.id and task.status == TaskStatus.READY
+            ]
             if not ready:
                 continue
-            # Resolve unique profile_ids needed.  Cascade per task:
-            # task.profile_id → project.default_profile_id → system
-            # default.  The last rung is what keeps a project that was
-            # never given a default (the common case — playbook- and
-            # supervisor-created tasks carry no profile_id) from
-            # stalling with READY work and no agents.  It is persisted
-            # so Orchestrator._resolve_profile agrees with the profile
-            # the agent was actually built for.
+            # An existing global worker already supplies this demand. Keep a
+            # missing project default missing so its saved profile can apply.
+            if supplied:
+                continue
             default_pid = project.default_profile_id
-            if not default_pid and any(not t.profile_id for t in ready):
-                default_pid = await self._backfill_project_default(
-                    project, profiles, report
-                )
-
-            needed_profiles: set[str] = set()
-            for t in ready:
-                pid = t.profile_id or default_pid
-                if pid:
-                    needed_profiles.add(pid)
-            if not needed_profiles:
-                # Only reachable when the agent_profiles table itself has
-                # nothing usable — the system default cannot be picked from
-                # an empty set.  Say so, because "set a default_profile_id"
-                # is not the fix here; syncing profiles from the vault is.
-                reason = (
-                    "no resolvable profile_id (no usable agent profiles are "
-                    "registered — check vault/agent-types sync)"
-                )
+            if not default_pid and any(not task.profile_id for task in ready):
+                default_pid = await self._backfill_project_default(project, profiles, report)
+            needed = {task.profile_id or default_pid for task in ready}
+            needed.discard(None)
+            if not needed:
+                reason = "no resolvable profile_id (no usable agent profiles are registered)"
                 self._warn_once(project.id, reason)
                 report.skipped.append((project.id, reason))
                 continue
-
-            # Pull-model pools (swarm-work-model §11) claim their own work;
-            # push agent rows are never created for them.  ``lifecycle``
-            # lives on the profile row, so a project-scoped override is
-            # checked first, mirroring Orchestrator._resolve_profile.  A
-            # project whose only READY work is pool-routed has nothing left
-            # to do here — that is expected routing, not a skip to report.
-            def _is_pool(pid: str) -> bool:
-                scoped = profiles.get(f"project:{project.id}:{pid}")
-                prof = scoped or profiles.get(pid)
-                return bool(prof and getattr(prof, "lifecycle", "task") == "pool")
-
-            needed_profiles = {pid for pid in needed_profiles if not _is_pool(pid)}
-            if not needed_profiles:
-                continue
-
-            project_agents = agents_by_project.get(project.id, [])
-            existing_profiles = {
-                a.profile_id for a in project_agents if a.state == AgentState.IDLE
-            }
-
-            for needed in needed_profiles:
-                if needed in existing_profiles:
+            busy = sum(
+                1
+                for agent in agents
+                if agent.current_task_id in by_task
+                and by_task[agent.current_task_id].project_id == project.id
+            )
+            remaining = max(0, project.max_concurrent_agents - busy)
+            for profile_id in sorted(needed):
+                profile = profiles.get(f"project:{project.id}:{profile_id}") or profiles.get(
+                    profile_id
+                )
+                if not profile or getattr(profile, "lifecycle", "task") == "pool":
                     continue
-
-                # Try create.
-                if len(project_agents) < project.max_concurrent_agents:
-                    # Workspace gate (only applies to NEW agent creation —
-                    # reassignment reuses an existing agent's workspace lock):
-                    # if the runtime requires a workspace, ensure the project
-                    # has at least one available (unlocked + enabled).
-                    requires_ws = self._runtime_requires_workspace(profiles.get(needed))
-                    if requires_ws:
-                        # Under worktree mode the gate must measure acquirable
-                        # *capacity*, not unlocked rows (worktree-execution
-                        # §6.7): a project with one base and zero pre-made
-                        # slots has no unlocked row but a full cap of
-                        # capacity, because slots are created lazily.  Without
-                        # this the reconciler would never create the first
-                        # agent and the project would never start.
-                        avail = await self._db.count_available_workspaces(
-                            project.id,
-                            worktree_slot_cap=(
-                                project.max_concurrent_agents
-                                if self._worktrees_enabled
-                                else None
-                            ),
-                        )
-                        if avail == 0:
-                            report.skipped.append(
-                                (project.id, f"no available workspace for {needed}")
-                            )
-                            continue
-
-                    # Adopt one unassigned-idle agent if available; else create.
-                    if unassigned_idle:
-                        adopted = unassigned_idle.pop(0)
-                        await self._db.update_agent(adopted.id, profile_id=needed)
-                        report.reassigned.append(
-                            (adopted.id, adopted.profile_id, needed)
-                        )
-                        adopted.profile_id = needed
-                        project_agents.append(adopted)
-                        existing_profiles.add(needed)
-                        continue
-                    agent = Agent(
-                        id=f"agent-{uuid.uuid4().hex[:12]}",
-                        name=f"{needed}-{len(agents) + 1}",
-                        profile_id=needed,
-                        state=AgentState.IDLE,
+                if max(cooldowns.get(profile_id, 0), cooldowns.get(profile.id, 0)) > now:
+                    continue
+                # The named supervisor is seeded separately; no per-project
+                # or task-demand duplicates of that global identity.
+                if profile_id == "supervisor" or profile.runtime == "supervisor":
+                    continue
+                if remaining <= 0:
+                    break
+                if self._runtime_requires_workspace(profile):
+                    count = await self._db.count_available_workspaces(
+                        project.id,
+                        worktree_slot_cap=(
+                            project.max_concurrent_agents if self._worktrees_enabled else None
+                        ),
                     )
-                    await self._db.create_agent(agent)
-                    agents.append(agent)
-                    project_agents.append(agent)
-                    existing_profiles.add(needed)
-                    report.created.append((project.id, needed))
-                    continue
-
-                # At cap — try to reassign an idle, mismatched-profile agent.
-                # Prefer agents whose profile_id is no longer in agent_profiles.
-                idle_in_project = [
-                    a for a in project_agents
-                    if a.state == AgentState.IDLE
-                    and a.profile_id != needed
-                    and a.id not in reassigned_this_tick
-                ]
-                if not idle_in_project:
-                    continue
-                orphans = [a for a in idle_in_project if a.profile_id not in profiles]
-                target = orphans[0] if orphans else idle_in_project[0]
-                old = target.profile_id
-                await self._db.update_agent(target.id, profile_id=needed)
-                target.profile_id = needed
-                reassigned_this_tick.add(target.id)
-                report.reassigned.append((target.id, old, needed))
-                # Update existing_profiles tracker.
-                existing_profiles.discard(old)
-                existing_profiles.add(needed)
-
+                    if not count:
+                        report.skipped.append(
+                            (project.id, f"no available workspace for {profile_id}")
+                        )
+                        continue
+                agent = Agent(
+                    id=f"agent-{uuid.uuid4().hex[:12]}",
+                    name=f"{profile_id}-{len(agents) + 1}",
+                    profile_id=profile_id,
+                )
+                await self._db.create_agent(agent)
+                agents.append(agent)
+                report.created.append((project.id, profile_id))
+                remaining -= 1
+                supplied = True
         return report
 
     async def _backfill_project_default(
@@ -310,6 +227,4 @@ class AgentReconciler:
         if self._warned_projects.get(project_id) == reason:
             return
         self._warned_projects[project_id] = reason
-        logger.warning(
-            "reconciler: project=%s has READY tasks but %s", project_id, reason
-        )
+        logger.warning("reconciler: project=%s has READY tasks but %s", project_id, reason)

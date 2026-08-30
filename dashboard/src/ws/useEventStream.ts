@@ -178,6 +178,11 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
 
       const type = event.event_type;
 
+      // Flock metadata includes assignments and direct-child activity across projects.
+      if (/^(agent|session|task|message)\./.test(type)) {
+        queryClient.invalidateQueries({ queryKey: ["agents"] });
+      }
+
       // Prefix-based invalidation for the wave-4 event families (gate.*,
       // message.*, session.*, task.blocked/unblocked). Handled *before* the
       // notify.* switch so the union type stays simple.

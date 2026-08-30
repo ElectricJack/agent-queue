@@ -295,7 +295,9 @@ class ExecutionMixin:
             return
 
         # Assign
-        await self.db.assign_task_to_agent(action.task_id, action.agent_id)
+        if await self.db.assign_task_to_agent(action.task_id, action.agent_id) is False:
+            logger.info("Assignment lost availability: task=%s agent=%s", action.task_id, action.agent_id)
+            return
 
         # Start agent
         await self.db.transition_task(
@@ -319,6 +321,9 @@ class ExecutionMixin:
         # dispatch through and whether a workspace is needed.  Tool-call-only
         # platforms (e.g. supervisor) skip workspace prep entirely.
         profile = await self._resolve_profile(task)
+        from src.agents.configuration import apply_agent_overrides
+        if profile:
+            profile = apply_agent_overrides(profile, agent)
         if profile:
             # Report the route actually taken.  This used to print
             # ``platform=<profile.runtime>`` unconditionally, which was
@@ -384,6 +389,7 @@ class ExecutionMixin:
                     TaskStatus.PAUSED,
                     context="no_workspace_available",
                     resume_after=time.time() + no_ws_backoff,
+                    assigned_agent_id=None,
                 )
                 await self._emit_task_event(
                     "task.paused",
@@ -391,7 +397,9 @@ class ExecutionMixin:
                     reason="no_workspace",
                     resume_after=time.time() + no_ws_backoff,
                 )
-                await self.db.update_agent(action.agent_id, state=AgentState.IDLE)
+                await self.db.update_agent(
+                    action.agent_id, state=AgentState.IDLE, current_task_id=None
+                )
                 # Some waits are expected and self-clearing.  Telling the
                 # operator to "/add-workspace" while the slot pool is simply
                 # ramping — one slot per dispatch, so a cold cap-N project
@@ -1799,6 +1807,9 @@ class ExecutionMixin:
         import uuid as _uuid
 
         from src.models import SessionRecord
+        from src.agents.configuration import apply_agent_overrides, resolve_launch_settings
+        agent = await self.db.get_agent(action.agent_id)
+        profile = apply_agent_overrides(profile, agent)
         from src.sessions.provider import SessionDiedDuringStartup, SessionHandle
 
         harness_name = getattr(profile, "harness", "") or ""
@@ -1923,6 +1934,10 @@ class ExecutionMixin:
                 SessionRecord(
                     id=session_id,
                     task_id=task.id,
+                    agent_id=action.agent_id,
+                    last_claim_epoch=claim_epoch,
+                    **resolve_launch_settings(profile, harness, self.session_spec_builder,
+                                              task_class=task.intelligence_class),
                     project_id=task.project_id,
                     profile_id=getattr(profile, "id", "") or "",
                     harness=harness.id,
@@ -2200,8 +2215,8 @@ class ExecutionMixin:
         has one.  N crash-looping tasks burned N agents and N workspaces
         until the daemon restarted.
 
-        Safe to call twice: ``_release_workspaces_for_task`` is a no-op on
-        an already-released task and ``update_agent`` is a plain write.
+        Repeated cleanup only releases the old task's locks and assignment;
+        it must not disturb a durable worker already reused for another task.
         """
         if workspace_path is None:
             try:
@@ -2219,12 +2234,12 @@ class ExecutionMixin:
         except Exception:
             logger.error("Task %s: workspace release failed", task_id, exc_info=True)
         if agent_id:
+            adapter = self._adapters.get(agent_id)
             try:
-                await self.db.update_agent(
-                    agent_id, state=AgentState.IDLE, current_task_id=None
-                )
+                released = await self.db.release_agent_for_task(agent_id, task_id)
+                if released and self._adapters.get(agent_id) is adapter:
+                    self._adapters.pop(agent_id, None)
             except Exception:
                 logger.error("Task %s: could not idle agent %s", task_id, agent_id, exc_info=True)
-            self._adapters.pop(agent_id, None)
         self._task_exec_start.pop(task_id, None)
         self._task_pre_exec_sha.pop(task_id, None)

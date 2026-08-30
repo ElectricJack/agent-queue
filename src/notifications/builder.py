@@ -11,12 +11,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from src.api.models import TaskRef
-from src.api.models.agent import AgentSummary
+from src.api.models.agent import AgentSettings, AgentSummary
 from src.api.models.task import TaskDetail
 
 if TYPE_CHECKING:
     from src.database import Database
-    from src.models import Task, WorkspaceAgent
+    from src.models import Agent, Task, WorkspaceAgent
 
 
 def build_task_detail(task: Task) -> TaskDetail:
@@ -104,25 +104,41 @@ async def build_task_detail_full(task: Task, db: Database) -> TaskDetail:
     return detail
 
 
-def build_agent_summary(agent: WorkspaceAgent) -> AgentSummary:
-    """Convert a domain WorkspaceAgent (or legacy Agent) to an AgentSummary API model.
+def build_agent_summary(agent: Agent | WorkspaceAgent) -> AgentSummary:
+    """Keep worker identity and configured settings in task notifications.
 
-    Handles both the new WorkspaceAgent model (has ``workspace_id``) and
-    the legacy Agent model (has ``id``, ``name``) for backward compat.
+    Workspace-only callers remain supported, without treating a global
+    worker's ID as a workspace ID. Live model metadata needs a session snapshot
+    and is deliberately left unknown by this synchronous converter.
     """
-    # WorkspaceAgent uses workspace_id; legacy Agent uses id
-    workspace_id = getattr(agent, "workspace_id", None) or getattr(agent, "id", "")
-    project_id = getattr(agent, "project_id", "")
-    name = getattr(agent, "workspace_name", None) or getattr(agent, "name", "") or workspace_id
+    workspace_id = getattr(agent, "workspace_id", None)
+    agent_id = getattr(agent, "id", None) or workspace_id or ""
+    project_id = getattr(agent, "project_id", None)
+    name = getattr(agent, "name", None) or getattr(agent, "workspace_name", None) or agent_id
+    profile_id = getattr(agent, "profile_id", "")
+    enabled = getattr(agent, "enabled", True)
     state_val = agent.state
     if hasattr(state_val, "value"):
-        state_val = state_val.value  # AgentState enum → string
+        state_val = state_val.value
 
     return AgentSummary(
+        id=agent_id,
         workspace_id=workspace_id,
         project_id=project_id,
+        current_project_id=project_id,
         name=name,
+        profile_id=profile_id,
+        role=getattr(agent, "role", "worker"),
+        enabled=enabled,
         state=state_val,
         current_task_id=getattr(agent, "current_task_id", None),
         current_task_title=getattr(agent, "current_task_title", None),
+        settings=AgentSettings(
+            name=name,
+            profile_id=profile_id,
+            harness=getattr(agent, "harness", None),
+            model=getattr(agent, "model", None),
+            intelligence_class=getattr(agent, "intelligence_class", None),
+            enabled=enabled,
+        ),
     )

@@ -426,10 +426,10 @@ class Task:
 
 @dataclass
 class Agent:
-    """Persisted agent slot — a project execution context with a current
-    profile assignment. Created lazily by ``AgentReconciler`` when work
-    needs an idle slot. Sized per project by
-    ``Project.max_concurrent_agents``.
+    """Durable global worker identity; projects belong to its current task.
+
+    Profiles specialize task capabilities without changing this definition.
+    Explicit execution overrides take effect on the next session.
     """
 
     id: str
@@ -442,6 +442,12 @@ class Agent:
     total_tokens_used: int = 0
     session_tokens_used: int = 0
     created_at: float = 0.0
+
+    role: str = "worker"
+    enabled: bool = True
+    harness: str | None = None
+    model: str | None = None
+    intelligence_class: str | None = None
 
 
 @dataclass
@@ -1278,3 +1284,7 @@ class SessionRecord:
     claim_phase_at: float | None = None
     last_claim_epoch: int | None = None
     last_claim_result: str | None = None  # claimed | prepare_failed | released
+
+    llm_provider: str | None = None
+    model: str | None = None
+    intelligence_class: str | None = None

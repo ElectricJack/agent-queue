@@ -181,3 +181,40 @@ class TestFiling:
         res = await handler._cmd_create_task({"title": "x", "description": "d",
                                               "project_id": PROJECT_ID, "status": "READY"})
         assert res["success"] and (await db.get_task(res["task_id"])).status == TaskStatus.READY
+
+
+@pytest.mark.parametrize("project_id", [None, PROJECT_ID])
+async def test_elevated_session_records_creator_without_worker_quota_or_gate(handler, db, project_id):
+    await db.create_session(SessionRecord(
+        id="supervisor-session", project_id=project_id, profile_id="supervisor",
+        harness="claude", provider="fake", name="n-supervisor--global",
+        lifecycle="named", work_dir="/wd", epoch="e", instance_token="t",
+        started_at=time.time(), state="running",
+    ))
+    handler._current_scope = {"kind": "session", "session_id": "supervisor-session",
+                              "project_id": project_id, "elevated": True}
+    # No held task, and more creations than the worker quota: elevated behavior is unchanged.
+    for index in range(3):
+        result = await handler._cmd_create_task({
+            "title": f"supervisor delegation {index}", "project_id": PROJECT_ID,
+            "created_by_kind": "session", "created_by_id": "spoofed-session",
+        })
+        assert result["success"] is True
+        created = await db.get_task(result["task_id"])
+        assert (created.created_by_kind, created.created_by_id) == ("session", "supervisor-session")
+        assert created.status == TaskStatus.READY
+        assert await db.get_gates_for_task(created.id) == []
+        # Event markers remain worker-only: supervisor provenance must not trigger triage.
+        event = created_events(handler)[-1]
+        assert event["created_by_kind"] is None and event["created_by_id"] is None
+        assert event["filed_by_profile_id"] is None
+
+
+async def test_local_task_creation_does_not_accept_spoofed_session_provenance(handler, db):
+    handler._current_scope = {"kind": "local"}
+    result = await handler._cmd_create_task({
+        "title": "operator work", "project_id": PROJECT_ID,
+        "created_by_kind": "session", "created_by_id": "spoofed-session",
+    })
+    created = await db.get_task(result["task_id"])
+    assert created.created_by_kind is None and created.created_by_id is None

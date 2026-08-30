@@ -6,11 +6,11 @@ import {
   TrashIcon,
 } from "@heroicons/react/24/outline";
 import {
-  useAgents,
   useEditWorkspace,
   useWorkspaces,
   type Workspace as WorkspaceSummary,
 } from "../../api/hooks";
+import { useAgentFlock } from "../../api/agents";
 import StatusBadge from "../../components/StatusBadge";
 import AddWorkspaceModal from "../../components/workspace/AddWorkspaceModal";
 import EditWorkspaceDrawer from "../../components/workspace/EditWorkspaceDrawer";
@@ -19,14 +19,14 @@ import DeleteWorkspaceModal from "../../components/workspace/DeleteWorkspaceModa
 export default function ProjectWorkspaces() {
   const { projectId = "" } = useParams();
   const { data: workspaces, isLoading } = useWorkspaces(projectId);
-  const { data: agents } = useAgents(projectId);
+  const { data: agents = [] } = useAgentFlock();
   const editWorkspace = useEditWorkspace(projectId);
 
   const [addOpen, setAddOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<WorkspaceSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<WorkspaceSummary | null>(null);
 
-  const agentByWorkspace = new Map((agents ?? []).map((a) => [a.workspace_id, a]));
+  const agentById = new Map(agents.map((agent) => [agent.id, agent]));
 
   const toggleEnabled = (ws: WorkspaceSummary) => {
     editWorkspace.mutate({
@@ -68,7 +68,15 @@ export default function ProjectWorkspaces() {
             </thead>
             <tbody className="divide-y divide-gray-800">
               {workspaces.map((ws) => {
-                const agent = agentByWorkspace.get(ws.id);
+                // Workspace locks are authoritative. Global workers have no
+                // fixed workspace, and their snapshots may update separately.
+                const occupied = !!(ws.locked_by_agent_id || ws.locked_by_task_id);
+                const agent = ws.locked_by_agent_id ? agentById.get(ws.locked_by_agent_id) : undefined;
+                const matchingAssignment = agent?.current_task_id === ws.locked_by_task_id
+                  && agent?.current_project_id === ws.project_id;
+                const currentTask = ws.locked_by_task_id
+                  ? (matchingAssignment && agent?.current_task_title) || ws.locked_by_task_id
+                  : "-";
                 const isDisabled = ws.enabled === false;
                 return (
                   <tr
@@ -81,14 +89,10 @@ export default function ProjectWorkspaces() {
                       {ws.workspace_path}
                     </td>
                     <td className="px-4 py-3">
-                      {agent ? (
-                        <StatusBadge status={agent.state} />
-                      ) : (
-                        <span className="text-xs text-gray-500">idle</span>
-                      )}
+                      <StatusBadge status={occupied ? "busy" : "idle"} />
                     </td>
                     <td className="max-w-xs truncate px-4 py-3 text-gray-400">
-                      {agent?.current_task_title ?? "-"}
+                      {currentTask}
                     </td>
                     <td className="px-4 py-3">
                       <button

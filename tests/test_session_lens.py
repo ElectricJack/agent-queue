@@ -656,3 +656,25 @@ async def _seed_running_supervisor(
     )
     await db.create_session(row)
     return row, handle
+
+
+async def test_global_supervisor_uses_canonical_agent_and_launch_settings(lens, db):
+    from src.agents.configuration import ensure_supervisor_agent
+    agent = await ensure_supervisor_agent(db)
+    await db.update_agent(agent.id, model="chosen-model", intelligence_class="deep")
+    assert await lens.ensure_started(kind="session", target_id="supervisor-global", project_id=None)
+    record = await db.get_session_by_name("n-supervisor--global")
+    assert record.agent_id == "supervisor-global"
+    assert record.project_id is None
+    assert (record.llm_provider, record.model, record.intelligence_class) == ("anthropic", "chosen-model", "deep")
+    assert len(await db.list_agents()) == 1
+    assert await lens.ensure_started(kind="session", target_id="supervisor-global", project_id=None)
+    assert len(await db.list_sessions(name="n-supervisor--global")) == 1
+
+
+async def test_disabled_global_supervisor_does_not_cold_start(lens, db):
+    from src.agents.configuration import ensure_supervisor_agent
+    agent = await ensure_supervisor_agent(db)
+    await db.update_agent(agent.id, enabled=False)
+    assert not await lens.ensure_started(kind="session", target_id="supervisor-global", project_id=None)
+    assert await db.list_sessions(name="n-supervisor--global") == []

@@ -793,27 +793,10 @@ class Orchestrator(
     async def _resolve_profile(self, task: Task) -> AgentProfile | None:
         """Resolve the agent profile for a task.
 
-        Resolution order (first non-None wins):
-        1. **Task-level** — ``task.profile_id`` (explicit override per task)
-        2. **Project default** — ``project.default_profile_id``
-        3. **System default** — :func:`select_default_profile_id` over the
-           registered profiles, persisted onto the project
-        4. **None** (adapter uses built-in defaults)
-
-        Rung 3 is the same third rung :class:`AgentReconciler` uses when it
-        backfills a project that has READY tasks carrying no ``profile_id``.
-        Both ends of the handoff must agree: the reconciler decides which
-        profile the *agent row* is built for, and this method decides which
-        profile the *task actually executes under*. If only the reconciler
-        had the fallback, a task dispatched before the backfill landed — or
-        after a failed backfill write — would run with ``profile=None``, i.e.
-        no role text, no tool allowlist, and no MCP servers. That degradation
-        is silent, so close the loop here too.
-
-        Selection is deterministic over a given profile set, so the two
-        callers converge on the same id even when they run in either order.
-        The choice is persisted for the same reason the reconciler persists
-        it: it must survive restarts rather than drift as profiles are added.
+        Resolution order: explicit task profile, project default, assigned
+        worker default, then the persisted system fallback. Task/project profiles
+        specialize capabilities without changing the worker's saved definition.
+        The system fallback still supplies unassigned work when no worker exists.
 
         Project-scoped overrides are checked first at each level: if a
         profile with id ``project:{project_id}:{profile_id}`` exists, it
@@ -827,6 +810,15 @@ class Orchestrator(
         """
         project = await self.db.get_project(task.project_id)
         profile_id = task.profile_id or (project.default_profile_id if project else None)
+        if not profile_id and task.assigned_agent_id:
+            agent = await self.db.get_agent(task.assigned_agent_id)
+            if agent:
+                scoped = await self.db.get_profile(f"project:{task.project_id}:{agent.profile_id}")
+                if scoped:
+                    return scoped
+                worker_default = await self.db.get_profile(agent.profile_id)
+                if worker_default:
+                    return worker_default
         if not profile_id and project:
             profile_id = await self._backfill_default_profile_id(project)
         if not profile_id:
@@ -1407,6 +1399,11 @@ class Orchestrator(
         before the Discord bot connects.
         """
         await self.db.initialize()
+        from src.agents.configuration import ensure_supervisor_agent
+        supervisor_agent = await ensure_supervisor_agent(self.db)
+        for row in await self.db.list_sessions(name="n-supervisor--global"):
+            if row.project_id is None and row.agent_id is None:
+                await self.db.update_session(row.id, agent_id=supervisor_agent.id)
         self.register_settlement_listener()
         # aq-surface Phase S2: construct the session-token store now that
         # the DB is live.  The API layer prefers this instance so
@@ -2061,6 +2058,12 @@ class Orchestrator(
                 len(skip_task_ids),
             )
 
+        # Preserve project-scoped executions independently of roster identity.
+        # The session reconciler classifies dead/deferred sessions safely later.
+        for row in await self.db.list_sessions(live_only=True):
+            if row.agent_id:
+                protected_agents.add(row.agent_id)
+
         # Reset BUSY agents to IDLE
         agents = await self.db.list_agents()
         for a in agents:
@@ -2070,80 +2073,8 @@ class Orchestrator(
                 logger.info("Recovery: resetting agent '%s' from %s to IDLE", a.name, a.state.value)
                 await self.db.update_agent(a.id, state=AgentState.IDLE, current_task_id=None)
 
-        # Reap idle agents whose profile_id no longer exists in agent_profiles
-        # (e.g. profile was deleted while the daemon was down).  Per spec §6:
-        # the reconciler does not reap mid-run; reaping happens at startup.
-        profile_ids = {p.id for p in await self.db.list_profiles()}
-        for a in agents:
-            if a.state == AgentState.IDLE and a.profile_id not in profile_ids:
-                logger.info(
-                    "Recovery: deleting idle agent '%s' (profile '%s' no longer exists)",
-                    a.name,
-                    a.profile_id,
-                )
-                await self.db.delete_agent(a.id)
-
-        # Reap excess idle agents over project.max_concurrent_agents.
-        # Attribute idle agents to projects via their workspace lock, then
-        # delete oldest-first beyond the cap.  Important for handling
-        # max_concurrent_agents being lowered while the daemon was down.
-        all_workspaces = await self.db.list_workspaces()
-        ws_owner = {
-            w.locked_by_agent_id: w.project_id for w in all_workspaces if w.locked_by_agent_id
-        }
-        projects = await self.db.list_projects()
-        max_by_project = {p.id: p.max_concurrent_agents for p in projects}
-        idle_by_project: dict[str, list] = {}
-        for a in agents:
-            if a.state != AgentState.IDLE:
-                continue
-            pid = ws_owner.get(a.id)
-            if pid is None:
-                continue
-            idle_by_project.setdefault(pid, []).append(a)
-        for pid, idle_agents in idle_by_project.items():
-            cap = max_by_project.get(pid)
-            if cap is None or len(idle_agents) <= cap:
-                continue
-            # Sort oldest-first by created_at.
-            idle_agents.sort(key=lambda a: getattr(a, "created_at", 0) or 0)
-            excess = idle_agents[: len(idle_agents) - cap]
-            for a in excess:
-                logger.info(
-                    "Recovery: deleting excess idle agent '%s' (project=%s over cap=%d)",
-                    a.name,
-                    pid,
-                    cap,
-                )
-                await self.db.delete_agent(a.id)
-
-        # RETIRED agents (swarm-work-model §9): terminate_pool_session marks
-        # the agent RETIRED once its session's claim fence closes, and
-        # nothing revives a RETIRED agent — the startup reaper deletes them
-        # unconditionally, releasing whatever workspace they still hold.
-        for a in agents:
-            if a.state == AgentState.RETIRED:
-                logger.info("Recovery: deleting RETIRED agent '%s'", a.name)
-                await self.db.release_workspaces_for_agent(a.id)
-                await self.db.delete_agent(a.id)
-
-        # Pool-profile agents with no session row (swarm-work-model §11): a
-        # launch that died between the agent row and the session row, or a
-        # session row independently removed, leaves an orphan pool agent
-        # holding a workspace lock forever.  Release the lock and drop it.
-        pool_agent_types = {
-            p.id.rsplit(":", 1)[-1]
-            for p in await self.db.list_profiles()
-            if getattr(p, "lifecycle", "task") == "pool"
-        }
-        for a in agents:
-            if a.state == AgentState.RETIRED or a.profile_id not in pool_agent_types:
-                continue
-            if await self.db.list_sessions(agent_id=a.id):
-                continue
-            logger.info("Recovery: deleting orphan pool agent '%s' (no session row)", a.name)
-            await self.db.release_workspaces_for_agent(a.id)
-            await self.db.delete_agent(a.id)
+        # Agent definitions and their history are durable. Missing profiles,
+        # project cap changes, or a stopped pool never delete a definition.
 
         # Release all workspace locks and clean orphaned sentinels.
         # After a restart no agents are running, so all DB locks are stale.
@@ -3160,7 +3091,7 @@ class Orchestrator(
         # Reconciler runs first: ensures the agents table has idle rows
         # for any project with dispatchable READY tasks, subject to
         # project.max_concurrent_agents.  See spec §4.1.
-        rep = await self._agent_reconciler.reconcile()
+        rep = await self._agent_reconciler.reconcile(provider_cooldowns=self._provider_cooldowns)
         if rep.created or rep.reassigned:
             logger.info(
                 "reconciler: created=%d reassigned=%d skipped=%d",
@@ -3180,6 +3111,10 @@ class Orchestrator(
         # 1.7 s/cycle at 100k tasks (performance-assessment.md §1.1).
         tasks = await self.db.list_active_tasks()
         agents = await self.db.list_agents()
+        live_sessions = await self.db.list_sessions(live_only=True)
+        occupied = {row.agent_id for row in live_sessions if row.agent_id}
+        agents = [agent for agent in agents
+                  if agent.state != AgentState.IDLE or agent.id not in occupied]
 
         # Token usage within the rolling window — this is the "actual usage"
         # that the deficit-based scheduler compares against each project's
@@ -3237,22 +3172,9 @@ class Orchestrator(
         all_workspaces = await self.db.list_workspaces()
         workspace_locks = {ws.id: ws.locked_by_task_id for ws in all_workspaces}
 
-        # Push-scheduler exclusion (swarm-work-model §11): pool-profile work
-        # is claimed by long-lived pool sessions, never assigned by the push
-        # scheduler.  Drop both sides so neither can cross-contaminate the
-        # other: pool-profile READY tasks never enter ``ready_by_project``,
-        # and idle pool agents (created by ``_launch_pool_session``, which
-        # holds their sole workspace lock) are never handed an unrelated
-        # task — the scheduler otherwise matches any idle agent to any
-        # project's task with no profile check at all.
-        #
-        # Keyed on ``lifecycle`` alone, not ``swarm.enabled`` — same gate
-        # ``_is_session_routed`` and ``AgentReconciler`` use, so all three
-        # agree regardless of the swarm flag.  Cheap when no pool profile
-        # exists anywhere (the common case): ``_pool_profile_ids`` shares one
-        # ``list_profiles()`` call across every project instead of paying it
-        # per project, and the per-project default-profile backfill below
-        # only runs for a project that actually has a pool profile.
+        # Pool-profile work is claimed by long-lived sessions, never pushed.
+        # Worker eligibility is based on live session ownership above, not a
+        # saved profile: a stopped pool worker can take any new specialization.
         all_profiles = await self.db.list_profiles()
         pool_ids_by_project: dict[str, set[str]] = {
             p.id: await self._pool_profile_ids(p.id, system_profiles=all_profiles)
@@ -3280,33 +3202,6 @@ class Orchestrator(
                 if (t.profile_id or default_profile_by_project.get(t.project_id))
                 not in pool_ids_by_project.get(t.project_id, set())
             ]
-
-            all_pool_ids: set[str] = set().union(*pool_ids_by_project.values())
-            ws_owner = {
-                w.locked_by_agent_id: w.project_id
-                for w in all_workspaces
-                if w.locked_by_agent_id
-            }
-
-            def _is_idle_pool_agent(a) -> bool:
-                if a.state != AgentState.IDLE:
-                    return False
-                if a.profile_id not in all_pool_ids:
-                    return False
-                # profile_id is a pool id in at least one project.  When the
-                # agent's own workspace lock names a project, defer to that
-                # project's pool set — a project-scoped override can make
-                # the same plain id push in one project and pool in
-                # another.  No locked workspace (e.g. mid-launch) falls
-                # through to the conservative "pool id somewhere" exclusion
-                # above, so an agent is never missed just for not holding a
-                # workspace yet.
-                pid = ws_owner.get(a.id)
-                if pid is None:
-                    return True
-                return a.profile_id in pool_ids_by_project.get(pid, set())
-
-            agents = [a for a in agents if not _is_idle_pool_agent(a)]
 
         # Load active project constraints (exclusive, pause_scheduling,
         # max_agents_by_type) so the scheduler can enforce them.

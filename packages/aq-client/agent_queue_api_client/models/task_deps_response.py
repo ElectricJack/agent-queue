@@ -9,6 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.provenance_ref import ProvenanceRef
     from ..models.task_ref import TaskRef
 
 
@@ -24,6 +25,7 @@ class TaskDepsResponse:
         status (str | Unset):  Default: ''.
         depends_on (list[TaskRef] | Unset):
         blocks (list[TaskRef] | Unset):
+        provenance (list[ProvenanceRef] | Unset):
     """
 
     task_id: str
@@ -31,6 +33,7 @@ class TaskDepsResponse:
     status: str | Unset = ""
     depends_on: list[TaskRef] | Unset = UNSET
     blocks: list[TaskRef] | Unset = UNSET
+    provenance: list[ProvenanceRef] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -54,6 +57,13 @@ class TaskDepsResponse:
                 blocks_item = blocks_item_data.to_dict()
                 blocks.append(blocks_item)
 
+        provenance: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.provenance, Unset):
+            provenance = []
+            for provenance_item_data in self.provenance:
+                provenance_item = provenance_item_data.to_dict()
+                provenance.append(provenance_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -68,11 +78,14 @@ class TaskDepsResponse:
             field_dict["depends_on"] = depends_on
         if blocks is not UNSET:
             field_dict["blocks"] = blocks
+        if provenance is not UNSET:
+            field_dict["provenance"] = provenance
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.provenance_ref import ProvenanceRef
         from ..models.task_ref import TaskRef
 
         d = dict(src_dict)
@@ -100,12 +113,22 @@ class TaskDepsResponse:
 
                 blocks.append(blocks_item)
 
+        _provenance = d.pop("provenance", UNSET)
+        provenance: list[ProvenanceRef] | Unset = UNSET
+        if _provenance is not UNSET:
+            provenance = []
+            for provenance_item_data in _provenance:
+                provenance_item = ProvenanceRef.from_dict(provenance_item_data)
+
+                provenance.append(provenance_item)
+
         task_deps_response = cls(
             task_id=task_id,
             title=title,
             status=status,
             depends_on=depends_on,
             blocks=blocks,
+            provenance=provenance,
         )
 
         task_deps_response.additional_properties = d

@@ -617,9 +617,13 @@ class SessionSpecBuilder:
         ``model`` key) is logged at warning and yields ``profile.model`` —
         session launch never fails because of a class typo.
         """
+        worker_model = getattr(profile, "_agent_model_override", None)
+        if worker_model:
+            return worker_model
         fallback = (getattr(profile, "model", "") or "").strip()
         class_id = (
-            task_intelligence_class
+            getattr(profile, "_agent_intelligence_class", None)
+            or task_intelligence_class
             or getattr(profile, "default_class", "")
             or ""
         )

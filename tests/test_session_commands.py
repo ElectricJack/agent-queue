@@ -1087,6 +1087,71 @@ class TestEndToEndOnFakeProvider:
         assert close["status"] == "BLOCKED"
         assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
 
+    async def test_old_task_cleanup_preserves_reused_worker_and_adapter(
+        self, db, real_orch, tmp_path
+    ):
+        await self._setup(db, tmp_path)
+        await db.create_task(Task(id="t2", project_id="p1", title="Next", description="next"))
+        await db.update_agent("a1", state=AgentState.BUSY, current_task_id="t2")
+        next_adapter = object()
+        real_orch._adapters["a1"] = next_adapter
+        await real_orch.release_session_task_resources("t1", agent_id="a1")
+        agent = await db.get_agent("a1")
+        assert agent.state == AgentState.BUSY and agent.current_task_id == "t2"
+        assert real_orch._adapters["a1"] is next_adapter
+
+    async def test_workspace_backoff_releases_worker_assignment(
+        self, db, real_orch, tmp_path, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+        await self._setup(db, tmp_path, ready=True)
+        monkeypatch.setattr(real_orch, "_prepare_workspace", AsyncMock(return_value=None))
+        real_orch._workspace_wait_reasons = {}
+        await real_orch._execute_task(AssignAction(task_id="t1", agent_id="a1", project_id="p1"))
+        task = await db.get_task("t1")
+        agent = await db.get_agent("a1")
+        assert task.status == TaskStatus.PAUSED
+        assert task.assigned_agent_id is None
+        assert agent.state == AgentState.IDLE and agent.current_task_id is None
+
+    async def test_retry_can_reassign_only_after_old_session_is_stopped(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        old = await db.get_session_for_task("t1")
+        await real_handler.execute("task_close", {
+            "task_id": "t1", "session_id": old.id, "outcome": "fail",
+            "failure_class": "transient", "summary": "try again",
+        })
+        task = await db.get_task("t1")
+        assert task.status == TaskStatus.READY and task.assigned_agent_id is None
+        assert await db.assign_task_to_agent("t1", "a1") is False
+        await db.update_session(old.id, state="stopped")
+        assert await db.assign_task_to_agent("t1", "a1") is True
+        assert (await db.get_agent("a1")).current_task_id == "t1"
+
+    async def test_task_launch_links_worker_and_freezes_individual_settings(
+        self, db, real_orch, provider, tmp_path
+    ):
+        wd = await self._setup(db, tmp_path)
+        await db.update_agent("a1", model="chosen-worker-model", intelligence_class="deep")
+        task = await db.get_task("t1")
+        profile = await db.get_profile("claude-opus")
+        action = AssignAction(task_id="t1", agent_id="a1", project_id="p1")
+        await real_orch._launch_session_for_task(action, task, profile, wd)
+        session = await db.get_session_for_task("t1")
+        assert session.agent_id == "a1" and session.project_id == "p1"
+        assert session.model == "chosen-worker-model"
+        assert session.intelligence_class == "deep"
+        assert session.last_claim_epoch == (await db.get_task("t1")).claim_epoch
+        assert session.last_claim_epoch is not None
+        assert session.llm_provider == "anthropic"
+        await db.update_agent("a1", model="next-session-model")
+        assert (await db.get_session(session.id)).model == "chosen-worker-model"
+        shared = await db.get_profile("claude-opus")
+        assert shared.model == profile.model
+        assert shared.default_class == profile.default_class
+
     async def test_launch_failure_pauses_rather_than_fabricating_a_result(
         self, db, real_orch, provider, tmp_path
     ):

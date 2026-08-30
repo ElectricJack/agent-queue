@@ -152,6 +152,11 @@ class ClaimQueryMixin:
                 tasks.c.status == TaskStatus.READY.value,
                 tasks.c.is_blocked == 0,
                 tasks.c.assigned_agent_id.is_(None),
+                exists(select(literal(1)).where(
+                    agents.c.id == agent_id,
+                    agents.c.enabled.is_(True),
+                    agents.c.role == "worker",
+                )),
             ),
             extra_values={"claim_epoch": tasks.c.claim_epoch + 1},
             returning=True,

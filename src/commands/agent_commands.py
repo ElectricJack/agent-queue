@@ -10,59 +10,13 @@ from src.models import RepoSourceType, Task, TaskStatus, TaskType, Workspace
 from src.task_names import generate_task_id
 from src.workspace_names import generate_workspace_id
 from src.commands.helpers import _run_subprocess
+from src.commands.flock_commands import FlockCommandsMixin
 
 logger = logging.getLogger(__name__)
 
 
-class AgentCommandsMixin:
+class AgentCommandsMixin(FlockCommandsMixin):
     """Agent command methods mixed into CommandHandler."""
-
-    # -----------------------------------------------------------------------
-    # Agent commands -- workspace-as-agent model.
-    # Agents are derived from project workspaces: each workspace is an
-    # agent slot.  CRUD commands (create/delete/pause/resume) are deprecated
-    # and return helpful error messages pointing to workspace commands.
-    # -----------------------------------------------------------------------
-
-    async def _cmd_list_agents(self, args: dict) -> dict:
-        """List agent slots derived from project workspaces.
-
-        Requires ``project_id`` (or active project).  Each workspace is an
-        agent slot: locked workspaces are "busy", unlocked are "idle".
-        """
-        project_id = args.get("project_id") or self._active_project_id
-        if not project_id:
-            return {"error": "project_id is required (or set an active project)"}
-
-        project = await self.db.get_project(project_id)
-        if not project:
-            return {"error": f"Project '{project_id}' not found"}
-
-        workspaces = await self.db.list_workspaces(project_id=project_id)
-        agent_list = []
-        for ws in workspaces:
-            if ws.locked_by_task_id:
-                state = "busy"
-                task = await self.db.get_task(ws.locked_by_task_id)
-                info: dict = {
-                    "workspace_id": ws.id,
-                    "project_id": project_id,
-                    "name": ws.name or ws.id,
-                    "state": state,
-                    "current_task_id": ws.locked_by_task_id,
-                    "current_task_title": task.title if task else None,
-                }
-            else:
-                info = {
-                    "workspace_id": ws.id,
-                    "project_id": project_id,
-                    "name": ws.name or ws.id,
-                    "state": "idle",
-                    "current_task_id": None,
-                    "current_task_title": None,
-                }
-            agent_list.append(info)
-        return {"agents": agent_list, "project_id": project_id}
 
     async def _cmd_add_workspace(self, args: dict) -> dict:
         """Create a workspace for a project."""

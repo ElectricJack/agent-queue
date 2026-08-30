@@ -1000,6 +1000,10 @@ class TaskCommandsMixin:
         # stay ``None`` for every other caller (elevated, local, MCP without
         # session scope) — that path is completely untouched below.
         scope = self._current_scope or {}
+        # Scope is authenticated by the command boundary; caller-supplied task
+        # arguments must never choose creator provenance. Elevated supervisors
+        # have provenance too, without entering the worker filing/quota path.
+        creator_session_id = scope.get("session_id") if scope.get("kind") == "session" else None
         filing_session = None
         held_id: str | None = None
         if scope.get("kind") == "session" and not scope.get("elevated"):
@@ -1296,13 +1300,13 @@ class TaskCommandsMixin:
             parent_task_id=None,
             dedup_key=args.get("dedup_key"),
             intelligence_class=args.get("intelligence_class"),
+            created_by_kind="session" if creator_session_id else None,
+            created_by_id=creator_session_id,
         )
         gate_id: str | None = None
         discovered_from_origin: str | None = None
         depth_cap_fallback = False
         if filing_session is not None:
-            task.created_by_kind = "session"
-            task.created_by_id = filing_session.id
             try:
                 (
                     task_id,
@@ -1427,8 +1431,10 @@ class TaskCommandsMixin:
                 # reflect the real edge written above; ``task.parent_task_id``
                 # itself is never updated in-memory (``set_parent``/
                 # ``create_task_under`` own the DB column, not the object).
-                extras["created_by_kind"] = task.created_by_kind
-                extras["created_by_id"] = task.created_by_id
+                # Persisted Task provenance includes all authenticated sessions;
+                # these event markers retain their worker-only triage meaning.
+                extras["created_by_kind"] = task.created_by_kind if filing_session is not None else None
+                extras["created_by_id"] = task.created_by_id if filing_session is not None else None
                 extras["filed_by_profile_id"] = (
                     filing_session.profile_id if filing_session is not None else None
                 )

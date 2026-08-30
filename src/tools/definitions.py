@@ -38,8 +38,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "workspace_reap": "project",
     "set_project_channel": "project",
     "set_control_interface": "project",
-    # agent (workspace-as-agent model — deprecated CRUD still available)
+    # global agents and reusable profiles
     "list_agents": "agent",
+    "get_agent": "agent",
+    "create_agent": "agent",
+    "edit_agent": "agent",
     "get_agent_error": "agent",
     "list_profiles": "agent",
     "create_profile": "agent",
@@ -1186,18 +1189,62 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "list_agents",
         "description": (
-            "List agent slots for a project. Each workspace is an agent slot: "
-            "locked workspaces are 'busy', unlocked are 'idle'. "
-            "Requires project_id (or an active project)."
+            "List globally defined shared agents, including the supervisor. "
+            "No project is required. Optional project_id filters current assignments."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": "Project ID to list agents for (optional if active project is set)",
+                    "description": "Only agents currently working in this project",
                 },
             },
+        },
+    },
+    {
+        "name": "get_agent",
+        "description": "Get a globally defined agent, current session, task, and individual settings.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"agent_id": {"type": "string"}},
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "create_agent",
+        "description": "Define a shared worker without launching it. Requires global admin.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "profile_id": {"type": "string"},
+                "harness": {"type": "string"},
+                "model": {"type": "string"},
+                "intelligence_class": {"type": "string"},
+                "enabled": {"type": "boolean", "default": True},
+            },
+            "required": ["name", "profile_id"],
+        },
+    },
+    {
+        "name": "edit_agent",
+        "description": (
+            "Edit an individual global worker. Empty overrides inherit profile defaults. "
+            "Changes apply to its next session; running work is left intact. Requires global admin."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "name": {"type": "string"},
+                "profile_id": {"type": "string"},
+                "harness": {"type": "string"},
+                "model": {"type": "string"},
+                "intelligence_class": {"type": "string"},
+                "enabled": {"type": "boolean"},
+            },
+            "required": ["agent_id"],
         },
     },
     {

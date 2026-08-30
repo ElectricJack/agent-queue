@@ -39,6 +39,7 @@ _MAX_QUEUE_SIZE = 1000
 # bus events — see docs/superpowers/plans/2026-08-21-wave4-dashboard-d1-d4.md.
 _FORWARDED_PREFIXES: tuple[str, ...] = (
     "notify.",
+    "agent.",
     "message.",
     "gate.",
     "session.",

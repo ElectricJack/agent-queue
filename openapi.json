@@ -934,6 +934,53 @@
         }
       }
     },
+    "/api/agent/create": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Define a shared worker without launching it. Requires global admin.",
+        "description": "Define a shared worker without launching it. Requires global admin.",
+        "operationId": "create_agent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSummary"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agent/create-profile": {
       "post": {
         "tags": [
@@ -1122,6 +1169,53 @@
         }
       }
     },
+    "/api/agent/edit": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Edit an individual global worker. Empty overrides inherit profile defaults. Changes apply to its next session; running work is left intact. Requires global admin.",
+        "description": "Edit an individual global worker. Empty overrides inherit profile defaults. Changes apply to its next session; running work is left intact. Requires global admin.",
+        "operationId": "edit_agent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSummary"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agent/edit-profile": {
       "post": {
         "tags": [
@@ -1241,6 +1335,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ExportProfileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agent/get": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Get a globally defined agent, current session, task, and individual settings.",
+        "description": "Get a globally defined agent, current session, task, and individual settings.",
+        "operationId": "get_agent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSummary"
                 }
               }
             }
@@ -1456,8 +1597,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "List agent slots for a project. Each workspace is an agent slot: locked workspaces are 'busy', unlocked are 'idle'. Requires project_id (or an active project).",
-        "description": "List agent slots for a project. Each workspace is an agent slot: locked workspaces are 'busy', unlocked are 'idle'. Requires project_id (or an active project).",
+        "summary": "List globally defined shared agents, including the supervisor. No project is required. Optional project_id filters current assignments.",
+        "description": "List globally defined shared agents, including the supervisor. No project is required. Optional project_id filters current assignments.",
         "operationId": "list_agents",
         "requestBody": {
           "content": {
@@ -8389,6 +8530,53 @@
         }
       }
     },
+    "/api/system/session-token": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Mint a fresh API bearer token for an existing session.",
+        "description": "Mint a fresh API bearer token for an existing session.",
+        "operationId": "session_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionTokenResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/session-wake": {
       "post": {
         "tags": [
@@ -11116,25 +11304,134 @@
         ],
         "title": "AddWorkspaceResponse"
       },
+      "AgentSettings": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "profile_id"
+        ],
+        "title": "AgentSettings"
+      },
       "AgentSummary": {
         "properties": {
-          "workspace_id": {
+          "id": {
             "type": "string",
-            "title": "Workspace Id"
-          },
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
+            "title": "Id"
           },
           "name": {
             "type": "string",
-            "title": "Name",
-            "default": ""
+            "title": "Name"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "default": "worker"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
           },
           "state": {
             "type": "string",
             "title": "State",
-            "default": ""
+            "default": "idle"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
           },
           "current_task_id": {
             "anyOf": [
@@ -11157,12 +11454,131 @@
               }
             ],
             "title": "Current Task Title"
+          },
+          "current_project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Project Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "workspace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "session_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session State"
+          },
+          "session_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Provider"
+          },
+          "active_subagent_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Subagent Count"
+          },
+          "subagent_count_complete": {
+            "type": "boolean",
+            "title": "Subagent Count Complete",
+            "default": false
+          },
+          "aq_subagent_count": {
+            "type": "integer",
+            "title": "Aq Subagent Count",
+            "default": 0
+          },
+          "native_subagent_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Native Subagent Count"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/AgentSettings"
+          },
+          "last_heartbeat": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Heartbeat"
+          },
+          "session_tokens_used": {
+            "type": "integer",
+            "title": "Session Tokens Used",
+            "default": 0
           }
         },
         "type": "object",
         "required": [
-          "workspace_id",
-          "project_id"
+          "id",
+          "name",
+          "profile_id",
+          "settings"
         ],
         "title": "AgentSummary"
       },
@@ -12249,6 +12665,68 @@
           "path"
         ],
         "title": "CountProjectMemoryFilesResponse"
+      },
+      "CreateAgentRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": ""
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "description": ""
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness",
+            "description": ""
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model",
+            "description": ""
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class",
+            "description": ""
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "description": "",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "profile_id"
+        ],
+        "title": "CreateAgentRequest"
       },
       "CreateBranchRequest": {
         "properties": {
@@ -14198,6 +14676,92 @@
           "status"
         ],
         "title": "DryRunPlaybookResponse"
+      },
+      "EditAgentRequest": {
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "description": ""
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": ""
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id",
+            "description": ""
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness",
+            "description": ""
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model",
+            "description": ""
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class",
+            "description": ""
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_id"
+        ],
+        "title": "EditAgentRequest"
       },
       "EditFileRequest": {
         "properties": {
@@ -16603,6 +17167,20 @@
           "task_id"
         ],
         "title": "GetAgentErrorResponse"
+      },
+      "GetAgentRequest": {
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_id"
+        ],
+        "title": "GetAgentRequest"
       },
       "GetChainHealthRequest": {
         "properties": {
@@ -19692,7 +20270,7 @@
               }
             ],
             "title": "Project Id",
-            "description": "Project ID to list agents for (optional if active project is set)"
+            "description": "Only agents currently working in this project"
           }
         },
         "type": "object",
@@ -19708,10 +20286,21 @@
             "title": "Agents",
             "default": []
           },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
           "project_id": {
-            "type": "string",
-            "title": "Project Id",
-            "default": ""
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
           }
         },
         "type": "object",
@@ -23434,6 +24023,35 @@
         ],
         "title": "PromoteNoteResponse"
       },
+      "ProvenanceRef": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "dep_type": {
+            "type": "string",
+            "title": "Dep Type",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "ProvenanceRef",
+        "description": "The task at the far end of a non-blocking edge *out of* this one.\n\nProvenance edges are **outgoing**, pointing from the task toward its\norigin \u2014 the same direction as ``depends_on``, which is why they share\na query.  Today the only kind is ``discovered-from``, so this is the\ntask a worker was holding when it filed the one being inspected."
+      },
       "ProvideInputRequest": {
         "properties": {
           "task_id": {
@@ -26235,6 +26853,107 @@
         "title": "SessionSummary",
         "description": "One row of ``session_list`` output.\n\n``idle_seconds`` and ``stalled`` are derived per-row in\n``_cmd_session_list``; every other field mirrors ``sessions`` table\ncolumns via ``SessionCommandsMixin._session_dict``."
       },
+      "SessionTokenRequest": {
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "Session id (uuid4 hex)"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id",
+            "description": "Alias for session_id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Session name"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Resolve session from this task id"
+          }
+        },
+        "type": "object",
+        "title": "SessionTokenRequest"
+      },
+      "SessionTokenResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "token": {
+            "type": "string",
+            "title": "Token"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "session_id",
+          "token"
+        ],
+        "title": "SessionTokenResponse",
+        "description": "``session_token`` \u2014 a freshly minted bearer token for one session.\n\nDev/e2e facility (see ``SessionCommandsMixin._cmd_session_token``).\n``task_id`` is populated only for a task session; a pool worker's\nscope pins no task."
+      },
       "SessionWakeRequest": {
         "properties": {
           "session_id": {
@@ -27785,6 +28504,14 @@
             },
             "type": "array",
             "title": "Blocks",
+            "default": []
+          },
+          "provenance": {
+            "items": {
+              "$ref": "#/components/schemas/ProvenanceRef"
+            },
+            "type": "array",
+            "title": "Provenance",
             "default": []
           }
         },

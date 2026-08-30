@@ -209,8 +209,8 @@ async def test_creates_one_agent_per_profile_under_cap(db):
     assert {a.profile_id for a in agents} == {"claude-opus", "claude-sonnet"}
 
 
-async def test_reassigns_at_cap(db):
-    """At capacity with idle wrong-profile agent → reassign in place, don't create."""
+async def test_preserves_default_profile_at_cap(db):
+    """Task specialization must not rewrite a durable worker default."""
     await _seed_project_with_profile(
         db, project_id="p", profile_id="claude-opus", max_agents=1
     )
@@ -231,12 +231,13 @@ async def test_reassigns_at_cap(db):
 
     agents = await db.list_agents()
     assert len(agents) == 1
-    assert agents[0].profile_id == "claude-sonnet"
-    assert report.reassigned == [("agent-1", "claude-opus", "claude-sonnet")]
+    assert agents[0].profile_id == "claude-opus"
+    assert report.reassigned == []
+    assert report.created == []
 
 
-async def test_reassignment_cap_one_per_agent_per_tick(db):
-    """3 ready tasks needing 3 distinct profiles + capacity=1 → exactly 1 reassignment."""
+async def test_multiple_task_profiles_keep_one_durable_worker(db):
+    """Several task profiles share one worker without overwriting its definition."""
     await _seed_project_with_profile(
         db, project_id="p", profile_id="claude-opus", max_agents=1
     )
@@ -257,7 +258,9 @@ async def test_reassignment_cap_one_per_agent_per_tick(db):
 
     report = await AgentReconciler(db).reconcile()
 
-    assert len(report.reassigned) == 1
+    assert report.reassigned == []
+    assert report.created == []
+    assert (await db.get_agent("agent-1")).profile_id == "claude-opus"
 
 
 async def test_workspace_required_no_workspace_no_create(db):
@@ -275,8 +278,8 @@ async def test_workspace_required_no_workspace_no_create(db):
     assert any("no available workspace" in s[1] for s in report.skipped)
 
 
-async def test_no_workspace_runtime_creates_regardless(db):
-    """SupervisorRuntime (requires_workspace=False) → create even with 0 workspaces."""
+async def test_supervisor_demand_does_not_create_duplicate_global_worker(db):
+    """The canonical named supervisor is seeded separately from task supply."""
     await _seed_project_with_profile(
         db, project_id="p", profile_id="supervisor",
         runtime="supervisor", workspace_count=0,
@@ -286,8 +289,7 @@ async def test_no_workspace_runtime_creates_regardless(db):
     await AgentReconciler(db).reconcile()
 
     agents = await db.list_agents()
-    assert len(agents) == 1
-    assert agents[0].profile_id == "supervisor"
+    assert agents == []
 
 
 async def test_orphan_busy_reset_to_idle(db):
@@ -313,8 +315,8 @@ async def test_orphan_busy_reset_to_idle(db):
     assert agents[0].state == AgentState.IDLE
 
 
-async def test_orphan_profile_id_preferred_for_reassignment(db):
-    """Idle agent with non-existent profile_id is the preferred reassignment target."""
+async def test_missing_profile_keeps_durable_definition(db):
+    """A missing profile never justifies rewriting a saved worker definition."""
     await _seed_project_with_profile(
         db, project_id="p", profile_id="claude-opus", max_agents=2
     )
@@ -339,14 +341,14 @@ async def test_orphan_profile_id_preferred_for_reassignment(db):
     workspaces = await db.list_workspaces()
     await db.update_workspace(workspaces[0].id, locked_by_agent_id="agent-valid")
     await db.update_workspace(workspaces[1].id, locked_by_agent_id="agent-orphan")
-    # Need a sonnet task, at cap → reassign.
+    # Task specialization may use the valid worker without changing either definition.
     await _seed_ready_task(db, task_id="t-son", project_id="p", profile_id="claude-sonnet")
 
     report = await AgentReconciler(db).reconcile()
 
-    # Orphan should be reassigned, valid should be untouched.
+    # Keep both valid and orphaned definitions unchanged.
     valid = await db.get_agent("agent-valid")
-    orphan_now_sonnet = await db.get_agent("agent-orphan")
+    orphan = await db.get_agent("agent-orphan")
     assert valid.profile_id == "claude-opus"
-    assert orphan_now_sonnet.profile_id == "claude-sonnet"
-    assert report.reassigned == [("agent-orphan", "deleted-profile", "claude-sonnet")]
+    assert orphan.profile_id == "deleted-profile"
+    assert report.reassigned == []

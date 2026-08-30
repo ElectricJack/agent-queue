@@ -6,6 +6,7 @@ from .add_dependency_response_422 import AddDependencyResponse422
 from .add_workspace_request import AddWorkspaceRequest
 from .add_workspace_response import AddWorkspaceResponse
 from .add_workspace_response_422 import AddWorkspaceResponse422
+from .agent_settings import AgentSettings
 from .agent_summary import AgentSummary
 from .append_note_request import AppendNoteRequest
 from .append_note_response import AppendNoteResponse
@@ -56,6 +57,8 @@ from .compile_playbook_response_422 import CompilePlaybookResponse422
 from .count_project_memory_files_request import CountProjectMemoryFilesRequest
 from .count_project_memory_files_response import CountProjectMemoryFilesResponse
 from .count_project_memory_files_response_422 import CountProjectMemoryFilesResponse422
+from .create_agent_request import CreateAgentRequest
+from .create_agent_response_422 import CreateAgentResponse422
 from .create_branch_request import CreateBranchRequest
 from .create_branch_response import CreateBranchResponse
 from .create_github_repo_request import CreateGithubRepoRequest
@@ -128,6 +131,8 @@ from .dry_run_playbook_response import DryRunPlaybookResponse
 from .dry_run_playbook_response_422 import DryRunPlaybookResponse422
 from .dry_run_playbook_response_mock_event import DryRunPlaybookResponseMockEvent
 from .dry_run_playbook_response_node_trace_item import DryRunPlaybookResponseNodeTraceItem
+from .edit_agent_request import EditAgentRequest
+from .edit_agent_response_422 import EditAgentResponse422
 from .edit_file_request import EditFileRequest
 from .edit_file_response import EditFileResponse
 from .edit_file_response_422 import EditFileResponse422
@@ -214,6 +219,8 @@ from .generate_readme_response_422 import GenerateReadmeResponse422
 from .get_agent_error_request import GetAgentErrorRequest
 from .get_agent_error_response import GetAgentErrorResponse
 from .get_agent_error_response_422 import GetAgentErrorResponse422
+from .get_agent_request import GetAgentRequest
+from .get_agent_response_422 import GetAgentResponse422
 from .get_chain_health_request import GetChainHealthRequest
 from .get_chain_health_response import GetChainHealthResponse
 from .get_chain_health_response_422 import GetChainHealthResponse422
@@ -544,6 +551,7 @@ from .project_summary import ProjectSummary
 from .promote_note_request import PromoteNoteRequest
 from .promote_note_response import PromoteNoteResponse
 from .promote_note_response_422 import PromoteNoteResponse422
+from .provenance_ref import ProvenanceRef
 from .provide_input_request import ProvideInputRequest
 from .provide_input_response import ProvideInputResponse
 from .provide_input_response_422 import ProvideInputResponse422
@@ -659,6 +667,9 @@ from .session_show_response_422 import SessionShowResponse422
 from .session_sleep_request import SessionSleepRequest
 from .session_sleep_response_422 import SessionSleepResponse422
 from .session_summary import SessionSummary
+from .session_token_request import SessionTokenRequest
+from .session_token_response import SessionTokenResponse
+from .session_token_response_422 import SessionTokenResponse422
 from .session_wake_request import SessionWakeRequest
 from .session_wake_response_422 import SessionWakeResponse422
 from .set_control_interface_request import SetControlInterfaceRequest
@@ -800,6 +811,7 @@ __all__ = (
     "AddWorkspaceRequest",
     "AddWorkspaceResponse",
     "AddWorkspaceResponse422",
+    "AgentSettings",
     "AgentSummary",
     "AppendNoteRequest",
     "AppendNoteResponse",
@@ -850,6 +862,8 @@ __all__ = (
     "CountProjectMemoryFilesRequest",
     "CountProjectMemoryFilesResponse",
     "CountProjectMemoryFilesResponse422",
+    "CreateAgentRequest",
+    "CreateAgentResponse422",
     "CreateBranchRequest",
     "CreateBranchResponse",
     "CreateGithubRepoRequest",
@@ -922,6 +936,8 @@ __all__ = (
     "DryRunPlaybookResponse422",
     "DryRunPlaybookResponseMockEvent",
     "DryRunPlaybookResponseNodeTraceItem",
+    "EditAgentRequest",
+    "EditAgentResponse422",
     "EditFileRequest",
     "EditFileResponse",
     "EditFileResponse422",
@@ -1008,6 +1024,8 @@ __all__ = (
     "GetAgentErrorRequest",
     "GetAgentErrorResponse",
     "GetAgentErrorResponse422",
+    "GetAgentRequest",
+    "GetAgentResponse422",
     "GetChainHealthRequest",
     "GetChainHealthResponse",
     "GetChainHealthResponse422",
@@ -1332,6 +1350,7 @@ __all__ = (
     "PromoteNoteRequest",
     "PromoteNoteResponse",
     "PromoteNoteResponse422",
+    "ProvenanceRef",
     "ProvideInputRequest",
     "ProvideInputResponse",
     "ProvideInputResponse422",
@@ -1447,6 +1466,9 @@ __all__ = (
     "SessionSleepRequest",
     "SessionSleepResponse422",
     "SessionSummary",
+    "SessionTokenRequest",
+    "SessionTokenResponse",
+    "SessionTokenResponse422",
     "SessionWakeRequest",
     "SessionWakeResponse422",
     "SetControlInterfaceRequest",

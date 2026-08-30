@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import { ShellPaneProvider } from "./panes/store";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
+const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
 const GlobalChat = lazy(() => import("./pages/GlobalChat"));
 const CommandCenterGraph = lazy(() => import("./pages/command-center/Graph"));
 const CommandCenterTasks = lazy(() => import("./pages/command-center/Tasks"));
@@ -51,6 +52,7 @@ export default function App() {
         <Routes>
           <Route element={<AppShellV2 />}>
             <Route index element={<GlobalChat />} />
+            <Route path="agents" element={<AgentWorkspace />} />
             <Route path="chat/:projectId" element={<ChatConversation />} />
 
             <Route path="command-center" element={<CommandCenter />}>

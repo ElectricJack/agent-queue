@@ -173,7 +173,7 @@ class TestPrepareTimeout:
 
 
 class TestExits:
-    async def test_pool_exit_holding_task_returns_task_and_retires_agent(self, db, reconciler,
+    async def test_pool_exit_holding_task_returns_task_and_releases_worker(self, db, reconciler,
                                                                          provider):
         sid = await held_pool_session(db)
         provider.peek = AsyncMock(return_value="")
@@ -182,7 +182,7 @@ class TestExits:
         t = await db.get_task("t1")
         assert (t.status, t.assigned_agent_id) == (TaskStatus.READY, None)
         assert await db.get_task_meta("t1", "needs_attention") == "exited_holding_task"
-        assert (await db.get_agent("agent-1")).state == AgentState.RETIRED
+        assert (await db.get_agent("agent-1")).state == AgentState.IDLE
         assert await db.get_workspace_for_agent("agent-1") is None
         assert (await db.get_session(sid)).state == "stopped"
 
@@ -223,7 +223,7 @@ class TestExits:
         live, now = await observe(reconciler)
         await reconciler._step_drain_ack(live, now)
         assert (await db.get_session(sid)).state == "stopped"
-        assert (await db.get_agent("agent-1")).state == AgentState.RETIRED
+        assert (await db.get_agent("agent-1")).state == AgentState.IDLE
 
 
 class TestBackstop:

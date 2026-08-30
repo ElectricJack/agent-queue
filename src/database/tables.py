@@ -348,6 +348,11 @@ agents = Table(
     Column("last_heartbeat", Float, nullable=True),
     Column("total_tokens_used", Integer, nullable=False, server_default="0"),
     Column("session_tokens_used", Integer, nullable=False, server_default="0"),
+    Column("role", Text, nullable=False, server_default="worker"),
+    Column("enabled", Boolean, nullable=False, server_default=true()),
+    Column("harness", Text, nullable=True),
+    Column("model", Text, nullable=True),
+    Column("intelligence_class", Text, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 
@@ -619,6 +624,10 @@ sessions = Table(
     Column("restarts", Integer, nullable=False, server_default="0"),
     Column("quarantined_at", Float, nullable=True),
     Column("sleep_reason", Text, nullable=True),
+    Column("llm_provider", Text, nullable=True),
+    Column("model", Text, nullable=True),
+    Column("intelligence_class", Text, nullable=True),
+    Index("idx_sessions_agent", "agent_id", "state"),
     Index("idx_sessions_task_id", "task_id"),
     Index("idx_sessions_state", "state"),
     Index("idx_sessions_name", "name"),

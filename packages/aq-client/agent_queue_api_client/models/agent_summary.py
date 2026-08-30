@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.agent_settings import AgentSettings
+
 
 T = TypeVar("T", bound="AgentSummary")
 
@@ -15,30 +19,98 @@ T = TypeVar("T", bound="AgentSummary")
 class AgentSummary:
     """
     Attributes:
-        workspace_id (str):
-        project_id (str):
-        name (str | Unset):  Default: ''.
-        state (str | Unset):  Default: ''.
+        id (str):
+        name (str):
+        profile_id (str):
+        settings (AgentSettings):
+        role (str | Unset):  Default: 'worker'.
+        enabled (bool | Unset):  Default: True.
+        state (str | Unset):  Default: 'idle'.
+        provider (None | str | Unset):
+        harness (None | str | Unset):
+        model (None | str | Unset):
+        intelligence_class (None | str | Unset):
         current_task_id (None | str | Unset):
         current_task_title (None | str | Unset):
+        current_project_id (None | str | Unset):
+        project_id (None | str | Unset):
+        workspace_id (None | str | Unset):
+        session_id (None | str | Unset):
+        session_state (None | str | Unset):
+        session_provider (None | str | Unset):
+        active_subagent_count (int | None | Unset):
+        subagent_count_complete (bool | Unset):  Default: False.
+        aq_subagent_count (int | Unset):  Default: 0.
+        native_subagent_count (int | None | Unset):
+        last_heartbeat (float | None | Unset):
+        session_tokens_used (int | Unset):  Default: 0.
     """
 
-    workspace_id: str
-    project_id: str
-    name: str | Unset = ""
-    state: str | Unset = ""
+    id: str
+    name: str
+    profile_id: str
+    settings: AgentSettings
+    role: str | Unset = "worker"
+    enabled: bool | Unset = True
+    state: str | Unset = "idle"
+    provider: None | str | Unset = UNSET
+    harness: None | str | Unset = UNSET
+    model: None | str | Unset = UNSET
+    intelligence_class: None | str | Unset = UNSET
     current_task_id: None | str | Unset = UNSET
     current_task_title: None | str | Unset = UNSET
+    current_project_id: None | str | Unset = UNSET
+    project_id: None | str | Unset = UNSET
+    workspace_id: None | str | Unset = UNSET
+    session_id: None | str | Unset = UNSET
+    session_state: None | str | Unset = UNSET
+    session_provider: None | str | Unset = UNSET
+    active_subagent_count: int | None | Unset = UNSET
+    subagent_count_complete: bool | Unset = False
+    aq_subagent_count: int | Unset = 0
+    native_subagent_count: int | None | Unset = UNSET
+    last_heartbeat: float | None | Unset = UNSET
+    session_tokens_used: int | Unset = 0
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        workspace_id = self.workspace_id
-
-        project_id = self.project_id
+        id = self.id
 
         name = self.name
 
+        profile_id = self.profile_id
+
+        settings = self.settings.to_dict()
+
+        role = self.role
+
+        enabled = self.enabled
+
         state = self.state
+
+        provider: None | str | Unset
+        if isinstance(self.provider, Unset):
+            provider = UNSET
+        else:
+            provider = self.provider
+
+        harness: None | str | Unset
+        if isinstance(self.harness, Unset):
+            harness = UNSET
+        else:
+            harness = self.harness
+
+        model: None | str | Unset
+        if isinstance(self.model, Unset):
+            model = UNSET
+        else:
+            model = self.model
+
+        intelligence_class: None | str | Unset
+        if isinstance(self.intelligence_class, Unset):
+            intelligence_class = UNSET
+        else:
+            intelligence_class = self.intelligence_class
 
         current_task_id: None | str | Unset
         if isinstance(self.current_task_id, Unset):
@@ -52,35 +124,175 @@ class AgentSummary:
         else:
             current_task_title = self.current_task_title
 
+        current_project_id: None | str | Unset
+        if isinstance(self.current_project_id, Unset):
+            current_project_id = UNSET
+        else:
+            current_project_id = self.current_project_id
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
+
+        workspace_id: None | str | Unset
+        if isinstance(self.workspace_id, Unset):
+            workspace_id = UNSET
+        else:
+            workspace_id = self.workspace_id
+
+        session_id: None | str | Unset
+        if isinstance(self.session_id, Unset):
+            session_id = UNSET
+        else:
+            session_id = self.session_id
+
+        session_state: None | str | Unset
+        if isinstance(self.session_state, Unset):
+            session_state = UNSET
+        else:
+            session_state = self.session_state
+
+        session_provider: None | str | Unset
+        if isinstance(self.session_provider, Unset):
+            session_provider = UNSET
+        else:
+            session_provider = self.session_provider
+
+        active_subagent_count: int | None | Unset
+        if isinstance(self.active_subagent_count, Unset):
+            active_subagent_count = UNSET
+        else:
+            active_subagent_count = self.active_subagent_count
+
+        subagent_count_complete = self.subagent_count_complete
+
+        aq_subagent_count = self.aq_subagent_count
+
+        native_subagent_count: int | None | Unset
+        if isinstance(self.native_subagent_count, Unset):
+            native_subagent_count = UNSET
+        else:
+            native_subagent_count = self.native_subagent_count
+
+        last_heartbeat: float | None | Unset
+        if isinstance(self.last_heartbeat, Unset):
+            last_heartbeat = UNSET
+        else:
+            last_heartbeat = self.last_heartbeat
+
+        session_tokens_used = self.session_tokens_used
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "workspace_id": workspace_id,
-                "project_id": project_id,
+                "id": id,
+                "name": name,
+                "profile_id": profile_id,
+                "settings": settings,
             }
         )
-        if name is not UNSET:
-            field_dict["name"] = name
+        if role is not UNSET:
+            field_dict["role"] = role
+        if enabled is not UNSET:
+            field_dict["enabled"] = enabled
         if state is not UNSET:
             field_dict["state"] = state
+        if provider is not UNSET:
+            field_dict["provider"] = provider
+        if harness is not UNSET:
+            field_dict["harness"] = harness
+        if model is not UNSET:
+            field_dict["model"] = model
+        if intelligence_class is not UNSET:
+            field_dict["intelligence_class"] = intelligence_class
         if current_task_id is not UNSET:
             field_dict["current_task_id"] = current_task_id
         if current_task_title is not UNSET:
             field_dict["current_task_title"] = current_task_title
+        if current_project_id is not UNSET:
+            field_dict["current_project_id"] = current_project_id
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
+        if workspace_id is not UNSET:
+            field_dict["workspace_id"] = workspace_id
+        if session_id is not UNSET:
+            field_dict["session_id"] = session_id
+        if session_state is not UNSET:
+            field_dict["session_state"] = session_state
+        if session_provider is not UNSET:
+            field_dict["session_provider"] = session_provider
+        if active_subagent_count is not UNSET:
+            field_dict["active_subagent_count"] = active_subagent_count
+        if subagent_count_complete is not UNSET:
+            field_dict["subagent_count_complete"] = subagent_count_complete
+        if aq_subagent_count is not UNSET:
+            field_dict["aq_subagent_count"] = aq_subagent_count
+        if native_subagent_count is not UNSET:
+            field_dict["native_subagent_count"] = native_subagent_count
+        if last_heartbeat is not UNSET:
+            field_dict["last_heartbeat"] = last_heartbeat
+        if session_tokens_used is not UNSET:
+            field_dict["session_tokens_used"] = session_tokens_used
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.agent_settings import AgentSettings
+
         d = dict(src_dict)
-        workspace_id = d.pop("workspace_id")
+        id = d.pop("id")
 
-        project_id = d.pop("project_id")
+        name = d.pop("name")
 
-        name = d.pop("name", UNSET)
+        profile_id = d.pop("profile_id")
+
+        settings = AgentSettings.from_dict(d.pop("settings"))
+
+        role = d.pop("role", UNSET)
+
+        enabled = d.pop("enabled", UNSET)
 
         state = d.pop("state", UNSET)
+
+        def _parse_provider(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        provider = _parse_provider(d.pop("provider", UNSET))
+
+        def _parse_harness(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        harness = _parse_harness(d.pop("harness", UNSET))
+
+        def _parse_model(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        model = _parse_model(d.pop("model", UNSET))
+
+        def _parse_intelligence_class(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
 
         def _parse_current_task_id(data: object) -> None | str | Unset:
             if data is None:
@@ -100,13 +312,119 @@ class AgentSummary:
 
         current_task_title = _parse_current_task_title(d.pop("current_task_title", UNSET))
 
+        def _parse_current_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        current_project_id = _parse_current_project_id(d.pop("current_project_id", UNSET))
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
+
+        def _parse_workspace_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        workspace_id = _parse_workspace_id(d.pop("workspace_id", UNSET))
+
+        def _parse_session_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        session_id = _parse_session_id(d.pop("session_id", UNSET))
+
+        def _parse_session_state(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        session_state = _parse_session_state(d.pop("session_state", UNSET))
+
+        def _parse_session_provider(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        session_provider = _parse_session_provider(d.pop("session_provider", UNSET))
+
+        def _parse_active_subagent_count(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        active_subagent_count = _parse_active_subagent_count(d.pop("active_subagent_count", UNSET))
+
+        subagent_count_complete = d.pop("subagent_count_complete", UNSET)
+
+        aq_subagent_count = d.pop("aq_subagent_count", UNSET)
+
+        def _parse_native_subagent_count(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        native_subagent_count = _parse_native_subagent_count(d.pop("native_subagent_count", UNSET))
+
+        def _parse_last_heartbeat(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        last_heartbeat = _parse_last_heartbeat(d.pop("last_heartbeat", UNSET))
+
+        session_tokens_used = d.pop("session_tokens_used", UNSET)
+
         agent_summary = cls(
-            workspace_id=workspace_id,
-            project_id=project_id,
+            id=id,
             name=name,
+            profile_id=profile_id,
+            settings=settings,
+            role=role,
+            enabled=enabled,
             state=state,
+            provider=provider,
+            harness=harness,
+            model=model,
+            intelligence_class=intelligence_class,
             current_task_id=current_task_id,
             current_task_title=current_task_title,
+            current_project_id=current_project_id,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            session_state=session_state,
+            session_provider=session_provider,
+            active_subagent_count=active_subagent_count,
+            subagent_count_complete=subagent_count_complete,
+            aq_subagent_count=aq_subagent_count,
+            native_subagent_count=native_subagent_count,
+            last_heartbeat=last_heartbeat,
+            session_tokens_used=session_tokens_used,
         )
 
         agent_summary.additional_properties = d

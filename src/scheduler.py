@@ -244,7 +244,9 @@ class Scheduler:
         idle_agents = [
             a
             for a in state.agents
-            if a.state == AgentState.IDLE and state.provider_cooldowns.get(a.profile_id, 0) <= now
+            if a.state == AgentState.IDLE and a.current_task_id is None
+            and a.enabled and a.role == "worker"
+            and state.provider_cooldowns.get(a.profile_id, 0) <= now
         ]
         if not idle_agents:
             return []

@@ -15,7 +15,7 @@ T = TypeVar("T", bound="ListAgentsRequest")
 class ListAgentsRequest:
     """
     Attributes:
-        project_id (None | str | Unset): Project ID to list agents for (optional if active project is set)
+        project_id (None | str | Unset): Only agents currently working in this project
     """
 
     project_id: None | str | Unset = UNSET

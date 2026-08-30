@@ -5,6 +5,7 @@ import {
   Cog6ToothIcon,
   FolderIcon,
 } from "@heroicons/react/24/outline";
+import AgentFlock from "./AgentFlock";
 import { useProjects } from "../api/hooks";
 import { useListNav } from "./hotkeys/useListNav";
 
@@ -26,7 +27,7 @@ export default function LeftRail() {
   const { data: projects } = useProjects();
   const navRef = useListNav<HTMLElement>({ axis: "vertical" });
   return (
-    <aside className="col-start-1 row-start-2 flex h-full w-60 shrink-0 flex-col overflow-hidden border-r border-gray-800 bg-gray-900">
+    <aside className="col-start-1 row-start-2 flex h-full w-64 shrink-0 lg:w-72 flex-col overflow-hidden border-r border-gray-800 bg-gray-900">
       <nav ref={navRef} className="flex-1 space-y-6 overflow-y-auto p-3">
         <div className="space-y-0.5">
           {sections.map(({ to, label, icon: Icon, end }) => (
@@ -36,6 +37,7 @@ export default function LeftRail() {
             </NavLink>
           ))}
         </div>
+        <AgentFlock />
         <div>
           <p className="px-3 pb-2 text-xs uppercase text-gray-500">Projects</p>
           <div className="space-y-0.5">

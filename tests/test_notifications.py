@@ -17,6 +17,7 @@ from src.api.models.agent import AgentSummary
 from src.api.models.task import TaskDetail
 from src.event_bus import EventBus
 from src.models import (
+    Agent,
     AgentState,
     Task,
     TaskStatus,
@@ -97,6 +98,9 @@ def _make_task_detail(**overrides) -> TaskDetail:
 
 def _make_agent_summary(**overrides) -> AgentSummary:
     defaults = dict(
+        id="worker-abc123",
+        profile_id="coder",
+        settings={"name": "my-workspace", "profile_id": "coder"},
         workspace_id="ws-abc123",
         project_id="test-project",
         name="my-workspace",
@@ -316,6 +320,27 @@ class TestBuilders:
         assert summary.name == "my-workspace"
         assert summary.state == "busy"
         assert summary.current_task_id == "test-task"
+
+    def test_build_agent_summary_preserves_global_identity_and_settings(self):
+        agent = Agent(
+            id="worker-a", name="Ada", profile_id="coder",
+            state=AgentState.BUSY, current_task_id="task-a",
+            harness="codex", model="configured-next-model",
+            intelligence_class="deep", enabled=False,
+        )
+        summary = build_agent_summary(agent)
+        assert summary.id == "worker-a"
+        assert summary.workspace_id is None
+        assert summary.project_id is None
+        assert summary.profile_id == "coder"
+        assert summary.settings.model == "configured-next-model"
+        assert summary.settings.harness == "codex"
+        assert summary.settings.intelligence_class == "deep"
+        assert summary.settings.enabled is False
+        assert summary.current_task_id == "task-a"
+        # A notification without a session snapshot must not report settings
+        # as the model that is already running.
+        assert summary.model is None
 
     def test_build_agent_summary_no_workspace_name(self):
         """Falls back to workspace_id when name is None."""

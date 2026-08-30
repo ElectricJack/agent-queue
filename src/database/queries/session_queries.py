@@ -40,8 +40,8 @@ import logging
 
 from sqlalchemy import delete, insert, select, update
 
-from src.database.tables import agent_profiles, sessions
-from src.models import SessionRecord
+from src.database.tables import agent_profiles, agents, sessions
+from src.models import AgentState, SessionRecord
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,9 @@ def _row_to_session(row) -> SessionRecord:
         sleep_reason=row["sleep_reason"],
         claims=int(row.get("claims") or 0),
         agent_id=row.get("agent_id"),
+        llm_provider=row.get("llm_provider"),
+        model=row.get("model"),
+        intelligence_class=row.get("intelligence_class"),
         claim_phase=row.get("claim_phase"),
         claim_phase_at=row.get("claim_phase_at"),
         last_claim_epoch=row.get("last_claim_epoch"),
@@ -136,7 +139,9 @@ def _row_to_session(row) -> SessionRecord:
 class SessionQueryMixin:
     """Query mixin for the ``sessions`` table.  Expects ``self._engine``."""
 
-    async def create_session(self, session: SessionRecord) -> None:
+    async def create_session(
+        self, session: SessionRecord, *, release_agent_reservation: bool = False
+    ) -> None:
         """Insert a session row, enforcing one *live* row per name.
 
         The module docstring argues (correctly) that ``sessions.name`` must
@@ -180,12 +185,27 @@ class SessionQueryMixin:
                     sleep_reason=session.sleep_reason,
                     claims=session.claims,
                     agent_id=session.agent_id,
+                    llm_provider=session.llm_provider,
+                    model=session.model,
+                    intelligence_class=session.intelligence_class,
                     claim_phase=session.claim_phase,
                     claim_phase_at=session.claim_phase_at,
                     last_claim_epoch=session.last_claim_epoch,
                     last_claim_result=session.last_claim_result,
                 )
             )
+
+            if release_agent_reservation and session.agent_id:
+                # The pool becomes claimable in the same commit that makes
+                # its worker idle. A first claim can never be overwritten by
+                # launch completion, nor can another launch steal this worker.
+                await conn.execute(
+                    update(agents).where(
+                        agents.c.id == session.agent_id,
+                        agents.c.state == AgentState.BUSY.value,
+                        agents.c.current_task_id.is_(None),
+                    ).values(state=AgentState.IDLE.value)
+                )
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         async with self._engine.begin() as conn:

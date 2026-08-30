@@ -63,6 +63,10 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     """
     if scope.kind == "local":
         return None
+    if command in {"create_agent", "edit_agent"} and not (
+        scope.elevated and scope.project_id is None
+    ):
+        return "out of scope: global agent settings require global admin"
     # Projectless messages are system records, not an omitted project filter.
     # Null project scope alone must never grant access to the global supervisor.
     system_message = args.get("system_only") or (

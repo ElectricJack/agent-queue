@@ -1334,3 +1334,34 @@ class TestCreateSessionLiveGuard:
             )
         )
         assert (await db.get_session_by_name("s-t1")).id == "s2"
+
+
+
+async def test_adoption_links_current_worker_without_guessing_launch_settings(
+    db, provider, reconciler
+):
+    await _task(db)
+    await db.create_agent(Agent(id="a1", name="Alice", profile_id="old",
+                               state=AgentState.BUSY, current_task_id="t1",
+                               model="new-next-session-model"))
+    await db.update_task("t1", assigned_agent_id="a1")
+    await _session(db, provider)
+    await reconciler.adopt_on_start()
+    adopted = await db.get_session("s1")
+    assert adopted.agent_id == "a1"
+    assert adopted.project_id == "p1"
+    assert adopted.instance_token == "tok-s1"
+    assert adopted.model is None and adopted.llm_provider is None
+    assert adopted.epoch == "epoch-new"
+
+
+async def test_adopted_pool_claim_remains_protected_from_restart_recovery(db, provider, reconciler):
+    await _task(db)
+    await db.create_agent(Agent(id="a1", name="Alice", profile_id="worker",
+                               state=AgentState.BUSY, current_task_id="t1"))
+    await db.update_task("t1", assigned_agent_id="a1")
+    await _session(db, provider, name="p-worker--p1--test", lifecycle="pool",
+                   agent_id="a1", claim_phase="active", last_claim_epoch=1)
+    report = await reconciler.adopt_on_start()
+    assert "s1" in report.adopted
+    assert await reconciler.adopted_task_ids(report) == {"t1"}
