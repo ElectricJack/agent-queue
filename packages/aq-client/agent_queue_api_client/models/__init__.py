@@ -139,6 +139,11 @@ from .edit_agent_response_422 import EditAgentResponse422
 from .edit_file_request import EditFileRequest
 from .edit_file_response import EditFileResponse
 from .edit_file_response_422 import EditFileResponse422
+from .edit_intelligence_class_conflict_response import EditIntelligenceClassConflictResponse
+from .edit_intelligence_class_request import EditIntelligenceClassRequest
+from .edit_intelligence_class_request_mapping import EditIntelligenceClassRequestMapping
+from .edit_intelligence_class_response import EditIntelligenceClassResponse
+from .edit_intelligence_class_response_422 import EditIntelligenceClassResponse422
 from .edit_mcp_server_request import EditMcpServerRequest
 from .edit_mcp_server_request_env_type_0 import EditMcpServerRequestEnvType0
 from .edit_mcp_server_request_headers_type_0 import EditMcpServerRequestHeadersType0
@@ -952,6 +957,11 @@ __all__ = (
     "EditFileRequest",
     "EditFileResponse",
     "EditFileResponse422",
+    "EditIntelligenceClassConflictResponse",
+    "EditIntelligenceClassRequest",
+    "EditIntelligenceClassRequestMapping",
+    "EditIntelligenceClassResponse",
+    "EditIntelligenceClassResponse422",
     "EditMcpServerRequest",
     "EditMcpServerRequestEnvType0",
     "EditMcpServerRequestHeadersType0",

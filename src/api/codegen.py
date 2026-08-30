@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, create_model
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
 from src.api.models import get_all_response_models
+from src.api.models.system import EditIntelligenceClassConflictResponse
 from src.api.scope import check_command_scope
 from src.cli.auto_commands import _strip_category_prefix
 from src.tools import (
@@ -374,6 +375,12 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
         }
 
         result = await ch.execute(cmd_name, args)
+        if cmd_name == "edit_intelligence_class" and result.get("error_code") == "revision_conflict":
+            return JSONResponse(
+                {"error": result["error"], "error_code": "revision_conflict",
+                 "current_revision": result["current_revision"]},
+                status_code=409,
+            )
         if "error" in result:
             return JSONResponse(
                 {"error": result["error"]},
@@ -478,6 +485,10 @@ def build_category_routers() -> list[APIRouter]:
                     description=defn.get("description", ""),
                     operation_id=cmd_name,
                     responses={
+                        **({409: {
+                            "description": "Intelligence class changed since it was loaded",
+                            "model": EditIntelligenceClassConflictResponse,
+                        }} if cmd_name == "edit_intelligence_class" else {}),
                         422: {
                             "description": "Command error",
                             "content": {

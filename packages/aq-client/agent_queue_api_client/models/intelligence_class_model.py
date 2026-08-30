@@ -20,12 +20,14 @@ class IntelligenceClassModel:
     """
     Attributes:
         id (str):
+        revision (str):
         name (str | Unset):  Default: ''.
         description (str | Unset):  Default: ''.
         mapping (IntelligenceClassModelMapping | Unset):
     """
 
     id: str
+    revision: str
     name: str | Unset = ""
     description: str | Unset = ""
     mapping: IntelligenceClassModelMapping | Unset = UNSET
@@ -33,6 +35,8 @@ class IntelligenceClassModel:
 
     def to_dict(self) -> dict[str, Any]:
         id = self.id
+
+        revision = self.revision
 
         name = self.name
 
@@ -47,6 +51,7 @@ class IntelligenceClassModel:
         field_dict.update(
             {
                 "id": id,
+                "revision": revision,
             }
         )
         if name is not UNSET:
@@ -65,6 +70,8 @@ class IntelligenceClassModel:
         d = dict(src_dict)
         id = d.pop("id")
 
+        revision = d.pop("revision")
+
         name = d.pop("name", UNSET)
 
         description = d.pop("description", UNSET)
@@ -78,6 +85,7 @@ class IntelligenceClassModel:
 
         intelligence_class_model = cls(
             id=id,
+            revision=revision,
             name=name,
             description=description,
             mapping=mapping,

@@ -13,6 +13,7 @@ for the Codex CLI.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -23,7 +24,8 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_JSON_BLOCK_RE = re.compile(r"```json\s*\n(.*?)```", re.DOTALL)
+_FRONTMATTER_RE = re.compile(r"\A---[ \t]*\r?\n(.*?)^---[ \t]*(?:\r?\n|$)", re.DOTALL | re.MULTILINE)
+_JSON_BLOCK_RE = re.compile(r"^[ \t]*```json[ \t]*\r?\n(.*?)^[ \t]*```[ \t]*(?=\r?$)", re.DOTALL | re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -32,31 +34,37 @@ class IntelligenceClass:
     name: str
     description: str
     mapping: dict  # provider -> {"model": str, ...}
+    revision: str = ""  # SHA-256 of the raw Markdown bytes, before default upgrades.
+    customized: bool = False  # Explicit editor saves opt out of default migration.
 
 
 def _parse_file(path: str) -> IntelligenceClass | None:
-    with open(path, encoding="utf-8") as f:
-        text = f.read()
-    if not text.startswith("---"):
-        logger.warning("intelligence-class %s: no frontmatter", path)
-        return None
-    parts = text.split("---", 2)
-    if len(parts) < 3:
+    with open(path, "rb") as f:
+        raw = f.read()
+    return _parse_text(raw.decode("utf-8"), path, revision=hashlib.sha256(raw).hexdigest())
+
+
+def _parse_text(text: str, path: str, *, revision: str = "") -> IntelligenceClass | None:
+    frontmatter = _FRONTMATTER_RE.match(text)
+    if frontmatter is None:
+        logger.warning("intelligence-class %s: no valid frontmatter", path)
         return None
     try:
-        fm = yaml.safe_load(parts[1]) or {}
+        fm = yaml.safe_load(frontmatter.group(1)) or {}
     except yaml.YAMLError:
         logger.warning("intelligence-class %s: bad YAML frontmatter", path)
         return None
-    body = parts[2]
-    m = _JSON_BLOCK_RE.search(body)
-    if not m:
+    if not isinstance(fm, dict):
+        return None
+    body = text[frontmatter.end():]
+    block = _JSON_BLOCK_RE.search(body)
+    if block is None:
         logger.warning("intelligence-class %s: missing fenced json block", path)
         return None
     try:
-        mapping = json.loads(m.group(1))
-    except json.JSONDecodeError as exc:
-        logger.warning("intelligence-class %s: bad JSON — %s", path, exc)
+        mapping = json.loads(block.group(1))
+    except json.JSONDecodeError:
+        logger.warning("intelligence-class %s: bad JSON", path)
         return None
     if not isinstance(mapping, dict):
         logger.warning("intelligence-class %s: mapping must be an object", path)
@@ -66,6 +74,8 @@ def _parse_file(path: str) -> IntelligenceClass | None:
         name=str(fm.get("name") or ""),
         description=str(fm.get("description") or ""),
         mapping=mapping,
+        revision=revision,
+        customized=fm.get("customized") is True,
     )
 
 
@@ -83,6 +93,8 @@ def _upgrade_legacy_provider_defaults(cls: IntelligenceClass) -> IntelligenceCla
     Each provider upgrades independently. Custom slices, explicit Codex entries
     (including empty ones), and non-bundled class IDs remain untouched.
     """
+    if cls.customized:
+        return cls
     tier, _, level = cls.id.rpartition("-")
     if tier not in _LEGACY_OPENAI_MODELS or level not in _LEGACY_OPENAI_EFFORTS:
         return cls
@@ -130,7 +142,14 @@ def load_intelligence_classes(data_dir: str) -> dict[str, IntelligenceClass]:
     for name in sorted(os.listdir(root)):
         if not name.endswith(".md"):
             continue
-        cls = _parse_file(os.path.join(root, name))
+        path = os.path.join(root, name)
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        try:
+            cls = _parse_file(path)
+        except (OSError, UnicodeError):
+            logger.warning("intelligence-class %s: unreadable file", path)
+            continue
         if cls is not None:
             out[cls.id] = _upgrade_legacy_provider_defaults(cls)
     return out

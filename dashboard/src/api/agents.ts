@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  listAgents, getAgent, createAgent, editAgent, deleteAgent, startAgentTerminal, listIntelligenceClasses,
+  listAgents, getAgent, createAgent, editAgent, deleteAgent, startAgentTerminal,
   type AgentSummary, type CreateAgentRequest, type EditAgentRequest, type DeleteAgentRequest, type StartAgentTerminalRequest,
 } from "./client";
+
+import { useIntelligenceClasses } from "./hooks";
 
 export type FlockAgent = AgentSummary;
 export type AgentSettings = NonNullable<FlockAgent["settings"]>;
@@ -78,9 +80,5 @@ export function useDeleteAgent() {
 }
 
 export function useAgentIntelligenceClasses() {
-  return useQuery({
-    queryKey: ["intelligence-classes"],
-    queryFn: async () => (await listIntelligenceClasses({ body: {}, throwOnError: true })).data,
-    staleTime: 30_000,
-  });
+  return useIntelligenceClasses();
 }

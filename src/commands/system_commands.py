@@ -30,19 +30,70 @@ class SystemCommandsMixin:
         description, and the provider→config mapping. Purely read-only.
         """
         from src.intelligence_classes import load_intelligence_classes
+        from src.intelligence_classes.editing import class_row
 
-        classes = load_intelligence_classes(self.config.data_dir)
-        rows = [
-            {
-                "id": cls.id,
-                "name": cls.name,
-                "description": cls.description,
-                "mapping": cls.mapping,
-            }
-            for cls in classes.values()
-        ]
-        rows.sort(key=lambda r: r["id"])
+        classes = await asyncio.to_thread(load_intelligence_classes, self.config.data_dir)
+        rows = sorted((class_row(cls) for cls in classes.values()), key=lambda row: row["id"])
         return {"success": True, "classes": rows}
+
+    async def _cmd_edit_intelligence_class(self, args: dict) -> dict:
+        """Edit one global class; explicit saves never auto-upgrade its models."""
+        scope = self._current_scope
+        if scope and scope.get("kind") != "local" and not (
+            scope.get("kind") == "session" and scope.get("elevated")
+            and scope.get("project_id") is None and scope.get("task_id") is None
+        ):
+            return {"error": "out of scope: intelligence-class settings require global admin"}
+        from src.intelligence_classes import load_intelligence_classes
+        from src.intelligence_classes.editing import (
+            IntelligenceClassConflict, IntelligenceClassEditError, class_row, edit_intelligence_class,
+        )
+
+        # Serialize persistence plus cache publication across all command handlers
+        # sharing this orchestrator, so a slower save cannot publish an older map.
+        lock = getattr(self.orchestrator, "_intelligence_class_edit_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.orchestrator._intelligence_class_edit_lock = lock
+        async def save_and_publish():
+            async with lock:
+                saved = await asyncio.to_thread(
+                    edit_intelligence_class, self.config.data_dir,
+                    class_id=args.get("class_id"), name=args.get("name"),
+                    description=args.get("description"), mapping=args.get("mapping"),
+                    expected_revision=args.get("expected_revision"),
+                )
+                classes = await asyncio.to_thread(load_intelligence_classes, self.config.data_dir)
+                builder = getattr(self.orchestrator, "session_spec_builder", None)
+                if builder is not None:
+                    # Lenses and reconcilers retain this builder object. Only its
+                    # class map changes; running sessions are left untouched.
+                    builder._intelligence_classes = classes
+                return {"success": True, "intelligence_class": class_row(classes.get(saved.id, saved))}
+
+        # Cancelling an HTTP request cannot cancel the persistence thread. Keep
+        # the lock and publish its result before propagating cancellation.
+        operation = asyncio.create_task(save_and_publish())
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            while not operation.done():
+                try:
+                    await asyncio.shield(operation)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not operation.cancelled():
+                operation.exception()  # retrieve a failure after a cancelled request
+            raise
+        except IntelligenceClassConflict as exc:
+            return {"error": str(exc), "error_code": "revision_conflict", "current_revision": exc.current_revision}
+        except IntelligenceClassEditError as exc:
+            return {"error": str(exc)}
+        except (OSError, UnicodeError):
+            logger.warning("Could not persist intelligence-class edit")
+            return {"error": "Intelligence class could not be saved"}
 
     async def _cmd_get_stuck_tasks(self, args: dict) -> dict:
         """Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their

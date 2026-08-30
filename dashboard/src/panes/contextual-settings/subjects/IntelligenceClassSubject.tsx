@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { describeProviderMapping } from "../../../components/intelligence-classes/mapping";
 import { useIntelligenceClasses } from "../../../api/hooks";
 import type { PaneViewProps } from "../../types";
 import type { ContextualSettingsArgs } from "../args";
@@ -39,15 +40,13 @@ export default function IntelligenceClassSubject({ args, setToolbar }: PaneViewP
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([provider, slice]) => (
             <li key={provider}>
-              <span className="text-gray-500">{provider}:</span> {slice.model ?? "—"}
-              {slice.thinking ? ` · think:${slice.thinking}` : ""}
+              <span className="text-gray-500">{provider}:</span> {describeProviderMapping(slice)}
             </li>
           ))}
       </ul>
       <p className="text-xs text-gray-500">
-        These classes ship from the vault. Edit{" "}
-        <code className="rounded bg-gray-800 px-1">vault/intelligence-classes/{args.subjectId}.md</code>{" "}
-        to change them.
+        <Link to="/settings/intelligence-classes" className="text-indigo-300 hover:underline">Edit in Intelligence Classes</Link>.
+        Changes apply to future launches; running sessions are unchanged.
       </p>
     </div>
   );

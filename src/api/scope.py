@@ -63,6 +63,10 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     """
     if scope.kind == "local":
         return None
+    if command == "edit_intelligence_class" and not (
+        scope.elevated and scope.project_id is None and scope.task_id is None
+    ):
+        return "out of scope: intelligence-class settings require global admin"
     if command == "session_input" and not (scope.elevated and scope.project_id is None):
         return "out of scope: direct terminal input requires global admin"
     if command in {"create_agent", "edit_agent", "delete_agent", "start_agent_terminal"} and not (

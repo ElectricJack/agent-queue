@@ -7314,6 +7314,63 @@
         }
       }
     },
+    "/api/system/edit-intelligence-class": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Edit an existing global intelligence class in the vault. Saves name, description and the complete provider mapping without changing its ID. Requires global admin. Changes affect future launches only. Pass the revision returned by list_intelligence_classes to reject stale edits.",
+        "description": "Edit an existing global intelligence class in the vault. Saves name, description and the complete provider mapping without changing its ID. Requires global admin. Changes affect future launches only. Pass the revision returned by list_intelligence_classes to reject stale edits.",
+        "operationId": "edit_intelligence_class",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditIntelligenceClassRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditIntelligenceClassResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Intelligence class changed since it was loaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditIntelligenceClassConflictResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/get-chat-analyzer-metrics": {
       "post": {
         "tags": [
@@ -14984,6 +15041,92 @@
         "type": "object",
         "title": "EditFileResponse"
       },
+      "EditIntelligenceClassConflictResponse": {
+        "properties": {
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "error_code": {
+            "type": "string",
+            "const": "revision_conflict",
+            "title": "Error Code"
+          },
+          "current_revision": {
+            "type": "string",
+            "title": "Current Revision"
+          }
+        },
+        "type": "object",
+        "required": [
+          "error",
+          "error_code",
+          "current_revision"
+        ],
+        "title": "EditIntelligenceClassConflictResponse"
+      },
+      "EditIntelligenceClassRequest": {
+        "properties": {
+          "class_id": {
+            "type": "string",
+            "title": "Class Id",
+            "description": "Existing immutable class ID."
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Human-readable class name."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "Class description."
+          },
+          "mapping": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Mapping",
+            "description": "Complete provider-to-configuration JSON mapping."
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision",
+            "description": "Raw-file revision from the last read."
+          }
+        },
+        "type": "object",
+        "required": [
+          "class_id",
+          "name",
+          "description",
+          "mapping"
+        ],
+        "title": "EditIntelligenceClassRequest"
+      },
+      "EditIntelligenceClassResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "intelligence_class": {
+            "$ref": "#/components/schemas/IntelligenceClassModel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "intelligence_class"
+        ],
+        "title": "EditIntelligenceClassResponse"
+      },
       "EditMcpServerRequest": {
         "properties": {
           "name": {
@@ -20348,6 +20491,10 @@
             "type": "string",
             "title": "Id"
           },
+          "revision": {
+            "type": "string",
+            "title": "Revision"
+          },
           "name": {
             "type": "string",
             "title": "Name",
@@ -20367,7 +20514,8 @@
         },
         "type": "object",
         "required": [
-          "id"
+          "id",
+          "revision"
         ],
         "title": "IntelligenceClassModel"
       },

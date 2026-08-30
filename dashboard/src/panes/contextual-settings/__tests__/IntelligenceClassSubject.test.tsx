@@ -31,7 +31,7 @@ describe("IntelligenceClassSubject", () => {
     } as unknown as ReturnType<typeof hooks.useIntelligenceClasses>);
   });
 
-  it("renders only the matching class, the vault hint, and only an open-full toolbar action", () => {
+  it("renders only the matching class and links to editable dashboard settings", () => {
     let toolbar: { id: string }[] = [];
     render(
       <IntelligenceClassSubject
@@ -49,7 +49,7 @@ describe("IntelligenceClassSubject", () => {
     expect(screen.getByText("Fast")).toBeInTheDocument();
     expect(screen.queryByText("Deep")).not.toBeInTheDocument();
     expect(screen.getByText(/anthropic/)).toBeInTheDocument();
-    expect(screen.getByText(/Edit/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Edit in Intelligence Classes" })).toHaveAttribute("href", "/settings/intelligence-classes");
     expect(toolbar).toEqual([{ id: "open-full", label: "Open full settings page", icon: expect.anything(), onClick: expect.any(Function) }]);
   });
 

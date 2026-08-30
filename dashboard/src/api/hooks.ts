@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiGet, legacyFetch } from "./legacy-fetch";
+import { apiGet } from "./legacy-fetch";
 import {
   addWorkspace,
   approvePlan,
@@ -17,6 +17,7 @@ import {
   deleteProjectProfile,
   deleteTask,
   editMcpServer,
+  editIntelligenceClass,
   editProfile,
   editProject,
   editProjectProfile,
@@ -31,6 +32,7 @@ import {
   getTask,
   listActiveTasksAllProjects,
   listAgents,
+  listIntelligenceClasses,
   listEventTriggers,
   listMcpServers,
   listMcpToolCatalog,
@@ -86,6 +88,8 @@ import type {
   CreateTaskRequest,
   CreateProjectProfileResponse2 as CreateProjectProfileResponse,
   EditProfileRequest,
+  EditIntelligenceClassRequest,
+  IntelligenceClassModel,
   EditProjectProfileRequest,
   EditProjectRequest,
   EditTaskRequest,
@@ -483,18 +487,14 @@ export function useDeleteProfile() {
   });
 }
 
-export type ProviderSlice = {
-  model?: string;
-  thinking?: string;
-  reasoning_effort?: string;
-  thinking_budget?: number;
-};
+export type ProviderSlice = Record<string, unknown>;
 
 export type IntelligenceClassRow = {
   id: string;
   name: string;
   description: string;
-  mapping: Record<string, ProviderSlice>;
+  revision: string;
+  mapping: Record<string, unknown>;
 };
 
 export type IntelligenceClassesResponse = {
@@ -502,25 +502,42 @@ export type IntelligenceClassesResponse = {
   classes: IntelligenceClassRow[];
 };
 
+function intelligenceClassRow(row: IntelligenceClassModel): IntelligenceClassRow {
+  return {
+    id: row.id, name: row.name ?? row.id, description: row.description ?? "",
+    revision: row.revision ?? "", mapping: row.mapping ?? {},
+  };
+}
+
 export function useIntelligenceClasses() {
   return useQuery({
     queryKey: ["intelligence-classes"],
-    queryFn: async () => {
-      // Auto-generated command routes are POST — call with an empty body.
-      // No generated-SDK type exists for this endpoint yet — legacyFetch is
-      // the documented exception, not a new violation of "never call fetch
-      // directly" (see dashboard/CLAUDE.md).
-      const res = await legacyFetch("/api/system/list-intelligence-classes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      });
-      if (!res.ok) {
-        throw new Error(`API ${res.status}: ${await res.text()}`);
-      }
-      return (await res.json()) as IntelligenceClassesResponse;
+    queryFn: async (): Promise<IntelligenceClassesResponse> => {
+      const { data } = await listIntelligenceClasses({ body: {}, throwOnError: true });
+      return { success: data.success ?? true, classes: (data.classes ?? []).map(intelligenceClassRow) };
     },
     staleTime: 30_000,
+  });
+}
+
+export function useEditIntelligenceClass() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: EditIntelligenceClassRequest) => {
+      const { data } = await editIntelligenceClass({ body: input, throwOnError: true });
+      return intelligenceClassRow(data.intelligence_class);
+    },
+    retry: false,
+    onSuccess: (saved) => {
+      queryClient.setQueryData<IntelligenceClassesResponse>(["intelligence-classes"], (previous) => previous
+        ? { ...previous, classes: previous.classes.map((row) => row.id === saved.id ? saved : row) }
+        : undefined);
+      void queryClient.invalidateQueries({ queryKey: ["intelligence-classes"] });
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
+      void queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+    },
+    // Refetch a conflict's latest revision without replacing the editor's draft.
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ["intelligence-classes"] }); },
   });
 }
 

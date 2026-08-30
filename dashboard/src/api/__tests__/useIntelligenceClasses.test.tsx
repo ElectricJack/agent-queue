@@ -1,47 +1,40 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { useIntelligenceClasses } from "../hooks";
-import * as legacyFetchModule from "../legacy-fetch";
+
+const api = vi.hoisted(() => ({ listIntelligenceClasses: vi.fn() }));
+vi.mock("../client", () => api);
+const clients: QueryClient[] = [];
 
 function wrapper({ children }: { children: ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  clients.push(client);
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
-describe("useIntelligenceClasses", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
+beforeEach(() => vi.clearAllMocks());
+afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()); });
 
-  it("fetches and returns the full response shape", async () => {
+describe("useIntelligenceClasses", () => {
+  it("returns effective mappings and edit revisions through the SDK", async () => {
     const body = {
       success: true,
-      classes: [
-        { id: "fast-off", name: "Fast", description: "", mapping: { anthropic: { model: "haiku" } } },
-      ],
+      classes: [{ id: "fast-off", name: "Fast", description: "", revision: "revision-1",
+        mapping: { anthropic: { model: "sonnet", thinking: "off", extra: true }, codex: null } }],
     };
-    vi.spyOn(legacyFetchModule, "legacyFetch").mockResolvedValue({
-      ok: true,
-      json: async () => body,
-      text: async () => "",
-    } as Response);
-
+    api.listIntelligenceClasses.mockResolvedValue({ data: body });
     const { result } = renderHook(() => useIntelligenceClasses(), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toEqual(body);
+    expect(api.listIntelligenceClasses).toHaveBeenCalledWith({ body: {}, throwOnError: true });
   });
 
-  it("throws on a non-ok response", async () => {
-    vi.spyOn(legacyFetchModule, "legacyFetch").mockResolvedValue({
-      ok: false,
-      status: 500,
-      json: async () => ({}),
-      text: async () => "boom",
-    } as Response);
-
+  it("surfaces the SDK request error", async () => {
+    api.listIntelligenceClasses.mockRejectedValue(new Error("API 500: boom"));
     const { result } = renderHook(() => useIntelligenceClasses(), { wrapper });
     await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe("API 500: boom");
   });
 });

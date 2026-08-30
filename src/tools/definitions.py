@@ -166,6 +166,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "run_command": "system",
     "get_stuck_tasks": "system",
     "list_intelligence_classes": "system",
+    "edit_intelligence_class": "system",
     "doctor": "system",
     "get_costs": "system",
     "db_preflight_hierarchy": "system",
@@ -4405,6 +4406,27 @@ _ALL_TOOL_DEFINITIONS = [
             "provider→config mapping each one resolves to. Read-only."
         ),
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "edit_intelligence_class",
+        "description": (
+            "Edit an existing global intelligence class in the vault. Saves name, "
+            "description and the complete provider mapping without changing its ID. "
+            "Requires global admin. Changes affect future launches only. Pass the "
+            "revision returned by list_intelligence_classes to reject stale edits."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "class_id": {"type": "string", "description": "Existing immutable class ID."},
+                "name": {"type": "string", "description": "Human-readable class name."},
+                "description": {"type": "string", "description": "Class description."},
+                "mapping": {"type": "object", "additionalProperties": True,
+                            "description": "Complete provider-to-configuration JSON mapping."},
+                "expected_revision": {"type": "string", "description": "Raw-file revision from the last read."},
+            },
+            "required": ["class_id", "name", "description", "mapping"],
+        },
     },
     # -----------------------------------------------------------------
     # Worker pools — sizing and bounds (swarm-work-model §11).

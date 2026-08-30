@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -242,6 +242,7 @@ class ScanStubStalenessResponse(BaseModel):
 
 class IntelligenceClassModel(BaseModel):
     id: str
+    revision: str
     name: str = ""
     description: str = ""
     #: provider → config mapping this class resolves to.
@@ -251,6 +252,17 @@ class IntelligenceClassModel(BaseModel):
 class ListIntelligenceClassesResponse(BaseModel):
     success: bool = True
     classes: list[IntelligenceClassModel] = []
+
+
+class EditIntelligenceClassConflictResponse(BaseModel):
+    error: str
+    error_code: Literal["revision_conflict"]
+    current_revision: str
+
+
+class EditIntelligenceClassResponse(BaseModel):
+    success: bool = True
+    intelligence_class: IntelligenceClassModel
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
@@ -277,4 +289,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_stuck_tasks": GetStuckTasksResponse,
     "scan_stub_staleness": ScanStubStalenessResponse,
     "list_intelligence_classes": ListIntelligenceClassesResponse,
+    "edit_intelligence_class": EditIntelligenceClassResponse,
 }
