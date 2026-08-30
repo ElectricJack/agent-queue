@@ -4,7 +4,6 @@ import { useListNav } from "../shell/hotkeys/useListNav";
 const tabs = [
   { to: "/command-center/graph", label: "Graph" },
   { to: "/command-center/tasks", label: "Tasks" },
-  { to: "/command-center/agents", label: "Agents" },
 ];
 
 function tabClass(active: boolean): string {
@@ -16,7 +15,7 @@ function tabClass(active: boolean): string {
 }
 
 /**
- * Command Center hub — three tabs (Graph, Tasks, Agents) sharing the same
+ * Command Center hub — Graph and Tasks tabs sharing the same
  * project-strip context (persisted in localStorage by each tab that uses it).
  * Route redirects and pane dispatches live in App.tsx.
  */

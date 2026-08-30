@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Outlet, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import App from "./App";
 
 vi.mock("./panes/registry", () => ({ PANE_REGISTRY: {} }));
@@ -11,7 +11,6 @@ vi.mock("./shell/TopBar", () => ({ default: () => null }));
 vi.mock("./shell/RightSurface", () => ({ default: () => null }));
 vi.mock("./shell/palette/Palette", () => ({ Palette: () => null }));
 vi.mock("./shell/hotkeys/CheatSheetModal", () => ({ default: () => null }));
-vi.mock("./pages/CommandCenter", () => ({ default: () => <Outlet /> }));
 vi.mock("./pages/command-center/Graph", () => ({ default: () => <h1>Command Center graph</h1> }));
 vi.mock("./pages/GlobalChat", () => ({ default: () => <h1>Former Home chat</h1> }));
 vi.mock("./pages/agents/AgentWorkspace", () => ({ default: () => <h1>Agent flock</h1> }));
@@ -28,6 +27,22 @@ function renderApp(path: string) {
 afterEach(cleanup);
 
 describe("Dashboard navigation", () => {
+  it("keeps only Graph and Tasks in Command Center navigation", async () => {
+    renderApp("/command-center/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    expect(screen.getByRole("link", { name: "Graph" })).toHaveAttribute("href", "/command-center/graph");
+    expect(screen.getByRole("link", { name: "Tasks" })).toHaveAttribute("href", "/command-center/tasks");
+    expect(screen.queryByRole("link", { name: "Agents" })).not.toBeInTheDocument();
+  });
+
+  it.each(["/agents", "/command-center/agents", "/work/agents", "/work/sessions"])(
+    "opens the sidebar Agent flock from %s", async (path) => {
+      renderApp(path);
+      expect(await screen.findByRole("heading", { name: "Agent flock" })).toBeInTheDocument();
+      expect(screen.getByLabelText("Current location").textContent).toBe("/agents");
+    },
+  );
+
   it.each(["/", "/old-missing-page"])("lands on Command Center from %s", async (path) => {
     renderApp(path);
     expect(await screen.findByRole("heading", { name: "Command Center graph" })).toBeInTheDocument();

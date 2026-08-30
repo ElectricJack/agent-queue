@@ -6,7 +6,6 @@ const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
 const CommandCenterGraph = lazy(() => import("./pages/command-center/Graph"));
 const CommandCenterTasks = lazy(() => import("./pages/command-center/Tasks"));
-const CommandCenterAgents = lazy(() => import("./pages/command-center/Agents"));
 
 const ChatConversation = lazy(() => import("./pages/chat/ChatConversation"));
 const CommandCenter = lazy(() => import("./pages/CommandCenter"));
@@ -58,14 +57,14 @@ export default function App() {
               <Route index element={<Navigate to="graph" replace />} />
               <Route path="graph" element={<CommandCenterGraph />} />
               <Route path="tasks" element={<CommandCenterTasks />} />
-              <Route path="agents" element={<CommandCenterAgents />} />
+              <Route path="agents" element={<Navigate to="/agents" replace />} />
             </Route>
 
             {/* Legacy /work* — kept as redirects for external deep-links. */}
             <Route path="work" element={<Navigate to="/command-center/tasks" replace />} />
             <Route path="work/tasks" element={<Navigate to="/command-center/tasks" replace />} />
-            <Route path="work/agents" element={<Navigate to="/command-center/agents" replace />} />
-            <Route path="work/sessions" element={<Navigate to="/command-center/agents" replace />} />
+            <Route path="work/agents" element={<Navigate to="/agents" replace />} />
+            <Route path="work/sessions" element={<Navigate to="/agents" replace />} />
             <Route
               path="work/events"
               element={<Navigate to="/command-center/tasks?openDrawer=events" replace />}
