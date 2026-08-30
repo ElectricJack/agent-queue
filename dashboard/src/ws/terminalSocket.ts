@@ -86,7 +86,10 @@ export function connectTerminal({ sessionId, cols, rows, write, onState }: {
 
   onState({ status: "connecting" });
   try {
-    const base = import.meta.env.VITE_WS_URL || import.meta.env.VITE_API_URL || window.location.origin;
+    // The legacy VITE_WS_URL is set by the checked-in .env for notifications.
+    // Terminals must use the same-origin Vite proxy unless explicitly configured;
+    // a separate endpoint also requires api_auth.trusted_dashboard_origins.
+    const base = import.meta.env.VITE_TERMINAL_WS_URL || window.location.origin;
     const url = new URL(base, window.location.href);
     url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
     url.pathname = url.pathname.replace(/\/$/, "") + "/ws/terminal/" + encodeURIComponent(sessionId);

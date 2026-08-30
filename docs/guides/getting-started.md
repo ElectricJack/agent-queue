@@ -81,6 +81,21 @@ The bot uses a **Supervisor** — an LLM-powered conversation interface that tra
 - **CLI:** Run `aq` commands in your terminal (install with `pip install -e ".[cli]"`)
 - **MCP client:** Connect from Claude Code, Cursor, or any MCP-compatible client — the embedded MCP server auto-exposes ~150 tools
 
+### Dashboard terminals
+
+Start the dashboard with `npm -w dashboard run dev` from the repository root.
+Agent flock terminals connect through the dashboard's own `/ws/terminal/` endpoint.
+Vite proxies this to `AQ_API_TARGET` (default `http://127.0.0.1:8081`), so ordinary
+local use needs no additional origin configuration.
+
+Terminal connections intentionally ignore the legacy `VITE_WS_URL` notification
+setting and the `VITE_API_URL` HTTP setting. To use a separate terminal endpoint,
+set `VITE_TERMINAL_WS_URL` to its base URL before starting or building the dashboard.
+The daemon must trust the exact dashboard origin (scheme, host, and port) in
+`api_auth.trusted_dashboard_origins`; custom dashboard hostnames also require this
+trust. Operator authentication and loopback access restrictions still apply.
+Leave the terminal override unset to use the normal dashboard proxy.
+
 ### What Happens Next
 
 As agents complete tasks, the system starts learning:

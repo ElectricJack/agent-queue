@@ -7,6 +7,7 @@ let connections: TerminalConnection[] = [];
 
 beforeEach(() => {
   TerminalSocketMock.instances = [];
+  vi.stubEnv("VITE_TERMINAL_WS_URL", "");
   vi.stubGlobal("WebSocket", TerminalSocketMock);
 });
 afterEach(() => {
@@ -29,12 +30,28 @@ function connect(sessionId = "session-b") {
 
 describe("Bidirectional terminal transport", () => {
   it("selects the exact session and dimensions using the terminal subprotocol", () => {
-    vi.stubEnv("VITE_WS_URL", "wss://daemon.example/base");
+    vi.stubEnv("VITE_TERMINAL_WS_URL", "wss://daemon.example/base");
     const { socket } = connect("session/one");
     expect(socket.url).toBe("wss://daemon.example/base/ws/terminal/session%2Fone?cols=100&rows=30");
     expect(socket.protocols).toEqual(["aq-terminal-v1"]);
     expect(socket.binaryType).toBe("arraybuffer");
     expect(socket.send).not.toHaveBeenCalled();
+  });
+
+  it("uses the dashboard proxy despite legacy event and API URL overrides", () => {
+    vi.stubEnv("VITE_WS_URL", "ws://127.0.0.1:8081");
+    vi.stubEnv("VITE_API_URL", "http://127.0.0.1:8081");
+    const { socket } = connect();
+    const expected = new URL("/ws/terminal/session-b?cols=100&rows=30", window.location.href);
+    expected.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    expect(socket.url).toBe(expected.toString());
+  });
+
+  it("uses secure same-origin WebSockets when the dashboard is served over HTTPS", () => {
+    vi.stubEnv("VITE_WS_URL", "ws://127.0.0.1:8081");
+    vi.stubGlobal("window", { location: { origin: "https://dashboard.example", href: "https://dashboard.example/agents" } });
+    const { socket } = connect();
+    expect(socket.url).toBe("wss://dashboard.example/ws/terminal/session-b?cols=100&rows=30");
   });
 
   it("sends consecutive input immediately without HTTP or output acknowledgements", () => {
