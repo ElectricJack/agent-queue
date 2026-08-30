@@ -11,7 +11,7 @@ exclusively by transition evaluation logic.
 
 The mixin expects the following attributes on ``self``:
 - ``event`` — trigger event dict
-- ``supervisor`` — :class:`Supervisor` instance
+- ``services`` — :class:`PlaybookServices` bundle
 - ``messages`` — conversation history list
 - ``tokens_used`` — cumulative token count
 - ``_dry_run`` — dry-run mode flag
@@ -155,11 +155,12 @@ class TransitionMixin:
 
     # Attributes expected from PlaybookRunner (for type checking purposes)
     event: dict
-    supervisor: Any  # Supervisor
+    services: Any  # PlaybookServices
     messages: list[dict]
     tokens_used: int
     _dry_run: bool
     _llm_config: dict | None
+    _playbook_id: str
     _transition_llm_config: dict | None
 
     async def _evaluate_transition(
@@ -514,7 +515,7 @@ class TransitionMixin:
         2. ``self._transition_llm_config`` — playbook-level transition config
         3. ``node["llm_config"]`` — per-node general config
         4. ``self._llm_config`` — playbook-level general config
-        5. ``None`` — use Supervisor default
+        5. ``None`` — use the client's default
 
         This allows playbooks to route transition classification calls to
         a cheaper/faster model (e.g., Haiku) while keeping node execution
@@ -618,13 +619,18 @@ class TransitionMixin:
             )
 
         # Make the classification call with full conversation context
-        decision = await self.supervisor.chat(
-            text=transition_prompt,
-            user_name=f"playbook-runner:transition:{node_id}",
-            history=list(self.messages),
-            llm_config=transition_llm_config,
-            tool_overrides=[],  # No tools needed for classification
-        )
+        from src.llm import spec_from_llm_config
+
+        decision = (
+            await self.services.llm.complete(
+                list(self.messages) + [{"role": "user", "content": transition_prompt}],
+                system="You classify which condition matched. Reply with only a number.",
+                spec=spec_from_llm_config(
+                    transition_llm_config,
+                    caller=f"playbook:{self._playbook_id}:transition:{node_id}",
+                ),
+            )
+        ).text
 
         # Parse the LLM's choice
         decision = decision.strip()

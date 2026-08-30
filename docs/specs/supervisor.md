@@ -4,12 +4,23 @@ tags: [spec, supervisor, llm, core]
 
 # Supervisor Specification
 
-The Supervisor is the single intelligent entity in the agent-queue system.
-It replaces the former `ChatAgent` class. All LLM reasoning flows through it.
+> **Superseded.** `src/supervisor.py` and the in-process `Supervisor` class
+> described below were **deleted** in the llm-direct-path cutover
+> (2026-08-30) — there is no single in-process LLM entity anymore. Discord
+> slash commands, MCP tools, and CLI all delegate directly to
+> `CommandHandler`; the "supervisor" is now a **profile** (a `harness`-selected
+> tmux session, `vault/agent-types/supervisor/profile.md`), not code, and
+> playbook/plugin LLM calls go through the direct LLM path (`src/llm/`
+> `LLMClient`) instead of `Supervisor.chat()`. See
+> `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md` and
+> `docs/specs/design/supervisor-agent.md` (§10, S9) for the design and
+> current architecture. The class description below is kept as historical
+> reference for what the old in-process entity did; nothing on this page
+> describes current code.
 
-See [[design/playbooks]] for how playbook execution extends the Supervisor model.
+See [[design/playbooks]] for how playbook execution extends the Supervisor model (historical).
 
-## Class: Supervisor (src/supervisor.py)
+## Class: Supervisor (src/supervisor.py) — deleted, historical reference
 
 ### Constructor
 - `Supervisor(orchestrator, config, llm_logger=None)`

@@ -28,7 +28,6 @@ from src.messaging.types import ThreadSendCallback
 
 if TYPE_CHECKING:
     from src.commands.handler import CommandHandler
-    from src.runtimes.supervisor import Supervisor
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +220,7 @@ class MessagingPort(ABC):
         """Provide the unified command handler for interactive actions."""
 
     @abstractmethod
-    def set_supervisor(self, supervisor: "Supervisor") -> None:
+    def set_supervisor(self, supervisor: Any) -> None:
         """Provide the supervisor for conversational message handling."""
 
     # -----------------------------------------------------------------------

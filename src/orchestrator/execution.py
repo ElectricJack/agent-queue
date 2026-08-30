@@ -15,7 +15,6 @@ from src.discord.notifications import format_task_started
 from src.notifications.builder import build_agent_summary, build_task_detail
 from src.notifications.events import (
     AgentQuestionEvent,
-    PlanAwaitingApprovalEvent,
     PRCreatedEvent,
     TaskBlockedEvent,
     TaskCompletedEvent,
@@ -354,9 +353,17 @@ class ExecutionMixin:
         # profile without ``harness`` keeps its ``runtime:`` verbatim.
         session_routed = self._is_session_routed(profile)
 
-        platform_name = profile.runtime if profile else self.config.default_runtime
+        # No in-tree runtime remains: ``create`` is reached only when a test
+        # or a plugin has registered one on the registry seam, and the name is
+        # not carried by the profile any more.
+        platform_name = ""
         platform = None
         if not session_routed:
+            logger.debug(
+                "Task %s: profile is not session-routed — dispatching through "
+                "the runtime seam",
+                task.id,
+            )
             platform = self._runtimes.create(
                 platform_name, profile=profile, llm_logger=self.llm_logger
             )
@@ -782,8 +789,7 @@ class ExecutionMixin:
             except Exception as e:
                 logger.warning("Task %s: failed to look up session_id: %s", task.id, e)
 
-        # Record execution start time so _discover_and_store_plan() can
-        # detect stale plan files that predate this task's agent execution.
+        # Record execution start time, keyed by task_id.
         self._task_exec_start[action.task_id] = time.time()
 
         # Snapshot the current HEAD so the task summary can show only the
@@ -1039,190 +1045,11 @@ class ExecutionMixin:
                 project=project,
             )
 
-            # Run completion pipeline (commit → plan_discover → merge)
+            # Run completion pipeline (commit → verify → integrate)
             logger.info("Task %s: running completion pipeline", task.id)
             pr_url, completed_ok = await self._run_completion_pipeline(pipeline_ctx)
 
-            if (
-                pipeline_ctx.plan_needs_approval
-                and completed_ok
-                and self._should_run_legacy_plan_region(task)
-            ):
-                # Gated by ``config.planner.legacy_plan_discovery``
-                # (supervisor-agent §9 row 4). ``_phase_plan_discover``
-                # only sets ``plan_needs_approval`` when the legacy
-                # discovery path ran, so this extra guard is defensive:
-                # if the flag was flipped between discover and here, the
-                # legacy region (AWAITING_PLAN_APPROVAL transition +
-                # ``break_plan_into_tasks``) is skipped. Drain semantics
-                # (spec §11 P5) let already-AWAITING_PLAN_APPROVAL tasks
-                # continue on legacy — see
-                # ``_should_run_legacy_plan_region``. When the region is
-                # skipped, no planner task-graph is auto-created here:
-                # spec §9 doesn't define a concrete replacement and the
-                # Task 8 brief mandates "skip + log at info" over
-                # invented behaviour.
-                logger.info(
-                    "Task %s: plan needs approval — sending notification",
-                    task.id,
-                )
-                # Plan was discovered — present it to the user for approval
-                await self.db.transition_task(
-                    action.task_id,
-                    TaskStatus.AWAITING_PLAN_APPROVAL,
-                    context="plan_found",
-                )
-                await self.db.log_event(
-                    "plan_found",
-                    project_id=action.project_id,
-                    task_id=action.task_id,
-                    agent_id=action.agent_id,
-                )
-                # Notify in the task thread that a plan was found
-                await self._emit_notify(
-                    "notify.task_message",
-                    TaskMessageEvent(
-                        task_id=task.id,
-                        message="📋 **Plan detected** — processing for approval...",
-                        message_type="agent_output",
-                        project_id=action.project_id,
-                    ),
-                )
-
-                # Retrieve the stored plan content for the event
-                plan_contexts = await self.db.get_task_contexts(task.id)
-                raw_ctx = next(
-                    (c for c in plan_contexts if c["type"] == "plan_raw"),
-                    None,
-                )
-                if not raw_ctx:
-                    logger.warning(
-                        "Task %s: plan_needs_approval=True but no plan_raw "
-                        "context found — approval embed will be empty",
-                        task.id,
-                    )
-                # Generate a URL to view the full plan in a browser
-                plan_url = ""
-                if self.config.mcp_server.enabled:
-                    from src.api.health import get_plan_url
-
-                    plan_url = get_plan_url(task.id)
-
-                # Auto pre-create draft subtasks so approval uses the fast
-                # path (plan_draft_subtasks context exists).
-                created_info: list[dict] = []
-                try:
-                    supervisor = self._supervisor
-                    if supervisor and supervisor.is_ready and raw_ctx:
-                        config = self.config.auto_task
-                        workspace_id = ws.id if ws else None
-                        self._plan_processing_locks.add(action.project_id)
-                        try:
-                            created_info = await supervisor.break_plan_into_tasks(
-                                raw_plan=raw_ctx["content"],
-                                parent_task_id=task.id,
-                                project_id=action.project_id,
-                                workspace_id=workspace_id,
-                                chain_dependencies=config.chain_dependencies,
-                                requires_approval=(
-                                    task.requires_approval if config.inherit_approval else False
-                                ),
-                                base_priority=task.priority,
-                            )
-
-                            if created_info:
-                                # break_plan_into_tasks() already gave every
-                                # subtask a `parent-child` edge to this task
-                                # (+ `discovered-from` provenance).  An
-                                # AWAITING_PLAN_APPROVAL container withholds
-                                # its children, so the chain stays blocked
-                                # until approval without a separate `blocks`
-                                # edge (work-graph design §3.1).
-
-                                # Store draft subtask IDs for approve/delete/reject
-                                import json as _json
-
-                                await self.db.add_task_context(
-                                    task.id,
-                                    type="plan_draft_subtasks",
-                                    label="Draft Subtask IDs",
-                                    content=_json.dumps(created_info),
-                                )
-
-                                logger.info(
-                                    "Task %s: auto-created %d draft subtasks",
-                                    task.id,
-                                    len(created_info),
-                                )
-                        finally:
-                            self._plan_processing_locks.discard(action.project_id)
-                except Exception:
-                    logger.exception(
-                        "Task %s: failed to auto-create draft subtasks "
-                        "(approval will use legacy path)",
-                        task.id,
-                    )
-
-                # ── Auto-approve if task has auto_approve_plan set ──
-                if task.auto_approve_plan and created_info:
-                    logger.info(
-                        "Task %s: auto_approve_plan=True — auto-approving plan with %d subtask(s)",
-                        task.id,
-                        len(created_info),
-                    )
-                    handler = self._get_handler()
-                    approve_result = await handler._cmd_approve_plan({"task_id": task.id})
-                    if "error" in approve_result:
-                        logger.warning(
-                            "Task %s: auto-approve failed: %s — falling back to manual approval",
-                            task.id,
-                            approve_result["error"],
-                        )
-                        # Fall through to manual approval below
-                    else:
-                        await self._emit_notify(
-                            "notify.task_message",
-                            TaskMessageEvent(
-                                task_id=task.id,
-                                message=(
-                                    f"✅ **Plan auto-approved** — "
-                                    f"{len(created_info)} subtask(s) activated"
-                                ),
-                                message_type="agent_output",
-                                project_id=action.project_id,
-                            ),
-                        )
-                        await self._emit_text_notify(
-                            f"✅ **Plan auto-approved:** `{task.id}` — "
-                            f"{task.title} ({len(created_info)} subtask(s))",
-                            project_id=action.project_id,
-                        )
-                        brief = (
-                            f"✅ Plan auto-approved: {task.title} "
-                            f"(`{task.id}`) — {len(created_info)} subtask(s)"
-                        )
-                        await _notify_brief(brief)
-                        pipeline_ctx.plan_needs_approval = False
-
-                if pipeline_ctx.plan_needs_approval:
-                    # Populate parsed_steps from auto-created subtasks (if any).
-                    parsed_steps: list[dict] = [
-                        {"title": t["title"], "description": ""} for t in created_info
-                    ]
-
-                    await self._emit_notify(
-                        "notify.plan_awaiting_approval",
-                        PlanAwaitingApprovalEvent(
-                            task=build_task_detail(task),
-                            subtasks=parsed_steps,
-                            plan_url=plan_url,
-                            raw_content=raw_ctx["content"] if raw_ctx else "",
-                            project_id=action.project_id,
-                        ),
-                    )
-                    brief = f"📋 Plan awaiting approval: {task.title} (`{task.id}`)"
-                    await _notify_brief(brief)
-            elif pr_url:
+            if pr_url:
                 # PR-based approval workflow
                 await self.db.transition_task(
                     action.task_id,

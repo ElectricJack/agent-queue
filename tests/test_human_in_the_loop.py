@@ -23,9 +23,36 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.event_bus import EventBus
+from src.llm import LLMClient, LLMRunResult
+from src.llm.fake import FakeProvider
 from src.models import PlaybookRun
 from src.playbooks.resume_handler import PlaybookResumeHandler
 from src.playbooks.runner import PlaybookRunner
+from src.playbooks.services import PlaybookServices
+
+
+def _run_result(text: str) -> LLMRunResult:
+    return LLMRunResult(text=text, transcript=[], turns=1, stopped_by="done")
+
+
+def _prompt_of(call) -> str:
+    """The folded per-node user prompt of a ``run_tools`` call."""
+    return call.args[0][-1]["content"]
+
+
+def _messages_of(call) -> list[dict]:
+    return call.args[0]
+
+
+def _script_iter(services, responses) -> None:
+    async def _run_tools(*a, **kw):
+        return _run_result(next(responses))
+
+    async def _complete(*a, **kw):
+        return MagicMock(text=next(responses), tool_calls=[])
+
+    services.llm.run_tools.side_effect = _run_tools
+    services.llm.complete.side_effect = _complete
 
 
 # ---------------------------------------------------------------------------
@@ -40,12 +67,14 @@ def event_bus():
 
 
 @pytest.fixture
-def mock_supervisor():
-    """Mock Supervisor with controllable chat() responses."""
-    supervisor = AsyncMock()
-    supervisor.chat = AsyncMock(return_value="Done.")
-    supervisor.summarize = AsyncMock(return_value="Summary.")
-    return supervisor
+def mock_services():
+    """PlaybookServices with controllable llm.run_tools() / llm.complete()."""
+    services = PlaybookServices.for_tests(LLMClient.with_provider(FakeProvider()))
+    services.llm = MagicMock()
+    services.llm.config = MagicMock(max_tokens=2048)
+    services.llm.run_tools = AsyncMock(return_value=_run_result("Done."))
+    services.llm.complete = AsyncMock(return_value=MagicMock(text="1", tool_calls=[]))
+    return services
 
 
 @pytest.fixture
@@ -160,13 +189,13 @@ class TestWaitForHumanPauses:
     persists run state to DB and pauses with status 'paused'."""
 
     async def test_run_pauses_at_wait_for_human_node(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """Runner returns status 'paused' when hitting a wait_for_human node."""
         responses = iter(["Analysis: code quality issues found.", "Here is my analysis."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(human_review_graph, event_data, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, event_data, mock_services, db=mock_db)
         result = await runner.run()
 
         assert result.status == "paused"
@@ -175,13 +204,13 @@ class TestWaitForHumanPauses:
         assert result.node_trace[1]["node_id"] == "review"
 
     async def test_paused_state_persisted_to_db(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """DB is updated with status 'paused', current_node, and full state."""
         responses = iter(["Analysis done.", "Ready for review."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(human_review_graph, event_data, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, event_data, mock_services, db=mock_db)
         await runner.run()
 
         # Find the paused update call
@@ -195,13 +224,13 @@ class TestWaitForHumanPauses:
         assert paused_call.kwargs["current_node"] == "review"
 
     async def test_conversation_history_persisted(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """Full conversation history is persisted in the paused DB update."""
         responses = iter(["Code has 3 issues.", "Please review these findings."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(human_review_graph, event_data, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, event_data, mock_services, db=mock_db)
         await runner.run()
 
         paused_call = None
@@ -222,13 +251,13 @@ class TestWaitForHumanPauses:
         assert history[4]["content"] == "Please review these findings."
 
     async def test_node_trace_persisted(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """Node trace with timing info is persisted when paused."""
         responses = iter(["Analysis.", "Review ready."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(human_review_graph, event_data, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, event_data, mock_services, db=mock_db)
         await runner.run()
 
         paused_call = None
@@ -248,13 +277,13 @@ class TestWaitForHumanPauses:
         assert trace[1]["status"] == "completed"
 
     async def test_tokens_tracked_before_pause(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """Token usage is tracked and persisted even when pausing."""
         responses = iter(["Analysis result.", "Review context."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(human_review_graph, event_data, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, event_data, mock_services, db=mock_db)
         result = await runner.run()
 
         assert result.tokens_used > 0
@@ -267,14 +296,14 @@ class TestWaitForHumanPauses:
         assert paused_call.kwargs["tokens_used"] > 0
 
     async def test_paused_at_timestamp_persisted(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """The paused_at timestamp is persisted to DB."""
         responses = iter(["Analysis.", "Review."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         before = time.time()
-        runner = PlaybookRunner(human_review_graph, event_data, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, event_data, mock_services, db=mock_db)
         await runner.run()
         after = time.time()
 
@@ -290,13 +319,13 @@ class TestWaitForHumanPauses:
         assert before <= paused_at <= after
 
     async def test_pinned_graph_stored_at_start(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """The compiled graph is pinned when the run starts (version pinning)."""
         responses = iter(["Analysis.", "Review."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(human_review_graph, event_data, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, event_data, mock_services, db=mock_db)
         await runner.run()
 
         created_run = mock_db.create_playbook_run.call_args[0][0]
@@ -316,7 +345,7 @@ class TestPauseNotification:
     with context summary of what the playbook has done so far."""
 
     async def test_paused_event_emitted_on_bus(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """A ``playbook.run.paused`` event is emitted when the run pauses."""
         bus = EventBus()
@@ -328,10 +357,10 @@ class TestPauseNotification:
         bus.subscribe("playbook.run.paused", capture)
 
         responses = iter(["Found 3 issues in code.", "Here are the issues for review."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         runner = PlaybookRunner(
-            human_review_graph, event_data, mock_supervisor, db=mock_db, event_bus=bus
+            human_review_graph, event_data, mock_services, db=mock_db, event_bus=bus
         )
         await runner.run()
 
@@ -343,7 +372,7 @@ class TestPauseNotification:
         assert "paused_at" in evt
 
     async def test_notification_includes_context_summary(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """The notification event includes the last assistant response as context."""
         bus = EventBus()
@@ -351,10 +380,10 @@ class TestPauseNotification:
         bus.subscribe("playbook.run.paused", lambda d: captured.append(d))
 
         responses = iter(["Analysis complete.", "Summary: 3 critical issues found."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         runner = PlaybookRunner(
-            human_review_graph, event_data, mock_supervisor, db=mock_db, event_bus=bus
+            human_review_graph, event_data, mock_services, db=mock_db, event_bus=bus
         )
         await runner.run()
 
@@ -363,7 +392,7 @@ class TestPauseNotification:
         assert "3 critical issues found" in captured[0]["last_response"]
 
     async def test_typed_notification_event_emitted(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """A typed ``notify.playbook_run_paused`` event is emitted for transports."""
         bus = EventBus()
@@ -371,10 +400,10 @@ class TestPauseNotification:
         bus.subscribe("notify.playbook_run_paused", lambda d: notify_events.append(d))
 
         responses = iter(["Done analysing.", "Review this."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         runner = PlaybookRunner(
-            human_review_graph, event_data, mock_supervisor, db=mock_db, event_bus=bus
+            human_review_graph, event_data, mock_services, db=mock_db, event_bus=bus
         )
         await runner.run()
 
@@ -386,7 +415,7 @@ class TestPauseNotification:
         assert "last_response" in evt
 
     async def test_notification_includes_project_id(
-        self, mock_supervisor, human_review_graph, mock_db
+        self, mock_services, human_review_graph, mock_db
     ):
         """Notification includes project_id from the trigger event for routing."""
         bus = EventBus()
@@ -395,10 +424,10 @@ class TestPauseNotification:
 
         event_with_project = {"type": "git.commit", "project_id": "my-app"}
         responses = iter(["Analysis.", "Review."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         runner = PlaybookRunner(
-            human_review_graph, event_with_project, mock_supervisor, db=mock_db, event_bus=bus
+            human_review_graph, event_with_project, mock_services, db=mock_db, event_bus=bus
         )
         await runner.run()
 
@@ -430,31 +459,26 @@ class TestEventDrivenResume:
         handler.subscribe()
 
         try:
-            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-                mock_sup = MagicMock()
-                mock_sup.initialize.return_value = True
-                MockSupervisor.return_value = mock_sup
+            with patch(
+                "src.playbooks.runner.PlaybookRunner.resume",
+                new_callable=AsyncMock,
+            ) as mock_resume:
+                mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
 
-                with patch(
-                    "src.playbooks.runner.PlaybookRunner.resume",
-                    new_callable=AsyncMock,
-                ) as mock_resume:
-                    mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
+                await event_bus.emit(
+                    "human.review.completed",
+                    {
+                        "playbook_id": "human-review-playbook",
+                        "run_id": "paused-run-1",
+                        "node_id": "review",
+                        "decision": "Approved, proceed.",
+                    },
+                )
 
-                    await event_bus.emit(
-                        "human.review.completed",
-                        {
-                            "playbook_id": "human-review-playbook",
-                            "run_id": "paused-run-1",
-                            "node_id": "review",
-                            "decision": "Approved, proceed.",
-                        },
-                    )
+                await asyncio.sleep(0.05)
 
-                    await asyncio.sleep(0.05)
-
-                    mock_db.get_playbook_run.assert_called_once_with("paused-run-1")
-                    mock_resume.assert_called_once()
+                mock_db.get_playbook_run.assert_called_once_with("paused-run-1")
+                mock_resume.assert_called_once()
         finally:
             handler.shutdown()
 
@@ -473,35 +497,30 @@ class TestEventDrivenResume:
         handler.subscribe()
 
         try:
-            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-                mock_sup = MagicMock()
-                mock_sup.initialize.return_value = True
-                MockSupervisor.return_value = mock_sup
+            with patch(
+                "src.playbooks.runner.PlaybookRunner.resume",
+                new_callable=AsyncMock,
+            ) as mock_resume:
+                mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
 
-                with patch(
-                    "src.playbooks.runner.PlaybookRunner.resume",
-                    new_callable=AsyncMock,
-                ) as mock_resume:
-                    mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
+                await event_bus.emit(
+                    "human.review.completed",
+                    {
+                        "playbook_id": "human-review-playbook",
+                        "run_id": "paused-run-1",
+                        "node_id": "review",
+                        "decision": "LGTM",
+                    },
+                )
 
-                    await event_bus.emit(
-                        "human.review.completed",
-                        {
-                            "playbook_id": "human-review-playbook",
-                            "run_id": "paused-run-1",
-                            "node_id": "review",
-                            "decision": "LGTM",
-                        },
-                    )
+                await asyncio.sleep(0.05)
 
-                    await asyncio.sleep(0.05)
-
-                    # Verify the db_run passed to resume has the full conversation
-                    db_run_arg = mock_resume.call_args.kwargs["db_run"]
-                    history = json.loads(db_run_arg.conversation_history)
-                    assert len(history) == 5
-                    assert history[0]["content"] == "Event received: git.commit"
-                    assert history[-1]["content"] == "Here is my analysis for your review."
+                # Verify the db_run passed to resume has the full conversation
+                db_run_arg = mock_resume.call_args.kwargs["db_run"]
+                history = json.loads(db_run_arg.conversation_history)
+                assert len(history) == 5
+                assert history[0]["content"] == "Event received: git.commit"
+                assert history[-1]["content"] == "Here is my analysis for your review."
         finally:
             handler.shutdown()
 
@@ -516,51 +535,52 @@ class TestResumedRunContinues:
     with human's input appended to conversation history."""
 
     async def test_human_input_appended_to_history(
-        self, mock_supervisor, human_review_graph, mock_db
+        self, mock_services, human_review_graph, mock_db
     ):
         """The human's review response is injected into conversation history."""
         paused_run = _make_paused_run()
 
         # LLM calls: transition classification → "1" (approved), execute node → response
         responses = iter(["1", "Plan executed successfully."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         result = await PlaybookRunner.resume(
             db_run=paused_run,
             graph=human_review_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Approved, go ahead with the fix.",
             db=mock_db,
         )
 
         assert result.status == "completed"
 
-        # Verify the execute node received history including human input
-        # The second chat call (execute node) should see the human input in history
+        # Verify the execute node received history including human input.
+        # The second run_tools call (execute node) should see the human
+        # input in its folded context.
         execute_call = None
-        for call in mock_supervisor.chat.call_args_list:
-            if call.kwargs.get("text") == "Execute the approved plan.":
+        for call in mock_services.llm.run_tools.call_args_list:
+            if _prompt_of(call).endswith("Execute the approved plan."):
                 execute_call = call
                 break
 
         assert execute_call is not None
-        history = execute_call.kwargs["history"]
+        history = _messages_of(execute_call)
         # Find the human input message in history
         human_msgs = [m for m in history if "[Human review response]" in m.get("content", "")]
         assert len(human_msgs) == 1
         assert "Approved, go ahead with the fix." in human_msgs[0]["content"]
 
-    async def test_resume_executes_next_node(self, mock_supervisor, human_review_graph, mock_db):
+    async def test_resume_executes_next_node(self, mock_services, human_review_graph, mock_db):
         """After resume, the runner continues executing the next node in the graph."""
         paused_run = _make_paused_run()
 
         responses = iter(["1", "Plan executed."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         result = await PlaybookRunner.resume(
             db_run=paused_run,
             graph=human_review_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Approved.",
             db=mock_db,
         )
@@ -570,18 +590,18 @@ class TestResumedRunContinues:
         assert "execute" in executed_nodes
 
     async def test_resume_preserves_prior_context(
-        self, mock_supervisor, human_review_graph, mock_db
+        self, mock_services, human_review_graph, mock_db
     ):
         """Resumed run carries forward all prior conversation context."""
         paused_run = _make_paused_run()
 
         responses = iter(["1", "Fixed all issues."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         result = await PlaybookRunner.resume(
             db_run=paused_run,
             graph=human_review_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Go ahead.",
             db=mock_db,
         )
@@ -597,7 +617,7 @@ class TestResumedRunContinues:
         assert history[0]["content"] == "Event received: git.commit"
         assert history[2]["content"] == "Analysis: the code has quality issues."
 
-    async def test_resume_emits_resumed_event(self, mock_supervisor, human_review_graph, mock_db):
+    async def test_resume_emits_resumed_event(self, mock_services, human_review_graph, mock_db):
         """Resume emits ``playbook.run.resumed`` on the EventBus."""
         bus = EventBus()
         resumed_events = []
@@ -605,12 +625,12 @@ class TestResumedRunContinues:
 
         paused_run = _make_paused_run()
         responses = iter(["1", "Done."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         await PlaybookRunner.resume(
             db_run=paused_run,
             graph=human_review_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Approved.",
             db=mock_db,
             event_bus=bus,
@@ -621,17 +641,17 @@ class TestResumedRunContinues:
         assert resumed_events[0]["decision"] == "Approved."
 
     async def test_resume_updates_db_to_running_then_completed(
-        self, mock_supervisor, human_review_graph, mock_db
+        self, mock_services, human_review_graph, mock_db
     ):
         """Resume first sets status to 'running', then to 'completed'."""
         paused_run = _make_paused_run()
         responses = iter(["1", "Done."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         await PlaybookRunner.resume(
             db_run=paused_run,
             graph=human_review_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Approved.",
             db=mock_db,
         )
@@ -657,19 +677,19 @@ class TestStructuredInputTransitions:
     (approve/reject/feedback) that influences the transition."""
 
     async def test_approved_transitions_to_execute(
-        self, mock_supervisor, human_review_graph, mock_db
+        self, mock_services, human_review_graph, mock_db
     ):
         """Human approval triggers the 'approved' transition → execute node."""
         paused_run = _make_paused_run()
 
         # LLM classification returns "1" (approved → execute)
         responses = iter(["1", "Plan executed."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         result = await PlaybookRunner.resume(
             db_run=paused_run,
             graph=human_review_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Approved, looks good.",
             db=mock_db,
         )
@@ -679,17 +699,17 @@ class TestStructuredInputTransitions:
         assert "execute" in executed_nodes
         assert "done" not in [t["node_id"] for t in result.node_trace if t.get("terminal")]
 
-    async def test_rejected_transitions_to_done(self, mock_supervisor, human_review_graph, mock_db):
+    async def test_rejected_transitions_to_done(self, mock_services, human_review_graph, mock_db):
         """Human rejection triggers the 'rejected' transition → done node."""
         paused_run = _make_paused_run()
 
         # LLM classification returns "2" (rejected → done)
-        mock_supervisor.chat.side_effect = lambda **kw: "2"
+        mock_services.llm.complete = AsyncMock(return_value=MagicMock(text="2", tool_calls=[]))
 
         result = await PlaybookRunner.resume(
             db_run=paused_run,
             graph=human_review_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Rejected, needs more work.",
             db=mock_db,
         )
@@ -700,18 +720,18 @@ class TestStructuredInputTransitions:
         assert "execute" not in executed_nodes
 
     async def test_feedback_with_approval_includes_context(
-        self, mock_supervisor, human_review_graph, mock_db
+        self, mock_services, human_review_graph, mock_db
     ):
         """Human can provide feedback alongside approval, visible to downstream nodes."""
         paused_run = _make_paused_run()
 
         responses = iter(["1", "Applied fixes with feedback incorporated."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         result = await PlaybookRunner.resume(
             db_run=paused_run,
             graph=human_review_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Approved, but focus on the SQL injection issue first.",
             db=mock_db,
         )
@@ -719,17 +739,17 @@ class TestStructuredInputTransitions:
         assert result.status == "completed"
         # Verify the execute node got the feedback in its history
         execute_call = None
-        for call in mock_supervisor.chat.call_args_list:
-            if call.kwargs.get("text") == "Execute the approved plan.":
+        for call in mock_services.llm.run_tools.call_args_list:
+            if _prompt_of(call).endswith("Execute the approved plan."):
                 execute_call = call
                 break
 
         if execute_call:
-            history_texts = [m["content"] for m in execute_call.kwargs["history"]]
+            history_texts = [m["content"] for m in _messages_of(execute_call)]
             feedback_found = any("SQL injection" in t for t in history_texts)
             assert feedback_found, "Feedback should be visible in execute node history"
 
-    async def test_structured_transitions_with_three_options(self, mock_supervisor, mock_db):
+    async def test_structured_transitions_with_three_options(self, mock_services, mock_db):
         """A graph with 3 transition options routes correctly based on human input."""
         graph = {
             "id": "three-way",
@@ -771,12 +791,12 @@ class TestStructuredInputTransitions:
 
         # LLM picks "1" (critical → hotfix)
         responses = iter(["1", "Hotfix applied."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         result = await PlaybookRunner.resume(
             db_run=paused_run,
             graph=graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Confirmed critical, apply hotfix immediately.",
             db=mock_db,
         )
@@ -809,31 +829,25 @@ class TestResumePlaybookCommand:
         mock_orchestrator.bus = EventBus()
         mock_config = MagicMock()
 
-        with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-            mock_sup = MagicMock()
-            mock_sup.initialize.return_value = True
-            mock_sup.chat = AsyncMock(side_effect=["1", "Plan executed."])
-            MockSupervisor.return_value = mock_sup
+        with patch(
+            "src.playbooks.runner.PlaybookRunner.resume",
+            new_callable=AsyncMock,
+        ) as mock_resume:
+            mock_resume.return_value = MagicMock(
+                status="completed", tokens_used=100, error=None
+            )
 
-            with patch(
-                "src.playbooks.runner.PlaybookRunner.resume",
-                new_callable=AsyncMock,
-            ) as mock_resume:
-                mock_resume.return_value = MagicMock(
-                    status="completed", tokens_used=100, error=None
-                )
+            from src.commands.handler import CommandHandler
 
-                from src.commands.handler import CommandHandler
+            handler = CommandHandler(mock_orchestrator, mock_config)
 
-                handler = CommandHandler(mock_orchestrator, mock_config)
+            result = await handler._cmd_resume_playbook(
+                {"run_id": "paused-run-1", "human_input": "Approved, go ahead."}
+            )
 
-                result = await handler._cmd_resume_playbook(
-                    {"run_id": "paused-run-1", "human_input": "Approved, go ahead."}
-                )
-
-                assert "error" not in result or result.get("error") is None
-                assert result["resumed"] == "paused-run-1"
-                assert result["status"] == "completed"
+            assert "error" not in result or result.get("error") is None
+            assert result["resumed"] == "paused-run-1"
+            assert result["status"] == "completed"
 
     async def test_command_rejects_missing_run_id(self):
         """Command returns error when run_id is missing."""
@@ -902,7 +916,7 @@ class TestMultiplePausedRuns:
     """Roadmap 5.4.6 case (g): multiple paused runs can coexist —
     resuming one does not affect others."""
 
-    async def test_two_runs_pause_independently(self, mock_supervisor, mock_db):
+    async def test_two_runs_pause_independently(self, mock_services, mock_db):
         """Two separate playbook runs can pause at wait_for_human independently."""
         graph = {
             "id": "multi-pause",
@@ -920,19 +934,20 @@ class TestMultiplePausedRuns:
         event_a = {"type": "git.commit", "project_id": "proj-a"}
         event_b = {"type": "git.commit", "project_id": "proj-b"}
 
-        mock_supervisor.chat.return_value = "Result."
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("Result."))
+        mock_services.llm.complete = AsyncMock(return_value=MagicMock(text="Result.", tool_calls=[]))
 
-        runner_a = PlaybookRunner(graph, event_a, mock_supervisor, db=mock_db)
+        runner_a = PlaybookRunner(graph, event_a, mock_services, db=mock_db)
         result_a = await runner_a.run()
 
-        runner_b = PlaybookRunner(graph, event_b, mock_supervisor, db=mock_db)
+        runner_b = PlaybookRunner(graph, event_b, mock_services, db=mock_db)
         result_b = await runner_b.run()
 
         assert result_a.status == "paused"
         assert result_b.status == "paused"
         assert result_a.run_id != result_b.run_id
 
-    async def test_resume_one_leaves_other_paused(self, mock_supervisor, mock_db):
+    async def test_resume_one_leaves_other_paused(self, mock_services, mock_db):
         """Resuming one paused run does not affect another paused run."""
         graph = {
             "id": "multi-pause",
@@ -961,11 +976,12 @@ class TestMultiplePausedRuns:
         )
 
         # Resume only run A
-        mock_supervisor.chat.return_value = "Done."
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("Done."))
+        mock_services.llm.complete = AsyncMock(return_value=MagicMock(text="Done.", tool_calls=[]))
         result_a = await PlaybookRunner.resume(
             db_run=paused_run_a,
             graph=graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Approved.",
             db=mock_db,
         )
@@ -1009,33 +1025,28 @@ class TestMultiplePausedRuns:
         handler.subscribe()
 
         try:
-            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-                mock_sup = MagicMock()
-                mock_sup.initialize.return_value = True
-                MockSupervisor.return_value = mock_sup
+            with patch(
+                "src.playbooks.runner.PlaybookRunner.resume",
+                new_callable=AsyncMock,
+            ) as mock_resume:
+                mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
 
-                with patch(
-                    "src.playbooks.runner.PlaybookRunner.resume",
-                    new_callable=AsyncMock,
-                ) as mock_resume:
-                    mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
+                # Resume only run-a
+                await event_bus.emit(
+                    "human.review.completed",
+                    {
+                        "playbook_id": "human-review-playbook",
+                        "run_id": "run-a",
+                        "node_id": "review",
+                        "decision": "Approved.",
+                    },
+                )
 
-                    # Resume only run-a
-                    await event_bus.emit(
-                        "human.review.completed",
-                        {
-                            "playbook_id": "human-review-playbook",
-                            "run_id": "run-a",
-                            "node_id": "review",
-                            "decision": "Approved.",
-                        },
-                    )
+                await asyncio.sleep(0.05)
 
-                    await asyncio.sleep(0.05)
-
-                    # Verify only run-a was resumed
-                    mock_resume.assert_called_once()
-                    assert mock_resume.call_args.kwargs["db_run"].run_id == "run-a"
+                # Verify only run-a was resumed
+                mock_resume.assert_called_once()
+                assert mock_resume.call_args.kwargs["db_run"].run_id == "run-a"
         finally:
             handler.shutdown()
 
@@ -1063,45 +1074,40 @@ class TestMultiplePausedRuns:
         handler.subscribe()
 
         try:
-            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-                mock_sup = MagicMock()
-                mock_sup.initialize.return_value = True
-                MockSupervisor.return_value = mock_sup
+            with patch(
+                "src.playbooks.runner.PlaybookRunner.resume",
+                new_callable=AsyncMock,
+            ) as mock_resume:
+                mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
 
-                with patch(
-                    "src.playbooks.runner.PlaybookRunner.resume",
-                    new_callable=AsyncMock,
-                ) as mock_resume:
-                    mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
+                # Fire both resume events
+                await event_bus.emit(
+                    "human.review.completed",
+                    {
+                        "playbook_id": "human-review-playbook",
+                        "run_id": "run-a",
+                        "node_id": "review",
+                        "decision": "Approved A.",
+                    },
+                )
+                await event_bus.emit(
+                    "human.review.completed",
+                    {
+                        "playbook_id": "human-review-playbook",
+                        "run_id": "run-b",
+                        "node_id": "review",
+                        "decision": "Approved B.",
+                    },
+                )
 
-                    # Fire both resume events
-                    await event_bus.emit(
-                        "human.review.completed",
-                        {
-                            "playbook_id": "human-review-playbook",
-                            "run_id": "run-a",
-                            "node_id": "review",
-                            "decision": "Approved A.",
-                        },
-                    )
-                    await event_bus.emit(
-                        "human.review.completed",
-                        {
-                            "playbook_id": "human-review-playbook",
-                            "run_id": "run-b",
-                            "node_id": "review",
-                            "decision": "Approved B.",
-                        },
-                    )
+                await asyncio.sleep(0.1)
 
-                    await asyncio.sleep(0.1)
-
-                    # Both runs should be resumed
-                    assert mock_resume.call_count == 2
-                    resumed_run_ids = {
-                        call.kwargs["db_run"].run_id for call in mock_resume.call_args_list
-                    }
-                    assert resumed_run_ids == {"run-a", "run-b"}
+                # Both runs should be resumed
+                assert mock_resume.call_count == 2
+                resumed_run_ids = {
+                    call.kwargs["db_run"].run_id for call in mock_resume.call_args_list
+                }
+                assert resumed_run_ids == {"run-a", "run-b"}
         finally:
             handler.shutdown()
 
@@ -1116,14 +1122,14 @@ class TestStateSurvivesRestart:
     persisted to DB, not just in-memory."""
 
     async def test_pause_then_resume_from_db_state(
-        self, mock_supervisor, human_review_graph, mock_db
+        self, mock_services, human_review_graph, mock_db
     ):
         """Simulate restart: pause a run, reconstruct from DB, resume."""
         # Phase 1: Run the playbook until it pauses
         responses = iter(["Analysis: 3 issues found.", "Here are the findings."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(human_review_graph, {"type": "test"}, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, {"type": "test"}, mock_services, db=mock_db)
         result = await runner.run()
         assert result.status == "paused"
 
@@ -1152,15 +1158,16 @@ class TestStateSurvivesRestart:
         )
 
         # Phase 3: Resume from the reconstructed state (post-restart)
-        mock_supervisor.chat.reset_mock()
+        mock_services.llm.run_tools.reset_mock()
+        mock_services.llm.complete.reset_mock()
         resume_responses = iter(["1", "All issues fixed."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(resume_responses)
+        _script_iter(mock_services, resume_responses)
 
         mock_db.reset_mock()
         result = await PlaybookRunner.resume(
             db_run=reconstructed_run,
             graph=human_review_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Approved, fix all issues.",
             db=mock_db,
         )
@@ -1171,14 +1178,14 @@ class TestStateSurvivesRestart:
         assert "execute" in executed_nodes
 
     async def test_conversation_history_survives_restart(
-        self, mock_supervisor, human_review_graph, mock_db
+        self, mock_services, human_review_graph, mock_db
     ):
         """Verify conversation history is fully preserved across restart."""
         # Phase 1: Run until pause
         responses = iter(["Found security vulnerability.", "Please review the CVE."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(human_review_graph, {"type": "test"}, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, {"type": "test"}, mock_services, db=mock_db)
         await runner.run()
 
         # Extract persisted history
@@ -1208,15 +1215,16 @@ class TestStateSurvivesRestart:
         )
 
         # Phase 3: Resume
-        mock_supervisor.chat.reset_mock()
+        mock_services.llm.run_tools.reset_mock()
+        mock_services.llm.complete.reset_mock()
         resume_responses = iter(["1", "Patched."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(resume_responses)
+        _script_iter(mock_services, resume_responses)
         mock_db.reset_mock()
 
         await PlaybookRunner.resume(
             db_run=reconstructed,
             graph=human_review_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Approved.",
             db=mock_db,
         )
@@ -1229,12 +1237,12 @@ class TestStateSurvivesRestart:
         for i in range(original_count):
             assert final_history[i] == persisted_history[i]
 
-    async def test_node_trace_survives_restart(self, mock_supervisor, human_review_graph, mock_db):
+    async def test_node_trace_survives_restart(self, mock_services, human_review_graph, mock_db):
         """Node trace from before pause is preserved and extended after resume."""
         responses = iter(["Analysis done.", "Review ready."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(human_review_graph, {"type": "test"}, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, {"type": "test"}, mock_services, db=mock_db)
         await runner.run()
 
         paused_call = None
@@ -1260,15 +1268,16 @@ class TestStateSurvivesRestart:
             pinned_graph=json.dumps(human_review_graph),
         )
 
-        mock_supervisor.chat.reset_mock()
+        mock_services.llm.run_tools.reset_mock()
+        mock_services.llm.complete.reset_mock()
         resume_responses = iter(["1", "Executed."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(resume_responses)
+        _script_iter(mock_services, resume_responses)
         mock_db.reset_mock()
 
         result = await PlaybookRunner.resume(
             db_run=reconstructed,
             graph=human_review_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Approved.",
             db=mock_db,
         )
@@ -1283,13 +1292,13 @@ class TestStateSurvivesRestart:
         assert "execute" in post_pause_nodes
 
     async def test_tokens_accumulate_across_restart(
-        self, mock_supervisor, human_review_graph, mock_db
+        self, mock_services, human_review_graph, mock_db
     ):
         """Token usage from before pause is carried forward after restart."""
         responses = iter(["Analysis.", "Review."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(human_review_graph, {"type": "test"}, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, {"type": "test"}, mock_services, db=mock_db)
         result = await runner.run()
         tokens_before_pause = result.tokens_used
         assert tokens_before_pause > 0
@@ -1314,15 +1323,16 @@ class TestStateSurvivesRestart:
             pinned_graph=json.dumps(human_review_graph),
         )
 
-        mock_supervisor.chat.reset_mock()
+        mock_services.llm.run_tools.reset_mock()
+        mock_services.llm.complete.reset_mock()
         resume_responses = iter(["1", "Done."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(resume_responses)
+        _script_iter(mock_services, resume_responses)
         mock_db.reset_mock()
 
         result = await PlaybookRunner.resume(
             db_run=reconstructed,
             graph=human_review_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             human_input="Go.",
             db=mock_db,
         )
@@ -1347,31 +1357,26 @@ class TestStateSurvivesRestart:
         new_handler.subscribe()
 
         try:
-            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-                mock_sup = MagicMock()
-                mock_sup.initialize.return_value = True
-                MockSupervisor.return_value = mock_sup
+            with patch(
+                "src.playbooks.runner.PlaybookRunner.resume",
+                new_callable=AsyncMock,
+            ) as mock_resume:
+                mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
 
-                with patch(
-                    "src.playbooks.runner.PlaybookRunner.resume",
-                    new_callable=AsyncMock,
-                ) as mock_resume:
-                    mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
+                # Fire resume event on the new bus (post-restart)
+                await new_bus.emit(
+                    "human.review.completed",
+                    {
+                        "playbook_id": "human-review-playbook",
+                        "run_id": "paused-run-1",
+                        "node_id": "review",
+                        "decision": "Approved after restart.",
+                    },
+                )
 
-                    # Fire resume event on the new bus (post-restart)
-                    await new_bus.emit(
-                        "human.review.completed",
-                        {
-                            "playbook_id": "human-review-playbook",
-                            "run_id": "paused-run-1",
-                            "node_id": "review",
-                            "decision": "Approved after restart.",
-                        },
-                    )
+                await asyncio.sleep(0.05)
 
-                    await asyncio.sleep(0.05)
-
-                    mock_resume.assert_called_once()
-                    assert mock_resume.call_args.kwargs["human_input"] == "Approved after restart."
+                mock_resume.assert_called_once()
+                assert mock_resume.call_args.kwargs["human_input"] == "Approved after restart."
         finally:
             new_handler.shutdown()

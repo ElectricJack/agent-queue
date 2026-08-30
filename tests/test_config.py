@@ -1,7 +1,7 @@
 import os
 import pytest
 import yaml
-from src.config import load_config, AppConfig
+from src.config import load_config
 
 
 @pytest.fixture
@@ -72,36 +72,6 @@ class TestConfigLoading:
     def test_missing_config_file_raises(self):
         with pytest.raises(FileNotFoundError):
             load_config("/nonexistent/config.yaml")
-
-
-def test_default_runtime_default_value():
-    cfg = AppConfig()
-    assert cfg.default_runtime == ""  # session-routed; harness picks the CLI
-
-
-def test_default_runtime_validation_accepts_empty():
-    """Empty is the normal value: run as a session, harness picks the CLI."""
-    cfg = AppConfig()
-    cfg.default_runtime = ""
-    errors = [e for e in cfg.validate() if e.field == "default_runtime"]
-    assert errors == []
-
-
-def test_default_runtime_validation_rejects_deleted_runtimes():
-    """`claude_sdk` / `acpx` were removed; naming one must not silently pass."""
-    for name in ("claude_sdk", "acpx"):
-        cfg = AppConfig()
-        cfg.default_runtime = name
-        errors = [e for e in cfg.validate() if e.field == "default_runtime"]
-        assert len(errors) == 1, f"{name} should be rejected"
-
-
-def test_default_runtime_validation_rejects_unknown():
-    cfg = AppConfig()
-    cfg.default_runtime = "made-up"
-    errors = [e for e in cfg.validate() if e.field == "default_runtime"]
-    assert len(errors) == 1
-    assert "unknown runtime" in errors[0].message.lower()
 
 
 def test_streams_config_defaults():

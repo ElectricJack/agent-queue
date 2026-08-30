@@ -69,18 +69,17 @@ class Capability(StrEnum):
 class Runtime(ABC):
     """Base class for in-process runtimes.
 
-    Since the tmux-harness migration the only implementation is
-    :class:`~src.runtimes.supervisor.Supervisor`; coding agents run as
-    sessions, not runtimes.  The ABC stays because Supervisor is registered
-    through it and a future non-CLI runtime would be too.
+    There are no in-tree implementations: every agent runs as a tmux session
+    selected by the profile's ``harness``.  The ABC stays as the contract a
+    plugin-registered (or test) runtime implements, and as the type the
+    :class:`~src.runtimes.RuntimeRegistry` hands the orchestrator.
     """
 
     name: ClassVar[str]
     capabilities: ClassVar[frozenset[Capability]]
     # Whether this platform needs a per-task workspace (repo checkout/branch).
-    # Defaults to True for backward compatibility — the Claude/Codex platforms
-    # inherit the default; the in-process Supervisor platform overrides to
-    # False because supervisor tasks are tool-call-only and have no cwd.
+    # Defaults to True; a runtime that is tool-call-only (no cwd) overrides
+    # it to False.
     requires_workspace: ClassVar[bool] = True
 
     @abstractmethod

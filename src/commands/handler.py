@@ -441,9 +441,8 @@ class CommandHandler(
     @property
     def _plan_subtask_creation_mode(self) -> bool:
         # When True, _cmd_create_task creates tasks as DEFINED instead of
-        # READY.  Set by supervisor.break_plan_into_tasks() so plan subtasks
-        # are born DEFINED, eliminating the race condition that required
-        # project-wide plan processing locks.
+        # READY, so plan subtasks are born DEFINED rather than racing to
+        # READY before their parent-blocking dependency is wired up.
         return _plan_subtask_creation_mode_var.get()
 
     @_plan_subtask_creation_mode.setter

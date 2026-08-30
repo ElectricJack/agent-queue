@@ -88,11 +88,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "skip_task": "task",
     "set_task_status": "task",
     "approve_task": "task",
-    "process_task_completion": "task",
     "approve_plan": "task",
     "reject_plan": "task",
     "delete_plan": "task",
-    "process_plan": "task",
     "archive_task": "task",
     "archive_settings": "task",
     "list_archived": "task",
@@ -1510,21 +1508,6 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "process_task_completion",
-        "description": "Internal: Process a task completion to discover and archive plan files. Called by Supervisor after task completion.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string", "description": "Task ID that completed"},
-                "workspace_path": {
-                    "type": "string",
-                    "description": "Path to the workspace where the task was executed",
-                },
-            },
-            "required": ["task_id", "workspace_path"],
-        },
-    },
-    {
         "name": "approve_plan",
         "description": "Approve a plan for a task in AWAITING_PLAN_APPROVAL status. Creates subtasks from the stored plan and marks the task completed.",
         "input_schema": {
@@ -1559,23 +1542,6 @@ _ALL_TOOL_DEFINITIONS = [
                 "task_id": {"type": "string", "description": "Task ID whose plan to delete"},
             },
             "required": ["task_id"],
-        },
-    },
-    {
-        "name": "process_plan",
-        "description": "Manually scan project workspaces for plan.md files and present them for approval. Use when the supervisor missed auto-detection or a plan was dropped into a workspace manually.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {
-                    "type": "string",
-                    "description": "Project ID to scan for plan files. Uses active project if omitted.",
-                },
-                "task_id": {
-                    "type": "string",
-                    "description": "Optional existing task ID to attach the plan to. If omitted, a new task is created.",
-                },
-            },
         },
     },
     {

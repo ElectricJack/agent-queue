@@ -373,6 +373,20 @@ class PlaybookCompiler:
             frontmatter["transition_llm_config"], dict
         ):
             result["transition_llm_config"] = frontmatter["transition_llm_config"]
+        for key in ("llm_config", "transition_llm_config"):
+            cfg = result.get(key)
+            if isinstance(cfg, dict):
+                dropped = sorted(
+                    set(cfg) - {"provider", "model", "intelligence_class", "max_tokens"}
+                )
+                if dropped:
+                    logger.warning(
+                        "playbook %s: %s keys %s are ignored",
+                        result.get("id"),
+                        key,
+                        dropped,
+                    )
+
         if "max_tokens" in frontmatter:
             result["max_tokens"] = int(frontmatter["max_tokens"])
 

@@ -15,16 +15,14 @@ graph TD
     Discord["Discord Interface<br/><i>Bot + Commands + Notifications</i>"]
     MCP["MCP Server<br/><i>~150 auto-exposed tools</i>"]
     CLI["CLI<br/><i>aq commands</i>"]
-    Supervisor["Supervisor<br/><i>Natural language → commands</i>"]
+    CmdHandler["CommandHandler<br/><i>Single mutation entry point</i>"]
+    LLM["LLM direct path<br/><i>src/llm/ — LLMClient</i>"]
     PB["PromptBuilder<br/><i>5-layer prompt assembly</i>"]
     TR["ToolRegistry<br/><i>Tiered tool loading</i>"]
-    Reflect["ReflectionEngine<br/><i>Post-action review</i>"]
-    ChatObs["ChatObserver<br/><i>Passive observation</i>"]
     Orch["Orchestrator<br/><i>Task lifecycle + agent management</i>"]
     Sched[Scheduler]
     SM[State Machine]
     EB[Event Bus]
-    PP[Plan Parser]
     Playbooks["Playbook Engine<br/><i>DAG workflow automation</i>"]
     Plugins["Plugin Registry<br/><i>Modular extensibility</i>"]
     Adapter["Adapter<br/><i>(Claude Code)</i>"]
@@ -34,18 +32,16 @@ graph TD
     Extractor["Memory Extractor<br/><i>Auto-extracts from events</i>"]
     Workflows["Workflow Coordination<br/><i>Multi-agent pipelines</i>"]
 
-    Discord --> Supervisor --> Orch
-    MCP --> Supervisor
-    CLI --> Supervisor
-    Supervisor --- PB
-    Supervisor --- Reflect
-    Supervisor --- ChatObs
+    Discord --> CmdHandler --> Orch
+    MCP --> CmdHandler
+    CLI --> CmdHandler
+    Playbooks --- LLM
+    LLM --- PB
     PB --- TR
     PB --- Memory
     Orch --- Sched
     Orch --- SM
     Orch --- EB
-    Orch --- PP
     Orch --- Playbooks
     Orch --- Workflows
     Orch --> Adapter
@@ -150,16 +146,21 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 | `src/state_machine.py` | Task state transitions and DAG validation |
 | `src/event_bus.py` | Async pub/sub with wildcard + payload filtering ([[specs/event-bus|spec]]) |
 
-### Supervisor & Intelligence
+### LLM Direct Path & Intelligence
+
+There is no in-process Supervisor or chat-provider abstraction. Discord slash
+commands, MCP tools, and CLI all delegate directly to `CommandHandler`; the
+only remaining LLM calls in the daemon are playbook node/transition execution
+and other direct-path consumers below.
 
 | Module | Purpose |
 |--------|---------|
-| `src/supervisor.py` | LLM conversation interface ([[specs/supervisor|spec]]) |
+| `src/llm/` | Direct LLM path — `LLMClient.complete`/`run_tools`, provider adapters, intelligence classes |
 | `src/prompt_builder.py` | 5-layer prompt assembly pipeline |
 | `src/tools/` | Tiered tool loading — core + on-demand ([[specs/tiered-tools|spec]]) |
-| `src/reflection.py` | Post-action reflection engine ([[specs/reflection|spec]]) |
-| `src/chat_observer.py` | Passive observation ([[specs/chat-observer|spec]]) |
 | `src/llm_logger.py` | LLM call logging and analytics ([[specs/llm-logging|spec]]) |
+
+Reflection runs as a playbook, not a module — see [[specs/design/self-improvement|Self-Improvement]].
 
 ### Playbooks
 
@@ -209,7 +210,7 @@ All state is persisted to SQLite via `aiosqlite`. The system survives restarts a
 | Module | Purpose |
 |--------|---------|
 | `src/adapters/` | Agent adapter interface + Claude Code implementation |
-| `src/chat_providers/` | LLM provider abstraction (Anthropic, Gemini, Ollama) |
+| `src/llm/` | Direct LLM path — `LLMClient`, provider adapters (Anthropic, Google, OpenAI/Ollama) |
 | `src/discord/` | Discord bot, commands, notifications |
 | `src/git/` | Git operations (branches, worktrees, sync-merge, event emission) |
 | `src/tokens/` | Token budget tracking and rate limit management |

@@ -11,8 +11,8 @@ described in ``docs/specs/design/playbooks.md`` Section 9 (steps 6–7):
 
 External systems (Discord buttons, API endpoints, other playbooks) fire
 ``human.review.completed`` with ``{playbook_id, run_id, node_id, decision}``
-to trigger the resume.  The handler performs validation, creates a
-Supervisor, and delegates to :meth:`PlaybookRunner.resume`, which
+to trigger the resume.  The handler performs validation, builds
+PlaybookServices, and delegates to :meth:`PlaybookRunner.resume`, which
 restores the full conversation history from the database and continues
 execution from the exact saved state.
 
@@ -57,13 +57,14 @@ class PlaybookResumeHandler:
     event_bus:
         EventBus to subscribe to ``human.review.completed`` events.
     orchestrator:
-        Orchestrator instance — used to create Supervisors for LLM calls
-        during the resumed execution.
+        Orchestrator instance — its ``playbook_services()`` builds the
+        PlaybookServices used for LLM calls during the resumed execution.
     playbook_manager:
         PlaybookManager — used to resolve the playbook graph when the run
         has no pinned graph (backward compatibility with pre-5.2.12 runs).
     config:
-        Application config — passed to Supervisor on creation.
+        Application config (kept for compatibility; LLM calls now go through
+        ``orchestrator.playbook_services()``).
     pause_timeout_seconds:
         Maximum time (seconds) a run can remain paused before it is
         considered timed out.  Defaults to 24 hours.
@@ -186,7 +187,7 @@ class PlaybookResumeHandler:
         1. Fetch the ``PlaybookRun`` from the database.
         2. Validate it is in ``paused`` status and within timeout.
         3. Resolve the compiled playbook graph (pinned or current).
-        4. Create a :class:`Supervisor` for LLM calls.
+        4. Build :class:`~src.playbooks.services.PlaybookServices` for LLM calls.
         5. Call :meth:`PlaybookRunner.resume` to restore conversation
            history and continue execution from the paused node.
         """
@@ -237,13 +238,19 @@ class PlaybookResumeHandler:
                 )
                 return
 
-            # 4. Create a Supervisor for LLM calls
-            from src.runtimes.supervisor import Supervisor
-
-            supervisor = Supervisor(self._orchestrator, self._config)
-            if not supervisor.initialize():
+            # 4. Build PlaybookServices for LLM calls
+            try:
+                services = self._orchestrator.playbook_services()
+            except RuntimeError as exc:
                 logger.error(
-                    "Failed to initialize LLM provider for resume of run '%s'",
+                    "Cannot resume run '%s': %s",
+                    run_id,
+                    exc,
+                )
+                return
+            if not services.llm.is_configured():
+                logger.error(
+                    "Cannot resume run '%s': LLM is not configured (config.llm)",
                     run_id,
                 )
                 return
@@ -253,7 +260,7 @@ class PlaybookResumeHandler:
                 result = await PlaybookRunner.resume(
                     db_run=db_run,
                     graph=graph,
-                    supervisor=supervisor,
+                    services=services,
                     human_input=decision,
                     db=self._db,
                     event_bus=self._bus,

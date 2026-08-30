@@ -493,45 +493,30 @@ class PluginContext:
         self,
         prompt: str,
         *,
+        intelligence_class: str | None = None,
         model: str | None = None,
         provider: str | None = None,
         tools: list[dict] | None = None,
-        thinking_budget: int | None = None,
+        system: str = "",
     ) -> str:
-        """Invoke the LLM with a prompt and return the response text.
+        """One direct LLM call on the daemon's ``llm`` client (spec: llm-direct-path §5).
 
-        This uses the system's ChatProvider (Anthropic API or Ollama) for
-        lightweight message-in/message-out LLM calls.  For heavy autonomous
-        work that requires file editing, shell access, etc., use
-        ``execute_command("create_task", {...})`` instead.
-
-        Args:
-            prompt: The user message to send to the LLM.
-            model: Optional model override (e.g. ``"claude-opus-4-20250514"``).
-                   Defaults to the system-configured model.
-            provider: Optional provider override (``"anthropic"`` or ``"ollama"``).
-                      Defaults to the system-configured provider.
-            tools: Optional tool definitions for a tool-use loop.
-            thinking_budget: Optional per-call thinking/reasoning token budget
-                             (Gemini/Anthropic). Pass ``0`` to disable thinking
-                             for cheap classification calls. Defaults to the
-                             system-configured budget.
-
-        Returns:
-            The LLM's response text.
-
-        Raises:
-            RuntimeError: If LLM invocation is not available (e.g. during tests).
+        Without ``tools`` this is a single completion; with ``tools`` (JSON-schema
+        tool definitions naming CommandHandler commands) it runs a tool loop where
+        every call executes through ``execute_command``.  ``intelligence_class``
+        picks a tier from ``vault/intelligence-classes``; ``model``/``provider``
+        override it.  For heavy autonomous work create a task instead.
         """
         if not self._invoke_llm_callback:
             raise RuntimeError("LLM invocation not available")
         return await self._invoke_llm_callback(
             prompt,
             self._plugin_name,
+            intelligence_class=intelligence_class,
             model=model,
             provider=provider,
             tools=tools,
-            thinking_budget=thinking_budget,
+            system=system,
         )
 
     # --- Configuration ---
@@ -716,7 +701,9 @@ class Plugin(abc.ABC):
 
             @cron("0 */4 * * *")
             async def periodic_check(self, ctx: PluginContext) -> None:
-                result = await ctx.invoke_llm("Summarize events")
+                result = await ctx.invoke_llm(
+                    "Summarize events", intelligence_class="fast-low"
+                )
                 await ctx.notify(result)
 
             async def handle_command(self, args: dict) -> dict:

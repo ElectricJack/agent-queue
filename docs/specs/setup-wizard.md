@@ -6,7 +6,7 @@ tags: [spec, setup, cli]
 
 ## 1. Overview
 
-The setup wizard is an interactive CLI tool that guides a first-time user through configuring all required services (Discord, Claude, chat provider) and writing the config files needed to run agent-queue. It is idempotent — running it again pre-fills all prompts from existing config, skipping steps that are already satisfied.
+The setup wizard is an interactive CLI tool that guides a first-time user through configuring all required services (Discord, Claude) and writing the config files needed to run agent-queue. It is idempotent — running it again pre-fills all prompts from existing config, skipping steps that are already satisfied.
 
 ## Source Files
 
@@ -16,17 +16,20 @@ The setup wizard is an interactive CLI tool that guides a first-time user throug
 
 ## 2. Entry Point
 
-The wizard runs via `./setup.sh` (which handles venv and dependencies) or directly via `python src/setup_wizard.py`. The `main()` function orchestrates eight sequential steps that produce a [[specs/config]] file:
+The wizard runs via `./setup.sh` (which handles venv and dependencies) or directly via `python src/setup_wizard.py`. The `main()` function orchestrates seven sequential steps that produce a [[specs/config]] file:
 
 1. Load existing configuration (pre-fill defaults)
 2. Step 1: Workspace & Database directories
 3. Step 2: Discord bot setup
 4. Step 3: Agent configuration (Claude Code)
-5. Step 4: Chat provider (Anthropic or Ollama)
-6. Step 5: Scheduling & budget
-7. Step 6: Write config files
-8. Step 7: Connectivity summary
-9. Step 8: Launch daemon
+5. Step 4: Scheduling & budget
+6. Step 5: Write config files
+7. Step 6: Connectivity summary
+8. Step 7: Launch daemon
+
+There is no chat-provider step. The wizard writes a fixed `llm:` block
+(`provider: anthropic`, `default_class: fast-medium`) to `config.yaml` — see
+§9 below — and leaves any further tuning of the direct LLM path (`docs/specs/config.md` §4.6) to manual config editing.
 
 If an existing `~/.agent-queue/config.yaml` or `~/.agent-queue/.env` is found, values are loaded and used as defaults throughout.
 
@@ -186,40 +189,16 @@ Prompts for model name with default from existing config or `claude-sonnet-4-202
 
 ---
 
-## 9. Step 4: Chat Provider
+## 9. Step 4: Scheduling & Budget
 
-`step_chat_provider(existing)` selects the LLM for the Discord chat interface (separate from task agents).
-
-### Provider Choice
-Two options:
-- **[1] Anthropic** (default) — uses Claude API, same credentials as agents
-- **[2] Ollama** — local models, free, no API key needed
-
-### Anthropic Path
-If Anthropic is selected (or defaulted), uses the existing model if configured, otherwise uses the SDK default.
-
-### Ollama Path
-Full guided setup:
-
-1. **Installation check** (`_is_ollama_installed` — checks `shutil.which("ollama")`):
-   - If not installed, offers to install automatically
-   - `_install_ollama()`: Linux uses `curl -fsSL https://ollama.com/install.sh | sh` (installs `zstd`/`curl` deps first via apt/dnf/yum/pacman), macOS uses `brew install ollama`
-
-2. **Server check** (`_is_ollama_running` — HTTP GET to `/api/tags` with 5s timeout):
-   - If not running, offers to start via `_start_ollama()` (runs `ollama serve` as a background process, polls for up to 10 seconds)
-
-3. **Model selection**:
-   - Lists locally available models via `_ollama_list_models` (HTTP GET `/api/tags`, parses JSON)
-   - Default model: existing config, or first local model, or `qwen2.5:32b-instruct-q3_K_M`
-   - If selected model isn't downloaded, offers to pull it (`ollama pull <model>`)
-
-4. **Base URL**: Defaults to `http://localhost:11434/v1`
-
-5. **OpenAI package check**: The Ollama provider requires the `openai` Python package. If not installed, offers to install via pip.
-
----
-
-## 10. Step 5: Scheduling & Budget
+> **Removed: the Chat Provider step.** The wizard no longer has a
+> `step_chat_provider` step or a Discord-chat-specific LLM selection —
+> there is no in-process chat agent to configure an LLM for (the Supervisor
+> was deleted; see `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`).
+> `step_write_config` (§11 below) writes a fixed `llm:` block
+> (`provider: anthropic`, `default_class: fast-medium`); provider/model/`base_url`
+> tuning — including pointing it at Ollama via `openai` + `base_url` — is a
+> manual edit to `config.yaml`, documented in [[specs/config]] §4.6.
 
 `step_scheduling(existing)` configures token budgets and retry behavior.
 
@@ -236,9 +215,9 @@ If customization is declined, shows the default values being used.
 
 ---
 
-## 11. Step 6: Write Config Files
+## 10. Step 5: Write Config Files
 
-`step_write_config(workspace, db_path, discord_cfg, agents_cfg, sched_cfg, chat_provider_cfg)` generates both config files.
+`step_write_config(workspace, db_config, discord_cfg, agents_cfg, sched_cfg)` generates both config files.
 
 ### .env File
 Written to `~/.agent-queue/.env` with mode `0o600`:
@@ -249,7 +228,7 @@ Written to `~/.agent-queue/.env` with mode `0o600`:
 Written to `~/.agent-queue/config.yaml`. Includes:
 - `workspace_dir` and `database_path`
 - `discord` section: bot token as `${DISCORD_BOT_TOKEN}`, guild ID (quoted), channel names, optional authorized users, optional per-project channel config (includes `private` flag)
-- `chat_provider` section: only written if provider is non-Anthropic, or if a specific model was chosen
+- `llm` section: fixed `provider: anthropic`, `default_class: fast-medium` (see note in §9 above)
 - `global_token_budget_daily`: only written if set
 - `scheduling` section: rolling window hours, min_task_guarantee always true
 - `pause_retry` section: rate limit backoff, token exhaustion retry
@@ -263,19 +242,18 @@ Written to `~/.agent-queue/config.yaml`. Includes:
 
 ---
 
-## 12. Step 7: Connectivity Summary
+## 11. Step 6: Connectivity Summary
 
-`step_test_connectivity(discord_cfg, agents_cfg, chat_provider_cfg)` prints a status summary:
+`step_test_connectivity(discord_cfg, agents_cfg)` prints a status summary:
 - Discord: connected or not verified
 - Claude API: connected with backend name, or not verified
 - claude-agent-sdk: installed or not
-- Chat provider: Anthropic (default), or Ollama with running/not-running status
 
 No retries or recovery at this step — purely informational.
 
 ---
 
-## 13. Step 8: Launch Daemon
+## 12. Step 7: Launch Daemon
 
 `step_launch(config_path)` offers to start the daemon:
 - Default: no (the user must opt in)
@@ -285,7 +263,7 @@ No retries or recovery at this step — purely informational.
 
 ---
 
-## 14. Idempotency and Interruption Safety
+## 13. Idempotency and Interruption Safety
 
 The wizard is designed to be safely re-run:
 - Existing values pre-fill all prompts

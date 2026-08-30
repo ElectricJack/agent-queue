@@ -38,8 +38,9 @@ remain unenriched are flagged with a status (``stale``, ``missing_source``,
 fields needed for the scan.
 
 Configuration is via ``MemoryConfig`` fields prefixed with ``stub_enrichment_``.
-The LLM provider falls back through:
-``stub_enrichment_provider`` -> ``revision_provider`` -> ``"anthropic"``
+The LLM call is made through the injected :class:`~src.llm.LLMClient`, resolved
+via ``stub_enrichment_class`` (an intelligence class; empty falls back to
+``llm.default_class``).
 
 See ``docs/specs/design/vault.md`` Section 4 for the stub format specification.
 """
@@ -53,9 +54,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.chat_providers.base import ChatProvider
     from src.config import MemoryConfig
     from src.event_bus import EventBus
+    from src.llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -570,9 +571,9 @@ class ReferenceStubEnricher:
         Path to ``vault/projects/`` where stubs are stored.
     config:
         MemoryConfig with ``stub_enrichment_*`` settings.
-    provider:
-        Optional pre-built ChatProvider.  If ``None``, a provider is
-        created from config on first use.
+    llm:
+        Optional injected LLMClient.  If ``None``, enrichment is skipped
+        (a warning is logged) rather than attempting a call.
     enabled:
         Master switch.  When ``False``, events are ignored.
     max_source_chars:
@@ -586,7 +587,7 @@ class ReferenceStubEnricher:
         vault_projects_dir: str,
         config: MemoryConfig,
         *,
-        provider: ChatProvider | None = None,
+        llm: "LLMClient | None" = None,
         enabled: bool = True,
         max_source_chars: int = DEFAULT_MAX_SOURCE_CHARS,
         max_tokens: int = 2048,
@@ -594,7 +595,7 @@ class ReferenceStubEnricher:
         self._bus = bus
         self._vault_projects_dir = vault_projects_dir
         self._config = config
-        self._provider = provider
+        self._llm = llm
         self._enabled = enabled
         self._max_source_chars = max_source_chars
         self._max_tokens = max_tokens
@@ -795,9 +796,8 @@ class ReferenceStubEnricher:
                 error=f"Could not read source file: {abs_path}",
             )
 
-        # 2. Get or create the LLM provider
-        provider = self._get_provider()
-        if not provider:
+        # 2. Ensure an LLM client is available
+        if self._llm is None:
             self._total_failed += 1
             return EnrichmentResult(
                 project_id=project_id,
@@ -808,7 +808,7 @@ class ReferenceStubEnricher:
 
         # 3. Call the LLM to summarize the document
         try:
-            sections = await self._summarize_document(provider, source_content)
+            sections = await self._summarize_document(source_content)
         except Exception as e:
             self._total_failed += 1
             return EnrichmentResult(
@@ -970,46 +970,11 @@ class ReferenceStubEnricher:
 
         return content
 
-    def _get_provider(self) -> ChatProvider | None:
-        """Get or lazily create the LLM chat provider.
-
-        Falls back through: stub_enrichment_provider -> revision_provider -> "anthropic"
-        """
-        if self._provider is not None:
-            return self._provider
-
-        try:
-            from src.chat_providers import create_chat_provider
-            from src.config import ChatProviderConfig
-
-            provider_name = (
-                self._config.stub_enrichment_provider
-                or self._config.revision_provider
-                or "anthropic"
-            )
-            model_name = self._config.stub_enrichment_model or self._config.revision_model or ""
-
-            provider_config = ChatProviderConfig(
-                provider=provider_name,
-                model=model_name,
-            )
-            self._provider = create_chat_provider(provider_config)
-            return self._provider
-        except Exception as e:
-            logger.warning("ReferenceStubEnricher: failed to create LLM provider: %s", e)
-            return None
-
-    async def _summarize_document(
-        self,
-        provider: ChatProvider,
-        content: str,
-    ) -> dict[str, str]:
+    async def _summarize_document(self, content: str) -> dict[str, str]:
         """Send document content to the LLM and parse the structured response.
 
         Parameters
         ----------
-        provider:
-            The chat provider to use for the LLM call.
         content:
             The source document content (possibly truncated).
 
@@ -1018,19 +983,26 @@ class ReferenceStubEnricher:
         dict[str, str]
             Parsed sections: summary, key_decisions, key_interfaces.
         """
+        from src.llm import LLMCallSpec
+
         user_prompt = SUMMARIZE_USER_PROMPT.replace("{content}", content)
 
-        response = await provider.create_message(
-            messages=[{"role": "user", "content": user_prompt}],
-            system=SUMMARIZE_SYSTEM_PROMPT,
-            max_tokens=self._max_tokens,
-        )
-
-        text_parts = response.text_parts
-        if not text_parts:
+        if self._llm is None:
+            logger.warning("ReferenceStubEnricher: no LLM client — skipping enrichment")
             return {"summary": "", "key_decisions": "", "key_interfaces": ""}
 
-        response_text = "\n".join(text_parts)
+        response = await self._llm.complete(
+            [{"role": "user", "content": user_prompt}],
+            system=SUMMARIZE_SYSTEM_PROMPT,
+            spec=LLMCallSpec(
+                intelligence_class=self._config.stub_enrichment_class or None,
+                max_tokens=self._max_tokens,
+                caller="stub-enricher",
+            ),
+        )
+        response_text = response.text
+        if not response_text:
+            return {"summary": "", "key_decisions": "", "key_interfaces": ""}
         return parse_enrichment_response(response_text)
 
     def _update_stub_file(self, stub_path: str, sections: dict[str, str]) -> bool:

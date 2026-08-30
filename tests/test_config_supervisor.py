@@ -1,48 +1,9 @@
 # tests/test_config_supervisor.py
-"""Tests for SupervisorConfig and ReflectionConfig."""
+"""Tests for SupervisorConfig.
 
-
-def test_reflection_config_defaults():
-    from src.config import ReflectionConfig
-
-    cfg = ReflectionConfig()
-    assert cfg.level == "full"
-    assert cfg.periodic_interval == 900
-    assert cfg.max_depth == 3
-    assert cfg.per_cycle_token_cap == 10000
-    assert cfg.hourly_token_circuit_breaker == 100000
-
-
-def test_reflection_config_validation_valid():
-    from src.config import ReflectionConfig
-
-    cfg = ReflectionConfig(level="moderate", max_depth=2)
-    errors = cfg.validate()
-    assert len(errors) == 0
-
-
-def test_reflection_config_validation_invalid_level():
-    from src.config import ReflectionConfig
-
-    cfg = ReflectionConfig(level="turbo")
-    errors = cfg.validate()
-    assert any("level" in str(e) for e in errors)
-
-
-def test_reflection_config_validation_invalid_depth():
-    from src.config import ReflectionConfig
-
-    cfg = ReflectionConfig(max_depth=0)
-    errors = cfg.validate()
-    assert any("max_depth" in str(e) for e in errors)
-
-
-def test_supervisor_config_defaults():
-    from src.config import SupervisorConfig
-
-    cfg = SupervisorConfig()
-    assert cfg.reflection is not None
-    assert cfg.reflection.level == "full"
+The reflection and observation config sections were deleted with the
+in-process Supervisor (llm-direct-path L6); only ``global`` remains.
+"""
 
 
 def test_supervisor_config_in_app_config(tmp_path):
@@ -51,6 +12,15 @@ def test_supervisor_config_in_app_config(tmp_path):
     app = AppConfig(data_dir=str(tmp_path / "data"))
     assert hasattr(app, "supervisor")
     assert isinstance(app.supervisor, SupervisorConfig)
+
+
+def test_supervisor_config_has_no_reflection_or_observation():
+    """Both sections retired with the in-process Supervisor."""
+    from src.config import SupervisorConfig
+
+    cfg = SupervisorConfig()
+    assert not hasattr(cfg, "reflection")
+    assert not hasattr(cfg, "observation")
 
 
 def test_supervisor_global_idle_timeout_default():
@@ -85,12 +55,32 @@ def test_supervisor_global_idle_timeout_from_yaml(tmp_path):
     assert cfg.supervisor.global_.idle_timeout_seconds == 1800
 
 
-def test_reflection_config_off_disables():
-    from src.config import ReflectionConfig
+def test_retired_supervisor_sections_still_load(tmp_path):
+    """An old config file with ``reflection``/``observation`` must not break."""
+    import yaml
 
-    cfg = ReflectionConfig(level="off")
-    errors = cfg.validate()
-    assert len(errors) == 0
+    from src.config import load_config
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump(
+            {
+                "data_dir": str(tmp_path / "data"),
+                "database_path": str(tmp_path / "test.db"),
+                "discord": {
+                    "bot_token": "test-token-for-validation",
+                    "guild_id": "123456789",
+                },
+                "supervisor": {
+                    "reflection": {"level": "full"},
+                    "observation": {"enabled": True},
+                    "global": {"idle_timeout_seconds": 1800},
+                },
+            }
+        )
+    )
+    cfg = load_config(str(cfg_path))
+    assert cfg.supervisor.global_.idle_timeout_seconds == 1800
 
 
 def test_supervisor_config_validation():
@@ -99,51 +89,6 @@ def test_supervisor_config_validation():
     cfg = SupervisorConfig()
     errors = cfg.validate()
     assert len(errors) == 0
-
-
-def test_observation_config_defaults():
-    from src.config import ObservationConfig
-
-    cfg = ObservationConfig()
-    # Paused by default during the framework overhaul — this is the real
-    # chat-analyzer switch.  See docs/specs/design/feature-pauses.md §2.3.
-    assert cfg.enabled is False
-    assert cfg.batch_window_seconds == 60
-    assert cfg.max_buffer_size == 20
-    assert cfg.stage1_keywords == []
-
-
-def test_observation_config_validation():
-    from src.config import ObservationConfig
-
-    cfg = ObservationConfig(batch_window_seconds=0)
-    errors = cfg.validate()
-    assert any("batch_window_seconds" in str(e) for e in errors)
-
-
-def test_supervisor_config_has_observation():
-    from src.config import SupervisorConfig
-
-    cfg = SupervisorConfig()
-    assert hasattr(cfg, "observation")
-    # Paused by default — see docs/specs/design/feature-pauses.md §2.3.
-    assert cfg.observation.enabled is False
-
-
-def test_observation_config_from_yaml():
-    from src.config import SupervisorConfig, ObservationConfig
-
-    cfg = SupervisorConfig(
-        observation=ObservationConfig(
-            enabled=False,
-            batch_window_seconds=30,
-            max_buffer_size=10,
-            stage1_keywords=["deploy", "hotfix"],
-        )
-    )
-    assert cfg.observation.enabled is False
-    assert cfg.observation.batch_window_seconds == 30
-    assert cfg.observation.stage1_keywords == ["deploy", "hotfix"]
 
 
 def test_check_deprecations_returns_empty(tmp_path):

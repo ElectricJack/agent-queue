@@ -274,7 +274,9 @@ For EACH workspace listed above, perform these steps IN ORDER:
                 return
 
             profile = await self._resolve_profile(task)
-            platform_name = self.config.default_runtime
+            # The registry is the injection seam; no in-tree runtime is
+            # registered under any name.
+            platform_name = ""
             adapter = self._runtimes.create(platform_name, profile=profile, llm_logger=self.llm_logger)
             self._adapters[action.agent_id] = adapter
 

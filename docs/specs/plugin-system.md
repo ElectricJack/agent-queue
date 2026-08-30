@@ -527,7 +527,7 @@ Several existing AgentQueue subsystems are good candidates for extraction into p
 | Component | Current Location | Notes |
 |---|---|---|
 | **File Watcher** | `src/file_watcher.py` (419 LOC) | Self-contained, event-driven. Only integration is EventBus emit. |
-| **Chat Providers (Ollama)** | `src/chat_providers/ollama.py` | Already behind factory. Extract non-default providers as plugins. |
+| **LLM Providers (Ollama)** | `src/llm/providers/openai.py` (Ollama = `openai` provider + `base_url`) | Already behind the `LLMClient` provider dispatch. Extract non-default providers as plugins. |
 | **Agent Adapters (future)** | `src/adapters/` | Factory pattern already in place. New LLM backends (OpenAI, local) would be plugins. |
 | **Token Budget Manager** | `src/tokens/` (104 LOC) | Pure math, minimal coupling. Alternative scheduling strategies could be plugins. |
 
@@ -542,13 +542,13 @@ Several existing AgentQueue subsystems are good candidates for extraction into p
 | Component | Current Location | Notes |
 |---|---|---|
 | **Discord Adapter** | `src/discord/` (11,959 LOC) | Tightly coupled, huge. Would need significant refactoring. Core platform for now. |
-| **Reflection Engine** | `src/reflection.py` | Deeply integrated with Supervisor decision loop. |
+| **Reflection Engine** | now a playbook, not a module | Reflection runs as a playbook (see `docs/specs/design/self-improvement.md`); no longer a module extracted from an in-process decision loop. |
 
 ### Recommended Extraction Order
 
 1. ✅ **Memory Manager** — extracted as `aq-memory`; validated complex plugin with external dependencies
 2. Next, **File Watcher** — validates the plugin loading pipeline end-to-end for a simpler subsystem
-3. Then **Ollama Chat Provider** — validates plugin tool/command registration
+3. Then **Ollama LLM Provider** (`src/llm/providers/openai.py`, Ollama via `openai` + `base_url`) — validates plugin tool/command registration
 
 Each extraction serves as a proving ground for the plugin API surface. If the API can't cleanly support the extraction, the API needs to change before publishing it for external plugin authors.
 

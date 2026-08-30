@@ -166,15 +166,16 @@ The constructor creates all sub-objects but performs no I/O:
 | `_create_thread` | `CreateThreadCallback \| None` | Discord thread creation callback |
 | `_paused` | `bool` | Global scheduling pause flag |
 | `_last_approval_check` | `float` | Unix timestamp of last approval poll |
-| `_chat_provider` | optional | LLM provider for plan parsing |
 | `_no_pr_reminded_at` | `dict[str, float]` | Rate-limit tracker for no-PR reminders |
 | `_stuck_notified_at` | `dict[str, float]` | Rate-limit tracker for stuck-DEFINED alerts |
 | `playbook_manager` | `PlaybookManager \| None` | Playbook subsystem (`None` when `playbooks.enabled` is false) |
 | `timer_service` | `TimerService \| None` | Emits synthetic `timer.*` events for periodic playbook triggers |
+| `llm` | `LLMClient` | The direct LLM path — see `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md` |
 
-If `config.auto_task.use_llm_parser` is true, the constructor attempts to instantiate a
-`ChatProvider` via `create_chat_provider(config.chat_provider)`.  Failure is silently
-swallowed — the system falls back to regex parsing.
+There is no `_chat_provider` field and no LLM-based plan parser: automatic
+plan-to-subtask breakdown was removed (see §12), and the orchestrator's own
+LLM usage — playbook node/transition execution — goes through `self.llm`
+(`LLMClient`), constructed from the `llm:` config section.
 
 ### `async initialize()`
 
@@ -507,13 +508,19 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
 **Step 15 — Handle result.**
 
 *`COMPLETED`:*
-- Run the three-phase `_run_completion_pipeline(ctx)` which executes:
+- Run `_run_completion_pipeline(ctx)` which executes:
   1. `_phase_commit` — commit agent changes to git
-  2. `_phase_plan_discover` — delegate to Supervisor for plan file discovery; if plan
-     found, transition to `AWAITING_PLAN_APPROVAL` and return early
-  3. `_phase_merge` — merge/push or create PR based on configuration; on merge
+  2. `_phase_merge` — merge/push or create PR based on configuration; on merge
      success transitions to `COMPLETED`, on PR creation transitions to
      `AWAITING_APPROVAL`, on merge failure transitions to `BLOCKED`
+- Automatic plan-file discovery (the former `_phase_plan_discover` phase) and
+  the manual `process_plan`/`process_task_completion` commands that replaced
+  it were both removed (llm-direct-path §6.3) — nothing discovers or
+  processes plan files anymore. `AWAITING_PLAN_APPROVAL` rows only exist as
+  pre-existing data from before this removal; `approve_plan`/`reject_plan`/
+  `delete_plan` remain as the remediation path for those rows (see
+  `docs/specs/command-handler.md`), and the `tasks.awaiting_plan_approval`
+  doctor check flags any that are stranded.
 - The pipeline handles PR creation, approval transitions, and completion notifications.
 - Post full completion summary to thread (or `_notify_channel`); post brief to main.
 
@@ -839,69 +846,28 @@ Pushes the task branch and creates a PR. Returns the PR URL or `None`.
 
 ---
 
-## 12. Plan-Generated Tasks (Two-Step Approval Workflow)
+## 12. Plan-Generated Tasks (On-Demand Approval Workflow)
 
-Plan generation follows a two-step workflow: **discover → approval → create subtasks**.
-After a task completes, the orchestrator delegates plan discovery to the Supervisor
-via `_phase_plan_discover`. The Supervisor calls `process_task_completion` to find,
-parse, and store plan files, then returns whether a plan was found. If found, the
-task transitions to `AWAITING_PLAN_APPROVAL`. Subtasks are only created once a
-human approves the plan via the `approve_plan` command (see [[specs/command-handler]]).
+> **Removed: automatic plan discovery.** The orchestrator no longer discovers
+> plan files as part of the completion pipeline. There is no
+> `_phase_plan_discover`, no Supervisor delegation, no `_chat_provider`, and
+> no LLM-based plan parser (`use_llm_parser`/`llm_parser_model` were removed
+> from config). See `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`.
+> Any `AWAITING_PLAN_APPROVAL` rows left over from before this change are
+> flagged by a doctor check as stranded, since nothing auto-resolves them
+> anymore.
 
-### 12a. Plan Discovery via Supervisor (`_phase_plan_discover`)
-
-Called as part of the completion pipeline, BEFORE merge (so the workspace is still
-available). Delegates to `Supervisor.on_task_completed()` which calls the
-`process_task_completion` command in CommandHandler.
-
-If no Supervisor is set (legacy mode), falls back to `_phase_plan_generate()`.
-
-The `process_task_completion` command wraps the same logic as the former
-`_discover_and_store_plan`:
-
-### 12a-legacy. `_discover_and_store_plan(task, workspace) -> bool` (legacy fallback)
-
-Called immediately after any successful COMPLETED path in `_execute_task`.  Returns `True`
-if a plan was found, parsed, and stored for approval; `False` otherwise.
-
-**Guards:**
-- If `config.auto_task.enabled` is false: return `False`.
-- If `task.is_plan_subtask` is true: return `False` (prevent recursive explosion).
-- **Skip-if-implemented heuristic:** if `config.auto_task.skip_if_implemented` is true,
-  call `git.has_non_plan_changes(workspace, default_branch)`.  If the task already made
-  substantial code changes beyond the plan file itself, the plan was likely already
-  executed during this task — log a message and return `False`.
-
-**Plan file discovery.**
-Call `find_plan_file(workspace, config.auto_task.plan_file_patterns)`.
-If no file found, log to stdout and return `False`.
-
-**Plan reading.**
-`raw = read_plan_file(plan_path)`.  On I/O error, log and return `False`.
-
-**Parsing.**
-If `config.auto_task.use_llm_parser` and `_chat_provider` is set:
-- Call `parse_plan_with_llm(raw, provider, source_file, max_steps)`.
-- On failure, log and fall back to `parse_plan(raw, source_file, max_steps)`.
-
-Otherwise: call `parse_plan(raw, source_file, max_steps)`.
-
-If `plan.steps` is empty, log and return `False`.
-
-**Plan archiving.**
-Move the plan file to `.claude/plans/{task.id}-plan.md` inside the workspace.  This
-prevents the file from being re-processed if the workspace is reused.  Any `OSError` is
-silently ignored.  Store the archived path as a `plan_archived_path` task context entry.
-
-**Store plan data.**  Store the parsed plan steps, preamble/context, and configuration
-as structured `task_context` entries so the plan can be retrieved later during approval
-without re-reading the file.
-
-**Transition.**  Move the task to `AWAITING_PLAN_APPROVAL` status and emit a
-`PLAN_FOUND` event.  Notify the Discord channel with a plan summary so the user can
-review and approve/reject/delete the plan.
-
-Return `True`.
+Plan handling is no longer discovery-driven at all: the `process_plan` /
+`process_task_completion` commands that used to discover, read, and archive
+a plan file (`.claude/plan.md`) were deleted outright (llm-direct-path
+§6.3 addendum) — the LLM plan parser they depended on is gone, so a
+discovered-but-unparsed plan was an unrecoverable dead end. `src/plan_parser.py`
+still provides `find_plan_file`/`read_plan_file`/`find_all_plan_files`
+utilities, but nothing calls the discovery ones anymore. Any
+`AWAITING_PLAN_APPROVAL` row is therefore pre-existing data; a human resolves
+it via the `approve_plan` (only works if draft subtasks were already stored),
+`reject_plan`, or `delete_plan` command — the mechanics of that approval step
+(`12b` below) are unchanged from before this removal.
 
 ### 12b. `_create_subtasks_from_stored_plan(task) -> list[Task]`
 

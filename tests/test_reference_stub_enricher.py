@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.llm import LLMClient
+from src.llm.providers.base import LLMProvider
+from src.llm.types import ChatResponse as FakeChatResponse
+from src.llm.types import TextBlock as FakeTextBlock
 from src.reference_stub_enricher import (
     SUMMARIZE_SYSTEM_PROMPT,
     ReferenceStubEnricher,
@@ -28,20 +32,29 @@ from src.reference_stub_enricher import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class FakeChatResponse:
-    """Minimal ChatResponse stand-in for testing."""
+class _AdaptedLLMProvider(LLMProvider):
+    """Adapts an object exposing an async ``create_message`` (e.g. an
+    ``AsyncMock``) into an ``LLMProvider`` so it can back an ``LLMClient``."""
 
-    content: list
+    def __init__(self, create_message):
+        self._create_message = create_message
+
+    async def create_message(self, **kwargs):
+        return await self._create_message(**kwargs)
 
     @property
-    def text_parts(self) -> list[str]:
-        return [block.text for block in self.content if hasattr(block, "text")]
+    def model_name(self) -> str:
+        return "fake"
 
 
-@dataclass
-class FakeTextBlock:
-    text: str
+def _llm_from(provider) -> LLMClient:
+    """Wrap a mock/object exposing ``create_message`` as an ``LLMClient``."""
+    from src.config import LLMConfig
+
+    adapted = provider if isinstance(provider, LLMProvider) else _AdaptedLLMProvider(
+        provider.create_message
+    )
+    return LLMClient.with_provider(adapted, config=LLMConfig())
 
 
 @pytest.fixture
@@ -59,18 +72,15 @@ def fake_config():
     @dataclass
     class FakeMemoryConfig:
         stub_enrichment_enabled: bool = True
-        stub_enrichment_provider: str = ""
-        stub_enrichment_model: str = ""
+        stub_enrichment_class: str = ""
         stub_enrichment_max_source_chars: int = 20_000
-        revision_provider: str = ""
-        revision_model: str = ""
 
     return FakeMemoryConfig()
 
 
 @pytest.fixture
 def fake_provider():
-    """Mock ChatProvider that returns a well-structured LLM response."""
+    """Mock LLM provider that returns a well-structured response."""
     provider = AsyncMock()
     provider.create_message = AsyncMock(
         return_value=FakeChatResponse(
@@ -111,7 +121,7 @@ def enricher(fake_bus, vault_dir, fake_config, fake_provider):
         bus=fake_bus,
         vault_projects_dir=vault_dir,
         config=fake_config,
-        provider=fake_provider,
+        llm=_llm_from(fake_provider),
         enabled=True,
     )
 
@@ -521,11 +531,9 @@ class TestReferenceStubEnricherEnrich:
             bus=fake_bus,
             vault_projects_dir=vault_dir,
             config=fake_config,
-            provider=None,  # No provider
+            llm=None,  # No LLM client
             enabled=True,
         )
-        # Patch _get_provider to return None (simulates missing credentials)
-        enricher._get_provider = MagicMock(return_value=None)
 
         project_id = "test-project"
         stub_name = "spec-test.md"
@@ -550,7 +558,7 @@ class TestReferenceStubEnricherEnrich:
             bus=fake_bus,
             vault_projects_dir=vault_dir,
             config=fake_config,
-            provider=provider,
+            llm=_llm_from(provider),
             enabled=True,
         )
 
@@ -579,7 +587,7 @@ class TestReferenceStubEnricherEnrich:
             bus=fake_bus,
             vault_projects_dir=vault_dir,
             config=fake_config,
-            provider=provider,
+            llm=_llm_from(provider),
             enabled=True,
         )
 
@@ -710,7 +718,7 @@ class TestReferenceStubEnricherReadSource:
             bus=fake_bus,
             vault_projects_dir=vault_dir,
             config=fake_config,
-            provider=fake_provider,
+            llm=_llm_from(fake_provider),
             max_source_chars=100,
         )
 
@@ -744,7 +752,7 @@ class TestReferenceStubEnricherSummarize:
     @pytest.mark.asyncio
     async def test_sends_correct_prompt_to_llm(self, enricher, fake_provider):
         content = "# Test Doc\nSome content here."
-        await enricher._summarize_document(fake_provider, content)
+        await enricher._summarize_document(content)
 
         fake_provider.create_message.assert_called_once()
         call_kwargs = fake_provider.create_message.call_args.kwargs
@@ -758,89 +766,62 @@ class TestReferenceStubEnricherSummarize:
         assert "Some content here." in messages[0]["content"]
 
     @pytest.mark.asyncio
-    async def test_empty_text_parts_returns_empty_sections(self, enricher):
+    async def test_empty_text_parts_returns_empty_sections(
+        self, fake_bus, vault_dir, fake_config
+    ):
         provider = AsyncMock()
         provider.create_message = AsyncMock(return_value=FakeChatResponse(content=[]))
-        result = await enricher._summarize_document(provider, "some content")
+        enricher = ReferenceStubEnricher(
+            bus=fake_bus,
+            vault_projects_dir=vault_dir,
+            config=fake_config,
+            llm=_llm_from(provider),
+            enabled=True,
+        )
+        result = await enricher._summarize_document("some content")
         assert result["summary"] == ""
         assert result["key_decisions"] == ""
         assert result["key_interfaces"] == ""
 
-
-class TestReferenceStubEnricherProviderFallback:
-    """Tests for LLM provider fallback chain."""
-
-    def test_uses_injected_provider(self, enricher, fake_provider):
-        result = enricher._get_provider()
-        assert result is fake_provider
-
-    def test_creates_provider_from_config(self, fake_bus, fake_config, tmp_path):
+    @pytest.mark.asyncio
+    async def test_no_llm_returns_empty_sections(self, fake_bus, vault_dir, fake_config):
         enricher = ReferenceStubEnricher(
             bus=fake_bus,
-            vault_projects_dir=str(tmp_path),
+            vault_projects_dir=vault_dir,
             config=fake_config,
-            provider=None,
+            llm=None,
             enabled=True,
         )
+        result = await enricher._summarize_document("some content")
+        assert result["summary"] == ""
+        assert result["key_decisions"] == ""
+        assert result["key_interfaces"] == ""
 
-        mock_provider = MagicMock()
-        with patch(
-            "src.chat_providers.create_chat_provider",
-            return_value=mock_provider,
-        ) as mock_create:
-            result = enricher._get_provider()
-            assert result is mock_provider
-            mock_create.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_enrichment_uses_configured_class(self, tmp_path):
+        from src.config import LLMConfig, MemoryConfig
+        from src.llm import LLMClient
+        from src.llm.fake import FakeProvider
+        from src.reference_stub_enricher import ReferenceStubEnricher
 
-    def test_fallback_to_revision_provider(self, fake_bus, tmp_path):
-        @dataclass
-        class Config:
-            stub_enrichment_enabled: bool = True
-            stub_enrichment_provider: str = ""
-            stub_enrichment_model: str = ""
-            stub_enrichment_max_source_chars: int = 20_000
-            revision_provider: str = "ollama"
-            revision_model: str = "qwen:7b"
+        fake = FakeProvider()
+        fake.add_text("## Summary\ns\n\n## Key Decisions\nd\n\n## Key Interfaces\ni")
+        seen = {}
 
+        class SpyClient(LLMClient):
+            async def complete(self, messages, *, system="", spec=None):
+                seen["spec"] = spec
+                return await super().complete(messages, system=system, spec=spec)
+
+        client = SpyClient.with_provider(fake, config=LLMConfig())
         enricher = ReferenceStubEnricher(
-            bus=fake_bus,
-            vault_projects_dir=str(tmp_path),
-            config=Config(),
-            provider=None,
-            enabled=True,
+            bus=AsyncMock(), vault_projects_dir=str(tmp_path),
+            config=MemoryConfig(stub_enrichment_class="fast-low"), llm=client,
         )
-
-        with patch("src.chat_providers.create_chat_provider") as mock_create:
-            mock_create.return_value = MagicMock()
-            enricher._get_provider()
-            call_args = mock_create.call_args[0][0]
-            assert call_args.provider == "ollama"
-            assert call_args.model == "qwen:7b"
-
-    def test_stub_enrichment_provider_takes_precedence(self, fake_bus, tmp_path):
-        @dataclass
-        class Config:
-            stub_enrichment_enabled: bool = True
-            stub_enrichment_provider: str = "gemini"
-            stub_enrichment_model: str = "gemini-2.5-flash"
-            stub_enrichment_max_source_chars: int = 20_000
-            revision_provider: str = "ollama"
-            revision_model: str = "qwen:7b"
-
-        enricher = ReferenceStubEnricher(
-            bus=fake_bus,
-            vault_projects_dir=str(tmp_path),
-            config=Config(),
-            provider=None,
-            enabled=True,
-        )
-
-        with patch("src.chat_providers.create_chat_provider") as mock_create:
-            mock_create.return_value = MagicMock()
-            enricher._get_provider()
-            call_args = mock_create.call_args[0][0]
-            assert call_args.provider == "gemini"
-            assert call_args.model == "gemini-2.5-flash"
+        out = await enricher._summarize_document("some content")
+        assert out["summary"] == "s"
+        assert seen["spec"].intelligence_class == "fast-low"
+        assert seen["spec"].caller == "stub-enricher"
 
 
 class TestReferenceStubEnricherLargeFiles:
@@ -876,7 +857,7 @@ class TestReferenceStubEnricherLargeFiles:
             bus=fake_bus,
             vault_projects_dir=vault_dir,
             config=fake_config,
-            provider=provider,
+            llm=_llm_from(provider),
             enabled=True,
             max_source_chars=500,
         )
@@ -1128,7 +1109,9 @@ class TestSourceHashSkipEnrichment:
     """Tests for source_hash-based skip logic in enrich_stub() (Roadmap 6.3.3)."""
 
     @pytest.mark.asyncio
-    async def test_unchanged_hash_enriched_stub_is_skipped(self, enricher, vault_dir, tmp_path):
+    async def test_unchanged_hash_enriched_stub_is_skipped(
+        self, enricher, fake_provider, vault_dir, tmp_path
+    ):
         """Unchanged source + already-enriched stub → skip LLM call."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
@@ -1154,10 +1137,12 @@ class TestSourceHashSkipEnrichment:
         assert enricher.total_skipped == 1
         assert enricher.total_enriched == 0
         # LLM should NOT have been called
-        enricher._provider.create_message.assert_not_called()
+        fake_provider.create_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_unchanged_hash_placeholder_stub_is_enriched(self, enricher, vault_dir, tmp_path):
+    async def test_unchanged_hash_placeholder_stub_is_enriched(
+        self, enricher, fake_provider, vault_dir, tmp_path
+    ):
         """Unchanged source + placeholder stub → must still enrich."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
@@ -1189,7 +1174,7 @@ class TestSourceHashSkipEnrichment:
         assert enricher.total_enriched == 1
         assert enricher.total_skipped == 0
         # LLM SHOULD have been called
-        enricher._provider.create_message.assert_called_once()
+        fake_provider.create_message.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_changed_hash_enriched_stub_is_re_enriched(self, enricher, vault_dir, tmp_path):
@@ -1214,7 +1199,7 @@ class TestSourceHashSkipEnrichment:
         assert enricher.total_skipped == 0
 
     @pytest.mark.asyncio
-    async def test_force_bypasses_hash_check(self, enricher, vault_dir, tmp_path):
+    async def test_force_bypasses_hash_check(self, enricher, fake_provider, vault_dir, tmp_path):
         """force=True always re-enriches, even if hash matches."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
@@ -1240,7 +1225,7 @@ class TestSourceHashSkipEnrichment:
         assert enricher.total_enriched == 1
         assert enricher.total_skipped == 0
         # LLM SHOULD have been called despite matching hash
-        enricher._provider.create_message.assert_called_once()
+        fake_provider.create_message.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_missing_stub_file_not_skipped(self, enricher, vault_dir, tmp_path):
@@ -1383,7 +1368,9 @@ class TestSourceHashEventHandler:
     """Tests for hash-based skip in the _on_spec_changed event handler."""
 
     @pytest.mark.asyncio
-    async def test_event_with_matching_hash_skips_enrichment(self, enricher, vault_dir, tmp_path):
+    async def test_event_with_matching_hash_skips_enrichment(
+        self, enricher, fake_provider, vault_dir, tmp_path
+    ):
         """Event carrying a content_hash that matches the stub skips LLM."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
@@ -1409,7 +1396,7 @@ class TestSourceHashEventHandler:
 
         assert enricher.total_skipped == 1
         assert enricher.total_enriched == 0
-        enricher._provider.create_message.assert_not_called()
+        fake_provider.create_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_event_with_changed_hash_enriches(self, enricher, vault_dir, tmp_path):
@@ -1503,7 +1490,7 @@ class TestSourceHashPersistence:
             bus=fake_bus,
             vault_projects_dir=vault_dir,
             config=fake_config,
-            provider=fake_provider,
+            llm=_llm_from(fake_provider),
             enabled=True,
         )
 
@@ -1533,7 +1520,9 @@ class TestStaleStubDetection:
     """
 
     @pytest.mark.asyncio
-    async def test_manual_source_edit_detected_as_stale(self, enricher, vault_dir, tmp_path):
+    async def test_manual_source_edit_detected_as_stale(
+        self, enricher, fake_provider, vault_dir, tmp_path
+    ):
         """Editing source file on disk → hash mismatch → stub re-enriched (not skipped)."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
@@ -1565,7 +1554,7 @@ class TestStaleStubDetection:
         assert enricher.total_enriched == 1
         assert enricher.total_skipped == 0
         # LLM SHOULD have been called to re-enrich
-        enricher._provider.create_message.assert_called_once()
+        fake_provider.create_message.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_check_skip_returns_none_on_stale_hash(self, enricher, vault_dir, tmp_path):
@@ -1599,7 +1588,9 @@ class TestStaleStubDetection:
         assert enricher.total_skipped == 0
 
     @pytest.mark.asyncio
-    async def test_stale_detection_in_event_flow(self, enricher, vault_dir, tmp_path):
+    async def test_stale_detection_in_event_flow(
+        self, enricher, fake_provider, vault_dir, tmp_path
+    ):
         """Event handler detects stale stub when source changed between events."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
@@ -1632,7 +1623,7 @@ class TestStaleStubDetection:
         # Stale detected → LLM called for re-enrichment
         assert enricher.total_enriched == 1
         assert enricher.total_skipped == 0
-        enricher._provider.create_message.assert_called_once()
+        fake_provider.create_message.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1710,7 +1701,9 @@ class TestDeletedSourceOrphanedStub:
         assert enricher.total_skipped == 0
 
     @pytest.mark.asyncio
-    async def test_deleted_event_ignored_by_enricher(self, enricher, vault_dir, tmp_path):
+    async def test_deleted_event_ignored_by_enricher(
+        self, enricher, fake_provider, vault_dir, tmp_path
+    ):
         """Enricher ignores 'deleted' events — watcher handles stub removal."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
@@ -1738,7 +1731,7 @@ class TestDeletedSourceOrphanedStub:
         assert enricher.total_enriched == 0
         assert enricher.total_skipped == 0
         assert enricher.total_failed == 0
-        enricher._provider.create_message.assert_not_called()
+        fake_provider.create_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_watcher_removes_stub_on_source_deletion(self, tmp_path):

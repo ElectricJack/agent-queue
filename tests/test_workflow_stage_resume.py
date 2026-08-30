@@ -20,13 +20,31 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.event_bus import EventBus
+from src.llm import LLMClient, LLMRunResult
+from src.llm.fake import FakeProvider
 from src.models import PlaybookRun, PlaybookRunEvent, PlaybookRunStatus, Workflow
 from src.playbooks.runner import PlaybookRunner
+from src.playbooks.services import PlaybookServices
 from src.playbooks.state_machine import (
     VALID_PLAYBOOK_RUN_TRANSITIONS,
     playbook_run_transition,
 )
 from src.workflow_stage_resume_handler import WorkflowStageResumeHandler
+
+
+def _run_result(text: str) -> LLMRunResult:
+    return LLMRunResult(text=text, transcript=[], turns=1, stopped_by="done")
+
+
+def _script_iter(services, responses) -> None:
+    async def _run_tools(*a, **kw):
+        return _run_result(next(responses))
+
+    async def _complete(*a, **kw):
+        return MagicMock(text=next(responses), tool_calls=[])
+
+    services.llm.run_tools.side_effect = _run_tools
+    services.llm.complete.side_effect = _complete
 
 
 # ---------------------------------------------------------------------------
@@ -35,12 +53,14 @@ from src.workflow_stage_resume_handler import WorkflowStageResumeHandler
 
 
 @pytest.fixture
-def mock_supervisor():
-    """A mock Supervisor with controllable chat()."""
-    supervisor = AsyncMock()
-    supervisor.chat = AsyncMock(return_value="Done.")
-    supervisor.summarize = AsyncMock(return_value="Summary.")
-    return supervisor
+def mock_services():
+    """PlaybookServices with controllable llm.run_tools() / llm.complete()."""
+    services = PlaybookServices.for_tests(LLMClient.with_provider(FakeProvider()))
+    services.llm = MagicMock()
+    services.llm.config = MagicMock(max_tokens=2048)
+    services.llm.run_tools = AsyncMock(return_value=_run_result("Done."))
+    services.llm.complete = AsyncMock(return_value=MagicMock(text="1", tool_calls=[]))
+    return services
 
 
 @pytest.fixture
@@ -236,13 +256,13 @@ class TestWaitForEventNode:
     """Verify PlaybookRunner pauses at wait_for_event nodes."""
 
     async def test_wait_for_event_pauses_run(
-        self, mock_supervisor, stage_event_graph, event_data, mock_db
+        self, mock_services, stage_event_graph, event_data, mock_db
     ):
         """A node with wait_for_event should pause the run."""
         responses = iter(["Tasks created.", "Waiting for stage."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(stage_event_graph, event_data, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(stage_event_graph, event_data, mock_services, db=mock_db)
         result = await runner.run()
 
         assert result.status == "paused"
@@ -252,13 +272,13 @@ class TestWaitForEventNode:
         assert "wait_stage" in node_ids
 
     async def test_wait_for_event_persists_waiting_for_event(
-        self, mock_supervisor, stage_event_graph, event_data, mock_db
+        self, mock_services, stage_event_graph, event_data, mock_db
     ):
         """The paused run should have waiting_for_event persisted in DB."""
         responses = iter(["Tasks created.", "Waiting."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(stage_event_graph, event_data, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(stage_event_graph, event_data, mock_services, db=mock_db)
         await runner.run()
 
         # Find the update call that set status to paused
@@ -272,14 +292,14 @@ class TestWaitForEventNode:
         assert paused_call.kwargs["current_node"] == "wait_stage"
 
     async def test_wait_for_event_dict_form(
-        self, mock_supervisor, stage_event_graph_dict_form, event_data, mock_db
+        self, mock_services, stage_event_graph_dict_form, event_data, mock_db
     ):
         """wait_for_event as dict {event: "..."} should also work."""
         responses = iter(["Tasks created.", "Waiting."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         runner = PlaybookRunner(
-            stage_event_graph_dict_form, event_data, mock_supervisor, db=mock_db
+            stage_event_graph_dict_form, event_data, mock_services, db=mock_db
         )
         result = await runner.run()
 
@@ -293,11 +313,11 @@ class TestWaitForEventNode:
         assert paused_call.kwargs["waiting_for_event"] == "workflow.stage.completed"
 
     async def test_wait_for_event_emits_paused_event(
-        self, mock_supervisor, stage_event_graph, event_data, mock_db, event_bus
+        self, mock_services, stage_event_graph, event_data, mock_db, event_bus
     ):
         """Pausing at wait_for_event should emit playbook.run.paused."""
         responses = iter(["Tasks created.", "Waiting."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         emitted = []
         event_bus.subscribe("playbook.run.paused", lambda d: emitted.append(d))
@@ -305,7 +325,7 @@ class TestWaitForEventNode:
         runner = PlaybookRunner(
             stage_event_graph,
             event_data,
-            mock_supervisor,
+            mock_services,
             db=mock_db,
             event_bus=event_bus,
         )
@@ -316,11 +336,11 @@ class TestWaitForEventNode:
         assert emitted[0]["node_id"] == "wait_stage"
 
     async def test_wait_for_event_no_human_notification(
-        self, mock_supervisor, stage_event_graph, event_data, mock_db, event_bus
+        self, mock_services, stage_event_graph, event_data, mock_db, event_bus
     ):
         """wait_for_event should NOT emit notify.playbook_run_paused."""
         responses = iter(["Tasks created.", "Waiting."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         notifications = []
         event_bus.subscribe("notify.playbook_run_paused", lambda d: notifications.append(d))
@@ -328,7 +348,7 @@ class TestWaitForEventNode:
         runner = PlaybookRunner(
             stage_event_graph,
             event_data,
-            mock_supervisor,
+            mock_services,
             db=mock_db,
             event_bus=event_bus,
         )
@@ -338,7 +358,7 @@ class TestWaitForEventNode:
         assert len(notifications) == 0
 
     async def test_wait_for_event_skipped_in_dry_run(
-        self, mock_supervisor, stage_event_graph, event_data
+        self, mock_services, stage_event_graph, event_data
     ):
         """Dry run should skip wait_for_event and continue."""
         result = await PlaybookRunner.dry_run(stage_event_graph, event_data)
@@ -349,11 +369,11 @@ class TestWaitForEventNode:
         assert "next_stage" in node_ids
 
     async def test_progress_callback_receives_paused_for_event(
-        self, mock_supervisor, stage_event_graph, event_data, mock_db
+        self, mock_services, stage_event_graph, event_data, mock_db
     ):
         """on_progress should receive 'playbook_paused_for_event'."""
         responses = iter(["Tasks.", "Waiting."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         progress_events = []
         on_progress = AsyncMock(side_effect=lambda e, d: progress_events.append((e, d)))
@@ -361,7 +381,7 @@ class TestWaitForEventNode:
         runner = PlaybookRunner(
             stage_event_graph,
             event_data,
-            mock_supervisor,
+            mock_services,
             db=mock_db,
             on_progress=on_progress,
         )
@@ -379,19 +399,19 @@ class TestWaitForEventNode:
 class TestResumeFromEvent:
     """Verify PlaybookRunner.resume_from_event continues graph execution."""
 
-    async def test_resume_from_event_completes(self, mock_supervisor, stage_event_graph, mock_db):
+    async def test_resume_from_event_completes(self, mock_services, stage_event_graph, mock_db):
         """Resuming with event data should continue to completion."""
         paused_run = _make_paused_run(graph=stage_event_graph)
 
         # LLM calls: transition classification → goto next_stage,
         # then execute next_stage
         responses = iter(["1", "Review tasks created."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         result = await PlaybookRunner.resume_from_event(
             db_run=paused_run,
             graph=stage_event_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             event_data={
                 "workflow_id": "wf-1",
                 "stage": "build",
@@ -404,28 +424,19 @@ class TestResumeFromEvent:
         assert result.run_id == "run-1"
 
     async def test_resume_from_event_injects_context(
-        self, mock_supervisor, stage_event_graph, mock_db
+        self, mock_services, stage_event_graph, mock_db
     ):
         """Event data should be injected into conversation history."""
         paused_run = _make_paused_run(graph=stage_event_graph)
 
-        captured_messages = []
-
-        async def capture_chat(**kwargs):
-            msgs = kwargs.get("messages", [])
-            captured_messages.extend(msgs)
-            return "Done."
-
-        mock_supervisor.chat.side_effect = capture_chat
-
         # Need transition eval + node exec
         responses = iter(["1", "Done."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         await PlaybookRunner.resume_from_event(
             db_run=paused_run,
             graph=stage_event_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             event_data={"workflow_id": "wf-1", "stage": "build"},
             db=mock_db,
         )
@@ -439,13 +450,13 @@ class TestResumeFromEvent:
         assert len(clear_calls) >= 1
 
     async def test_resume_from_event_uses_pinned_graph(
-        self, mock_supervisor, stage_event_graph, mock_db
+        self, mock_services, stage_event_graph, mock_db
     ):
         """Should use pinned graph from the run record when available."""
         paused_run = _make_paused_run(graph=stage_event_graph)
 
         responses = iter(["1", "Done."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         # Pass a different graph (should be ignored in favor of pinned)
         different_graph = {
@@ -457,7 +468,7 @@ class TestResumeFromEvent:
         result = await PlaybookRunner.resume_from_event(
             db_run=paused_run,
             graph=different_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             event_data={"workflow_id": "wf-1"},
             db=mock_db,
         )
@@ -465,18 +476,18 @@ class TestResumeFromEvent:
         assert result.status == "completed"
 
     async def test_resume_from_event_transitions_state(
-        self, mock_supervisor, stage_event_graph, mock_db
+        self, mock_services, stage_event_graph, mock_db
     ):
         """State should transition PAUSED → RUNNING → COMPLETED."""
         paused_run = _make_paused_run(graph=stage_event_graph)
 
         responses = iter(["1", "Done."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         result = await PlaybookRunner.resume_from_event(
             db_run=paused_run,
             graph=stage_event_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             event_data={"workflow_id": "wf-1"},
             db=mock_db,
         )
@@ -493,13 +504,13 @@ class TestResumeFromEvent:
         assert "completed" in status_updates
 
     async def test_resume_from_event_emits_resumed_event(
-        self, mock_supervisor, stage_event_graph, mock_db, event_bus
+        self, mock_services, stage_event_graph, mock_db, event_bus
     ):
         """Should emit playbook.run.resumed with resumed_by_event."""
         paused_run = _make_paused_run(graph=stage_event_graph)
 
         responses = iter(["1", "Done."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         emitted = []
         event_bus.subscribe("playbook.run.resumed", lambda d: emitted.append(d))
@@ -507,7 +518,7 @@ class TestResumeFromEvent:
         await PlaybookRunner.resume_from_event(
             db_run=paused_run,
             graph=stage_event_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             event_data={"workflow_id": "wf-1"},
             db=mock_db,
             event_bus=event_bus,
@@ -518,7 +529,7 @@ class TestResumeFromEvent:
         assert emitted[0]["node_id"] == "wait_stage"
 
     async def test_resume_from_event_no_current_node(
-        self, mock_supervisor, stage_event_graph, mock_db
+        self, mock_services, stage_event_graph, mock_db
     ):
         """Missing current_node should fail gracefully."""
         paused_run = _make_paused_run(graph=stage_event_graph)
@@ -527,7 +538,7 @@ class TestResumeFromEvent:
         result = await PlaybookRunner.resume_from_event(
             db_run=paused_run,
             graph=stage_event_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             event_data={"workflow_id": "wf-1"},
             db=mock_db,
         )
@@ -535,7 +546,7 @@ class TestResumeFromEvent:
         assert result.status == "failed"
         assert "no current_node" in (result.error or "")
 
-    async def test_resume_from_event_can_pause_again(self, mock_supervisor, mock_db):
+    async def test_resume_from_event_can_pause_again(self, mock_services, mock_db):
         """After resuming, the playbook can pause at another wait_for_event."""
         multi_stage_graph = {
             "id": "multi-stage",
@@ -576,12 +587,12 @@ class TestResumeFromEvent:
         # Transition eval → goto create_stage_2, execute it, then
         # hit wait_stage_2 and pause again
         responses = iter(["1", "Stage 2 tasks created.", "Waiting for stage 2."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         result = await PlaybookRunner.resume_from_event(
             db_run=paused_run,
             graph=multi_stage_graph,
-            supervisor=mock_supervisor,
+            services=mock_services,
             event_data={"workflow_id": "wf-1", "stage": "stage_1"},
             db=mock_db,
         )

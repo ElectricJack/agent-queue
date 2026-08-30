@@ -81,7 +81,7 @@ def log_file(tmp_path):
         {
             "timestamp": (now - timedelta(hours=1)).isoformat(),
             "level": "info",
-            "logger": "src.runtimes.supervisor",
+            "logger": "src.sessions.supervisor",
             "event": "Task assigned to workspace",
             "component": "supervisor",
             "task_id": "t-1",
@@ -98,7 +98,7 @@ def log_file(tmp_path):
         {
             "timestamp": (now - timedelta(minutes=10)).isoformat(),
             "level": "error",
-            "logger": "src.runtimes.supervisor",
+            "logger": "src.sessions.supervisor",
             "event": "Task execution failed: ImportError in target module",
             "component": "supervisor",
             "task_id": "t-2",

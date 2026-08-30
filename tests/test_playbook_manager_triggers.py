@@ -102,7 +102,7 @@ VALID_COMPILED_NODES = {
 
 def _make_mock_provider(responses: list[str] | None = None) -> AsyncMock:
     """Create a mock ChatProvider returning fenced JSON."""
-    from src.chat_providers.types import ChatResponse, TextBlock
+    from src.llm.types import ChatResponse, TextBlock
 
     provider = AsyncMock()
     provider.model_name = "test-model"
@@ -273,7 +273,7 @@ class TestTriggerMapOnCompile:
     async def test_trigger_map_not_changed_on_failed_compilation(self, tmp_path: Path) -> None:
         """Failed compilation does not alter the trigger mapping."""
         provider = _make_mock_provider()
-        from src.chat_providers.types import ChatResponse, TextBlock
+        from src.llm.types import ChatResponse, TextBlock
 
         json_str = json.dumps(VALID_COMPILED_NODES, indent=2)
         good_resp = ChatResponse(content=[TextBlock(text=f"```json\n{json_str}\n```")])
@@ -311,7 +311,7 @@ class TestTriggerMapOnCompile:
         When a playbook's triggers change (e.g., from git.commit to task.completed),
         the old triggers are removed and new ones are added.
         """
-        from src.chat_providers.types import ChatResponse, TextBlock
+        from src.llm.types import ChatResponse, TextBlock
 
         # v1: triggers on git.commit
         nodes_v1 = {"nodes": VALID_COMPILED_NODES["nodes"]}

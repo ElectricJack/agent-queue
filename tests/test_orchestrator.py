@@ -119,8 +119,8 @@ async def _run_cycle_and_wait(orch):
 async def _approve_plan_for_task(orch, task_id: str) -> list:
     """Simulate plan approval: transition to IN_PROGRESS and promote subtasks.
 
-    Returns an empty list (subtask creation is now handled by the supervisor
-    LLM via break_plan_into_tasks, not by the orchestrator).
+    Returns an empty list (automatic plan-to-subtask breakdown was removed;
+    the orchestrator itself never creates draft subtasks).
     The parent stays IN_PROGRESS until all subtasks complete.
     """
     task = await orch.db.get_task(task_id)
@@ -139,16 +139,6 @@ async def _run_cycle_and_approve_plan(orch, task_id: str) -> list:
     """
     await _run_cycle_and_wait(orch)
     return await _approve_plan_for_task(orch, task_id)
-
-
-async def _discover_and_create_subtasks(orch, task, workspace: str) -> list:
-    """Discover+store plan (subtask creation is now supervisor-only).
-
-    Returns empty list — subtask creation via regex parsing has been removed.
-    Plan discovery still works for the AWAITING_PLAN_APPROVAL flow.
-    """
-    await orch._discover_and_store_plan(task, workspace)
-    return []
 
 
 class TestOrchestratorLifecycle:
@@ -348,10 +338,9 @@ def _make_plan_toucher(workspace):
     """Create an on_wait callback that touches pre-created plan files.
 
     Tests pre-create plan files before the orchestration cycle to simulate
-    agent-written plans.  The staleness check in _discover_and_store_plan()
-    compares file mtime against the task execution start time.  This callback
-    runs during adapter.wait() to refresh the mtime, simulating the agent
-    writing the file during execution.
+    agent-written plans.  This callback runs during adapter.wait() to
+    refresh the mtime, simulating the agent writing the file during
+    execution.
     """
     import glob as _glob
 
@@ -1862,7 +1851,7 @@ class TestVerificationReopen:
 
 
 class TestCompletionPipelineVerify:
-    """Tests for the completion pipeline with plan_discover + verify phases."""
+    """Tests for the completion pipeline's verify phase."""
 
     @pytest.fixture
     async def pipeline_orch(self, tmp_path):
@@ -1920,44 +1909,6 @@ class TestCompletionPipelineVerify:
             ),
             default_branch="main",
         )
-
-    async def test_pipeline_runs_plan_discover_then_verify(self, pipeline_orch):
-        """Pipeline runs plan_discover then verify in order, both succeed."""
-        orch = pipeline_orch
-
-        task = Task(
-            id="t-1",
-            project_id="p-1",
-            title="Test",
-            description="test",
-            branch_name="feature-1",
-            status=TaskStatus.IN_PROGRESS,
-        )
-        await orch.db.create_task(task)
-        await orch.db.acquire_workspace("p-1", "a-1", "t-1")
-
-        ws = await orch.db.get_workspace_for_task("t-1")
-        ctx = self._make_ctx(orch, task, ws.workspace_path)
-
-        # Track which phases run
-        phases_called = []
-        original_plan_discover = orch._phase_plan_discover
-        original_verify = orch._phase_verify
-
-        async def tracked_plan_discover(ctx):
-            phases_called.append("plan_discover")
-            return await original_plan_discover(ctx)
-
-        async def tracked_verify(ctx):
-            phases_called.append("verify")
-            return await original_verify(ctx)
-
-        orch._phase_plan_discover = tracked_plan_discover
-        orch._phase_verify = tracked_verify
-
-        pr_url, ok = await orch._run_completion_pipeline(ctx)
-        assert ok is True
-        assert phases_called == ["plan_discover", "verify"]
 
     async def test_pipeline_stops_when_verify_returns_stop(self, pipeline_orch):
         """Pipeline returns completed_ok=False when verify phase returns STOP."""

@@ -21,15 +21,14 @@ Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with 
 ```
 asyncio event loop
 ├── Discord Bot / MCP Server     — control planes (human + machine)
-├── Supervisor                   — LLM conversation, tool dispatch, reflection
+├── LLM direct path              — src/llm/: LLMClient.complete/run_tools, intelligence classes
 │   ├── PromptBuilder            — 5-layer context assembly (L0-L3 + tools)
-│   ├── ReflectionEngine         — post-action review with depth tiers
 │   └── ToolRegistry             — tiered tool loading (core + on-demand)
 ├── Orchestrator                 — deterministic task lifecycle
 │   ├── Scheduler                — proportional deficit-based assignment
 │   ├── State Machine            — formal task state transitions + DAG validation
 │   ├── Smart Cascade            — promotion pipeline (approvals → resume → promote → monitor)
-│   ├── Plan Parser              — plan discovery → subtask chain creation
+│   ├── Plan Parser              — manual `process_plan` command → subtask chain creation (no auto-discovery)
 │   └── Playbook Engine          — compiled DAG workflows
 │       ├── PlaybookCompiler     — markdown → JSON graph (LLM-powered, one-shot)
 │       ├── PlaybookRunner       — graph walker with conversation history
@@ -67,13 +66,14 @@ DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED
                      resume)  (Discord)   BLOCKED)
 
 AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
-AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
+AWAITING_PLAN_APPROVAL  (reachable only via manual `process_plan` command, never auto-discovered;
+                         doctor check `tasks.awaiting_plan_approval` flags stranded rows)
 ```
 
 - DEFINED → READY: all dependencies COMPLETED
 - PAUSED tasks always have `resume_after` — never stall permanently
 - Failed tasks retry up to configurable limit, then BLOCKED
-- Plan-generated tasks: agent produces `.claude/plan.md` → orchestrator parses → chained subtasks with dependencies
+- Plan-generated tasks: agent produces `.claude/plan.md`; a human (or the requester) runs the `process_plan` command to read and store it for approval — the orchestrator no longer auto-discovers plan files during task completion (see `docs/specs/orchestrator.md` §12)
 
 ### Memory Tiers
 
@@ -102,7 +102,6 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 | `src/main.py` | Entry point — CLI args, starts async loop |
 | `src/orchestrator.py` | **Central brain** — task lifecycle, agent management, rate limit recovery |
 | `src/commands/` | **Unified command execution** — 150+ commands, single entry point for Discord + MCP + CLI |
-| `src/supervisor.py` | **Supervisor** — multi-turn LLM conversation loop, tool dispatch, streaming |
 | `src/database/` | SQLAlchemy Core persistence — `tables.py` (schema), `queries/` (mixins), Alembic migrations |
 | `src/models.py` | Dataclasses/enums — Task, Agent, Project, Workflow, AgentOutput |
 | `src/config.py` | YAML config with `${ENV_VAR}` substitution |
@@ -110,17 +109,15 @@ AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
 | `src/state_machine.py` | Formal state transitions, DAG cycle detection |
 | `src/event_bus.py` | Async pub/sub with wildcard support |
 
-### Supervisor & Prompt System
+### LLM Direct Path & Prompt System
 
 | File | Purpose |
 |------|---------|
+| `src/llm/client.py` | `LLMClient.complete`/`run_tools` — the direct LLM path, no in-process Supervisor |
 | `src/prompt_builder.py` | 5-layer prompt assembly: L0 role → override → L1 facts → L2 context → identity → tools |
 | `src/tools/` | Tiered tool loading — ~11 core tools always loaded, ~80 more on-demand in 11 categories |
-| `src/reflection.py` | Post-action reflection engine — deep/standard/light tiers with circuit breaker |
 | `src/prompt_manager.py` | Manages prompt templates and variants from `src/prompts/` |
-| `src/rule_manager.py` | User-defined rules injected into Supervisor prompts (deprecated, migrating to playbooks) |
-| `src/chat_observer.py` | Observes agent chat streams, detects questions and key events |
-| `src/llm_logger.py` | Logs all LLM API calls — chat provider calls, agent sessions, prompt analytics |
+| `src/llm_logger.py` | Logs all LLM API calls (`llm.jsonl`) — direct-path calls, agent sessions, prompt analytics |
 
 ### Playbook System
 
@@ -201,7 +198,7 @@ Memory is provided by the **external `aq-memory` plugin** (install via `aq plugi
 | `src/discord/` | Bot, slash commands, notifications, channel routing |
 | `src/git/` | Clone, branch, worktree, push/pull, serialized shared-repo ops |
 | `src/tokens/` | Token budget calculation, usage ledger, rate limit tracking |
-| `src/chat_providers/` | LLM provider abstraction (Anthropic, Gemini, Ollama) |
+| `src/llm/` | Direct LLM path — `LLMClient`, provider adapters (Anthropic, Google, OpenAI/Ollama), `LLMCallSpec` |
 | `src/prompts/` | System prompts and templates (Mustache-style `{{placeholder}}`) |
 | `src/messaging/` | Messaging transport port + adapter factory (`discord`, `none`) |
 | `src/plugins/` | Plugin system for extensibility |
@@ -213,7 +210,7 @@ Memory is provided by the **external `aq-memory` plugin** (install via `aq plugi
 ## Design Decisions
 
 ### Why zero LLM for orchestration?
-Every token is precious. Scheduling, dependency resolution, state transitions — all deterministic. The only LLM calls are: (1) agent task execution, (2) Supervisor chat, (3) playbook node execution, (4) playbook compilation, (5) memory revision/merging, (6) reflection, (7) knowledge extraction.
+Every token is precious. Scheduling, dependency resolution, state transitions — all deterministic. The only LLM calls are: (1) agent task execution (every agent runs as a tmux session, selected by `harness`), (2) playbook node/transition execution and compilation via the direct LLM path (`src/llm/`), (3) memory revision/merging, (4) reflection (a playbook, not a module), (5) knowledge extraction.
 
 ### Why playbooks over hooks/rules?
 Hooks were single-shot LLM calls with no context accumulation or multi-step reasoning. Playbooks model workflows as directed graphs: each node is a focused LLM decision point, transitions carry context forward, and human checkpoints enable oversight. Markdown authoring keeps them human-readable; LLM compilation makes them executable.
@@ -228,10 +225,10 @@ Playbooks, profiles, facts, and knowledge are all markdown files in `~/.agent-qu
 Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi. SQLAlchemy Core provides dialect portability — PostgreSQL supported via asyncpg for production deployments.
 
 ### Why Discord as control plane?
-Users manage from their phone. Natural language via Supervisor backed by LLM tools. Each task gets a thread for live streaming. Reply to threads to unblock agents.
+Users manage from their phone. Discord slash commands and threads front the same `CommandHandler` used by CLI and MCP. Each task gets a thread for live streaming. Reply to threads to unblock agents.
 
 ### Why the Command Pattern?
-`CommandHandler` is the single execution point for all operations. Discord slash commands, Supervisor tools, MCP tools, and CLI all delegate here — ensures feature parity and consistent error handling across all interfaces.
+`CommandHandler` is the single execution point for all operations. Discord slash commands, playbook nodes, MCP tools, and CLI all delegate here — ensures feature parity and consistent error handling across all interfaces.
 
 ### Why plugins?
 Internal functionality (file ops, git, memory, code quality) is implemented as plugins with the same API available to third parties. This enforces clean boundaries, enables selective loading, and stress-tests the plugin API with real complexity.
@@ -258,7 +255,7 @@ Specs in `docs/specs/` are the source of truth. Flow: specs → implementation �
 
 File: `~/.agent-queue/config.yaml` (YAML with `${ENV_VAR}` substitution)
 
-Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`, `chat_provider`, `memory`, `mcp_server`, `plugins`
+Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`, `llm`, `memory`, `mcp_server`, `plugins`
 
 ## Vault Structure
 

@@ -279,10 +279,15 @@ async def test_workspace_required_no_workspace_no_create(db):
 
 
 async def test_supervisor_demand_does_not_create_duplicate_global_worker(db):
-    """The canonical named supervisor is seeded separately from task supply."""
+    """The canonical named supervisor is seeded separately from task supply.
+
+    With the in-process Supervisor runtime deleted, the supervisor profile is
+    an ordinary tmux agent: the workspace gate applies to it like any other
+    profile, and task supply never creates a duplicate global worker.
+    """
     await _seed_project_with_profile(
         db, project_id="p", profile_id="supervisor",
-        runtime="supervisor", workspace_count=0,
+        workspace_count=0,
     )
     await _seed_ready_task(db, task_id="t-1", project_id="p")
 

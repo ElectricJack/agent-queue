@@ -95,7 +95,7 @@ dependencies = [
 anthropic = [
     "anthropic>=0.42.0",
 ]
-gemini = [
+google = [
     "google-genai>=1.0.0",
 ]
 inbox = [
@@ -105,12 +105,17 @@ inbox = [
 postgresql = [
     "asyncpg>=0.29.0",
 ]
-ollama = [
+openai = [
+    "openai>=1.0.0",
+]
+llm = [
+    "anthropic>=0.42.0",
+    "google-genai>=1.0.0",
     "openai>=1.0.0",
 ]
 mcp = [
-    # 1.28.1 addresses PYSEC-2026-3481, 3482, 3483.
-    "mcp>=1.28.1",
+    # 1.28.1 addresses PYSEC-2026-3481, 3482, 3483; <2 because FastMCP import moved in 2.x.
+    "mcp>=1.28.1,<2",
 ]
 cli = [
     # 8.3.3 addresses PYSEC-2026-2132.
