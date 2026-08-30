@@ -48,6 +48,11 @@ vault watcher; no restart, no release.
 
 ## Notes
 
+**Luna requires a current Codex CLI.** The fast intelligence-class presets use
+`gpt-5.6-luna` for Codex. This model was verified with Codex **0.151.0** using
+ChatGPT login; **0.125.0** rejected it and requested a newer CLI. This records
+versions tested, not an exact minimum version.
+
 **`ready_prompt_prefix` is `›` (U+203A) + a plain space** — verified by
 launching codex 0.125.0 under tmux and capturing the pane bytes
 (`E2 80 BA 20`). This is a different character from Claude's `❯` (U+276F).

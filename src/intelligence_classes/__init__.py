@@ -8,7 +8,8 @@ fenced ```json``` block mapping provider name to a runtime config slice
 Resolution: (class_id, provider) → dict. Session launch calls
 :func:`resolve_class` after picking the class (from ``task.intelligence_class``
 or the profile's ``default_class``) and the provider (from the profile's
-harness).
+harness). An optional ``codex`` slice overrides the OpenAI API slice only
+for the Codex CLI.
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import yaml
 
@@ -68,6 +69,33 @@ def _parse_file(path: str) -> IntelligenceClass | None:
     )
 
 
+def _backfill_legacy_fast_codex(cls: IntelligenceClass) -> IntelligenceClass:
+    """Add the bundled CLI default only to unchanged legacy API defaults.
+
+    The vault is never rewritten. Explicit Codex entries (even empty ones),
+    custom OpenAI slices, other class IDs, and other providers are preserved.
+    Compare against the historical API slice, not tomorrow's bundled API model.
+    """
+    legacy_efforts = {"fast-off": "minimal", "fast-low": "low",
+                      "fast-medium": "medium", "fast-high": "high"}
+    effort = legacy_efforts.get(cls.id)
+    if effort is None or "codex" in cls.mapping:
+        return cls
+    if cls.mapping.get("openai") != {"model": "gpt-5-mini", "reasoning_effort": effort}:
+        return cls
+    source = os.path.join(os.path.dirname(__file__), "..", "prompts",
+                          "default_intelligence_classes", f"{cls.id}.md")
+    try:
+        bundled = _parse_file(source)
+    except OSError:
+        logger.warning("Bundled Codex default for intelligence-class %s is unavailable", cls.id)
+        return cls
+    codex = resolve_class(bundled, "codex") if bundled else {}
+    if not codex.get("model"):
+        return cls
+    return replace(cls, mapping={**cls.mapping, "codex": codex})
+
+
 def load_intelligence_classes(data_dir: str) -> dict[str, IntelligenceClass]:
     """Load every ``*.md`` under ``{data_dir}/vault/intelligence-classes/``.
 
@@ -83,7 +111,7 @@ def load_intelligence_classes(data_dir: str) -> dict[str, IntelligenceClass]:
             continue
         cls = _parse_file(os.path.join(root, name))
         if cls is not None:
-            out[cls.id] = cls
+            out[cls.id] = _backfill_legacy_fast_codex(cls)
     return out
 
 

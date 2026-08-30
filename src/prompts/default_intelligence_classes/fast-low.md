@@ -10,6 +10,7 @@ thinking: low
 {
   "anthropic": {"model": "claude-haiku-4-5", "thinking": "low"},
   "openai":    {"model": "gpt-5-mini",    "reasoning_effort": "low"},
+  "codex":     {"model": "gpt-5.6-luna", "reasoning_effort": "low"},
   "google":    {"model": "gemini-2.5-flash",    "thinking_budget": 2048}
 }
 ```

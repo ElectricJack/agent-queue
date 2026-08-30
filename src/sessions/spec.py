@@ -154,6 +154,14 @@ def _infer_provider_from_harness(harness) -> str:
     return mapping.get(key, "")
 
 
+def _is_codex_cli(harness) -> bool:
+    """Keep Codex-specific settings off other harnesses using OpenAI models."""
+    return (
+        getattr(harness, "id", "") == "codex"
+        and Path(getattr(harness, "command", "")).name in {"codex", "codex.exe"}
+    )
+
+
 def sanitize_name(raw: str) -> str:
     """Fold *raw* into ``^[a-zA-Z0-9_-]+$``."""
     cleaned = _UNSAFE.sub("-", str(raw)).strip("-")
@@ -503,7 +511,7 @@ class SessionSpecBuilder:
         if effort and harness.effort_flag:
             argv.extend([harness.effort_flag, effort])
 
-        if harness.id == "codex" and Path(harness.command).name in {"codex", "codex.exe"}:
+        if _is_codex_cli(harness):
             # Codex uses a TOML config override, not a generic effort flag.
             # Key and values verified against the installed CLI's generated
             # Config/ReasoningEffort schema and its --help configuration syntax.
@@ -704,7 +712,15 @@ class SessionSpecBuilder:
             return {}
         from src.intelligence_classes import resolve_class
 
-        slice_ = resolve_class(cls, provider)
+        # Codex account models are a separate namespace from OpenAI API
+        # defaults. The optional CLI slice never changes provider reporting or
+        # the model chosen for another OpenAI harness.
+        slice_ = (
+            resolve_class(cls, "codex")
+            if provider == "openai" and _is_codex_cli(harness) else {}
+        )
+        if not slice_:
+            slice_ = resolve_class(cls, provider)
         model = str(slice_.get("model") or "").strip()
         if not model:
             logger.warning(
