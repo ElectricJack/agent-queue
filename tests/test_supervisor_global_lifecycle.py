@@ -148,6 +148,7 @@ class TestGlobalSupervisorColdStart:
         starts = providers.create("fake").starts
         assert len(starts) == 1
         assert starts[0].session_name == "n-supervisor--global"
+        assert not starts[0].env.get("AQ_PROJECT_ID")
 
     async def test_ensure_started_supervisor_global_row_persisted(self, lens):
         ok = await lens.ensure_started(
@@ -159,6 +160,8 @@ class TestGlobalSupervisorColdStart:
         assert row.profile_id == "supervisor"
         assert row.state == "running"
         assert row.epoch == TEST_EPOCH
+        assert row.project_id is None
+        assert await lens._db.get_project("global") is None
 
     async def test_ensure_started_per_project_still_mints_project_scoped_token(
         self, db, lens, token_store

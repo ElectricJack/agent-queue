@@ -301,29 +301,6 @@ class SessionLens:
                 "cold-starting global supervisor (idle_timeout_seconds=%s)",
                 idle_timeout,
             )
-        # ``sessions.project_id`` is a NOT NULL FK to ``projects.id`` —
-        # so persisting the global-supervisor row requires a stub
-        # ``projects`` row named "global". Auto-create idempotently; the
-        # token itself was minted with project_id=None (admin scope), so
-        # this stub only exists to satisfy the FK and is never used to
-        # narrow scope. If a real project happens to be named "global",
-        # ``create_project`` is idempotent enough (INSERT OR IGNORE-style)
-        # for it to be a no-op — see ``Database.create_project``.
-        if is_global:
-            try:
-                from src.models import Project as _Project
-
-                await self._db.create_project(
-                    _Project(id=_GLOBAL_SUPERVISOR_SUFFIX, name="Global")
-                )
-            except IntegrityError:
-                # Already exists — expected on every warm start.
-                pass
-            except Exception:
-                logger.debug(
-                    "failed to ensure 'global' project stub for global supervisor",
-                    exc_info=True,
-                )
         if not work_dir:
             # No vault_root configured and no project_id → nowhere sensible
             # to run the supervisor. Better to skip than to pass an empty
@@ -387,7 +364,7 @@ class SessionLens:
         spec = self._spec_builder.build_named_spec(
             profile=profile,
             harness=harness,
-            project_id=derived_project,
+            project_id=harness_project,
             work_dir=work_dir,
             session_id=session_id,
             instance_token=instance_token,
@@ -422,7 +399,7 @@ class SessionLens:
                     # harness's own conversation id and the resume key line
                     # up on restart.
                     id=session_id,
-                    project_id=derived_project,
+                    project_id=harness_project,
                     profile_id=getattr(profile, "id", "") or "supervisor",
                     harness=harness.id,
                     provider=provider_name,

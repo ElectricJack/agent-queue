@@ -323,7 +323,7 @@ class DatabaseBackend(Protocol):
 
     async def record_token_usage(
         self,
-        project_id: str,
+        project_id: str | None,
         agent_id: str,
         task_id: str,
         tokens: int,

@@ -63,7 +63,7 @@ class MessageQueriesMixin:
     async def create_message(
         self,
         *,
-        project_id: str,
+        project_id: str | None,
         from_kind: str,
         from_id: str,
         to_kind: str,
@@ -157,7 +157,7 @@ class MessageQueriesMixin:
             result = await conn.execute(stmt)
             return [_row_to_message(r) for r in result.mappings().fetchall()]
 
-    async def get_pending_recipients(self) -> list[tuple[str, str, str]]:
+    async def get_pending_recipients(self) -> list[tuple[str, str, str | None]]:
         """Distinct ``(to_kind, to_id, project_id)`` with pending messages.
 
         Read-only — the delivery engine enumerates these to know whose
@@ -243,6 +243,7 @@ class MessageQueriesMixin:
         self,
         *,
         project_id: str | None = None,
+        system_only: bool = False,
         thread_id: str | None = None,
         to_kind: str | None = None,
         to_id: str | None = None,
@@ -250,14 +251,18 @@ class MessageQueriesMixin:
         since: float | None = None,
         limit: int = 100,
     ) -> list[Message]:
-        """List messages newest-first with the usual filter set.
+        """List messages newest-first; system_only selects NULL-project records.
+
+        Omitting project_id still means all projects, including system records.
 
         ``since`` is an exclusive lower bound on ``created_at`` — the
         polling form ``aq chat --once`` uses it to fetch only what arrived
         after its own outbound message.
         """
         conditions = []
-        if project_id:
+        if system_only:
+            conditions.append(messages.c.project_id.is_(None))
+        elif project_id:
             conditions.append(messages.c.project_id == project_id)
         if thread_id:
             conditions.append(messages.c.thread_id == thread_id)

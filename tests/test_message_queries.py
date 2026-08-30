@@ -234,3 +234,11 @@ class TestListMessages:
         for _ in range(4):
             await _send(db)
         assert len(await db.list_messages(project_id="p1", limit=2)) == 2
+
+
+async def test_system_only_is_distinct_from_all_projects(db):
+    system = await _send(db, project_id=None, to_id="supervisor-global")
+    project = await _send(db)
+    assert {m.id for m in await db.list_messages()} == {system.id, project.id}
+    assert [m.id for m in await db.list_messages(system_only=True)] == [system.id]
+    assert [m.id for m in await db.list_messages(project_id="p1")] == [project.id]

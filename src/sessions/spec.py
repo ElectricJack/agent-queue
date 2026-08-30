@@ -278,7 +278,11 @@ class SessionSpecBuilder:
         the first wake of a never-run session has nothing to resume.
         """
         profile_id = getattr(profile, "id", "") or ""
-        name = named_session_name(profile_id, project_id)
+        # Keep the established global runtime name for restart adoption; the
+        # suffix is an address, not a project association.
+        name = named_session_name(
+            profile_id, "global" if profile_id == "supervisor" and project_id is None else project_id
+        )
         effective_resume = resume_key if wake == "resume" else None
         bootstrap = prompt if prompt is not None else NAMED_BOOTSTRAP_PROMPT.format(
             profile=profile_id or "agent", work_dir=work_dir

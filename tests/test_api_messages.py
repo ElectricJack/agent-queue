@@ -80,19 +80,11 @@ class TestNameResolution:
         assert exc.value.status_code == 404
 
     async def test_global_supervisor_resolves_without_a_preexisting_project(self, handler):
-        """`supervisor-global` addresses the *global* supervisor, not a project
-        literally named "global". It has to resolve before that project row
-        exists: the stub row is created lazily on SessionLens's cold-start
-        path, which can only be reached by a request that got past this
-        resolver. Requiring the row up front deadlocked the dashboard's
-        global chat at `/` behind a permanent 404."""
-        assert await resolve_session_project("supervisor-global", handler) == "global"
+        """Global chat resolves to system scope without any project record."""
+        assert await resolve_session_project("supervisor-global", handler) is None
 
     async def test_global_supervisor_resolution_creates_nothing(self, handler):
-        """Resolution must stay side-effect free. Creating the stub here meant
-        every dashboard chat *load* conjured a `global` project row, which then
-        showed up as a phantom "Global" entry in the sidebar. The write path
-        creates it instead."""
+        """Reading global chat must never create a project."""
         await resolve_session_project("supervisor-global", handler)
         assert await handler.db.get_project("global") is None
 
@@ -312,3 +304,120 @@ class TestMessageRouteScopeEnforcement:
             _deps._token_store = None
             _deps._require_session_token = False
             await db.close()
+
+
+async def test_global_chat_is_projectless_and_does_not_include_project_messages(client, handler):
+    handler.set_active_project("agent-queue")
+    try:
+        scoped = client.post("/api/sessions/supervisor-agent-queue/message", json={"body": "project only", "thread_id": "shared"})
+        sent = client.post("/api/sessions/supervisor-global/message", json={"body": "system only", "thread_id": "shared"})
+        assert scoped.status_code == sent.status_code == 200
+        message = await handler.db.get_message(sent.json()["message_id"])
+        assert message.project_id is None
+        assert await handler.db.get_project("global") is None
+        reply = await handler.execute("message_reply", {"message_id": message.id, "body": "system reply"})
+        assert reply["reply"]["project_id"] is None
+        response = client.get("/api/sessions/supervisor-global/messages")
+        assert response.status_code == 200
+        assert response.json()["project_id"] is None
+        assert {m["body"] for m in response.json()["messages"]} == {"system only", "system reply"}
+        project_response = client.get("/api/sessions/supervisor-agent-queue/messages")
+        assert [m["body"] for m in project_response.json()["messages"]] == ["project only"]
+    finally:
+        handler.set_active_project(None)
+
+
+@pytest.mark.parametrize("elevated,project_id", [(False, "proj-a"), (True, "proj-a"), (False, None)])
+async def test_scoped_or_unprivileged_tokens_cannot_access_global_chat(tmp_path, elevated, project_id):
+    db, store, ch, app = await _seed_messages_app(tmp_path)
+    try:
+        token = await store.mint(session_id="scoped", task_id=None, project_id=project_id, elevated=elevated)
+        with TestClient(app) as client:
+            headers = {"Authorization": f"Bearer {token}"}
+            assert client.get("/api/sessions/supervisor-global/messages", headers=headers).status_code == 403
+            assert client.post("/api/sessions/supervisor-global/message", headers=headers, json={"body": "denied"}).status_code == 403
+        assert await db.list_messages() == []
+        assert await db.get_project("global") is None
+    finally:
+        _deps._orchestrator = None
+        _deps._command_handler = None
+        _deps._token_store = None
+        _deps._require_session_token = False
+        await db.close()
+
+
+@pytest.mark.parametrize("elevated,project_id", [(False, "agent-queue"), (True, "agent-queue"), (False, None)])
+async def test_system_message_commands_require_global_authority(handler, elevated, project_id):
+    message = await handler.db.create_message(project_id=None, from_kind="user", from_id="user", to_kind="session", to_id="supervisor-global", body="private")
+    scope = {"kind": "session", "session_id": "scoped", "elevated": elevated, "project_id": project_id}
+    calls = [
+        ("message_list", {"system_only": True}),
+        ("message_inbox", {"to_kind": "session", "to_id": "supervisor-global", "inject": True}),
+        ("message_reply", {"message_id": message.id, "body": "denied"}),
+        ("message_send", {"to_kind": "session", "to_id": "supervisor-global", "from_id": "user", "body": "denied"}),
+    ]
+    for command, args in calls:
+        result = await handler.execute(command, {**args, "_scope": scope})
+        assert "out of scope" in result["error"]
+    persisted = await handler.db.get_message(message.id)
+    assert persisted.read_at is None
+    assert persisted.delivered_at is None
+    assert len(await handler.db.list_messages()) == 1
+
+
+async def test_global_admin_can_send_without_project_and_read_system_chat(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+    db, store, ch, app = await _seed_messages_app(tmp_path)
+    try:
+        token = await store.mint(session_id="global-admin", task_id=None, project_id=None, elevated=True)
+        transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+        async with AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": f"Bearer {token}"}) as client:
+            sent = await client.post("/api/sessions/supervisor-global/message", json={"body": "hello"})
+            assert sent.status_code == 200
+            response = await client.get("/api/sessions/supervisor-global/messages")
+            assert response.status_code == 200
+            assert response.json()["project_id"] is None
+            assert [m["body"] for m in response.json()["messages"]] == ["hello"]
+        direct = await ch.execute("message_send", {"from_kind": "session", "from_id": "global-admin", "to_kind": "user", "to_id": "user", "body": "update", "_scope": {"kind": "session", "session_id": "global-admin", "elevated": True, "project_id": None}})
+        assert direct["message"]["project_id"] is None
+        assert await db.get_project("global") is None
+    finally:
+        _deps._orchestrator = None
+        _deps._command_handler = None
+        _deps._token_store = None
+        _deps._require_session_token = False
+        await db.close()
+
+
+@pytest.mark.parametrize("inject", [False, True])
+async def test_scoped_inbox_cannot_read_system_replies_to_user(handler, inject):
+    message = await handler.db.create_message(
+        project_id=None, from_kind="session", from_id="supervisor-global",
+        to_kind="user", to_id="user", body="private response",
+    )
+    result = await handler.execute("message_inbox", {
+        "to_kind": "user", "to_id": "user", "inject": inject,
+        "_scope": {"kind": "session", "session_id": "scoped",
+                   "project_id": "agent-queue", "elevated": False},
+    })
+    assert "out of scope" in result["error"]
+    persisted = await handler.db.get_message(message.id)
+    assert persisted.delivered_at is None
+    assert persisted.read_at is None
+
+
+async def test_global_supervisor_can_send_to_a_real_project(handler):
+    sent = await handler.execute("message_send", {
+        "project_id": "agent-queue", "from_kind": "session",
+        "from_id": "supervisor-global", "to_kind": "session",
+        "to_id": "supervisor-agent-queue", "body": "project instruction",
+        "_scope": {"kind": "session", "session_id": "global-admin",
+                   "project_id": None, "elevated": True},
+    })
+    assert sent["message"]["project_id"] == "agent-queue"
+    reply = await handler.execute("message_reply", {
+        "message_id": sent["message_id"], "body": "project response",
+        "_scope": {"kind": "session", "session_id": "project-admin",
+                   "project_id": "agent-queue", "elevated": True},
+    })
+    assert reply["reply"]["project_id"] == "agent-queue"

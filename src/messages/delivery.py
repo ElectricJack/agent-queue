@@ -304,7 +304,8 @@ class MessageDeliveryEngine:
         set of unresolved candidates.
         """
         rows = await self._db.list_messages(
-            project_id=msg.project_id, include_archived=True, limit=200
+            project_id=msg.project_id, system_only=msg.project_id is None,
+            include_archived=True, limit=200
         )
         return any(r.reply_to_id == msg.id for r in rows)
 
@@ -330,7 +331,7 @@ def _messages_config(config):
 
 
 def _target_from_recipient(
-    to_kind: str, to_id: str, project_id: str
+    to_kind: str, to_id: str, project_id: str | None
 ) -> tuple[str | None, str | None, str | None]:
     """Map (``messages.to_kind``, ``to_id``) → ``SessionManagerProto`` kind.
 

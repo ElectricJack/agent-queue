@@ -355,7 +355,7 @@ token_ledger = Table(
     "token_ledger",
     metadata,
     Column("id", Text, primary_key=True),
-    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=True),
     # ``agent_id`` and ``task_id`` are deliberately NOT foreign keys.  The
     # ledger is an append-only *audit* record of money spent: it has to
     # outlive the ephemeral rows it refers to.  Agents are reaped whenever
@@ -588,7 +588,7 @@ sessions = Table(
     metadata,
     Column("id", Text, primary_key=True),  # uuid4 hex
     Column("task_id", Text, ForeignKey("tasks.id"), nullable=True),  # NULL for named
-    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=True),
     Column("profile_id", Text, nullable=False),  # soft ref, like agents.profile_id
     Column("harness", Text, nullable=False),  # e.g. "claude"
     Column("provider", Text, nullable=False),  # "tmux" | "subprocess" | "fake"
@@ -629,7 +629,7 @@ messages = Table(
     "messages",
     metadata,
     Column("id", Text, primary_key=True),  # "msg-<uuid7>"
-    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=True),
     Column("from_kind", Text, nullable=False),  # session|user|system
     Column("from_id", Text, nullable=False),
     Column("to_kind", Text, nullable=False),  # session|task|profile|user

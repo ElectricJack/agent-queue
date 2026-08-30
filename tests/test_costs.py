@@ -561,3 +561,16 @@ class TestConfigWiring:
         config = load_config(str(path))
         assert [m.model for m in config.pricing.models] == ["claude-sonnet-4-5*"]
         assert config.security.wal_warn_mb == 99
+
+
+async def test_projectless_usage_is_recorded_without_a_project_and_included_in_totals(db):
+    await db.record_token_usage(
+        None, "global-session", "", 120, model="test-model",
+        input_tokens=100, output_tokens=20,
+    )
+    assert await db.list_projects() == []
+    rows = await db.get_cost_rollup()
+    assert sum(row["tokens_used"] for row in rows) == 120
+    assert sum(row["input_tokens"] for row in rows) == 100
+    assert sum(row["output_tokens"] for row in rows) == 20
+    assert await db.get_cost_rollup(project_id="real-project") == []

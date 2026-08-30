@@ -63,6 +63,15 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     """
     if scope.kind == "local":
         return None
+    # Projectless messages are system records, not an omitted project filter.
+    # Null project scope alone must never grant access to the global supervisor.
+    system_message = args.get("system_only") or (
+        command in {"message_send", "message_inbox"}
+        and args.get("to_kind") == "session"
+        and args.get("to_id") == "supervisor-global"
+    )
+    if system_message and not (scope.elevated and scope.project_id is None):
+        return "out of scope: system messages require global admin"
     # Elevated session (per-project supervisor OR the global supervisor).
     # Skip the AGENT_COMMAND_SET gate — the supervisor is a trusted
     # operator that runs every ``aq`` command on behalf of the user.

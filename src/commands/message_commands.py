@@ -82,6 +82,14 @@ class MessageCommandsMixin:
             return {"error": MESSAGES_DISABLED_ERROR}
         return None
 
+    def _system_message_scope_error(self) -> dict | None:
+        """Only local callers and explicit global administrators own system chat."""
+        scope = self._current_scope
+        if scope and scope.get("kind") != "local":
+            if not scope.get("elevated") or scope.get("project_id") is not None:
+                return {"error": "out of scope: system messages require global admin"}
+        return None
+
     async def _emit_message_event(self, event_type: str, payload: dict) -> None:
         """Emit a ``message.*`` event without letting it fail the command."""
         try:
@@ -98,13 +106,6 @@ class MessageCommandsMixin:
         disabled = self._messages_disabled_error()
         if disabled:
             return disabled
-
-        project_id = args.get("project_id") or self._active_project_id
-        if not project_id:
-            return {"error": "project_id is required (no active project set)"}
-        project = await self.db.get_project(project_id)
-        if not project:
-            return {"error": f"Project '{project_id}' not found"}
 
         to_kind = (args.get("to_kind") or "").strip()
         to_id = (args.get("to_id") or "").strip()
@@ -125,6 +126,33 @@ class MessageCommandsMixin:
         from_id = (args.get("from_id") or "").strip()
         if not from_id:
             return {"error": "from_id is required"}
+
+        scope = self._current_scope or {}
+        global_sender = (
+            scope.get("kind") == "session"
+            and scope.get("elevated")
+            and scope.get("project_id") is None
+            and not args.get("project_id")
+        )
+        system_only = global_sender or bool(args.get("system_only")) or (
+            to_kind == "session" and to_id == "supervisor-global"
+        ) or (
+            not args.get("project_id")
+            and from_kind == "session"
+            and from_id == "supervisor-global"
+        )
+        if system_only:
+            scope_error = self._system_message_scope_error()
+            if scope_error:
+                return scope_error
+            project_id = None
+        else:
+            project_id = args.get("project_id") or self._active_project_id
+            if not project_id:
+                return {"error": "project_id is required (no active project set)"}
+            project = await self.db.get_project(project_id)
+            if not project:
+                return {"error": f"Project '{project_id}' not found"}
 
         body = args.get("body")
         if not body or not str(body).strip():
@@ -217,6 +245,11 @@ class MessageCommandsMixin:
         if original is None:
             return {"error": f"Message '{message_id}' not found"}
 
+        if original.project_id is None:
+            scope_error = self._system_message_scope_error()
+            if scope_error:
+                return scope_error
+
         body = args.get("body")
         if not body or not str(body).strip():
             return {"error": "body is required"}
@@ -302,6 +335,11 @@ class MessageCommandsMixin:
         if not to_id:
             return {"error": "to_id is required"}
 
+        if to_kind == "session" and to_id == "supervisor-global":
+            scope_error = self._system_message_scope_error()
+            if scope_error:
+                return scope_error
+
         inject = bool(args.get("inject", False))
         limit = args.get("limit")
         if limit is None:
@@ -310,6 +348,10 @@ class MessageCommandsMixin:
             return {"error": "limit must be a non-negative integer"}
 
         pending = await self.db.get_pending_messages(to_kind, to_id, limit=limit)
+        if any(message.project_id is None for message in pending):
+            scope_error = self._system_message_scope_error()
+            if scope_error:
+                return scope_error
         if not inject:
             return {
                 "to_kind": to_kind,
@@ -376,8 +418,15 @@ class MessageCommandsMixin:
             except (TypeError, ValueError):
                 return {"error": "since must be an epoch timestamp (number)"}
 
+        system_only = bool(args.get("system_only", False))
+        if system_only:
+            scope_error = self._system_message_scope_error()
+            if scope_error:
+                return scope_error
+
         rows = await self.db.list_messages(
-            project_id=args.get("project_id") or self._active_project_id,
+            project_id=None if system_only else args.get("project_id") or self._active_project_id,
+            system_only=system_only,
             thread_id=args.get("thread_id"),
             to_kind=to_kind,
             to_id=args.get("to_id"),

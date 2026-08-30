@@ -812,7 +812,7 @@ class Message:
     """
 
     id: str
-    project_id: str
+    project_id: str | None
     from_kind: str
     from_id: str
     to_kind: str
@@ -1250,7 +1250,7 @@ class SessionRecord:
     """
 
     id: str
-    project_id: str
+    project_id: str | None
     profile_id: str
     harness: str
     provider: str
