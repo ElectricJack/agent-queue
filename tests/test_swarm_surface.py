@@ -207,3 +207,138 @@ def test_skill_documents_worker_loop():
     text = open("src/skills/aq-tasks/SKILL.md", encoding="utf-8").read()
     assert "aq task claim --next" in text and "--claim-next" in text
     assert "--outcome pass|fail" in text and "needs_context" not in text
+
+
+# ─────────────────── pool scale writes the vault (spec §14) ──────────────
+
+
+POOL_PROFILE_MD = """---
+id: worker
+name: Worker
+---
+
+## Role
+
+Do the work.
+
+## Config
+
+```json
+{
+  "lifecycle": "pool",
+  "min_active": 1,
+  "max_active": 2
+}
+```
+
+## Rules
+
+Be careful.
+"""
+
+
+@pytest.fixture
+async def pool_handler(handler, tmp_path):
+    """``handler`` plus a system ``worker`` pool profile in DB *and* vault."""
+    from src.profiles.sync import sync_profile_text_to_db
+
+    system_path = tmp_path / "data" / "vault" / "agent-types" / "worker" / "profile.md"
+    system_path.parent.mkdir(parents=True, exist_ok=True)
+    system_path.write_text(POOL_PROFILE_MD, encoding="utf-8")
+    result = await sync_profile_text_to_db(
+        POOL_PROFILE_MD, handler.db, source_path=str(system_path), fallback_id="worker"
+    )
+    assert result.success, result.errors
+    return handler
+
+
+def _override_path(tmp_path):
+    return (
+        tmp_path
+        / "data"
+        / "vault"
+        / "projects"
+        / PROJECT_ID
+        / "agent-types"
+        / "worker"
+        / "profile.md"
+    )
+
+
+async def test_pool_scale_creates_project_override_in_vault(pool_handler, tmp_path):
+    """The bounds land in the vault file, not just the agent_profiles row."""
+    from src.profiles.parser import parse_profile
+
+    path = _override_path(tmp_path)
+    assert not path.exists()
+
+    res = await pool_handler._cmd_pool_scale(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 3, "max": 7}
+    )
+    assert res["success"], res
+    assert (res["min_active"], res["max_active"]) == (3, 7)
+
+    assert path.is_file(), "project-scoped override was not created"
+    text = path.read_text(encoding="utf-8")
+    parsed = parse_profile(text)
+    assert parsed.config["min_active"] == 3
+    assert parsed.config["max_active"] == 7
+    # The rest of the system definition carried over unchanged.
+    assert parsed.config["lifecycle"] == "pool"
+    assert "Do the work." in text
+    assert "Be careful." in text
+    # The override must own its own row, not upsert the system one.
+    assert parsed.frontmatter.id == f"project:{PROJECT_ID}:worker"
+
+
+async def test_pool_scale_db_row_matches_vault(pool_handler, tmp_path):
+    res = await pool_handler._cmd_pool_scale(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 2, "max": 5}
+    )
+    assert res["success"], res
+
+    scoped = await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker")
+    assert scoped is not None, "sync did not create the project-scoped row"
+    assert (scoped.min_active, scoped.max_active) == (2, 5)
+
+
+async def test_pool_scale_survives_a_resync(pool_handler, tmp_path):
+    """Re-syncing the vault must not revert the scale (the old bug)."""
+    from src.profiles.sync import sync_profile_text_to_db
+
+    await pool_handler._cmd_pool_scale(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 4, "max": 9}
+    )
+    path = _override_path(tmp_path)
+    scoped_id = f"project:{PROJECT_ID}:worker"
+
+    result = await sync_profile_text_to_db(
+        path.read_text(encoding="utf-8"),
+        pool_handler.db,
+        source_path=str(path),
+        fallback_id=scoped_id,
+    )
+    assert result.success, result.errors
+
+    scoped = await pool_handler.db.get_profile(scoped_id)
+    assert (scoped.min_active, scoped.max_active) == (4, 9)
+
+
+async def test_pool_scale_updates_an_existing_override(pool_handler, tmp_path):
+    """A second scale edits the override in place, preserving its prose."""
+    from src.profiles.parser import parse_profile
+
+    await pool_handler._cmd_pool_scale(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 1, "max": 3}
+    )
+    path = _override_path(tmp_path)
+    # Author-added content must survive the next write.
+    path.write_text(path.read_text(encoding="utf-8") + "\n## Reflection\n\nKeep notes.\n")
+
+    await pool_handler._cmd_pool_scale({"project_id": PROJECT_ID, "profile_id": "worker", "max": 8})
+
+    text = path.read_text(encoding="utf-8")
+    parsed = parse_profile(text)
+    assert parsed.config["max_active"] == 8
+    assert parsed.config["min_active"] == 1, "min must be left alone when only max is passed"
+    assert "Keep notes." in text

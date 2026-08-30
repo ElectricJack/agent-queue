@@ -10,8 +10,11 @@ flat ``dict`` of arguments and returns a ``dict`` — domain data on success,
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime, timezone
+
+from src.profiles.sync import underlying_agent_type
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +174,9 @@ class OpsCommandsMixin:
             total_tokens = row.get("tokens_used", 0) or 0
             cost: float | None = None
             if entry is not None and split_tokens:
-                cost = (
-                    (row.get("input_tokens") or 0) * entry.input_per_mtok / 1_000_000
-                    + (row.get("output_tokens") or 0) * entry.output_per_mtok / 1_000_000
-                )
+                cost = (row.get("input_tokens") or 0) * entry.input_per_mtok / 1_000_000 + (
+                    row.get("output_tokens") or 0
+                ) * entry.output_per_mtok / 1_000_000
                 total_cost += cost
                 # Tokens in this bucket that carried no split are not covered
                 # by `cost` — count them as unpriced rather than losing them.
@@ -243,9 +245,14 @@ class OpsCommandsMixin:
     async def _cmd_pool_status(self, args: dict) -> dict:
         """Supply/demand/bounds snapshot for every worker pool.  Backs ``aq pool status``."""
         project_ids = {args["project_id"]} if args.get("project_id") else None
-        supply, demand, bounds, _profiles, _caps, _projects = (
-            await self.orchestrator._measure_pools(project_ids)
-        )
+        (
+            supply,
+            demand,
+            bounds,
+            _profiles,
+            _caps,
+            _projects,
+        ) = await self.orchestrator._measure_pools(project_ids)
         now = time.time()
         pools = []
         for key in sorted(supply, key=lambda k: (k.project_id, k.profile_id)):
@@ -271,20 +278,35 @@ class OpsCommandsMixin:
             pools.append(row)
         return {"success": True, "pools": pools}
 
+    def _project_profile_path(self, project_id: str, agent_type: str) -> str:
+        """Vault path of the project-scoped override for *agent_type*."""
+        return os.path.join(
+            self.config.data_dir,
+            "vault",
+            "projects",
+            project_id,
+            "agent-types",
+            agent_type,
+            "profile.md",
+        )
+
+    def _system_profile_path(self, agent_type: str) -> str:
+        return os.path.join(self.config.data_dir, "vault", "agent-types", agent_type, "profile.md")
+
     async def _write_pool_bounds(
         self, project_id: str, profile_id: str, min_active: int | None, max_active: int | None
     ):
-        """Persist new min/max bounds on the effective pool profile for *project_id*.
+        """Persist new min/max bounds for the effective pool profile of *project_id*.
 
-        Prefers a project-scoped override row (``project:{project_id}:{profile_id}``)
-        when one exists, else the system-wide row.  There is no vault writer for
-        ``min_active``/``max_active`` today — ``agent_profile_to_markdown``
-        (the function ``aq profile set`` / ``_cmd_edit_profile`` uses) has no
-        ``lifecycle``/``min_active``/``max_active`` parameters, so this updates
-        the ``agent_profiles`` DB row directly via ``db.update_profile``. A
-        vault re-sync of the same profile (the watcher, or a future ``aq
-        profile set`` call) will overwrite this value once a vault writer for
-        pool bounds exists — that is a known gap, not a bug in this command.
+        The vault ``## Config`` block is the source of truth (swarm spec §14),
+        so the bounds are written into the **project-scoped** profile markdown
+        at ``vault/projects/<pid>/agent-types/<id>/profile.md`` — created from
+        the system profile when no override exists yet — and then synced back
+        into the ``agent_profiles`` row.  Writing only the DB row (what this
+        used to do) meant the next vault sync silently reverted the scale.
+
+        The DB row is also updated directly and first, so the very next
+        orchestrator tick sees the new bounds even if the sync is slow.
         """
         scoped_id = f"project:{project_id}:{profile_id}"
         target = await self.db.get_profile(scoped_id)
@@ -298,8 +320,14 @@ class OpsCommandsMixin:
             updates["min_active"] = min_active
         if max_active is not None:
             updates["max_active"] = max_active
+
+        # 1. Immediate DB write on the row the scheduler currently reads, so
+        #    the next tick already honours the new bounds.
         if updates:
             await self.db.update_profile(target.id, **updates)
+
+        # 2. Durable write: the project-scoped vault file.
+        await self._write_pool_bounds_to_vault(project_id, profile_id, updates)
 
         import dataclasses
 
@@ -308,6 +336,59 @@ class OpsCommandsMixin:
             min_active=min_active if min_active is not None else target.min_active,
             max_active=max_active if max_active is not None else target.max_active,
         )
+
+    async def _write_pool_bounds_to_vault(
+        self, project_id: str, profile_id: str, updates: dict
+    ) -> None:
+        """Merge *updates* into the project override's ``## Config`` and re-sync.
+
+        Failures are logged, never raised: the DB row has already been updated
+        by the caller, so a read-only vault degrades ``pool scale`` to the old
+        (non-durable) behaviour rather than failing the command outright.
+        """
+        if not updates:
+            return
+        from pathlib import Path
+
+        from src.profiles.parser import set_frontmatter_id, update_config_keys
+        from src.profiles.sync import sync_profile_text_to_db
+
+        # ``profile_id`` may already be scoped when a caller passes the row id.
+        agent_type = underlying_agent_type(profile_id) or profile_id
+        scoped_id = f"project:{project_id}:{agent_type}"
+        path = Path(self._project_profile_path(project_id, agent_type))
+
+        try:
+            if path.is_file():
+                markdown = path.read_text(encoding="utf-8")
+            else:
+                # Seed the override from the system profile so the rest of the
+                # definition (role, rules, tools) carries over unchanged.
+                system_path = Path(self._system_profile_path(agent_type))
+                markdown = system_path.read_text(encoding="utf-8") if system_path.is_file() else ""
+                # The copy must not upsert the *system* row: sync resolves the
+                # id as frontmatter-id first, fallback path-derived id second.
+                markdown = set_frontmatter_id(markdown, scoped_id)
+                path.parent.mkdir(parents=True, exist_ok=True)
+
+            markdown = update_config_keys(markdown, updates)
+            path.write_text(markdown, encoding="utf-8")
+        except OSError:
+            logger.warning(
+                "pool scale: could not write vault profile %s — bounds applied to the "
+                "agent_profiles row only, and will revert on the next vault sync",
+                path,
+                exc_info=True,
+            )
+            return
+
+        result = await sync_profile_text_to_db(
+            markdown, self.db, source_path=str(path), fallback_id=scoped_id
+        )
+        if not result.success:
+            logger.warning(
+                "pool scale: wrote %s but the DB re-sync failed: %s", path, result.errors
+            )
 
     async def _cmd_pool_scale(self, args: dict) -> dict:
         """Set a pool profile's min/max active-session bounds.  Backs ``aq pool scale``."""

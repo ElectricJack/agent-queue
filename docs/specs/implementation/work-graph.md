@@ -323,15 +323,16 @@ contract, this is only the file map:
 | `src/scheduler.py` | Pure `size_pools(*, supply, demand, bounds, project_caps, global_cap, surplus_since, now, scale_down_grace, max_starts_per_tick, max_drains_per_tick) -> tuple[list[PoolAction], dict[PoolKey, float]]` beside `Scheduler.schedule` (keyword-only, table-tested, no I/O; the second return value is the updated `surplus_since` map), plus `PoolKey`/`PoolSupply`/`PoolAction`. |
 | `src/sessions/reconciler.py` | Pool carve-outs on the existing steps (§4 of `implementation/session-runtime.md`): `_step_prepare_timeout` (new), `_step_orphans`/`_step_exits` pool branches, stall ladder gated on `task_id IS NOT NULL`. |
 | `src/doctor/pool_checks.py` | `pools.stuck` (**has a fix**: releases the claim), `pools.orphan_agents` (**has a fix**: releases the workspace lock and deletes the agent), `pools.preparing_stuck` (**has a fix**: releases the claim as `prepare_failed`), `pools.disabled` (report-only), `claims.holder_consistency` (report-only). |
-| `src/commands/ops_commands.py` | `_cmd_pool_status`, `_cmd_pool_scale` (writes `min_active`/`max_active` on the `agent_profiles` **DB row**, not the vault — there is no vault writer for pool bounds yet, so a vault re-sync of that profile overwrites the value; known gap). |
+| `src/commands/ops_commands.py` | `_cmd_pool_status`, `_cmd_pool_scale` (writes `min_active`/`max_active` into the **project-scoped vault profile** `vault/projects/<pid>/agent-types/<id>/profile.md` — created from the system profile when no override exists — then re-syncs it into `agent_profiles`. The DB row is updated first as well so the next tick already honours the new bounds; the vault `## Config` stays the source of truth, so a re-sync no longer reverts the scale). |
 | `src/profiles/parser.py` | `lifecycle: pool` + `min_active`/`max_active`/`max_claims_per_session` (`NULL` = unlimited, `0`/negative/bool = parse error, pool-only keys rejected on other lifecycles). |
 | `src/config.py::SwarmConfig` | `swarm` section — see `docs/specs/config.md` §4.11. |
 | Tests | `tests/test_claim_queries.py`, `tests/test_claim_commands.py`, `tests/test_pool_sizing.py`, `tests/test_pool_reconciler.py`, `tests/test_pool_reconciler_carveouts.py`, `tests/test_pool_doctor.py`, `tests/perf/test_claim_statements.py` (statement-count and p99 budgets). |
 
 Migration: Alembic revisions `a1b2c3d4e5f6` (DDL — `lifecycle='pool'` columns, `sessions`
 claim-phase columns, `tasks.claim_epoch`/`filed_count`), `b2c3d4e5f6a7` (data +
-`uq_task_deps_single_parent`, shared with Part I), `c3d4e5f6a7b8` (the two swarm indexes —
-current `alembic heads`).
+`uq_task_deps_single_parent`, shared with Part I), `c3d4e5f6a7b8` (the two swarm indexes),
+`d4e5f6a7b8c9` (the two `use_alter` foreign keys the baseline never emitted — current
+`alembic heads`).
 
 ## 12. Risks
 

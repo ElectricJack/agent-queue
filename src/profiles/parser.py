@@ -528,9 +528,7 @@ def _validate_config(config: dict) -> list[str]:
             errors.append(f"Config 'runtime' must be a string, got {type(rt).__name__}")
         elif rt not in VALID_RUNTIMES:
             sorted_runtimes = sorted(VALID_RUNTIMES)
-            errors.append(
-                f"Config 'runtime' must be one of {sorted_runtimes}, got '{rt}'"
-            )
+            errors.append(f"Config 'runtime' must be one of {sorted_runtimes}, got '{rt}'")
 
     # --- agent_name --- retired with the ACPX runtime.  Rejected rather
     # than ignored: a profile still carrying it was written for a dispatch
@@ -541,29 +539,23 @@ def _validate_config(config: dict) -> list[str]:
         errors.append(
             "Config 'agent_name' was removed with the 'acpx' runtime. "
             "Select the agent with 'harness' instead "
-            "(\"claude\", \"codex\", \"gemini\")."
+            '("claude", "codex", "gemini").'
         )
 
     if "default_class" in config:
         v = config["default_class"]
         if not isinstance(v, str):
-            errors.append(
-                f"Config 'default_class' must be a string, got {type(v).__name__}"
-            )
+            errors.append(f"Config 'default_class' must be a string, got {type(v).__name__}")
 
     if "needs_workspace" in config:
         v = config["needs_workspace"]
         if not isinstance(v, bool):
-            errors.append(
-                f"Config 'needs_workspace' must be a boolean, got {type(v).__name__}"
-            )
+            errors.append(f"Config 'needs_workspace' must be a boolean, got {type(v).__name__}")
 
     if "read_only" in config:
         v = config["read_only"]
         if not isinstance(v, bool):
-            errors.append(
-                f"Config 'read_only' must be a boolean, got {type(v).__name__}"
-            )
+            errors.append(f"Config 'read_only' must be a boolean, got {type(v).__name__}")
 
     errors.extend(_validate_session_config(config))
 
@@ -633,8 +625,7 @@ def _validate_session_config(config: dict) -> list[str]:
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, int):
             errors.append(
-                f"Config '{key}' must be a positive integer (seconds), "
-                f"got {type(value).__name__}"
+                f"Config '{key}' must be a positive integer (seconds), got {type(value).__name__}"
             )
             continue
         if value <= 0:
@@ -1263,3 +1254,106 @@ def agent_profile_to_markdown(
         lines.append("")
 
     return "\n".join(lines)
+
+
+def set_frontmatter_id(markdown: str, profile_id: str) -> str:
+    """Return *markdown* with its frontmatter ``id`` set to *profile_id*.
+
+    Used when seeding a project-scoped override from a system profile:
+    :func:`~src.profiles.sync.sync_profile_to_db` resolves the row id as
+    *frontmatter id > fallback_id*, so an override copied verbatim from the
+    system file would otherwise upsert the **system** row.
+
+    Frontmatter is created when the document has none.  Every other line is
+    preserved byte for byte.
+    """
+    _, remaining = parse_frontmatter(markdown)
+    if remaining == markdown:
+        # No frontmatter at all — prepend a minimal block.
+        return f"---\nid: {profile_id}\n---\n\n{markdown.lstrip()}"
+
+    stripped = markdown.lstrip()
+    after_open = stripped[3:].lstrip("\r\n")
+    close_idx = after_open.find("\n---")
+    yaml_text = after_open[:close_idx]
+
+    lines = yaml_text.splitlines()
+    out, replaced = [], False
+    for line in lines:
+        if re.match(r"^id\s*:", line):
+            if not replaced:
+                out.append(f"id: {profile_id}")
+                replaced = True
+            continue  # drop any duplicate id keys
+        out.append(line)
+    if not replaced:
+        out.insert(0, f"id: {profile_id}")
+
+    # Drop exactly one newline after the closing delimiter (the delimiter's
+    # own line break), preserving any blank line the author put there.
+    rest = after_open[close_idx + 4 :]
+    if rest.startswith("\r\n"):
+        rest = rest[2:]
+    elif rest.startswith("\n"):
+        rest = rest[1:]
+    return "---\n" + "\n".join(out) + "\n---\n" + rest
+
+
+def update_config_keys(markdown: str, updates: dict) -> str:
+    """Return *markdown* with *updates* merged into its ``## Config`` JSON block.
+
+    A surgical rewrite: only the ``## Config`` fenced JSON object is replaced,
+    so Role/Rules/Tools/MCP Servers prose and every other section survive
+    untouched.  This is what makes the vault — not the ``agent_profiles`` row —
+    the source of truth for values a command mutates (swarm spec §14): a
+    whole-document re-render via :func:`agent_profile_to_markdown` would drop
+    any section it has no parameter for.
+
+    When the document has no ``## Config`` section, one is appended.  Keys
+    whose value is ``None`` are removed from the block.
+    """
+    frontmatter_text = ""
+    body = markdown
+    _, remaining = parse_frontmatter(markdown)
+    if remaining != markdown:
+        frontmatter_text = markdown[: len(markdown) - len(remaining)]
+        body = remaining
+
+    def _render(config: dict) -> str:
+        return "```json\n" + json.dumps(config, indent=2) + "\n```"
+
+    sections = _split_sections(body)
+    rebuilt: list[str] = []
+    found = False
+    for heading, section_body in sections:
+        if heading.strip().lower() != "config":
+            if heading:
+                rebuilt.append(f"## {heading}\n{section_body}")
+            elif section_body:
+                rebuilt.append(section_body)
+            continue
+
+        found = True
+        json_str, _ = _extract_json_block(section_body)
+        try:
+            config = json.loads(json_str) if json_str else {}
+        except json.JSONDecodeError:
+            config = {}
+        if not isinstance(config, dict):
+            config = {}
+        for key, value in updates.items():
+            if value is None:
+                config.pop(key, None)
+            else:
+                config[key] = value
+        rebuilt.append(f"## Config\n\n{_render(config)}\n\n")
+
+    result = "".join(rebuilt)
+    if not found:
+        config = {k: v for k, v in updates.items() if v is not None}
+        if config:
+            if result and not result.endswith("\n"):
+                result += "\n"
+            result = result.rstrip("\n") + f"\n\n## Config\n\n{_render(config)}\n"
+
+    return frontmatter_text + result
