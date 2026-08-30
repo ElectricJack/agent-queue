@@ -10,6 +10,7 @@ thinking: medium
 {
   "anthropic": {"model": "claude-opus-5", "thinking": "medium"},
   "openai":    {"model": "gpt-5",    "reasoning_effort": "medium"},
+  "codex":     {"model": "gpt-5.6-sol", "reasoning_effort": "medium"},
   "google":    {"model": "gemini-2.5-pro",    "thinking_budget": 8192}
 }
 ```

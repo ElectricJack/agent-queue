@@ -48,10 +48,14 @@ vault watcher; no restart, no release.
 
 ## Notes
 
-**Luna requires a current Codex CLI.** The fast intelligence-class presets use
-`gpt-5.6-luna` for Codex. This model was verified with Codex **0.151.0** using
-ChatGPT login; **0.125.0** rejected it and requested a newer CLI. This records
-versions tested, not an exact minimum version.
+**Use a current Codex CLI.** Intelligence classes select `gpt-5.6-luna` for
+fast work, `gpt-5.6-terra` for standard work, and `gpt-5.6-sol` for deep work.
+Their Off and Low levels both use Codex's lowest supported reasoning level,
+`low`; Medium and High use the corresponding levels. Generic OpenAI API
+mappings remain separate. All three models were verified with Codex **0.151.0**
+using ChatGPT login. The older **0.125.0** CLI was tested only with Luna; it
+rejected that model and requested a newer CLI. These are versions tested,
+not an exact minimum version.
 
 **`ready_prompt_prefix` is `›` (U+203A) + a plain space** — verified by
 launching codex 0.125.0 under tmux and capturing the pane bytes

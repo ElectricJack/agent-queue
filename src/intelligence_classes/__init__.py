@@ -69,19 +69,19 @@ def _parse_file(path: str) -> IntelligenceClass | None:
     )
 
 
-def _backfill_legacy_fast_codex(cls: IntelligenceClass) -> IntelligenceClass:
+def _backfill_legacy_codex(cls: IntelligenceClass) -> IntelligenceClass:
     """Add the bundled CLI default only to unchanged legacy API defaults.
 
     The vault is never rewritten. Explicit Codex entries (even empty ones),
     custom OpenAI slices, other class IDs, and other providers are preserved.
     Compare against the historical API slice, not tomorrow's bundled API model.
     """
-    legacy_efforts = {"fast-off": "minimal", "fast-low": "low",
-                      "fast-medium": "medium", "fast-high": "high"}
-    effort = legacy_efforts.get(cls.id)
-    if effort is None or "codex" in cls.mapping:
+    tier, _, level = cls.id.rpartition("-")
+    model = {"fast": "gpt-5-mini", "standard": "gpt-5", "deep": "gpt-5"}.get(tier)
+    effort = {"off": "minimal", "low": "low", "medium": "medium", "high": "high"}.get(level)
+    if model is None or effort is None or "codex" in cls.mapping:
         return cls
-    if cls.mapping.get("openai") != {"model": "gpt-5-mini", "reasoning_effort": effort}:
+    if cls.mapping.get("openai") != {"model": model, "reasoning_effort": effort}:
         return cls
     source = os.path.join(os.path.dirname(__file__), "..", "prompts",
                           "default_intelligence_classes", f"{cls.id}.md")
@@ -111,7 +111,7 @@ def load_intelligence_classes(data_dir: str) -> dict[str, IntelligenceClass]:
             continue
         cls = _parse_file(os.path.join(root, name))
         if cls is not None:
-            out[cls.id] = _backfill_legacy_fast_codex(cls)
+            out[cls.id] = _backfill_legacy_codex(cls)
     return out
 
 

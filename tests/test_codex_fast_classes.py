@@ -72,13 +72,12 @@ def test_other_openai_harnesses_keep_api_mapping(tmp_path, hid, command):
     assert specs._resolve_model(profile("off"), harness, None) == "gpt-5-mini"
 
 
-def test_other_providers_and_non_fast_tiers_are_unchanged(tmp_path):
+def test_other_providers_and_api_tiers_are_unchanged(tmp_path):
     specs = builder(tmp_path)
     assert specs._resolve_model(profile(), Harness(id="claude", command="claude"), None) == "claude-haiku-4-5"
     assert specs._resolve_model(profile(), Harness(id="gemini", command="gemini"), None) == "gemini-2.5-flash"
     for cid, cls in specs._intelligence_classes.items():
         if not cid.startswith("fast-"):
-            assert "codex" not in cls.mapping
             assert cls.mapping["openai"]["model"] == "gpt-5"
 
 
@@ -127,7 +126,7 @@ def test_custom_openai_mapping_is_not_backfilled(tmp_path, openai):
 
 
 @pytest.mark.parametrize("cid", ["custom-fast", "standard-low", "deep-low"])
-def test_backfill_only_applies_to_bundled_fast_ids(tmp_path, cid):
+def test_backfill_requires_matching_bundled_id_and_legacy_model(tmp_path, cid):
     mapping = {"openai": {"model": "gpt-5-mini", "reasoning_effort": "low"}}
     write_class(tmp_path, cid, mapping)
     assert load_intelligence_classes(str(tmp_path))[cid].mapping == mapping

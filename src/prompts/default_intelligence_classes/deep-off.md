@@ -10,6 +10,7 @@ thinking: off
 {
   "anthropic": {"model": "claude-opus-5", "thinking": "off"},
   "openai":    {"model": "gpt-5",    "reasoning_effort": "minimal"},
+  "codex":     {"model": "gpt-5.6-sol", "reasoning_effort": "low"},
   "google":    {"model": "gemini-2.5-pro",    "thinking_budget": 0}
 }
 ```

@@ -10,6 +10,7 @@ thinking: high
 {
   "anthropic": {"model": "claude-opus-5", "thinking": "high"},
   "openai":    {"model": "gpt-5",    "reasoning_effort": "high"},
+  "codex":     {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
   "google":    {"model": "gemini-2.5-pro",    "thinking_budget": 24576}
 }
 ```
