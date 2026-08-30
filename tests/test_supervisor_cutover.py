@@ -791,29 +791,3 @@ class TestMessageSentRenderer:
         assert any(
             "not resolvable" in r.message and "999" in r.message for r in caplog.records
         )
-
-
-# ---------------------------------------------------------------------------
-# Plugin invoke_llm fallback (spec §9 row 3 — unchanged)
-# ---------------------------------------------------------------------------
-
-
-class TestInvokeLLMFallback:
-    """The plugin ``invoke_llm`` fallback still delegates to
-    ``supervisor.chat`` when no per-call model/provider override is given.
-    Behaviour is unchanged in this task; the test guards against accidental
-    regression from the cutover.
-    """
-
-    async def test_default_path_calls_supervisor_chat(self):
-        # Verify the plugin registry gets a callback and that the callback
-        # source-code still calls ``supervisor.chat``.  Static-import check
-        # keeps this fast and avoids standing up the full orchestrator.
-        import inspect
-
-        from src.orchestrator import core
-
-        src = inspect.getsource(core.Orchestrator.set_supervisor)
-        # Guard: the fallback still routes through supervisor.chat when no
-        # per-call override is supplied.
-        assert "supervisor.chat(" in src

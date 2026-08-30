@@ -614,9 +614,45 @@ class Orchestrator(
         ):
             playbook_manager.set_command_handler(handler)
 
+        plugin_registry = getattr(self, "plugin_registry", None)
+        if plugin_registry is not None:
+            plugin_registry.set_active_project_id_getter(lambda: handler._active_project_id)
+            plugin_registry.set_execute_command_callback(handler.execute)
+
     def _get_handler(self) -> Any:
         """Return the command handler or None. Used by interactive views."""
         return self._command_handler
+
+    async def _plugin_invoke_llm(
+        self,
+        prompt: str,
+        plugin_name: str,
+        *,
+        intelligence_class: str | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+        tools: list[dict] | None = None,
+        system: str = "",
+    ) -> str:
+        from src.llm import LLMCallSpec
+
+        spec = LLMCallSpec(
+            provider=provider,
+            model=model,
+            intelligence_class=intelligence_class,
+            caller=f"plugin:{plugin_name}",
+        )
+        system_prompt = system or f"You are a helper for plugin:{plugin_name}."
+        if not tools:
+            resp = await self.llm.complete(prompt, system=system_prompt, spec=spec)
+            return resp.text
+        handler = self._command_handler
+        if handler is None:
+            raise RuntimeError("invoke_llm with tools needs the command handler wired")
+        result = await self.llm.run_tools(
+            prompt, tools, handler.execute, system=system_prompt, spec=spec
+        )
+        return result.text
 
     def set_supervisor(self, supervisor) -> None:
         """Set the Supervisor reference for post-task delegation."""
@@ -630,60 +666,6 @@ class Orchestrator(
         # Store the registry on the orchestrator so command handlers can access
         # the shared instance (with plugin tools and the tool index).
         self._tool_registry = supervisor._registry
-
-        # Wire LLM invocation callback into the plugin registry so plugins
-        # can call ctx.invoke_llm() from cron jobs and command handlers.
-        if hasattr(self, "plugin_registry") and self.plugin_registry:
-
-            async def _plugin_invoke_llm(
-                prompt: str,
-                plugin_name: str,
-                *,
-                model: str | None = None,
-                provider: str | None = None,
-                tools: list[dict] | None = None,
-                thinking_budget: int | None = None,
-            ) -> str:
-                if model or provider or thinking_budget is not None:
-                    import dataclasses
-                    from src.chat_providers import create_chat_provider
-
-                    sys_cfg = self.config.chat_provider
-                    cfg = dataclasses.replace(
-                        sys_cfg,
-                        provider=provider or sys_cfg.provider,
-                        model=model or sys_cfg.model,
-                        thinking_budget=(
-                            thinking_budget
-                            if thinking_budget is not None
-                            else sys_cfg.thinking_budget
-                        ),
-                    )
-                    one_shot = create_chat_provider(cfg)
-                    if one_shot is None:
-                        raise RuntimeError(
-                            f"Plugin {plugin_name}: chat provider '{cfg.provider}' "
-                            "is not configured (missing credentials)"
-                        )
-                    resp = await one_shot.create_message(
-                        messages=[{"role": "user", "content": prompt}],
-                        system=f"You are a helper for plugin:{plugin_name}.",
-                    )
-                    return "".join(resp.text_parts)
-                # Default: use the supervisor (has tool loop)
-                return await supervisor.chat(
-                    prompt,
-                    user_name=f"plugin:{plugin_name}",
-                )
-
-            self.plugin_registry.set_invoke_llm_callback(_plugin_invoke_llm)
-
-        # Wire active project getter so internal plugins can resolve context
-        if hasattr(self, "plugin_registry") and self.plugin_registry:
-            self.plugin_registry.set_active_project_id_getter(
-                lambda: supervisor.handler._active_project_id
-            )
-            self.plugin_registry.set_execute_command_callback(supervisor.handler.execute)
 
     async def _get_default_branch(self, project, workspace: str | None = None) -> str:
         """Get the default branch for a project, with dynamic detection fallback.
@@ -1820,6 +1802,9 @@ class Orchestrator(
             config=self.config,
             doctor_registry=self.doctor_registry,
         )
+        self.plugin_registry.set_invoke_llm_callback(self._plugin_invoke_llm)
+        if self._command_handler is not None:
+            self.set_command_handler(self._command_handler)
 
         # Build and inject services for internal plugins
         internal_services = build_internal_services(
