@@ -113,6 +113,14 @@ once keeps **every** snapshot row (one per cook); `formula_show
 `task_context` has no timestamp column of its own and `id` is random hex.
 The container also gets a `formula:<name>` label.
 
+A container re-cooked under a **different** formula name (via
+`--parent`) accumulates one `formula:<name>` label per distinct formula
+it was cooked with — labels are additive, never replaced. The five
+`task_metadata` keys above, by contrast, are overwritten on every cook, so
+`task_metadata.formula` (and its siblings) always reflects only the
+**latest** cook, not the full cook history; the label set and the
+`formula_snapshot` rows are the only places that history survives.
+
 `--as-cooked <container_id>` on `formula_show` renders the snapshot exactly
 as recorded — no registry lookup, no re-validation — so it reflects what
 was *actually* cooked even if the vault file has since changed.
@@ -164,3 +172,18 @@ half-edited file never takes a formula offline mid-edit).
   placeholders (titles, descriptions, ...); there is no typed var (int,
   bool, list) and no expression language — `apply_defaults` coerces
   everything to `str`.
+- **A project override cannot `extends` the system formula of the same
+  name.** `resolve_chain` looks up every hop — including the first — by
+  `(name, project_id)`; a project-scoped `foo` that writes `extends: foo`
+  resolves to itself (same name, same scope) and is rejected as
+  `formula.extends_cycle`, not treated as "extend the system-scope `foo`".
+  There is no scope-qualified `extends` syntax (e.g. `extends:
+  system:foo`) to express that today — the workaround is to copy the
+  system formula's document into the project override rather than extend
+  it. A scope-qualified `extends` is future work.
+- **Inherited nodes cannot be removed by a child.** `merge_documents`
+  merges nodes by `key` — a child can override a parent node's fields
+  (field-wise, child wins) or add a new node, but there is no "delete this
+  inherited node" directive. A leaf that wants to drop a node inherited
+  from its `extends` chain has to `extends` a different, node-comparable
+  parent instead.

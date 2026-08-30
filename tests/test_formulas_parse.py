@@ -119,11 +119,11 @@ class TestRegistry:
         path.write_text("---\nname: base-review\n---\nhalf saved", encoding="utf-8")
         await _on_formula_changed(
             [VaultChange(path=str(path), rel_path="formulas/base-review.md", operation="modified")],
-            registry=reg, vault_root=str(vault))
+            registry=reg)
         assert reg.get("base-review") is not None  # previous good entry kept
         assert "formulas/base-review.md" in reg.errors
         path.unlink()
         await _on_formula_changed(
             [VaultChange(path=str(path), rel_path="formulas/base-review.md", operation="deleted")],
-            registry=reg, vault_root=str(vault))
+            registry=reg)
         assert reg.get("base-review") is None

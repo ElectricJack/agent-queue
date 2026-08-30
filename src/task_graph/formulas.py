@@ -54,7 +54,6 @@ __all__ = [
     "resolve_chain",
     "resolve_formula",
     "validate_vars",
-    "vault_path_for",
 ]
 
 #: Glob patterns handed to the vault watcher.
@@ -117,12 +116,6 @@ def derive_formula_id(rel_path: str) -> tuple[str | None, str] | None:
     if len(parts) == 2 and parts[0] == "formulas" and parts[-1].endswith(".md"):
         return (None, parts[-1][:-3])
     return None
-
-
-def vault_path_for(vault_root: str, name: str, project_id: str | None) -> str:
-    if project_id:
-        return os.path.join(vault_root, "projects", project_id, "formulas", f"{name}.md")
-    return os.path.join(vault_root, "formulas", f"{name}.md")
 
 
 def _load_raw_document(block: str) -> dict | None:
@@ -393,7 +386,6 @@ async def _on_formula_changed(
     changes: list["VaultChange"],
     *,
     registry: FormulaRegistry,
-    vault_root: str,
 ) -> None:
     """Watcher callback — reparse changed files, update the registry."""
     for change in changes:
@@ -440,13 +432,11 @@ async def _on_formula_changed(
 def register_formula_handlers(
     watcher: "VaultWatcher",
     registry: FormulaRegistry,
-    *,
-    vault_root: str,
 ) -> list[str]:
     """Register vault-watcher handlers for both formula scopes."""
 
     async def _handler(changes: list["VaultChange"]) -> None:
-        await _on_formula_changed(changes, registry=registry, vault_root=vault_root)
+        await _on_formula_changed(changes, registry=registry)
 
     handler_ids: list[str] = []
     for pattern in FORMULA_PATTERNS:
@@ -470,9 +460,11 @@ def resolve_chain(
     Every hop is looked up with the same *project_id* — project shadows
     system at every level of the chain, not just the leaf.
 
-    Raises :class:`FormulaError` with ``formula.extends_missing`` (a named
-    parent does not exist in this scope) or ``formula.extends_cycle`` (a
-    formula extends one of its own ancestors).
+    Raises :class:`FormulaError` with ``formula.not_found`` (the leaf formula
+    itself — the one the caller actually asked for — does not exist in this
+    scope), ``formula.extends_missing`` (a later hop's named parent does not
+    exist), or ``formula.extends_cycle`` (a formula extends one of its own
+    ancestors).
     """
     chain: list[Formula] = []
     seen: list[str] = []
@@ -489,7 +481,19 @@ def resolve_chain(
             )
         formula = registry.get(current, project_id)
         if formula is None:
-            parent = seen[-1] if seen else name
+            if not seen:
+                raise FormulaError(
+                    [
+                        GraphError(
+                            rule="formula.not_found",
+                            detail=(
+                                f"no formula named {name!r} in scope "
+                                f"{project_id or 'system'}"
+                            ),
+                        )
+                    ]
+                )
+            parent = seen[-1]
             raise FormulaError(
                 [
                     GraphError(
@@ -547,7 +551,7 @@ def merge_documents(chain: list[Formula]) -> dict:
         src = copy.deepcopy(formula.graph_doc)
         if src.get("spec"):
             doc["spec"] = src["spec"]
-        doc["defaults"].update(src.get("defaults") or {})
+        doc["defaults"].update(_drop_null(src.get("defaults") or {}))
         doc["parent"].update(_drop_null(src.get("parent") or {}))
         for node in src.get("nodes") or []:
             key = node["key"]

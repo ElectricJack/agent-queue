@@ -85,6 +85,14 @@ class TestShow:
         h, *_ = setup
         res = await h._cmd_formula_show({"name": "nope", "project_id": "p1"})
         assert res["success"] is False and "nope" in res["error"]
+        assert "formula.not_found" in res["error"]
+
+    async def test_show_requires_name_or_as_cooked(self, setup):
+        h, *_ = setup
+        assert await h._cmd_formula_show({}) == {
+            "success": False, "error": "name or as_cooked is required"}
+        assert await h._cmd_formula_show({"project_id": "p1"}) == {
+            "success": False, "error": "name or as_cooked is required"}
 
     async def test_show_vars_must_be_a_mapping(self, setup):
         h, *_ = setup
@@ -158,6 +166,12 @@ class TestCook:
         res = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1", "vars": {"branch": "b"}})
         assert res["success"] is True
 
+    async def test_cook_requires_name(self, setup):
+        h, *_ = setup
+        assert await h._cmd_formula_cook({}) == {"success": False, "error": "name is required"}
+        assert await h._cmd_formula_cook({"project_id": "p1"}) == {
+            "success": False, "error": "name is required"}
+
     async def test_cook_project_not_found(self, setup):
         h, *_ = setup
         res = await h._cmd_formula_cook({"name": "base-review", "project_id": "ghost",
@@ -197,7 +211,30 @@ class TestAsCooked:
         )
         shown = await h._cmd_formula_show({"as_cooked": cid})
         assert shown["success"] is True
-        assert {n["key"] for n in shown["graph"]["nodes"]} in ({"legacy"}, {"review"})
+        # The envelope row's real `cooked_at` outranks the legacy row's
+        # implicit 0.0, so the max-picking sort always prefers it here.
+        assert {n["key"] for n in shown["graph"]["nodes"]} == {"review"}
+
+    async def test_as_cooked_renders_legacy_bare_document_when_it_is_the_only_row(self, setup):
+        h, db, *_ = setup
+        # A container created directly via `create_task_graph` (no
+        # FormulaProvenance) never gets the {cooked_at, chain_sha, document}
+        # envelope — exercise the `payload.get("document", payload)` fallback
+        # by writing only a legacy bare-document `formula_snapshot` row.
+        from src.task_graph import create_graph, parse_graph
+
+        graph = parse_graph(
+            {"version": 1, "parent": {"title": "P"}, "nodes": [{"key": "legacy", "title": "L"}]}
+        )
+        report = await create_graph(h, graph, project_id="p1", dry_run=False)
+        cid = report["parent_id"]
+        await db.add_task_context(
+            cid, type="formula_snapshot", label="legacy",
+            content=json.dumps({"version": 1, "nodes": [{"key": "legacy", "title": "L"}]}),
+        )
+        shown = await h._cmd_formula_show({"as_cooked": cid})
+        assert shown["success"] is True
+        assert {n["key"] for n in shown["graph"]["nodes"]} == {"legacy"}
 
     async def test_as_cooked_renders_snapshot_not_current_file(self, setup):
         h, db, vault_root, registry = setup
@@ -234,3 +271,37 @@ class TestAsCooked:
         h._current_scope = {"kind": "session", "session_id": "s", "project_id": "p1", "elevated": False}
         res = await h._cmd_formula_show({"as_cooked": other["container_id"]})
         assert res["success"] is False and res["result"] == "out_of_scope"
+
+    async def test_as_cooked_out_of_scope_for_other_project_with_pinned_task(self, setup):
+        # C1 (whole-branch review): a non-pool session token pins a
+        # `task_id` in its own project (p1) but must still be refused when
+        # `as_cooked` targets a container in a *different* project (p2) --
+        # `_assert_task_in_scope` alone short-circuits on a pinned task_id
+        # and would let this through.
+        h, *_ = setup
+        mine = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1",
+                                          "vars": {"branch": "b"}})
+        other = await h._cmd_formula_cook({"name": "base-review", "project_id": "p2",
+                                           "vars": {"branch": "b"}})
+        h._current_scope = {
+            "kind": "session", "session_id": "s", "project_id": "p1",
+            "elevated": False, "task_id": mine["container_id"],
+        }
+        res = await h._cmd_formula_show({"as_cooked": other["container_id"]})
+        assert res["success"] is False and res["result"] == "out_of_scope"
+
+    async def test_as_cooked_same_project_with_pinned_task_succeeds(self, setup):
+        # The pinned-task fence must not over-fence: a session pinned to a
+        # task in p1 reading a *different* p1 container's cooked snapshot
+        # is legitimate -- only the cross-project case is refused.
+        h, *_ = setup
+        mine = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1",
+                                          "vars": {"branch": "b"}})
+        other_p1 = await h._cmd_formula_cook({"name": "base-review", "project_id": "p1",
+                                              "vars": {"branch": "c"}})
+        h._current_scope = {
+            "kind": "session", "session_id": "s", "project_id": "p1",
+            "elevated": False, "task_id": mine["container_id"],
+        }
+        res = await h._cmd_formula_show({"as_cooked": other_p1["container_id"]})
+        assert res["success"] is True

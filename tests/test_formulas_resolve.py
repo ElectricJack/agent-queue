@@ -56,6 +56,10 @@ def test_chain_missing_and_cycle(reg, tmp_path):
     with pytest.raises(FormulaError) as exc:
         resolve_chain(r, "a", project_id=None)
     assert exc.value.errors[0].rule == "formula.extends_cycle"
+    with pytest.raises(FormulaError) as exc:
+        resolve_chain(r, "ghost", project_id=None)
+    assert exc.value.errors[0].rule == "formula.not_found"
+    assert exc.value.errors[0].detail == "no formula named 'ghost' in scope system"
 
 
 def test_project_shadow_applies_at_every_hop(reg):
@@ -77,6 +81,22 @@ def test_merge_nodes_by_key_child_wins_new_appended(reg):
     assert review["acceptance"] == ["findings written"]             # inherited (child did not set)
     assert doc["parent"]["title"] == "Review and fix {branch}"
     assert doc["defaults"] == {"profile": "{reviewer}"}
+
+
+def test_merge_defaults_child_null_does_not_clobber_inherited(reg, tmp_path):
+    r, vault = reg
+    (vault / "formulas" / "root-defaults.md").write_text(
+        "---\nname: root-defaults\n---\n"
+        "```aq-graph\nversion: 1\ndefaults:\n  profile: reviewer\n"
+        "nodes:\n  - key: x\n    title: x\n```\n")
+    (vault / "formulas" / "child-defaults.md").write_text(
+        "---\nname: child-defaults\nextends: root-defaults\n---\n"
+        "```aq-graph\nversion: 1\ndefaults:\n  profile:\n"
+        "nodes:\n  - key: y\n    title: y\n```\n")
+    load_from_vault(r, str(vault))
+    chain = resolve_chain(r, "child-defaults", project_id=None)
+    doc = merge_documents(chain)
+    assert doc["defaults"] == {"profile": "reviewer"}  # child's bare `profile:` did not clobber it
 
 
 def test_validate_vars():

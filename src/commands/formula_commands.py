@@ -147,7 +147,9 @@ class FormulaCommandsMixin:
         if as_cooked:
             return await self._formula_show_as_cooked(as_cooked)
 
-        name = args["name"]
+        name = args.get("name")
+        if not name:
+            return {"success": False, "error": "name or as_cooked is required"}
         project_id = self._formula_scope_project(args)
         supplied, vars_error = self._formula_vars_arg(args)
         if vars_error is not None:
@@ -185,18 +187,37 @@ class FormulaCommandsMixin:
         No registry access, no validation, no writes — this renders exactly
         what was cooked, even if the vault file has since changed.  A
         non-elevated session scope may only read a snapshot on a container
-        in its own project (``_assert_task_in_scope``, claim mixin).  When
-        several ``formula_snapshot`` rows exist (the container was cooked
-        more than once), the row's ``content`` carries a ``cooked_at``
-        timestamp (``write_plan``, controller ruling P3-4 — ``task_context``
-        has no timestamp column and its ``id`` is random hex, so row order
-        alone is not a reliable "latest" signal); the newest row wins, ties
-        broken by ``chain_sha`` then ``id``.
+        in its own project.  ``_assert_task_in_scope`` (claim mixin) is not
+        enough here on its own: it short-circuits whenever the scope pins a
+        ``task_id`` (valid for commands whose target arrives as
+        ``args["task_id"]``, which ``as_cooked`` is not — the container
+        comes in as ``args["as_cooked"]`` so a pinned-task token would sail
+        straight through and read another project's cooked graph), so the
+        project fence below runs unconditionally for a non-elevated session
+        scope, regardless of whether ``task_id`` is pinned.  When several
+        ``formula_snapshot`` rows exist (the container was cooked more than
+        once), the row's ``content`` carries a ``cooked_at`` timestamp
+        (``write_plan``, controller ruling P3-4 — ``task_context`` has no
+        timestamp column and its ``id`` is random hex, so row order alone is
+        not a reliable "latest" signal); the newest row wins, ties broken by
+        ``chain_sha`` then ``id``.
         """
         container = await self.db.get_task(container_id)
-        out_of_scope = self._assert_task_in_scope(container)
-        if out_of_scope:
-            return out_of_scope
+
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            scope_project_id = scope.get("project_id")
+            if scope_project_id is not None and (
+                container is None or container.project_id != scope_project_id
+            ):
+                return {
+                    "success": False,
+                    "result": "out_of_scope",
+                    "error": (
+                        f"container '{container_id}' is outside this session's "
+                        f"scope ('{scope_project_id}')"
+                    ),
+                }
 
         contexts = await self.db.get_task_contexts(container_id)
         snapshots = [c for c in contexts if c["type"] == "formula_snapshot"]
@@ -241,7 +262,9 @@ class FormulaCommandsMixin:
         if scope.get("kind") == "session" and not scope.get("elevated"):
             return {"success": False, "error": "formula_cook is not available to agent sessions"}
 
-        name = args["name"]
+        name = args.get("name")
+        if not name:
+            return {"success": False, "error": "name is required"}
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
             return {"success": False, "error": "project_id is required (no active project set)"}
@@ -271,7 +294,7 @@ class FormulaCommandsMixin:
                 "warnings": [w.to_dict() for w in warnings],
             }
 
-        parent_error = await self._validate_graph_parent(project_id, parent_id)
+        parent_error, _parent = await self._validate_graph_parent(project_id, parent_id)
         if parent_error is not None:
             return {**parent_error, "success": False}
 

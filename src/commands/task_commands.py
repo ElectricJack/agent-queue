@@ -1539,33 +1539,42 @@ class TaskCommandsMixin:
 
         return result
 
-    async def _validate_graph_parent(self, project_id: str, parent_id: str | None) -> dict | None:
+    async def _validate_graph_parent(
+        self, project_id: str, parent_id: str | None
+    ) -> tuple[dict | None, Task | None]:
         """Checks an optional container to build a graph under (supervisor-agent §8).
 
-        Returns an error dict (``{"error", "code"}``) or ``None`` when
-        *parent_id* is absent or passes every check.  Factored out of
+        Returns ``(error, parent)`` — *error* is a ``{"error", "code"}`` dict
+        or ``None`` when *parent_id* is absent or passes every check; *parent*
+        is the fetched :class:`~src.models.Task` on success (``None`` on
+        error or when no ``parent_id`` was given), so a caller that also
+        needs the row (``_cmd_create_task_graph`` reads ``parent.title``)
+        does not have to fetch it a second time.  Factored out of
         ``_cmd_create_task_graph`` so ``_cmd_formula_cook`` (swarm-work-model
         §13) shares the exact same rules.
         """
         if not parent_id:
-            return None
+            return None, None
         parent = await self.db.get_task(parent_id)
         if parent is None:
             return {
                 "error": f"Parent task '{parent_id}' not found",
                 "code": "hierarchy.not_found",
-            }
+            }, None
         if parent.project_id != project_id:
-            return {"error": "parent is in another project", "code": "hierarchy.cross_project"}
+            return {
+                "error": "parent is in another project",
+                "code": "hierarchy.cross_project",
+            }, None
         if parent.status == TaskStatus.COMPLETED:
-            return {"error": "parent is COMPLETED", "code": "hierarchy.container_closed"}
+            return {"error": "parent is COMPLETED", "code": "hierarchy.container_closed"}, None
         async with self.db._engine.begin() as conn:
             depth = await self.db.structural_depth(parent_id, conn=conn)
         if depth + 1 > MAX_STRUCTURAL_DEPTH:
             return {
                 "error": f"parent at structural depth {depth}; cap is {MAX_STRUCTURAL_DEPTH}",
                 "code": "hierarchy.depth",
-            }
+            }, None
         if naming_depth(parent_id) >= MAX_NAMING_DEPTH:
             return {
                 "error": (
@@ -1573,8 +1582,8 @@ class TaskCommandsMixin:
                     f"{MAX_NAMING_DEPTH} — a graph cannot mint further dotted children"
                 ),
                 "code": "hierarchy.depth",
-            }
-        return None
+            }, None
+        return None, parent
 
     async def _cmd_create_task_graph(self, args: dict) -> dict:
         """Create a whole task graph in one transaction (supervisor-agent §8).
@@ -1611,10 +1620,9 @@ class TaskCommandsMixin:
         parent_id = args.get("parent_id")
         parent = None
         if parent_id:
-            parent_error = await self._validate_graph_parent(project_id, parent_id)
+            parent_error, parent = await self._validate_graph_parent(project_id, parent_id)
             if parent_error is not None:
                 return parent_error
-            parent = await self.db.get_task(parent_id)
 
         vault_root = getattr(self.config, "vault_root", None)
 

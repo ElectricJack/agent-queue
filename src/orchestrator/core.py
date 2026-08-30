@@ -1509,9 +1509,7 @@ class Orchestrator(
 
         for err in load_from_vault(self.formula_registry, self.config.vault_root):
             logger.warning("Formula registry: %s", err)
-        register_formula_handlers(
-            self.vault_watcher, self.formula_registry, vault_root=self.config.vault_root
-        )
+        register_formula_handlers(self.vault_watcher, self.formula_registry)
         # Seed the synthetic agent-queue entry so the dashboard can show
         # "Built-in" plus its plugin tools, and profiles can reference it
         # by name.
