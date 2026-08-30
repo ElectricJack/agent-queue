@@ -37,6 +37,7 @@ from src.sessions.provider import (
     CapabilityUnsupported,
     NotSubmitted,
     SessionHandle,
+    SessionExecutableNotFound,
 )
 from src.sessions.spec import named_session_name, task_session_name
 
@@ -213,17 +214,23 @@ class SessionLens:
             return "busy"
         return "idle"
 
-    async def ensure_started(self, *, kind: str, target_id: str, project_id: str | None) -> bool:
+    async def ensure_started(
+        self, *, kind: str, target_id: str, project_id: str | None,
+        raise_start_error: bool = False,
+    ) -> bool:
+        """Wake on demand; explicit terminal callers may request safe launch errors."""
         # All message, button and reconciler wakes share this lock. Key it by
         # runtime name so aliases cannot launch a second copy of the supervisor.
         name = _resolve_runtime_session_name(kind, target_id)
         async with self._start_locks.setdefault(name, asyncio.Lock()):
             return await self._ensure_started_locked(
                 kind=kind, target_id=target_id, project_id=project_id,
+                raise_start_error=raise_start_error,
             )
 
     async def _ensure_started_locked(
-        self, *, kind: str, target_id: str, project_id: str | None
+        self, *, kind: str, target_id: str, project_id: str | None,
+        raise_start_error: bool = False,
     ) -> bool:
         # Only supervisor-named sessions are wake-on-demand. Task sessions
         # are launched by the task lifecycle; spawning one from the message
@@ -446,6 +453,8 @@ class SessionLens:
             if isinstance(exc, asyncio.CancelledError):
                 raise
             logger.exception("failed to start supervisor session %s", target_id)
+            if raise_start_error and isinstance(exc, SessionExecutableNotFound):
+                raise
             return False
         return True
 

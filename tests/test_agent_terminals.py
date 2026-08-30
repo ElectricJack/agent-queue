@@ -494,14 +494,18 @@ async def test_typed_terminal_start_enforces_scope_and_returns_flock_summary(han
         if router.prefix == "/api/agent":
             app.include_router(router)
     app.dependency_overrides[get_command_handler] = lambda: handler
-    scope = RequestScope(kind="session", session_id="project-supervisor", project_id="p", elevated=True)
+    scope = RequestScope(
+        kind="session", session_id="project-supervisor", project_id="p", elevated=True
+    )
 
     @app.middleware("http")
     async def bind_scope(request, call_next):
         request.state.scope = scope
         return await call_next(request)
 
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         denied = await client.post("/api/agent/start-terminal", json={"agent_id": "worker-a"})
         assert denied.status_code == 403
         assert provider(handler).starts == []
@@ -513,3 +517,49 @@ async def test_typed_terminal_start_enforces_scope_and_returns_flock_summary(han
         assert body["session_state"] == "running"
         assert body["settings"]["model"] == "my-model"
         assert len(provider(handler).starts) == 1
+
+
+@pytest.mark.parametrize("agent_id", ["worker-a", "supervisor-global"])
+async def test_real_provider_missing_cli_is_actionable_without_launch(
+    handler,
+    monkeypatch,
+    tmp_path,
+    agent_id,
+):
+    from src.sessions.tmux import TmuxProvider
+
+    if agent_id == "supervisor-global":
+        await handler.db.create_agent(
+            Agent(
+                id=agent_id,
+                name="Supervisor",
+                profile_id="supervisor",
+                role="supervisor",
+            )
+        )
+    monkeypatch.setenv("PATH", str(tmp_path / "no-cli"))
+    fake = provider(handler)
+
+    # Exercise the actual real-provider entry point. No OS launch is allowed.
+    async def forbidden_probe():
+        raise AssertionError("Missing CLI must be detected before tmux access")
+
+    monkeypatch.setattr(fake, "_probe_server", forbidden_probe, raising=False)
+
+    async def real_start(spec):
+        return await TmuxProvider.start(fake, spec)
+
+    monkeypatch.setattr(fake, "start", real_start)
+    result = await start(handler, agent_id)
+    assert "claude" in result["error"] and "PATH" in result["error"]
+    assert "aqs_" not in result["error"] and str(tmp_path) not in result["error"]
+    assert (await handler.db.get_agent(agent_id)).state == AgentState.IDLE
+    assert await handler.db.list_sessions() == []
+    assert fake.starts == []
+    # Message/reconciler callers keep the existing bool-return contract.
+    if agent_id == "supervisor-global":
+        assert not await handler.orchestrator.session_lens.ensure_started(
+            kind="session",
+            target_id=agent_id,
+            project_id=None,
+        )

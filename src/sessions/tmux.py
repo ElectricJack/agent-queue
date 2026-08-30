@@ -42,6 +42,7 @@ from src.sessions.provider import (
     SessionHandle,
     SessionProvider,
     SessionSpec,
+    require_session_executable,
     validate_terminal_input,
 )
 from src.sessions.state_cache import TmuxStateCache, TmuxUnavailable
@@ -183,6 +184,7 @@ class TmuxProvider(SessionProvider):
     # -- lifecycle ---------------------------------------------------------
 
     async def start(self, spec: SessionSpec) -> SessionHandle:
+        require_session_executable(spec)
         work_dir = Path(spec.work_dir)
         work_dir.mkdir(parents=True, exist_ok=True)
         _write_spec_files(spec)

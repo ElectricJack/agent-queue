@@ -39,9 +39,12 @@ one of the Gas City post-mortem's most expensive bugs.
 
 from __future__ import annotations
 
+import os
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import ClassVar
 
 __all__ = [
@@ -51,6 +54,8 @@ __all__ = [
     "SessionHandle",
     "SessionProvider",
     "SessionError",
+    "SessionExecutableNotFound",
+    "require_session_executable",
     "CapabilityUnsupported",
     "NotSubmitted",
     "PartialListError",
@@ -201,6 +206,36 @@ class SessionHandle:
 
 class SessionError(Exception):
     """Base for every typed session-provider failure."""
+
+
+class SessionExecutableNotFound(SessionError):
+    """Safe startup diagnosis containing only the executable's basename."""
+
+    def __init__(self, executable: str):
+        self.executable = Path(executable).name
+        super().__init__(
+            f"Executable {self.executable!r} was not found or is not executable in the session PATH. "
+            "Check the harness command and add its installation directory to the daemon PATH."
+        )
+
+
+def require_session_executable(spec: SessionSpec) -> None:
+    """Check the child lookup context, before creating files or starting a process."""
+    if not spec.command:
+        raise ValueError(f"session {spec.session_name!r} has an empty command")
+    command = spec.command[0]
+    work_dir = Path(spec.work_dir).resolve()
+    # Relative PATH entries (including an empty entry) resolve in the child's
+    # working directory, never in the daemon's current checkout.
+    paths = []
+    for entry in spec.env.get("PATH", os.defpath).split(os.pathsep):
+        candidate = Path(entry)
+        paths.append(str(candidate if candidate.is_absolute() else work_dir / candidate))
+    target = command
+    if os.path.dirname(command) and not os.path.isabs(command):
+        target = str(work_dir / command)
+    if not shutil.which(target, path=os.pathsep.join(paths)):
+        raise SessionExecutableNotFound(command)
 
 
 class CapabilityUnsupported(SessionError):

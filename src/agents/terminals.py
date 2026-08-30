@@ -16,7 +16,7 @@ from src.agents.configuration import (
     resolve_launch_settings,
 )
 from src.models import AgentState, SessionRecord, TaskStatus
-from src.sessions.provider import Cap, SessionHandle
+from src.sessions.provider import Cap, SessionExecutableNotFound, SessionHandle
 
 logger = logging.getLogger(__name__)
 _ACTIVE_TASK = {
@@ -98,7 +98,10 @@ async def start_agent_terminal(orchestrator, agent_id: str, *, config=None) -> S
         locks = orchestrator._agent_terminal_locks = {}
     lock = locks.setdefault(agent_id, asyncio.Lock())
     async with lock:
-        return await _start_locked(orchestrator, agent_id, config or orchestrator.config)
+        try:
+            return await _start_locked(orchestrator, agent_id, config or orchestrator.config)
+        except SessionExecutableNotFound as exc:
+            raise TerminalStartError(str(exc)) from exc
 
 
 async def _start_locked(orchestrator, agent_id, config):
@@ -128,7 +131,12 @@ async def _start_locked(orchestrator, agent_id, config):
         # Explicit starts must never fall through the legacy no-token test path.
         if lens._token_store is None:
             raise TerminalStartError("Supervisor token service is unavailable")
-        if not await lens.ensure_started(kind="session", target_id=agent.id, project_id=None):
+        if not await lens.ensure_started(
+            kind="session",
+            target_id=agent.id,
+            project_id=None,
+            raise_start_error=True,
+        ):
             raise TerminalStartError(
                 "Supervisor could not start; check its profile and session logs"
             )
@@ -267,7 +275,7 @@ async def _start_locked(orchestrator, agent_id, config):
                 agent.id,
                 expected_heartbeat=reservation.last_heartbeat,
             )
-        if isinstance(exc, (TerminalStartError, asyncio.CancelledError)):
+        if isinstance(exc, (TerminalStartError, SessionExecutableNotFound, asyncio.CancelledError)):
             raise
         logger.exception("Could not start terminal for agent %s", agent.id)
         raise TerminalStartError(
