@@ -15,6 +15,7 @@ It comes in two tiers.
 |---|---|---|
 | `sessions.provider` | `fake` | `tmux` |
 | Who is the worker | `scripts/e2e-smoke.sh` | a real `claude` process |
+| Playbooks / messages / supervisor | off | on (a live agent needs them) |
 | Runtime | ~2½ minutes | as long as the model takes |
 | Deterministic | yes | no |
 | Costs tokens | no | yes |
@@ -87,11 +88,12 @@ The runner exits non-zero if any scenario fails.
 | File | What it does |
 |---|---|
 | `scripts/e2e-common.sh` | shared paths, ports and DSNs; every value overridable from the environment |
-| `scripts/e2e-env.sh` | builds the world: dirs, bare git repos + workspace clones, vault fixtures, `config.yaml`, the database. `--reset` drops all of it first |
+| `scripts/e2e-env.sh` | builds the world: dirs, bare git repos + workspace clones, vault fixtures, `bin/aq`, `config.yaml`, the database. `--reset` drops all of it first; `--register` registers the projects against a running daemon |
 | `scripts/e2e-daemon.sh` | `start` / `stop` / `status` / `logs` for the isolated daemon |
 | `scripts/e2e-smoke.sh` | the Tier 1 runner (thin wrapper) |
 | `scripts/e2e/smoke.py` | the seven scenarios |
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
+| `scripts/e2e/register.py` | creates the `e2e` / `other` projects + their workspaces (needs the daemon) |
 | `scripts/e2e/dbsetup.py` | creates/drops `agent_queue_e2e` via asyncpg (no `psql` needed) |
 | `scripts/e2e-dashboard.sh` | the React dashboard pointed at the e2e daemon, for watching a run |
 
@@ -114,6 +116,12 @@ AQ_API_TARGET=http://127.0.0.1:8099 npx vite --port 5174
 ```
 
 Either way you are looking at the e2e project's flock, not your real queue.
+
+Projects live in the database, not on disk, so `e2e-env.sh` cannot create
+them as part of its build step — `e2e-daemon.sh start` runs
+`e2e-env.sh --register` once the API answers instead. That matters most for
+Tier 2, which runs no smoke and would otherwise find an empty daemon. It is
+idempotent, so running it again is free.
 
 `scripts/e2e/aq.py` exists because neither obvious way to invoke the CLI is
 safe here. The installed `aq` console script resolves `src` through the
@@ -237,7 +245,7 @@ just as public a surface.
 
 ## Tier 2 — with a real harness
 
-Same environment, one config change. The daemon then spawns actual `claude`
+Same environment, one switch. The daemon then spawns actual `claude`
 processes in tmux and the *agent* runs the claim loop instead of the script.
 
 ```bash
@@ -245,6 +253,27 @@ scripts/e2e-daemon.sh stop
 AQ_E2E_SESSION_PROVIDER=tmux scripts/e2e-env.sh     # rewrites config.yaml only
 scripts/e2e-daemon.sh start
 ```
+
+Run Tier 2 in its **own** home so it cannot collide with a Tier 1 run:
+
+```bash
+export AQ_E2E_HOME=~/.agent-queue-e2e-live AQ_E2E_PORT=8098 \
+       E2E_DB_NAME=agent_queue_e2e_live AQ_E2E_SESSION_PROVIDER=tmux
+scripts/e2e-env.sh --reset && scripts/e2e-daemon.sh start
+```
+
+That switch does more than change the provider. A live agent needs three
+subsystems Tier 1 deliberately runs without, and `e2e-env.sh` turns all
+three on when the provider is not `fake`:
+
+- `playbooks.enabled` — the default pipeline's worker-filed triage is what
+  routes a task an agent files. Without it a filing sits DEFINED behind its
+  routing gate forever (which is exactly what S3 asserts, and exactly what
+  you do *not* want when watching a live run).
+- `messages.enabled` + `supervisor_agent.enabled` — the per-project
+  supervisor sessions the dashboard's chat talks to.
+
+It also raises `sessions.dialog_budget_seconds` to 45; see below.
 
 Then create the demand by hand and watch:
 
@@ -286,6 +315,46 @@ Failure modes that only show up here: a bootstrap prompt the model
 misreads (it asks a question instead of claiming), a harness that swallows
 the `--claim-epoch` flag, and a worker that closes without `--claim-next`
 and then sits idle holding a workspace.
+
+### Two things that will bite you first
+
+**`aq` inside the session must be *this* worktree's.** The pip-installed
+`aq` resolves `src` through the editable install — usually a different
+checkout, with no `aq task claim` in it at all — so a worker fails its very
+first command with "No such command". `e2e-env.sh` writes
+`$AQ_E2E_HOME/bin/aq` (a wrapper around `scripts/e2e/aq.py`) and
+`e2e-daemon.sh start` puts that directory first on the daemon's PATH, which
+tmux sessions inherit. Verify before blaming the agent:
+
+```bash
+tmux -L aq-e2e list-sessions
+tmux -L aq-e2e show-environment -t <session> PATH
+# or, inside a pane:
+which aq && aq pool status
+```
+
+If a tmux server was already running on the `aq-e2e` socket before the
+daemon started, it kept its *own* environment and never saw the new PATH —
+`tmux -L aq-e2e kill-server` and restart the daemon.
+
+**The trust dialog.** `claude`'s first run in a directory it has not seen
+draws a "do you trust the files in this folder?" prompt. On a cold cache it
+can take well over ten seconds to appear — past the stock
+`dialog_budget_seconds: 8`, so the harness's auto-dismiss has already given
+up and the session parks on the dialog until a human presses Enter. The
+symptom is a session that is "running" with no output and no claim, and a
+supervisor that appears to hang. `e2e-env.sh` sets 45s for Tier 2; if you
+still catch one, attach and press Enter once — the answer is remembered per
+directory, so it only happens on a fresh workspace.
+
+### The supervisor chat
+
+With `supervisor_agent.enabled` (Tier 2 sets it), `scripts/e2e-dashboard.sh`
+gives you a chat box. It addresses `supervisor-<project>` — which cold-starts
+a `claude` session for that project on first message — or `supervisor-global`.
+Those sessions appear in `aq session list` with `lifecycle: named`, alongside
+the pool workers, and are the same thing the real deployment's Discord chat
+talks to.
 
 ### Teardown
 

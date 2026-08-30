@@ -48,8 +48,16 @@ cmd_start() {
     # `cd` into the worktree so `src` resolves here rather than through
     # whatever is pip-installed, and so alembic finds this checkout's
     # migrations.
+    #
+    # `$E2E_BIN` goes first on PATH and stays there: tmux sessions inherit
+    # the daemon's environment, so under Tier 2 this is the `aq` the agents
+    # themselves run.  Without it they get the pip-installed one, which
+    # resolves `src` through the editable install — a different checkout,
+    # with no `aq task claim` in it, so every worker fails its first
+    # command.
     (
         cd "$REPO_ROOT"
+        export PATH="$E2E_BIN:$PATH"
         exec python3 -m src.main "$E2E_CONFIG"
     ) >>"$E2E_LOG" 2>&1 &
     echo $! > "$E2E_PID_FILE"
@@ -58,6 +66,11 @@ cmd_start() {
     while [ "$waited" -lt "$STARTUP_TIMEOUT" ]; do
         if health_ok; then
             echo "==> healthy after ${waited}s: $AQ_E2E_API_URL (pid $(cat "$E2E_PID_FILE"))"
+            # Projects live in the database, so they cannot be part of
+            # e2e-env.sh's build step.  Doing it here means both tiers find
+            # them: Tier 1's scenarios assume them, and a Tier 2 operator
+            # runs no smoke to create them.  Idempotent.
+            "$REPO_ROOT/scripts/e2e-env.sh" --register || return 1
             return 0
         fi
         if ! running_pid >/dev/null; then

@@ -38,10 +38,16 @@ E2E_REPO="$AQ_E2E_HOME/repo.git"
 E2E_OTHER_REPO="$AQ_E2E_HOME/repo-other.git"
 E2E_LOG="$AQ_E2E_HOME/daemon.log"
 E2E_PID_FILE="$AQ_E2E_HOME/daemon.pid"
+# An `aq` on PATH that resolves to *this* worktree.  Prepended to the
+# daemon's PATH by e2e-daemon.sh so that Tier 2 sessions — which inherit
+# the daemon's environment through tmux — get the swarm commands.  The
+# pip-installed `aq` resolves `src` through the editable install, which is
+# usually a different checkout and has no `aq task claim` at all.
+E2E_BIN="$AQ_E2E_HOME/bin"
 
 export AQ_E2E_HOME AQ_E2E_PORT AQ_E2E_API_URL AQ_E2E_TMUX_SOCKET
 export AQ_E2E_SESSION_PROVIDER
-export E2E_CONFIG E2E_VAULT E2E_REPO E2E_OTHER_REPO E2E_LOG E2E_PID_FILE
+export E2E_CONFIG E2E_VAULT E2E_REPO E2E_OTHER_REPO E2E_LOG E2E_PID_FILE E2E_BIN
 export E2E_DB_NAME E2E_DB_URL E2E_ADMIN_DSN
 
 # `aq` from *this* worktree — see scripts/e2e/aq.py for why neither the

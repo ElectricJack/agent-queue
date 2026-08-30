@@ -372,11 +372,21 @@ def ensure_project(project_id: str, workspaces: list[str]) -> None:
         )
 
 
-def setup() -> None:
+def workspace_paths(project_id: str) -> list[str]:
+    """The workspace clones ``e2e-env.sh`` laid down for *project_id*."""
     home = os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e"))
     ws = os.path.join(home, "workspaces")
-    ensure_project(PROJECT, [os.path.join(ws, f"e2e-{n}") for n in (1, 2, 3, 4, 5)])
-    ensure_project(OTHER_PROJECT, [os.path.join(ws, "other-1")])
+    if project_id == PROJECT:
+        return [os.path.join(ws, f"e2e-{n}") for n in (1, 2, 3, 4, 5)]
+    return [os.path.join(ws, "other-1")]
+
+
+def setup() -> None:
+    # `e2e-daemon.sh start` already ran `e2e-env.sh --register`; this is the
+    # same idempotent call, so the runner also works against a daemon
+    # somebody started by hand.
+    ensure_project(PROJECT, workspace_paths(PROJECT))
+    ensure_project(OTHER_PROJECT, workspace_paths(OTHER_PROJECT))
     # The pool profile must have reached the DB from the vault, or every
     # scenario below fails for the same uninteresting reason.
     check(
