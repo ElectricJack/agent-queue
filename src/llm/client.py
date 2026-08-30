@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from src.config import LLMConfig
 from src.intelligence_classes import IntelligenceClass
@@ -17,6 +20,26 @@ from src.llm.types import ChatResponse, serialize_canonical
 from src.llm_logger import LLMLogger
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LLMRunResult:
+    text: str
+    transcript: list[dict]
+    turns: int
+    stopped_by: str  # "done" | "max_turns" | "cancelled"
+    tool_calls_made: list[str] = field(default_factory=list)
+
+
+ProgressCallback = Callable[[str, str | None], Awaitable[None]]
+ToolExecutor = Callable[[str, dict], Awaitable[Any]]
+
+
+def _json_safe(obj: Any) -> str:
+    try:
+        return json.dumps(obj, default=str)
+    except Exception:
+        return json.dumps({"result": str(obj)})
 
 
 @dataclass(frozen=True)
@@ -127,6 +150,77 @@ class LLMClient:
             resolved, messages=_as_messages(messages), system=system, tools=None
         )
         return LLMResponse.from_chat_response(resp)
+
+    async def run_tools(
+        self,
+        messages: list[dict] | str,
+        tools: list[dict],
+        execute: ToolExecutor,
+        *,
+        system: str = "",
+        spec: LLMCallSpec = LLMCallSpec(),
+        max_turns: int = 25,
+        on_progress: ProgressCallback | None = None,
+        cancel_event: asyncio.Event | None = None,
+    ) -> LLMRunResult:
+        """Caller-supplied tool loop.  Tool errors become tool results; the loop
+        ends when the model answers without tool calls, on ``max_turns``, or on
+        ``cancel_event``."""
+        resolved = self.resolve(spec)
+        transcript = _as_messages(messages)
+        offered = {t["name"] for t in tools}
+        made: list[str] = []
+        turns = 0
+
+        async def _progress(kind: str, detail: str | None = None) -> None:
+            if on_progress is not None:
+                await on_progress(kind, detail)
+
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                await _progress("cancelled")
+                return LLMRunResult("", transcript, turns, "cancelled", made)
+            if turns >= max_turns:
+                return LLMRunResult("", transcript, turns, "max_turns", made)
+
+            await _progress("thinking", None if turns == 0 else f"round {turns + 1}")
+            resp = await self._create_message(
+                resolved, messages=transcript, system=system, tools=tools or None
+            )
+            turns += 1
+
+            if not resp.has_tool_use:
+                await _progress("responding")
+                text = "\n".join(resp.text_parts).strip()
+                transcript.append({"role": "assistant", "content": text})
+                return LLMRunResult(text, transcript, turns, "done", made)
+
+            transcript.append({"role": "assistant", "content": resp.tool_uses})
+            results: list[dict] = []
+            for call in resp.tool_uses:
+                await _progress("tool_use", call.name)
+                made.append(call.name)
+                if call.name not in offered:
+                    result: Any = {
+                        "success": False,
+                        "error": f"Tool '{call.name}' is not available in this call",
+                    }
+                else:
+                    try:
+                        result = await execute(call.name, dict(call.input or {}))
+                    except Exception as exc:
+                        logger.warning(
+                            "llm.run_tools: tool %s raised: %s", call.name, exc
+                        )
+                        result = {"success": False, "error": str(exc)}
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": call.id,
+                        "content": _json_safe(result),
+                    }
+                )
+            transcript.append({"role": "user", "content": results})
 
     async def _create_message(
         self,
