@@ -4,11 +4,22 @@ tags: [spec, reflection, self-improvement]
 
 # Reflection Engine Specification
 
-The ReflectionEngine manages the [[specs/supervisor|Supervisor]]'s action-reflect cycle — a per-interaction self-verification pass that checks whether the Supervisor actually accomplished what it intended.
+> **Superseded.** `src/reflection.py` and the in-process `ReflectionEngine`
+> class described below were **deleted** in the llm-direct-path cutover
+> (2026-08-30), along with the `Supervisor` whose action-reflect cycle it
+> managed. There is no per-interaction self-verification pass anymore.
+> Reflection now runs entirely as the periodic *reflection playbook*
+> described in [[design/self-improvement]] — a playbook, not a module. See
+> `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md` and
+> `docs/specs/design/supervisor-agent.md` for the cutover. The depth/prompt
+> tables below are kept as historical reference for the deleted
+> per-interaction design; they do not describe current code.
 
-Not to be confused with the periodic *reflection playbook* that distills task records into scoped memory; that is a separate subsystem described in [[design/self-improvement]].
+The ReflectionEngine managed the [[specs/supervisor|Supervisor]] (deleted)'s action-reflect cycle — a per-interaction self-verification pass that checked whether the Supervisor actually accomplished what it intended.
 
-## Class: ReflectionEngine (src/reflection.py)
+Not to be confused with the periodic *reflection playbook* that distills task records into scoped memory — that is the subsystem which survives, described in [[design/self-improvement]].
+
+## Class: ReflectionEngine (src/reflection.py) — deleted, historical reference
 
 ### Constructor
 - `ReflectionEngine(config: ReflectionConfig)`

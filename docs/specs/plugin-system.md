@@ -548,7 +548,7 @@ Several existing AgentQueue subsystems are good candidates for extraction into p
 
 1. ✅ **Memory Manager** — extracted as `aq-memory`; validated complex plugin with external dependencies
 2. Next, **File Watcher** — validates the plugin loading pipeline end-to-end for a simpler subsystem
-3. Then **Ollama Chat Provider** — validates plugin tool/command registration
+3. Then **Ollama LLM Provider** (`src/llm/providers/openai.py`, Ollama via `openai` + `base_url`) — validates plugin tool/command registration
 
 Each extraction serves as a proving ground for the plugin API surface. If the API can't cleanly support the extraction, the API needs to change before publishing it for external plugin authors.
 

@@ -28,7 +28,7 @@ asyncio event loop
 │   ├── Scheduler                — proportional deficit-based assignment
 │   ├── State Machine            — formal task state transitions + DAG validation
 │   ├── Smart Cascade            — promotion pipeline (approvals → resume → promote → monitor)
-│   ├── Plan Parser              — plan discovery → subtask chain creation
+│   ├── Plan Parser              — manual `process_plan` command → subtask chain creation (no auto-discovery)
 │   └── Playbook Engine          — compiled DAG workflows
 │       ├── PlaybookCompiler     — markdown → JSON graph (LLM-powered, one-shot)
 │       ├── PlaybookRunner       — graph walker with conversation history
@@ -66,13 +66,14 @@ DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED
                      resume)  (Discord)   BLOCKED)
 
 AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
-AWAITING_PLAN_APPROVAL  (plan discovered, awaiting approval to split)
+AWAITING_PLAN_APPROVAL  (reachable only via manual `process_plan` command, never auto-discovered;
+                         doctor check `tasks.awaiting_plan_approval` flags stranded rows)
 ```
 
 - DEFINED → READY: all dependencies COMPLETED
 - PAUSED tasks always have `resume_after` — never stall permanently
 - Failed tasks retry up to configurable limit, then BLOCKED
-- Plan-generated tasks: agent produces `.claude/plan.md` → orchestrator parses → chained subtasks with dependencies
+- Plan-generated tasks: agent produces `.claude/plan.md`; a human (or the requester) runs the `process_plan` command to read and store it for approval — the orchestrator no longer auto-discovers plan files during task completion (see `docs/specs/orchestrator.md` §12)
 
 ### Memory Tiers
 
