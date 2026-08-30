@@ -781,9 +781,7 @@ class ExecutionMixin:
             except Exception as e:
                 logger.warning("Task %s: failed to look up session_id: %s", task.id, e)
 
-        # Record execution start time so
-        # TaskCommandsMixin._cmd_process_task_completion() can detect stale
-        # plan files that predate this task's agent execution.
+        # Record execution start time, keyed by task_id.
         self._task_exec_start[action.task_id] = time.time()
 
         # Snapshot the current HEAD so the task summary can show only the

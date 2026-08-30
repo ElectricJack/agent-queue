@@ -513,11 +513,14 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
   2. `_phase_merge` — merge/push or create PR based on configuration; on merge
      success transitions to `COMPLETED`, on PR creation transitions to
      `AWAITING_APPROVAL`, on merge failure transitions to `BLOCKED`
-- Automatic plan-file discovery (the former `_phase_plan_discover` phase) was
-  removed — plan files are now processed on demand via the `process_plan`
-  command (see `docs/specs/command-handler.md`), not auto-detected during the
-  completion pipeline. `AWAITING_PLAN_APPROVAL` is entered only by that
-  command, never automatically.
+- Automatic plan-file discovery (the former `_phase_plan_discover` phase) and
+  the manual `process_plan`/`process_task_completion` commands that replaced
+  it were both removed (llm-direct-path §6.3) — nothing discovers or
+  processes plan files anymore. `AWAITING_PLAN_APPROVAL` rows only exist as
+  pre-existing data from before this removal; `approve_plan`/`reject_plan`/
+  `delete_plan` remain as the remediation path for those rows (see
+  `docs/specs/command-handler.md`), and the `tasks.awaiting_plan_approval`
+  doctor check flags any that are stranded.
 - The pipeline handles PR creation, approval transitions, and completion notifications.
 - Post full completion summary to thread (or `_notify_channel`); post brief to main.
 
@@ -854,15 +857,17 @@ Pushes the task branch and creates a PR. Returns the PR URL or `None`.
 > flagged by a doctor check as stranded, since nothing auto-resolves them
 > anymore.
 
-Plan handling is now command-driven, not pipeline-driven: a plan file
-(`.claude/plan.md`) is only discovered, read, and archived when the
-`process_plan` command is invoked explicitly (see
-[[specs/command-handler]] and `src/plan_parser.py`, which now provides only
-`find_plan_file`/`read_plan_file` utilities — no automatic subtask
-breakdown). The command finds the plan, stores it, and transitions the task
-to `AWAITING_PLAN_APPROVAL` for human review. Subtasks are created only once
-a human approves via the `approve_plan` command; the mechanics of that
-approval step (`12b` below) are unchanged from before this removal.
+Plan handling is no longer discovery-driven at all: the `process_plan` /
+`process_task_completion` commands that used to discover, read, and archive
+a plan file (`.claude/plan.md`) were deleted outright (llm-direct-path
+§6.3 addendum) — the LLM plan parser they depended on is gone, so a
+discovered-but-unparsed plan was an unrecoverable dead end. `src/plan_parser.py`
+still provides `find_plan_file`/`read_plan_file`/`find_all_plan_files`
+utilities, but nothing calls the discovery ones anymore. Any
+`AWAITING_PLAN_APPROVAL` row is therefore pre-existing data; a human resolves
+it via the `approve_plan` (only works if draft subtasks were already stored),
+`reject_plan`, or `delete_plan` command — the mechanics of that approval step
+(`12b` below) are unchanged from before this removal.
 
 ### 12b. `_create_subtasks_from_stored_plan(task) -> list[Task]`
 

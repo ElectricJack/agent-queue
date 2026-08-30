@@ -334,9 +334,7 @@ class Orchestrator(
         # task_id.  Cleaned up each cycle; prevents double-launching.
         self._running_tasks: dict[str, asyncio.Task] = {}
         # Timestamps (time.time()) recording when each task's agent execution
-        # started, keyed by task_id.  Used by
-        # TaskCommandsMixin._cmd_process_task_completion() to detect stale
-        # plan files that predate the current task's execution.
+        # started, keyed by task_id.
         self._task_exec_start: dict[str, float] = {}
         # Git HEAD SHA recorded just before the agent starts, keyed by
         # task_id.  Used by write_task_summary to show only the commits

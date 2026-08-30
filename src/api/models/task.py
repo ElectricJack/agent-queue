@@ -326,29 +326,6 @@ class ListActiveTasksAllProjectsResponse(BaseModel):
     hidden_completed: int = 0
 
 
-class ProcessPlanResponse(BaseModel):
-    model_config = {"extra": "allow"}
-    status: str = ""
-    project_id: str = ""
-    task_id: str | None = None
-    plan_path: str | None = None
-    title: str | None = None
-    phases: int | None = None
-    draft_subtasks: int | None = None
-    total_plan_files_found: int | None = None
-    workspaces_scanned: int | None = None
-    message: str | None = None
-    note: str | None = None
-
-
-class ProcessTaskCompletionResponse(BaseModel):
-    model_config = {"extra": "allow"}
-    plan_found: bool = False
-    reason: str | None = None
-    plan_file: str | None = None
-    archived_path: str | None = None
-
-
 class ExplainReason(BaseModel):
     code: str
     detail: str = ""
@@ -601,8 +578,6 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "reparent_task": ReparentTaskResponse,
     "get_chain_health": GetChainHealthResponse,
     "list_active_tasks_all_projects": ListActiveTasksAllProjectsResponse,
-    "process_plan": ProcessPlanResponse,
-    "process_task_completion": ProcessTaskCompletionResponse,
     "explain_task": ExplainTaskResponse,
     "project_ready": ProjectReadyResponse,
     "ensure_task": EnsureTaskResponse,

@@ -6,7 +6,8 @@ module provides utilities to find and read plan files.
 
 Automatic plan-to-subtask breakdown was removed (llm-direct-path §6.3); a
 plan file found here is stored as raw content and presented for manual
-approval — see ``TaskCommandsMixin._cmd_process_plan``.
+approval via ``TaskCommandsMixin._cmd_approve_plan`` /
+``_cmd_reject_plan``.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ def find_all_plan_files(workspace: str) -> list[dict]:
 
     Archived plans (format: ``{task-id}-plan.md`` or ``stale-{task-id}-plan.md``)
     are excluded because they accumulate as tasks complete and would cause
-    the same plan to be re-discovered on every ``process_plan`` invocation.
+    the same plan to be re-discovered on every rescan.
 
     Returns a list of dicts with keys: ``path``, ``ctime`` (file creation
     time, falling back to mtime on Linux where birthtime isn't available).

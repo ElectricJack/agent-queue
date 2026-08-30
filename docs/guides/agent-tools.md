@@ -301,8 +301,6 @@ rewrite unchanged and are filled by the step's LLM at execution time.
 | `approve_plan` | Approve plan → creates subtasks | `task_id` (required) |
 | `reject_plan` | Reject plan with feedback → reopens for revision | `task_id` (required), `feedback` (required) |
 | `delete_plan` | Delete plan without creating subtasks → completes task | `task_id` (required) |
-| `process_plan` | Scan workspaces for plan.md files | `project_id` (optional), `task_id` (optional) |
-| `process_task_completion` | Internal: discover plan files after task completes | `task_id` (required), `workspace_path` (required) |
 
 ### Dependency Operations
 

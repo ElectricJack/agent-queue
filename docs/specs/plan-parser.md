@@ -14,13 +14,18 @@ tags: [spec, plans, tasks]
 > **What exists now:** `src/plan_parser.py` provides only
 > `find_plan_file`/`find_all_plan_files`/`read_plan_file` — plain file-discovery
 > and reading utilities, no parsing into structured steps and no LLM call.
-> Turning a plan file into subtasks is a human-in-the-loop command
-> (`process_plan` → `AWAITING_PLAN_APPROVAL` → `approve_plan`; see
-> [[specs/command-handler]] and `docs/specs/orchestrator.md` §12), not an
-> automatic pipeline phase. Structured, LLM-assisted plan breakdown — if wanted
-> — is expected to come from dispatching the work to an agent running under a
-> `planner` profile (a `harness`-selected coding agent, like any other), not
-> from an in-process LLM call; no such profile ships in-tree yet.
+> The `process_plan` and `process_task_completion` commands that used to drive
+> plan discovery (`process_plan` → `AWAITING_PLAN_APPROVAL` → `approve_plan`)
+> were deleted outright — the LLM plan parser they depended on is gone, so a
+> discovered-but-unparsed plan was an unrecoverable dead end (llm-direct-path
+> §6.3 addendum). Nothing discovers plan files anymore. `approve_plan` /
+> `reject_plan` / `delete_plan` remain (see [[specs/command-handler]] and
+> `docs/specs/orchestrator.md` §12) purely as the remediation path for
+> pre-existing `AWAITING_PLAN_APPROVAL` rows. Structured, LLM-assisted plan
+> breakdown — if wanted — is expected to come from dispatching the work to an
+> agent running under a `planner` profile (a `harness`-selected coding agent,
+> like any other), not from an in-process LLM call; no such profile ships
+> in-tree yet.
 > `TaskStatus.AWAITING_PLAN_APPROVAL` stays in the enum; a doctor check reports
 > any task stranded in that state (nothing auto-resolves it) with the
 > instruction to reopen or close it.

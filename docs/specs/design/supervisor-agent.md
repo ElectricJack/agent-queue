@@ -428,10 +428,16 @@ today's `AWAITING_PLAN_APPROVAL` status.
 > planned, but plainly: `break_plan_into_tasks()` and automatic plan-file discovery
 > were deleted, not migrated onto a chat provider or an LLM plan parser — they were
 > dead code by the time the direct LLM path landed. The `planner` profile this
-> section anticipates does not ship in-tree yet; plan files are processed on demand
-> via the `process_plan` command (`docs/specs/command-handler.md`,
-> `docs/specs/orchestrator.md` §12), not automatically. See
-> `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md` §6.3.
+> section anticipates does not ship in-tree yet. The `process_plan`/
+> `process_task_completion` commands that briefly replaced automatic discovery were
+> themselves deleted outright in a later fix wave (same day) — the LLM plan parser
+> they depended on was gone, so a discovered-but-unparsed plan was an unrecoverable
+> dead end. Nothing discovers or processes plan files anymore; `approve_plan`/
+> `reject_plan`/`delete_plan` (`docs/specs/command-handler.md`,
+> `docs/specs/orchestrator.md` §12) remain only as the remediation path for
+> pre-existing `AWAITING_PLAN_APPROVAL` rows. See
+> `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md` §6.3 and its
+> "Deviations applied during implementation" list.
 
 Today's flow (historical, pre-cutover) made the daemon an LLM client twice over. A coding agent writes `plan.md`;
 the completion pipeline's plan-discovery phase (`src/orchestrator/git_ops.py::

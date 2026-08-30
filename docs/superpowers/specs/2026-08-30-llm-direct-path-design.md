@@ -318,3 +318,17 @@ Each commit leaves the suite green so the work can be bisected or partially reve
    `harness`, and a startup migration strips any lingering `runtime` key from vault
    profiles. This avoided an extra migration/rename for a field with no remaining
    writers.
+5. **`process_plan`/`process_task_completion` commands deleted outright, not just
+   their call sites.** §6.3 named only "call sites" for removal. But the commands
+   themselves — `TaskCommandsMixin._cmd_process_plan` and `_cmd_process_task_completion`
+   — were exactly those call sites: with the LLM plan parser gone (deviation 2), every
+   invocation of `process_plan` created an `AWAITING_PLAN_APPROVAL` row with no draft
+   subtasks and no way to populate them, which `_cmd_approve_plan` then rejected —
+   an unrecoverable dead end reachable from Discord/MCP/CLI. Both `_cmd_*` methods,
+   their tool definitions (`src/tools/definitions.py`), formatter registrations
+   (`src/cli/formatter_registry.py`), and response models (`src/api/models/task.py`)
+   were removed in a follow-up fix wave the same day. `_cmd_approve_plan` and
+   `_cmd_reject_plan` were kept as the remediation path for pre-existing rows (the
+   `tasks.awaiting_plan_approval` doctor check points at them); `approve_plan`'s
+   error message for a row with no draft subtasks was reworded to point at
+   `reject_plan`/`delete_plan` instead of the now-deleted `process_plan`.

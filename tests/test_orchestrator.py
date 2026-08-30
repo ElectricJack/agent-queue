@@ -120,8 +120,7 @@ async def _approve_plan_for_task(orch, task_id: str) -> list:
     """Simulate plan approval: transition to IN_PROGRESS and promote subtasks.
 
     Returns an empty list (automatic plan-to-subtask breakdown was removed;
-    draft subtasks, if any, are created before approval by
-    ``_cmd_process_plan``, not by the orchestrator).
+    the orchestrator itself never creates draft subtasks).
     The parent stays IN_PROGRESS until all subtasks complete.
     """
     task = await orch.db.get_task(task_id)
@@ -339,11 +338,9 @@ def _make_plan_toucher(workspace):
     """Create an on_wait callback that touches pre-created plan files.
 
     Tests pre-create plan files before the orchestration cycle to simulate
-    agent-written plans.  The staleness check in
-    ``_cmd_process_task_completion()`` compares file mtime against the task
-    execution start time.  This callback
-    runs during adapter.wait() to refresh the mtime, simulating the agent
-    writing the file during execution.
+    agent-written plans.  This callback runs during adapter.wait() to
+    refresh the mtime, simulating the agent writing the file during
+    execution.
     """
     import glob as _glob
 

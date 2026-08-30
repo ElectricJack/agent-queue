@@ -332,9 +332,7 @@ def _register_all():
         "approve_plan",
         "reject_plan",
         "delete_plan",
-        "process_plan",
         "reopen_with_feedback",
-        "process_task_completion",
         "add_dependency",
         "remove_dependency",
     ):
