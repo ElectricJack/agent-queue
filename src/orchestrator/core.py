@@ -467,6 +467,13 @@ class Orchestrator(
             self.harness_registry,
             intelligence_classes=load_intelligence_classes(config.data_dir),
         )
+        from src.llm import LLMClient
+
+        self.llm = LLMClient(
+            config.llm,
+            classes_loader=lambda: load_intelligence_classes(self.config.data_dir),
+            llm_logger=self.llm_logger if self.llm_logger._enabled else None,
+        )
         # AQ_DAEMON_EPOCH: identifies this daemon *run*.  Provenance for
         # adoption, never a validity test — an older-epoch session is still
         # adoptable, and the instance token is what fences kills.
