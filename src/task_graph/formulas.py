@@ -83,6 +83,9 @@ class Formula:
     project_id: str | None
     rel_path: str  # vault-relative, e.g. "formulas/base-review.md"
     vars: dict[str, VarDecl]
+    #: The RAW authored ``extends`` string, including any scope qualifier —
+    #: ``"base"`` or ``"system:base"``.  Surfaced verbatim by ``formula_list``
+    #: so what the author wrote is what an operator reads back.
     extends: str | None
     graph_block: str  # raw text of the aq-graph block
     #: The RAW authored mapping (``yaml.safe_load``/``json.loads`` of
@@ -95,6 +98,19 @@ class Formula:
     #: defaulted" — a distinction ``to_dict()`` erases.
     graph_doc: dict
     content_sha: str  # sha256 of the whole file text
+    #: ``"system"`` when ``extends`` carried the ``system:`` qualifier, else
+    #: ``None``.  Only that one hop is pinned to system scope; any further
+    #: unqualified hop resolves project-first again, as it always did.
+    extends_scope: str | None = None
+
+    @property
+    def extends_name(self) -> str | None:
+        """The parent's bare name, with any scope qualifier stripped."""
+        if self.extends is None:
+            return None
+        if self.extends_scope == "system":
+            return self.extends.split(":", 1)[1]
+        return self.extends
 
 
 class FormulaError(Exception):
@@ -206,7 +222,16 @@ def parse_formula(text: str, *, rel_path: str) -> Formula:
 
     extends = fm.extra.get("extends")
     extends = str(extends) if extends else None
-    if extends == fm.name:
+    # ``extends: system:<name>`` pins that one hop to system scope, which is
+    # what lets a project override extend the system formula of the SAME name
+    # (``projects/p1/formulas/base.md`` -> ``system`` ``base``).  Without the
+    # qualifier that would resolve back to the override itself.
+    extends_scope: str | None = None
+    if extends is not None and extends.startswith("system:") and len(extends) > len("system:"):
+        extends_scope = "system"
+    if extends_scope is None and extends == fm.name:
+        # Only an UNQUALIFIED self-reference is a genuine self-extend; the
+        # qualified form names a different formula (the system one).
         errors.append(
             GraphError(rule="formula.extends_self", detail="a formula cannot extend itself")
         )
@@ -258,6 +283,7 @@ def parse_formula(text: str, *, rel_path: str) -> Formula:
         rel_path=rel_path.replace(os.sep, "/"),
         vars=var_decls,
         extends=extends,
+        extends_scope=extends_scope,
         graph_block=block,
         graph_doc=graph_doc,
         content_sha=hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -452,13 +478,21 @@ def register_formula_handlers(
 # ---------------------------------------------------------------------------
 
 
-def resolve_chain(
-    registry: FormulaRegistry, name: str, *, project_id: str | None
-) -> list[Formula]:
+def resolve_chain(registry: FormulaRegistry, name: str, *, project_id: str | None) -> list[Formula]:
     """Resolve the ``extends`` chain for *name*, root first.
 
-    Every hop is looked up with the same *project_id* — project shadows
-    system at every level of the chain, not just the leaf.
+    Each hop is looked up with the same *project_id* — project shadows system
+    at every level of the chain, not just the leaf — **unless** the hop was
+    written ``extends: system:<name>``, which pins that one lookup to system
+    scope.  That qualifier is what lets a project override extend the system
+    formula it shadows (``projects/p1/formulas/base.md`` with
+    ``extends: system:base``); an unqualified ``extends: base`` there would
+    resolve straight back to the override itself.  Only the qualified hop is
+    pinned: a further unqualified ``extends`` on the system parent resolves
+    project-first again.
+
+    The cycle check keys on ``(scope, name)``, not name alone, so the same
+    name at two different scopes is two distinct chain entries.
 
     Raises :class:`FormulaError` with ``formula.not_found`` (the leaf formula
     itself — the one the caller actually asked for — does not exist in this
@@ -466,45 +500,51 @@ def resolve_chain(
     exist), or ``formula.extends_cycle`` (a formula extends one of its own
     ancestors).
     """
+
+    def _label(scope: str | None, formula_name: str) -> str:
+        return f"{scope or 'system'}:{formula_name}"
+
     chain: list[Formula] = []
-    seen: list[str] = []
+    seen: list[tuple[str | None, str]] = []
     current: str | None = name
+    current_project: str | None = project_id
     while current is not None:
-        if current in seen:
+        key = (current_project, current)
+        if key in seen:
             raise FormulaError(
                 [
                     GraphError(
                         rule="formula.extends_cycle",
-                        detail=" -> ".join(seen + [current]),
+                        detail=" -> ".join(_label(s, n) for s, n in seen + [key]),
                     )
                 ]
             )
-        formula = registry.get(current, project_id)
+        formula = registry.get(current, current_project)
         if formula is None:
             if not seen:
                 raise FormulaError(
                     [
                         GraphError(
                             rule="formula.not_found",
-                            detail=(
-                                f"no formula named {name!r} in scope "
-                                f"{project_id or 'system'}"
-                            ),
+                            detail=(f"no formula named {name!r} in scope {project_id or 'system'}"),
                         )
                     ]
                 )
-            parent = seen[-1]
+            parent = seen[-1][1]
             raise FormulaError(
                 [
                     GraphError(
                         rule="formula.extends_missing",
-                        detail=f"{current!r} (required by {parent!r})",
+                        detail=f"{_label(current_project, current)!r} (required by {parent!r})",
                     )
                 ]
             )
-        seen.append(current)
+        seen.append(key)
         chain.append(formula)
-        current = formula.extends
+        current = formula.extends_name
+        # A ``system:`` qualifier pins only its own hop; everything else
+        # keeps resolving against the caller's project.
+        current_project = None if formula.extends_scope == "system" else project_id
     chain.reverse()
     return chain
 
@@ -584,9 +624,7 @@ def validate_vars(decls: dict[str, VarDecl], supplied: dict[str, str]) -> list[G
     errors: list[GraphError] = []
     for name, decl in decls.items():
         if decl.required and name not in supplied:
-            errors.append(
-                GraphError(rule="formula.var_required", detail=f"{name!r} is required")
-            )
+            errors.append(GraphError(rule="formula.var_required", detail=f"{name!r} is required"))
             continue
         if name in supplied and decl.enum is not None and str(supplied[name]) not in decl.enum:
             errors.append(

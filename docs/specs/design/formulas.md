@@ -48,7 +48,33 @@ Frontmatter keys:
 | `name` | yes | Formula id. Must match the filename stem. |
 | `description` | no | One-line summary shown in `formula list`. |
 | `vars` | no | Map of var name → `{required, default, enum}`. All three are optional; `required: true` with no `default` means the caller must supply it. |
-| `extends` | no | Name of a single parent formula to inherit from (same scope-lookup rule as the leaf — project shadows system at *every* hop, not just the leaf). |
+| `extends` | no | Name of a single parent formula to inherit from (same scope-lookup rule as the leaf — project shadows system at *every* hop, not just the leaf). May be **scope-qualified** as `system:<name>` to pin that one hop to system scope — see below. |
+
+### `extends: system:<name>`
+
+Prefixing the parent with `system:` resolves that hop at system scope
+(`registry.get(name, None)`) instead of project-first. This is what lets a
+project override extend the system formula it shadows:
+
+```yaml
+# vault/projects/p1/formulas/base-review.md
+name: base-review
+extends: system:base-review
+```
+
+Without the qualifier, `extends: base-review` in a project-scoped
+`base-review` would resolve straight back to the override itself.
+
+Only the qualified hop is pinned. If that system parent itself writes an
+unqualified `extends`, that next hop resolves project-first again, exactly
+as it always did.
+
+`Formula.extends` keeps the **raw** authored string (`"system:base-review"`),
+which is what `formula list` displays; `Formula.extends_scope` is `"system"`
+or `None`, and `Formula.extends_name` is the bare parent name.
+`formula.extends_self` fires only for an *unqualified* self-reference — the
+qualified form names a genuinely different formula. The cycle check keys on
+`(scope, name)`, so the same name at two scopes is two distinct entries.
 
 `vars` are declared in frontmatter only — a `vars:` key inside the
 `aq-graph` body itself is not a declaration; the body may only *reference*
@@ -61,9 +87,11 @@ substitution `create_task_graph` uses for any graph with a `vars` block).
 `resolve_formula` (`src/task_graph/formulas.py`) runs, in order:
 
 1. **`resolve_chain`** — walk `extends` from the leaf to the root,
-   looking up each hop in the same scope (project falls back to system).
+   looking up each hop in the same scope (project falls back to system),
+   except a `system:`-qualified hop, which is looked up at system scope only.
    Raises `formula.extends_missing` (named parent not found) or
-   `formula.extends_cycle` (a formula extends one of its own ancestors).
+   `formula.extends_cycle` (a formula extends one of its own ancestors —
+   keyed on `(scope, name)`).
    The chain is returned root-first.
 2. **`merge_documents`** — fold the chain's raw authored documents
    (never `TaskGraph.to_dict()` defaults — only what each file's author
@@ -172,15 +200,10 @@ half-edited file never takes a formula offline mid-edit).
   placeholders (titles, descriptions, ...); there is no typed var (int,
   bool, list) and no expression language — `apply_defaults` coerces
   everything to `str`.
-- **A project override cannot `extends` the system formula of the same
-  name.** `resolve_chain` looks up every hop — including the first — by
-  `(name, project_id)`; a project-scoped `foo` that writes `extends: foo`
-  resolves to itself (same name, same scope) and is rejected as
-  `formula.extends_cycle`, not treated as "extend the system-scope `foo`".
-  There is no scope-qualified `extends` syntax (e.g. `extends:
-  system:foo`) to express that today — the workaround is to copy the
-  system formula's document into the project override rather than extend
-  it. A scope-qualified `extends` is future work.
+- **An *unqualified* `extends` never escapes the project scope.** A
+  project-scoped `foo` that writes `extends: foo` resolves to itself and is
+  rejected (`formula.extends_self` at parse time). To extend the system
+  formula of the same name, write `extends: system:foo` — see §2.
 - **Inherited nodes cannot be removed by a child.** `merge_documents`
   merges nodes by `key` — a child can override a parent node's fields
   (field-wise, child wins) or add a new node, but there is no "delete this
