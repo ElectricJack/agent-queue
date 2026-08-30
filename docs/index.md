@@ -142,6 +142,7 @@ Or connect via MCP from Claude Code, Cursor, or any MCP-compatible client for pr
 - [[guides/cli|CLI]] — Terminal interface reference
 - [[guides/agent-tools|Agent Tools]] — Tool reference for AI agents
 - [[guides/platform-development|Platform Development]] — Adding new agent backends
+- [[guides/e2e-swarm|Swarm E2E Testing]] — Running a real daemon, on real PostgreSQL, through the whole claim protocol
 - `dashboard/CLAUDE.md` (in-repo) — Typed `@aq/ts-client` workflow for the React dashboard
 
 **Specifications:**

@@ -37,6 +37,7 @@ pytest tests/test_orchestrator.py -v   # specific file — sequential is fine fo
 ./run.sh start                         # start daemon
 ```
 
+- **Swarm end-to-end:** `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh` drives a real daemon on real PostgreSQL through the pool/claim/formula/hierarchy scenarios via the real CLI, in ~2½ min and with no LLM. See **[docs/guides/e2e-swarm.md](docs/guides/e2e-swarm.md)**; run it after any change to claims, pools, formulas or the task hierarchy.
 - Python 3.12+, ruff (line-length 100, py312), pytest-asyncio (auto mode)
 - Async-first: use `GitManager` async API (`a`-prefixed), never sync `subprocess.run()` in production
 - Commands return `{"success": bool, ...}` dicts
