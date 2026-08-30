@@ -17,7 +17,6 @@ def _make_handler():
     config.auto_task.enabled = True
     config.auto_task.plan_file_patterns = [".claude/plan.md", "plan.md"]
     config.auto_task.max_steps_per_plan = 20
-    config.auto_task.use_llm_parser = False
     config.auto_task.skip_if_implemented = False
     config.auto_task.inherit_approval = False
     config.auto_task.chain_dependencies = True

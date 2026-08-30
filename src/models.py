@@ -1223,7 +1223,6 @@ class PipelineContext:
     default_branch: str = "main"
     project: Project | None = None
     pr_url: str | None = None
-    plan_needs_approval: bool = False
     verification_reopened: bool = False
 
 

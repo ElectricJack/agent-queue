@@ -198,8 +198,6 @@ class AutoTaskConfig:
     mid_chain_rebase_push: bool = False  # Push rebased branch to remote between subtasks
     max_plan_depth: int = 1  # Max nesting of plan-generated tasks
     max_steps_per_plan: int = 20  # Cap phases from a single plan
-    use_llm_parser: bool = False  # Use LLM (Claude) for plan parsing
-    llm_parser_model: str = ""  # Model override for plan parsing
     skip_if_implemented: bool = True  # Skip task generation if branch has substantial code changes
     max_verification_retries: int = 2  # Max reopen attempts for git verification failures
 
@@ -1215,20 +1213,6 @@ class EventsConfig:
 
 
 @dataclass
-class PlannerConfig:
-    """Plan-discovery rollout switch.
-
-    Substrate placeholder — see docs/specs/implementation/supervisor-agent.md §10.
-    ``legacy_plan_discovery`` True preserves today's plan.md pipeline.
-    """
-
-    legacy_plan_discovery: bool = True
-
-    def validate(self) -> list[ConfigError]:
-        return []
-
-
-@dataclass
 class ApiAuthConfig:
     """Session-token auth for the local HTTP API.
 
@@ -1397,7 +1381,6 @@ class AppConfig:
     messages: MessagesConfig = field(default_factory=MessagesConfig)
     events: EventsConfig = field(default_factory=EventsConfig)
     supervisor_agent: SupervisorAgentConfig = field(default_factory=SupervisorAgentConfig)
-    planner: PlannerConfig = field(default_factory=PlannerConfig)
     api_auth: ApiAuthConfig = field(default_factory=ApiAuthConfig)
     surface: SurfaceConfig = field(default_factory=SurfaceConfig)
     state_machine: StateMachineConfig = field(default_factory=StateMachineConfig)
@@ -1571,7 +1554,6 @@ class AppConfig:
         errors.extend(self.pricing.validate())
         errors.extend(self.messages.validate())
         errors.extend(self.supervisor_agent.validate())
-        errors.extend(self.planner.validate())
         errors.extend(self.api_auth.validate())
         errors.extend(self.surface.validate())
         errors.extend(self.state_machine.validate())
@@ -1716,7 +1698,6 @@ RESTART_REQUIRED_SECTIONS = {
     "security",
     "messages",
     "supervisor_agent",
-    "planner",
     "api_auth",
 }
 """Config sections that require a full restart to take effect."""
@@ -1752,7 +1733,6 @@ _SECTION_FIELDS = {
     "pricing",
     "messages",
     "supervisor_agent",
-    "planner",
     "api_auth",
     "surface",
     "state_machine",
@@ -2273,8 +2253,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             mid_chain_rebase_push=at.get("mid_chain_rebase_push", False),
             max_plan_depth=at.get("max_plan_depth", 1),
             max_steps_per_plan=at.get("max_steps_per_plan", 20),
-            use_llm_parser=at.get("use_llm_parser", False),
-            llm_parser_model=at.get("llm_parser_model", ""),
             skip_if_implemented=at.get("skip_if_implemented", True),
         )
 
@@ -2419,12 +2397,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.supervisor_agent = SupervisorAgentConfig(
             enabled=bool(sa.get("enabled", False)),
             idle_timeout=int(sa.get("idle_timeout", 900)),
-        )
-
-    if "planner" in raw and isinstance(raw["planner"], dict):
-        pl = raw["planner"]
-        config.planner = PlannerConfig(
-            legacy_plan_discovery=bool(pl.get("legacy_plan_discovery", True)),
         )
 
     if "api_auth" in raw and isinstance(raw["api_auth"], dict):

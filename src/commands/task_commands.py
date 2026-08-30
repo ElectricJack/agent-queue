@@ -2800,17 +2800,11 @@ class TaskCommandsMixin:
 
         The task must be in AWAITING_PLAN_APPROVAL status.
 
-        **Parse-first workflow (preferred):**
-        If ``_cmd_process_plan`` already created draft subtasks (stored in
-        ``plan_draft_subtasks`` context), approval transitions the parent to
-        IN_PROGRESS — signaling that the plan is approved and subtasks are
-        running.  The parent will auto-complete when all subtasks finish.
-
-        **Legacy workflow (fallback):**
-        If no draft subtasks exist (e.g. plan came through the old auto-
-        detection path), the supervisor LLM is called to create tasks now,
-        falling back to the algorithmic parser if the supervisor is
-        unavailable.
+        ``_cmd_process_plan`` must have already created draft subtasks
+        (stored in ``plan_draft_subtasks`` context); approval transitions
+        the parent to IN_PROGRESS — signaling that the plan is approved and
+        subtasks are running.  The parent will auto-complete when all
+        subtasks finish.
         """
         import json as _json
         import logging
@@ -2829,7 +2823,6 @@ class TaskCommandsMixin:
         if not raw_ctx:
             return {"error": "No stored plan content found for this task"}
 
-        raw_plan = raw_ctx["content"]
         config = self.orchestrator.config.auto_task
 
         # ── Check for pre-created draft subtasks (parse-first workflow) ──
@@ -2886,65 +2879,17 @@ class TaskCommandsMixin:
                             e,
                         )
         else:
-            # ── Legacy workflow: create subtasks on approval ──
-            ws = await self.db.get_workspace_for_task(task.id)
-            workspace_id = ws.id if ws else None
-            if not workspace_id and task.project_id:
-                workspaces = await self.db.list_workspaces(project_id=task.project_id)
-                if workspaces:
-                    workspace_id = workspaces[0].id
-
-            supervisor = getattr(self.orchestrator, "_supervisor", None)
-
-            if supervisor and supervisor.is_ready:
-                _lock_project = task.project_id or ""
-                created_info = await supervisor.break_plan_into_tasks(
-                    raw_plan=raw_plan,
-                    parent_task_id=task.id,
-                    project_id=_lock_project,
-                    workspace_id=workspace_id,
-                    chain_dependencies=config.chain_dependencies,
-                    requires_approval=(
-                        task.requires_approval if config.inherit_approval else False
-                    ),
-                    base_priority=task.priority,
+            logger.error(
+                "approve_plan: no draft subtasks found for task %s — "
+                "run /process-plan to generate them first",
+                task.id,
+            )
+            return {
+                "error": (
+                    "No draft subtasks found for this plan. "
+                    "Use /process-plan to generate them first."
                 )
-
-                # Treat empty result as an error — the LLM call may have
-                # failed silently (rate limit, timeout, etc.).
-                if not created_info:
-                    logger.warning(
-                        "approve_plan: supervisor returned 0 subtasks for "
-                        "task %s — refusing to approve",
-                        task.id,
-                    )
-                    return {
-                        "error": (
-                            "Supervisor failed to create subtasks from the plan. "
-                            "The plan has not been approved. Please retry or use "
-                            "/process-plan to manually trigger subtask creation."
-                        )
-                    }
-
-                if config.chain_dependencies:
-                    final_subtask_id = created_info[-1]["id"]
-                    dependents = await self.db.get_dependents(task.id)
-                    for dep_task_id in dependents:
-                        try:
-                            await self.db.add_dependency(dep_task_id, depends_on=final_subtask_id)
-                        except Exception as e:
-                            logger.warning(
-                                "Failed to add downstream dep %s→%s: %s",
-                                dep_task_id,
-                                final_subtask_id,
-                                e,
-                            )
-            else:
-                logger.error(
-                    "approve_plan: supervisor unavailable — cannot create subtasks for task %s",
-                    task.id,
-                )
-                return {"error": "Supervisor is not available. Cannot create subtasks from plan."}
+            }
 
         # Note: no separate channel notification here — the PlanApprovalView
         # already updates the original embed in-place to show approval status
@@ -3432,59 +3377,15 @@ class TaskCommandsMixin:
             payload=f"Manual plan processing triggered — plan found at {plan_path}",
         )
 
-        # ── Phase 1: Use supervisor LLM to break plan into draft subtasks ──
-        # This happens BEFORE approval so the user sees the proper task
-        # breakdown.  Draft subtasks are blocked by a dependency on the
-        # parent task (which is in AWAITING_PLAN_APPROVAL), so they won't
-        # execute until the plan is approved and the parent is COMPLETED.
-        #
-        # IMPORTANT: We hold a plan-processing lock on the project while the
-        # supervisor is creating subtasks.  This prevents the orchestrator's
-        # _check_defined_tasks() from promoting subtasks to READY before
-        # the blocking dependency on the parent has been established.
-        config = self.orchestrator.config.auto_task
-        supervisor = getattr(self.orchestrator, "_supervisor", None)
+        # Draft subtasks are no longer auto-created here — plan discovery
+        # was removed (llm-direct-path §6.3).  A stranded
+        # AWAITING_PLAN_APPROVAL task is surfaced by the
+        # ``tasks.awaiting_plan_approval`` doctor check; a human resolves it
+        # with `aq task reopen`/`aq task close`.
         created_info: list[dict] = []
 
-        if supervisor and supervisor.is_ready:
-            workspace_id = ws.id if ws else None
-            created_info = await supervisor.break_plan_into_tasks(
-                raw_plan=raw,
-                parent_task_id=task_id,
-                project_id=project_id,
-                workspace_id=workspace_id,
-                chain_dependencies=config.chain_dependencies,
-                requires_approval=(task.requires_approval if config.inherit_approval else False),
-                base_priority=task.priority,
-            )
-
-            if created_info:
-                # break_plan_into_tasks() already wired every subtask to the
-                # parent with a `parent-child` edge (+ `discovered-from`
-                # provenance).  The parent is AWAITING_PLAN_APPROVAL, which
-                # is a *withholding* container status, so the whole set stays
-                # blocked until the plan is approved — no extra `blocks` edge
-                # on the first subtask needed (work-graph design §3.1).
-
-                # Store draft subtask IDs so approve/delete/reject can find them
-                import json as _json
-
-                await self.db.add_task_context(
-                    task_id,
-                    type="plan_draft_subtasks",
-                    label="Draft Subtask IDs",
-                    content=_json.dumps(created_info),
-                )
-
-                logger.info(
-                    "process_plan: supervisor created %d draft subtasks for %s",
-                    len(created_info),
-                    task_id,
-                )
-
-        # Build the steps list for the approval embed from supervisor-created
-        # subtasks.  If supervisor didn't create any, the embed will show the
-        # raw plan content only.
+        # created_info is always empty now — the embed shows the raw plan
+        # content only (see comment above).
         parsed_steps = [{"title": t["title"], "description": ""} for t in created_info]
 
         # Emit plan approval notification via the event bus.

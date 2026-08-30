@@ -4,9 +4,9 @@ When an agent completes a task that results in an implementation plan
 (written to ``.claude/plan.md`` or a similar file in the workspace), this
 module provides utilities to find and read plan files.
 
-Plan *parsing* (breaking a plan into subtasks) is handled exclusively by
-``Supervisor.break_plan_into_tasks()`` which uses LLM tool calls to
-create tasks directly.
+Automatic plan-to-subtask breakdown was removed (llm-direct-path §6.3); a
+plan file found here is stored as raw content and presented for manual
+approval — see ``TaskCommandsMixin._cmd_process_plan``.
 """
 
 from __future__ import annotations

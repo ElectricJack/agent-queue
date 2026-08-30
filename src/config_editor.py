@@ -41,7 +41,6 @@ SECTION_NOTES: dict[str, str] = {
     "pricing": "Framework overhaul: model price table for token-ledger cost rollups.",
     "messages": "Framework overhaul: inter-agent message queue. Disabled until the lane lands.",
     "supervisor_agent": "Framework overhaul: supervisor-as-a-session. Disabled until the lane lands.",
-    "planner": "Framework overhaul: plan-discovery rollout switch.",
     "api_auth": "Framework overhaul: session-token auth for the local HTTP API.",
     "surface": "Framework overhaul: agent-surface ergonomics knobs.",
     "state_machine": "Framework overhaul: task state-machine enforcement (warn-only while off).",

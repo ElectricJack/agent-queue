@@ -33,7 +33,6 @@ Key method call hierarchy (read these to understand the full lifecycle)::
                 ├── adapter.start(ctx)    #   Launch agent process
                 ├── adapter.wait()        #   Stream output + rate-limit retries
                 ├── _run_completion_pipeline() # Post-completion phases:
-                │   ├── _phase_plan_discover() # Plan discovery + approval
                 │   └── _phase_verify()        # Verify git state, reopen if bad
                 └── cleanup               #   Release workspace + free agent
 
@@ -335,8 +334,9 @@ class Orchestrator(
         # task_id.  Cleaned up each cycle; prevents double-launching.
         self._running_tasks: dict[str, asyncio.Task] = {}
         # Timestamps (time.time()) recording when each task's agent execution
-        # started, keyed by task_id.  Used by _discover_and_store_plan() to
-        # detect stale plan files that predate the current task's execution.
+        # started, keyed by task_id.  Used by
+        # TaskCommandsMixin._cmd_process_task_completion() to detect stale
+        # plan files that predate the current task's execution.
         self._task_exec_start: dict[str, float] = {}
         # Git HEAD SHA recorded just before the agent starts, keyed by
         # task_id.  Used by write_task_summary to show only the commits
@@ -412,22 +412,6 @@ class Orchestrator(
         # tests can toggle it deterministically.
         self._gate_event_unsub = None
         self._config_watcher: ConfigWatcher | None = None
-        # Chat provider for LLM-based plan parsing.  Optionally used by
-        # ``_generate_tasks_from_plan`` to parse agent-written plan files
-        # with an LLM instead of the regex parser, producing higher-quality
-        # task splits.  Wrapped with ``LoggedChatProvider`` so plan-parsing
-        # token usage appears in analytics under the ``plan_parser`` caller.
-        self._chat_provider = None
-        if config.auto_task.use_llm_parser:
-            try:
-                from src.chat_providers import create_chat_provider, LoggedChatProvider
-
-                provider = create_chat_provider(config.chat_provider)
-                if provider and self.llm_logger._enabled:
-                    provider = LoggedChatProvider(provider, self.llm_logger, caller="plan_parser")
-                self._chat_provider = provider
-            except Exception:
-                pass
         # Tracks the last time we sent a reminder for an AWAITING_APPROVAL
         # task that has no PR URL (keyed by task_id).
         self._no_pr_reminded_at: dict[str, float] = {}
@@ -554,7 +538,6 @@ class Orchestrator(
         # wiring. May be None (e.g. before wiring, or in tests) — read
         # defensively; playbook_services() passes it through unchanged.
         self._tool_registry: Any = None
-        # Project IDs currently undergoing plan processing (supervisor is
         # Tracks per-project budget warning thresholds already sent so we
         # don't spam the same warning.  Keyed by project_id, value is the
         # highest threshold percentage (e.g. 80, 95) already notified.
