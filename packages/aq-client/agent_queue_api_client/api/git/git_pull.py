@@ -65,13 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GitPullRequest,
 ) -> Response[GitPullResponse | GitPullResponse422]:
-    """Pull (fetch + merge) a branch from the remote origin. Defaults to the current branch if not
-    specified. Operates on the active project's repository. Use the workspace parameter to target a
-    specific workspace.
+    """Pull (fetch + merge) from the remote origin.
 
-     Pull (fetch + merge) a branch from the remote origin. Defaults to the current branch if not
-    specified. Operates on the active project's repository. Use the workspace parameter to target a
-    specific workspace.
+     Pull (fetch + merge) from the remote origin.
 
     Args:
         body (GitPullRequest):
@@ -100,13 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GitPullRequest,
 ) -> GitPullResponse | GitPullResponse422 | None:
-    """Pull (fetch + merge) a branch from the remote origin. Defaults to the current branch if not
-    specified. Operates on the active project's repository. Use the workspace parameter to target a
-    specific workspace.
+    """Pull (fetch + merge) from the remote origin.
 
-     Pull (fetch + merge) a branch from the remote origin. Defaults to the current branch if not
-    specified. Operates on the active project's repository. Use the workspace parameter to target a
-    specific workspace.
+     Pull (fetch + merge) from the remote origin.
 
     Args:
         body (GitPullRequest):
@@ -130,13 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GitPullRequest,
 ) -> Response[GitPullResponse | GitPullResponse422]:
-    """Pull (fetch + merge) a branch from the remote origin. Defaults to the current branch if not
-    specified. Operates on the active project's repository. Use the workspace parameter to target a
-    specific workspace.
+    """Pull (fetch + merge) from the remote origin.
 
-     Pull (fetch + merge) a branch from the remote origin. Defaults to the current branch if not
-    specified. Operates on the active project's repository. Use the workspace parameter to target a
-    specific workspace.
+     Pull (fetch + merge) from the remote origin.
 
     Args:
         body (GitPullRequest):
@@ -163,13 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GitPullRequest,
 ) -> GitPullResponse | GitPullResponse422 | None:
-    """Pull (fetch + merge) a branch from the remote origin. Defaults to the current branch if not
-    specified. Operates on the active project's repository. Use the workspace parameter to target a
-    specific workspace.
+    """Pull (fetch + merge) from the remote origin.
 
-     Pull (fetch + merge) a branch from the remote origin. Defaults to the current branch if not
-    specified. Operates on the active project's repository. Use the workspace parameter to target a
-    specific workspace.
+     Pull (fetch + merge) from the remote origin.
 
     Args:
         body (GitPullRequest):

@@ -65,11 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GitCreatePrRequest,
 ) -> Response[GitCreatePrResponse | GitCreatePrResponse422]:
-    """Create a GitHub pull request using the gh CLI. Requires gh to be authenticated. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+    """Create a GitHub pull request using the gh CLI.
 
-     Create a GitHub pull request using the gh CLI. Requires gh to be authenticated. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+     Create a GitHub pull request using the gh CLI.
 
     Args:
         body (GitCreatePrRequest):
@@ -98,11 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GitCreatePrRequest,
 ) -> GitCreatePrResponse | GitCreatePrResponse422 | None:
-    """Create a GitHub pull request using the gh CLI. Requires gh to be authenticated. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+    """Create a GitHub pull request using the gh CLI.
 
-     Create a GitHub pull request using the gh CLI. Requires gh to be authenticated. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+     Create a GitHub pull request using the gh CLI.
 
     Args:
         body (GitCreatePrRequest):
@@ -126,11 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GitCreatePrRequest,
 ) -> Response[GitCreatePrResponse | GitCreatePrResponse422]:
-    """Create a GitHub pull request using the gh CLI. Requires gh to be authenticated. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+    """Create a GitHub pull request using the gh CLI.
 
-     Create a GitHub pull request using the gh CLI. Requires gh to be authenticated. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+     Create a GitHub pull request using the gh CLI.
 
     Args:
         body (GitCreatePrRequest):
@@ -157,11 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GitCreatePrRequest,
 ) -> GitCreatePrResponse | GitCreatePrResponse422 | None:
-    """Create a GitHub pull request using the gh CLI. Requires gh to be authenticated. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+    """Create a GitHub pull request using the gh CLI.
 
-     Create a GitHub pull request using the gh CLI. Requires gh to be authenticated. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+     Create a GitHub pull request using the gh CLI.
 
     Args:
         body (GitCreatePrRequest):

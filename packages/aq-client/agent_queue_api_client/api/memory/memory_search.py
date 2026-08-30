@@ -65,13 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: MemorySearchRequest,
 ) -> Response[MemorySearchResponse | MemorySearchResponse422]:
-    """Search project memory for relevant context. Returns semantically similar past task results, notes,
-    and knowledge-base entries. Use this when the user asks about past work, wants to find related
-    context, or says 'search memory', 'what do we know about', etc.
+    """Search memory. Returns {paused: true, results: []} while memory.enabled is false
+    (docs/specs/design/feature-pauses.md). Backs `aq memory search`.
 
-     Search project memory for relevant context. Returns semantically similar past task results, notes,
-    and knowledge-base entries. Use this when the user asks about past work, wants to find related
-    context, or says 'search memory', 'what do we know about', etc.
+     Search memory. Returns {paused: true, results: []} while memory.enabled is false
+    (docs/specs/design/feature-pauses.md). Backs `aq memory search`.
 
     Args:
         body (MemorySearchRequest):
@@ -100,13 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: MemorySearchRequest,
 ) -> MemorySearchResponse | MemorySearchResponse422 | None:
-    """Search project memory for relevant context. Returns semantically similar past task results, notes,
-    and knowledge-base entries. Use this when the user asks about past work, wants to find related
-    context, or says 'search memory', 'what do we know about', etc.
+    """Search memory. Returns {paused: true, results: []} while memory.enabled is false
+    (docs/specs/design/feature-pauses.md). Backs `aq memory search`.
 
-     Search project memory for relevant context. Returns semantically similar past task results, notes,
-    and knowledge-base entries. Use this when the user asks about past work, wants to find related
-    context, or says 'search memory', 'what do we know about', etc.
+     Search memory. Returns {paused: true, results: []} while memory.enabled is false
+    (docs/specs/design/feature-pauses.md). Backs `aq memory search`.
 
     Args:
         body (MemorySearchRequest):
@@ -130,13 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: MemorySearchRequest,
 ) -> Response[MemorySearchResponse | MemorySearchResponse422]:
-    """Search project memory for relevant context. Returns semantically similar past task results, notes,
-    and knowledge-base entries. Use this when the user asks about past work, wants to find related
-    context, or says 'search memory', 'what do we know about', etc.
+    """Search memory. Returns {paused: true, results: []} while memory.enabled is false
+    (docs/specs/design/feature-pauses.md). Backs `aq memory search`.
 
-     Search project memory for relevant context. Returns semantically similar past task results, notes,
-    and knowledge-base entries. Use this when the user asks about past work, wants to find related
-    context, or says 'search memory', 'what do we know about', etc.
+     Search memory. Returns {paused: true, results: []} while memory.enabled is false
+    (docs/specs/design/feature-pauses.md). Backs `aq memory search`.
 
     Args:
         body (MemorySearchRequest):
@@ -163,13 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: MemorySearchRequest,
 ) -> MemorySearchResponse | MemorySearchResponse422 | None:
-    """Search project memory for relevant context. Returns semantically similar past task results, notes,
-    and knowledge-base entries. Use this when the user asks about past work, wants to find related
-    context, or says 'search memory', 'what do we know about', etc.
+    """Search memory. Returns {paused: true, results: []} while memory.enabled is false
+    (docs/specs/design/feature-pauses.md). Backs `aq memory search`.
 
-     Search project memory for relevant context. Returns semantically similar past task results, notes,
-    and knowledge-base entries. Use this when the user asks about past work, wants to find related
-    context, or says 'search memory', 'what do we know about', etc.
+     Search memory. Returns {paused: true, results: []} while memory.enabled is false
+    (docs/specs/design/feature-pauses.md). Backs `aq memory search`.
 
     Args:
         body (MemorySearchRequest):

@@ -19,12 +19,15 @@ class AddWorkspaceRequest:
         source (str): How to set up the workspace: clone (from project repo_url), link (existing dir)
         path (None | str | Unset): Directory path (required for link, auto-generated for clone)
         name (None | str | Unset): Workspace name (optional)
+        kind_id (None | str | Unset): Workspace kind id (e.g. 'project-repo', 'package-foo', 'vault'). Defaults to
+            'project-repo'. Must resolve via project-scoped or system-wide vault/workspace-kinds/<id>.md.
     """
 
     project_id: str
     source: str
     path: None | str | Unset = UNSET
     name: None | str | Unset = UNSET
+    kind_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -44,6 +47,12 @@ class AddWorkspaceRequest:
         else:
             name = self.name
 
+        kind_id: None | str | Unset
+        if isinstance(self.kind_id, Unset):
+            kind_id = UNSET
+        else:
+            kind_id = self.kind_id
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -56,6 +65,8 @@ class AddWorkspaceRequest:
             field_dict["path"] = path
         if name is not UNSET:
             field_dict["name"] = name
+        if kind_id is not UNSET:
+            field_dict["kind_id"] = kind_id
 
         return field_dict
 
@@ -84,11 +95,21 @@ class AddWorkspaceRequest:
 
         name = _parse_name(d.pop("name", UNSET))
 
+        def _parse_kind_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        kind_id = _parse_kind_id(d.pop("kind_id", UNSET))
+
         add_workspace_request = cls(
             project_id=project_id,
             source=source,
             path=path,
             name=name,
+            kind_id=kind_id,
         )
 
         add_workspace_request.additional_properties = d

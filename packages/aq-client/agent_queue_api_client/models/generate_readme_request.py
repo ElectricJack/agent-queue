@@ -15,22 +15,26 @@ T = TypeVar("T", bound="GenerateReadmeRequest")
 class GenerateReadmeRequest:
     """
     Attributes:
-        project_id (str): Project ID
         name (str): Human-readable project name
+        project_id (None | str | Unset): Project ID
         description (None | str | Unset): Project description
         tech_stack (None | str | Unset): Comma-separated technologies
     """
 
-    project_id: str
     name: str
+    project_id: None | str | Unset = UNSET
     description: None | str | Unset = UNSET
     tech_stack: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
-
         name = self.name
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         description: None | str | Unset
         if isinstance(self.description, Unset):
@@ -48,10 +52,11 @@ class GenerateReadmeRequest:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "project_id": project_id,
                 "name": name,
             }
         )
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if description is not UNSET:
             field_dict["description"] = description
         if tech_stack is not UNSET:
@@ -62,9 +67,16 @@ class GenerateReadmeRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        project_id = d.pop("project_id")
-
         name = d.pop("name")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_description(data: object) -> None | str | Unset:
             if data is None:
@@ -85,8 +97,8 @@ class GenerateReadmeRequest:
         tech_stack = _parse_tech_stack(d.pop("tech_stack", UNSET))
 
         generate_readme_request = cls(
-            project_id=project_id,
             name=name,
+            project_id=project_id,
             description=description,
             tech_stack=tech_stack,
         )

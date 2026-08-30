@@ -67,11 +67,13 @@ def sync_detailed(
 ) -> Response[AddWorkspaceResponse | AddWorkspaceResponse422]:
     """Add a workspace directory for a project. Source types: 'clone' (auto-clones from the project's
     repo_url), 'link' (link an existing directory on disk). Workspaces are project-scoped and
-    dynamically acquired by agents when assigned tasks.
+    dynamically acquired by agents when assigned tasks. Optional kind_id selects which workspace kind
+    this instance implements; defaults to 'project-repo' for back-compat (workspaces-v2 spec §10).
 
      Add a workspace directory for a project. Source types: 'clone' (auto-clones from the project's
     repo_url), 'link' (link an existing directory on disk). Workspaces are project-scoped and
-    dynamically acquired by agents when assigned tasks.
+    dynamically acquired by agents when assigned tasks. Optional kind_id selects which workspace kind
+    this instance implements; defaults to 'project-repo' for back-compat (workspaces-v2 spec §10).
 
     Args:
         body (AddWorkspaceRequest):
@@ -102,11 +104,13 @@ def sync(
 ) -> AddWorkspaceResponse | AddWorkspaceResponse422 | None:
     """Add a workspace directory for a project. Source types: 'clone' (auto-clones from the project's
     repo_url), 'link' (link an existing directory on disk). Workspaces are project-scoped and
-    dynamically acquired by agents when assigned tasks.
+    dynamically acquired by agents when assigned tasks. Optional kind_id selects which workspace kind
+    this instance implements; defaults to 'project-repo' for back-compat (workspaces-v2 spec §10).
 
      Add a workspace directory for a project. Source types: 'clone' (auto-clones from the project's
     repo_url), 'link' (link an existing directory on disk). Workspaces are project-scoped and
-    dynamically acquired by agents when assigned tasks.
+    dynamically acquired by agents when assigned tasks. Optional kind_id selects which workspace kind
+    this instance implements; defaults to 'project-repo' for back-compat (workspaces-v2 spec §10).
 
     Args:
         body (AddWorkspaceRequest):
@@ -132,11 +136,13 @@ async def asyncio_detailed(
 ) -> Response[AddWorkspaceResponse | AddWorkspaceResponse422]:
     """Add a workspace directory for a project. Source types: 'clone' (auto-clones from the project's
     repo_url), 'link' (link an existing directory on disk). Workspaces are project-scoped and
-    dynamically acquired by agents when assigned tasks.
+    dynamically acquired by agents when assigned tasks. Optional kind_id selects which workspace kind
+    this instance implements; defaults to 'project-repo' for back-compat (workspaces-v2 spec §10).
 
      Add a workspace directory for a project. Source types: 'clone' (auto-clones from the project's
     repo_url), 'link' (link an existing directory on disk). Workspaces are project-scoped and
-    dynamically acquired by agents when assigned tasks.
+    dynamically acquired by agents when assigned tasks. Optional kind_id selects which workspace kind
+    this instance implements; defaults to 'project-repo' for back-compat (workspaces-v2 spec §10).
 
     Args:
         body (AddWorkspaceRequest):
@@ -165,11 +171,13 @@ async def asyncio(
 ) -> AddWorkspaceResponse | AddWorkspaceResponse422 | None:
     """Add a workspace directory for a project. Source types: 'clone' (auto-clones from the project's
     repo_url), 'link' (link an existing directory on disk). Workspaces are project-scoped and
-    dynamically acquired by agents when assigned tasks.
+    dynamically acquired by agents when assigned tasks. Optional kind_id selects which workspace kind
+    this instance implements; defaults to 'project-repo' for back-compat (workspaces-v2 spec §10).
 
      Add a workspace directory for a project. Source types: 'clone' (auto-clones from the project's
     repo_url), 'link' (link an existing directory on disk). Workspaces are project-scoped and
-    dynamically acquired by agents when assigned tasks.
+    dynamically acquired by agents when assigned tasks. Optional kind_id selects which workspace kind
+    this instance implements; defaults to 'project-repo' for back-compat (workspaces-v2 spec §10).
 
     Args:
         body (AddWorkspaceRequest):

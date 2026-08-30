@@ -10,7 +10,6 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.get_profile_response_install import GetProfileResponseInstall
-    from ..models.get_profile_response_mcp_servers import GetProfileResponseMcpServers
 
 
 T = TypeVar("T", bound="GetProfileResponse")
@@ -24,9 +23,10 @@ class GetProfileResponse:
         name (str):
         description (str | Unset):  Default: ''.
         model (str | Unset):  Default: ''.
+        default_class (str | Unset):  Default: ''.
         permission_mode (str | Unset):  Default: ''.
         allowed_tools (list[str] | Unset):
-        mcp_servers (GetProfileResponseMcpServers | Unset):
+        mcp_servers (list[str] | Unset):
         system_prompt_suffix (str | Unset):  Default: ''.
         install (GetProfileResponseInstall | Unset):
     """
@@ -35,9 +35,10 @@ class GetProfileResponse:
     name: str
     description: str | Unset = ""
     model: str | Unset = ""
+    default_class: str | Unset = ""
     permission_mode: str | Unset = ""
     allowed_tools: list[str] | Unset = UNSET
-    mcp_servers: GetProfileResponseMcpServers | Unset = UNSET
+    mcp_servers: list[str] | Unset = UNSET
     system_prompt_suffix: str | Unset = ""
     install: GetProfileResponseInstall | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -51,15 +52,17 @@ class GetProfileResponse:
 
         model = self.model
 
+        default_class = self.default_class
+
         permission_mode = self.permission_mode
 
         allowed_tools: list[str] | Unset = UNSET
         if not isinstance(self.allowed_tools, Unset):
             allowed_tools = self.allowed_tools
 
-        mcp_servers: dict[str, Any] | Unset = UNSET
+        mcp_servers: list[str] | Unset = UNSET
         if not isinstance(self.mcp_servers, Unset):
-            mcp_servers = self.mcp_servers.to_dict()
+            mcp_servers = self.mcp_servers
 
         system_prompt_suffix = self.system_prompt_suffix
 
@@ -79,6 +82,8 @@ class GetProfileResponse:
             field_dict["description"] = description
         if model is not UNSET:
             field_dict["model"] = model
+        if default_class is not UNSET:
+            field_dict["default_class"] = default_class
         if permission_mode is not UNSET:
             field_dict["permission_mode"] = permission_mode
         if allowed_tools is not UNSET:
@@ -95,7 +100,6 @@ class GetProfileResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.get_profile_response_install import GetProfileResponseInstall
-        from ..models.get_profile_response_mcp_servers import GetProfileResponseMcpServers
 
         d = dict(src_dict)
         id = d.pop("id")
@@ -106,16 +110,13 @@ class GetProfileResponse:
 
         model = d.pop("model", UNSET)
 
+        default_class = d.pop("default_class", UNSET)
+
         permission_mode = d.pop("permission_mode", UNSET)
 
         allowed_tools = cast(list[str], d.pop("allowed_tools", UNSET))
 
-        _mcp_servers = d.pop("mcp_servers", UNSET)
-        mcp_servers: GetProfileResponseMcpServers | Unset
-        if isinstance(_mcp_servers, Unset):
-            mcp_servers = UNSET
-        else:
-            mcp_servers = GetProfileResponseMcpServers.from_dict(_mcp_servers)
+        mcp_servers = cast(list[str], d.pop("mcp_servers", UNSET))
 
         system_prompt_suffix = d.pop("system_prompt_suffix", UNSET)
 
@@ -131,6 +132,7 @@ class GetProfileResponse:
             name=name,
             description=description,
             model=model,
+            default_class=default_class,
             permission_mode=permission_mode,
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,

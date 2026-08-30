@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PluginReloadRequest,
 ) -> Response[PluginReloadResponse | PluginReloadResponse422]:
-    """Reload a plugin (shutdown, reimport, reinitialize).
+    """Reload a plugin (shutdown -> load -> initialize).
 
-     Reload a plugin (shutdown, reimport, reinitialize).
+     Reload a plugin (shutdown -> load -> initialize).
 
     Args:
         body (PluginReloadRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PluginReloadRequest,
 ) -> PluginReloadResponse | PluginReloadResponse422 | None:
-    """Reload a plugin (shutdown, reimport, reinitialize).
+    """Reload a plugin (shutdown -> load -> initialize).
 
-     Reload a plugin (shutdown, reimport, reinitialize).
+     Reload a plugin (shutdown -> load -> initialize).
 
     Args:
         body (PluginReloadRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PluginReloadRequest,
 ) -> Response[PluginReloadResponse | PluginReloadResponse422]:
-    """Reload a plugin (shutdown, reimport, reinitialize).
+    """Reload a plugin (shutdown -> load -> initialize).
 
-     Reload a plugin (shutdown, reimport, reinitialize).
+     Reload a plugin (shutdown -> load -> initialize).
 
     Args:
         body (PluginReloadRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PluginReloadRequest,
 ) -> PluginReloadResponse | PluginReloadResponse422 | None:
-    """Reload a plugin (shutdown, reimport, reinitialize).
+    """Reload a plugin (shutdown -> load -> initialize).
 
-     Reload a plugin (shutdown, reimport, reinitialize).
+     Reload a plugin (shutdown -> load -> initialize).
 
     Args:
         body (PluginReloadRequest):

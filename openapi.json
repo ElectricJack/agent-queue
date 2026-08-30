@@ -364,6 +364,273 @@
         }
       }
     },
+    "/api/sessions/{session_id}/pane": {
+      "get": {
+        "summary": "Pane",
+        "operationId": "pane_api_sessions__session_id__pane_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "max_seconds",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Seconds"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams": {
+      "post": {
+        "summary": "Start",
+        "operationId": "start_api_streams_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StreamStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamStartResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/{stream_id}": {
+      "get": {
+        "summary": "Metadata",
+        "operationId": "metadata_api_streams__stream_id__get",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Stream Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamMetadata"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/{stream_id}/subscribe": {
+      "get": {
+        "summary": "Subscribe",
+        "operationId": "subscribe_api_streams__stream_id__subscribe_get",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Stream Id"
+            }
+          },
+          {
+            "name": "after_seq",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": -1,
+              "title": "After Seq"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/{stream_id}/tail": {
+      "get": {
+        "summary": "Tail",
+        "operationId": "tail_api_streams__stream_id__tail_get",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Stream Id"
+            }
+          },
+          {
+            "name": "after_seq",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": -1,
+              "title": "After Seq"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Tail Api Streams  Stream Id  Tail Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/{stream_id}/kill": {
+      "post": {
+        "summary": "Kill",
+        "operationId": "kill_api_streams__stream_id__kill_post",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Stream Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamKillResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/{task_id}/files": {
       "get": {
         "summary": "List Files",
@@ -1419,6 +1686,100 @@
         }
       }
     },
+    "/api/discord/cleanup-threads": {
+      "post": {
+        "tags": [
+          "discord"
+        ],
+        "summary": "Archive or delete threads in a Discord channel. Defaults to mode='archive' and only_closed=true, so threads for running tasks are left alone. Dry-run unless confirm=true.",
+        "description": "Archive or delete threads in a Discord channel. Defaults to mode='archive' and only_closed=true, so threads for running tasks are left alone. Dry-run unless confirm=true.",
+        "operationId": "discord_cleanup_threads",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscordCleanupThreadsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscordCleanupThreadsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/discord/purge-channel": {
+      "post": {
+        "tags": [
+          "discord"
+        ],
+        "summary": "Delete messages from a Discord channel. Dry-run by default \u2014 it reports how many messages would go; pass confirm=true to actually delete. Discord only bulk-deletes messages under 14 days old; older ones are counted and reported, not silently skipped.",
+        "description": "Delete messages from a Discord channel. Dry-run by default \u2014 it reports how many messages would go; pass confirm=true to actually delete. Discord only bulk-deletes messages under 14 days old; older ones are counted and reported, not silently skipped.",
+        "operationId": "discord_purge_channel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscordPurgeChannelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscordPurgeChannelResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/files/count-project-memory": {
       "post": {
         "tags": [
@@ -1914,6 +2275,147 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WriteFileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/formula/cook": {
+      "post": {
+        "tags": [
+          "formula"
+        ],
+        "summary": "Resolve a formula, validate it, and create the resulting task graph in one transaction, stamping formula provenance (name/scope/path/vars/chain_sha and a formula_snapshot context row) on the container. Emits formula.cooked after a real (non-dry-run) commit. Not available to agent sessions.",
+        "description": "Resolve a formula, validate it, and create the resulting task graph in one transaction, stamping formula provenance (name/scope/path/vars/chain_sha and a formula_snapshot context row) on the container. Emits formula.cooked after a real (non-dry-run) commit. Not available to agent sessions.",
+        "operationId": "formula_cook",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FormulaCookRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FormulaCookResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/formula/list": {
+      "post": {
+        "tags": [
+          "formula"
+        ],
+        "summary": "List formulas (reusable task-graph templates) visible to a project \u2014 system formulas plus any project overrides, with project entries shadowing system entries of the same name. A non-elevated agent session is pinned to its own project.",
+        "description": "List formulas (reusable task-graph templates) visible to a project \u2014 system formulas plus any project overrides, with project entries shadowing system entries of the same name. A non-elevated agent session is pinned to its own project.",
+        "operationId": "formula_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FormulaListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FormulaListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/formula/show": {
+      "post": {
+        "tags": [
+          "formula"
+        ],
+        "summary": "Resolve a formula's extends chain, substitute its vars and validate the result \u2014 read-only, never writes. With as_cooked=<container_id>, instead render back the formula_snapshot a previous formula_cook actually wrote for that container, ignoring the current vault file.",
+        "description": "Resolve a formula's extends chain, substitute its vars and validate the result \u2014 read-only, never writes. With as_cooked=<container_id>, instead render back the formula_snapshot a previous formula_cook actually wrote for that container, ignoring the current vault file.",
+        "operationId": "formula_show",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FormulaShowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FormulaShowResponse"
                 }
               }
             }
@@ -4284,6 +4786,100 @@
         }
       }
     },
+    "/api/playbook/install": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Install a compiled playbook artifact into the live registry. Re-validates server-side before installing (a caller's own validation is not trusted), refuses a markdown source, and refuses an artifact whose ``id`` does not match the requested playbook_id. Paths outside the vault root are refused.",
+        "description": "Install a compiled playbook artifact into the live registry. Re-validates server-side before installing (a caller's own validation is not trusted), refuses a markdown source, and refuses an artifact whose ``id`` does not match the requested playbook_id. Paths outside the vault root are refused.",
+        "operationId": "playbook_install",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookInstallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookInstallResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/playbook/validate": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Validate a playbook file inside the vault. A ``.md`` source is checked for YAML frontmatter only and comes back with ``requires_compile: true`` \u2014 compiling it is a separate, agent-produced step. A ``.json`` artifact is fully validated against the compiled-playbook schema. Errors are returned as structured ``{node, field, message}`` rows, not prose. Paths outside the vault root are refused.",
+        "description": "Validate a playbook file inside the vault. A ``.md`` source is checked for YAML frontmatter only and comes back with ``requires_compile: true`` \u2014 compiling it is a separate, agent-produced step. A ``.json`` artifact is fully validated against the compiled-playbook schema. Errors are returned as structured ``{node, field, message}`` rows, not prose. Paths outside the vault root are refused.",
+        "operationId": "playbook_validate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookValidateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/recover-workflow": {
       "post": {
         "tags": [
@@ -5083,6 +5679,100 @@
         }
       }
     },
+    "/api/pool/scale": {
+      "post": {
+        "tags": [
+          "pool"
+        ],
+        "summary": "Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, min <= max. With `now: true`, also terminates idle sessions above the new max, oldest first. Backs `aq pool scale`.",
+        "description": "Set a pool profile's min/max active-session bounds. Validates min >= 0, max >= 1, min <= max. With `now: true`, also terminates idle sessions above the new max, oldest first. Backs `aq pool scale`.",
+        "operationId": "pool_scale",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoolScaleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolScaleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pool/status": {
+      "post": {
+        "tags": [
+          "pool"
+        ],
+        "summary": "Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool status`.",
+        "description": "Supply/demand/bounds snapshot for every worker pool (one row per project, profile). Backs `aq pool status`.",
+        "operationId": "pool_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoolStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/add-workspace": {
       "post": {
         "tags": [
@@ -5692,6 +6382,53 @@
         }
       }
     },
+    "/api/project/ready": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "The project's ready frontier plus the tasks withheld from it and why. The frontier excludes `hold:*`-labeled tasks. Filter it to one profile's work with `profile_id`, or ask for the compact projection with `brief`. Backs `aq project ready`.",
+        "description": "The project's ready frontier plus the tasks withheld from it and why. The frontier excludes `hold:*`-labeled tasks. Filter it to one profile's work with `profile_id`, or ask for the compact projection with `brief`. Backs `aq project ready`.",
+        "operationId": "project_ready",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectReadyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectReadyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/queue-sync-workspaces": {
       "post": {
         "tags": [
@@ -6252,6 +6989,51 @@
         }
       }
     },
+    "/api/system/db-preflight-hierarchy": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Dry-run the hierarchy canonicalisation used by migration revision b2c3d4e5f6a7 (spec \u00a717): pick one canonical parent per task from the current parent_task_id column and parent-child edges, and validate the resulting graph (parent exists, same project, no cycle, structural depth <= 3).  Nothing is rewritten \u2014 this only computes the plan and commits it to hierarchy_migration_rejects plus a JSON report under <data_dir>/logs/.  success is False when any task was rejected.",
+        "description": "Dry-run the hierarchy canonicalisation used by migration revision b2c3d4e5f6a7 (spec \u00a717): pick one canonical parent per task from the current parent_task_id column and parent-child edges, and validate the resulting graph (parent exists, same project, no cycle, structural depth <= 3).  Nothing is rewritten \u2014 this only computes the plan and commits it to hierarchy_migration_rejects plus a JSON report under <data_dir>/logs/.  success is False when any task was rejected.",
+        "operationId": "db_preflight_hierarchy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DbPreflightHierarchyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/doctor": {
       "post": {
         "tags": [
@@ -6766,8 +7548,8 @@
         "tags": [
           "system"
         ],
-        "summary": "List the intelligence classes seeded under vault/intelligence-classes.",
-        "description": "List the intelligence classes seeded under vault/intelligence-classes.",
+        "summary": "List the intelligence classes seeded under ``vault/intelligence-classes`` \u2014 id, name, description, and the provider\u2192config mapping each one resolves to. Read-only.",
+        "description": "List the intelligence classes seeded under ``vault/intelligence-classes`` \u2014 id, name, description, and the provider\u2192config mapping each one resolves to. Read-only.",
         "operationId": "list_intelligence_classes",
         "requestBody": {
           "content": {
@@ -6784,7 +7566,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ListIntelligenceClassesResponse"
+                }
               }
             }
           },
@@ -7536,6 +8320,100 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ShowSessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/session-sleep": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Record that a session is not wanted running.",
+        "description": "Record that a session is not wanted running.",
+        "operationId": "session_sleep",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionSleepRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDesiredStateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/session-wake": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Mark a sleeping named session as wanted again.",
+        "description": "Mark a sleeping named session as wanted again.",
+        "operationId": "session_wake",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionWakeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDesiredStateResponse"
                 }
               }
             }
@@ -9058,53 +9936,6 @@
         }
       }
     },
-    "/api/task/project-ready": {
-      "post": {
-        "tags": [
-          "task"
-        ],
-        "summary": "Ready frontier for a project + withheld tasks with reasons.",
-        "description": "Ready frontier for a project + withheld tasks with reasons.",
-        "operationId": "project_ready",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ProjectReadyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProjectReadyResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/task/reject-plan": {
       "post": {
         "tags": [
@@ -9224,6 +10055,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReopenWithFeedbackResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/reparent": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Move a task under another container (parent_id) or to the root (root=true). Ids never change.",
+        "description": "Move a task under another container (parent_id) or to the root (root=true). Ids never change.",
+        "operationId": "reparent_task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReparentTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReparentTaskResponse"
                 }
               }
             }
@@ -9387,6 +10265,53 @@
         }
       }
     },
+    "/api/task/spec-approve": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Flip a spec's frontmatter ``status`` to ``approved`` in place, preserving comments and key order. The spec must live under ``<vault>/projects/<project_id>/specs/`` and end in ``.md``; anything outside that root is refused. Approving a spec is what makes it eligible for ingest into the work graph.",
+        "description": "Flip a spec's frontmatter ``status`` to ``approved`` in place, preserving comments and key order. The spec must live under ``<vault>/projects/<project_id>/specs/`` and end in ``.md``; anything outside that root is refused. Approving a spec is what makes it eligible for ingest into the work graph.",
+        "operationId": "spec_approve",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpecApproveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecApproveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/stop": {
       "post": {
         "tags": [
@@ -9412,6 +10337,288 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StopTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-commit": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Atomically materialise a proposal into the live work graph: creates every task, then every dependency edge, stamping the proposal's source as provenance. The ready\u2192committed flip is a single conditional update, so two concurrent commits cannot both win. Any failure unwinds every task and edge already created and returns the proposal to ``ready`` for a retry. Returns the created task ids.",
+        "description": "Atomically materialise a proposal into the live work graph: creates every task, then every dependency edge, stamping the proposal's source as provenance. The ready\u2192committed flip is a single conditional update, so two concurrent commits cannot both win. Any failure unwinds every task and edge already created and returns the proposal to ``ready`` for a retry. Returns the created task ids.",
+        "operationId": "task_batch_commit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchCommitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskBatchCommitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-discard": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Discard a pending proposal without creating anything. Refused if it was already committed or discarded.",
+        "description": "Discard a pending proposal without creating anything. Refused if it was already committed or discarded.",
+        "operationId": "task_batch_discard",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchDiscardRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskBatchAckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-propose": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Propose a batch of tasks and their dependency edges as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.",
+        "description": "Propose a batch of tasks and their dependency edges as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.",
+        "operationId": "task_batch_propose",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchProposeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskBatchProposeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-update": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
+        "description": "Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
+        "operationId": "task_batch_update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskBatchAckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/children": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "List the children of a task (direct, or the whole subtree with recursive=true).",
+        "description": "List the children of a task (direct, or the whole subtree with recursive=true).",
+        "operationId": "task_children",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskChildrenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskChildrenResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/claim": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Claim a ready task for the calling pool/task session (pull-based work selection, swarm-work-model \u00a710). Pass `next: true` for the next available task matching the session's profile, or `task_id` for a specific one. `wait` long-polls (clamped to `swarm.claim_wait_max`) instead of returning `no_ready_work` immediately. Writes `.aq/claim.json` and returns the task's own row plus `claim_epoch`, which subsequent `task_close` / `task_heartbeat` / `task_set` / `task_handoff` calls must echo back. The returned task is the row only \u2014 for dependencies, dependents, subtasks, children, context and labels, call `task_show` (`aq task show <id>`), which is the full view.",
+        "description": "Claim a ready task for the calling pool/task session (pull-based work selection, swarm-work-model \u00a710). Pass `next: true` for the next available task matching the session's profile, or `task_id` for a specific one. `wait` long-polls (clamped to `swarm.claim_wait_max`) instead of returning `no_ready_work` immediately. Writes `.aq/claim.json` and returns the task's own row plus `claim_epoch`, which subsequent `task_close` / `task_heartbeat` / `task_set` / `task_handoff` calls must echo back. The returned task is the row only \u2014 for dependencies, dependents, subtasks, children, context and labels, call `task_show` (`aq task show <id>`), which is the full view.",
+        "operationId": "task_claim",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskClaimResponse"
                 }
               }
             }
@@ -9571,6 +10778,53 @@
         }
       }
     },
+    "/api/task/progress": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Computed progress for a container: counts, Kahn waves, max parallelism.",
+        "description": "Computed progress for a container: counts, Kahn waves, max parallelism.",
+        "operationId": "task_progress",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskProgressRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskProgressResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/route": {
       "post": {
         "tags": [
@@ -9686,7 +10940,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/TaskShowResponse"
+                }
               }
             }
           },
@@ -10397,6 +11653,102 @@
           "project_id"
         ],
         "title": "CheckoutBranchResponse"
+      },
+      "ClaimSessionSummary": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "claims": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claims"
+          },
+          "cap": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cap"
+          },
+          "desired_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Desired State"
+          },
+          "claim_phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Phase"
+          }
+        },
+        "type": "object",
+        "title": "ClaimSessionSummary",
+        "description": "The calling session's claim bookkeeping, echoed back on every ``task_claim`` reply."
+      },
+      "ClaimedBy": {
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "title": "Claim Epoch",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "ClaimedBy",
+        "description": "Who currently holds a task (swarm-work-model \u00a714).\n\nAssembled from three places: ``task_metadata.claimed_by_session``,\n``tasks.assigned_agent_id`` and ``tasks.claim_epoch``."
       },
       "ClaudeUsageRequest": {
         "properties": {},
@@ -11572,6 +12924,18 @@
             ],
             "title": "Auto Create Channels",
             "description": "If true, auto-create dedicated Discord channels for this project after creation.  If false, skip channel creation.  When omitted, falls back to the global per_project_channels.auto_create config setting."
+          },
+          "default_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Profile Id",
+            "description": "Agent profile used for tasks in this project that don't specify their own profile_id.  When omitted, a system default is chosen automatically (claude-opus, then claude-sonnet, then any general-purpose profile)."
           }
         },
         "type": "object",
@@ -11647,6 +13011,18 @@
             "title": "Dry Run",
             "description": "Validate and report assigned ids without writing",
             "default": false
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id",
+            "description": ""
           }
         },
         "type": "object",
@@ -11804,6 +13180,55 @@
             ],
             "title": "Requires Kinds",
             "description": "Workspace kinds this task needs (workspaces-v2 spec \u00a75). Each entry is either a kind id string (e.g. 'game-repo') or a dict {kind, alias?}. Auto-attached kinds (e.g. 'vault') do NOT need to be listed. When omitted, the task implicitly requires 'project-repo' \u2014 preserving today's single-workspace behavior. Each kind must resolve via project-scoped or system-wide vault/workspace-kinds/<id>.md."
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id",
+            "description": "Create as a child of this container; the id becomes <parent>.<n>"
+          },
+          "depends_on": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depends On",
+            "description": "Task IDs this task depends on (optional)."
+          },
+          "discovered_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovered From",
+            "description": "Task ID this work was discovered from (provenance, swarm-work-model \u00a79; a worker-filed caller is restricted to the held task's subtree)."
+          },
+          "dedup_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dedup Key",
+            "description": "Idempotency key for find-or-create semantics (see ensure_task)."
           }
         },
         "type": "object",
@@ -11898,6 +13323,50 @@
               }
             ],
             "title": "Warning"
+          },
+          "success": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Success"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "gate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
           }
         },
         "type": "object",
@@ -11907,6 +13376,11 @@
           "project_id"
         ],
         "title": "CreateTaskResponse"
+      },
+      "DbPreflightHierarchyRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "DbPreflightHierarchyRequest"
       },
       "DeleteMcpServerRequest": {
         "properties": {
@@ -12237,6 +13711,12 @@
             "type": "string",
             "title": "Task Id",
             "description": "Task ID to delete"
+          },
+          "cascade": {
+            "type": "boolean",
+            "title": "Cascade",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
@@ -12262,6 +13742,328 @@
           "title"
         ],
         "title": "DeleteTaskResponse"
+      },
+      "DiscordCleanupThreadsRequest": {
+        "properties": {
+          "channel_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel Id",
+            "description": "Target channel id."
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Use this project's channel instead of channel_id."
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode",
+            "description": "archive (reversible, default) or delete (permanent)."
+          },
+          "only_closed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Only Closed",
+            "description": "Only touch threads whose task is finished (default true). Matched via tasks.discord_thread_id."
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "How many archived threads to scan (default 500)."
+          },
+          "confirm": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirm",
+            "description": "Actually apply. Without it this is a dry run."
+          }
+        },
+        "type": "object",
+        "title": "DiscordCleanupThreadsRequest"
+      },
+      "DiscordCleanupThreadsResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "channel": {
+            "type": "string",
+            "title": "Channel"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": false
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "threads_found": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threads Found"
+          },
+          "would_archive": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Would Archive"
+          },
+          "would_delete": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Would Delete"
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived"
+          },
+          "deleted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted"
+          },
+          "failed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed"
+          },
+          "skipped_live": {
+            "type": "integer",
+            "title": "Skipped Live",
+            "default": 0
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning"
+          }
+        },
+        "type": "object",
+        "required": [
+          "channel"
+        ],
+        "title": "DiscordCleanupThreadsResponse",
+        "description": "Result of ``discord_cleanup_threads``.\n\n``skipped_live`` is reported rather than inferred: the useful question\nafter a cleanup is \"what did it leave alone, and why\", and the answer is\nthreads whose task is still running."
+      },
+      "DiscordPurgeChannelRequest": {
+        "properties": {
+          "channel_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel Id",
+            "description": "Target channel id."
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Use this project's channel instead of channel_id."
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "How many messages back to scan (default 1000)."
+          },
+          "confirm": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirm",
+            "description": "Actually delete. Without it this is a dry run."
+          }
+        },
+        "type": "object",
+        "title": "DiscordPurgeChannelRequest"
+      },
+      "DiscordPurgeChannelResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "channel": {
+            "type": "string",
+            "title": "Channel"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": false
+          },
+          "deletable": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deletable"
+          },
+          "deleted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted"
+          },
+          "too_old_to_bulk_delete": {
+            "type": "integer",
+            "title": "Too Old To Bulk Delete",
+            "default": 0
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "channel"
+        ],
+        "title": "DiscordPurgeChannelResponse",
+        "description": "Result of ``discord_purge_channel``.\n\nBoth shapes share one model because the command is a dry run by default:\nwithout ``confirm`` it reports ``deletable`` and sets ``dry_run``, and with\nit reports ``deleted``.  ``too_old_to_bulk_delete`` is always present \u2014\nDiscord refuses to bulk-delete messages over 14 days old, and a purge that\nreported success while silently leaving hundreds behind would be worse than\none that says what it could not reach."
       },
       "DoctorRequest": {
         "properties": {
@@ -13663,6 +15465,505 @@
           "project_id"
         ],
         "title": "FindMergeConflictWorkspacesResponse"
+      },
+      "FormulaCookRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Formula name"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Owning project"
+          },
+          "vars": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vars",
+            "description": "Supplied var values, keyed by declared var name"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id",
+            "description": "Cook the graph under an existing container instead of a new one"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "Validate and report without writing",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "project_id"
+        ],
+        "title": "FormulaCookRequest"
+      },
+      "FormulaCookResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "errors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Errors",
+            "default": []
+          },
+          "warnings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
+          },
+          "container_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Container Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "parent_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Title"
+          },
+          "provisional": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provisional"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Task Ids",
+            "default": []
+          },
+          "nodes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Nodes",
+            "default": []
+          },
+          "dependency_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dependency Count"
+          },
+          "context_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Count"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run"
+          },
+          "created": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "FormulaCookResponse",
+        "description": "``formula_cook`` shares ``create_task_graph``'s build_report envelope\n(``parent_id``/``nodes``/``dry_run``/...) plus formula-specific fields\n(``container_id``, ``provenance``) and an error envelope on failure."
+      },
+      "FormulaListRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Project scope (defaults to the active project)"
+          }
+        },
+        "type": "object",
+        "title": "FormulaListRequest"
+      },
+      "FormulaListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "formulas": {
+            "items": {
+              "$ref": "#/components/schemas/FormulaSummary"
+            },
+            "type": "array",
+            "title": "Formulas",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "FormulaListResponse"
+      },
+      "FormulaShowRequest": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Formula name"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Project scope (defaults to the active project)"
+          },
+          "vars": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vars",
+            "description": "Supplied var values, keyed by declared var name"
+          },
+          "as_cooked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Cooked",
+            "description": "Container task id: render its formula_snapshot instead of resolving 'name' from the registry"
+          }
+        },
+        "type": "object",
+        "title": "FormulaShowRequest"
+      },
+      "FormulaShowResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "chain": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chain"
+          },
+          "chain_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chain Sha"
+          },
+          "vars": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vars"
+          },
+          "graph": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph"
+          },
+          "errors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Errors",
+            "default": []
+          },
+          "warnings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
+          },
+          "as_cooked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Cooked"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "FormulaShowResponse",
+        "description": "``formula_show``'s shape varies by outcome (same reasoning as\n``create_task_graph``): a validation failure reports ``errors`` and the\nraw merged document, ``as_cooked`` omits ``chain``/``chain_sha`` details\nthat only apply to a live registry resolution.  ``extra=\"allow\"`` plus\nall-optional fields keeps the model honest about that without pinning\ndown a shape narrower than what the command actually returns."
+      },
+      "FormulaSummary": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": ""
+          },
+          "extends": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extends"
+          },
+          "vars": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Vars",
+            "default": {}
+          },
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "default": ""
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "FormulaSummary",
+        "description": "One entry in ``formula_list``'s ``formulas`` array."
       },
       "GateCreatePayload": {
         "properties": {
@@ -15533,6 +17834,30 @@
             "type": "number",
             "title": "Updated At",
             "default": 0.0
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "children": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Children"
           }
         },
         "type": "object",
@@ -17266,6 +19591,35 @@
         ],
         "title": "InstallProfileResponse"
       },
+      "IntelligenceClassModel": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "mapping": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Mapping",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "IntelligenceClassModel"
+      },
       "ListActiveTasksAllProjectsRequest": {
         "properties": {
           "include_completed": {
@@ -17566,6 +19920,25 @@
         "properties": {},
         "type": "object",
         "title": "ListIntelligenceClassesRequest"
+      },
+      "ListIntelligenceClassesResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "classes": {
+            "items": {
+              "$ref": "#/components/schemas/IntelligenceClassModel"
+            },
+            "type": "array",
+            "title": "Classes",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ListIntelligenceClassesResponse"
       },
       "ListMcpServersRequest": {
         "properties": {
@@ -18328,6 +20701,18 @@
       },
       "MemorySearchRequest": {
         "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Project whose memory to search (optional; defaults to the active project)"
+          },
           "query": {
             "type": "string",
             "title": "Query",
@@ -19304,6 +21689,45 @@
         "title": "PlaybookHealthResponse",
         "description": "Loose shape \u2014 compute_playbook_health returns a rich dynamic dict."
       },
+      "PlaybookInstallRequest": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "description": "The playbook id being installed. Must equal the artifact's own id."
+          },
+          "compiled_path": {
+            "type": "string",
+            "title": "Compiled Path",
+            "description": "Path to the compiled .json artifact, inside the vault."
+          }
+        },
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "compiled_path"
+        ],
+        "title": "PlaybookInstallRequest"
+      },
+      "PlaybookInstallResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/PlaybookValidationError"
+            },
+            "type": "array",
+            "title": "Errors",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "PlaybookInstallResponse"
+      },
       "PlaybookLastRun": {
         "properties": {
           "run_id": {
@@ -19589,6 +22013,78 @@
           "scope"
         ],
         "title": "PlaybookSummary"
+      },
+      "PlaybookValidateRequest": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Path to the .md source or .json artifact, inside the vault."
+          }
+        },
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "PlaybookValidateRequest"
+      },
+      "PlaybookValidateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/PlaybookValidationError"
+            },
+            "type": "array",
+            "title": "Errors",
+            "default": []
+          },
+          "requires_compile": {
+            "type": "boolean",
+            "title": "Requires Compile",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "PlaybookValidateResponse"
+      },
+      "PlaybookValidationError": {
+        "properties": {
+          "node": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "PlaybookValidationError",
+        "description": "One structured validation failure.\n\n``node`` is the compiled node the error belongs to, or None for a\nwhole-file problem (missing frontmatter, path outside the vault)."
       },
       "PluginConfigRequest": {
         "properties": {},
@@ -19923,6 +22419,251 @@
           "updated"
         ],
         "title": "PluginUpdateResponse"
+      },
+      "PoolScaleRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project ID."
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "description": "Pool profile (agent-type) ID."
+          },
+          "min": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min",
+            "description": "New min_active bound (optional)."
+          },
+          "max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max",
+            "description": "New max_active bound (optional)."
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Now",
+            "description": "Immediately terminate idle sessions above the new max, oldest first."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "profile_id"
+        ],
+        "title": "PoolScaleRequest"
+      },
+      "PoolScaleResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "min_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Active"
+          },
+          "max_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Active"
+          },
+          "terminated": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Terminated",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PoolScaleResponse"
+      },
+      "PoolStatusRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Limit to this project (optional \u2014 defaults to all)."
+          }
+        },
+        "type": "object",
+        "title": "PoolStatusRequest"
+      },
+      "PoolStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "pools": {
+            "items": {
+              "$ref": "#/components/schemas/PoolStatusRow"
+            },
+            "type": "array",
+            "title": "Pools",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "PoolStatusResponse"
+      },
+      "PoolStatusRow": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "min_active": {
+            "type": "integer",
+            "title": "Min Active"
+          },
+          "max_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Active"
+          },
+          "desired": {
+            "type": "integer",
+            "title": "Desired"
+          },
+          "running_idle": {
+            "type": "integer",
+            "title": "Running Idle"
+          },
+          "running_busy": {
+            "type": "integer",
+            "title": "Running Busy"
+          },
+          "starting": {
+            "type": "integer",
+            "title": "Starting"
+          },
+          "draining": {
+            "type": "integer",
+            "title": "Draining"
+          },
+          "ready": {
+            "type": "integer",
+            "title": "Ready"
+          },
+          "quarantined_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantined Until"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "profile_id",
+          "min_active",
+          "desired",
+          "running_idle",
+          "running_busy",
+          "starting",
+          "draining",
+          "ready"
+        ],
+        "title": "PoolStatusRow",
+        "description": "One (project, profile) worker-pool row \u2014 swarm-work-model \u00a711."
       },
       "PrMergeRequest": {
         "properties": {
@@ -20479,7 +23220,7 @@
               }
             ],
             "title": "Project Id",
-            "description": "Project id (falls back to the active project when omitted)"
+            "description": "Project id (falls back to the active project when omitted)."
           },
           "labels": {
             "anyOf": [
@@ -20492,7 +23233,7 @@
               }
             ],
             "title": "Labels",
-            "description": "Restrict frontier to tasks carrying all of these labels"
+            "description": "Restrict frontier to tasks carrying ALL of these labels."
           },
           "any_label": {
             "anyOf": [
@@ -20505,7 +23246,31 @@
               }
             ],
             "title": "Any Label",
-            "description": "Restrict frontier to tasks carrying any of these labels"
+            "description": "Restrict frontier to tasks carrying ANY of these labels."
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id",
+            "description": "Restrict the frontier to tasks this profile would be offered. Uses the same widening as the work query: when this is the project's default profile, unassigned tasks count as its work too."
+          },
+          "brief": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brief",
+            "description": "Project each ready task to id, title, status, priority, is_blocked, profile_id instead of the default shape."
           }
         },
         "type": "object",
@@ -21191,8 +23956,26 @@
       "ReadyTask": {
         "properties": {
           "task_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Task Id"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
           },
           "title": {
             "type": "string",
@@ -21202,14 +23985,47 @@
             "type": "integer",
             "title": "Priority",
             "default": 0
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "is_blocked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Blocked"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
           }
         },
         "type": "object",
         "required": [
-          "task_id",
           "title"
         ],
-        "title": "ReadyTask"
+        "title": "ReadyTask",
+        "description": "One frontier row.\n\nTwo shapes share this model: the default (``task_id``, ``title``,\n``priority``) and ``brief: true`` (``id``, ``title``, ``status``,\n``priority``, ``is_blocked``, ``profile_id``).  Both keys are optional so\neither projection validates."
       },
       "RecordFileInspectionRequest": {
         "properties": {
@@ -21872,6 +24688,78 @@
         ],
         "title": "ReopenWithFeedbackResponse"
       },
+      "ReparentTaskRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": ""
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id",
+            "description": ""
+          },
+          "root": {
+            "type": "boolean",
+            "title": "Root",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "ReparentTaskRequest"
+      },
+      "ReparentTaskResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "old_parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Old Parent"
+          },
+          "new_parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Parent"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "task_id"
+        ],
+        "title": "ReparentTaskResponse"
+      },
       "RestartDaemonRequest": {
         "properties": {
           "reason": {
@@ -22447,6 +25335,42 @@
           "attach_command"
         ],
         "title": "SessionAttachResponse"
+      },
+      "SessionDesiredStateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "desired_state": {
+            "type": "string",
+            "title": "Desired State"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "session_id",
+          "desired_state"
+        ],
+        "title": "SessionDesiredStateResponse",
+        "description": "``session_sleep`` / ``session_wake`` \u2014 intent, not observation.\n\nBoth fields are returned so a caller can see the gap it just opened:\n``desired_state`` is what was written, ``state`` is what the runtime\nstill shows until the reconciler converges."
       },
       "SessionKillRequest": {
         "properties": {
@@ -23080,6 +26004,60 @@
         "type": "object",
         "title": "SessionShowRequest"
       },
+      "SessionSleepRequest": {
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "Session id (uuid4 hex)"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id",
+            "description": "Alias for session_id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Session name"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Resolve session from this task id"
+          }
+        },
+        "type": "object",
+        "title": "SessionSleepRequest"
+      },
       "SessionSummary": {
         "properties": {
           "id": {
@@ -23256,6 +26234,60 @@
         ],
         "title": "SessionSummary",
         "description": "One row of ``session_list`` output.\n\n``idle_seconds`` and ``stalled`` are derived per-row in\n``_cmd_session_list``; every other field mirrors ``sessions`` table\ncolumns via ``SessionCommandsMixin._session_dict``."
+      },
+      "SessionWakeRequest": {
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "Session id (uuid4 hex)"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id",
+            "description": "Alias for session_id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Session name"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Resolve session from this task id"
+          }
+        },
+        "type": "object",
+        "title": "SessionWakeRequest"
       },
       "SetControlInterfaceRequest": {
         "properties": {
@@ -23818,6 +26850,43 @@
         ],
         "title": "SkipTaskResponse"
       },
+      "SpecApproveRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Project owning the spec (defaults to the active project)."
+          },
+          "spec_path": {
+            "type": "string",
+            "title": "Spec Path",
+            "description": "Path to the spec markdown file, inside the project's specs directory."
+          }
+        },
+        "type": "object",
+        "required": [
+          "spec_path"
+        ],
+        "title": "SpecApproveRequest"
+      },
+      "SpecApproveResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "SpecApproveResponse"
+      },
       "StopTaskRequest": {
         "properties": {
           "task_id": {
@@ -23844,6 +26913,155 @@
           "stopped"
         ],
         "title": "StopTaskResponse"
+      },
+      "StreamKillResponse": {
+        "properties": {
+          "stream_id": {
+            "type": "string",
+            "title": "Stream Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stream_id",
+          "status"
+        ],
+        "title": "StreamKillResponse"
+      },
+      "StreamMetadata": {
+        "properties": {
+          "stream_id": {
+            "type": "string",
+            "title": "Stream Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "started_at": {
+            "type": "number",
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stream_id",
+          "title",
+          "status",
+          "exit_code",
+          "started_at",
+          "ended_at",
+          "session_id",
+          "project_id"
+        ],
+        "title": "StreamMetadata"
+      },
+      "StreamStartRequest": {
+        "properties": {
+          "command": {
+            "title": "Command"
+          },
+          "cwd": {
+            "type": "string",
+            "title": "Cwd"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "command",
+          "cwd",
+          "session_id"
+        ],
+        "title": "StreamStartRequest"
+      },
+      "StreamStartResponse": {
+        "properties": {
+          "stream_id": {
+            "type": "string",
+            "title": "Stream Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stream_id",
+          "status"
+        ],
+        "title": "StreamStartResponse"
       },
       "StubScanEntry": {
         "properties": {
@@ -24061,6 +27279,347 @@
         ],
         "title": "StuckTasksThresholds"
       },
+      "TaskBatchAckResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "TaskBatchAckResponse",
+        "description": "``task_batch_update`` / ``task_batch_discard`` \u2014 bare acknowledgement."
+      },
+      "TaskBatchCommitRequest": {
+        "properties": {
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id",
+            "description": "Proposal to commit."
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id"
+        ],
+        "title": "TaskBatchCommitRequest"
+      },
+      "TaskBatchCommitResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Task Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "TaskBatchCommitResponse",
+        "description": "The ids of the tasks the commit actually created, in batch order."
+      },
+      "TaskBatchDiscardRequest": {
+        "properties": {
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id",
+            "description": "Proposal to discard."
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id"
+        ],
+        "title": "TaskBatchDiscardRequest"
+      },
+      "TaskBatchProposeRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Project to propose into (defaults to the active one)."
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "Where the proposal came from (e.g. a spec path or playbook id). Recorded as provenance on every task the commit creates."
+          },
+          "tasks": {
+            "items": {},
+            "type": "array",
+            "title": "Tasks",
+            "description": "The tasks to create. Must be non-empty."
+          },
+          "edges": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edges",
+            "description": "Dependency edges between the batch's tasks."
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "tasks"
+        ],
+        "title": "TaskBatchProposeRequest"
+      },
+      "TaskBatchProposeResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Id"
+          }
+        },
+        "type": "object",
+        "title": "TaskBatchProposeResponse",
+        "description": "A proposal is created, not applied \u2014 nothing exists in the graph yet."
+      },
+      "TaskBatchUpdateRequest": {
+        "properties": {
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id",
+            "description": "Proposal to replace."
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload",
+            "description": "The replacement graph: ``{\"tasks\": [...], \"edges\": [...]}`` in the same shape task_batch_propose takes."
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id",
+          "payload"
+        ],
+        "title": "TaskBatchUpdateRequest"
+      },
+      "TaskChildrenRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": ""
+          },
+          "recursive": {
+            "type": "boolean",
+            "title": "Recursive",
+            "description": "",
+            "default": false
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "Filter by status"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": ""
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "TaskChildrenRequest"
+      },
+      "TaskChildrenResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/TaskDict"
+            },
+            "type": "array",
+            "title": "Children"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "task_id",
+          "count",
+          "children"
+        ],
+        "title": "TaskChildrenResponse"
+      },
+      "TaskClaimRequest": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Claim this specific task (optional \u2014 mutually exclusive with next)."
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next",
+            "description": "Claim whatever ready task matches the session's profile."
+          },
+          "wait": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait",
+            "description": "Seconds to long-poll for ready work before returning `no_ready_work` (optional, clamped to `swarm.claim_wait_max`)."
+          }
+        },
+        "type": "object",
+        "title": "TaskClaimRequest"
+      },
+      "TaskClaimResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "result": {
+            "type": "string",
+            "title": "Result"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "session": {
+            "$ref": "#/components/schemas/ClaimSessionSummary",
+            "default": {}
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "result"
+        ],
+        "title": "TaskClaimResponse",
+        "description": "``task_claim`` \u2014 pull-based work selection (swarm-work-model \u00a710).\n\n``task`` is the claimed task's own **row** \u2014 the scalar fields of\n``GetTaskResponse`` plus ``claim_epoch``, without the joined\n``depends_on`` / ``blocks`` / ``subtasks`` / ``children`` / ``context``\n/ ``labels`` sections (spec \u00a715: building those cost ~10 statements on\nevery claim; ``task_show`` remains the full view).  ``None`` for every\nnon-``claimed`` result code."
+      },
       "TaskCloseRequest": {
         "properties": {
           "task_id": {
@@ -24120,6 +27679,60 @@
             ],
             "title": "Notes",
             "description": "Closing notes (optional)"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary",
+            "description": "Summary of what happened, for the reviewer/dashboard/vault note. Required for tasks whose profile has needs_workspace: true (Dv2 Phase 2 \u00a77 close contract)."
+          },
+          "abandon_children": {
+            "type": "boolean",
+            "title": "Abandon Children",
+            "description": "",
+            "default": false
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": "Current claim epoch for a pool-session caller (optional \u2014 the CLI reads it from .aq/claim.json)."
+          },
+          "claim_next": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Next",
+            "description": "After closing, immediately claim the next ready task matching this session's profile (pool worker loop, swarm-work-model \u00a710)."
+          },
+          "wait": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait",
+            "description": "Seconds to long-poll for the next claim when claim_next is set (optional, clamped to swarm.claim_wait_max)."
           }
         },
         "type": "object",
@@ -24334,6 +27947,30 @@
             "type": "number",
             "title": "Updated At",
             "default": 0.0
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "children": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Children"
           }
         },
         "type": "object",
@@ -24343,6 +27980,31 @@
           "title"
         ],
         "title": "TaskDetail"
+      },
+      "TaskDict": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "TaskDict",
+        "description": "Loose task dict as returned in list results."
       },
       "TaskHeartbeatRequest": {
         "properties": {
@@ -24357,10 +28019,100 @@
             ],
             "title": "Task Id",
             "description": "Task ID (optional \u2014 defaults to the caller's session scope)"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": "Current claim epoch for a pool-session caller (optional \u2014 the CLI reads it from .aq/claim.json)."
           }
         },
         "type": "object",
         "title": "TaskHeartbeatRequest"
+      },
+      "TaskProgressRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "TaskProgressRequest"
+      },
+      "TaskProgressResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "parent_id": {
+            "type": "string",
+            "title": "Parent Id"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "done": {
+            "type": "integer",
+            "title": "Done"
+          },
+          "ready": {
+            "type": "integer",
+            "title": "Ready"
+          },
+          "blocked": {
+            "type": "integer",
+            "title": "Blocked"
+          },
+          "in_progress": {
+            "type": "integer",
+            "title": "In Progress"
+          },
+          "waves": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Waves"
+          },
+          "max_parallelism": {
+            "type": "integer",
+            "title": "Max Parallelism"
+          },
+          "depth": {
+            "type": "integer",
+            "title": "Depth"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "parent_id",
+          "total",
+          "done",
+          "ready",
+          "blocked",
+          "in_progress",
+          "waves",
+          "max_parallelism",
+          "depth"
+        ],
+        "title": "TaskProgressResponse"
       },
       "TaskRef": {
         "properties": {
@@ -24549,6 +28301,18 @@
             ],
             "title": "Meta",
             "description": "Arbitrary key/value task metadata to set (optional)."
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": "Current claim epoch for a pool-session caller (optional \u2014 the CLI reads it from .aq/claim.json)."
           }
         },
         "type": "object",
@@ -24570,6 +28334,220 @@
           "task_id"
         ],
         "title": "TaskShowRequest"
+      },
+      "TaskShowResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 0
+          },
+          "assigned_agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigned Agent"
+          },
+          "retry_count": {
+            "type": "integer",
+            "title": "Retry Count",
+            "default": 0
+          },
+          "max_retries": {
+            "type": "integer",
+            "title": "Max Retries",
+            "default": 3
+          },
+          "requires_approval": {
+            "type": "boolean",
+            "title": "Requires Approval",
+            "default": false
+          },
+          "is_blocked": {
+            "type": "boolean",
+            "title": "Is Blocked",
+            "default": false
+          },
+          "is_plan_subtask": {
+            "type": "boolean",
+            "title": "Is Plan Subtask",
+            "default": false
+          },
+          "task_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Type"
+          },
+          "parent_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Task Id"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "auto_approve_plan": {
+            "type": "boolean",
+            "title": "Auto Approve Plan",
+            "default": false
+          },
+          "skip_verification": {
+            "type": "boolean",
+            "title": "Skip Verification",
+            "default": false
+          },
+          "pr_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Url"
+          },
+          "depends_on": {
+            "items": {
+              "$ref": "#/components/schemas/TaskRef"
+            },
+            "type": "array",
+            "title": "Depends On",
+            "default": []
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskRef"
+            },
+            "type": "array",
+            "title": "Blocks",
+            "default": []
+          },
+          "subtasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskRef"
+            },
+            "type": "array",
+            "title": "Subtasks",
+            "default": []
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At",
+            "default": 0.0
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At",
+            "default": 0.0
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "children": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Children"
+          },
+          "context": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Context",
+            "default": []
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labels",
+            "default": []
+          },
+          "claimed_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimedBy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "title"
+        ],
+        "title": "TaskShowResponse",
+        "description": "``task_show`` \u2014 ``get_task`` plus the composed sections.\n\n``claimed_by`` is ``None`` when the task is unclaimed."
       },
       "TaskStatusSummary": {
         "properties": {

@@ -65,11 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GitPushRequest,
 ) -> Response[GitPushResponse | GitPushResponse422]:
-    """Push a branch to the remote origin. Defaults to the current branch if not specified. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+    """Push a branch to the remote origin.
 
-     Push a branch to the remote origin. Defaults to the current branch if not specified. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+     Push a branch to the remote origin.
 
     Args:
         body (GitPushRequest):
@@ -98,11 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GitPushRequest,
 ) -> GitPushResponse | GitPushResponse422 | None:
-    """Push a branch to the remote origin. Defaults to the current branch if not specified. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+    """Push a branch to the remote origin.
 
-     Push a branch to the remote origin. Defaults to the current branch if not specified. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+     Push a branch to the remote origin.
 
     Args:
         body (GitPushRequest):
@@ -126,11 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GitPushRequest,
 ) -> Response[GitPushResponse | GitPushResponse422]:
-    """Push a branch to the remote origin. Defaults to the current branch if not specified. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+    """Push a branch to the remote origin.
 
-     Push a branch to the remote origin. Defaults to the current branch if not specified. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+     Push a branch to the remote origin.
 
     Args:
         body (GitPushRequest):
@@ -157,11 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GitPushRequest,
 ) -> GitPushResponse | GitPushResponse422 | None:
-    """Push a branch to the remote origin. Defaults to the current branch if not specified. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+    """Push a branch to the remote origin.
 
-     Push a branch to the remote origin. Defaults to the current branch if not specified. Operates on the
-    active project's repository. Use the workspace parameter to target a specific workspace.
+     Push a branch to the remote origin.
 
     Args:
         body (GitPushRequest):

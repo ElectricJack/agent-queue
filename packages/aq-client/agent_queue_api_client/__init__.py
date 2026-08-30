@@ -1,4 +1,4 @@
-"""A client library for accessing AgentQueue API"""
+"""A client library for accessing Agent Q API"""
 
 from .client import AuthenticatedClient, Client
 

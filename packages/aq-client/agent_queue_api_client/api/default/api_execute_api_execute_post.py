@@ -67,6 +67,11 @@ def sync_detailed(
 
      Run a CommandHandler command (backward-compat envelope).
 
+    Honours :data:`src.api.codegen.API_EXCLUDED`.  Without this the endpoint
+    is a back door around the typed routes' exclusion set — notably for
+    ``run_command``, whose containment (trust-and-ops §2.5) depends on it
+    being unreachable from every remote surface.
+
     Args:
         body (ExecuteRequest):
 
@@ -98,6 +103,11 @@ def sync(
 
      Run a CommandHandler command (backward-compat envelope).
 
+    Honours :data:`src.api.codegen.API_EXCLUDED`.  Without this the endpoint
+    is a back door around the typed routes' exclusion set — notably for
+    ``run_command``, whose containment (trust-and-ops §2.5) depends on it
+    being unreachable from every remote surface.
+
     Args:
         body (ExecuteRequest):
 
@@ -123,6 +133,11 @@ async def asyncio_detailed(
     """Api Execute
 
      Run a CommandHandler command (backward-compat envelope).
+
+    Honours :data:`src.api.codegen.API_EXCLUDED`.  Without this the endpoint
+    is a back door around the typed routes' exclusion set — notably for
+    ``run_command``, whose containment (trust-and-ops §2.5) depends on it
+    being unreachable from every remote surface.
 
     Args:
         body (ExecuteRequest):
@@ -152,6 +167,11 @@ async def asyncio(
     """Api Execute
 
      Run a CommandHandler command (backward-compat envelope).
+
+    Honours :data:`src.api.codegen.API_EXCLUDED`.  Without this the endpoint
+    is a back door around the typed routes' exclusion set — notably for
+    ``run_command``, whose containment (trust-and-ops §2.5) depends on it
+    being unreachable from every remote surface.
 
     Args:
         body (ExecuteRequest):

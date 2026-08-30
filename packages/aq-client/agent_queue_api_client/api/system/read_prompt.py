@@ -66,10 +66,14 @@ def sync_detailed(
     body: ReadPromptRequest,
 ) -> Response[ReadPromptResponse | ReadPromptResponse422]:
     """Read a prompt template's full content and metadata. Returns the template body, variable definitions,
-    tags, and category. Use the 'name' field from list_prompts as the name parameter.
+    tags, and category. Pass either (project_id, name) for a project-scoped template, or path=<absolute
+    path> for a bundled template that ships with the daemon (in playbooks, use aq://prompts/<path> —
+    compiler rewrites).
 
      Read a prompt template's full content and metadata. Returns the template body, variable definitions,
-    tags, and category. Use the 'name' field from list_prompts as the name parameter.
+    tags, and category. Pass either (project_id, name) for a project-scoped template, or path=<absolute
+    path> for a bundled template that ships with the daemon (in playbooks, use aq://prompts/<path> —
+    compiler rewrites).
 
     Args:
         body (ReadPromptRequest):
@@ -99,10 +103,14 @@ def sync(
     body: ReadPromptRequest,
 ) -> ReadPromptResponse | ReadPromptResponse422 | None:
     """Read a prompt template's full content and metadata. Returns the template body, variable definitions,
-    tags, and category. Use the 'name' field from list_prompts as the name parameter.
+    tags, and category. Pass either (project_id, name) for a project-scoped template, or path=<absolute
+    path> for a bundled template that ships with the daemon (in playbooks, use aq://prompts/<path> —
+    compiler rewrites).
 
      Read a prompt template's full content and metadata. Returns the template body, variable definitions,
-    tags, and category. Use the 'name' field from list_prompts as the name parameter.
+    tags, and category. Pass either (project_id, name) for a project-scoped template, or path=<absolute
+    path> for a bundled template that ships with the daemon (in playbooks, use aq://prompts/<path> —
+    compiler rewrites).
 
     Args:
         body (ReadPromptRequest):
@@ -127,10 +135,14 @@ async def asyncio_detailed(
     body: ReadPromptRequest,
 ) -> Response[ReadPromptResponse | ReadPromptResponse422]:
     """Read a prompt template's full content and metadata. Returns the template body, variable definitions,
-    tags, and category. Use the 'name' field from list_prompts as the name parameter.
+    tags, and category. Pass either (project_id, name) for a project-scoped template, or path=<absolute
+    path> for a bundled template that ships with the daemon (in playbooks, use aq://prompts/<path> —
+    compiler rewrites).
 
      Read a prompt template's full content and metadata. Returns the template body, variable definitions,
-    tags, and category. Use the 'name' field from list_prompts as the name parameter.
+    tags, and category. Pass either (project_id, name) for a project-scoped template, or path=<absolute
+    path> for a bundled template that ships with the daemon (in playbooks, use aq://prompts/<path> —
+    compiler rewrites).
 
     Args:
         body (ReadPromptRequest):
@@ -158,10 +170,14 @@ async def asyncio(
     body: ReadPromptRequest,
 ) -> ReadPromptResponse | ReadPromptResponse422 | None:
     """Read a prompt template's full content and metadata. Returns the template body, variable definitions,
-    tags, and category. Use the 'name' field from list_prompts as the name parameter.
+    tags, and category. Pass either (project_id, name) for a project-scoped template, or path=<absolute
+    path> for a bundled template that ships with the daemon (in playbooks, use aq://prompts/<path> —
+    compiler rewrites).
 
      Read a prompt template's full content and metadata. Returns the template body, variable definitions,
-    tags, and category. Use the 'name' field from list_prompts as the name parameter.
+    tags, and category. Pass either (project_id, name) for a project-scoped template, or path=<absolute
+    path> for a bundled template that ships with the daemon (in playbooks, use aq://prompts/<path> —
+    compiler rewrites).
 
     Args:
         body (ReadPromptRequest):

@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: CreateGithubRepoRequest,
 ) -> Response[CreateGithubRepoResponse | CreateGithubRepoResponse422]:
-    """Create a new GitHub repository via the gh CLI. Supports private/public repos, org or personal.
+    """Create a new GitHub repository via the gh CLI.
 
-     Create a new GitHub repository via the gh CLI. Supports private/public repos, org or personal.
+     Create a new GitHub repository via the gh CLI.
 
     Args:
         body (CreateGithubRepoRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: CreateGithubRepoRequest,
 ) -> CreateGithubRepoResponse | CreateGithubRepoResponse422 | None:
-    """Create a new GitHub repository via the gh CLI. Supports private/public repos, org or personal.
+    """Create a new GitHub repository via the gh CLI.
 
-     Create a new GitHub repository via the gh CLI. Supports private/public repos, org or personal.
+     Create a new GitHub repository via the gh CLI.
 
     Args:
         body (CreateGithubRepoRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: CreateGithubRepoRequest,
 ) -> Response[CreateGithubRepoResponse | CreateGithubRepoResponse422]:
-    """Create a new GitHub repository via the gh CLI. Supports private/public repos, org or personal.
+    """Create a new GitHub repository via the gh CLI.
 
-     Create a new GitHub repository via the gh CLI. Supports private/public repos, org or personal.
+     Create a new GitHub repository via the gh CLI.
 
     Args:
         body (CreateGithubRepoRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: CreateGithubRepoRequest,
 ) -> CreateGithubRepoResponse | CreateGithubRepoResponse422 | None:
-    """Create a new GitHub repository via the gh CLI. Supports private/public repos, org or personal.
+    """Create a new GitHub repository via the gh CLI.
 
-     Create a new GitHub repository via the gh CLI. Supports private/public repos, org or personal.
+     Create a new GitHub repository via the gh CLI.
 
     Args:
         body (CreateGithubRepoRequest):

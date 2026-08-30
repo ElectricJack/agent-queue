@@ -41,11 +41,20 @@ if [[ -d "$CLIENT_DIR" ]]; then
     rm -rf "$CLIENT_DIR"
 fi
 
-openapi-python-client generate --path "$SPEC_FILE" --output-path "$CLIENT_DIR"
+# --config pins the package name: it would otherwise be derived from the
+# spec's info.title ("Agent Q API" -> agent_q_api_client), renaming the
+# package that src/cli/client.py imports by name.
+openapi-python-client generate \
+    --path "$SPEC_FILE" \
+    --output-path "$CLIENT_DIR" \
+    --config "$SCRIPT_DIR/openapi-python-client.yaml"
 echo "Generated client at $CLIENT_DIR"
 
-# Reinstall
-pip install -e "$CLIENT_DIR" --quiet
+# Reinstall.  PEP 668 marks some interpreters externally managed; the client
+# is a dev artifact, so fall back rather than failing the regeneration.
+pip install -e "$CLIENT_DIR" --quiet \
+    || pip install -e "$CLIENT_DIR" --quiet --break-system-packages \
+    || echo "WARNING: could not pip install $CLIENT_DIR — install it manually" >&2
 echo "Installed agent-queue-api-client"
 
 echo "Done. Don't forget to commit packages/aq-client/ and openapi.json"

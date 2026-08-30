@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: CommitChangesRequest,
 ) -> Response[CommitChangesResponse | CommitChangesResponse422]:
-    """Stage all changes and commit with a message.
+    """Stage all changes and commit (alias for git_commit).
 
-     Stage all changes and commit with a message.
+     Stage all changes and commit (alias for git_commit).
 
     Args:
         body (CommitChangesRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: CommitChangesRequest,
 ) -> CommitChangesResponse | CommitChangesResponse422 | None:
-    """Stage all changes and commit with a message.
+    """Stage all changes and commit (alias for git_commit).
 
-     Stage all changes and commit with a message.
+     Stage all changes and commit (alias for git_commit).
 
     Args:
         body (CommitChangesRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: CommitChangesRequest,
 ) -> Response[CommitChangesResponse | CommitChangesResponse422]:
-    """Stage all changes and commit with a message.
+    """Stage all changes and commit (alias for git_commit).
 
-     Stage all changes and commit with a message.
+     Stage all changes and commit (alias for git_commit).
 
     Args:
         body (CommitChangesRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: CommitChangesRequest,
 ) -> CommitChangesResponse | CommitChangesResponse422 | None:
-    """Stage all changes and commit with a message.
+    """Stage all changes and commit (alias for git_commit).
 
-     Stage all changes and commit with a message.
+     Stage all changes and commit (alias for git_commit).
 
     Args:
         body (CommitChangesRequest):

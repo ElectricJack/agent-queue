@@ -16,15 +16,15 @@ class GitCreatePrRequest:
     """
     Attributes:
         title (str): PR title
-        body (str | Unset): PR description body (optional) Default: ''.
-        branch (None | str | Unset): Head branch (defaults to current branch)
-        base (None | str | Unset): Base branch (defaults to repo's default branch)
-        project_id (None | str | Unset): Project ID (optional — inferred from active project)
-        workspace (None | str | Unset): Workspace ID or name to operate on (optional — defaults to first workspace)
+        body (None | str | Unset): PR body/description
+        branch (None | str | Unset): Source branch (default: current)
+        base (None | str | Unset): Target branch (default: project default)
+        project_id (None | str | Unset): Project ID
+        workspace (None | str | Unset): Workspace name or ID (optional)
     """
 
     title: str
-    body: str | Unset = ""
+    body: None | str | Unset = UNSET
     branch: None | str | Unset = UNSET
     base: None | str | Unset = UNSET
     project_id: None | str | Unset = UNSET
@@ -34,7 +34,11 @@ class GitCreatePrRequest:
     def to_dict(self) -> dict[str, Any]:
         title = self.title
 
-        body = self.body
+        body: None | str | Unset
+        if isinstance(self.body, Unset):
+            body = UNSET
+        else:
+            body = self.body
 
         branch: None | str | Unset
         if isinstance(self.branch, Unset):
@@ -85,7 +89,14 @@ class GitCreatePrRequest:
         d = dict(src_dict)
         title = d.pop("title")
 
-        body = d.pop("body", UNSET)
+        def _parse_body(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        body = _parse_body(d.pop("body", UNSET))
 
         def _parse_branch(data: object) -> None | str | Unset:
             if data is None:

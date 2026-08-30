@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -15,49 +15,72 @@ T = TypeVar("T", bound="MemorySearchRequest")
 class MemorySearchRequest:
     """
     Attributes:
-        project_id (str): Project ID to search memory for
-        query (str): Semantic search query
-        top_k (int | Unset): Number of results to return (default 10) Default: 10.
+        query (str): Search query
+        project_id (None | str | Unset): Project whose memory to search (optional; defaults to the active project)
+        scope (None | str | Unset): Memory scope to search within (optional)
     """
 
-    project_id: str
     query: str
-    top_k: int | Unset = 10
+    project_id: None | str | Unset = UNSET
+    scope: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
-
         query = self.query
 
-        top_k = self.top_k
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
+
+        scope: None | str | Unset
+        if isinstance(self.scope, Unset):
+            scope = UNSET
+        else:
+            scope = self.scope
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "project_id": project_id,
                 "query": query,
             }
         )
-        if top_k is not UNSET:
-            field_dict["top_k"] = top_k
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
+        if scope is not UNSET:
+            field_dict["scope"] = scope
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        project_id = d.pop("project_id")
-
         query = d.pop("query")
 
-        top_k = d.pop("top_k", UNSET)
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
+
+        def _parse_scope(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        scope = _parse_scope(d.pop("scope", UNSET))
 
         memory_search_request = cls(
-            project_id=project_id,
             query=query,
-            top_k=top_k,
+            project_id=project_id,
+            scope=scope,
         )
 
         memory_search_request.additional_properties = d

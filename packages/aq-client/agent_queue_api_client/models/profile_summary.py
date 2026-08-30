@@ -19,6 +19,7 @@ class ProfileSummary:
         name (str):
         description (str | Unset):  Default: ''.
         model (str | Unset):  Default: ''.
+        default_class (str | Unset):  Default: ''.
         allowed_tools (list[str] | Unset):
         mcp_servers (list[str] | Unset):
         has_system_prompt (bool | Unset):  Default: False.
@@ -28,6 +29,7 @@ class ProfileSummary:
     name: str
     description: str | Unset = ""
     model: str | Unset = ""
+    default_class: str | Unset = ""
     allowed_tools: list[str] | Unset = UNSET
     mcp_servers: list[str] | Unset = UNSET
     has_system_prompt: bool | Unset = False
@@ -41,6 +43,8 @@ class ProfileSummary:
         description = self.description
 
         model = self.model
+
+        default_class = self.default_class
 
         allowed_tools: list[str] | Unset = UNSET
         if not isinstance(self.allowed_tools, Unset):
@@ -64,6 +68,8 @@ class ProfileSummary:
             field_dict["description"] = description
         if model is not UNSET:
             field_dict["model"] = model
+        if default_class is not UNSET:
+            field_dict["default_class"] = default_class
         if allowed_tools is not UNSET:
             field_dict["allowed_tools"] = allowed_tools
         if mcp_servers is not UNSET:
@@ -84,6 +90,8 @@ class ProfileSummary:
 
         model = d.pop("model", UNSET)
 
+        default_class = d.pop("default_class", UNSET)
+
         allowed_tools = cast(list[str], d.pop("allowed_tools", UNSET))
 
         mcp_servers = cast(list[str], d.pop("mcp_servers", UNSET))
@@ -95,6 +103,7 @@ class ProfileSummary:
             name=name,
             description=description,
             model=model,
+            default_class=default_class,
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,
             has_system_prompt=has_system_prompt,

@@ -24,7 +24,12 @@ class CreateTaskResponse:
         preferred_workspace_id (None | str | Unset):
         attachments (list[str] | None | Unset):
         auto_approve_plan (bool | Unset):  Default: False.
+        skip_verification (bool | Unset):  Default: False.
         warning (None | str | Unset):
+        success (bool | None | Unset):
+        task_id (None | str | Unset):
+        gate_id (None | str | Unset):
+        status (None | str | Unset):
     """
 
     created: str
@@ -36,7 +41,12 @@ class CreateTaskResponse:
     preferred_workspace_id: None | str | Unset = UNSET
     attachments: list[str] | None | Unset = UNSET
     auto_approve_plan: bool | Unset = False
+    skip_verification: bool | Unset = False
     warning: None | str | Unset = UNSET
+    success: bool | None | Unset = UNSET
+    task_id: None | str | Unset = UNSET
+    gate_id: None | str | Unset = UNSET
+    status: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -77,11 +87,37 @@ class CreateTaskResponse:
 
         auto_approve_plan = self.auto_approve_plan
 
+        skip_verification = self.skip_verification
+
         warning: None | str | Unset
         if isinstance(self.warning, Unset):
             warning = UNSET
         else:
             warning = self.warning
+
+        success: bool | None | Unset
+        if isinstance(self.success, Unset):
+            success = UNSET
+        else:
+            success = self.success
+
+        task_id: None | str | Unset
+        if isinstance(self.task_id, Unset):
+            task_id = UNSET
+        else:
+            task_id = self.task_id
+
+        gate_id: None | str | Unset
+        if isinstance(self.gate_id, Unset):
+            gate_id = UNSET
+        else:
+            gate_id = self.gate_id
+
+        status: None | str | Unset
+        if isinstance(self.status, Unset):
+            status = UNSET
+        else:
+            status = self.status
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -104,8 +140,18 @@ class CreateTaskResponse:
             field_dict["attachments"] = attachments
         if auto_approve_plan is not UNSET:
             field_dict["auto_approve_plan"] = auto_approve_plan
+        if skip_verification is not UNSET:
+            field_dict["skip_verification"] = skip_verification
         if warning is not UNSET:
             field_dict["warning"] = warning
+        if success is not UNSET:
+            field_dict["success"] = success
+        if task_id is not UNSET:
+            field_dict["task_id"] = task_id
+        if gate_id is not UNSET:
+            field_dict["gate_id"] = gate_id
+        if status is not UNSET:
+            field_dict["status"] = status
 
         return field_dict
 
@@ -166,6 +212,8 @@ class CreateTaskResponse:
 
         auto_approve_plan = d.pop("auto_approve_plan", UNSET)
 
+        skip_verification = d.pop("skip_verification", UNSET)
+
         def _parse_warning(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -174,6 +222,42 @@ class CreateTaskResponse:
             return cast(None | str | Unset, data)
 
         warning = _parse_warning(d.pop("warning", UNSET))
+
+        def _parse_success(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        success = _parse_success(d.pop("success", UNSET))
+
+        def _parse_task_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        task_id = _parse_task_id(d.pop("task_id", UNSET))
+
+        def _parse_gate_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        gate_id = _parse_gate_id(d.pop("gate_id", UNSET))
+
+        def _parse_status(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        status = _parse_status(d.pop("status", UNSET))
 
         create_task_response = cls(
             created=created,
@@ -185,7 +269,12 @@ class CreateTaskResponse:
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,
             auto_approve_plan=auto_approve_plan,
+            skip_verification=skip_verification,
             warning=warning,
+            success=success,
+            task_id=task_id,
+            gate_id=gate_id,
+            status=status,
         )
 
         create_task_response.additional_properties = d

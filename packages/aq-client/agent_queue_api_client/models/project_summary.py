@@ -21,6 +21,7 @@ class ProjectSummary:
         credit_weight (float | Unset):  Default: 1.0.
         max_concurrent_agents (int | Unset):  Default: 1.
         workspace (None | str | Unset):
+        repo_url (None | str | Unset):
         discord_channel_id (None | str | Unset):
     """
 
@@ -30,6 +31,7 @@ class ProjectSummary:
     credit_weight: float | Unset = 1.0
     max_concurrent_agents: int | Unset = 1
     workspace: None | str | Unset = UNSET
+    repo_url: None | str | Unset = UNSET
     discord_channel_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -49,6 +51,12 @@ class ProjectSummary:
             workspace = UNSET
         else:
             workspace = self.workspace
+
+        repo_url: None | str | Unset
+        if isinstance(self.repo_url, Unset):
+            repo_url = UNSET
+        else:
+            repo_url = self.repo_url
 
         discord_channel_id: None | str | Unset
         if isinstance(self.discord_channel_id, Unset):
@@ -72,6 +80,8 @@ class ProjectSummary:
             field_dict["max_concurrent_agents"] = max_concurrent_agents
         if workspace is not UNSET:
             field_dict["workspace"] = workspace
+        if repo_url is not UNSET:
+            field_dict["repo_url"] = repo_url
         if discord_channel_id is not UNSET:
             field_dict["discord_channel_id"] = discord_channel_id
 
@@ -99,6 +109,15 @@ class ProjectSummary:
 
         workspace = _parse_workspace(d.pop("workspace", UNSET))
 
+        def _parse_repo_url(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        repo_url = _parse_repo_url(d.pop("repo_url", UNSET))
+
         def _parse_discord_channel_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -115,6 +134,7 @@ class ProjectSummary:
             credit_weight=credit_weight,
             max_concurrent_agents=max_concurrent_agents,
             workspace=workspace,
+            repo_url=repo_url,
             discord_channel_id=discord_channel_id,
         )
 

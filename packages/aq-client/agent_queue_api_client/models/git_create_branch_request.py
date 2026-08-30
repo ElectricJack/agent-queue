@@ -15,9 +15,9 @@ T = TypeVar("T", bound="GitCreateBranchRequest")
 class GitCreateBranchRequest:
     """
     Attributes:
-        branch_name (str): Name for the new branch
-        project_id (None | str | Unset): Project ID (optional — inferred from active project)
-        workspace (None | str | Unset): Workspace ID or name to operate on (optional — defaults to first workspace)
+        branch_name (str): New branch name
+        project_id (None | str | Unset): Project ID
+        workspace (None | str | Unset): Workspace name or ID (optional)
     """
 
     branch_name: str

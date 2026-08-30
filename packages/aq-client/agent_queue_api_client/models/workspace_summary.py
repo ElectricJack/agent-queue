@@ -22,6 +22,7 @@ class WorkspaceSummary:
         name (None | str | Unset):
         locked_by_agent_id (None | str | Unset):
         locked_by_task_id (None | str | Unset):
+        enabled (bool | Unset):  Default: True.
     """
 
     id: str
@@ -31,6 +32,7 @@ class WorkspaceSummary:
     name: None | str | Unset = UNSET
     locked_by_agent_id: None | str | Unset = UNSET
     locked_by_task_id: None | str | Unset = UNSET
+    enabled: bool | Unset = True
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,6 +62,8 @@ class WorkspaceSummary:
         else:
             locked_by_task_id = self.locked_by_task_id
 
+        enabled = self.enabled
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -77,6 +81,8 @@ class WorkspaceSummary:
             field_dict["locked_by_agent_id"] = locked_by_agent_id
         if locked_by_task_id is not UNSET:
             field_dict["locked_by_task_id"] = locked_by_task_id
+        if enabled is not UNSET:
+            field_dict["enabled"] = enabled
 
         return field_dict
 
@@ -118,6 +124,8 @@ class WorkspaceSummary:
 
         locked_by_task_id = _parse_locked_by_task_id(d.pop("locked_by_task_id", UNSET))
 
+        enabled = d.pop("enabled", UNSET)
+
         workspace_summary = cls(
             id=id,
             project_id=project_id,
@@ -126,6 +134,7 @@ class WorkspaceSummary:
             name=name,
             locked_by_agent_id=locked_by_agent_id,
             locked_by_task_id=locked_by_task_id,
+            enabled=enabled,
         )
 
         workspace_summary.additional_properties = d

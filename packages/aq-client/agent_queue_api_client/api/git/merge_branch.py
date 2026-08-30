@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: MergeBranchRequest,
 ) -> Response[MergeBranchResponse | MergeBranchResponse422]:
-    """Merge a branch into the default branch in a project's repo.
+    """Merge a branch into the default branch (alias for git_merge).
 
-     Merge a branch into the default branch in a project's repo.
+     Merge a branch into the default branch (alias for git_merge).
 
     Args:
         body (MergeBranchRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: MergeBranchRequest,
 ) -> MergeBranchResponse | MergeBranchResponse422 | None:
-    """Merge a branch into the default branch in a project's repo.
+    """Merge a branch into the default branch (alias for git_merge).
 
-     Merge a branch into the default branch in a project's repo.
+     Merge a branch into the default branch (alias for git_merge).
 
     Args:
         body (MergeBranchRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: MergeBranchRequest,
 ) -> Response[MergeBranchResponse | MergeBranchResponse422]:
-    """Merge a branch into the default branch in a project's repo.
+    """Merge a branch into the default branch (alias for git_merge).
 
-     Merge a branch into the default branch in a project's repo.
+     Merge a branch into the default branch (alias for git_merge).
 
     Args:
         body (MergeBranchRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: MergeBranchRequest,
 ) -> MergeBranchResponse | MergeBranchResponse422 | None:
-    """Merge a branch into the default branch in a project's repo.
+    """Merge a branch into the default branch (alias for git_merge).
 
-     Merge a branch into the default branch in a project's repo.
+     Merge a branch into the default branch (alias for git_merge).
 
     Args:
         body (MergeBranchRequest):

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="GitCheckoutRequest")
 
@@ -15,16 +17,24 @@ class GitCheckoutRequest:
     Attributes:
         project_id (str): Project ID
         branch (str): Branch name to switch to
+        workspace (None | str | Unset): Workspace name or ID (optional)
     """
 
     project_id: str
     branch: str
+    workspace: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         project_id = self.project_id
 
         branch = self.branch
+
+        workspace: None | str | Unset
+        if isinstance(self.workspace, Unset):
+            workspace = UNSET
+        else:
+            workspace = self.workspace
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -34,6 +44,8 @@ class GitCheckoutRequest:
                 "branch": branch,
             }
         )
+        if workspace is not UNSET:
+            field_dict["workspace"] = workspace
 
         return field_dict
 
@@ -44,9 +56,19 @@ class GitCheckoutRequest:
 
         branch = d.pop("branch")
 
+        def _parse_workspace(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        workspace = _parse_workspace(d.pop("workspace", UNSET))
+
         git_checkout_request = cls(
             project_id=project_id,
             branch=branch,
+            workspace=workspace,
         )
 
         git_checkout_request.additional_properties = d

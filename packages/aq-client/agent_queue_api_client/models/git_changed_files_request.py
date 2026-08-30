@@ -15,28 +15,29 @@ T = TypeVar("T", bound="GitChangedFilesRequest")
 class GitChangedFilesRequest:
     """
     Attributes:
-        project_id (None | str | Unset): Project ID (optional — inferred from active project)
-        base_branch (None | str | Unset): Branch to compare against (defaults to repo's default branch)
-        workspace (None | str | Unset): Workspace ID or name to operate on (optional — defaults to first workspace)
+        base_branch (None | str | Unset): Base revision to compare against (default: project default branch). Accepts a
+            branch name or a revision expression such as 'HEAD~1', 'HEAD^' or 'main@{1}'.
+        project_id (None | str | Unset): Project ID
+        workspace (None | str | Unset): Workspace name or ID (optional)
     """
 
-    project_id: None | str | Unset = UNSET
     base_branch: None | str | Unset = UNSET
+    project_id: None | str | Unset = UNSET
     workspace: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id: None | str | Unset
-        if isinstance(self.project_id, Unset):
-            project_id = UNSET
-        else:
-            project_id = self.project_id
-
         base_branch: None | str | Unset
         if isinstance(self.base_branch, Unset):
             base_branch = UNSET
         else:
             base_branch = self.base_branch
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         workspace: None | str | Unset
         if isinstance(self.workspace, Unset):
@@ -47,10 +48,10 @@ class GitChangedFilesRequest:
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
-        if project_id is not UNSET:
-            field_dict["project_id"] = project_id
         if base_branch is not UNSET:
             field_dict["base_branch"] = base_branch
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if workspace is not UNSET:
             field_dict["workspace"] = workspace
 
@@ -60,15 +61,6 @@ class GitChangedFilesRequest:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
 
-        def _parse_project_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        project_id = _parse_project_id(d.pop("project_id", UNSET))
-
         def _parse_base_branch(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -77,6 +69,15 @@ class GitChangedFilesRequest:
             return cast(None | str | Unset, data)
 
         base_branch = _parse_base_branch(d.pop("base_branch", UNSET))
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_workspace(data: object) -> None | str | Unset:
             if data is None:
@@ -88,8 +89,8 @@ class GitChangedFilesRequest:
         workspace = _parse_workspace(d.pop("workspace", UNSET))
 
         git_changed_files_request = cls(
-            project_id=project_id,
             base_branch=base_branch,
+            project_id=project_id,
             workspace=workspace,
         )
 

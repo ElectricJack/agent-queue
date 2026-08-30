@@ -34,6 +34,26 @@ class CreateTaskRequest:
             downloaded locally. The agent will be told to read these files using the Read tool.
         auto_approve_plan (bool | Unset): If true, any plan this task generates will be automatically approved without
             waiting for human review. Default: False.
+        skip_verification (bool | Unset): If true, skip git verification on task completion. Use for
+            investigation/research tasks that don't produce code changes requiring git cleanup. Default: False.
+        affinity_agent_id (None | str | Unset): Preferred agent ID for context continuity. The scheduler will prefer
+            this agent when assigning the task, but will fall back to any available agent if the preferred one is busy.
+        affinity_reason (None | str | Unset): Why this agent is preferred: 'context' (has relevant conversation
+            history), 'workspace' (already has the workspace locked), 'type' (matches the required agent type).
+        workspace_mode (None | str | Unset): Workspace lock mode. 'exclusive' (default): one agent per workspace.
+            'branch-isolated': DEPRECATED — it is now an alias for 'exclusive'. The worktree fallback that made it mean
+            'multiple agents on separate branches in the same repo' was retired (worktree-execution spec §7.4); parallel
+            work in one repo is provided by worktree slots, which are chosen by the workspace kind's 'mode', not by this
+            field. 'directory-isolated': multiple agents on separate directories (not yet implemented).
+        requires_kinds (list[Any] | None | Unset): Workspace kinds this task needs (workspaces-v2 spec §5). Each entry
+            is either a kind id string (e.g. 'game-repo') or a dict {kind, alias?}. Auto-attached kinds (e.g. 'vault') do
+            NOT need to be listed. When omitted, the task implicitly requires 'project-repo' — preserving today's single-
+            workspace behavior. Each kind must resolve via project-scoped or system-wide vault/workspace-kinds/<id>.md.
+        parent_id (None | str | Unset): Create as a child of this container; the id becomes <parent>.<n>
+        depends_on (list[Any] | None | Unset): Task IDs this task depends on (optional).
+        discovered_from (None | str | Unset): Task ID this work was discovered from (provenance, swarm-work-model §9; a
+            worker-filed caller is restricted to the held task's subtree).
+        dedup_key (None | str | Unset): Idempotency key for find-or-create semantics (see ensure_task).
     """
 
     title: str
@@ -46,6 +66,15 @@ class CreateTaskRequest:
     preferred_workspace_id: None | str | Unset = UNSET
     attachments: list[Any] | None | Unset = UNSET
     auto_approve_plan: bool | Unset = False
+    skip_verification: bool | Unset = False
+    affinity_agent_id: None | str | Unset = UNSET
+    affinity_reason: None | str | Unset = UNSET
+    workspace_mode: None | str | Unset = UNSET
+    requires_kinds: list[Any] | None | Unset = UNSET
+    parent_id: None | str | Unset = UNSET
+    depends_on: list[Any] | None | Unset = UNSET
+    discovered_from: None | str | Unset = UNSET
+    dedup_key: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -96,6 +125,62 @@ class CreateTaskRequest:
 
         auto_approve_plan = self.auto_approve_plan
 
+        skip_verification = self.skip_verification
+
+        affinity_agent_id: None | str | Unset
+        if isinstance(self.affinity_agent_id, Unset):
+            affinity_agent_id = UNSET
+        else:
+            affinity_agent_id = self.affinity_agent_id
+
+        affinity_reason: None | str | Unset
+        if isinstance(self.affinity_reason, Unset):
+            affinity_reason = UNSET
+        else:
+            affinity_reason = self.affinity_reason
+
+        workspace_mode: None | str | Unset
+        if isinstance(self.workspace_mode, Unset):
+            workspace_mode = UNSET
+        else:
+            workspace_mode = self.workspace_mode
+
+        requires_kinds: list[Any] | None | Unset
+        if isinstance(self.requires_kinds, Unset):
+            requires_kinds = UNSET
+        elif isinstance(self.requires_kinds, list):
+            requires_kinds = self.requires_kinds
+
+        else:
+            requires_kinds = self.requires_kinds
+
+        parent_id: None | str | Unset
+        if isinstance(self.parent_id, Unset):
+            parent_id = UNSET
+        else:
+            parent_id = self.parent_id
+
+        depends_on: list[Any] | None | Unset
+        if isinstance(self.depends_on, Unset):
+            depends_on = UNSET
+        elif isinstance(self.depends_on, list):
+            depends_on = self.depends_on
+
+        else:
+            depends_on = self.depends_on
+
+        discovered_from: None | str | Unset
+        if isinstance(self.discovered_from, Unset):
+            discovered_from = UNSET
+        else:
+            discovered_from = self.discovered_from
+
+        dedup_key: None | str | Unset
+        if isinstance(self.dedup_key, Unset):
+            dedup_key = UNSET
+        else:
+            dedup_key = self.dedup_key
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -121,6 +206,24 @@ class CreateTaskRequest:
             field_dict["attachments"] = attachments
         if auto_approve_plan is not UNSET:
             field_dict["auto_approve_plan"] = auto_approve_plan
+        if skip_verification is not UNSET:
+            field_dict["skip_verification"] = skip_verification
+        if affinity_agent_id is not UNSET:
+            field_dict["affinity_agent_id"] = affinity_agent_id
+        if affinity_reason is not UNSET:
+            field_dict["affinity_reason"] = affinity_reason
+        if workspace_mode is not UNSET:
+            field_dict["workspace_mode"] = workspace_mode
+        if requires_kinds is not UNSET:
+            field_dict["requires_kinds"] = requires_kinds
+        if parent_id is not UNSET:
+            field_dict["parent_id"] = parent_id
+        if depends_on is not UNSET:
+            field_dict["depends_on"] = depends_on
+        if discovered_from is not UNSET:
+            field_dict["discovered_from"] = discovered_from
+        if dedup_key is not UNSET:
+            field_dict["dedup_key"] = dedup_key
 
         return field_dict
 
@@ -197,6 +300,96 @@ class CreateTaskRequest:
 
         auto_approve_plan = d.pop("auto_approve_plan", UNSET)
 
+        skip_verification = d.pop("skip_verification", UNSET)
+
+        def _parse_affinity_agent_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        affinity_agent_id = _parse_affinity_agent_id(d.pop("affinity_agent_id", UNSET))
+
+        def _parse_affinity_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        affinity_reason = _parse_affinity_reason(d.pop("affinity_reason", UNSET))
+
+        def _parse_workspace_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        workspace_mode = _parse_workspace_mode(d.pop("workspace_mode", UNSET))
+
+        def _parse_requires_kinds(data: object) -> list[Any] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                requires_kinds_type_0 = cast(list[Any], data)
+
+                return requires_kinds_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[Any] | None | Unset, data)
+
+        requires_kinds = _parse_requires_kinds(d.pop("requires_kinds", UNSET))
+
+        def _parse_parent_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        parent_id = _parse_parent_id(d.pop("parent_id", UNSET))
+
+        def _parse_depends_on(data: object) -> list[Any] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                depends_on_type_0 = cast(list[Any], data)
+
+                return depends_on_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[Any] | None | Unset, data)
+
+        depends_on = _parse_depends_on(d.pop("depends_on", UNSET))
+
+        def _parse_discovered_from(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        discovered_from = _parse_discovered_from(d.pop("discovered_from", UNSET))
+
+        def _parse_dedup_key(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        dedup_key = _parse_dedup_key(d.pop("dedup_key", UNSET))
+
         create_task_request = cls(
             title=title,
             project_id=project_id,
@@ -208,6 +401,15 @@ class CreateTaskRequest:
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,
             auto_approve_plan=auto_approve_plan,
+            skip_verification=skip_verification,
+            affinity_agent_id=affinity_agent_id,
+            affinity_reason=affinity_reason,
+            workspace_mode=workspace_mode,
+            requires_kinds=requires_kinds,
+            parent_id=parent_id,
+            depends_on=depends_on,
+            discovered_from=discovered_from,
+            dedup_key=dedup_key,
         )
 
         create_task_request.additional_properties = d

@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GenerateReadmeRequest,
 ) -> Response[GenerateReadmeResponse | GenerateReadmeResponse422]:
-    """Generate a README.md from project metadata and commit it to the project's repository.
+    """Generate a README.md from project metadata and commit it.
 
-     Generate a README.md from project metadata and commit it to the project's repository.
+     Generate a README.md from project metadata and commit it.
 
     Args:
         body (GenerateReadmeRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GenerateReadmeRequest,
 ) -> GenerateReadmeResponse | GenerateReadmeResponse422 | None:
-    """Generate a README.md from project metadata and commit it to the project's repository.
+    """Generate a README.md from project metadata and commit it.
 
-     Generate a README.md from project metadata and commit it to the project's repository.
+     Generate a README.md from project metadata and commit it.
 
     Args:
         body (GenerateReadmeRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GenerateReadmeRequest,
 ) -> Response[GenerateReadmeResponse | GenerateReadmeResponse422]:
-    """Generate a README.md from project metadata and commit it to the project's repository.
+    """Generate a README.md from project metadata and commit it.
 
-     Generate a README.md from project metadata and commit it to the project's repository.
+     Generate a README.md from project metadata and commit it.
 
     Args:
         body (GenerateReadmeRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GenerateReadmeRequest,
 ) -> GenerateReadmeResponse | GenerateReadmeResponse422 | None:
-    """Generate a README.md from project metadata and commit it to the project's repository.
+    """Generate a README.md from project metadata and commit it.
 
-     Generate a README.md from project metadata and commit it to the project's repository.
+     Generate a README.md from project metadata and commit it.
 
     Args:
         body (GenerateReadmeRequest):

@@ -65,11 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GitCreateBranchRequest,
 ) -> Response[GitCreateBranchResponse | GitCreateBranchResponse422]:
-    """Create and switch to a new git branch in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+    """Create and switch to a new git branch.
 
-     Create and switch to a new git branch in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+     Create and switch to a new git branch.
 
     Args:
         body (GitCreateBranchRequest):
@@ -98,11 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GitCreateBranchRequest,
 ) -> GitCreateBranchResponse | GitCreateBranchResponse422 | None:
-    """Create and switch to a new git branch in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+    """Create and switch to a new git branch.
 
-     Create and switch to a new git branch in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+     Create and switch to a new git branch.
 
     Args:
         body (GitCreateBranchRequest):
@@ -126,11 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GitCreateBranchRequest,
 ) -> Response[GitCreateBranchResponse | GitCreateBranchResponse422]:
-    """Create and switch to a new git branch in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+    """Create and switch to a new git branch.
 
-     Create and switch to a new git branch in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+     Create and switch to a new git branch.
 
     Args:
         body (GitCreateBranchRequest):
@@ -157,11 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GitCreateBranchRequest,
 ) -> GitCreateBranchResponse | GitCreateBranchResponse422 | None:
-    """Create and switch to a new git branch in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+    """Create and switch to a new git branch.
 
-     Create and switch to a new git branch in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+     Create and switch to a new git branch.
 
     Args:
         body (GitCreateBranchRequest):

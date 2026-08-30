@@ -65,13 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GitMergeRequest,
 ) -> Response[GitMergeResponse | GitMergeResponse422]:
-    """Merge a branch into the default branch. Returns whether the merge succeeded or had conflicts
-    (conflicts are automatically aborted). Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+    """Merge a branch into the default branch.
 
-     Merge a branch into the default branch. Returns whether the merge succeeded or had conflicts
-    (conflicts are automatically aborted). Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+     Merge a branch into the default branch.
 
     Args:
         body (GitMergeRequest):
@@ -100,13 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GitMergeRequest,
 ) -> GitMergeResponse | GitMergeResponse422 | None:
-    """Merge a branch into the default branch. Returns whether the merge succeeded or had conflicts
-    (conflicts are automatically aborted). Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+    """Merge a branch into the default branch.
 
-     Merge a branch into the default branch. Returns whether the merge succeeded or had conflicts
-    (conflicts are automatically aborted). Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+     Merge a branch into the default branch.
 
     Args:
         body (GitMergeRequest):
@@ -130,13 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GitMergeRequest,
 ) -> Response[GitMergeResponse | GitMergeResponse422]:
-    """Merge a branch into the default branch. Returns whether the merge succeeded or had conflicts
-    (conflicts are automatically aborted). Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+    """Merge a branch into the default branch.
 
-     Merge a branch into the default branch. Returns whether the merge succeeded or had conflicts
-    (conflicts are automatically aborted). Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+     Merge a branch into the default branch.
 
     Args:
         body (GitMergeRequest):
@@ -163,13 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GitMergeRequest,
 ) -> GitMergeResponse | GitMergeResponse422 | None:
-    """Merge a branch into the default branch. Returns whether the merge succeeded or had conflicts
-    (conflicts are automatically aborted). Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+    """Merge a branch into the default branch.
 
-     Merge a branch into the default branch. Returns whether the merge succeeded or had conflicts
-    (conflicts are automatically aborted). Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+     Merge a branch into the default branch.
 
     Args:
         body (GitMergeRequest):

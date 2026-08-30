@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -15,50 +15,74 @@ T = TypeVar("T", bound="EditProjectProfileResponse")
 class EditProjectProfileResponse:
     """
     Attributes:
-        project_id (str):
-        status (str | Unset):  Default: 'profile_updated'.
-        path (str | Unset):  Default: ''.
+        updated (str):
+        fields (list[str] | Unset):
+        warnings (list[str] | None | Unset):
     """
 
-    project_id: str
-    status: str | Unset = "profile_updated"
-    path: str | Unset = ""
+    updated: str
+    fields: list[str] | Unset = UNSET
+    warnings: list[str] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
+        updated = self.updated
 
-        status = self.status
+        fields: list[str] | Unset = UNSET
+        if not isinstance(self.fields, Unset):
+            fields = self.fields
 
-        path = self.path
+        warnings: list[str] | None | Unset
+        if isinstance(self.warnings, Unset):
+            warnings = UNSET
+        elif isinstance(self.warnings, list):
+            warnings = self.warnings
+
+        else:
+            warnings = self.warnings
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "project_id": project_id,
+                "updated": updated,
             }
         )
-        if status is not UNSET:
-            field_dict["status"] = status
-        if path is not UNSET:
-            field_dict["path"] = path
+        if fields is not UNSET:
+            field_dict["fields"] = fields
+        if warnings is not UNSET:
+            field_dict["warnings"] = warnings
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        project_id = d.pop("project_id")
+        updated = d.pop("updated")
 
-        status = d.pop("status", UNSET)
+        fields = cast(list[str], d.pop("fields", UNSET))
 
-        path = d.pop("path", UNSET)
+        def _parse_warnings(data: object) -> list[str] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                warnings_type_0 = cast(list[str], data)
+
+                return warnings_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[str] | None | Unset, data)
+
+        warnings = _parse_warnings(d.pop("warnings", UNSET))
 
         edit_project_profile_response = cls(
-            project_id=project_id,
-            status=status,
-            path=path,
+            updated=updated,
+            fields=fields,
+            warnings=warnings,
         )
 
         edit_project_profile_response.additional_properties = d

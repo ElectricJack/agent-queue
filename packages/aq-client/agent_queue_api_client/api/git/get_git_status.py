@@ -65,13 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GetGitStatusRequest,
 ) -> Response[GetGitStatusResponse | GetGitStatusResponse422]:
-    """Get the git status of a project's repository. Shows current branch, working tree status, and recent
-    commits. Reports status for all workspaces registered to the project, or falls back to the project
-    workspace path. Operates on the active project's repository.
+    """Get git status for all workspaces in a project. Shows branch, uncommitted changes, recent commits,
+    ahead/behind counts, and stash count.
 
-     Get the git status of a project's repository. Shows current branch, working tree status, and recent
-    commits. Reports status for all workspaces registered to the project, or falls back to the project
-    workspace path. Operates on the active project's repository.
+     Get git status for all workspaces in a project. Shows branch, uncommitted changes, recent commits,
+    ahead/behind counts, and stash count.
 
     Args:
         body (GetGitStatusRequest):
@@ -100,13 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GetGitStatusRequest,
 ) -> GetGitStatusResponse | GetGitStatusResponse422 | None:
-    """Get the git status of a project's repository. Shows current branch, working tree status, and recent
-    commits. Reports status for all workspaces registered to the project, or falls back to the project
-    workspace path. Operates on the active project's repository.
+    """Get git status for all workspaces in a project. Shows branch, uncommitted changes, recent commits,
+    ahead/behind counts, and stash count.
 
-     Get the git status of a project's repository. Shows current branch, working tree status, and recent
-    commits. Reports status for all workspaces registered to the project, or falls back to the project
-    workspace path. Operates on the active project's repository.
+     Get git status for all workspaces in a project. Shows branch, uncommitted changes, recent commits,
+    ahead/behind counts, and stash count.
 
     Args:
         body (GetGitStatusRequest):
@@ -130,13 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GetGitStatusRequest,
 ) -> Response[GetGitStatusResponse | GetGitStatusResponse422]:
-    """Get the git status of a project's repository. Shows current branch, working tree status, and recent
-    commits. Reports status for all workspaces registered to the project, or falls back to the project
-    workspace path. Operates on the active project's repository.
+    """Get git status for all workspaces in a project. Shows branch, uncommitted changes, recent commits,
+    ahead/behind counts, and stash count.
 
-     Get the git status of a project's repository. Shows current branch, working tree status, and recent
-    commits. Reports status for all workspaces registered to the project, or falls back to the project
-    workspace path. Operates on the active project's repository.
+     Get git status for all workspaces in a project. Shows branch, uncommitted changes, recent commits,
+    ahead/behind counts, and stash count.
 
     Args:
         body (GetGitStatusRequest):
@@ -163,13 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GetGitStatusRequest,
 ) -> GetGitStatusResponse | GetGitStatusResponse422 | None:
-    """Get the git status of a project's repository. Shows current branch, working tree status, and recent
-    commits. Reports status for all workspaces registered to the project, or falls back to the project
-    workspace path. Operates on the active project's repository.
+    """Get git status for all workspaces in a project. Shows branch, uncommitted changes, recent commits,
+    ahead/behind counts, and stash count.
 
-     Get the git status of a project's repository. Shows current branch, working tree status, and recent
-    commits. Reports status for all workspaces registered to the project, or falls back to the project
-    workspace path. Operates on the active project's repository.
+     Get git status for all workspaces in a project. Shows branch, uncommitted changes, recent commits,
+    ahead/behind counts, and stash count.
 
     Args:
         body (GetGitStatusRequest):

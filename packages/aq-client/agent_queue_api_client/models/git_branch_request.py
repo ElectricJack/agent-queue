@@ -16,11 +16,13 @@ class GitBranchRequest:
     """
     Attributes:
         project_id (str): Project ID
-        name (None | str | Unset): Branch name to create (omit to list branches)
+        name (None | str | Unset): New branch name (optional -- omit to list)
+        workspace (None | str | Unset): Workspace name or ID (optional)
     """
 
     project_id: str
     name: None | str | Unset = UNSET
+    workspace: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -32,6 +34,12 @@ class GitBranchRequest:
         else:
             name = self.name
 
+        workspace: None | str | Unset
+        if isinstance(self.workspace, Unset):
+            workspace = UNSET
+        else:
+            workspace = self.workspace
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -41,6 +49,8 @@ class GitBranchRequest:
         )
         if name is not UNSET:
             field_dict["name"] = name
+        if workspace is not UNSET:
+            field_dict["workspace"] = workspace
 
         return field_dict
 
@@ -58,9 +68,19 @@ class GitBranchRequest:
 
         name = _parse_name(d.pop("name", UNSET))
 
+        def _parse_workspace(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        workspace = _parse_workspace(d.pop("workspace", UNSET))
+
         git_branch_request = cls(
             project_id=project_id,
             name=name,
+            workspace=workspace,
         )
 
         git_branch_request.additional_properties = d

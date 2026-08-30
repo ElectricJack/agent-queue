@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
-
-from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="GetGitStatusRequest")
 
@@ -15,39 +13,29 @@ T = TypeVar("T", bound="GetGitStatusRequest")
 class GetGitStatusRequest:
     """
     Attributes:
-        project_id (None | str | Unset): Project ID (optional — inferred from active project)
+        project_id (str): Project ID
     """
 
-    project_id: None | str | Unset = UNSET
+    project_id: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id: None | str | Unset
-        if isinstance(self.project_id, Unset):
-            project_id = UNSET
-        else:
-            project_id = self.project_id
+        project_id = self.project_id
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
-        if project_id is not UNSET:
-            field_dict["project_id"] = project_id
+        field_dict.update(
+            {
+                "project_id": project_id,
+            }
+        )
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-
-        def _parse_project_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        project_id = _parse_project_id(d.pop("project_id", UNSET))
+        project_id = d.pop("project_id")
 
         get_git_status_request = cls(
             project_id=project_id,

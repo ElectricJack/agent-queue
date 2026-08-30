@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PluginInfoRequest,
 ) -> Response[PluginInfoResponse | PluginInfoResponse422]:
-    """Get detailed information about a specific plugin.
+    """Get detailed info for a specific plugin.
 
-     Get detailed information about a specific plugin.
+     Get detailed info for a specific plugin.
 
     Args:
         body (PluginInfoRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PluginInfoRequest,
 ) -> PluginInfoResponse | PluginInfoResponse422 | None:
-    """Get detailed information about a specific plugin.
+    """Get detailed info for a specific plugin.
 
-     Get detailed information about a specific plugin.
+     Get detailed info for a specific plugin.
 
     Args:
         body (PluginInfoRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PluginInfoRequest,
 ) -> Response[PluginInfoResponse | PluginInfoResponse422]:
-    """Get detailed information about a specific plugin.
+    """Get detailed info for a specific plugin.
 
-     Get detailed information about a specific plugin.
+     Get detailed info for a specific plugin.
 
     Args:
         body (PluginInfoRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PluginInfoRequest,
 ) -> PluginInfoResponse | PluginInfoResponse422 | None:
-    """Get detailed information about a specific plugin.
+    """Get detailed info for a specific plugin.
 
-     Get detailed information about a specific plugin.
+     Get detailed info for a specific plugin.
 
     Args:
         body (PluginInfoRequest):

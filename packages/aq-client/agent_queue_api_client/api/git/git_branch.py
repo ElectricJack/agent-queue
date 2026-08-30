@@ -65,11 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GitBranchRequest,
 ) -> Response[GitBranchResponse | GitBranchResponse422]:
-    """List branches or create a new branch. If name is provided a new branch is created and checked out;
-    otherwise all local branches are listed.
+    """List branches or create a new branch. If 'name' is provided, creates and checks out; otherwise lists
+    branches.
 
-     List branches or create a new branch. If name is provided a new branch is created and checked out;
-    otherwise all local branches are listed.
+     List branches or create a new branch. If 'name' is provided, creates and checks out; otherwise lists
+    branches.
 
     Args:
         body (GitBranchRequest):
@@ -98,11 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GitBranchRequest,
 ) -> GitBranchResponse | GitBranchResponse422 | None:
-    """List branches or create a new branch. If name is provided a new branch is created and checked out;
-    otherwise all local branches are listed.
+    """List branches or create a new branch. If 'name' is provided, creates and checks out; otherwise lists
+    branches.
 
-     List branches or create a new branch. If name is provided a new branch is created and checked out;
-    otherwise all local branches are listed.
+     List branches or create a new branch. If 'name' is provided, creates and checks out; otherwise lists
+    branches.
 
     Args:
         body (GitBranchRequest):
@@ -126,11 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GitBranchRequest,
 ) -> Response[GitBranchResponse | GitBranchResponse422]:
-    """List branches or create a new branch. If name is provided a new branch is created and checked out;
-    otherwise all local branches are listed.
+    """List branches or create a new branch. If 'name' is provided, creates and checks out; otherwise lists
+    branches.
 
-     List branches or create a new branch. If name is provided a new branch is created and checked out;
-    otherwise all local branches are listed.
+     List branches or create a new branch. If 'name' is provided, creates and checks out; otherwise lists
+    branches.
 
     Args:
         body (GitBranchRequest):
@@ -157,11 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GitBranchRequest,
 ) -> GitBranchResponse | GitBranchResponse422 | None:
-    """List branches or create a new branch. If name is provided a new branch is created and checked out;
-    otherwise all local branches are listed.
+    """List branches or create a new branch. If 'name' is provided, creates and checks out; otherwise lists
+    branches.
 
-     List branches or create a new branch. If name is provided a new branch is created and checked out;
-    otherwise all local branches are listed.
+     List branches or create a new branch. If 'name' is provided, creates and checks out; otherwise lists
+    branches.
 
     Args:
         body (GitBranchRequest):

@@ -1,67 +1,31 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
-
-from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="PluginUpdateRequest")
 
 
 @_attrs_define
 class PluginUpdateRequest:
-    """
-    Attributes:
-        name (str): Plugin name to update
-        rev (None | str | Unset): Specific revision to update to (optional)
-    """
+    """ """
 
-    name: str
-    rev: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        name = self.name
-
-        rev: None | str | Unset
-        if isinstance(self.rev, Unset):
-            rev = UNSET
-        else:
-            rev = self.rev
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "name": name,
-            }
-        )
-        if rev is not UNSET:
-            field_dict["rev"] = rev
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        name = d.pop("name")
-
-        def _parse_rev(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        rev = _parse_rev(d.pop("rev", UNSET))
-
-        plugin_update_request = cls(
-            name=name,
-            rev=rev,
-        )
+        plugin_update_request = cls()
 
         plugin_update_request.additional_properties = d
         return plugin_update_request

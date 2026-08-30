@@ -9,6 +9,8 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
+    from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
     from ..models.task_ref import TaskRef
 
 
@@ -29,15 +31,21 @@ class GetTaskResponse:
         retry_count (int | Unset):  Default: 0.
         max_retries (int | Unset):  Default: 3.
         requires_approval (bool | Unset):  Default: False.
+        is_blocked (bool | Unset):  Default: False.
         is_plan_subtask (bool | Unset):  Default: False.
         task_type (None | str | Unset):
         parent_task_id (None | str | Unset):
         profile_id (None | str | Unset):
         auto_approve_plan (bool | Unset):  Default: False.
+        skip_verification (bool | Unset):  Default: False.
         pr_url (None | str | Unset):
         depends_on (list[TaskRef] | Unset):
         blocks (list[TaskRef] | Unset):
         subtasks (list[TaskRef] | Unset):
+        created_at (float | Unset):  Default: 0.0.
+        updated_at (float | Unset):  Default: 0.0.
+        parent (GetTaskResponseParentType0 | None | Unset):
+        children (GetTaskResponseChildrenType0 | None | Unset):
     """
 
     id: str
@@ -50,18 +58,27 @@ class GetTaskResponse:
     retry_count: int | Unset = 0
     max_retries: int | Unset = 3
     requires_approval: bool | Unset = False
+    is_blocked: bool | Unset = False
     is_plan_subtask: bool | Unset = False
     task_type: None | str | Unset = UNSET
     parent_task_id: None | str | Unset = UNSET
     profile_id: None | str | Unset = UNSET
     auto_approve_plan: bool | Unset = False
+    skip_verification: bool | Unset = False
     pr_url: None | str | Unset = UNSET
     depends_on: list[TaskRef] | Unset = UNSET
     blocks: list[TaskRef] | Unset = UNSET
     subtasks: list[TaskRef] | Unset = UNSET
+    created_at: float | Unset = 0.0
+    updated_at: float | Unset = 0.0
+    parent: GetTaskResponseParentType0 | None | Unset = UNSET
+    children: GetTaskResponseChildrenType0 | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
+        from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
+
         id = self.id
 
         project_id = self.project_id
@@ -86,6 +103,8 @@ class GetTaskResponse:
 
         requires_approval = self.requires_approval
 
+        is_blocked = self.is_blocked
+
         is_plan_subtask = self.is_plan_subtask
 
         task_type: None | str | Unset
@@ -107,6 +126,8 @@ class GetTaskResponse:
             profile_id = self.profile_id
 
         auto_approve_plan = self.auto_approve_plan
+
+        skip_verification = self.skip_verification
 
         pr_url: None | str | Unset
         if isinstance(self.pr_url, Unset):
@@ -135,6 +156,26 @@ class GetTaskResponse:
                 subtasks_item = subtasks_item_data.to_dict()
                 subtasks.append(subtasks_item)
 
+        created_at = self.created_at
+
+        updated_at = self.updated_at
+
+        parent: dict[str, Any] | None | Unset
+        if isinstance(self.parent, Unset):
+            parent = UNSET
+        elif isinstance(self.parent, GetTaskResponseParentType0):
+            parent = self.parent.to_dict()
+        else:
+            parent = self.parent
+
+        children: dict[str, Any] | None | Unset
+        if isinstance(self.children, Unset):
+            children = UNSET
+        elif isinstance(self.children, GetTaskResponseChildrenType0):
+            children = self.children.to_dict()
+        else:
+            children = self.children
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -158,6 +199,8 @@ class GetTaskResponse:
             field_dict["max_retries"] = max_retries
         if requires_approval is not UNSET:
             field_dict["requires_approval"] = requires_approval
+        if is_blocked is not UNSET:
+            field_dict["is_blocked"] = is_blocked
         if is_plan_subtask is not UNSET:
             field_dict["is_plan_subtask"] = is_plan_subtask
         if task_type is not UNSET:
@@ -168,6 +211,8 @@ class GetTaskResponse:
             field_dict["profile_id"] = profile_id
         if auto_approve_plan is not UNSET:
             field_dict["auto_approve_plan"] = auto_approve_plan
+        if skip_verification is not UNSET:
+            field_dict["skip_verification"] = skip_verification
         if pr_url is not UNSET:
             field_dict["pr_url"] = pr_url
         if depends_on is not UNSET:
@@ -176,11 +221,21 @@ class GetTaskResponse:
             field_dict["blocks"] = blocks
         if subtasks is not UNSET:
             field_dict["subtasks"] = subtasks
+        if created_at is not UNSET:
+            field_dict["created_at"] = created_at
+        if updated_at is not UNSET:
+            field_dict["updated_at"] = updated_at
+        if parent is not UNSET:
+            field_dict["parent"] = parent
+        if children is not UNSET:
+            field_dict["children"] = children
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.get_task_response_children_type_0 import GetTaskResponseChildrenType0
+        from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
         from ..models.task_ref import TaskRef
 
         d = dict(src_dict)
@@ -210,6 +265,8 @@ class GetTaskResponse:
         max_retries = d.pop("max_retries", UNSET)
 
         requires_approval = d.pop("requires_approval", UNSET)
+
+        is_blocked = d.pop("is_blocked", UNSET)
 
         is_plan_subtask = d.pop("is_plan_subtask", UNSET)
 
@@ -241,6 +298,8 @@ class GetTaskResponse:
         profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
 
         auto_approve_plan = d.pop("auto_approve_plan", UNSET)
+
+        skip_verification = d.pop("skip_verification", UNSET)
 
         def _parse_pr_url(data: object) -> None | str | Unset:
             if data is None:
@@ -278,6 +337,44 @@ class GetTaskResponse:
 
                 subtasks.append(subtasks_item)
 
+        created_at = d.pop("created_at", UNSET)
+
+        updated_at = d.pop("updated_at", UNSET)
+
+        def _parse_parent(data: object) -> GetTaskResponseParentType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                parent_type_0 = GetTaskResponseParentType0.from_dict(data)
+
+                return parent_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(GetTaskResponseParentType0 | None | Unset, data)
+
+        parent = _parse_parent(d.pop("parent", UNSET))
+
+        def _parse_children(data: object) -> GetTaskResponseChildrenType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                children_type_0 = GetTaskResponseChildrenType0.from_dict(data)
+
+                return children_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(GetTaskResponseChildrenType0 | None | Unset, data)
+
+        children = _parse_children(d.pop("children", UNSET))
+
         get_task_response = cls(
             id=id,
             project_id=project_id,
@@ -289,15 +386,21 @@ class GetTaskResponse:
             retry_count=retry_count,
             max_retries=max_retries,
             requires_approval=requires_approval,
+            is_blocked=is_blocked,
             is_plan_subtask=is_plan_subtask,
             task_type=task_type,
             parent_task_id=parent_task_id,
             profile_id=profile_id,
             auto_approve_plan=auto_approve_plan,
+            skip_verification=skip_verification,
             pr_url=pr_url,
             depends_on=depends_on,
             blocks=blocks,
             subtasks=subtasks,
+            created_at=created_at,
+            updated_at=updated_at,
+            parent=parent,
+            children=children,
         )
 
         get_task_response.additional_properties = d

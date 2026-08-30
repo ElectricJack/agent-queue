@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PluginInstallRequest,
 ) -> Response[PluginInstallResponse | PluginInstallResponse422]:
-    """Install a plugin from a git repository URL.
+    """Install a plugin from a git repository.
 
-     Install a plugin from a git repository URL.
+     Install a plugin from a git repository.
 
     Args:
         body (PluginInstallRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PluginInstallRequest,
 ) -> PluginInstallResponse | PluginInstallResponse422 | None:
-    """Install a plugin from a git repository URL.
+    """Install a plugin from a git repository.
 
-     Install a plugin from a git repository URL.
+     Install a plugin from a git repository.
 
     Args:
         body (PluginInstallRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PluginInstallRequest,
 ) -> Response[PluginInstallResponse | PluginInstallResponse422]:
-    """Install a plugin from a git repository URL.
+    """Install a plugin from a git repository.
 
-     Install a plugin from a git repository URL.
+     Install a plugin from a git repository.
 
     Args:
         body (PluginInstallRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PluginInstallRequest,
 ) -> PluginInstallResponse | PluginInstallResponse422 | None:
-    """Install a plugin from a git repository URL.
+    """Install a plugin from a git repository.
 
-     Install a plugin from a git repository URL.
+     Install a plugin from a git repository.
 
     Args:
         body (PluginInstallRequest):

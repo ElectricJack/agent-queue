@@ -11,35 +11,21 @@ T = TypeVar("T", bound="PluginRemoveRequest")
 
 @_attrs_define
 class PluginRemoveRequest:
-    """
-    Attributes:
-        name (str): Plugin name to remove
-    """
+    """ """
 
-    name: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        name = self.name
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "name": name,
-            }
-        )
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        name = d.pop("name")
-
-        plugin_remove_request = cls(
-            name=name,
-        )
+        plugin_remove_request = cls()
 
         plugin_remove_request.additional_properties = d
         return plugin_remove_request

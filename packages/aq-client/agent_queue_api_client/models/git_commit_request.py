@@ -16,8 +16,8 @@ class GitCommitRequest:
     """
     Attributes:
         message (str): Commit message
-        project_id (None | str | Unset): Project ID (optional — inferred from active project)
-        workspace (None | str | Unset): Workspace ID or name to operate on (optional — defaults to first workspace)
+        project_id (None | str | Unset): Project ID
+        workspace (None | str | Unset): Workspace name or ID (optional)
     """
 
     message: str

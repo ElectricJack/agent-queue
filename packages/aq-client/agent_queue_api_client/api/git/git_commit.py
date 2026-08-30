@@ -65,11 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GitCommitRequest,
 ) -> Response[GitCommitResponse | GitCommitResponse422]:
-    """Stage all changes and create a commit in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+    """Stage all changes and create a commit.
 
-     Stage all changes and create a commit in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+     Stage all changes and create a commit.
 
     Args:
         body (GitCommitRequest):
@@ -98,11 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GitCommitRequest,
 ) -> GitCommitResponse | GitCommitResponse422 | None:
-    """Stage all changes and create a commit in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+    """Stage all changes and create a commit.
 
-     Stage all changes and create a commit in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+     Stage all changes and create a commit.
 
     Args:
         body (GitCommitRequest):
@@ -126,11 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GitCommitRequest,
 ) -> Response[GitCommitResponse | GitCommitResponse422]:
-    """Stage all changes and create a commit in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+    """Stage all changes and create a commit.
 
-     Stage all changes and create a commit in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+     Stage all changes and create a commit.
 
     Args:
         body (GitCommitRequest):
@@ -157,11 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GitCommitRequest,
 ) -> GitCommitResponse | GitCommitResponse422 | None:
-    """Stage all changes and create a commit in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+    """Stage all changes and create a commit.
 
-     Stage all changes and create a commit in a repository. Operates on the active project's repository.
-    Use the workspace parameter to target a specific workspace.
+     Stage all changes and create a commit.
 
     Args:
         body (GitCommitRequest):

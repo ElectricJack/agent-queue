@@ -17,10 +17,12 @@ class CommitChangesRequest:
     Attributes:
         message (str): Commit message
         project_id (None | str | Unset): Project ID
+        workspace (None | str | Unset): Workspace name or ID (optional)
     """
 
     message: str
     project_id: None | str | Unset = UNSET
+    workspace: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -32,6 +34,12 @@ class CommitChangesRequest:
         else:
             project_id = self.project_id
 
+        workspace: None | str | Unset
+        if isinstance(self.workspace, Unset):
+            workspace = UNSET
+        else:
+            workspace = self.workspace
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -41,6 +49,8 @@ class CommitChangesRequest:
         )
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
+        if workspace is not UNSET:
+            field_dict["workspace"] = workspace
 
         return field_dict
 
@@ -58,9 +68,19 @@ class CommitChangesRequest:
 
         project_id = _parse_project_id(d.pop("project_id", UNSET))
 
+        def _parse_workspace(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        workspace = _parse_workspace(d.pop("workspace", UNSET))
+
         commit_changes_request = cls(
             message=message,
             project_id=project_id,
+            workspace=workspace,
         )
 
         commit_changes_request.additional_properties = d

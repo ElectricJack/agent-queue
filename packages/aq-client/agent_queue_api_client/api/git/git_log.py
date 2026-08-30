@@ -65,11 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GitLogRequest,
 ) -> Response[GitLogResponse | GitLogResponse422]:
-    """Show recent git commits for a project's repository. Operates on the active project's repository. Use
-    the workspace parameter to target a specific workspace.
+    """Show recent commit log.
 
-     Show recent git commits for a project's repository. Operates on the active project's repository. Use
-    the workspace parameter to target a specific workspace.
+     Show recent commit log.
 
     Args:
         body (GitLogRequest):
@@ -98,11 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GitLogRequest,
 ) -> GitLogResponse | GitLogResponse422 | None:
-    """Show recent git commits for a project's repository. Operates on the active project's repository. Use
-    the workspace parameter to target a specific workspace.
+    """Show recent commit log.
 
-     Show recent git commits for a project's repository. Operates on the active project's repository. Use
-    the workspace parameter to target a specific workspace.
+     Show recent commit log.
 
     Args:
         body (GitLogRequest):
@@ -126,11 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GitLogRequest,
 ) -> Response[GitLogResponse | GitLogResponse422]:
-    """Show recent git commits for a project's repository. Operates on the active project's repository. Use
-    the workspace parameter to target a specific workspace.
+    """Show recent commit log.
 
-     Show recent git commits for a project's repository. Operates on the active project's repository. Use
-    the workspace parameter to target a specific workspace.
+     Show recent commit log.
 
     Args:
         body (GitLogRequest):
@@ -157,11 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GitLogRequest,
 ) -> GitLogResponse | GitLogResponse422 | None:
-    """Show recent git commits for a project's repository. Operates on the active project's repository. Use
-    the workspace parameter to target a specific workspace.
+    """Show recent commit log.
 
-     Show recent git commits for a project's repository. Operates on the active project's repository. Use
-    the workspace parameter to target a specific workspace.
+     Show recent commit log.
 
     Args:
         body (GitLogRequest):

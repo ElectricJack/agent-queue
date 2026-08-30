@@ -1,5 +1,5 @@
 # agent-queue-api-client
-A client library for accessing AgentQueue API
+A client library for accessing Agent Q API
 
 ## Usage
 First, create a client:

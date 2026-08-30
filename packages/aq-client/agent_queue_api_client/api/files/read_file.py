@@ -65,11 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ReadFileRequest,
 ) -> Response[ReadFileResponse | ReadFileResponse422]:
-    """Read a file's contents from a workspace. Path can be absolute or relative to the workspaces root.
-    Supports offset/limit for reading specific portions of large files.
+    """Read a file's contents. Path can be absolute or relative to the workspaces root. Supports
+    offset/limit for reading specific portions of large files.
 
-     Read a file's contents from a workspace. Path can be absolute or relative to the workspaces root.
-    Supports offset/limit for reading specific portions of large files.
+     Read a file's contents. Path can be absolute or relative to the workspaces root. Supports
+    offset/limit for reading specific portions of large files.
 
     Args:
         body (ReadFileRequest):
@@ -98,11 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ReadFileRequest,
 ) -> ReadFileResponse | ReadFileResponse422 | None:
-    """Read a file's contents from a workspace. Path can be absolute or relative to the workspaces root.
-    Supports offset/limit for reading specific portions of large files.
+    """Read a file's contents. Path can be absolute or relative to the workspaces root. Supports
+    offset/limit for reading specific portions of large files.
 
-     Read a file's contents from a workspace. Path can be absolute or relative to the workspaces root.
-    Supports offset/limit for reading specific portions of large files.
+     Read a file's contents. Path can be absolute or relative to the workspaces root. Supports
+    offset/limit for reading specific portions of large files.
 
     Args:
         body (ReadFileRequest):
@@ -126,11 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ReadFileRequest,
 ) -> Response[ReadFileResponse | ReadFileResponse422]:
-    """Read a file's contents from a workspace. Path can be absolute or relative to the workspaces root.
-    Supports offset/limit for reading specific portions of large files.
+    """Read a file's contents. Path can be absolute or relative to the workspaces root. Supports
+    offset/limit for reading specific portions of large files.
 
-     Read a file's contents from a workspace. Path can be absolute or relative to the workspaces root.
-    Supports offset/limit for reading specific portions of large files.
+     Read a file's contents. Path can be absolute or relative to the workspaces root. Supports
+    offset/limit for reading specific portions of large files.
 
     Args:
         body (ReadFileRequest):
@@ -157,11 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ReadFileRequest,
 ) -> ReadFileResponse | ReadFileResponse422 | None:
-    """Read a file's contents from a workspace. Path can be absolute or relative to the workspaces root.
-    Supports offset/limit for reading specific portions of large files.
+    """Read a file's contents. Path can be absolute or relative to the workspaces root. Supports
+    offset/limit for reading specific portions of large files.
 
-     Read a file's contents from a workspace. Path can be absolute or relative to the workspaces root.
-    Supports offset/limit for reading specific portions of large files.
+     Read a file's contents. Path can be absolute or relative to the workspaces root. Supports
+    offset/limit for reading specific portions of large files.
 
     Args:
         body (ReadFileRequest):

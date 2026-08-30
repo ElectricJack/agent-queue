@@ -17,8 +17,8 @@ class CreateGithubRepoRequest:
     Attributes:
         name (str): Repository name
         private (bool | Unset): Create private repo (default true) Default: True.
-        org (None | str | Unset): GitHub org — omit for personal repo
-        description (None | str | Unset): Optional repo description
+        org (None | str | Unset): GitHub org (omit for personal repo)
+        description (None | str | Unset): Repo description
     """
 
     name: str

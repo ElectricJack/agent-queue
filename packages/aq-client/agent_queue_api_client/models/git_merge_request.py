@@ -16,31 +16,31 @@ class GitMergeRequest:
     """
     Attributes:
         branch_name (str): Branch to merge
-        project_id (None | str | Unset): Project ID (optional — inferred from active project)
-        default_branch (None | str | Unset): Target branch to merge into (defaults to repo's default branch)
-        workspace (None | str | Unset): Workspace ID or name to operate on (optional — defaults to first workspace)
+        default_branch (None | str | Unset): Target branch (default: project default)
+        project_id (None | str | Unset): Project ID
+        workspace (None | str | Unset): Workspace name or ID (optional)
     """
 
     branch_name: str
-    project_id: None | str | Unset = UNSET
     default_branch: None | str | Unset = UNSET
+    project_id: None | str | Unset = UNSET
     workspace: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         branch_name = self.branch_name
 
-        project_id: None | str | Unset
-        if isinstance(self.project_id, Unset):
-            project_id = UNSET
-        else:
-            project_id = self.project_id
-
         default_branch: None | str | Unset
         if isinstance(self.default_branch, Unset):
             default_branch = UNSET
         else:
             default_branch = self.default_branch
+
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
 
         workspace: None | str | Unset
         if isinstance(self.workspace, Unset):
@@ -55,10 +55,10 @@ class GitMergeRequest:
                 "branch_name": branch_name,
             }
         )
-        if project_id is not UNSET:
-            field_dict["project_id"] = project_id
         if default_branch is not UNSET:
             field_dict["default_branch"] = default_branch
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
         if workspace is not UNSET:
             field_dict["workspace"] = workspace
 
@@ -69,15 +69,6 @@ class GitMergeRequest:
         d = dict(src_dict)
         branch_name = d.pop("branch_name")
 
-        def _parse_project_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        project_id = _parse_project_id(d.pop("project_id", UNSET))
-
         def _parse_default_branch(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -86,6 +77,15 @@ class GitMergeRequest:
             return cast(None | str | Unset, data)
 
         default_branch = _parse_default_branch(d.pop("default_branch", UNSET))
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
 
         def _parse_workspace(data: object) -> None | str | Unset:
             if data is None:
@@ -98,8 +98,8 @@ class GitMergeRequest:
 
         git_merge_request = cls(
             branch_name=branch_name,
-            project_id=project_id,
             default_branch=default_branch,
+            project_id=project_id,
             workspace=workspace,
         )
 

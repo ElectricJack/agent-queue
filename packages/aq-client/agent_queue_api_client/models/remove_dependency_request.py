@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="RemoveDependencyRequest")
 
@@ -15,16 +17,25 @@ class RemoveDependencyRequest:
     Attributes:
         task_id (str): The downstream task to unlink
         depends_on (str): The upstream task to remove as a dependency
+        dep_type (None | str | Unset): Only remove the edge of this kind. Omit to remove every edge kind between the
+            pair.
     """
 
     task_id: str
     depends_on: str
+    dep_type: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         task_id = self.task_id
 
         depends_on = self.depends_on
+
+        dep_type: None | str | Unset
+        if isinstance(self.dep_type, Unset):
+            dep_type = UNSET
+        else:
+            dep_type = self.dep_type
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -34,6 +45,8 @@ class RemoveDependencyRequest:
                 "depends_on": depends_on,
             }
         )
+        if dep_type is not UNSET:
+            field_dict["dep_type"] = dep_type
 
         return field_dict
 
@@ -44,9 +57,19 @@ class RemoveDependencyRequest:
 
         depends_on = d.pop("depends_on")
 
+        def _parse_dep_type(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        dep_type = _parse_dep_type(d.pop("dep_type", UNSET))
+
         remove_dependency_request = cls(
             task_id=task_id,
             depends_on=depends_on,
+            dep_type=dep_type,
         )
 
         remove_dependency_request.additional_properties = d

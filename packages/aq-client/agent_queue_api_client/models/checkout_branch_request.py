@@ -15,9 +15,9 @@ T = TypeVar("T", bound="CheckoutBranchRequest")
 class CheckoutBranchRequest:
     """
     Attributes:
-        branch_name (str): Branch name to check out
-        project_id (None | str | Unset): Project ID (optional — inferred from active project)
-        workspace (None | str | Unset): Workspace ID or name to operate on (optional — defaults to first workspace)
+        branch_name (str): Branch name
+        project_id (None | str | Unset): Project ID
+        workspace (None | str | Unset): Workspace name or ID (optional)
     """
 
     branch_name: str

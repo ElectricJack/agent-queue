@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GitCheckoutRequest,
 ) -> Response[GitCheckoutResponse | GitCheckoutResponse422]:
-    """Switch to an existing branch in a project's repo.
+    """Switch to an existing branch.
 
-     Switch to an existing branch in a project's repo.
+     Switch to an existing branch.
 
     Args:
         body (GitCheckoutRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GitCheckoutRequest,
 ) -> GitCheckoutResponse | GitCheckoutResponse422 | None:
-    """Switch to an existing branch in a project's repo.
+    """Switch to an existing branch.
 
-     Switch to an existing branch in a project's repo.
+     Switch to an existing branch.
 
     Args:
         body (GitCheckoutRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GitCheckoutRequest,
 ) -> Response[GitCheckoutResponse | GitCheckoutResponse422]:
-    """Switch to an existing branch in a project's repo.
+    """Switch to an existing branch.
 
-     Switch to an existing branch in a project's repo.
+     Switch to an existing branch.
 
     Args:
         body (GitCheckoutRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GitCheckoutRequest,
 ) -> GitCheckoutResponse | GitCheckoutResponse422 | None:
-    """Switch to an existing branch in a project's repo.
+    """Switch to an existing branch.
 
-     Switch to an existing branch in a project's repo.
+     Switch to an existing branch.
 
     Args:
         body (GitCheckoutRequest):

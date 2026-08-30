@@ -65,13 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GitDiffRequest,
 ) -> Response[GitDiffResponse | GitDiffResponse422]:
-    """Show the git diff for a project's repository. Without base_branch shows working tree changes; with
-    base_branch shows diff against that branch. Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+    """Show diff of the working tree or against a base branch.
 
-     Show the git diff for a project's repository. Without base_branch shows working tree changes; with
-    base_branch shows diff against that branch. Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+     Show diff of the working tree or against a base branch.
 
     Args:
         body (GitDiffRequest):
@@ -100,13 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GitDiffRequest,
 ) -> GitDiffResponse | GitDiffResponse422 | None:
-    """Show the git diff for a project's repository. Without base_branch shows working tree changes; with
-    base_branch shows diff against that branch. Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+    """Show diff of the working tree or against a base branch.
 
-     Show the git diff for a project's repository. Without base_branch shows working tree changes; with
-    base_branch shows diff against that branch. Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+     Show diff of the working tree or against a base branch.
 
     Args:
         body (GitDiffRequest):
@@ -130,13 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GitDiffRequest,
 ) -> Response[GitDiffResponse | GitDiffResponse422]:
-    """Show the git diff for a project's repository. Without base_branch shows working tree changes; with
-    base_branch shows diff against that branch. Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+    """Show diff of the working tree or against a base branch.
 
-     Show the git diff for a project's repository. Without base_branch shows working tree changes; with
-    base_branch shows diff against that branch. Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+     Show diff of the working tree or against a base branch.
 
     Args:
         body (GitDiffRequest):
@@ -163,13 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GitDiffRequest,
 ) -> GitDiffResponse | GitDiffResponse422 | None:
-    """Show the git diff for a project's repository. Without base_branch shows working tree changes; with
-    base_branch shows diff against that branch. Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+    """Show diff of the working tree or against a base branch.
 
-     Show the git diff for a project's repository. Without base_branch shows working tree changes; with
-    base_branch shows diff against that branch. Operates on the active project's repository. Use the
-    workspace parameter to target a specific workspace.
+     Show diff of the working tree or against a base branch.
 
     Args:
         body (GitDiffRequest):

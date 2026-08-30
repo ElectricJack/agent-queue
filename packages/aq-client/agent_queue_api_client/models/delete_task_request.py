@@ -6,6 +6,8 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..types import UNSET, Unset
+
 T = TypeVar("T", bound="DeleteTaskRequest")
 
 
@@ -14,13 +16,17 @@ class DeleteTaskRequest:
     """
     Attributes:
         task_id (str): Task ID to delete
+        cascade (bool | Unset):  Default: False.
     """
 
     task_id: str
+    cascade: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         task_id = self.task_id
+
+        cascade = self.cascade
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -29,6 +35,8 @@ class DeleteTaskRequest:
                 "task_id": task_id,
             }
         )
+        if cascade is not UNSET:
+            field_dict["cascade"] = cascade
 
         return field_dict
 
@@ -37,8 +45,11 @@ class DeleteTaskRequest:
         d = dict(src_dict)
         task_id = d.pop("task_id")
 
+        cascade = d.pop("cascade", UNSET)
+
         delete_task_request = cls(
             task_id=task_id,
+            cascade=cascade,
         )
 
         delete_task_request.additional_properties = d

@@ -15,7 +15,7 @@ T = TypeVar("T", bound="UpdateAndRestartRequest")
 class UpdateAndRestartRequest:
     """
     Attributes:
-        reason (None | str | Unset): Why the update is being requested
+        reason (None | str | Unset): Why the update/restart is being requested
         wait_for_tasks (bool | None | Unset): If true, pause orchestrator and wait for running tasks to complete before
             restarting (up to 5 minutes). Default: false.
     """

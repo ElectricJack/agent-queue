@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PluginRemoveRequest,
 ) -> Response[PluginRemoveResponse | PluginRemoveResponse422]:
-    """Completely remove an installed plugin.
+    """Remove an installed plugin.
 
-     Completely remove an installed plugin.
+     Remove an installed plugin.
 
     Args:
         body (PluginRemoveRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PluginRemoveRequest,
 ) -> PluginRemoveResponse | PluginRemoveResponse422 | None:
-    """Completely remove an installed plugin.
+    """Remove an installed plugin.
 
-     Completely remove an installed plugin.
+     Remove an installed plugin.
 
     Args:
         body (PluginRemoveRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PluginRemoveRequest,
 ) -> Response[PluginRemoveResponse | PluginRemoveResponse422]:
-    """Completely remove an installed plugin.
+    """Remove an installed plugin.
 
-     Completely remove an installed plugin.
+     Remove an installed plugin.
 
     Args:
         body (PluginRemoveRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PluginRemoveRequest,
 ) -> PluginRemoveResponse | PluginRemoveResponse422 | None:
-    """Completely remove an installed plugin.
+    """Remove an installed plugin.
 
-     Completely remove an installed plugin.
+     Remove an installed plugin.
 
     Args:
         body (PluginRemoveRequest):

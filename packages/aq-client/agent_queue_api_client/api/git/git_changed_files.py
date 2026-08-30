@@ -65,11 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GitChangedFilesRequest,
 ) -> Response[GitChangedFilesResponse | GitChangedFilesResponse422]:
-    """List files changed compared to a base branch. Lighter than a full diff. Operates on the active
-    project's repository. Use the workspace parameter to target a specific workspace.
+    """List files changed compared to a base branch.
 
-     List files changed compared to a base branch. Lighter than a full diff. Operates on the active
-    project's repository. Use the workspace parameter to target a specific workspace.
+     List files changed compared to a base branch.
 
     Args:
         body (GitChangedFilesRequest):
@@ -98,11 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GitChangedFilesRequest,
 ) -> GitChangedFilesResponse | GitChangedFilesResponse422 | None:
-    """List files changed compared to a base branch. Lighter than a full diff. Operates on the active
-    project's repository. Use the workspace parameter to target a specific workspace.
+    """List files changed compared to a base branch.
 
-     List files changed compared to a base branch. Lighter than a full diff. Operates on the active
-    project's repository. Use the workspace parameter to target a specific workspace.
+     List files changed compared to a base branch.
 
     Args:
         body (GitChangedFilesRequest):
@@ -126,11 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GitChangedFilesRequest,
 ) -> Response[GitChangedFilesResponse | GitChangedFilesResponse422]:
-    """List files changed compared to a base branch. Lighter than a full diff. Operates on the active
-    project's repository. Use the workspace parameter to target a specific workspace.
+    """List files changed compared to a base branch.
 
-     List files changed compared to a base branch. Lighter than a full diff. Operates on the active
-    project's repository. Use the workspace parameter to target a specific workspace.
+     List files changed compared to a base branch.
 
     Args:
         body (GitChangedFilesRequest):
@@ -157,11 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GitChangedFilesRequest,
 ) -> GitChangedFilesResponse | GitChangedFilesResponse422 | None:
-    """List files changed compared to a base branch. Lighter than a full diff. Operates on the active
-    project's repository. Use the workspace parameter to target a specific workspace.
+    """List files changed compared to a base branch.
 
-     List files changed compared to a base branch. Lighter than a full diff. Operates on the active
-    project's repository. Use the workspace parameter to target a specific workspace.
+     List files changed compared to a base branch.
 
     Args:
         body (GitChangedFilesRequest):

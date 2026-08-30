@@ -1,0 +1,9 @@
+# openapi-python-client generator config.
+#
+# The generated package name is derived from the OpenAPI `info.title`, which
+# is "Agent Q API" -> `agent_q_api_client`. The committed client (and
+# `src/cli/client.py`, which imports it by name for typed dispatch) predates
+# that title and uses `agent_queue_api_client`. Pin both names here so a
+# regeneration never silently renames the package out from under its importer.
+package_name_override: agent_queue_api_client
+project_name_override: agent-queue-api-client

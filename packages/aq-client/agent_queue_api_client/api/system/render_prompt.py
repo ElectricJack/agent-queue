@@ -66,10 +66,14 @@ def sync_detailed(
     body: RenderPromptRequest,
 ) -> Response[RenderPromptResponse | RenderPromptResponse422]:
     """Render a prompt template with variable substitution. Replaces {{variable}} placeholders with
-    provided values. Returns the fully rendered prompt text.
+    provided values. Returns the fully rendered prompt text. Pass either (project_id, name) for a
+    project-scoped template, or path=<absolute path> for a bundled template (in playbooks, use
+    aq://prompts/<path> — compiler rewrites).
 
      Render a prompt template with variable substitution. Replaces {{variable}} placeholders with
-    provided values. Returns the fully rendered prompt text.
+    provided values. Returns the fully rendered prompt text. Pass either (project_id, name) for a
+    project-scoped template, or path=<absolute path> for a bundled template (in playbooks, use
+    aq://prompts/<path> — compiler rewrites).
 
     Args:
         body (RenderPromptRequest):
@@ -99,10 +103,14 @@ def sync(
     body: RenderPromptRequest,
 ) -> RenderPromptResponse | RenderPromptResponse422 | None:
     """Render a prompt template with variable substitution. Replaces {{variable}} placeholders with
-    provided values. Returns the fully rendered prompt text.
+    provided values. Returns the fully rendered prompt text. Pass either (project_id, name) for a
+    project-scoped template, or path=<absolute path> for a bundled template (in playbooks, use
+    aq://prompts/<path> — compiler rewrites).
 
      Render a prompt template with variable substitution. Replaces {{variable}} placeholders with
-    provided values. Returns the fully rendered prompt text.
+    provided values. Returns the fully rendered prompt text. Pass either (project_id, name) for a
+    project-scoped template, or path=<absolute path> for a bundled template (in playbooks, use
+    aq://prompts/<path> — compiler rewrites).
 
     Args:
         body (RenderPromptRequest):
@@ -127,10 +135,14 @@ async def asyncio_detailed(
     body: RenderPromptRequest,
 ) -> Response[RenderPromptResponse | RenderPromptResponse422]:
     """Render a prompt template with variable substitution. Replaces {{variable}} placeholders with
-    provided values. Returns the fully rendered prompt text.
+    provided values. Returns the fully rendered prompt text. Pass either (project_id, name) for a
+    project-scoped template, or path=<absolute path> for a bundled template (in playbooks, use
+    aq://prompts/<path> — compiler rewrites).
 
      Render a prompt template with variable substitution. Replaces {{variable}} placeholders with
-    provided values. Returns the fully rendered prompt text.
+    provided values. Returns the fully rendered prompt text. Pass either (project_id, name) for a
+    project-scoped template, or path=<absolute path> for a bundled template (in playbooks, use
+    aq://prompts/<path> — compiler rewrites).
 
     Args:
         body (RenderPromptRequest):
@@ -158,10 +170,14 @@ async def asyncio(
     body: RenderPromptRequest,
 ) -> RenderPromptResponse | RenderPromptResponse422 | None:
     """Render a prompt template with variable substitution. Replaces {{variable}} placeholders with
-    provided values. Returns the fully rendered prompt text.
+    provided values. Returns the fully rendered prompt text. Pass either (project_id, name) for a
+    project-scoped template, or path=<absolute path> for a bundled template (in playbooks, use
+    aq://prompts/<path> — compiler rewrites).
 
      Render a prompt template with variable substitution. Replaces {{variable}} placeholders with
-    provided values. Returns the fully rendered prompt text.
+    provided values. Returns the fully rendered prompt text. Pass either (project_id, name) for a
+    project-scoped template, or path=<absolute path> for a bundled template (in playbooks, use
+    aq://prompts/<path> — compiler rewrites).
 
     Args:
         body (RenderPromptRequest):

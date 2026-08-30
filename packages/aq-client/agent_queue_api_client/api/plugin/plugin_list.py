@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PluginListRequest,
 ) -> Response[PluginListResponse | PluginListResponse422]:
-    """List all installed plugins with their status.
+    """List installed plugins.
 
-     List all installed plugins with their status.
+     List installed plugins.
 
     Args:
         body (PluginListRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PluginListRequest,
 ) -> PluginListResponse | PluginListResponse422 | None:
-    """List all installed plugins with their status.
+    """List installed plugins.
 
-     List all installed plugins with their status.
+     List installed plugins.
 
     Args:
         body (PluginListRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PluginListRequest,
 ) -> Response[PluginListResponse | PluginListResponse422]:
-    """List all installed plugins with their status.
+    """List installed plugins.
 
-     List all installed plugins with their status.
+     List installed plugins.
 
     Args:
         body (PluginListRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PluginListRequest,
 ) -> PluginListResponse | PluginListResponse422 | None:
-    """List all installed plugins with their status.
+    """List installed plugins.
 
-     List all installed plugins with their status.
+     List installed plugins.
 
     Args:
         body (PluginListRequest):

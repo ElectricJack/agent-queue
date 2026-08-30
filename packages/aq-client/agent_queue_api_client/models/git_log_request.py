@@ -15,22 +15,18 @@ T = TypeVar("T", bound="GitLogRequest")
 class GitLogRequest:
     """
     Attributes:
-        project_id (None | str | Unset): Project ID (optional — inferred from active project)
-        count (int | Unset): Number of commits to show (default 10) Default: 10.
-        workspace (None | str | Unset): Workspace ID or name to operate on (optional — defaults to first workspace)
+        project_id (str): Project ID
+        count (int | Unset): Number of commits (default 10) Default: 10.
+        workspace (None | str | Unset): Workspace name or ID (optional)
     """
 
-    project_id: None | str | Unset = UNSET
+    project_id: str
     count: int | Unset = 10
     workspace: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id: None | str | Unset
-        if isinstance(self.project_id, Unset):
-            project_id = UNSET
-        else:
-            project_id = self.project_id
+        project_id = self.project_id
 
         count = self.count
 
@@ -42,9 +38,11 @@ class GitLogRequest:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
-        if project_id is not UNSET:
-            field_dict["project_id"] = project_id
+        field_dict.update(
+            {
+                "project_id": project_id,
+            }
+        )
         if count is not UNSET:
             field_dict["count"] = count
         if workspace is not UNSET:
@@ -55,15 +53,7 @@ class GitLogRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-
-        def _parse_project_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        project_id = _parse_project_id(d.pop("project_id", UNSET))
+        project_id = d.pop("project_id")
 
         count = d.pop("count", UNSET)
 

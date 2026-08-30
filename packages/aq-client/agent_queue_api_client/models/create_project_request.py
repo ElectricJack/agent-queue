@@ -23,6 +23,9 @@ class CreateProjectRequest:
         auto_create_channels (bool | None | Unset): If true, auto-create dedicated Discord channels for this project
             after creation.  If false, skip channel creation.  When omitted, falls back to the global
             per_project_channels.auto_create config setting.
+        default_profile_id (None | str | Unset): Agent profile used for tasks in this project that don't specify their
+            own profile_id.  When omitted, a system default is chosen automatically (claude-opus, then claude-sonnet, then
+            any general-purpose profile).
     """
 
     name: str
@@ -31,6 +34,7 @@ class CreateProjectRequest:
     repo_url: None | str | Unset = UNSET
     default_branch: str | Unset = "main"
     auto_create_channels: bool | None | Unset = UNSET
+    default_profile_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -54,6 +58,12 @@ class CreateProjectRequest:
         else:
             auto_create_channels = self.auto_create_channels
 
+        default_profile_id: None | str | Unset
+        if isinstance(self.default_profile_id, Unset):
+            default_profile_id = UNSET
+        else:
+            default_profile_id = self.default_profile_id
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -71,6 +81,8 @@ class CreateProjectRequest:
             field_dict["default_branch"] = default_branch
         if auto_create_channels is not UNSET:
             field_dict["auto_create_channels"] = auto_create_channels
+        if default_profile_id is not UNSET:
+            field_dict["default_profile_id"] = default_profile_id
 
         return field_dict
 
@@ -103,6 +115,15 @@ class CreateProjectRequest:
 
         auto_create_channels = _parse_auto_create_channels(d.pop("auto_create_channels", UNSET))
 
+        def _parse_default_profile_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        default_profile_id = _parse_default_profile_id(d.pop("default_profile_id", UNSET))
+
         create_project_request = cls(
             name=name,
             credit_weight=credit_weight,
@@ -110,6 +131,7 @@ class CreateProjectRequest:
             repo_url=repo_url,
             default_branch=default_branch,
             auto_create_channels=auto_create_channels,
+            default_profile_id=default_profile_id,
         )
 
         create_project_request.additional_properties = d

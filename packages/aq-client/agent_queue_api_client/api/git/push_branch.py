@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PushBranchRequest,
 ) -> Response[PushBranchResponse | PushBranchResponse422]:
-    """Push the current (or specified) branch to origin.
+    """Push the current or specified branch to origin (alias for git_push).
 
-     Push the current (or specified) branch to origin.
+     Push the current or specified branch to origin (alias for git_push).
 
     Args:
         body (PushBranchRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PushBranchRequest,
 ) -> PushBranchResponse | PushBranchResponse422 | None:
-    """Push the current (or specified) branch to origin.
+    """Push the current or specified branch to origin (alias for git_push).
 
-     Push the current (or specified) branch to origin.
+     Push the current or specified branch to origin (alias for git_push).
 
     Args:
         body (PushBranchRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PushBranchRequest,
 ) -> Response[PushBranchResponse | PushBranchResponse422]:
-    """Push the current (or specified) branch to origin.
+    """Push the current or specified branch to origin (alias for git_push).
 
-     Push the current (or specified) branch to origin.
+     Push the current or specified branch to origin (alias for git_push).
 
     Args:
         body (PushBranchRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PushBranchRequest,
 ) -> PushBranchResponse | PushBranchResponse422 | None:
-    """Push the current (or specified) branch to origin.
+    """Push the current or specified branch to origin (alias for git_push).
 
-     Push the current (or specified) branch to origin.
+     Push the current or specified branch to origin (alias for git_push).
 
     Args:
         body (PushBranchRequest):

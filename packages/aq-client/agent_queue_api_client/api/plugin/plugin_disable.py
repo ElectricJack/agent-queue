@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PluginDisableRequest,
 ) -> Response[PluginDisableResponse | PluginDisableResponse422]:
-    """Disable a plugin without removing it.
+    """Disable a plugin (keeps it installed).
 
-     Disable a plugin without removing it.
+     Disable a plugin (keeps it installed).
 
     Args:
         body (PluginDisableRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PluginDisableRequest,
 ) -> PluginDisableResponse | PluginDisableResponse422 | None:
-    """Disable a plugin without removing it.
+    """Disable a plugin (keeps it installed).
 
-     Disable a plugin without removing it.
+     Disable a plugin (keeps it installed).
 
     Args:
         body (PluginDisableRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PluginDisableRequest,
 ) -> Response[PluginDisableResponse | PluginDisableResponse422]:
-    """Disable a plugin without removing it.
+    """Disable a plugin (keeps it installed).
 
-     Disable a plugin without removing it.
+     Disable a plugin (keeps it installed).
 
     Args:
         body (PluginDisableRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PluginDisableRequest,
 ) -> PluginDisableResponse | PluginDisableResponse422 | None:
-    """Disable a plugin without removing it.
+    """Disable a plugin (keeps it installed).
 
-     Disable a plugin without removing it.
+     Disable a plugin (keeps it installed).
 
     Args:
         body (PluginDisableRequest):

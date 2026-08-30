@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PluginConfigRequest,
 ) -> Response[PluginConfigResponse | PluginConfigResponse422]:
-    """Get or set a plugin's configuration.
+    """Get or set plugin configuration.
 
-     Get or set a plugin's configuration.
+     Get or set plugin configuration.
 
     Args:
         body (PluginConfigRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PluginConfigRequest,
 ) -> PluginConfigResponse | PluginConfigResponse422 | None:
-    """Get or set a plugin's configuration.
+    """Get or set plugin configuration.
 
-     Get or set a plugin's configuration.
+     Get or set plugin configuration.
 
     Args:
         body (PluginConfigRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PluginConfigRequest,
 ) -> Response[PluginConfigResponse | PluginConfigResponse422]:
-    """Get or set a plugin's configuration.
+    """Get or set plugin configuration.
 
-     Get or set a plugin's configuration.
+     Get or set plugin configuration.
 
     Args:
         body (PluginConfigRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PluginConfigRequest,
 ) -> PluginConfigResponse | PluginConfigResponse422 | None:
-    """Get or set a plugin's configuration.
+    """Get or set plugin configuration.
 
-     Get or set a plugin's configuration.
+     Get or set plugin configuration.
 
     Args:
         body (PluginConfigRequest):

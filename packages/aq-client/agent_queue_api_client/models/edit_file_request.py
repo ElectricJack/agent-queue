@@ -18,7 +18,7 @@ class EditFileRequest:
         path (str): File path (absolute or relative to workspaces root)
         old_string (str): Exact text to find and replace
         new_string (str): Replacement text
-        replace_all (bool | Unset): Replace all occurrences (default false — requires unique match) Default: False.
+        replace_all (bool | Unset): Replace all occurrences (default false -- requires unique match) Default: False.
     """
 
     path: str

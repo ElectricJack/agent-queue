@@ -18,14 +18,14 @@ class NoteSummary:
         name (str | Unset):  Default: ''.
         title (str | Unset):  Default: ''.
         size_bytes (int | Unset):  Default: 0.
-        modified (None | str | Unset):
+        modified (float | None | str | Unset):
         path (None | str | Unset):
     """
 
     name: str | Unset = ""
     title: str | Unset = ""
     size_bytes: int | Unset = 0
-    modified: None | str | Unset = UNSET
+    modified: float | None | str | Unset = UNSET
     path: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -36,7 +36,7 @@ class NoteSummary:
 
         size_bytes = self.size_bytes
 
-        modified: None | str | Unset
+        modified: float | None | str | Unset
         if isinstance(self.modified, Unset):
             modified = UNSET
         else:
@@ -73,12 +73,12 @@ class NoteSummary:
 
         size_bytes = d.pop("size_bytes", UNSET)
 
-        def _parse_modified(data: object) -> None | str | Unset:
+        def _parse_modified(data: object) -> float | None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return cast(None | str | Unset, data)
+            return cast(float | None | str | Unset, data)
 
         modified = _parse_modified(d.pop("modified", UNSET))
 

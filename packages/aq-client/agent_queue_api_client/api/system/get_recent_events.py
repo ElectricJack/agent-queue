@@ -65,9 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GetRecentEventsRequest,
 ) -> Response[GetRecentEventsResponse | GetRecentEventsResponse422]:
-    """Get recent system events (task completions, failures, etc.).
+    """Get recent system events (task completions, failures, agent questions, budget warnings, etc.) from
+    the event database. Supports filtering by event type, time range, project, agent, or task.
 
-     Get recent system events (task completions, failures, etc.).
+     Get recent system events (task completions, failures, agent questions, budget warnings, etc.) from
+    the event database. Supports filtering by event type, time range, project, agent, or task.
 
     Args:
         body (GetRecentEventsRequest):
@@ -96,9 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GetRecentEventsRequest,
 ) -> GetRecentEventsResponse | GetRecentEventsResponse422 | None:
-    """Get recent system events (task completions, failures, etc.).
+    """Get recent system events (task completions, failures, agent questions, budget warnings, etc.) from
+    the event database. Supports filtering by event type, time range, project, agent, or task.
 
-     Get recent system events (task completions, failures, etc.).
+     Get recent system events (task completions, failures, agent questions, budget warnings, etc.) from
+    the event database. Supports filtering by event type, time range, project, agent, or task.
 
     Args:
         body (GetRecentEventsRequest):
@@ -122,9 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GetRecentEventsRequest,
 ) -> Response[GetRecentEventsResponse | GetRecentEventsResponse422]:
-    """Get recent system events (task completions, failures, etc.).
+    """Get recent system events (task completions, failures, agent questions, budget warnings, etc.) from
+    the event database. Supports filtering by event type, time range, project, agent, or task.
 
-     Get recent system events (task completions, failures, etc.).
+     Get recent system events (task completions, failures, agent questions, budget warnings, etc.) from
+    the event database. Supports filtering by event type, time range, project, agent, or task.
 
     Args:
         body (GetRecentEventsRequest):
@@ -151,9 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GetRecentEventsRequest,
 ) -> GetRecentEventsResponse | GetRecentEventsResponse422 | None:
-    """Get recent system events (task completions, failures, etc.).
+    """Get recent system events (task completions, failures, agent questions, budget warnings, etc.) from
+    the event database. Supports filtering by event type, time range, project, agent, or task.
 
-     Get recent system events (task completions, failures, etc.).
+     Get recent system events (task completions, failures, agent questions, budget warnings, etc.) from
+    the event database. Supports filtering by event type, time range, project, agent, or task.
 
     Args:
         body (GetRecentEventsRequest):

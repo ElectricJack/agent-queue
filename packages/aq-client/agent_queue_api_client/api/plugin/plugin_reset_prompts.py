@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PluginResetPromptsRequest,
 ) -> Response[PluginResetPromptsResponse | PluginResetPromptsResponse422]:
-    """Reset a plugin's prompts to defaults from source.
+    """Re-copy all default prompts from plugin source.
 
-     Reset a plugin's prompts to defaults from source.
+     Re-copy all default prompts from plugin source.
 
     Args:
         body (PluginResetPromptsRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PluginResetPromptsRequest,
 ) -> PluginResetPromptsResponse | PluginResetPromptsResponse422 | None:
-    """Reset a plugin's prompts to defaults from source.
+    """Re-copy all default prompts from plugin source.
 
-     Reset a plugin's prompts to defaults from source.
+     Re-copy all default prompts from plugin source.
 
     Args:
         body (PluginResetPromptsRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PluginResetPromptsRequest,
 ) -> Response[PluginResetPromptsResponse | PluginResetPromptsResponse422]:
-    """Reset a plugin's prompts to defaults from source.
+    """Re-copy all default prompts from plugin source.
 
-     Reset a plugin's prompts to defaults from source.
+     Re-copy all default prompts from plugin source.
 
     Args:
         body (PluginResetPromptsRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PluginResetPromptsRequest,
 ) -> PluginResetPromptsResponse | PluginResetPromptsResponse422 | None:
-    """Reset a plugin's prompts to defaults from source.
+    """Re-copy all default prompts from plugin source.
 
-     Reset a plugin's prompts to defaults from source.
+     Re-copy all default prompts from plugin source.
 
     Args:
         body (PluginResetPromptsRequest):

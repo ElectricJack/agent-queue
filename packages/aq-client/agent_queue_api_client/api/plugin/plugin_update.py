@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PluginUpdateRequest,
 ) -> Response[PluginUpdateResponse | PluginUpdateResponse422]:
-    """Update an installed plugin to the latest version.
+    """Update an installed plugin.
 
-     Update an installed plugin to the latest version.
+     Update an installed plugin.
 
     Args:
         body (PluginUpdateRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PluginUpdateRequest,
 ) -> PluginUpdateResponse | PluginUpdateResponse422 | None:
-    """Update an installed plugin to the latest version.
+    """Update an installed plugin.
 
-     Update an installed plugin to the latest version.
+     Update an installed plugin.
 
     Args:
         body (PluginUpdateRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PluginUpdateRequest,
 ) -> Response[PluginUpdateResponse | PluginUpdateResponse422]:
-    """Update an installed plugin to the latest version.
+    """Update an installed plugin.
 
-     Update an installed plugin to the latest version.
+     Update an installed plugin.
 
     Args:
         body (PluginUpdateRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PluginUpdateRequest,
 ) -> PluginUpdateResponse | PluginUpdateResponse422 | None:
-    """Update an installed plugin to the latest version.
+    """Update an installed plugin.
 
-     Update an installed plugin to the latest version.
+     Update an installed plugin.
 
     Args:
         body (PluginUpdateRequest):

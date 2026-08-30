@@ -15,9 +15,9 @@ T = TypeVar("T", bound="GitPushRequest")
 class GitPushRequest:
     """
     Attributes:
-        project_id (None | str | Unset): Project ID (optional — inferred from active project)
-        branch (None | str | Unset): Branch name to push (defaults to current branch)
-        workspace (None | str | Unset): Workspace ID or name to operate on (optional — defaults to first workspace)
+        project_id (None | str | Unset): Project ID
+        branch (None | str | Unset): Branch to push (optional, defaults to current)
+        workspace (None | str | Unset): Workspace name or ID (optional)
     """
 
     project_id: None | str | Unset = UNSET

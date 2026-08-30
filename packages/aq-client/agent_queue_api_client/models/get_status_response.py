@@ -9,7 +9,6 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.agent_status_entry import AgentStatusEntry
     from ..models.task_status_summary import TaskStatusSummary
 
 
@@ -21,26 +20,17 @@ class GetStatusResponse:
     """
     Attributes:
         projects (int | Unset):  Default: 0.
-        agents (list[AgentStatusEntry] | Unset):
         tasks (TaskStatusSummary | Unset):
         orchestrator_paused (bool | Unset):  Default: False.
     """
 
     projects: int | Unset = 0
-    agents: list[AgentStatusEntry] | Unset = UNSET
     tasks: TaskStatusSummary | Unset = UNSET
     orchestrator_paused: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         projects = self.projects
-
-        agents: list[dict[str, Any]] | Unset = UNSET
-        if not isinstance(self.agents, Unset):
-            agents = []
-            for agents_item_data in self.agents:
-                agents_item = agents_item_data.to_dict()
-                agents.append(agents_item)
 
         tasks: dict[str, Any] | Unset = UNSET
         if not isinstance(self.tasks, Unset):
@@ -53,8 +43,6 @@ class GetStatusResponse:
         field_dict.update({})
         if projects is not UNSET:
             field_dict["projects"] = projects
-        if agents is not UNSET:
-            field_dict["agents"] = agents
         if tasks is not UNSET:
             field_dict["tasks"] = tasks
         if orchestrator_paused is not UNSET:
@@ -64,20 +52,10 @@ class GetStatusResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.agent_status_entry import AgentStatusEntry
         from ..models.task_status_summary import TaskStatusSummary
 
         d = dict(src_dict)
         projects = d.pop("projects", UNSET)
-
-        _agents = d.pop("agents", UNSET)
-        agents: list[AgentStatusEntry] | Unset = UNSET
-        if _agents is not UNSET:
-            agents = []
-            for agents_item_data in _agents:
-                agents_item = AgentStatusEntry.from_dict(agents_item_data)
-
-                agents.append(agents_item)
 
         _tasks = d.pop("tasks", UNSET)
         tasks: TaskStatusSummary | Unset
@@ -90,7 +68,6 @@ class GetStatusResponse:
 
         get_status_response = cls(
             projects=projects,
-            agents=agents,
             tasks=tasks,
             orchestrator_paused=orchestrator_paused,
         )
