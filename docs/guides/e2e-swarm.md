@@ -273,7 +273,9 @@ three on when the provider is not `fake`:
 - `messages.enabled` + `supervisor_agent.enabled` — the per-project
   supervisor sessions the dashboard's chat talks to.
 
-It also raises `sessions.dialog_budget_seconds` to 45; see below.
+Separately — and for *both* tiers, since it costs nothing when no dialog
+appears — the generated config sets `sessions.dialog_budget_seconds: 45`.
+Only Tier 2 can ever hit it; see below.
 
 Then create the demand by hand and watch:
 
@@ -343,8 +345,9 @@ can take well over ten seconds to appear — past the stock
 `dialog_budget_seconds: 8`, so the harness's auto-dismiss has already given
 up and the session parks on the dialog until a human presses Enter. The
 symptom is a session that is "running" with no output and no claim, and a
-supervisor that appears to hang. `e2e-env.sh` sets 45s for Tier 2; if you
-still catch one, attach and press Enter once — the answer is remembered per
+supervisor that appears to hang. `e2e-env.sh` writes 45s into every config
+it generates (harmless under Tier 1, which spawns nothing); if you still
+catch one, attach and press Enter once — the answer is remembered per
 directory, so it only happens on a fresh workspace.
 
 ### The supervisor chat

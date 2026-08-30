@@ -179,3 +179,26 @@ def test_asyncpg_dsn_is_pooled_like_any_other_postgres_url():
 
     cfg = DatabaseConfig(url="postgresql+asyncpg://u:p@h/db", pool_min_size=0)
     assert [e.field for e in cfg.validate()] == ["pool_min_size"]
+
+
+def test_psycopg2_dsn_is_rejected_at_load():
+    """Recognized as PostgreSQL, but it cannot run this daemon.
+
+    psycopg2 has no asyncio support, so ``create_async_engine`` rejects it —
+    but only at first connect, deep in SQLAlchemy, with a message about the
+    dialect not being async.  Config validation says it at load, with the
+    fix in the text.
+    """
+    from src.config import DatabaseConfig
+
+    cfg = DatabaseConfig(url="postgresql+psycopg2://u:p@h/db")
+    errors = cfg.validate()
+    assert [e.field for e in errors] == ["url"]
+    assert "asyncpg" in errors[0].message
+
+
+def test_psycopg3_dsn_is_accepted():
+    """psycopg *3* is async-capable, unlike psycopg2 — it stays legal."""
+    from src.config import DatabaseConfig
+
+    assert DatabaseConfig(url="postgresql+psycopg://u:p@h/db").validate() == []

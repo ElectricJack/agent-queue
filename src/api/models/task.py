@@ -235,7 +235,13 @@ class RemoveDependencyResponse(BaseModel):
 
 
 class ProvenanceRef(BaseModel):
-    """A non-blocking incoming edge — today only ``discovered-from``."""
+    """The task at the far end of a non-blocking edge *out of* this one.
+
+    Provenance edges are **outgoing**, pointing from the task toward its
+    origin — the same direction as ``depends_on``, which is why they share
+    a query.  Today the only kind is ``discovered-from``, so this is the
+    task a worker was holding when it filed the one being inspected.
+    """
 
     id: str
     title: str = ""
@@ -249,7 +255,8 @@ class TaskDepsResponse(BaseModel):
     status: str = ""
     depends_on: list[TaskRef] = []
     blocks: list[TaskRef] = []
-    #: Where this task came from, as opposed to what holds it back.
+    #: Outgoing non-blocking edges: where this task came from, as opposed
+    #: to what holds it back.
     provenance: list[ProvenanceRef] = []
 
 

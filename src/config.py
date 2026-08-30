@@ -816,6 +816,15 @@ POSTGRES_URL_SCHEMES: tuple[str, ...] = (
 )
 
 
+#: PostgreSQL drivers that are recognized as PostgreSQL but cannot actually
+#: run this daemon.  ``psycopg2`` has no asyncio support at all, so
+#: ``create_async_engine`` rejects it — but only at first connect, deep in
+#: SQLAlchemy, with a message about the dialect not being async.  Naming it
+#: here turns that into a config error at load with the fix in it.
+#: (``postgresql+psycopg`` — psycopg *3* — is async-capable and stays legal.)
+SYNC_ONLY_POSTGRES_SCHEMES: tuple[str, ...] = ("postgresql+psycopg2://",)
+
+
 def is_postgres_url(url: str) -> bool:
     """True when *url* is a PostgreSQL DSN rather than a SQLite file path."""
     return str(url or "").startswith(POSTGRES_URL_SCHEMES)
@@ -859,6 +868,15 @@ class DatabaseConfig:
         if not self.url:
             errors.append(ConfigError("database", "url", "database url/path is required"))
         if self.backend == "postgresql":
+            if self.url.startswith(SYNC_ONLY_POSTGRES_SCHEMES):
+                errors.append(
+                    ConfigError(
+                        "database",
+                        "url",
+                        "psycopg2 is sync-only; use postgresql+asyncpg:// "
+                        "(the daemon is async end to end)",
+                    )
+                )
             if self.pool_min_size < 1:
                 errors.append(ConfigError("database", "pool_min_size", "must be >= 1"))
             if self.pool_max_size < self.pool_min_size:

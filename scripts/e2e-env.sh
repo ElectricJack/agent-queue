@@ -25,7 +25,7 @@ for arg in "$@"; do
     case "$arg" in
         --reset) RESET=1 ;;
         --register) REGISTER_ONLY=1 ;;
-        -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
 done
@@ -49,6 +49,17 @@ register_projects() {
         python3 "$REPO_ROOT/scripts/e2e/register.py"
 }
 
+# `--reset --register` is incoherent rather than merely ordered wrong: a
+# reset drops the database out from under the daemon that registration
+# needs, so whichever order it ran in, one half would be talking to a
+# corpse.  Say so instead of guessing.
+if [ "$REGISTER_ONLY" = "1" ] && [ "$RESET" = "1" ]; then
+    echo "--reset and --register cannot be combined: the reset drops the database" >&2
+    echo "the daemon is holding.  Run: e2e-env.sh --reset, then e2e-daemon.sh start" >&2
+    echo "(which registers for you)." >&2
+    exit 2
+fi
+
 if [ "$REGISTER_ONLY" = "1" ]; then
     register_projects
     exit $?
@@ -58,12 +69,62 @@ fi
 # 1. Directories
 # ---------------------------------------------------------------------------
 
+#: Written on create; `--reset` refuses to delete a directory without it.
+E2E_MARKER="$AQ_E2E_HOME/.aq-e2e"
+
+# `rm -rf "$AQ_E2E_HOME"` runs on a path that comes from the environment,
+# so a typo, an unset var expanded by a caller that did not `set -u`, or a
+# copy-pasted `AQ_E2E_HOME=~` is one keystroke from deleting a home
+# directory.  Two independent guards: the path may not *be* something
+# precious, and it must carry this kit's marker file — so pointing the kit
+# at an existing directory full of someone else's data refuses rather than
+# eats it.
+assert_safe_to_reset() {
+    local target real
+    target="$AQ_E2E_HOME"
+    real="$(cd "$target" 2>/dev/null && pwd -P || true)"
+    if [ -z "$real" ]; then
+        echo "cannot resolve $target — refusing to reset" >&2
+        exit 2
+    fi
+
+    local forbidden name
+    for forbidden in "/" "$HOME" "$HOME/.agent-queue" "$REPO_ROOT"; do
+        local forbidden_real
+        forbidden_real="$(cd "$forbidden" 2>/dev/null && pwd -P || echo "$forbidden")"
+        if [ "$real" = "$forbidden_real" ]; then
+            echo "refusing to reset '$real' — that is $forbidden, not an e2e home" >&2
+            exit 2
+        fi
+    done
+
+    name="$(basename "$real")"
+    if [ -z "$name" ] || [ "$name" = "/" ]; then
+        echo "refusing to reset '$real' — empty basename" >&2
+        exit 2
+    fi
+
+    if [ ! -f "$real/.aq-e2e" ]; then
+        echo "refusing to reset '$real' — no .aq-e2e marker file." >&2
+        echo "This directory was not created by scripts/e2e-env.sh.  If it really is" >&2
+        echo "a disposable e2e home, remove it by hand and re-run." >&2
+        exit 2
+    fi
+}
+
 if [ "$RESET" = "1" ] && [ -d "$AQ_E2E_HOME" ]; then
+    assert_safe_to_reset
     echo "==> resetting $AQ_E2E_HOME"
     rm -rf "$AQ_E2E_HOME"
 fi
 
 mkdir -p "$AQ_E2E_HOME"
+# The marker is what makes the next `--reset` legal.  Written before
+# anything else lands, so an interrupted build is still resettable.
+printf '%s\n' \
+    "Marker for scripts/e2e-env.sh.  Its presence is what allows --reset to" \
+    "delete this directory.  Do not add anything here you want to keep." \
+    > "$E2E_MARKER"
 mkdir -p "$AQ_E2E_HOME/workspaces"
 mkdir -p "$E2E_VAULT/agent-types"
 mkdir -p "$E2E_VAULT/formulas"

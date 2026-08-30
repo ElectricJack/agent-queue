@@ -11,10 +11,18 @@ nothing logged.  ``aq system update-config --section swarm --data
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import click
 import pytest
+from click.testing import CliRunner
 
-from src.cli.auto_commands import StructuredParam, _schema_to_click_type
+from src.cli.auto_commands import (
+    EXPLICIT_NULL,
+    StructuredParam,
+    _make_auto_command,
+    _schema_to_click_type,
+)
 
 
 def convert(schema: dict, text: str):
@@ -61,8 +69,9 @@ class TestUnionSchemas:
         """A section whose value really is a string must survive."""
         assert convert(self.UNION, "production") == "production"
 
-    def test_null_deletes_the_section(self):
-        assert convert(self.UNION, "null") is None
+    def test_null_becomes_the_explicit_sentinel(self):
+        """Not a bare ``None`` — the callback would drop that as "not given"."""
+        assert convert(self.UNION, "null") is EXPLICIT_NULL
 
     def test_a_union_without_structure_is_a_plain_scalar_type(self):
         assert _schema_to_click_type({"type": ["string", "null"]}) is str
@@ -82,3 +91,62 @@ class TestUnaffectedSchemas:
 
     def test_already_structured_values_pass_through(self):
         assert StructuredParam("object").convert({"a": 1}, None, None) == {"a": 1}
+
+
+UPDATE_CONFIG_TOOL = {
+    "name": "update_config",
+    "description": "Replace one top-level section in the YAML config.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "section": {"type": "string", "description": "Section to replace."},
+            "data": {
+                "type": ["object", "array", "string", "number", "boolean", "null"],
+                "description": "New value. null to delete.",
+            },
+            "dry_run": {"type": "boolean", "description": "Validate only."},
+        },
+        "required": ["section", "data"],
+    },
+}
+
+
+def _invoke(*argv: str) -> dict:
+    """Run the generated `update-config` command, returning the args it sent."""
+    from rich.console import Console
+
+    command = _make_auto_command("update_config", "update-config", UPDATE_CONFIG_TOOL, Console())
+    client = AsyncMock()
+    client.execute = AsyncMock(return_value={"applied": True})
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("src.cli.app._get_client", return_value=client):
+        result = CliRunner().invoke(command, list(argv), obj={})
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once()
+    return client.execute.await_args.args[1]
+
+
+class TestArgsReachingTheServer:
+    """End-to-end through the generated Click command, to the client call."""
+
+    def test_explicit_null_is_sent_as_a_real_none(self):
+        """This is what deletes a section — and it used to be dropped.
+
+        The callback drops ``None`` kwargs (that is how "flag absent" is
+        expressed), so a converted `null` never left the CLI and
+        ``--data null`` silently did nothing.
+        """
+        args = _invoke("--section", "swarm", "--data", "null")
+        assert args == {"section": "swarm", "data": None}
+        assert "data" in args  # present, not merely falsy
+
+    def test_an_omitted_option_is_still_dropped(self):
+        args = _invoke("--section", "swarm", "--data", "{}")
+        assert args == {"section": "swarm", "data": {}}
+        assert "dry_run" not in args
+
+    def test_an_object_arrives_parsed(self):
+        args = _invoke("--section", "swarm", "--data", '{"enabled": true}')
+        assert args["data"] == {"enabled": True}

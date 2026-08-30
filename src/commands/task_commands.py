@@ -1793,6 +1793,12 @@ class TaskCommandsMixin:
         was invisible on every read surface — the row existed, the
         dashboard's graph view drew it, and no command would tell you
         which task a filing came out of.
+
+        Like ``depends_on``, provenance edges are **outgoing** — they run
+        from *task_id* toward its origin, so each entry is the task this
+        one came out of, not a task that came out of it.  (That is why the
+        two share ``get_typed_dependencies``; ``blocks`` is the only
+        reversed list here.)
         """
         task_id = args.get("task_id", "")
         if not task_id:

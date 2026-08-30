@@ -17,19 +17,52 @@ is connected to it — including this script.
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import sys
 
 #: Databases that must never be touched by the kit, whatever is passed in.
-#: ``agent_queue`` is the developer's real daemon; the ``_gwN`` databases
-#: belong to the parallel unit suite.
-PROTECTED = {"postgres", "template0", "template1", "agent_queue", "agent_queue_master"}
+#: ``agent_queue`` is the developer's real daemon.
+PROTECTED = {"postgres", "template0", "template1", "agent_queue"}
+
+#: The per-xdist-worker databases the unit suite creates.
+#: ``tests/pg_dsn.py`` derives ``{base}_{worker}`` where *worker* is
+#: ``master`` outside ``-n`` and ``gwN`` under it — so the shape, not a
+#: hardcoded ``agent_queue_`` prefix, is what identifies them.  Dropping one
+#: mid-run corrupts whichever worker owns it.
+WORKER_DB_RE = re.compile(r"_(master|gw\d+)$")
+
+#: A database name goes straight into ``DROP DATABASE "<name>"`` — there is
+#: no bind-parameter form of that statement.  Quoting makes injection hard
+#: rather than impossible (a name containing ``"`` would close the quote),
+#: so the name is validated as a plain identifier first and the quoting is
+#: belt-and-braces.
+SAFE_NAME_RE = re.compile(r"^[a-z0-9_]+$")
+
+
+def refuse(db_name: str) -> str | None:
+    """Why *db_name* must not be managed by this kit, or ``None``."""
+    if not SAFE_NAME_RE.match(db_name):
+        return "not a plain identifier (^[a-z0-9_]+$)"
+    if db_name in PROTECTED:
+        return "protected database"
+    if WORKER_DB_RE.search(db_name):
+        return "looks like a pytest-xdist worker database (tests/pg_dsn.py)"
+    # Whatever POSTGRES_TEST_DSN currently names, and its worker databases.
+    test_dsn = os.environ.get("POSTGRES_TEST_DSN", "")
+    if test_dsn:
+        base = test_dsn.rpartition("/")[2].partition("?")[0]
+        if base and db_name == base:
+            return "this is POSTGRES_TEST_DSN's database"
+    return None
 
 
 async def main(admin_dsn: str, db_name: str, reset: bool) -> int:
     import asyncpg
 
-    if db_name in PROTECTED or db_name.startswith("agent_queue_gw"):
-        print(f"refusing to manage protected database '{db_name}'", file=sys.stderr)
+    reason = refuse(db_name)
+    if reason is not None:
+        print(f"refusing to manage '{db_name}': {reason}", file=sys.stderr)
         return 2
 
     conn = await asyncpg.connect(admin_dsn)

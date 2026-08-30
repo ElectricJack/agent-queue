@@ -17,12 +17,25 @@ source "$REPO_ROOT/scripts/e2e-common.sh"
 STARTUP_TIMEOUT="${AQ_E2E_STARTUP_TIMEOUT:-90}"
 STOP_GRACE="${AQ_E2E_STOP_GRACE:-20}"
 
+# The pid in the file is only ours if the process *at* that pid is still
+# the daemon.  A stale file plus a recycled pid means `stop` would signal
+# whatever inherited the number — someone else's editor, or a build.  PIDs
+# get reused quickly on a busy box and this file outlives crashes, so check
+# the cmdline before believing it.
 running_pid() {
     [ -f "$E2E_PID_FILE" ] || return 1
     local pid
     pid="$(cat "$E2E_PID_FILE" 2>/dev/null || true)"
     [ -n "$pid" ] || return 1
+    case "$pid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
     kill -0 "$pid" 2>/dev/null || return 1
+    # /proc is Linux/WSL; on a kernel without it, fall back to trusting the
+    # pid rather than refusing to manage the daemon at all.
+    if [ -r "/proc/$pid/cmdline" ]; then
+        tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "src.main" || return 1
+    fi
     echo "$pid"
 }
 
@@ -70,7 +83,16 @@ cmd_start() {
             # e2e-env.sh's build step.  Doing it here means both tiers find
             # them: Tier 1's scenarios assume them, and a Tier 2 operator
             # runs no smoke to create them.  Idempotent.
-            "$REPO_ROOT/scripts/e2e-env.sh" --register || return 1
+            #
+            # A daemon that came up but could not be registered is not
+            # usable and is not something the caller asked for, so take it
+            # back down rather than leaving a half-built environment (and a
+            # live pid file) behind after returning non-zero.
+            if ! "$REPO_ROOT/scripts/e2e-env.sh" --register; then
+                echo "registration failed — stopping the daemon we just started" >&2
+                cmd_stop || true
+                return 1
+            fi
             return 0
         fi
         if ! running_pid >/dev/null; then

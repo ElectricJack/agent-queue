@@ -123,6 +123,27 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+class _ExplicitNull:
+    """Sentinel for an option the user gave as literal JSON ``null``.
+
+    The callback drops ``None`` kwargs, which is how "option not given" is
+    expressed — so a converted ``null`` was indistinguishable from an
+    absent flag and never reached the server.  ``update_config``'s
+    documented way to *delete* a section is ``--data null``, which
+    therefore silently did nothing.  Carrying an explicit sentinel through
+    Click keeps the two apart; the callback turns it back into ``None``
+    while keeping the key.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<explicit null>"
+
+
+EXPLICIT_NULL = _ExplicitNull()
+
+
 class StructuredParam(click.ParamType):
     """A JSON object/array argument, parsed rather than passed through.
 
@@ -160,9 +181,10 @@ class StructuredParam(click.ParamType):
                 return value  # a bare string is a legal value here
             self.fail(f"{text!r} is not valid JSON for a {self.kind} argument", param, ctx)
             return None
-        # `--data null` is how update_config deletes a section; keep it.
+        # `--data null` is how update_config deletes a section.  Returning a
+        # bare None here would be dropped by the callback as "not given".
         if parsed is None:
-            return None
+            return EXPLICIT_NULL
         if self.kind == "json":
             return parsed
         expected = dict if self.kind == "object" else list
@@ -286,7 +308,14 @@ def _make_auto_command(
             from . import app as _app
 
             api_url = ctx.obj.get("api_url") if ctx.obj else None
-            args = {k.replace("-", "_"): v for k, v in kwargs.items() if v is not None}
+            # ``None`` means "option not given" and is dropped; an option
+            # given as literal JSON ``null`` arrives as EXPLICIT_NULL and
+            # is sent as a real ``None`` (see the sentinel's docstring).
+            args = {
+                k.replace("-", "_"): (None if v is EXPLICIT_NULL else v)
+                for k, v in kwargs.items()
+                if v is not None
+            }
 
             async def _exec():
                 async with _app._get_client(api_url) as client:
