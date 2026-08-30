@@ -26,9 +26,12 @@ class PlaybookServices:
 
     def node_tools(self, allowed: list[str] | None) -> list[dict]:
         """Tool definitions for one node: exactly ``allowed`` (validated against the
-        registry) or the registry's core set when the profile lists none."""
+        registry) or the registry's full catalogue when the profile lists none.
+        Unscoped playbooks are trusted; ``profile_id:`` (the ``allowed`` branch) is
+        the sandboxing mechanism, so the unscoped default must not be limited to the
+        core set."""
         if allowed is None:
-            tools = self.tool_registry.get_core_tools()
+            tools = self.tool_registry.get_all_tools()
         else:
             known = {t["name"]: t for t in self.tool_registry.get_all_tools()}
             unknown = sorted(set(allowed) - set(known))

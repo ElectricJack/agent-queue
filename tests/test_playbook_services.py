@@ -3,6 +3,7 @@ import pytest
 from src.llm import LLMClient
 from src.llm.fake import FakeProvider
 from src.playbooks.services import PlaybookServices
+from src.tools.registry import ToolRegistry
 
 T = lambda n: {"name": n, "description": n, "input_schema": {"type": "object", "properties": {}}}  # noqa: E731
 
@@ -19,9 +20,20 @@ def test_allowed_filters_and_orders_and_strips_navigation():
     assert [t["name"] for t in s.node_tools(["b", "reply_to_user", "a"])] == ["b", "a"]
 
 
-def test_none_uses_core_tools():
-    s = _svc([], [T("core"), T("load_tools")])
-    assert [t["name"] for t in s.node_tools(None)] == ["core"]
+def test_none_uses_all_tools():
+    s = _svc([T("a"), T("b"), T("load_tools")], [])
+    assert [t["name"] for t in s.node_tools(None)] == ["a", "b"]
+
+
+def test_none_with_real_registry_includes_categorised_tools():
+    """Unscoped playbook nodes (allowed=None) get the full registry catalogue,
+    not just the core set — profile_id: is the sandboxing mechanism, not this."""
+    services = PlaybookServices.for_tests(LLMClient.with_provider(FakeProvider()))
+    services.tool_registry = ToolRegistry()
+    names = {t["name"] for t in services.node_tools(None)}
+    assert "list_projects" in names
+    assert "render_prompt" in names
+    assert "load_tools" not in names
 
 
 def test_unknown_allowed_raises():
