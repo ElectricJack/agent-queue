@@ -43,6 +43,13 @@ dependencies = [
     # uri_validate). oauthlib comes in transitively via
     # google-auth-oauthlib / requests-oauthlib (inbox extras).
     "oauthlib>=3.2.1",
+    # Pin aiohttp to >=3.14.1 to address 7 critical CVEs disclosed in 2026:
+    # CVE-2026-54275 (PYSEC-2026-237), CVE-2026-34993 (PYSEC-2026-2104),
+    # CVE-2026-54276 (PYSEC-2026-2109), CVE-2026-54277 (PYSEC-2026-2110),
+    # CVE-2026-54278 (PYSEC-2026-2111), CVE-2026-54279 (PYSEC-2026-2112),
+    # CVE-2026-54280 (PYSEC-2026-2113). aiohttp comes in transitively via
+    # discord.py and google-api-python-client (inbox extras).
+    "aiohttp>=3.14.1",
     # Pin setuptools to >=78.1.1 to address PYSEC-2025-49 / CVE-2025-47273
     # (path traversal in PackageIndex._download_url via insufficiently
     # sanitized URL-derived filenames — os.path.join discards tmpdir when
