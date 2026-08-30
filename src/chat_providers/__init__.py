@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from src.config import ChatProviderConfig
 
-from .anthropic import AnthropicChatProvider
 from .base import ChatProvider
 from .logged import LoggedChatProvider
 from .types import ChatResponse, TextBlock, ToolUseBlock
@@ -26,30 +25,20 @@ def create_chat_provider(config: ChatProviderConfig) -> ChatProvider | None:
 
     Returns None if the provider cannot be initialized (e.g. missing credentials).
     """
-    if config.provider == "ollama":
-        from .ollama import OllamaChatProvider
+    from src.llm.providers import create_provider
+    from src.config import normalize_llm_provider
 
-        return OllamaChatProvider(
-            model=config.model or "qwen3.5:35b",
-            base_url=config.base_url or "http://localhost:11434/v1",
-            keep_alive=config.keep_alive or "1h",
-            num_ctx=config.num_ctx or 0,
+    provider_id = normalize_llm_provider(config.provider)
+    base_url = config.base_url or ("http://localhost:11434/v1" if config.provider == "ollama" else "")
+    extras = {"thinking_budget": config.thinking_budget} if provider_id == "google" else {}
+    try:
+        provider = create_provider(
+            provider=provider_id, model=config.model, base_url=base_url,
+            api_key=config.api_key, extras=extras,
         )
-
-    if config.provider == "gemini":
-        from .gemini import GeminiChatProvider
-
-        return GeminiChatProvider(
-            model=config.model or "gemini-2.5-flash",
-            api_key=config.api_key,
-            thinking_budget=config.thinking_budget,
-        )
-
-    # Default: anthropic
-    provider = AnthropicChatProvider(model=config.model)
-    if not provider.is_configured:
+    except Exception:
         return None
-    return provider
+    return provider if provider.is_configured else None
 
 
 __all__ = [

@@ -5,6 +5,6 @@ This module re-exports ``anthropic_tools_to_openai`` so existing
 imports continue to work.
 """
 
-from .adapters.openai_adapter import convert_tools as anthropic_tools_to_openai
+from src.llm.providers.adapters.openai_adapter import convert_tools as anthropic_tools_to_openai
 
 __all__ = ["anthropic_tools_to_openai"]

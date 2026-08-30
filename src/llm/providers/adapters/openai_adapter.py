@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import uuid
 
-from ..types import ChatResponse, TextBlock, ToolUseBlock
+from src.llm.types import ChatResponse, TextBlock, ToolUseBlock
 
 
 def convert_tools(anthropic_tools: list[dict]) -> list[dict]:
