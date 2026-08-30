@@ -953,14 +953,20 @@ class TaskCommandsMixin:
                 # record provenance the same way create_task_under does,
                 # instead of a parent-child edge to the (too-deep) container.
                 origin = parent_id
-                flipped |= await self.db.add_dependency(
-                    task.id, origin, DepType.DISCOVERED_FROM.value, conn=conn
-                ) or set()
+                flipped |= (
+                    await self.db.add_dependency(
+                        task.id, origin, DepType.DISCOVERED_FROM.value, conn=conn
+                    )
+                    or set()
+                )
             else:
                 origin = discovered_from or held_id
-                flipped |= await self.db.add_dependency(
-                    task.id, origin, DepType.DISCOVERED_FROM.value, conn=conn
-                ) or set()
+                flipped |= (
+                    await self.db.add_dependency(
+                        task.id, origin, DepType.DISCOVERED_FROM.value, conn=conn
+                    )
+                    or set()
+                )
                 # ``create_gate``'s own conn-path deliberately does not log
                 # blocked flips (the caller's transaction hasn't committed
                 # yet) — call the same underlying writer directly so we get
@@ -979,9 +985,9 @@ class TaskCommandsMixin:
                 )
                 flipped |= gate_flipped
             for dep_id, dep_type in edges:
-                flipped |= await self.db.add_dependency(
-                    task.id, dep_id, dep_type, conn=conn
-                ) or set()
+                flipped |= (
+                    await self.db.add_dependency(task.id, dep_id, dep_type, conn=conn) or set()
+                )
         await self.db.log_blocked_flips(flipped)
         return task.id, gate_id, origin, depth_cap_fallback
 
@@ -1298,14 +1304,17 @@ class TaskCommandsMixin:
             task.created_by_kind = "session"
             task.created_by_id = filing_session.id
             try:
-                task_id, gate_id, discovered_from_origin, depth_cap_fallback = (
-                    await self._create_worker_filed_task(
-                        task,
-                        held_id=held_id,
-                        parent_id=parent_id,
-                        discovered_from=args.get("discovered_from"),
-                        edges=edges,
-                    )
+                (
+                    task_id,
+                    gate_id,
+                    discovered_from_origin,
+                    depth_cap_fallback,
+                ) = await self._create_worker_filed_task(
+                    task,
+                    held_id=held_id,
+                    parent_id=parent_id,
+                    discovered_from=args.get("discovered_from"),
+                    edges=edges,
                 )
             except _FilingQuota:
                 return {
@@ -3697,12 +3706,24 @@ class TaskCommandsMixin:
         Frontier excludes ``hold:*``-labeled tasks (design §6).  Withheld
         section lists DEFINED/BLOCKED tasks and the reasons keeping them
         out of the frontier.
+
+        Args:
+            profile_id: Restrict the frontier to tasks this profile would be
+                offered.  Uses the same widening as the §10 work query
+                (``select_ready_for_profile``): when *profile_id* is the
+                project's ``default_profile_id``, unassigned tasks
+                (``profile_id IS NULL``) count as its work too.
+            brief: Project each ready task to
+                ``id,title,status,priority,is_blocked,profile_id`` instead of
+                the default ``task_id,title,priority`` shape.
         """
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
             return {"success": False, "error": "project_id is required"}
         labels = args.get("labels")
         any_label = args.get("any_label")
+        profile_id = args.get("profile_id")
+        brief = bool(args.get("brief"))
 
         try:
             frontier = await self.db.get_ready_frontier(
@@ -3711,14 +3732,37 @@ class TaskCommandsMixin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-        ready = [
-            {
-                "task_id": t.id,
-                "title": t.title,
-                "priority": t.priority,
-            }
-            for t in frontier
-        ]
+        if profile_id:
+            project = await self.db.get_project(str(project_id))
+            default_profile_id = getattr(project, "default_profile_id", None) if project else None
+            frontier = [
+                t
+                for t in frontier
+                if t.profile_id == profile_id
+                or (t.profile_id is None and default_profile_id == profile_id)
+            ]
+
+        if brief:
+            ready = [
+                {
+                    "id": t.id,
+                    "title": t.title,
+                    "status": t.status.value if hasattr(t.status, "value") else t.status,
+                    "priority": t.priority,
+                    "is_blocked": bool(t.is_blocked),
+                    "profile_id": t.profile_id,
+                }
+                for t in frontier
+            ]
+        else:
+            ready = [
+                {
+                    "task_id": t.id,
+                    "title": t.title,
+                    "priority": t.priority,
+                }
+                for t in frontier
+            ]
 
         # Withheld: everything not READY-and-unblocked in DEFINED/BLOCKED.
         from src.models import TaskStatus

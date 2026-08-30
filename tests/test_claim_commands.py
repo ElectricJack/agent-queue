@@ -383,7 +383,13 @@ class TestReadScope:
 
     @pytest.mark.parametrize(
         "command",
-        ["_cmd_get_task", "_cmd_task_show", "_cmd_task_children", "_cmd_task_progress", "_cmd_prime"],
+        [
+            "_cmd_get_task",
+            "_cmd_task_show",
+            "_cmd_task_children",
+            "_cmd_task_progress",
+            "_cmd_prime",
+        ],
     )
     async def test_cross_project_read_refused(self, handler, db, tmp_path, command):
         await self.setup_other_project(db)
@@ -394,7 +400,13 @@ class TestReadScope:
 
     @pytest.mark.parametrize(
         "command",
-        ["_cmd_get_task", "_cmd_task_show", "_cmd_task_children", "_cmd_task_progress", "_cmd_prime"],
+        [
+            "_cmd_get_task",
+            "_cmd_task_show",
+            "_cmd_task_children",
+            "_cmd_task_progress",
+            "_cmd_prime",
+        ],
     )
     async def test_same_project_read_allowed(self, handler, db, tmp_path, command):
         await mktask(db, "t1", profile_id="worker")
@@ -493,3 +505,40 @@ class TestEventWaiter:
         assert (await w.wait(0.5))["task_id"] == "t"
         w.close()
         assert bus.subscriber_count("task.ready") == 0
+
+
+class TestTaskShowClaimedBy:
+    """``task_show.claimed_by`` — spec §14.
+
+    Assembled from ``task_metadata.claimed_by_session``,
+    ``tasks.assigned_agent_id`` and ``tasks.claim_epoch``.
+    """
+
+    async def test_unclaimed_task_reports_none(self, handler, db, tmp_path):
+        await mktask(db, "t1", profile_id="worker")
+        res = await handler._cmd_task_show({"task_id": "t1"})
+        assert res["claimed_by"] is None
+
+    async def test_claimed_task_reports_holder(self, handler, db, tmp_path):
+        handler.orchestrator.bus.emit = AsyncMock()
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        claim = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert claim["result"] == "claimed"
+
+        res = await handler._cmd_task_show({"task_id": "t1"})
+        assert res["claimed_by"] == {
+            "session_id": sid,
+            "agent_id": "agent-1",
+            "claim_epoch": claim["claim_epoch"],
+        }
+
+    async def test_claim_epoch_matches_the_fence_handed_to_the_worker(self, handler, db, tmp_path):
+        handler.orchestrator.bus.emit = AsyncMock()
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        on_disk = json.loads((wd / ".aq" / "claim.json").read_text())
+        res = await handler._cmd_task_show({"task_id": "t1"})
+        assert res["claimed_by"]["claim_epoch"] == on_disk["claim_epoch"]

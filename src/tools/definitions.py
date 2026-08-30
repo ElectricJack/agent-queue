@@ -204,9 +204,12 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "gate_list": "task",
     "gate_show": "task",
     "gate_resolve": "task",
-    # explain + ready frontier — work-graph WG-4
+    # explain + ready frontier — work-graph WG-4.  The frontier is a
+    # project-scoped query, so it belongs to the ``project`` group: that is
+    # what mounts it as ``aq project ready`` rather than
+    # ``aq task project-ready``.
     "explain_task": "task",
-    "project_ready": "task",
+    "project_ready": "project",
     # spec ingest + task proposals — a batch of tasks is proposed, reviewed,
     # then committed atomically (src/commands/proposal_commands.py).
     "spec_approve": "task",
@@ -3389,8 +3392,7 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Restrict the run to these check ids "
-                        "(e.g. 'db.migrations', 'vault.parse')."
+                        "Restrict the run to these check ids (e.g. 'db.migrations', 'vault.parse')."
                     ),
                 },
             },
@@ -3458,6 +3460,50 @@ _ALL_TOOL_DEFINITIONS = [
     # docstring-derived schema pass 3 would otherwise synthesize. Argument
     # names match docs/specs/implementation/aq-surface.md §3.
     # -----------------------------------------------------------------
+    {
+        "name": "project_ready",
+        "description": (
+            "The project's ready frontier plus the tasks withheld from it and "
+            "why. The frontier excludes `hold:*`-labeled tasks. Filter it to "
+            "one profile's work with `profile_id`, or ask for the compact "
+            "projection with `brief`. Backs `aq project ready`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": ("Project id (falls back to the active project when omitted)."),
+                },
+                "labels": {
+                    "type": "array",
+                    "description": "Restrict frontier to tasks carrying ALL of these labels.",
+                    "items": {"type": "string"},
+                },
+                "any_label": {
+                    "type": "array",
+                    "description": "Restrict frontier to tasks carrying ANY of these labels.",
+                    "items": {"type": "string"},
+                },
+                "profile_id": {
+                    "type": "string",
+                    "description": (
+                        "Restrict the frontier to tasks this profile would be "
+                        "offered. Uses the same widening as the work query: when "
+                        "this is the project's default profile, unassigned tasks "
+                        "count as its work too."
+                    ),
+                },
+                "brief": {
+                    "type": "boolean",
+                    "description": (
+                        "Project each ready task to id, title, status, priority, "
+                        "is_blocked, profile_id instead of the default shape."
+                    ),
+                },
+            },
+        },
+    },
     {
         "name": "task_show",
         "description": (
@@ -3876,8 +3922,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": (
-                        "Project whose memory to search (optional; defaults to "
-                        "the active project)"
+                        "Project whose memory to search (optional; defaults to the active project)"
                     ),
                 },
                 "query": {"type": "string", "description": "Search query"},
@@ -4024,8 +4069,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "pr_url": {
                     "type": "string",
                     "description": (
-                        "Full GitHub PR URL, e.g. "
-                        "``https://github.com/org/repo/pull/42``."
+                        "Full GitHub PR URL, e.g. ``https://github.com/org/repo/pull/42``."
                     ),
                 },
                 "method": {
@@ -4058,15 +4102,12 @@ _ALL_TOOL_DEFINITIONS = [
             "properties": {
                 "project_id": {
                     "type": "string",
-                    "description": (
-                        "Project owning the spec (defaults to the active project)."
-                    ),
+                    "description": ("Project owning the spec (defaults to the active project)."),
                 },
                 "spec_path": {
                     "type": "string",
                     "description": (
-                        "Path to the spec markdown file, inside the project's "
-                        "specs directory."
+                        "Path to the spec markdown file, inside the project's specs directory."
                     ),
                 },
             },
@@ -4167,8 +4208,8 @@ _ALL_TOOL_DEFINITIONS = [
                 "payload": {
                     "type": "object",
                     "description": (
-                        "The replacement graph: ``{\"tasks\": [...], "
-                        "\"edges\": [...]}`` in the same shape "
+                        'The replacement graph: ``{"tasks": [...], '
+                        '"edges": [...]}`` in the same shape '
                         "task_batch_propose takes."
                     ),
                 },
@@ -4230,9 +4271,7 @@ _ALL_TOOL_DEFINITIONS = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": (
-                        "Path to the .md source or .json artifact, inside the vault."
-                    ),
+                    "description": ("Path to the .md source or .json artifact, inside the vault."),
                 },
             },
             "required": ["path"],
@@ -4253,8 +4292,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "playbook_id": {
                     "type": "string",
                     "description": (
-                        "The playbook id being installed. Must equal the "
-                        "artifact's own id."
+                        "The playbook id being installed. Must equal the artifact's own id."
                     ),
                 },
                 "compiled_path": {

@@ -82,25 +82,11 @@ _CODEGEN_INPUT_SCHEMAS: dict[str, dict] = {
         },
         "required": ["task_id"],
     },
-    "project_ready": {
-        "type": "object",
-        "properties": {
-            "project_id": {
-                "type": "string",
-                "description": "Project id (falls back to the active project when omitted)",
-            },
-            "labels": {
-                "type": "array",
-                "description": "Restrict frontier to tasks carrying all of these labels",
-                "items": {"type": "string"},
-            },
-            "any_label": {
-                "type": "array",
-                "description": "Restrict frontier to tasks carrying any of these labels",
-                "items": {"type": "string"},
-            },
-        },
-    },
+    # ``project_ready`` used to live here too.  It now carries a real entry in
+    # ``_ALL_TOOL_DEFINITIONS`` (so the auto-generated CLI exposes
+    # ``aq project ready --profile-id X --brief``), which makes a codegen-only
+    # override redundant — the loop below only fires for definitions whose
+    # schema has no properties.
     # -- gate operator surface (work-graph WG-3) ---------------------------
     "gate_create": {
         "type": "object",

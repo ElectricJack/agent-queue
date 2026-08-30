@@ -76,7 +76,6 @@ KNOWN_AUTO_REGISTERED: frozenset[str] = frozenset(
         "gate_list",
         "gate_resolve",
         "gate_show",
-        "project_ready",
     }
 )
 
@@ -132,9 +131,7 @@ class TestCommandSurface:
         """Every name in the debt ledger must still be an unplaced command."""
         commands = _command_names()
         typed = _defined_tool_names()
-        stale = sorted(
-            n for n in KNOWN_AUTO_REGISTERED if n not in commands or n in typed
-        )
+        stale = sorted(n for n in KNOWN_AUTO_REGISTERED if n not in commands or n in typed)
         assert not stale, (
             "KNOWN_AUTO_REGISTERED lists names that no longer need to be there "
             f"(command removed, or a typed definition now exists): {', '.join(stale)}. "
@@ -242,9 +239,7 @@ class TestRunCommandStaysExcluded:
 
         handler = Handler()
         for command in sorted(API_EXCLUDED):
-            response = await api_execute(
-                ExecuteRequest(command=command, args={}), ch=handler
-            )
+            response = await api_execute(ExecuteRequest(command=command, args={}), ch=handler)
             assert response.status_code == 403, command
         assert handler.calls == [], (
             f"excluded command(s) reached the CommandHandler: {handler.calls}"
@@ -257,9 +252,7 @@ class TestRunCommandStaysExcluded:
             async def execute(self, command, args):
                 return {"echoed": command}
 
-        response = await api_execute(
-            ExecuteRequest(command="get_status", args={}), ch=Handler()
-        )
+        response = await api_execute(ExecuteRequest(command="get_status", args={}), ch=Handler())
         assert response.status_code == 200
 
     def test_shell_helper_has_exactly_one_caller(self):

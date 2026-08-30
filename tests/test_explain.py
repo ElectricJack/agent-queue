@@ -102,22 +102,15 @@ class TestExplainCommand:
 
     async def test_blocked_gate_reason(self, handler, db):
         await mktask(db, "t")
-        gid, _ = await db.create_gate(
-            PROJECT_ID, "human", "review", waiter_task_ids=["t"]
-        )
+        gid, _ = await db.create_gate(PROJECT_ID, "human", "review", waiter_task_ids=["t"])
         res = await handler._cmd_explain_task({"task_id": "t"})
-        assert any(
-            r["code"] == "blocked_gate" and r["ref"] == gid for r in res["reasons"]
-        )
+        assert any(r["code"] == "blocked_gate" and r["ref"] == gid for r in res["reasons"])
 
     async def test_hold_label_reason(self, handler, db):
         await mktask(db, "t", status=TaskStatus.READY)
         await db.add_task_label("t", "hold:alice")
         res = await handler._cmd_explain_task({"task_id": "t"})
-        assert any(
-            r["code"] == "held" and r["ref"] == "hold:alice"
-            for r in res["reasons"]
-        )
+        assert any(r["code"] == "held" and r["ref"] == "hold:alice" for r in res["reasons"])
 
     async def test_cross_project_dep_names_the_other_project(self, handler, db):
         other = "proj-other"
@@ -145,9 +138,7 @@ class TestBuildCapacityReasons:
     def test_no_idle_agent(self):
         proj = Project(id=PROJECT_ID, name="p")
         task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
-        state = make_state(
-            projects=[proj], project_available_workspaces={PROJECT_ID: 1}
-        )
+        state = make_state(projects=[proj], project_available_workspaces={PROJECT_ID: 1})
         codes = [r["code"] for r in build_capacity_reasons(task, state, {PROJECT_ID: 1}, {})]
         assert "no_idle_agent" in codes
 
@@ -161,10 +152,10 @@ class TestBuildCapacityReasons:
     def test_budget_exhausted(self):
         proj = Project(id=PROJECT_ID, name="p")
         task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
-        state = make_state(
-            projects=[proj], global_budget=100, global_tokens_used=200
-        )
-        codes = [r["code"] for r in build_capacity_reasons(task, state, {PROJECT_ID: 1}, {PROJECT_ID: 1})]
+        state = make_state(projects=[proj], global_budget=100, global_tokens_used=200)
+        codes = [
+            r["code"] for r in build_capacity_reasons(task, state, {PROJECT_ID: 1}, {PROJECT_ID: 1})
+        ]
         assert "budget_exhausted" in codes
 
     def test_rate_limited(self):
@@ -207,9 +198,7 @@ class TestDescribeTaskBlocker:
     async def test_fallback(self, handler):
         proj = Project(id=PROJECT_ID, name="p")
         task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
-        state = make_state(
-            projects=[proj], project_available_workspaces={PROJECT_ID: 1}
-        )
+        state = make_state(projects=[proj], project_available_workspaces={PROJECT_ID: 1})
         s = handler.orchestrator._describe_task_blocker(
             task, state, {PROJECT_ID: 1}, {PROJECT_ID: 1}
         )
@@ -244,6 +233,78 @@ class TestProjectReady:
         res = await handler._cmd_project_ready({})
         assert res["success"] is False
 
+    # -- profile_id filter (spec §14) ------------------------------------
+
+    async def test_profile_id_filters_to_that_profile(self, handler, db):
+        from src.models import AgentProfile
+
+        await db.create_profile(AgentProfile(id="coder", name="Coder"))
+        await db.create_profile(AgentProfile(id="reviewer", name="Reviewer"))
+        await mktask(db, "c1", status=TaskStatus.READY, profile_id="coder")
+        await mktask(db, "r1", status=TaskStatus.READY, profile_id="reviewer")
+
+        res = await handler._cmd_project_ready({"project_id": PROJECT_ID, "profile_id": "coder"})
+        assert [t["task_id"] for t in res["ready"]] == ["c1"]
+
+    async def test_default_profile_also_gets_unassigned_tasks(self, handler, db):
+        """Same widening as select_ready_for_profile: NULL profile counts."""
+        from src.models import AgentProfile
+
+        await db.create_profile(AgentProfile(id="coder", name="Coder"))
+        await db.update_project(PROJECT_ID, default_profile_id="coder")
+        await mktask(db, "c1", status=TaskStatus.READY, profile_id="coder")
+        await mktask(db, "u1", status=TaskStatus.READY)  # profile_id is NULL
+
+        res = await handler._cmd_project_ready({"project_id": PROJECT_ID, "profile_id": "coder"})
+        assert {t["task_id"] for t in res["ready"]} == {"c1", "u1"}
+
+    async def test_non_default_profile_does_not_get_unassigned_tasks(self, handler, db):
+        from src.models import AgentProfile
+
+        await db.create_profile(AgentProfile(id="coder", name="Coder"))
+        await db.create_profile(AgentProfile(id="reviewer", name="Reviewer"))
+        await db.update_project(PROJECT_ID, default_profile_id="coder")
+        await mktask(db, "u1", status=TaskStatus.READY)
+
+        res = await handler._cmd_project_ready({"project_id": PROJECT_ID, "profile_id": "reviewer"})
+        assert res["ready"] == []
+
+    # -- brief projection (spec §14) --------------------------------------
+
+    async def test_brief_projection_shape(self, handler, db):
+        from src.models import AgentProfile
+
+        await db.create_profile(AgentProfile(id="coder", name="Coder"))
+        await mktask(db, "b1", status=TaskStatus.READY, profile_id="coder", priority=42)
+
+        res = await handler._cmd_project_ready({"project_id": PROJECT_ID, "brief": True})
+        assert len(res["ready"]) == 1
+        row = res["ready"][0]
+        assert set(row) == {"id", "title", "status", "priority", "is_blocked", "profile_id"}
+        assert row["id"] == "b1"
+        assert row["status"] == "READY"
+        assert row["priority"] == 42
+        assert row["is_blocked"] is False
+        assert row["profile_id"] == "coder"
+
+    async def test_default_projection_unchanged(self, handler, db):
+        await mktask(db, "d1", status=TaskStatus.READY)
+        res = await handler._cmd_project_ready({"project_id": PROJECT_ID})
+        assert set(res["ready"][0]) == {"task_id", "title", "priority"}
+
+    async def test_brief_and_profile_id_compose(self, handler, db):
+        from src.models import AgentProfile
+
+        await db.create_profile(AgentProfile(id="coder", name="Coder"))
+        await db.create_profile(AgentProfile(id="reviewer", name="Reviewer"))
+        await mktask(db, "c1", status=TaskStatus.READY, profile_id="coder")
+        await mktask(db, "r1", status=TaskStatus.READY, profile_id="reviewer")
+
+        res = await handler._cmd_project_ready(
+            {"project_id": PROJECT_ID, "profile_id": "reviewer", "brief": True}
+        )
+        assert [t["id"] for t in res["ready"]] == ["r1"]
+
 
 # ── Explain works between ticks via cached SchedulerState ────────────────
 
@@ -259,9 +320,7 @@ class TestBetweenTicks:
         # Now install a synthetic cached state; explain must include capacity.
         proj = Project(id=PROJECT_ID, name="p")
         task_row = await db.get_task("t")
-        state = make_state(
-            projects=[proj], project_available_workspaces={PROJECT_ID: 0}
-        )
+        state = make_state(projects=[proj], project_available_workspaces={PROJECT_ID: 0})
         handler.orchestrator._last_scheduler_state = state
         handler.orchestrator._last_scheduler_workspace_counts = {PROJECT_ID: 0}
         handler.orchestrator._last_scheduler_idle_by_project = {}

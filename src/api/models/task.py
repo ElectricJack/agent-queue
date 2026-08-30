@@ -90,6 +90,29 @@ class GetTaskResponse(TaskDetail):
     pass
 
 
+class ClaimedBy(BaseModel):
+    """Who currently holds a task (swarm-work-model §14).
+
+    Assembled from three places: ``task_metadata.claimed_by_session``,
+    ``tasks.assigned_agent_id`` and ``tasks.claim_epoch``.
+    """
+
+    session_id: str | None = None
+    agent_id: str | None = None
+    claim_epoch: int = 0
+
+
+class TaskShowResponse(TaskDetail):
+    """``task_show`` — ``get_task`` plus the composed sections.
+
+    ``claimed_by`` is ``None`` when the task is unclaimed.
+    """
+
+    context: list[dict[str, Any]] = []
+    labels: list[str] = []
+    claimed_by: ClaimedBy | None = None
+
+
 class EditTaskResponse(BaseModel):
     updated: str
     fields: list[str]
@@ -320,9 +343,21 @@ class ExplainTaskResponse(BaseModel):
 
 
 class ReadyTask(BaseModel):
-    task_id: str
+    """One frontier row.
+
+    Two shapes share this model: the default (``task_id``, ``title``,
+    ``priority``) and ``brief: true`` (``id``, ``title``, ``status``,
+    ``priority``, ``is_blocked``, ``profile_id``).  Both keys are optional so
+    either projection validates.
+    """
+
+    task_id: str | None = None
+    id: str | None = None
     title: str
     priority: int = 0
+    status: str | None = None
+    is_blocked: bool | None = None
+    profile_id: str | None = None
 
 
 class WithheldTask(BaseModel):
@@ -362,6 +397,7 @@ class TaskRouteResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
+
 
 class SpecApproveResponse(BaseModel):
     success: bool = True
@@ -518,6 +554,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_tasks": ListTasksResponse,
     "create_task": CreateTaskResponse,
     "get_task": GetTaskResponse,
+    "task_show": TaskShowResponse,
     "edit_task": EditTaskResponse,
     "delete_task": DeleteTaskResponse,
     "approve_task": ApproveTaskResponse,

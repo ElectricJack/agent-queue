@@ -116,7 +116,31 @@ class SurfaceCommandsMixin:
                 parent = {"id": p.id, "title": p.title, "status": p.status.value}
         info["parent"] = parent
         info["children"] = await self.db.get_children_summary(task_id)
+        info["claimed_by"] = await self._claimed_by(task_id)
         return info
+
+    async def _claimed_by(self, task_id: str) -> dict | None:
+        """Who currently holds *task_id*, or ``None`` when nobody does.
+
+        The three parts of a claim live in three places (spec §14): the
+        holding session in ``task_metadata.claimed_by_session``, the agent in
+        ``tasks.assigned_agent_id``, and the fence in ``tasks.claim_epoch``.
+        A task counts as claimed when at least one of the session or agent is
+        set — a released claim clears both, and ``claim_epoch`` alone is just
+        the historical high-water mark.
+        """
+        task = await self.db.get_task(task_id)
+        if task is None:
+            return None
+        session_id = await self.db.get_task_meta(task_id, "claimed_by_session")
+        agent_id = task.assigned_agent_id
+        if not session_id and not agent_id:
+            return None
+        return {
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "claim_epoch": getattr(task, "claim_epoch", 0),
+        }
 
     # ------------------------------------------------------------------
     # task_set — backs `aq task set` (design §3.1)

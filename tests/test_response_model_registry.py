@@ -116,7 +116,7 @@ _REQUIRED_FIELDS_BY_COMMAND: dict[str, set[str]] = {
 
 _PRESENT_PROPERTIES_BY_COMMAND: dict[str, set[str]] = {
     "explain_task": {"task_id"},
-    "project_ready": {"project_id"},
+    "project_ready": {"project_id", "labels", "any_label", "profile_id", "brief"},
     "gate_create": {"project_id", "gate_type", "title"},
     "gate_show": {"gate_id"},
     "gate_resolve": {"gate_id", "resolved_by"},
@@ -130,13 +130,28 @@ _PRESENT_PROPERTIES_BY_COMMAND: dict[str, set[str]] = {
 }
 
 
+def _tool_input_schema(cmd_name: str) -> dict:
+    from src.tools import _ALL_TOOL_DEFINITIONS
+
+    for defn in _ALL_TOOL_DEFINITIONS:
+        if defn["name"] == cmd_name:
+            return defn["input_schema"]
+    raise AssertionError(f"{cmd_name} has neither a codegen override nor a tool definition")
+
+
 @pytest.mark.parametrize("cmd_name", sorted(_REQUIRED_FIELDS_BY_COMMAND))
 def test_codegen_request_model_has_expected_fields(cmd_name: str) -> None:
     """The codegen request model must expose the properties the ``_cmd_*``
     method actually reads from its ``args`` dict.  Without this the FastAPI
     body model silently drops client fields — see the ``_CODEGEN_INPUT_SCHEMAS``
-    docstring for the reproducer that motivated this guard."""
-    schema = _CODEGEN_INPUT_SCHEMAS[cmd_name]
+    docstring for the reproducer that motivated this guard.
+
+    The schema comes from the codegen override when there is one, else from
+    the command's real ``_ALL_TOOL_DEFINITIONS`` entry — ``project_ready``
+    graduated to a full tool definition (so the CLI exposes it) and no longer
+    needs an override.
+    """
+    schema = _CODEGEN_INPUT_SCHEMAS.get(cmd_name) or _tool_input_schema(cmd_name)
     model = _make_input_model(cmd_name, schema)
     fields = set(model.model_fields.keys())
     required = {name for name, field in model.model_fields.items() if field.is_required()}
