@@ -363,6 +363,13 @@ class TestClaimLatency:
 
         if os.environ.get("AQ_PERF_STRICT") != "1":
             pytest.skip("AQ_PERF_STRICT not set")
+        if any_db._engine.dialect.name == "sqlite":
+            # Ruling P3-5: PostgreSQL is the production backend and SQLite is
+            # deprecated.  Under ``NullPool`` (P2-16, required for claim
+            # correctness) every transaction opens a fresh sqlite3
+            # connection, which puts this loop at ~900 ms p99; the budget is
+            # asserted on Postgres (measured 43.65 ms on postgres:18).
+            pytest.xfail("SQLite is deprecated; the p99 budget is a Postgres budget")
         await _seed_worker_scale(any_db)
         sid, _wd = await pool_session(any_db, tmp_path)
         handler = await build_handler(any_db, tmp_path)

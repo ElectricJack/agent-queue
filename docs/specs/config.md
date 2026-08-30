@@ -86,6 +86,8 @@ Maps to `DatabaseConfig`. The YAML key is `database`. This section configures th
 
 **Backward compatibility:** If no `database` section is present, the top-level `database_path` field is used as the `url` value (SQLite). New installations using the setup wizard will write the appropriate section automatically.
 
+**Deprecation:** PostgreSQL is the production backend. SQLite remains supported for the test suite and single-user experiments, but it is deprecated for real deployments: since the swarm work model, every SQLite transaction opens its own connection (`NullPool`, required so a concurrent writer cannot commit a claim transaction mid-flight), which makes claim/release latency roughly an order of magnitude worse than on PostgreSQL (~900 ms vs ~45 ms p99 at 5,000 tasks). Performance budgets are asserted against PostgreSQL.
+
 **Examples:**
 
 ```yaml
