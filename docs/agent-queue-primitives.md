@@ -198,15 +198,15 @@ Vault is Obsidian-compatible markdown. Scoped by directory: `system/` · `orches
 | **PlaybookRunner** | `src/playbooks/runner.py` (+ `runner_transitions.py`, `runner_events.py`, `runner_context.py`, `resume_handler.py`) | Walks compiled graph, invokes LLM per node, evaluates transitions, pauses for human input. |
 | **PlaybookCompiler** | `src/playbooks/compiler.py` | MD → LLM → JSON schema validation → `compiled/<id>.json`. |
 | **PlaybookManager** | `src/playbooks/manager.py` | Lifecycle API (list/get/compile/run/inspect). |
-| **Supervisor** | `src/supervisor.py` | LLM agent for user chat, task CRUD, diagnostics. Uses CommandHandler + Reflection. |
-| **Reflection Engine** | `src/reflection.py` | Post-action verdict pass. Tiers: deep (task.completed) / standard (user.request) / light (periodic). Circuit-breakered. |
+| **Discord Bot / Command Handler** | `src/discord/`, `src/commands/handler.py` | User chat, task CRUD, diagnostics — no in-process Supervisor; Discord slash commands and threads front `CommandHandler` directly. |
+| **Reflection** | playbook, not a module | Post-action verdict pass. Tiers: deep (task.completed) / standard (user.request) / light (periodic). Runs via the direct LLM path (`src/llm/`), not an in-process reflection engine. |
 | **PromptBuilder** | `src/prompt_builder.py` | 5-layer: L0 role → override → L1 facts → L2 context → identity → tools. Budget-aware. |
 | **EventBus** | `src/event_bus.py` (+ schemas in `src/event_schemas.py`) | Typed pub-sub. Triggers playbooks, notifies adapters, drives orchestration. |
 | **FileWatcher** | `src/file_watcher.py`, `src/workspace_spec_watcher.py` | Vault + workspace spec changes → compile / sync / reindex. |
 | **CommandHandler** | `src/commands/handler.py` (+ mixins in `src/commands/`) | Single mutation entry point. Auto-exposed as MCP tools. |
 | **Tool Registry** | `src/tools/registry.py` | Plugins register here; profiles select from here. |
 | **Messaging Adapters** | `src/discord/`, `src/messaging/base.py`, `src/messaging/null_adapter.py` | Platform-agnostic send/receive + notification routing. Discord or `none`. |
-| **Chat Providers** | `src/chat_providers/` | Normalized LLM client (Anthropic / OpenAI / Ollama / Gemini) returning `ChatResponse`. |
+| **LLM direct path** | `src/llm/` | `LLMClient.complete`/`run_tools` — normalized LLM client (Anthropic / Google / OpenAI, Ollama via OpenAI + `base_url`). Consumers: playbook nodes/transitions, plugin `invoke_llm`, stub enricher, vault summaries. |
 | **Memory V2 Plugin** | `src/plugins/internal/memory_v2/` + `packages/memsearch/` | Milvus-backed. Semantic + KV + temporal facts. Multi-scope weighted queries. |
 
 ### D. Enums / Shape Primitives (`src/models.py`)
@@ -232,7 +232,7 @@ Vault is Obsidian-compatible markdown. Scoped by directory: `system/` · `orches
 | **MemoryContext** | `src/models.py` | Assembled L0+L1+L2+L3 trimmed to budget. `to_context_block()` → markdown. |
 | **AgentOutput** | `src/models.py` | What an adapter returns: result, summary, files_changed, tokens_used, error, session_id. |
 | **CompiledPlaybook** | `src/playbooks/models.py` | Nodes, transitions, `llm_config`, `pause_timeout`, `max_tokens`. |
-| **ChatResponse** | `src/chat_providers/types.py` | Unified LLM response: text, tool_use, stop_reason, usage. |
+| **LLMResponse** | `src/llm/client.py` | Unified LLM response: text, tool_use, stop_reason. No `usage` field — token accounting stays estimate-based (see `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`, "Deviations applied during implementation" §3). |
 
 ---
 
@@ -246,7 +246,7 @@ This is the part that usually trips people up. Each arrow is "X makes Y visible 
 | **Tools** (allowlist) | AgentProfile | a specific Agent/Task | `profile.allowed_tools` → filtered at PromptBuilder |
 | **MCP servers** | AgentProfile + Registry | a specific Agent/Task | `profile.mcp_servers` (`list[str]`) → resolved via the MCP server registry → passed through TaskContext to the adapter |
 | **MCP tools** (all ~150 CommandHandler commands) | CommandHandler | external IDEs / Claude Code | Embedded MCP server auto-exposes every command. Builtin entry in the registry; computed in-process so the daemon doesn't probe its own endpoint. |
-| **Sandboxed playbook capabilities** | Playbook frontmatter `profile_id` | the playbook's chat turns | Runner threads `profile.allowed_tools` as `tool_overrides` into every `supervisor.chat()`. Supervisor gates `tool_use.name ∈ active_tools` and rejects unknown names with a synthetic error. See [[specs/design/sandboxed-playbooks]]. |
+| **Sandboxed playbook capabilities** | Playbook frontmatter `profile_id` | the playbook's LLM calls | Runner threads `profile.allowed_tools` as `tool_overrides` into every direct-path `LLMClient` call for this run's nodes. The client gates `tool_use.name ∈ active_tools` and rejects unknown names with a synthetic error. See [[specs/design/sandboxed-playbooks]] (predates the direct LLM path; mechanism unchanged, `supervisor.chat()` → `LLMClient.run_tools`). |
 | **Identity/role** | AgentProfile `## Role` | the running agent | L0 tier in PromptBuilder |
 | **Facts** | `vault/**/memory/facts.md` | the running agent | L1 tier — always in prompt |
 | **Topic knowledge** | `vault/**/memory/knowledge/*.md` | the running agent | L2 tier — topic-filtered, injected at task start |

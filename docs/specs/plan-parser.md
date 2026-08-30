@@ -4,16 +4,40 @@ tags: [spec, plans, tasks]
 
 # Specification: Plan Parser
 
-## 1. Overview
+> **Superseded.** Everything below this notice describes the pre-llm-direct-path
+> design: automatic plan discovery during the completion pipeline, regex parsing
+> into `PlanStep`/`ParsedPlan`, an LLM fallback parser (`src/plan_parser_llm.py`,
+> `ChatProvider`-backed), and automatic subtask creation. That machinery is
+> **deleted** — see `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`
+> §6.3 and its "Deviations applied during implementation" §2.
+>
+> **What exists now:** `src/plan_parser.py` provides only
+> `find_plan_file`/`find_all_plan_files`/`read_plan_file` — plain file-discovery
+> and reading utilities, no parsing into structured steps and no LLM call.
+> Turning a plan file into subtasks is a human-in-the-loop command
+> (`process_plan` → `AWAITING_PLAN_APPROVAL` → `approve_plan`; see
+> [[specs/command-handler]] and `docs/specs/orchestrator.md` §12), not an
+> automatic pipeline phase. Structured, LLM-assisted plan breakdown — if wanted
+> — is expected to come from dispatching the work to an agent running under a
+> `planner` profile (a `harness`-selected coding agent, like any other), not
+> from an in-process LLM call; no such profile ships in-tree yet.
+> `TaskStatus.AWAITING_PLAN_APPROVAL` stays in the enum; a doctor check reports
+> any task stranded in that state (nothing auto-resolves it) with the
+> instruction to reopen or close it.
+>
+> The rest of this page is kept as historical reference for the data model
+> shapes that no longer exist in code.
+
+## 1. Overview (historical)
 
 The plan parser converts markdown implementation plan files into structured task definitions that the [[specs/orchestrator]] can schedule as follow-up work.
 
 When an agent completes a task, it may write a plan file (e.g. `.claude/plan.md`) to its workspace describing the steps required to carry out that work. The plan parser reads this file, identifies the actionable steps, and returns them as an ordered list of `PlanStep` objects wrapped in a `ParsedPlan`. The orchestrator then creates one child task per step, chaining them with dependencies.
 
-The module is split into two files:
+The module was split into two files:
 
-- `src/plan_parser.py` — regex-based parser, data models, plan file discovery, and task description builder. No I/O beyond reading the plan file itself.
-- `src/plan_parser_llm.py` — async wrapper that sends the raw markdown to a `ChatProvider` (Claude or another configured LLM) and uses tool-use structured output to extract steps. Falls back to the regex parser on any failure.
+- `src/plan_parser.py` — regex-based parser, data models, plan file discovery, and task description builder. No I/O beyond reading the plan file itself. **Only the discovery/reading functions survive; the parser and task-description builder were deleted.**
+- `src/plan_parser_llm.py` — async wrapper that sends the raw markdown to a `ChatProvider` (Claude or another configured LLM) and uses tool-use structured output to extract steps. Falls back to the regex parser on any failure. **Deleted.**
 
 ---
 

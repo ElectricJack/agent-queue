@@ -290,3 +290,31 @@ Branch `llm-direct-path` in a worktree, landed as four reviewable commits:
 4. **Docs** (§6.4) and CLAUDE.md/profile.md.
 
 Each commit leaves the suite green so the work can be bisected or partially reverted.
+
+## Deviations applied during implementation
+
+1. **`src/runtimes/` kept as a seam, not deleted.** §6.4/§9 said delete
+   `src/runtimes/` outright. Instead `base.py` (the `Runtime` ABC, `Capability` enum,
+   `requires_workspace` ClassVar) and the `RuntimeRegistry` stayed as the test/dispatch
+   injection seam used by `sync_workflow` and tests; only `supervisor.py` (the in-process
+   Supervisor runtime implementation) was deleted. `default_registry(config=...)`
+   registers nothing in production — there are no in-tree `Runtime` implementations left,
+   since every agent runs as a tmux session selected by `harness`.
+2. **The LLM plan parser was deleted, not ported.** §5's port list implied the
+   plan-discovery LLM call would move onto the direct path. In practice it was dead
+   code — `_chat_provider` on the plan parser was never read — so it was deleted
+   outright along with plan discovery itself (`.claude/plan.md` parsing,
+   `AWAITING_PLAN_APPROVAL`), not migrated to `LLMClient`. The `use_llm_parser` and
+   `llm_parser_model` config keys were removed with it.
+3. **No `usage` field on `LLMResponse`/`LLMRunResult`.** The design implied
+   provider-reported token accounting would ride along with responses. The shipped
+   adapters expose content blocks only — no normalized usage struct — so token
+   accounting stays estimate-based (unchanged from the chat-provider era). A
+   `tool_calls_made` count was added to `LLMRunResult` instead, since callers needed a
+   way to tell whether the tool loop actually invoked anything.
+4. **`AgentProfile.runtime` field and DB column retained, inert.** Rather than dropping
+   the `runtime` dataclass field and column, both stay in place but unused:
+   `src/profiles/parser.py` rejects `runtime` in profile config with a pointer to
+   `harness`, and a startup migration strips any lingering `runtime` key from vault
+   profiles. This avoided an extra migration/rename for a field with no remaining
+   writers.

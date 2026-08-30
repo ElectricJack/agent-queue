@@ -15,12 +15,13 @@ Agent Queue — self-improving orchestration platform for AI coding agents. Mana
 - **Formulas:** `src/task_graph/formulas.py` (registry, `extends` merge, vars), `src/commands/formula_commands.py` (`formula_list|show|cook`), provenance in `creator.write_plan`. Files: `vault/[projects/<pid>/]formulas/<name>.md` (frontmatter + one `aq-graph` block). Spec: design spec Part III.
 - **Swarm (claims/pools):** `src/database/queries/claim_queries.py` (claim transaction, epoch fence), `src/commands/claim_commands.py` (`task_claim`), `src/orchestrator/pools.py` (`_reconcile_pools`; pure `size_pools` in `scheduler.py`), pool carve-outs in `src/sessions/reconciler.py`, checks in `src/doctor/pool_checks.py`. Profiles with `lifecycle: pool` pull work via `aq task claim`; `lifecycle: task` keeps push. Off by default (`swarm.enabled`). Spec: `docs/superpowers/specs/2026-08-28-swarm-work-model-design.md` Part II.
 - **Config editor:** `src/config_editor.py` — ruamel round-trip writer behind `get_config` / `update_config` / `get_config_schema`. Validates via temp-file `load_config()` before swap.
-- **Intelligence:** `prompt_builder.py`, `tools/registry.py`, `llm_logger.py`, `llm/` (the direct LLM path). Reflection is a playbook, not a module.
+- **Intelligence:** `prompt_builder.py`, `tools/registry.py`, `llm_logger.py`. Reflection is a playbook, not a module.
+- **LLM direct path:** `src/llm/` — `LLMClient.complete`/`run_tools`, `LLMCallSpec`, config `llm:`, intelligence classes shared with sessions. Consumers: playbook nodes/transitions, plugin `invoke_llm`, the reference-stub enricher, and `aq vault rebuild-index --with-summaries`.
 - **Workflows:** `workflow_stage_resume_handler.py`, `orphan_workflow_recovery.py`, `workflow_pipeline_view.py`
 - **Plugins:** `src/plugins/` (base, registry, loader, internal/)
 - **Internal plugins:** `src/plugins/internal/` (aq-files, aq-git, aq-notes, aq-vibecop)
 - **Messages:** `src/messages/` — `session_lens.py` (`SessionManagerProto`/`SessionLens`; supervisor messaging address `supervisor-<pid>` → runtime name `n-supervisor--<pid>`), `delivery.py` (`MessageDeliveryEngine`; per-`to_kind` delivery policy; parking for stale session rows; transcript-tail fallback). Cascade step in `run_one_cycle` behind `messages.enabled`; `aq inbox --inject` hook in claude harness; prime surfaces pending messages via `via="prime"`.
-- **Subsystems:** `src/runtimes/`, `src/discord/`, `src/git/`, `src/tokens/`, `src/chat_providers/`, `src/messaging/`
+- **Subsystems:** `src/runtimes/`, `src/discord/`, `src/git/`, `src/tokens/`, `src/messaging/`
 - **Specs:** `docs/specs/` (source of truth — specs first, then code)
 - **Design specs:** `docs/specs/design/` (principles, playbooks, memory, self-improvement, coordination, vault, profiles, roadmap)
 - **Config:** `~/.agent-queue/config.yaml`

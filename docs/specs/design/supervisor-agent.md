@@ -47,7 +47,7 @@ not revisited here:
 | S6 | It acts only through `aq` / slim MCP; it talks to users via the Discord project channel and dashboard chat. |
 | S7 | A new `messages` table carries all user↔session and session↔session traffic; delivery is nudge-when-idle (a message arriving mid-turn waits for the next idle observation), prime-inject at session start. |
 | S8 | Specs live at `vault/projects/<pid>/specs/<slug>.md`; graphs are created via `aq task create --graph` / `--from-spec` in a single transaction; `task_context.type='spec_ref'` links tasks to spec sections. |
-| S9 | Old code: `Supervisor.chat()` is unwired from Discord/Telegram/CLI; `src/runtimes/supervisor.py` and `src/chat_providers/` stay **dormant as reference**. The `supervisor` runtime value in profiles maps to a restricted-tools task session. |
+| S9 | **Superseded (2026-08-30):** old code — `Supervisor.chat()`, `src/runtimes/supervisor.py`, `src/chat_providers/` — was **deleted**, not left dormant. There is no `supervisor` runtime value; the profile `runtime` key is rejected. See `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md` and §10 below. |
 
 ---
 
@@ -424,7 +424,16 @@ today's `AWAITING_PLAN_APPROVAL` status.
 
 ## 9. The planner flow — replacing `break_plan_into_tasks()`
 
-Today's flow makes the daemon an LLM client twice over. A coding agent writes `plan.md`;
+> **Superseded (2026-08-30).** The plan-discovery deletion described below shipped as
+> planned, but plainly: `break_plan_into_tasks()` and automatic plan-file discovery
+> were deleted, not migrated onto a chat provider or an LLM plan parser — they were
+> dead code by the time the direct LLM path landed. The `planner` profile this
+> section anticipates does not ship in-tree yet; plan files are processed on demand
+> via the `process_plan` command (`docs/specs/command-handler.md`,
+> `docs/specs/orchestrator.md` §12), not automatically. See
+> `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md` §6.3.
+
+Today's flow (historical, pre-cutover) made the daemon an LLM client twice over. A coding agent writes `plan.md`;
 the completion pipeline's plan-discovery phase (`src/orchestrator/git_ops.py::
 _discover_and_store_plan`, `src/orchestrator/approval.py::_phase_plan_discover`, invoked
 from `_run_completion_pipeline`) detects and archives it; the task flips to
@@ -467,20 +476,26 @@ acceptance criteria; rules: never push fixes yourself, reopen with concrete feed
 
 ## 10. What is unwired, what stays dormant
 
-**Phase 4 cutover complete (2026-08-21):** Discord chat now routes exclusively to
-supervisor sessions via `message_send`. `supervisor_agent.legacy_chat` config flag
-has been deleted. `Supervisor.chat()` remains available for `runtime: supervisor`
-tasks and plugin `invoke_llm` fallback — it is no longer called for Discord messages.
+**Superseded (2026-08-30):** everything this section once described as "dormant" or
+"retained" was deleted outright by the llm-direct-path cutover — there is no
+in-process Supervisor left to be dormant. `Supervisor.chat()`, `src/chat_providers/`,
+and `src/runtimes/supervisor.py` are gone; every agent (including what would have been
+a `runtime: supervisor` task) runs as a `harness`-selected tmux session, and playbook
+nodes/transitions plus plugin `invoke_llm` go through the direct LLM path
+(`src/llm/`) instead of a chat provider. See
+`docs/superpowers/specs/2026-08-30-llm-direct-path-design.md` for the design and its
+"Deviations applied during implementation" section for where the shipped result
+diverged from this spec's plan.
 
 | Component | Disposition |
 |---|---|
-| `Supervisor.chat()` Discord wiring: `on_message` → `self.agent.chat(...)` | **Removed** — channel messages become `messages` rows; `ThinkingView` deleted |
-| Telegram `self._supervisor.chat(history)` (`src/telegram/bot.py:327`) | Removed with `src/telegram/` (Workstream F, decided) |
-| Plugin `invoke_llm` fallback → `supervisor.chat` (`src/orchestrator/core.py:412`) | Still active — unchanged in Phase 4; plugins continue to use `Supervisor.chat()` |
-| `Supervisor.chat()` itself | **Retained** — used by `runtime: supervisor` tasks, playbook runner, and plugin `invoke_llm` fallback |
-| `src/runtimes/supervisor.py`, `src/chat_providers/` | **Dormant as reference** (decided) — frozen, not deleted before the playbook comeback |
-| `profile.runtime = "supervisor"` (tool-call-only in-process runtime) | Maps to a **restricted-tools task session** under the session runtime; the profile keeps its narrow `allowed` list, the singleton goes unused |
-| Plan discovery + `break_plan_into_tasks` | Unwired per §9, `planner.legacy_plan_discovery` flag gates in-flight tasks |
+| `Supervisor.chat()` Discord wiring: `on_message` → `self.agent.chat(...)` | **Removed** — see the direct-path spec |
+| Telegram `self._supervisor.chat(history)` (`src/telegram/bot.py:327`) | **Removed** — see the direct-path spec |
+| Plugin `invoke_llm` fallback → `supervisor.chat` (`src/orchestrator/core.py:412`) | **Removed** — `invoke_llm` now calls `LLMClient` directly; see the direct-path spec |
+| `Supervisor.chat()` itself | **Removed** — see the direct-path spec |
+| `src/runtimes/supervisor.py`, `src/chat_providers/` | **Removed** — see the direct-path spec (`src/runtimes/base.py` + `RuntimeRegistry` survive as an inert dispatch seam; nothing is registered in production) |
+| `profile.runtime = "supervisor"` (tool-call-only in-process runtime) | **Removed** — the `runtime` config key is rejected by the profile parser; every agent is a session selected by `harness`. See the direct-path spec |
+| Plan discovery + `break_plan_into_tasks` | **Removed** — deleted rather than ported (dead code); see the direct-path spec |
 
 ---
 
