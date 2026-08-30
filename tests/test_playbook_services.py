@@ -70,3 +70,25 @@ def test_compiler_silent_on_supported_llm_config_keys(caplog):
             }
         )
     assert "are ignored" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator.playbook_services() factory
+# ---------------------------------------------------------------------------
+
+
+def test_orchestrator_playbook_services(tmp_path):
+    from unittest.mock import MagicMock
+    from src.config import AppConfig, DiscordConfig
+    from src.orchestrator import Orchestrator
+
+    cfg = AppConfig(discord=DiscordConfig(bot_token="t", guild_id="1"),
+                    workspace_dir=str(tmp_path / "w"), database_path=str(tmp_path / "t.db"),
+                    data_dir=str(tmp_path / "d"))
+    o = Orchestrator(cfg)
+    with pytest.raises(RuntimeError, match="command handler"):
+        o.playbook_services()
+    o._command_handler = MagicMock()
+    o._tool_registry = MagicMock()
+    s = o.playbook_services()
+    assert s.llm is o.llm and s.handler is o._command_handler and s.tool_registry is o._tool_registry

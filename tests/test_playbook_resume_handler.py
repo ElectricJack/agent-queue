@@ -429,31 +429,55 @@ class TestValidation:
             call_kwargs = mock_db.update_playbook_run.call_args.kwargs
             assert call_kwargs.get("status") == "timed_out"
 
-    async def test_supervisor_init_failure(self, handler, event_bus, mock_db, paused_run):
-        """If Supervisor.initialize() fails, the resume is aborted gracefully."""
+    async def test_llm_not_configured(self, handler, event_bus, mock_db, mock_orchestrator, paused_run):
+        """If the LLM is not configured, the resume is aborted gracefully."""
         mock_db.get_playbook_run.return_value = paused_run
 
-        with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-            mock_sup = MagicMock()
-            mock_sup.initialize.return_value = False
-            MockSupervisor.return_value = mock_sup
+        mock_services = MagicMock()
+        mock_services.llm.is_configured.return_value = False
+        mock_orchestrator.playbook_services = MagicMock(return_value=mock_services)
 
-            with patch(
-                "src.playbooks.runner.PlaybookRunner.resume",
-                new_callable=AsyncMock,
-            ) as mock_resume:
-                await event_bus.emit(
-                    "human.review.completed",
-                    {
-                        "playbook_id": "human-review-playbook",
-                        "run_id": "paused-abc123",
-                        "node_id": "review",
-                        "decision": "Approved.",
-                    },
-                )
+        with patch(
+            "src.playbooks.runner.PlaybookRunner.resume",
+            new_callable=AsyncMock,
+        ) as mock_resume:
+            await event_bus.emit(
+                "human.review.completed",
+                {
+                    "playbook_id": "human-review-playbook",
+                    "run_id": "paused-abc123",
+                    "node_id": "review",
+                    "decision": "Approved.",
+                },
+            )
 
-                await asyncio.sleep(0.05)
-                mock_resume.assert_not_called()
+            await asyncio.sleep(0.05)
+            mock_resume.assert_not_called()
+
+    async def test_command_handler_not_wired(self, handler, event_bus, mock_db, mock_orchestrator, paused_run):
+        """If the orchestrator's command handler isn't wired yet, resume is aborted gracefully."""
+        mock_db.get_playbook_run.return_value = paused_run
+
+        mock_orchestrator.playbook_services = MagicMock(
+            side_effect=RuntimeError("playbook_services: command handler not wired yet")
+        )
+
+        with patch(
+            "src.playbooks.runner.PlaybookRunner.resume",
+            new_callable=AsyncMock,
+        ) as mock_resume:
+            await event_bus.emit(
+                "human.review.completed",
+                {
+                    "playbook_id": "human-review-playbook",
+                    "run_id": "paused-abc123",
+                    "node_id": "review",
+                    "decision": "Approved.",
+                },
+            )
+
+            await asyncio.sleep(0.05)
+            mock_resume.assert_not_called()
 
     async def test_no_graph_available(self, handler, event_bus, mock_db):
         """If no graph can be resolved (no pinned, no active), resume is skipped."""

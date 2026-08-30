@@ -6349,6 +6349,19 @@ class TestHumanInTheLoopEvents:
 # ---------------------------------------------------------------------------
 
 
+def _resume_cmd_services(*, configured: bool = True) -> PlaybookServices:
+    """A PlaybookServices for the ``_cmd_resume_playbook`` command tests below.
+
+    These tests don't use the module-level ``mock_services`` fixture because
+    they aren't parametrized by it (they build a bare mock handler each time);
+    this mirrors it standalone.
+    """
+    services = PlaybookServices.for_tests(LLMClient.with_provider(FakeProvider()))
+    services.llm = MagicMock()
+    services.llm.is_configured = MagicMock(return_value=configured)
+    return services
+
+
 class TestResumePlaybookCommand:
     """Tests for the _cmd_resume_playbook command handler method."""
 
@@ -6482,12 +6495,9 @@ class TestResumePlaybookCommand:
             error=None,
         )
 
-        with (
-            patch("src.runtimes.supervisor.Supervisor") as MockSupervisor,
-            patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
-        ):
-            mock_sup = MockSupervisor.return_value
-            mock_sup.initialize.return_value = True
+        handler.orchestrator.playbook_services = MagicMock(return_value=_resume_cmd_services())
+
+        with patch("src.playbooks.runner.PlaybookRunner") as MockRunner:
             MockRunner.resume = AsyncMock(return_value=mock_result)
             MockRunner._resolve_pause_timeout = PlaybookRunner._resolve_pause_timeout
 
@@ -6551,12 +6561,9 @@ class TestResumePlaybookCommand:
             error=None,
         )
 
-        with (
-            patch("src.runtimes.supervisor.Supervisor") as MockSupervisor,
-            patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
-        ):
-            mock_sup = MockSupervisor.return_value
-            mock_sup.initialize.return_value = True
+        handler.orchestrator.playbook_services = MagicMock(return_value=_resume_cmd_services())
+
+        with patch("src.playbooks.runner.PlaybookRunner") as MockRunner:
             MockRunner.resume = AsyncMock(return_value=mock_result)
             MockRunner._resolve_pause_timeout = PlaybookRunner._resolve_pause_timeout
 
@@ -6621,12 +6628,9 @@ class TestResumePlaybookCommand:
             error=None,
         )
 
-        with (
-            patch("src.runtimes.supervisor.Supervisor") as MockSupervisor,
-            patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
-        ):
-            mock_sup = MockSupervisor.return_value
-            mock_sup.initialize.return_value = True
+        handler.orchestrator.playbook_services = MagicMock(return_value=_resume_cmd_services())
+
+        with patch("src.playbooks.runner.PlaybookRunner") as MockRunner:
             MockRunner.resume = AsyncMock(return_value=mock_result)
             MockRunner._resolve_pause_timeout = PlaybookRunner._resolve_pause_timeout
 
@@ -6674,10 +6678,8 @@ class TestResumePlaybookCommand:
         assert "error" in result
         assert "Cannot resolve playbook graph" in result["error"]
 
-    async def test_resume_supervisor_init_failure(self):
-        """resume_playbook returns error when Supervisor fails to initialize."""
-        from unittest.mock import patch
-
+    async def test_resume_llm_not_configured(self):
+        """resume_playbook returns error when the LLM is not configured."""
         from src.commands.handler import CommandHandler
 
         handler = AsyncMock(spec=CommandHandler)
@@ -6709,16 +6711,16 @@ class TestResumePlaybookCommand:
             node_trace="[]",
         )
         handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
+        handler.orchestrator.playbook_services = MagicMock(
+            return_value=_resume_cmd_services(configured=False)
+        )
 
-        with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-            mock_sup = MockSupervisor.return_value
-            mock_sup.initialize.return_value = False  # Fails to init
-            result = await handler._cmd_resume_playbook(
-                {"run_id": "run-no-sup", "human_input": "ok"}
-            )
+        result = await handler._cmd_resume_playbook(
+            {"run_id": "run-no-sup", "human_input": "ok"}
+        )
 
         assert "error" in result
-        assert "Failed to initialize" in result["error"]
+        assert "not configured" in result["error"]
 
     async def test_resume_timeout_enforced(self):
         """resume_playbook enforces pause timeout and marks run as timed_out."""
@@ -6815,13 +6817,9 @@ class TestResumePlaybookCommand:
             node_trace="[]",
         )
         handler.db.get_playbook_run = AsyncMock(return_value=paused_run)
+        handler.orchestrator.playbook_services = MagicMock(return_value=_resume_cmd_services())
 
-        with (
-            patch("src.runtimes.supervisor.Supervisor") as MockSupervisor,
-            patch("src.playbooks.runner.PlaybookRunner") as MockRunner,
-        ):
-            mock_sup = MockSupervisor.return_value
-            mock_sup.initialize.return_value = True
+        with patch("src.playbooks.runner.PlaybookRunner") as MockRunner:
             MockRunner.resume = AsyncMock(side_effect=RuntimeError("LLM provider crashed"))
             MockRunner._resolve_pause_timeout = PlaybookRunner._resolve_pause_timeout
 

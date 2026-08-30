@@ -15,8 +15,26 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.event_bus import EventBus
+from src.llm import LLMClient, LLMRunResult
+from src.llm.fake import FakeProvider
 from src.notifications.events import PlaybookRunPausedEvent
 from src.playbooks.runner import PlaybookRunner
+from src.playbooks.services import PlaybookServices
+
+
+def _run_result(text: str) -> LLMRunResult:
+    return LLMRunResult(text=text, transcript=[], turns=1, stopped_by="done")
+
+
+def _script_iter(services, responses) -> None:
+    async def _run_tools(*a, **kw):
+        return _run_result(next(responses))
+
+    async def _complete(*a, **kw):
+        return MagicMock(text=next(responses), tool_calls=[])
+
+    services.llm.run_tools.side_effect = _run_tools
+    services.llm.complete.side_effect = _complete
 
 
 # ---------------------------------------------------------------------------
@@ -39,11 +57,13 @@ def _make_mock_bot():
 
 
 @pytest.fixture
-def mock_supervisor():
-    supervisor = AsyncMock()
-    supervisor.chat = AsyncMock(return_value="Done.")
-    supervisor.summarize = AsyncMock(return_value="Summary.")
-    return supervisor
+def mock_services():
+    services = PlaybookServices.for_tests(LLMClient.with_provider(FakeProvider()))
+    services.llm = MagicMock()
+    services.llm.config = MagicMock(max_tokens=2048)
+    services.llm.run_tools = AsyncMock(return_value=_run_result("Done."))
+    services.llm.complete = AsyncMock(return_value=MagicMock(text="1", tool_calls=[]))
+    return services
 
 
 @pytest.fixture
@@ -157,17 +177,17 @@ class TestPlaybookRunnerPausedNotification:
 
     @pytest.mark.asyncio
     async def test_pause_emits_notify_event(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """When a run pauses, both playbook.run.paused and notify.playbook_run_paused fire."""
         responses = iter(["Analysis done.", "Ready for review."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         event_bus = AsyncMock()
         event_bus.emit = AsyncMock()
 
         runner = PlaybookRunner(
-            human_review_graph, event_data, mock_supervisor, db=mock_db, event_bus=event_bus
+            human_review_graph, event_data, mock_services, db=mock_db, event_bus=event_bus
         )
         result = await runner.run()
 
@@ -180,17 +200,17 @@ class TestPlaybookRunnerPausedNotification:
 
     @pytest.mark.asyncio
     async def test_notify_event_contains_context_summary(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """The notify event includes last_response as the context summary."""
         responses = iter(["Analysis complete.", "Here is my analysis for your review."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         event_bus = AsyncMock()
         event_bus.emit = AsyncMock()
 
         runner = PlaybookRunner(
-            human_review_graph, event_data, mock_supervisor, db=mock_db, event_bus=event_bus
+            human_review_graph, event_data, mock_services, db=mock_db, event_bus=event_bus
         )
         await runner.run()
 
@@ -207,18 +227,18 @@ class TestPlaybookRunnerPausedNotification:
 
     @pytest.mark.asyncio
     async def test_notify_event_includes_project_id(
-        self, mock_supervisor, human_review_graph, mock_db
+        self, mock_services, human_review_graph, mock_db
     ):
         """The notify event propagates project_id from the trigger event."""
         responses = iter(["Analysis.", "Review."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         event_bus = AsyncMock()
         event_bus.emit = AsyncMock()
 
         event_data = {"type": "test", "project_id": "my-project"}
         runner = PlaybookRunner(
-            human_review_graph, event_data, mock_supervisor, db=mock_db, event_bus=event_bus
+            human_review_graph, event_data, mock_services, db=mock_db, event_bus=event_bus
         )
         await runner.run()
 
@@ -231,17 +251,17 @@ class TestPlaybookRunnerPausedNotification:
 
     @pytest.mark.asyncio
     async def test_notify_event_includes_timing_info(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """The notify event includes running_seconds and tokens_used."""
         responses = iter(["Done.", "Review."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         event_bus = AsyncMock()
         event_bus.emit = AsyncMock()
 
         runner = PlaybookRunner(
-            human_review_graph, event_data, mock_supervisor, db=mock_db, event_bus=event_bus
+            human_review_graph, event_data, mock_services, db=mock_db, event_bus=event_bus
         )
         await runner.run()
 
@@ -257,18 +277,18 @@ class TestPlaybookRunnerPausedNotification:
 
     @pytest.mark.asyncio
     async def test_notify_event_not_emitted_without_event_bus(
-        self, mock_supervisor, human_review_graph, event_data, mock_db
+        self, mock_services, human_review_graph, event_data, mock_db
     ):
         """Without an event_bus, pause still works (no crash)."""
         responses = iter(["Analysis.", "Review."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
-        runner = PlaybookRunner(human_review_graph, event_data, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, event_data, mock_services, db=mock_db)
         result = await runner.run()
         assert result.status == "paused"  # No error, graceful handling
 
     @pytest.mark.asyncio
-    async def test_notify_event_caps_long_context(self, mock_supervisor, mock_db):
+    async def test_notify_event_caps_long_context(self, mock_services, mock_db):
         """The last_response in the notify event is capped at 2000 chars."""
         graph = {
             "id": "cap-test",
@@ -290,13 +310,13 @@ class TestPlaybookRunnerPausedNotification:
 
         long_response = "x" * 5000
         responses = iter(["short.", long_response])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         event_bus = AsyncMock()
         event_bus.emit = AsyncMock()
 
         runner = PlaybookRunner(
-            graph, {"type": "test"}, mock_supervisor, db=mock_db, event_bus=event_bus
+            graph, {"type": "test"}, mock_services, db=mock_db, event_bus=event_bus
         )
         await runner.run()
 
@@ -538,12 +558,12 @@ class TestEndToEndPausedNotification:
     """Full pipeline: PlaybookRunner pause → EventBus → DiscordNotificationHandler."""
 
     @pytest.mark.asyncio
-    async def test_full_pipeline(self, mock_supervisor, human_review_graph, mock_db):
+    async def test_full_pipeline(self, mock_services, human_review_graph, mock_db):
         """Verify end-to-end from playbook runner to Discord message."""
         from src.discord.notification_handler import DiscordNotificationHandler
 
         responses = iter(["Analysis done.", "Here is the review summary."])
-        mock_supervisor.chat.side_effect = lambda **kw: next(responses)
+        _script_iter(mock_services, responses)
 
         bus = EventBus()
         bot = _make_mock_bot()
@@ -551,7 +571,7 @@ class TestEndToEndPausedNotification:
 
         event_data = {"type": "test", "project_id": "proj-1"}
         runner = PlaybookRunner(
-            human_review_graph, event_data, mock_supervisor, db=mock_db, event_bus=bus
+            human_review_graph, event_data, mock_services, db=mock_db, event_bus=bus
         )
         result = await runner.run()
 

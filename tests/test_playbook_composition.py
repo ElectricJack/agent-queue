@@ -35,14 +35,21 @@ implementation for the future dispatcher.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.event_bus import EventBus
+from src.llm import LLMClient, LLMRunResult
+from src.llm.fake import FakeProvider
 from src.playbooks.manager import PlaybookManager
 from src.playbooks.models import CompiledPlaybook, PlaybookNode
 from src.playbooks.runner import PlaybookRunner
+from src.playbooks.services import PlaybookServices
+
+
+def _run_result(text: str) -> LLMRunResult:
+    return LLMRunResult(text=text, transcript=[], turns=1, stopped_by="done")
 
 
 # ---------------------------------------------------------------------------
@@ -123,12 +130,13 @@ def _manager_with_playbooks(*playbooks: CompiledPlaybook) -> PlaybookManager:
     return manager
 
 
-def _mock_supervisor() -> AsyncMock:
-    """Create a mock Supervisor with a controllable chat() return value."""
-    supervisor = AsyncMock()
-    supervisor.chat = AsyncMock(return_value="Done.")
-    supervisor.summarize = AsyncMock(return_value="Summary of prior steps.")
-    return supervisor
+def _mock_supervisor() -> PlaybookServices:
+    """Create PlaybookServices with a controllable llm.run_tools() return value."""
+    services = PlaybookServices.for_tests(LLMClient.with_provider(FakeProvider()))
+    services.llm = MagicMock()
+    services.llm.run_tools = AsyncMock(return_value=_run_result("Done."))
+    services.llm.complete = AsyncMock(return_value=MagicMock(text="1", tool_calls=[]))
+    return services
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +209,7 @@ class TestFilteredTriggerOnCompletion:
         )
 
         supervisor = _mock_supervisor()
-        supervisor.chat = AsyncMock(return_value="All checks passed.")
+        supervisor.llm.run_tools = AsyncMock(return_value=_run_result("All checks passed."))
         graph_a = _simple_graph("code-review")
 
         runner = PlaybookRunner(graph_a, {"type": "git.commit"}, supervisor, event_bus=event_bus)
@@ -458,7 +466,7 @@ class TestCompositionPayloadData:
         be used by downstream playbooks as their trigger event."""
         received_trigger_events: list[dict] = []
         supervisor = _mock_supervisor()
-        supervisor.chat = AsyncMock(return_value="Found 3 issues in src/main.py")
+        supervisor.llm.run_tools = AsyncMock(return_value=_run_result("Found 3 issues in src/main.py"))
 
         async def launch_downstream(data: dict) -> None:
             # The downstream playbook receives the completion event as its
@@ -495,7 +503,7 @@ class TestCompositionPayloadData:
         the upstream playbook's output is accessible via self.event."""
         downstream_events: list[dict] = []
         supervisor = _mock_supervisor()
-        supervisor.chat = AsyncMock(return_value="Analysis complete: all clear.")
+        supervisor.llm.run_tools = AsyncMock(return_value=_run_result("Analysis complete: all clear."))
 
         async def launch_downstream(data: dict) -> None:
             # Launch playbook B with the completion event as its trigger event
@@ -775,7 +783,7 @@ class TestFailedPlaybookTriggersDownstream:
         event_bus.subscribe("playbook.run.failed", lambda d: captured.append(d))
 
         supervisor = _mock_supervisor()
-        supervisor.chat = AsyncMock(side_effect=RuntimeError("LLM timeout"))
+        supervisor.llm.run_tools = AsyncMock(side_effect=RuntimeError("LLM timeout"))
 
         graph = {
             "id": "timeout-playbook",

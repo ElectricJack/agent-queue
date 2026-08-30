@@ -15,12 +15,15 @@ Coverage:
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.llm import LLMClient, LLMRunResult
+from src.llm.fake import FakeProvider
 from src.models import PlaybookRun, PlaybookRunEvent, PlaybookRunStatus
 from src.playbooks.runner import PlaybookRunner
+from src.playbooks.services import PlaybookServices
 from src.playbooks.state_machine import (
     TERMINAL_STATUSES,
     VALID_PLAYBOOK_RUN_STATUS_TRANSITIONS,
@@ -33,17 +36,23 @@ from src.playbooks.state_machine import (
 )
 
 
+def _run_result(text: str) -> LLMRunResult:
+    return LLMRunResult(text=text, transcript=[], turns=1, stopped_by="done")
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def mock_supervisor():
-    supervisor = AsyncMock()
-    supervisor.chat = AsyncMock(return_value="Done.")
-    supervisor.summarize = AsyncMock(return_value="Summary.")
-    return supervisor
+def mock_services():
+    services = PlaybookServices.for_tests(LLMClient.with_provider(FakeProvider()))
+    services.llm = MagicMock()
+    services.llm.config = MagicMock(max_tokens=2048)
+    services.llm.run_tools = AsyncMock(return_value=_run_result("Done."))
+    services.llm.complete = AsyncMock(return_value=MagicMock(text="1", tool_calls=[]))
+    return services
 
 
 @pytest.fixture
@@ -309,7 +318,7 @@ class TestRunnerStateMachineIntegration:
     """Verify that PlaybookRunner uses the state machine for all transitions."""
 
     async def test_successful_run_transitions_running_to_completed(
-        self, mock_supervisor, mock_db, event_data
+        self, mock_services, mock_db, event_data
     ):
         """Happy path: status goes running → completed."""
         graph = {
@@ -320,8 +329,9 @@ class TestRunnerStateMachineIntegration:
                 "done": {"terminal": True},
             },
         }
-        mock_supervisor.chat.return_value = "Done."
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("Done."))
+        mock_services.llm.complete = AsyncMock(return_value=MagicMock(text="Done.", tool_calls=[]))
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
 
         assert runner._status == PlaybookRunStatus.RUNNING
         result = await runner.run()
@@ -329,7 +339,7 @@ class TestRunnerStateMachineIntegration:
         assert runner._status == PlaybookRunStatus.COMPLETED
 
     async def test_failed_run_transitions_running_to_failed(
-        self, mock_supervisor, mock_db, event_data
+        self, mock_services, mock_db, event_data
     ):
         """Node execution error: status goes running → failed."""
         graph = {
@@ -340,15 +350,16 @@ class TestRunnerStateMachineIntegration:
                 "done": {"terminal": True},
             },
         }
-        mock_supervisor.chat.side_effect = RuntimeError("LLM error")
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        mock_services.llm.run_tools = AsyncMock(side_effect=RuntimeError("LLM error"))
+        mock_services.llm.complete = AsyncMock(side_effect=RuntimeError("LLM error"))
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
 
         result = await runner.run()
         assert result.status == "failed"
         assert runner._status == PlaybookRunStatus.FAILED
 
     async def test_budget_exceeded_transitions_running_to_failed(
-        self, mock_supervisor, mock_db, event_data
+        self, mock_services, mock_db, event_data
     ):
         """Budget exceeded: status goes running → failed (spec §6)."""
         graph = {
@@ -361,15 +372,16 @@ class TestRunnerStateMachineIntegration:
                 "done": {"terminal": True},
             },
         }
-        mock_supervisor.chat.return_value = "x" * 200
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("x" * 200))
+        mock_services.llm.complete = AsyncMock(return_value=MagicMock(text="x" * 200, tool_calls=[]))
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
 
         result = await runner.run()
         assert result.status == "failed"
         assert runner._status == PlaybookRunStatus.FAILED
 
     async def test_paused_run_transitions_running_to_paused(
-        self, mock_supervisor, mock_db, event_data
+        self, mock_services, mock_db, event_data
     ):
         """Human-in-the-loop: status goes running → paused."""
         graph = {
@@ -385,15 +397,16 @@ class TestRunnerStateMachineIntegration:
                 "done": {"terminal": True},
             },
         }
-        mock_supervisor.chat.return_value = "Review result."
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("Review result."))
+        mock_services.llm.complete = AsyncMock(return_value=MagicMock(text="Review result.", tool_calls=[]))
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
 
         result = await runner.run()
         assert result.status == "paused"
         assert runner._status == PlaybookRunStatus.PAUSED
 
     async def test_no_entry_node_transitions_running_to_failed(
-        self, mock_supervisor, mock_db, event_data
+        self, mock_services, mock_db, event_data
     ):
         """Missing entry node: status goes running → failed (GRAPH_ERROR)."""
         graph = {
@@ -404,7 +417,7 @@ class TestRunnerStateMachineIntegration:
                 "b": {"prompt": "B."},
             },
         }
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
 
         result = await runner.run()
         assert result.status == "failed"
@@ -412,7 +425,7 @@ class TestRunnerStateMachineIntegration:
         assert "entry" in result.error.lower()
 
     async def test_missing_node_transitions_running_to_failed(
-        self, mock_supervisor, mock_db, event_data
+        self, mock_services, mock_db, event_data
     ):
         """Node not found in graph: status goes running → failed (GRAPH_ERROR)."""
         graph = {
@@ -423,8 +436,9 @@ class TestRunnerStateMachineIntegration:
                 "done": {"terminal": True},
             },
         }
-        mock_supervisor.chat.return_value = "Done."
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("Done."))
+        mock_services.llm.complete = AsyncMock(return_value=MagicMock(text="Done.", tool_calls=[]))
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
 
         result = await runner.run()
         assert result.status == "failed"
@@ -432,7 +446,7 @@ class TestRunnerStateMachineIntegration:
         assert "nonexistent" in result.error
 
     async def test_transition_eval_failure_transitions_running_to_failed(
-        self, mock_supervisor, mock_db, event_data
+        self, mock_services, mock_db, event_data
     ):
         """Transition evaluation error: running → failed (TRANSITION_FAILED)."""
         graph = {
@@ -449,18 +463,12 @@ class TestRunnerStateMachineIntegration:
                 "done": {"terminal": True},
             },
         }
-        # First call succeeds (node execution), second call fails (transition eval)
-        call_count = 0
-
-        async def chat_side_effect(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return "Scan results."
-            raise RuntimeError("LLM transition eval error")
-
-        mock_supervisor.chat.side_effect = chat_side_effect
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        # Node execution succeeds; transition evaluation fails.
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("Scan results."))
+        mock_services.llm.complete = AsyncMock(
+            side_effect=RuntimeError("LLM transition eval error")
+        )
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
 
         result = await runner.run()
         assert result.status == "failed"
@@ -472,7 +480,7 @@ class TestRunnerResumeStateMachine:
     """Verify state machine integration in the resume() classmethod."""
 
     async def test_resume_transitions_paused_to_running_to_completed(
-        self, mock_supervisor, mock_db, event_data
+        self, mock_services, mock_db, event_data
     ):
         """Resume: paused → running → completed."""
         graph = {
@@ -490,8 +498,9 @@ class TestRunnerResumeStateMachine:
         }
 
         # First run: pauses
-        mock_supervisor.chat.return_value = "Review result."
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("Review result."))
+        mock_services.llm.complete = AsyncMock(return_value=MagicMock(text="Review result.", tool_calls=[]))
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
         run_result = await runner.run()
         assert run_result.status == "paused"
 
@@ -512,11 +521,11 @@ class TestRunnerResumeStateMachine:
 
         # Resume with human input
         resume_result = await PlaybookRunner.resume(
-            paused_run, graph, mock_supervisor, "Looks good!", db=mock_db
+            paused_run, graph, mock_services, "Looks good!", db=mock_db
         )
         assert resume_result.status == "completed"
 
-    async def test_resume_missing_current_node_fails(self, mock_supervisor, mock_db, event_data):
+    async def test_resume_missing_current_node_fails(self, mock_services, mock_db, event_data):
         """Resume with no current_node recorded: transitions to failed."""
         graph = {
             "id": "sm-resume-fail",
@@ -540,12 +549,12 @@ class TestRunnerResumeStateMachine:
         )
 
         result = await PlaybookRunner.resume(
-            paused_run, graph, mock_supervisor, "Input", db=mock_db
+            paused_run, graph, mock_services, "Input", db=mock_db
         )
         assert result.status == "failed"
         assert "current_node" in result.error
 
-    async def test_resume_missing_node_in_graph_fails(self, mock_supervisor, mock_db, event_data):
+    async def test_resume_missing_node_in_graph_fails(self, mock_services, mock_db, event_data):
         """Resume with a node ID not in graph: transitions to failed."""
         graph = {
             "id": "sm-resume-missing",
@@ -569,12 +578,12 @@ class TestRunnerResumeStateMachine:
         )
 
         result = await PlaybookRunner.resume(
-            paused_run, graph, mock_supervisor, "Input", db=mock_db
+            paused_run, graph, mock_services, "Input", db=mock_db
         )
         assert result.status == "failed"
         assert "nonexistent" in result.error
 
-    async def test_resume_transition_eval_failure(self, mock_supervisor, mock_db, event_data):
+    async def test_resume_transition_eval_failure(self, mock_services, mock_db, event_data):
         """Resume where transition evaluation fails: transitions to failed."""
         graph = {
             "id": "sm-resume-transition-fail",
@@ -620,10 +629,11 @@ class TestRunnerResumeStateMachine:
         )
 
         # Transition evaluation will fail
-        mock_supervisor.chat.side_effect = RuntimeError("LLM error")
+        mock_services.llm.run_tools = AsyncMock(side_effect=RuntimeError("LLM error"))
+        mock_services.llm.complete = AsyncMock(side_effect=RuntimeError("LLM error"))
 
         result = await PlaybookRunner.resume(
-            paused_run, graph, mock_supervisor, "Approve", db=mock_db
+            paused_run, graph, mock_services, "Approve", db=mock_db
         )
         assert result.status == "failed"
         assert "Transition" in result.error
@@ -632,7 +642,7 @@ class TestRunnerResumeStateMachine:
 class TestRunnerStatusPersistedCorrectly:
     """Verify the persisted status values match the state machine output."""
 
-    async def test_completed_status_persisted_via_enum(self, mock_supervisor, mock_db, event_data):
+    async def test_completed_status_persisted_via_enum(self, mock_services, mock_db, event_data):
         """DB update uses the enum .value, not a hardcoded string."""
         graph = {
             "id": "persist-test",
@@ -642,14 +652,15 @@ class TestRunnerStatusPersistedCorrectly:
                 "done": {"terminal": True},
             },
         }
-        mock_supervisor.chat.return_value = "Done."
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("Done."))
+        mock_services.llm.complete = AsyncMock(return_value=MagicMock(text="Done.", tool_calls=[]))
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
         await runner.run()
 
         final_call = mock_db.update_playbook_run.call_args_list[-1]
         assert final_call.kwargs["status"] == "completed"
 
-    async def test_failed_status_persisted_via_enum(self, mock_supervisor, mock_db, event_data):
+    async def test_failed_status_persisted_via_enum(self, mock_services, mock_db, event_data):
         graph = {
             "id": "persist-fail",
             "version": 1,
@@ -658,8 +669,9 @@ class TestRunnerStatusPersistedCorrectly:
                 "done": {"terminal": True},
             },
         }
-        mock_supervisor.chat.side_effect = RuntimeError("Error")
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        mock_services.llm.run_tools = AsyncMock(side_effect=RuntimeError("Error"))
+        mock_services.llm.complete = AsyncMock(side_effect=RuntimeError("Error"))
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
         await runner.run()
 
         fail_call = None
@@ -670,7 +682,7 @@ class TestRunnerStatusPersistedCorrectly:
         assert fail_call is not None
 
     async def test_budget_exceeded_status_persisted_via_enum(
-        self, mock_supervisor, mock_db, event_data
+        self, mock_services, mock_db, event_data
     ):
         graph = {
             "id": "persist-timeout",
@@ -682,8 +694,9 @@ class TestRunnerStatusPersistedCorrectly:
                 "done": {"terminal": True},
             },
         }
-        mock_supervisor.chat.return_value = "x" * 200
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("x" * 200))
+        mock_services.llm.complete = AsyncMock(return_value=MagicMock(text="x" * 200, tool_calls=[]))
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
         await runner.run()
 
         budget_call = None
@@ -695,7 +708,7 @@ class TestRunnerStatusPersistedCorrectly:
                 break
         assert budget_call is not None
 
-    async def test_paused_status_persisted_via_enum(self, mock_supervisor, mock_db, event_data):
+    async def test_paused_status_persisted_via_enum(self, mock_services, mock_db, event_data):
         graph = {
             "id": "persist-pause",
             "version": 1,
@@ -709,8 +722,9 @@ class TestRunnerStatusPersistedCorrectly:
                 "done": {"terminal": True},
             },
         }
-        mock_supervisor.chat.return_value = "Review."
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("Review."))
+        mock_services.llm.complete = AsyncMock(return_value=MagicMock(text="Review.", tool_calls=[]))
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
         await runner.run()
 
         pause_call = None
@@ -724,7 +738,7 @@ class TestRunnerStatusPersistedCorrectly:
 class TestRunnerStatusField:
     """Verify the runner's _status field accurately tracks state."""
 
-    async def test_initial_status_is_running(self, mock_supervisor, event_data):
+    async def test_initial_status_is_running(self, mock_services, event_data):
         graph = {
             "id": "status-field",
             "version": 1,
@@ -733,10 +747,10 @@ class TestRunnerStatusField:
                 "done": {"terminal": True},
             },
         }
-        runner = PlaybookRunner(graph, event_data, mock_supervisor)
+        runner = PlaybookRunner(graph, event_data, mock_services)
         assert runner._status == PlaybookRunStatus.RUNNING
 
-    async def test_status_after_each_transition(self, mock_supervisor, mock_db, event_data):
+    async def test_status_after_each_transition(self, mock_services, mock_db, event_data):
         """Full lifecycle: running → paused → running → completed."""
         graph = {
             "id": "full-lifecycle",
@@ -753,8 +767,9 @@ class TestRunnerStatusField:
         }
 
         # Phase 1: run until pause
-        mock_supervisor.chat.return_value = "Review result."
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, db=mock_db)
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("Review result."))
+        mock_services.llm.complete = AsyncMock(return_value=MagicMock(text="Review result.", tool_calls=[]))
+        runner = PlaybookRunner(graph, event_data, mock_services, db=mock_db)
         assert runner._status == PlaybookRunStatus.RUNNING
 
         result = await runner.run()
@@ -776,6 +791,6 @@ class TestRunnerStatusField:
         )
 
         resume_result = await PlaybookRunner.resume(
-            paused_run, graph, mock_supervisor, "Approved!", db=mock_db
+            paused_run, graph, mock_services, "Approved!", db=mock_db
         )
         assert resume_result.status == "completed"

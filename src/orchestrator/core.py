@@ -551,6 +551,10 @@ class Orchestrator(
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
         self._command_handler: Any = None
+        # Shared tool registry, set by set_supervisor() once the Supervisor
+        # exists. May be None (e.g. before wiring, or in tests) — read
+        # defensively; playbook_services() passes it through unchanged.
+        self._tool_registry: Any = None
         # Project IDs currently undergoing plan processing (supervisor is
         # Tracks per-project budget warning thresholds already sent so we
         # don't spam the same warning.  Keyed by project_id, value is the
@@ -622,6 +626,20 @@ class Orchestrator(
     def _get_handler(self) -> Any:
         """Return the command handler or None. Used by interactive views."""
         return self._command_handler
+
+    def playbook_services(self):
+        """Everything a PlaybookRunner needs, built from daemon-wide singletons."""
+        from src.playbooks.services import PlaybookServices
+
+        if self._command_handler is None:
+            raise RuntimeError("playbook_services: command handler not wired yet")
+        return PlaybookServices(
+            llm=self.llm,
+            handler=self._command_handler,
+            tool_registry=self._tool_registry,
+            llm_logger=self.llm_logger,
+            runtimes=self._runtimes,
+        )
 
     async def _plugin_invoke_llm(
         self,
@@ -889,13 +907,12 @@ class Orchestrator(
 
         Registered as ``playbook_manager.on_trigger`` at startup.  The
         manager has already applied cooldown + concurrency checks before
-        calling us, so we just build the runtime context (Supervisor,
-        event bus, plugin registry) and fire a PlaybookRunner.  The run
-        is intentionally fire-and-forget — the event dispatch path must
-        not block waiting for an LLM-driven graph walk.
+        calling us, so we just build the runtime context (PlaybookServices,
+        event bus) and fire a PlaybookRunner.  The run is intentionally
+        fire-and-forget — the event dispatch path must not block waiting for
+        an LLM-driven graph walk.
         """
         try:
-            from src.runtimes.supervisor import Supervisor
             from src.playbooks.runner import PlaybookRunner
             from src.models import PlaybookRun as PlaybookRunModel
 
@@ -1105,29 +1122,26 @@ class Orchestrator(
                 )
                 return
 
-            supervisor = Supervisor(self, self.config, llm_logger=self.llm_logger)
-            if not supervisor.initialize():
+            try:
+                services = self.playbook_services()
+            except RuntimeError as exc:
+                logger.error("Playbook trigger for '%s': %s — skipping", playbook.id, exc)
+                return
+            if not services.llm.is_configured():
                 logger.error(
-                    "Playbook trigger for '%s': failed to initialise LLM — skipping",
+                    "Playbook trigger for '%s': LLM not configured (config.llm) — skipping",
                     playbook.id,
                 )
                 return
 
             project_id = event_data.get("project_id")
-            if project_id:
-                supervisor.set_active_project(project_id)
-
-            plugin_registry = getattr(self, "plugin_registry", None)
-            if plugin_registry:
-                supervisor._registry.set_plugin_registry(plugin_registry)
 
             runner = PlaybookRunner(
                 graph=graph,
                 event=event_data,
-                supervisor=supervisor,
+                services=services,
                 db=self.db,
                 event_bus=self.bus,
-                runtimes=getattr(self, "_runtimes", None),
             )
 
             async def _run() -> None:

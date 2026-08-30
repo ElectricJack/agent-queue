@@ -18,15 +18,51 @@ Depends on: 6.1.3 (trigger system), 6.1.1 (reflection playbook template).
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from src.event_bus import EventBus
 from src.event_schemas import validate_payload
+from src.llm import LLMRunResult
 from src.playbooks.manager import PlaybookManager
 from src.playbooks.models import CompiledPlaybook, PlaybookNode
 from src.playbooks.runner import PlaybookRunner, RunResult
+from src.playbooks.services import PlaybookServices
+
+
+def _wrap_supervisor(sup) -> PlaybookServices:
+    """Wrap a duck-typed mock 'Supervisor' (``chat()``-based) as PlaybookServices.
+
+    Routes ``llm.run_tools`` / ``llm.complete`` through the same ``chat()``
+    method the mock already implements, passing ``user_name=spec.caller`` so
+    the mocks' node-name sniffing (and the tests' assertions on
+    ``chat_calls``) keep working unchanged.
+    """
+
+    class _Adapter:
+        def __init__(self, s):
+            self._sup = s
+            self.config = SimpleNamespace(max_tokens=2048)
+
+        async def run_tools(self, messages, tools, execute, *, system="", spec=None, **kw):
+            text = await self._sup.chat(
+                text=messages[-1]["content"],
+                history=messages,
+                user_name=spec.caller if spec else "",
+            )
+            return LLMRunResult(text=text, transcript=messages, turns=1, stopped_by="done")
+
+        async def complete(self, messages, *, system="", spec=None):
+            text = await self._sup.chat(
+                text=messages[-1]["content"],
+                history=messages,
+                user_name=spec.caller if spec else "",
+            )
+            return SimpleNamespace(text=text, tool_calls=[])
+
+    return PlaybookServices.for_tests(_Adapter(sup))
 
 
 # ---------------------------------------------------------------------------
@@ -390,8 +426,8 @@ class ToolTrackingSupervisor:
         self.chat_calls.append(kwargs)
         node_hint = kwargs.get("user_name", "")
 
-        # Extract node name from "playbook-runner:node_name"
-        node_name = node_hint.split(":", 1)[-1] if ":" in node_hint else ""
+        # Extract node name from "playbook:<playbook_id>:node_name"
+        node_name = node_hint.rsplit(":", 1)[-1] if ":" in node_hint else ""
 
         # Record simulated tool calls for this node
         if node_name in self._node_tool_mapping:
@@ -435,7 +471,7 @@ class TestReflectionE2ETriggerToRunner:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             """Simulate the production on_trigger: create a runner and execute."""
             graph = _make_reflection_graph(playbook_id=playbook.id)
-            runner = PlaybookRunner(graph, data, supervisor)
+            runner = PlaybookRunner(graph, data, _wrap_supervisor(supervisor))
             result = await runner.run()
             runner_results.append(result)
 
@@ -461,7 +497,7 @@ class TestReflectionE2ETriggerToRunner:
 
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             graph = _make_reflection_graph(playbook_id=playbook.id)
-            runner = PlaybookRunner(graph, data, supervisor)
+            runner = PlaybookRunner(graph, data, _wrap_supervisor(supervisor))
             await runner.run()
             runner_messages.append(list(runner.messages))
 
@@ -525,7 +561,7 @@ class TestReflectionE2ETriggerToRunner:
 
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             graph = _make_reflection_graph(playbook_id=playbook.id)
-            runner = PlaybookRunner(graph, data, supervisor)
+            runner = PlaybookRunner(graph, data, _wrap_supervisor(supervisor))
             result = await runner.run()
             runner_results.append(result)
 
@@ -555,7 +591,7 @@ class TestReflectionRunnerGraphWalk:
         graph = _make_reflection_graph()
         event = _task_completed_event()
 
-        runner = PlaybookRunner(graph, event, supervisor)
+        runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor))
         result = await runner.run()
 
         assert result.status == "completed"
@@ -572,30 +608,35 @@ class TestReflectionRunnerGraphWalk:
 
         Post-refactor the runner builds fresh per-node context rather than
         accumulating the raw transcript: every non-entry node gets
-        ``[seed, prior-step-results, ack]`` regardless of how far along the
-        graph is.  The ``prior-step-results`` block grows as more nodes run.
+        ``[seed, prior-step-results, ack, node prompt]`` regardless of how
+        far along the graph is (the node prompt lands as its own trailing
+        message here because the context's last message is the assistant's
+        ack, not a user message — ``_fold_context`` only merges onto a
+        trailing *user* message; see ``runner.py::_fold_context``).  The
+        ``prior-step-results`` block grows as more nodes run.
         """
         supervisor = ReflectionMockSupervisor()
         graph = _make_reflection_graph()
         event = _task_completed_event()
 
-        runner = PlaybookRunner(graph, event, supervisor)
+        runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor))
         await runner.run()
 
         # Should have 4 chat calls (one per non-terminal node).
         assert len(supervisor.chat_calls) == 4
 
-        # Entry node: history = [seed message]
+        # Entry node: history = [seed message] (fold merges the prompt onto it)
         first_history = supervisor.chat_calls[0]["history"]
         assert len(first_history) == 1
         assert "Event received" in first_history[0]["content"]
 
-        # Every subsequent node: history = [seed, prior-results, ack]
+        # Every subsequent node: history = [seed, prior-results, ack, prompt]
         for call in supervisor.chat_calls[1:]:
             history = call["history"]
-            assert len(history) == 3
+            assert len(history) == 4
             assert "Prior Step Results" in history[1]["content"]
             assert history[2]["role"] == "assistant"
+            assert history[3]["role"] == "user"
 
         # Prior-results block grows as nodes complete.
         second_results = supervisor.chat_calls[1]["history"][1]["content"]
@@ -613,7 +654,7 @@ class TestReflectionRunnerGraphWalk:
             agent_type="coding",
         )
 
-        runner = PlaybookRunner(graph, event, supervisor)
+        runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor))
         await runner.run()
 
         # The seed message is the first in history for every node call
@@ -629,15 +670,15 @@ class TestReflectionRunnerGraphWalk:
         graph = _make_reflection_graph()
         event = _task_completed_event()
 
-        runner = PlaybookRunner(graph, event, supervisor)
+        runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor))
         await runner.run()
 
-        # Map prompts by node name from user_name="playbook-runner:<node>"
+        # Map prompts by node name from user_name="playbook:<playbook_id>:<node>"
         prompts_by_node: dict[str, str] = {}
         for call in supervisor.chat_calls:
             user_name = call.get("user_name", "")
-            if ":" in user_name:
-                node_name = user_name.split(":", 1)[1]
+            if ":" in user_name and "transition" not in user_name:
+                node_name = user_name.rsplit(":", 1)[-1]
                 prompts_by_node[node_name] = call["text"]
 
         # review_task prompt references get_task
@@ -665,7 +706,7 @@ class TestReflectionToolCallPatterns:
         graph = _make_reflection_graph()
         event = _task_completed_event()
 
-        runner = PlaybookRunner(graph, event, supervisor)
+        runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor))
         await runner.run()
 
         tools_by_node = supervisor.tools_by_node
@@ -678,7 +719,7 @@ class TestReflectionToolCallPatterns:
         graph = _make_reflection_graph()
         event = _task_completed_event()
 
-        runner = PlaybookRunner(graph, event, supervisor)
+        runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor))
         await runner.run()
 
         tools_by_node = supervisor.tools_by_node
@@ -690,7 +731,7 @@ class TestReflectionToolCallPatterns:
         graph = _make_reflection_graph()
         event = _task_completed_event()
 
-        runner = PlaybookRunner(graph, event, supervisor)
+        runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor))
         await runner.run()
 
         assert len(supervisor.memory_saves) >= 1
@@ -701,7 +742,7 @@ class TestReflectionToolCallPatterns:
         graph = _make_reflection_graph()
         event = _task_completed_event()
 
-        runner = PlaybookRunner(graph, event, supervisor)
+        runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor))
         await runner.run()
 
         tools_by_node = supervisor.tools_by_node
@@ -713,7 +754,7 @@ class TestReflectionToolCallPatterns:
         graph = _make_reflection_graph()
         event = _task_completed_event()
 
-        runner = PlaybookRunner(graph, event, supervisor)
+        runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor))
         await runner.run()
 
         for save in supervisor.memory_saves:
@@ -791,7 +832,7 @@ class TestMultiTaskInsightAccumulation:
                 title=task["title"],
             )
 
-            runner = PlaybookRunner(graph, event, supervisor)
+            runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor))
             result = await runner.run()
             assert result.status == "completed"
 
@@ -819,7 +860,7 @@ class TestMultiTaskInsightAccumulation:
             graph = _make_reflection_graph()
             event = _task_completed_event(task_id=f"t-{i}", title=f"Task {i}")
 
-            runner = PlaybookRunner(graph, event, supervisor)
+            runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor))
             result = await runner.run()
 
             assert result.status == "completed"
@@ -875,7 +916,7 @@ class TestReflectionConversationContext:
         """The seed message includes the task_id so the LLM can call get_task."""
         supervisor = ReflectionMockSupervisor()
         event = _task_completed_event(task_id="t-ctx-1")
-        runner = PlaybookRunner(_make_reflection_graph(), event, supervisor)
+        runner = PlaybookRunner(_make_reflection_graph(), event, _wrap_supervisor(supervisor))
         await runner.run()
 
         seed = runner.messages[0]["content"]
@@ -885,7 +926,7 @@ class TestReflectionConversationContext:
         """The seed message includes the project_id for memory scoping."""
         supervisor = ReflectionMockSupervisor()
         event = _task_completed_event(project_id="webapp")
-        runner = PlaybookRunner(_make_reflection_graph(), event, supervisor)
+        runner = PlaybookRunner(_make_reflection_graph(), event, _wrap_supervisor(supervisor))
         await runner.run()
 
         seed = runner.messages[0]["content"]
@@ -895,7 +936,7 @@ class TestReflectionConversationContext:
         """The seed message includes agent_type for scope context."""
         supervisor = ReflectionMockSupervisor()
         event = _task_completed_event(agent_type="coding")
-        runner = PlaybookRunner(_make_reflection_graph(), event, supervisor)
+        runner = PlaybookRunner(_make_reflection_graph(), event, _wrap_supervisor(supervisor))
         await runner.run()
 
         seed = runner.messages[0]["content"]
@@ -907,7 +948,7 @@ class TestReflectionConversationContext:
         runner = PlaybookRunner(
             _make_reflection_graph(),
             _task_completed_event(),
-            supervisor,
+            _wrap_supervisor(supervisor),
         )
         await runner.run()
 
@@ -924,7 +965,7 @@ class TestReflectionConversationContext:
         runner = PlaybookRunner(
             _make_reflection_graph(),
             _task_completed_event(),
-            supervisor,
+            _wrap_supervisor(supervisor),
         )
         await runner.run()
 
@@ -1072,7 +1113,7 @@ class TestReflectionDBPersistence:
         graph = _make_reflection_graph()
         event = _task_completed_event()
 
-        runner = PlaybookRunner(graph, event, supervisor, db=db)
+        runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor), db=db)
         result = await runner.run()
 
         assert result.status == "completed"
@@ -1092,7 +1133,7 @@ class TestReflectionDBPersistence:
         graph = _make_reflection_graph()
         event = _task_completed_event()
 
-        runner = PlaybookRunner(graph, event, supervisor, db=db)
+        runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor), db=db)
         result = await runner.run()
 
         assert result.status == "completed"
@@ -1110,7 +1151,7 @@ class TestReflectionDBPersistence:
         graph = _make_reflection_graph()
         event = _task_completed_event(task_id="t-persist")
 
-        runner = PlaybookRunner(graph, event, supervisor, db=db)
+        runner = PlaybookRunner(graph, event, _wrap_supervisor(supervisor), db=db)
         await runner.run()
 
         run_arg = db.create_playbook_run.call_args[0][0]
@@ -1215,17 +1256,17 @@ class TestReflectionRunnerIdentity:
     """Verify the runner identifies itself to the Supervisor correctly."""
 
     async def test_supervisor_calls_identify_playbook_runner(self) -> None:
-        """Each supervisor.chat() call has user_name='playbook-runner:<node>'."""
+        """Each supervisor.chat() call has user_name='playbook:<playbook_id>:<node>'."""
         supervisor = ReflectionMockSupervisor()
         runner = PlaybookRunner(
             _make_reflection_graph(),
             _task_completed_event(),
-            supervisor,
+            _wrap_supervisor(supervisor),
         )
         await runner.run()
 
         for call in supervisor.chat_calls:
-            assert call["user_name"].startswith("playbook-runner:")
+            assert call["user_name"].startswith("playbook:coding-reflection:")
 
     async def test_node_names_in_user_name(self) -> None:
         """User names match the node IDs from the reflection graph."""
@@ -1233,17 +1274,17 @@ class TestReflectionRunnerIdentity:
         runner = PlaybookRunner(
             _make_reflection_graph(),
             _task_completed_event(),
-            supervisor,
+            _wrap_supervisor(supervisor),
         )
         await runner.run()
 
-        # Filter to only playbook-runner calls (skip any transition-classification calls)
+        # Filter to only node calls (skip any transition-classification calls)
         node_calls = [
             call
             for call in supervisor.chat_calls
-            if call.get("user_name", "").startswith("playbook-runner:")
+            if call.get("user_name", "").startswith("playbook:coding-reflection:")
         ]
-        node_names = [call["user_name"].split(":", 1)[1] for call in node_calls]
+        node_names = [call["user_name"].rsplit(":", 1)[-1] for call in node_calls]
         assert node_names == [
             "review_task",
             "extract_insights",

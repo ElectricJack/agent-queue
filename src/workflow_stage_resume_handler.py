@@ -59,12 +59,14 @@ class WorkflowStageResumeHandler:
     event_bus:
         EventBus to subscribe to ``workflow.stage.completed`` events.
     orchestrator:
-        Orchestrator instance — used to create Supervisors for LLM calls.
+        Orchestrator instance — its ``playbook_services()`` builds the
+        PlaybookServices used for LLM calls.
     playbook_manager:
         PlaybookManager — used to resolve playbook graphs when the run
         has no pinned graph.
     config:
-        Application config — passed to Supervisor on creation.
+        Application config (kept for compatibility; LLM calls now go through
+        ``orchestrator.playbook_services()``).
     pause_timeout_seconds:
         Maximum time (seconds) an event-triggered pause can last before
         the run is considered timed out.  Defaults to 48 hours.
@@ -201,7 +203,7 @@ class WorkflowStageResumeHandler:
         2. Validate it is paused and waiting for this event type.
         3. Check pause timeout.
         4. Resolve the compiled playbook graph.
-        5. Create a :class:`Supervisor` for LLM calls.
+        5. Build :class:`~src.playbooks.services.PlaybookServices` for LLM calls.
         6. Call :meth:`PlaybookRunner.resume_from_event` to continue
            execution with the event data in conversation context.
         """
@@ -263,13 +265,19 @@ class WorkflowStageResumeHandler:
                 )
                 return
 
-            # 5. Create a Supervisor for LLM calls
-            from src.runtimes.supervisor import Supervisor
-
-            supervisor = Supervisor(self._orchestrator, self._config)
-            if not supervisor.initialize():
+            # 5. Build PlaybookServices for LLM calls
+            try:
+                services = self._orchestrator.playbook_services()
+            except RuntimeError as exc:
                 logger.error(
-                    "Failed to initialize LLM provider for event resume of run '%s'",
+                    "Cannot resume run '%s' from event: %s",
+                    run_id,
+                    exc,
+                )
+                return
+            if not services.llm.is_configured():
+                logger.error(
+                    "Cannot resume run '%s' from event: LLM is not configured (config.llm)",
                     run_id,
                 )
                 return
@@ -282,7 +290,7 @@ class WorkflowStageResumeHandler:
                 result = await PlaybookRunner.resume_from_event(
                     db_run=db_run,
                     graph=graph,
-                    supervisor=supervisor,
+                    services=services,
                     event_data=clean_data,
                     db=self._db,
                     event_bus=self._bus,
