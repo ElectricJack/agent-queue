@@ -794,13 +794,40 @@ class HealthCheckConfig:
     base_url: str = ""
 
 
+#: Every DSN scheme that means "this is PostgreSQL".
+#:
+#: The driver-qualified forms matter as much as the bare ones: SQLAlchemy
+#: writes ``postgresql+asyncpg://``, that is what
+#: :func:`src.database.engine.create_postgres_engine` normalizes *to*, and it
+#: is the form this repo's own tooling passes around (``POSTGRES_TEST_DSN``,
+#: ``alembic.ini``).  Matching only ``postgresql://`` made such a URL fall
+#: through to the SQLite branch, where it was treated as a *file path* — the
+#: daemon then silently ran on an empty SQLite database and
+#: :func:`src.main.run` created a directory literally named
+#: ``postgresql+asyncpg:/agent_queue:…@host:5533``.  Fail-fast is not
+#: possible here (a bare path is a legal value), so the scheme list has to
+#: be right.
+POSTGRES_URL_SCHEMES: tuple[str, ...] = (
+    "postgresql://",
+    "postgres://",
+    "postgresql+asyncpg://",
+    "postgresql+psycopg://",
+    "postgresql+psycopg2://",
+)
+
+
+def is_postgres_url(url: str) -> bool:
+    """True when *url* is a PostgreSQL DSN rather than a SQLite file path."""
+    return str(url or "").startswith(POSTGRES_URL_SCHEMES)
+
+
 @dataclass
 class DatabaseConfig:
     """Database backend configuration via a single URL/DSN.
 
     The ``url`` field determines the backend automatically:
 
-    - Starts with ``postgresql://`` or ``postgres://`` → PostgreSQL (asyncpg)
+    - Any scheme in :data:`POSTGRES_URL_SCHEMES` → PostgreSQL (asyncpg)
     - Anything else (file path or empty) → SQLite (aiosqlite)
 
     Examples::
@@ -809,9 +836,11 @@ class DatabaseConfig:
         database:
           url: ~/.agent-queue/agent-queue.db
 
-        # PostgreSQL:
+        # PostgreSQL — both spellings work:
         database:
           url: postgresql://user:pass@localhost:5432/agent_queue
+        database:
+          url: postgresql+asyncpg://user:pass@localhost:5432/agent_queue
 
     Pool settings are only used for PostgreSQL.
     """
@@ -823,9 +852,7 @@ class DatabaseConfig:
     @property
     def backend(self) -> str:
         """Infer backend from the URL scheme."""
-        if self.url.startswith(("postgresql://", "postgres://")):
-            return "postgresql"
-        return "sqlite"
+        return "postgresql" if is_postgres_url(self.url) else "sqlite"
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []

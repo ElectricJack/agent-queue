@@ -30,6 +30,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from src.config import is_postgres_url
+
 # ANSI colors
 BOLD = "\033[1m"
 GREEN = "\033[32m"
@@ -473,7 +475,7 @@ def step_database(existing: dict) -> dict:
     existing_sqlite = existing.get("DATABASE_PATH") or yaml_cfg.get("database_path") or ""
 
     # Re-run: existing PostgreSQL config
-    if existing_url.startswith(("postgresql://", "postgres://")):
+    if is_postgres_url(existing_url):
         success(
             f"Database: PostgreSQL ({existing_url.split('@')[-1] if '@' in existing_url else existing_url})"
         )

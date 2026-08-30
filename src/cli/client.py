@@ -19,6 +19,8 @@ from typing import Any
 
 import httpx
 
+from src.config import is_postgres_url
+
 from .exceptions import CommandError, DaemonNotRunningError, ScopeDeniedError
 
 logger = logging.getLogger(__name__)
@@ -425,7 +427,7 @@ class PluginClient:
         self._db = None
 
     async def connect(self) -> None:
-        if self._db_url.startswith(("postgresql://", "postgres://")):
+        if is_postgres_url(self._db_url):
             from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
 
             self._db = PostgreSQLDatabaseAdapter(self._db_url, pool_min=1, pool_max=2)
@@ -503,7 +505,7 @@ def _resolve_db_url() -> str:
     db_config = _resolve_db_config()
     if db_config and db_config.get("url"):
         url = db_config["url"]
-        if url.startswith(("postgresql://", "postgres://")):
+        if is_postgres_url(url):
             return url
         return os.path.expanduser(url)
 

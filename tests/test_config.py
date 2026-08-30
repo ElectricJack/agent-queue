@@ -131,3 +131,51 @@ def test_streams_config_validate_accepts_defaults():
     from src.config import StreamsConfig
 
     assert StreamsConfig().validate() == []
+
+
+# ---------------------------------------------------------------------------
+# DatabaseConfig.backend — DSN scheme detection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://u:p@localhost:5432/db",
+        "postgres://u:p@localhost:5432/db",
+        # SQLAlchemy's driver-qualified form.  This is what
+        # ``create_postgres_engine`` normalizes *to*, what ``alembic.ini``
+        # and ``POSTGRES_TEST_DSN`` carry, and what the swarm e2e kit writes
+        # into its generated config.  Missing it sent the DSN down the
+        # SQLite branch, where it was treated as a file path: the daemon
+        # came up healthy on an empty SQLite database and ``src.main.run``
+        # created a directory named after the DSN.
+        "postgresql+asyncpg://u:p@localhost:5432/db",
+        "postgresql+psycopg://u:p@localhost:5432/db",
+        "postgresql+psycopg2://u:p@localhost:5432/db",
+    ],
+)
+def test_database_backend_detects_every_postgres_scheme(url):
+    from src.config import DatabaseConfig, is_postgres_url
+
+    assert is_postgres_url(url) is True
+    assert DatabaseConfig(url=url).backend == "postgresql"
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["", "~/.agent-queue/agent-queue.db", "/var/lib/aq/aq.db", "sqlite+aiosqlite:///x.db"],
+)
+def test_database_backend_treats_everything_else_as_sqlite(url):
+    from src.config import DatabaseConfig, is_postgres_url
+
+    assert is_postgres_url(url) is False
+    assert DatabaseConfig(url=url).backend == "sqlite"
+
+
+def test_asyncpg_dsn_is_pooled_like_any_other_postgres_url():
+    """The pool bounds are only validated on the PostgreSQL branch."""
+    from src.config import DatabaseConfig
+
+    cfg = DatabaseConfig(url="postgresql+asyncpg://u:p@h/db", pool_min_size=0)
+    assert [e.field for e in cfg.validate()] == ["pool_min_size"]
