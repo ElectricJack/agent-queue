@@ -204,6 +204,18 @@ class PoolsMixin:
                     await self.db.update_session(sid, desired_state="stopped")
                     executed += 1
             if executed:
+                # Persist *and* emit.  The bus is in-process only and
+                # ``pool.`` is not among the WebSocket's forwarded prefixes,
+                # so without the audit row a scaling decision left no trace
+                # any operator surface could read: ``aq pool status`` shows
+                # the current shape, never the fact that it changed or when.
+                # ``aq events --event-type pool.scaled`` is the answer to
+                # "why did a worker appear at 03:14?".
+                await self.db.log_event(
+                    "pool.scaled",
+                    project_id=action.key.project_id,
+                    payload=f"{action.kind} {executed} {action.key.profile_id}",
+                )
                 await self.bus.emit(
                     "pool.scaled",
                     {
