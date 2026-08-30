@@ -447,6 +447,11 @@ async def on_profile_changed(
     **not** remove the profile from the database.  Per spec, the DB
     retains the last-known config until explicitly removed via command.
 
+    The retired-``runtime`` strip (:func:`strip_retired_runtime_key`) is
+    deliberately **not** applied here: it is a one-shot startup migration, so
+    an edit that reintroduces ``runtime`` after boot fails sync loudly (with a
+    ``notify.profile_sync_failed`` event) instead of being silently self-healed.
+
     Parameters
     ----------
     changes:
