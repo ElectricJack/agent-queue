@@ -198,38 +198,32 @@ class TestEventDrivenResume:
         """Firing human.review.completed resumes the paused run."""
         mock_db.get_playbook_run.return_value = paused_run
 
-        with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-            mock_sup = MagicMock()
-            mock_sup.initialize.return_value = True
-            mock_sup.chat = AsyncMock(side_effect=["1", "Plan executed."])
-            MockSupervisor.return_value = mock_sup
+        with patch(
+            "src.playbooks.runner.PlaybookRunner.resume",
+            new_callable=AsyncMock,
+        ) as mock_resume:
+            mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
 
-            with patch(
-                "src.playbooks.runner.PlaybookRunner.resume",
-                new_callable=AsyncMock,
-            ) as mock_resume:
-                mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
+            await event_bus.emit(
+                "human.review.completed",
+                {
+                    "playbook_id": "human-review-playbook",
+                    "run_id": "paused-abc123",
+                    "node_id": "review",
+                    "decision": "Approved, go ahead.",
+                },
+            )
 
-                await event_bus.emit(
-                    "human.review.completed",
-                    {
-                        "playbook_id": "human-review-playbook",
-                        "run_id": "paused-abc123",
-                        "node_id": "review",
-                        "decision": "Approved, go ahead.",
-                    },
-                )
+            # Give the background task a chance to run
+            await asyncio.sleep(0.05)
 
-                # Give the background task a chance to run
-                await asyncio.sleep(0.05)
-
-                mock_db.get_playbook_run.assert_called_once_with("paused-abc123")
-                mock_resume.assert_called_once()
-                call_kwargs = mock_resume.call_args.kwargs
-                assert call_kwargs["db_run"] == paused_run
-                assert call_kwargs["human_input"] == "Approved, go ahead."
-                assert call_kwargs["db"] == mock_db
-                assert call_kwargs["event_bus"] == event_bus
+            mock_db.get_playbook_run.assert_called_once_with("paused-abc123")
+            mock_resume.assert_called_once()
+            call_kwargs = mock_resume.call_args.kwargs
+            assert call_kwargs["db_run"] == paused_run
+            assert call_kwargs["human_input"] == "Approved, go ahead."
+            assert call_kwargs["db"] == mock_db
+            assert call_kwargs["event_bus"] == event_bus
 
     async def test_resume_restores_conversation_state(
         self, handler, event_bus, mock_db, paused_run
@@ -237,35 +231,30 @@ class TestEventDrivenResume:
         """The resume call receives the paused run with full conversation history."""
         mock_db.get_playbook_run.return_value = paused_run
 
-        with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-            mock_sup = MagicMock()
-            mock_sup.initialize.return_value = True
-            MockSupervisor.return_value = mock_sup
+        with patch(
+            "src.playbooks.runner.PlaybookRunner.resume",
+            new_callable=AsyncMock,
+        ) as mock_resume:
+            mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
 
-            with patch(
-                "src.playbooks.runner.PlaybookRunner.resume",
-                new_callable=AsyncMock,
-            ) as mock_resume:
-                mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
+            await event_bus.emit(
+                "human.review.completed",
+                {
+                    "playbook_id": "human-review-playbook",
+                    "run_id": "paused-abc123",
+                    "node_id": "review",
+                    "decision": "LGTM, proceed.",
+                },
+            )
 
-                await event_bus.emit(
-                    "human.review.completed",
-                    {
-                        "playbook_id": "human-review-playbook",
-                        "run_id": "paused-abc123",
-                        "node_id": "review",
-                        "decision": "LGTM, proceed.",
-                    },
-                )
+            await asyncio.sleep(0.05)
 
-                await asyncio.sleep(0.05)
-
-                # Verify the db_run passed to resume has the saved conversation
-                db_run_arg = mock_resume.call_args.kwargs["db_run"]
-                history = json.loads(db_run_arg.conversation_history)
-                assert len(history) == 5
-                assert history[0]["content"] == "Event received: git.commit"
-                assert history[-1]["content"] == "Here is my analysis for your review."
+            # Verify the db_run passed to resume has the saved conversation
+            db_run_arg = mock_resume.call_args.kwargs["db_run"]
+            history = json.loads(db_run_arg.conversation_history)
+            assert len(history) == 5
+            assert history[0]["content"] == "Event received: git.commit"
+            assert history[-1]["content"] == "Here is my analysis for your review."
 
     async def test_resume_uses_pinned_graph(
         self, handler, event_bus, mock_db, paused_run, human_review_graph
@@ -273,31 +262,26 @@ class TestEventDrivenResume:
         """When the run has a pinned_graph, it is used instead of PlaybookManager."""
         mock_db.get_playbook_run.return_value = paused_run
 
-        with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-            mock_sup = MagicMock()
-            mock_sup.initialize.return_value = True
-            MockSupervisor.return_value = mock_sup
+        with patch(
+            "src.playbooks.runner.PlaybookRunner.resume",
+            new_callable=AsyncMock,
+        ) as mock_resume:
+            mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
 
-            with patch(
-                "src.playbooks.runner.PlaybookRunner.resume",
-                new_callable=AsyncMock,
-            ) as mock_resume:
-                mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
+            await event_bus.emit(
+                "human.review.completed",
+                {
+                    "playbook_id": "human-review-playbook",
+                    "run_id": "paused-abc123",
+                    "node_id": "review",
+                    "decision": "Approved.",
+                },
+            )
 
-                await event_bus.emit(
-                    "human.review.completed",
-                    {
-                        "playbook_id": "human-review-playbook",
-                        "run_id": "paused-abc123",
-                        "node_id": "review",
-                        "decision": "Approved.",
-                    },
-                )
+            await asyncio.sleep(0.05)
 
-                await asyncio.sleep(0.05)
-
-                graph_arg = mock_resume.call_args.kwargs["graph"]
-                assert graph_arg == human_review_graph
+            graph_arg = mock_resume.call_args.kwargs["graph"]
+            assert graph_arg == human_review_graph
 
 
 # ---------------------------------------------------------------------------
@@ -541,47 +525,42 @@ class TestDeDuplication:
             await resume_gate.wait()
             return MagicMock(status="completed", tokens_used=100)
 
-        with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-            mock_sup = MagicMock()
-            mock_sup.initialize.return_value = True
-            MockSupervisor.return_value = mock_sup
+        with patch(
+            "src.playbooks.runner.PlaybookRunner.resume",
+            new_callable=AsyncMock,
+            side_effect=slow_resume,
+        ) as mock_resume:
+            # Fire first event
+            await event_bus.emit(
+                "human.review.completed",
+                {
+                    "playbook_id": "human-review-playbook",
+                    "run_id": "paused-abc123",
+                    "node_id": "review",
+                    "decision": "Approved.",
+                },
+            )
 
-            with patch(
-                "src.playbooks.runner.PlaybookRunner.resume",
-                new_callable=AsyncMock,
-                side_effect=slow_resume,
-            ) as mock_resume:
-                # Fire first event
-                await event_bus.emit(
-                    "human.review.completed",
-                    {
-                        "playbook_id": "human-review-playbook",
-                        "run_id": "paused-abc123",
-                        "node_id": "review",
-                        "decision": "Approved.",
-                    },
-                )
+            # Wait for resume to start
+            await asyncio.wait_for(resume_started.wait(), timeout=2.0)
 
-                # Wait for resume to start
-                await asyncio.wait_for(resume_started.wait(), timeout=2.0)
+            # Fire duplicate event while first is still running
+            await event_bus.emit(
+                "human.review.completed",
+                {
+                    "playbook_id": "human-review-playbook",
+                    "run_id": "paused-abc123",
+                    "node_id": "review",
+                    "decision": "Approved again.",
+                },
+            )
 
-                # Fire duplicate event while first is still running
-                await event_bus.emit(
-                    "human.review.completed",
-                    {
-                        "playbook_id": "human-review-playbook",
-                        "run_id": "paused-abc123",
-                        "node_id": "review",
-                        "decision": "Approved again.",
-                    },
-                )
+            # Release the gate
+            resume_gate.set()
+            await asyncio.sleep(0.05)
 
-                # Release the gate
-                resume_gate.set()
-                await asyncio.sleep(0.05)
-
-                # Only one resume call should have been made
-                assert mock_resume.call_count == 1
+            # Only one resume call should have been made
+            assert mock_resume.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -639,32 +618,27 @@ class TestGraphResolution:
         mock_pb.to_dict.return_value = active_graph
         mock_playbook_manager._active = {"active-playbook": mock_pb}
 
-        with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-            mock_sup = MagicMock()
-            mock_sup.initialize.return_value = True
-            MockSupervisor.return_value = mock_sup
+        with patch(
+            "src.playbooks.runner.PlaybookRunner.resume",
+            new_callable=AsyncMock,
+        ) as mock_resume:
+            mock_resume.return_value = MagicMock(status="completed", tokens_used=20)
 
-            with patch(
-                "src.playbooks.runner.PlaybookRunner.resume",
-                new_callable=AsyncMock,
-            ) as mock_resume:
-                mock_resume.return_value = MagicMock(status="completed", tokens_used=20)
+            await event_bus.emit(
+                "human.review.completed",
+                {
+                    "playbook_id": "active-playbook",
+                    "run_id": "no-pin-1",
+                    "node_id": "review",
+                    "decision": "Proceed.",
+                },
+            )
 
-                await event_bus.emit(
-                    "human.review.completed",
-                    {
-                        "playbook_id": "active-playbook",
-                        "run_id": "no-pin-1",
-                        "node_id": "review",
-                        "decision": "Proceed.",
-                    },
-                )
+            await asyncio.sleep(0.05)
 
-                await asyncio.sleep(0.05)
-
-                mock_resume.assert_called_once()
-                graph_arg = mock_resume.call_args.kwargs["graph"]
-                assert graph_arg == active_graph
+            mock_resume.assert_called_once()
+            graph_arg = mock_resume.call_args.kwargs["graph"]
+            assert graph_arg == active_graph
 
 
 # ---------------------------------------------------------------------------

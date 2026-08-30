@@ -280,31 +280,14 @@ class AgentReconciler:
         return chosen
 
     def _runtime_requires_workspace(self, profile) -> bool:
-        """Look up runtime.requires_workspace via the profile's runtime name.
+        """Always True: no Runtime class decides workspace needs any more.
 
-        Maps the runtime-name string to the ClassVar on the runtime class
-        directly. This avoids depending on a populated RuntimeRegistry
-        (the daemon-wide registry only includes the supervisor singleton
-        if one is wired, but the supervisor runtime class itself always
-        knows its workspace requirement).
-
-        Defensive: unknown profile / runtime → assume requires workspace
-        (the safer default), so we don't over-create agents that can't
-        actually dispatch.
+        Every agent runs as a tmux session, and a session's workspace need
+        comes from the profile's own ``needs_workspace`` — not from a runtime
+        class.  Kept as a seam so the caller reads the same way it did when
+        the in-process Supervisor was the one exception.
         """
-        if profile is None:
-            return True
-        try:
-            from src.runtimes.supervisor import Supervisor
-
-            # Supervisor is the only remaining Runtime; every other profile
-            # runs as a tmux session and its workspace need comes from the
-            # profile's own ``needs_workspace``, not from a runtime class.
-            if profile.runtime == Supervisor.name:
-                return Supervisor.requires_workspace
-            return True
-        except Exception:
-            return True
+        return True
 
     def _warn_once(self, project_id: str, reason: str) -> None:
         if self._warned_projects.get(project_id) == reason:

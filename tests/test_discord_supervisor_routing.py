@@ -1,25 +1,27 @@
-"""Tests for the P4 chat routing cutover and Supervisor.initialize() hardening.
+"""Discord chat routing to the supervisor *session* (post-cutover).
 
 Covers:
-- ``Supervisor.initialize()`` returns False (never raises) when chat-provider
-  construction fails — daemon boot must degrade gracefully.
-- Discord ``on_message`` chat routing (post-cutover):
+- Discord ``on_message`` chat routing:
     * ``supervisor_agent.enabled=True`` in a bound project channel:
       ``message.send`` is invoked with a supervisor session recipient.
     * enabled but unbound channel: user gets an "isn't bound to a project"
       hint and no ``message.send`` fires.
     * disabled: user gets a "chat is disabled" hint.
-- ``invoke_llm`` plugin fallback: the legacy path still resolves to
-  ``supervisor.chat`` (spec §9 row 3 — behaviour unchanged in this phase).
 - ``SupervisorAgentConfig`` no longer carries ``legacy_chat``; old YAML that
   includes the key must load without error.
 - Bot module carries no in-process chat agent state: no ``self.agent``, and
-  the bot never calls ``Supervisor.chat``.
+  the bot never calls a ``.chat()`` brain.
+- The ``message.sent`` renderer that posts a session's reply back to the
+  project channel.
+
+Split out of the former ``test_supervisor_cutover.py`` when the in-process
+Supervisor was deleted; the ``Supervisor.initialize()`` hardening tests went
+with the class.
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -61,59 +63,6 @@ def test_config_loader_ignores_legacy_chat_key(tmp_path):
     )
     cfg = load_config(str(cfg_path))
     assert cfg.supervisor_agent.enabled is False
-
-
-# ---------------------------------------------------------------------------
-# Supervisor.initialize() hardening
-# ---------------------------------------------------------------------------
-
-
-class TestInitializeHardening:
-    """``initialize()`` must return False (not raise) on provider errors.
-
-    Boot at ``src/main.py:105`` treats a False return as non-fatal and only
-    logs a warning; a raised ``ValueError`` (e.g. google-genai when its API
-    key env var is missing) tears the daemon down.  See supervisor-agent.md
-    §9 row 1.
-    """
-
-    def test_returns_false_when_provider_raises(self, tmp_path):
-        from src.config import AppConfig
-        from src.runtimes.supervisor import Supervisor
-
-        cfg = AppConfig()
-        cfg.data_dir = str(tmp_path)  # no vault profile -> use base config
-        orch = MagicMock()
-        orch.llm_logger = None
-        sup = Supervisor(orch, cfg, llm_logger=None)
-
-        with patch(
-            "src.runtimes.supervisor.create_chat_provider",
-            side_effect=ValueError("GOOGLE_API_KEY not set"),
-        ):
-            # Must NOT raise — must return False.
-            result = sup.initialize()
-
-        assert result is False
-        assert sup._provider is None
-
-    def test_returns_false_when_provider_returns_none(self, tmp_path):
-        from src.config import AppConfig
-        from src.runtimes.supervisor import Supervisor
-
-        cfg = AppConfig()
-        cfg.data_dir = str(tmp_path)
-        orch = MagicMock()
-        orch.llm_logger = None
-        sup = Supervisor(orch, cfg, llm_logger=None)
-
-        with patch(
-            "src.runtimes.supervisor.create_chat_provider",
-            return_value=None,
-        ):
-            result = sup.initialize()
-
-        assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +390,7 @@ class TestMessageSendPath:
 # ---------------------------------------------------------------------------
 
 
-def test_bot_has_no_inprocess_chat_agent():
+def test_bot_has_no_inprocess_chat_brain():
     import inspect
 
     import src.discord.bot as botmod

@@ -34,7 +34,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.models import AgentProfile
-from src.profiles.parser import ParsedProfile, parse_profile, parsed_profile_to_agent_profile
+from src.profiles.parser import (
+    ParsedProfile,
+    parse_profile,
+    parsed_profile_to_agent_profile,
+    update_config_keys,
+)
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -651,6 +656,39 @@ def _find_profile_files(vault_root: str) -> list[tuple[str, str]]:
     return results
 
 
+def strip_retired_runtime_key(text: str, abs_path: str) -> str:
+    """Remove a retired ``runtime`` key from a profile's ``## Config`` block.
+
+    ``runtime`` selected a :class:`~src.runtimes.base.Runtime` implementation;
+    the last one (the in-process Supervisor) is gone, so the parser now rejects
+    the key.  A vault file written before the removal would fail to sync
+    entirely — losing the profile — so the startup scan strips the key and
+    rewrites the file through the same surgical helper commands use
+    (:func:`~src.profiles.parser.update_config_keys`), leaving every other
+    section untouched.  A file that cannot be rewritten is still stripped in
+    memory so the profile syncs; the warning tells the operator to delete the
+    key by hand.
+    """
+    if '"runtime"' not in text:
+        return text
+    if "runtime" not in parse_profile(text).config:
+        return text
+
+    stripped = update_config_keys(text, {"runtime": None})
+    try:
+        Path(abs_path).write_text(stripped, encoding="utf-8")
+    except OSError:
+        logger.warning(
+            "profile %s: removed retired 'runtime' key in memory only — could "
+            "not rewrite the file; delete the key by hand",
+            abs_path,
+            exc_info=True,
+        )
+    else:
+        logger.info("profile %s: removed retired 'runtime' key", abs_path)
+    return stripped
+
+
 async def scan_and_sync_existing_profiles(
     vault_root: str,
     db: Any,
@@ -708,6 +746,7 @@ async def scan_and_sync_existing_profiles(
             )
             continue
 
+        text = strip_retired_runtime_key(text, abs_path)
         parsed = parse_profile(text)
         result = await sync_profile_to_db(
             parsed,

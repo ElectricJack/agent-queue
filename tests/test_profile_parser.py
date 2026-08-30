@@ -1448,23 +1448,23 @@ class TestValidateConfig:
 
     def test_config_known_keys(self):
         """CONFIG_KNOWN_KEYS contains the spec-defined fields, including
-        ``runtime`` (selects the Runtime implementation at dispatch
-        time), ``read_only`` (profile may not write to its workspace),
+        ``read_only`` (profile may not write to its workspace),
         the named-session fields from
         docs/specs/implementation/supervisor-agent.md §7, and the
         pool-only sizing fields (``min_active``, ``max_active``,
         ``max_claims_per_session``) from swarm-work-model §9.
 
-        Note: ``agent_name`` is deliberately *not* a known key. It was
-        retired together with the ``acpx`` runtime; the parser now
-        rejects it outright (see ``test_config_agent_name_rejected``)
-        and agent selection happens through ``harness``.
+        Note: neither ``agent_name`` nor ``runtime`` is a known key.
+        ``agent_name`` retired with the ``acpx`` runtime and ``runtime``
+        with the in-process Supervisor; the parser rejects both outright
+        (see ``test_config_agent_name_rejected`` and
+        ``tests/test_profile_parser_runtime.py``) and agent selection
+        happens through ``harness``.
         """
         assert CONFIG_KNOWN_KEYS == {
             "model",
             "permission_mode",
             "max_tokens_per_task",
-            "runtime",
             "harness",
             "lifecycle",
             "mode",

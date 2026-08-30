@@ -85,13 +85,17 @@ class TestGetProjectChannelsToolDefinition:
     """Verify the tool is properly defined in the TOOLS list."""
 
     def test_tool_exists_in_tools_list(self):
-        from src.chat_agent import TOOLS
+        from src.tools.registry import ToolRegistry
+
+        TOOLS = ToolRegistry().get_all_tools()
 
         tool_names = [t["name"] for t in TOOLS]
         assert "get_project_channels" in tool_names
 
     def test_tool_schema(self):
-        from src.chat_agent import TOOLS
+        from src.tools.registry import ToolRegistry
+
+        TOOLS = ToolRegistry().get_all_tools()
 
         tool = next(t for t in TOOLS if t["name"] == "get_project_channels")
         schema = tool["input_schema"]

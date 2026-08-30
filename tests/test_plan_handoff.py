@@ -104,21 +104,3 @@ def test_process_task_completion_disabled():
     assert "disabled" in result.get("reason", "").lower()
 
 
-def test_orchestrator_calls_supervisor_on_completion():
-    """After task completes, orchestrator delegates to Supervisor."""
-    from src.runtimes.supervisor import Supervisor
-
-    assert hasattr(Supervisor, "on_task_completed")
-
-
-def test_on_task_completed_returns_plan_status():
-    """on_task_completed returns whether a plan was found."""
-    from src.runtimes.supervisor import Supervisor
-    from unittest.mock import AsyncMock, MagicMock
-
-    sup = MagicMock(spec=Supervisor)
-    sup.on_task_completed = AsyncMock(return_value={"plan_found": True, "steps_count": 3})
-    result = asyncio.run(
-        sup.on_task_completed(task_id="t-1", project_id="p-1", workspace_path="/tmp/ws")
-    )
-    assert result["plan_found"] is True

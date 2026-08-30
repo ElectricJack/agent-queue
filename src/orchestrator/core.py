@@ -412,7 +412,6 @@ class Orchestrator(
         # tests can toggle it deterministically.
         self._gate_event_unsub = None
         self._config_watcher: ConfigWatcher | None = None
-        self._supervisor = None  # Set via set_supervisor() in Discord bot
         # Chat provider for LLM-based plan parsing.  Optionally used by
         # ``_generate_tasks_from_plan`` to parse agent-written plan files
         # with an LLM instead of the regex parser, producing higher-quality
@@ -551,8 +550,8 @@ class Orchestrator(
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
         self._command_handler: Any = None
-        # Shared tool registry, set by set_supervisor() once the Supervisor
-        # exists. May be None (e.g. before wiring, or in tests) — read
+        # Shared tool registry, set by set_tool_registry() during daemon
+        # wiring. May be None (e.g. before wiring, or in tests) — read
         # defensively; playbook_services() passes it through unchanged.
         self._tool_registry: Any = None
         # Project IDs currently undergoing plan processing (supervisor is
@@ -672,18 +671,17 @@ class Orchestrator(
         )
         return result.text
 
-    def set_supervisor(self, supervisor) -> None:
-        """Set the Supervisor reference for post-task delegation."""
-        self._supervisor = supervisor
+    def set_tool_registry(self, registry) -> None:
+        """Daemon-wide ToolRegistry (tool definitions for playbook nodes / plugins).
 
-        # Expose plugin tools to the supervisor's tool registry so the LLM
-        # can discover and call plugin-provided tools (e.g. memory_save).
-        if hasattr(self, "plugin_registry") and self.plugin_registry:
-            supervisor._registry.set_plugin_registry(self.plugin_registry)
-
-        # Store the registry on the orchestrator so command handlers can access
-        # the shared instance (with plugin tools and the tool index).
-        self._tool_registry = supervisor._registry
+        Also hands the registry the plugin registry so LLM callers can
+        discover plugin-provided tools (e.g. ``memory_save``).  Call after
+        ``initialize()`` — that is where ``plugin_registry`` is built.
+        """
+        self._tool_registry = registry
+        plugin_registry = getattr(self, "plugin_registry", None)
+        if plugin_registry is not None and hasattr(registry, "set_plugin_registry"):
+            registry.set_plugin_registry(plugin_registry)
 
     async def _get_default_branch(self, project, workspace: str | None = None) -> str:
         """Get the default branch for a project, with dynamic detection fallback.

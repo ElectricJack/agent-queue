@@ -49,7 +49,6 @@ CONFIG_KNOWN_KEYS = frozenset(
         "model",
         "permission_mode",
         "max_tokens_per_task",
-        "runtime",
         # Named-session fields (supervisor-agent spec §7).  ``workspaces``
         # is parsed and validated here but is *not* persisted on
         # ``agent_profiles`` — session-runtime owns attachment resolution.
@@ -92,18 +91,6 @@ VALID_PERMISSION_MODES = frozenset(
         "auto",
     }
 )
-
-# Valid runtime values selecting which Runtime implementation executes
-# tasks for this profile.  Validated at parse time against the static set
-# (the in-tree runtimes); runtime-time registration of additional runtimes
-# via plugins is checked separately at task dispatch.
-#
-# Only ``supervisor`` remains.  Coding agents run as tmux sessions selected
-# by ``harness`` — ``claude_sdk`` (Agent SDK subprocess) and ``acpx`` (ACP
-# fan-out) were deleted in the tmux-harness migration, along with the
-# earlier ``claude_cli`` / ``codex_cli``.  Supervisor is not a coding agent:
-# tool-call-only, no workspace, in-process, so there is no CLI to wrap.
-VALID_RUNTIMES = frozenset({"supervisor"})
 
 # Regex to find fenced code blocks: ```json ... ``` (with optional language tag)
 _JSON_BLOCK_RE = re.compile(
@@ -519,17 +506,6 @@ def _validate_config(config: dict) -> list[str]:
         elif mtt <= 0:
             errors.append(f"Config 'max_tokens_per_task' must be positive, got {mtt}")
 
-    # --- runtime --- selects which Runtime implementation runs tasks.
-    # Fail-closed on unknown values so a typo can't silently fall through
-    # to the default and run the wrong runtime for this profile.
-    if "runtime" in config:
-        rt = config["runtime"]
-        if not isinstance(rt, str):
-            errors.append(f"Config 'runtime' must be a string, got {type(rt).__name__}")
-        elif rt not in VALID_RUNTIMES:
-            sorted_runtimes = sorted(VALID_RUNTIMES)
-            errors.append(f"Config 'runtime' must be one of {sorted_runtimes}, got '{rt}'")
-
     # --- agent_name --- retired with the ACPX runtime.  Rejected rather
     # than ignored: a profile still carrying it was written for a dispatch
     # path that no longer exists, and silently dropping the key would leave
@@ -540,6 +516,13 @@ def _validate_config(config: dict) -> list[str]:
             "Config 'agent_name' was removed with the 'acpx' runtime. "
             "Select the agent with 'harness' instead "
             '("claude", "codex", "gemini").'
+        )
+
+    # --- runtime --- retired with the in-process Supervisor (llm-direct-path L6).
+    if "runtime" in config:
+        errors.append(
+            "Config 'runtime' was removed; every agent runs as a tmux session. "
+            'Select the CLI with \'harness\' ("claude", "codex", "gemini").'
         )
 
     if "default_class" in config:
@@ -970,13 +953,11 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     if parsed.frontmatter.extra.get("memory_scope_id"):
         result["memory_scope_id"] = str(parsed.frontmatter.extra["memory_scope_id"])
 
-    # Config → model, permission_mode, runtime
+    # Config → model, permission_mode
     if parsed.config.get("model"):
         result["model"] = parsed.config["model"]
     if parsed.config.get("permission_mode"):
         result["permission_mode"] = parsed.config["permission_mode"]
-    if parsed.config.get("runtime"):
-        result["runtime"] = parsed.config["runtime"]
 
     if "default_class" in parsed.config:
         result["default_class"] = parsed.config["default_class"]
@@ -1115,7 +1096,6 @@ def agent_profile_to_markdown(
     rules: str = "",
     reflection: str = "",
     tags: list[str] | None = None,
-    runtime: str = "",
     default_class: str = "",
 ) -> str:
     """Render profile fields into the hybrid markdown format.
@@ -1198,10 +1178,6 @@ def agent_profile_to_markdown(
         config["permission_mode"] = permission_mode
     if default_class:
         config["default_class"] = default_class
-    # Emit runtime only when set.  Empty is the default (session-routed via
-    # ``harness``), so omitting it keeps round-tripped files clean.
-    if runtime:
-        config["runtime"] = runtime
     if config:
         lines.append("## Config")
         lines.append("```json")

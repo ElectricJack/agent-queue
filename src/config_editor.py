@@ -66,11 +66,6 @@ FLAG_NOTES: dict[str, str] = {
         "playbook_runs rows and compiled JSON are preserved. "
         "See docs/specs/design/feature-pauses.md."
     ),
-    "supervisor.observation.enabled": (
-        "Temporary — overhaul pause. ``observation.enabled`` is the chat "
-        "analyzer switch; false means ChatObserver is not constructed. "
-        "See docs/specs/design/feature-pauses.md."
-    ),
 }
 
 

@@ -275,19 +275,25 @@ async def test_workspace_required_no_workspace_no_create(db):
     assert any("no available workspace" in s[1] for s in report.skipped)
 
 
-async def test_no_workspace_runtime_creates_regardless(db):
-    """SupervisorRuntime (requires_workspace=False) → create even with 0 workspaces."""
+async def test_workspace_gate_applies_to_every_profile(db):
+    """No runtime class opts out of the workspace gate any more.
+
+    The in-process Supervisor was the one profile whose runtime class
+    declared ``requires_workspace = False``.  With it deleted every agent
+    runs as a tmux session, so the gate is uniform: 0 available workspaces
+    means no agent is created, whatever the profile.
+    """
     await _seed_project_with_profile(
         db, project_id="p", profile_id="supervisor",
-        runtime="supervisor", workspace_count=0,
+        workspace_count=0,
     )
     await _seed_ready_task(db, task_id="t-1", project_id="p")
 
-    await AgentReconciler(db).reconcile()
+    report = await AgentReconciler(db).reconcile()
 
     agents = await db.list_agents()
-    assert len(agents) == 1
-    assert agents[0].profile_id == "supervisor"
+    assert len(agents) == 0
+    assert any("no available workspace" in s[1] for s in report.skipped)
 
 
 async def test_orphan_busy_reset_to_idle(db):

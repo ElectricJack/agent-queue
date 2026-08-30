@@ -57,7 +57,7 @@ class TestLLMLoggerChatProvider:
 
     def test_contains_expected_fields(self, logger, log_dir):
         logger.log_chat_provider_call(
-            caller="chat_agent.chat",
+            caller="playbook_node.chat",
             model="claude-sonnet-4-20250514",
             provider="AnthropicChatProvider",
             messages=[
@@ -76,7 +76,7 @@ class TestLLMLoggerChatProvider:
             entry = json.loads(f.readline())
 
         assert "timestamp" in entry
-        assert entry["caller"] == "chat_agent.chat"
+        assert entry["caller"] == "playbook_node.chat"
         assert len(entry["input"]["messages"]) == 2
         assert entry["input"]["system"] == "Be helpful."
         assert entry["input"]["max_tokens"] == 1024

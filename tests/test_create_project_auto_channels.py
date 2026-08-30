@@ -189,7 +189,9 @@ class TestToolDefinition:
     """Verify the create_project tool includes auto_create_channels."""
 
     def test_tool_has_auto_create_channels_param(self):
-        from src.chat_agent import TOOLS
+        from src.tools.registry import ToolRegistry
+
+        TOOLS = ToolRegistry().get_all_tools()
 
         tool = next(t for t in TOOLS if t["name"] == "create_project")
         props = tool["input_schema"]["properties"]
@@ -197,14 +199,18 @@ class TestToolDefinition:
         assert props["auto_create_channels"]["type"] == "boolean"
 
     def test_auto_create_channels_not_required(self):
-        from src.chat_agent import TOOLS
+        from src.tools.registry import ToolRegistry
+
+        TOOLS = ToolRegistry().get_all_tools()
 
         tool = next(t for t in TOOLS if t["name"] == "create_project")
         required = tool["input_schema"].get("required", [])
         assert "auto_create_channels" not in required
 
     def test_tool_description_mentions_channels(self):
-        from src.chat_agent import TOOLS
+        from src.tools.registry import ToolRegistry
+
+        TOOLS = ToolRegistry().get_all_tools()
 
         tool = next(t for t in TOOLS if t["name"] == "create_project")
         assert "channel" in tool["description"].lower()

@@ -349,9 +349,17 @@ class ExecutionMixin:
         # profile without ``harness`` keeps its ``runtime:`` verbatim.
         session_routed = self._is_session_routed(profile)
 
-        platform_name = profile.runtime if profile else self.config.default_runtime
+        # No in-tree runtime remains: ``create`` is reached only when a test
+        # or a plugin has registered one on the registry seam, and the name is
+        # not carried by the profile any more.
+        platform_name = ""
         platform = None
         if not session_routed:
+            logger.debug(
+                "Task %s: profile is not session-routed — dispatching through "
+                "the runtime seam",
+                task.id,
+            )
             platform = self._runtimes.create(
                 platform_name, profile=profile, llm_logger=self.llm_logger
             )
@@ -1104,7 +1112,7 @@ class ExecutionMixin:
                 # path (plan_draft_subtasks context exists).
                 created_info: list[dict] = []
                 try:
-                    supervisor = self._supervisor
+                    supervisor = getattr(self, "_supervisor", None)
                     if supervisor and supervisor.is_ready and raw_ctx:
                         config = self.config.auto_task
                         workspace_id = ws.id if ws else None

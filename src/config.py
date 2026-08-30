@@ -412,62 +412,6 @@ class LoggingConfig:
 
 
 @dataclass
-class ReflectionConfig:
-    """Configuration for the Supervisor's action-reflect cycle."""
-
-    level: str = "full"
-    periodic_interval: int = 900
-    max_depth: int = 3
-    per_cycle_token_cap: int = 10000
-    hourly_token_circuit_breaker: int = 100000
-
-    _VALID_LEVELS = {"full", "moderate", "minimal", "off"}
-
-    def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        if self.level not in self._VALID_LEVELS:
-            errors.append(
-                ConfigError(
-                    "reflection",
-                    "level",
-                    f"must be one of {sorted(self._VALID_LEVELS)}, got '{self.level}'",
-                )
-            )
-        if self.max_depth < 1:
-            errors.append(ConfigError("reflection", "max_depth", "must be >= 1"))
-        if self.periodic_interval < 0:
-            errors.append(ConfigError("reflection", "periodic_interval", "must be >= 0"))
-        if self.per_cycle_token_cap < 0:
-            errors.append(ConfigError("reflection", "per_cycle_token_cap", "must be >= 0"))
-        if self.hourly_token_circuit_breaker < 0:
-            errors.append(ConfigError("reflection", "hourly_token_circuit_breaker", "must be >= 0"))
-        return errors
-
-
-@dataclass
-class ObservationConfig:
-    """Configuration for the Supervisor's passive chat observation.
-
-    Paused by default during the framework overhaul — this is the real
-    chat-analyzer switch (``supervisor.observation.enabled``).  See
-    docs/specs/design/feature-pauses.md.
-    """
-
-    enabled: bool = False
-    batch_window_seconds: int = 60
-    max_buffer_size: int = 20
-    stage1_keywords: list[str] = field(default_factory=list)
-
-    def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        if self.batch_window_seconds < 5:
-            errors.append(ConfigError("observation", "batch_window_seconds", "must be >= 5"))
-        if self.max_buffer_size < 1:
-            errors.append(ConfigError("observation", "max_buffer_size", "must be >= 1"))
-        return errors
-
-
-@dataclass
 class ChatAnalyzerConfig:
     """Configuration for the Discord chat-analyzer suggester gate stack.
 
@@ -567,16 +511,12 @@ class GlobalSupervisorConfig:
 class SupervisorConfig:
     """Top-level Supervisor configuration."""
 
-    reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
-    observation: ObservationConfig = field(default_factory=ObservationConfig)
     #: The trailing underscore in the attribute name avoids the Python
     #: keyword ``global``. In YAML the section is written as ``global``.
     global_: GlobalSupervisorConfig = field(default_factory=GlobalSupervisorConfig)
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
-        errors.extend(self.reflection.validate())
-        errors.extend(self.observation.validate())
         errors.extend(self.global_.validate())
         return errors
 
@@ -1486,12 +1426,6 @@ class AppConfig:
             "mark_read_on_emit": True,
         }
     )
-    # Phase-1 stub: which platform to spawn for tasks. Replaced by
-    # profile.platform in phase 2 of the platforms refactor.
-    # Fallback runtime for a profile that names none.  Empty means "run as a
-    # session", which is the path for every coding agent since the
-    # tmux-harness migration; the profile's ``harness`` selects the CLI.
-    default_runtime: str = ""
     _config_path: str = field(default="", repr=False)
 
     # -- Vault path properties (derived from data_dir) -----------------------
@@ -1680,24 +1614,6 @@ class AppConfig:
                         "rate_limits", scope, f"expected a dict, got {type(limits).__name__}"
                     )
                 )
-
-        # ``default_runtime`` must name a known runtime, or be empty.
-        # Empty is the normal case since the tmux-harness migration: it means
-        # "run as a session", and the profile's ``harness`` picks the CLI.
-        from src.runtimes import default_registry
-
-        try:
-            available = default_registry().names()
-        except Exception:  # pragma: no cover - registry import fail = bigger problem
-            available = ["supervisor"]
-        if self.default_runtime and self.default_runtime not in available:
-            errors.append(
-                ConfigError(
-                    section="app",
-                    field="default_runtime",
-                    message=f"unknown runtime {self.default_runtime!r}; available: {available}",
-                )
-            )
 
         return errors
 
@@ -2302,23 +2218,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     if "supervisor" in raw:
         s = raw["supervisor"]
-        reflection = s.get("reflection", {})
-        observation = s.get("observation", {})
         global_section = s.get("global", {}) or {}
         config.supervisor = SupervisorConfig(
-            reflection=ReflectionConfig(
-                level=reflection.get("level", "full"),
-                periodic_interval=reflection.get("periodic_interval", 900),
-                max_depth=reflection.get("max_depth", 3),
-                per_cycle_token_cap=reflection.get("per_cycle_token_cap", 10000),
-                hourly_token_circuit_breaker=reflection.get("hourly_token_circuit_breaker", 100000),
-            ),
-            observation=ObservationConfig(
-                enabled=observation.get("enabled", False),
-                batch_window_seconds=observation.get("batch_window_seconds", 60),
-                max_buffer_size=observation.get("max_buffer_size", 20),
-                stage1_keywords=observation.get("stage1_keywords", []),
-            ),
             global_=GlobalSupervisorConfig(
                 idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
             ),

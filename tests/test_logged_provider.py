@@ -61,7 +61,7 @@ class TestLoggedChatProviderLogging:
         response = ChatResponse(content=[TextBlock(text="Answer")])
         mock_provider.create_message.return_value = response
 
-        logged = LoggedChatProvider(mock_provider, logger, caller="chat_agent.chat")
+        logged = LoggedChatProvider(mock_provider, logger, caller="playbook_node.chat")
         await logged.create_message(
             messages=[{"role": "user", "content": "question"}],
             system="sys",
@@ -74,7 +74,7 @@ class TestLoggedChatProviderLogging:
         with open(file_path) as f:
             entry = json.loads(f.readline())
 
-        assert entry["caller"] == "chat_agent.chat"
+        assert entry["caller"] == "playbook_node.chat"
         assert entry["model"] == "test-model-v1"
         assert entry["error"] is None
         assert entry["duration_ms"] >= 0
@@ -126,13 +126,13 @@ class TestLoggedChatProviderLogging:
         response = ChatResponse(content=[TextBlock(text="ok")])
         mock_provider.create_message.return_value = response
 
-        logged = LoggedChatProvider(mock_provider, logger, caller="chat_agent.chat")
+        logged = LoggedChatProvider(mock_provider, logger, caller="playbook_node.chat")
 
         # First call with default caller
         await logged.create_message(messages=[], system="s")
 
         # Change caller
-        logged._caller = "chat_agent.summarize"
+        logged._caller = "playbook_node.summarize"
         await logged.create_message(messages=[], system="s")
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -142,5 +142,5 @@ class TestLoggedChatProviderLogging:
             lines = f.readlines()
 
         assert len(lines) == 2
-        assert json.loads(lines[0])["caller"] == "chat_agent.chat"
-        assert json.loads(lines[1])["caller"] == "chat_agent.summarize"
+        assert json.loads(lines[0])["caller"] == "playbook_node.chat"
+        assert json.loads(lines[1])["caller"] == "playbook_node.summarize"

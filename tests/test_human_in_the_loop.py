@@ -459,31 +459,26 @@ class TestEventDrivenResume:
         handler.subscribe()
 
         try:
-            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-                mock_sup = MagicMock()
-                mock_sup.initialize.return_value = True
-                MockSupervisor.return_value = mock_sup
+            with patch(
+                "src.playbooks.runner.PlaybookRunner.resume",
+                new_callable=AsyncMock,
+            ) as mock_resume:
+                mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
 
-                with patch(
-                    "src.playbooks.runner.PlaybookRunner.resume",
-                    new_callable=AsyncMock,
-                ) as mock_resume:
-                    mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
+                await event_bus.emit(
+                    "human.review.completed",
+                    {
+                        "playbook_id": "human-review-playbook",
+                        "run_id": "paused-run-1",
+                        "node_id": "review",
+                        "decision": "Approved, proceed.",
+                    },
+                )
 
-                    await event_bus.emit(
-                        "human.review.completed",
-                        {
-                            "playbook_id": "human-review-playbook",
-                            "run_id": "paused-run-1",
-                            "node_id": "review",
-                            "decision": "Approved, proceed.",
-                        },
-                    )
+                await asyncio.sleep(0.05)
 
-                    await asyncio.sleep(0.05)
-
-                    mock_db.get_playbook_run.assert_called_once_with("paused-run-1")
-                    mock_resume.assert_called_once()
+                mock_db.get_playbook_run.assert_called_once_with("paused-run-1")
+                mock_resume.assert_called_once()
         finally:
             handler.shutdown()
 
@@ -502,35 +497,30 @@ class TestEventDrivenResume:
         handler.subscribe()
 
         try:
-            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-                mock_sup = MagicMock()
-                mock_sup.initialize.return_value = True
-                MockSupervisor.return_value = mock_sup
+            with patch(
+                "src.playbooks.runner.PlaybookRunner.resume",
+                new_callable=AsyncMock,
+            ) as mock_resume:
+                mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
 
-                with patch(
-                    "src.playbooks.runner.PlaybookRunner.resume",
-                    new_callable=AsyncMock,
-                ) as mock_resume:
-                    mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
+                await event_bus.emit(
+                    "human.review.completed",
+                    {
+                        "playbook_id": "human-review-playbook",
+                        "run_id": "paused-run-1",
+                        "node_id": "review",
+                        "decision": "LGTM",
+                    },
+                )
 
-                    await event_bus.emit(
-                        "human.review.completed",
-                        {
-                            "playbook_id": "human-review-playbook",
-                            "run_id": "paused-run-1",
-                            "node_id": "review",
-                            "decision": "LGTM",
-                        },
-                    )
+                await asyncio.sleep(0.05)
 
-                    await asyncio.sleep(0.05)
-
-                    # Verify the db_run passed to resume has the full conversation
-                    db_run_arg = mock_resume.call_args.kwargs["db_run"]
-                    history = json.loads(db_run_arg.conversation_history)
-                    assert len(history) == 5
-                    assert history[0]["content"] == "Event received: git.commit"
-                    assert history[-1]["content"] == "Here is my analysis for your review."
+                # Verify the db_run passed to resume has the full conversation
+                db_run_arg = mock_resume.call_args.kwargs["db_run"]
+                history = json.loads(db_run_arg.conversation_history)
+                assert len(history) == 5
+                assert history[0]["content"] == "Event received: git.commit"
+                assert history[-1]["content"] == "Here is my analysis for your review."
         finally:
             handler.shutdown()
 
@@ -1035,33 +1025,28 @@ class TestMultiplePausedRuns:
         handler.subscribe()
 
         try:
-            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-                mock_sup = MagicMock()
-                mock_sup.initialize.return_value = True
-                MockSupervisor.return_value = mock_sup
+            with patch(
+                "src.playbooks.runner.PlaybookRunner.resume",
+                new_callable=AsyncMock,
+            ) as mock_resume:
+                mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
 
-                with patch(
-                    "src.playbooks.runner.PlaybookRunner.resume",
-                    new_callable=AsyncMock,
-                ) as mock_resume:
-                    mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
+                # Resume only run-a
+                await event_bus.emit(
+                    "human.review.completed",
+                    {
+                        "playbook_id": "human-review-playbook",
+                        "run_id": "run-a",
+                        "node_id": "review",
+                        "decision": "Approved.",
+                    },
+                )
 
-                    # Resume only run-a
-                    await event_bus.emit(
-                        "human.review.completed",
-                        {
-                            "playbook_id": "human-review-playbook",
-                            "run_id": "run-a",
-                            "node_id": "review",
-                            "decision": "Approved.",
-                        },
-                    )
+                await asyncio.sleep(0.05)
 
-                    await asyncio.sleep(0.05)
-
-                    # Verify only run-a was resumed
-                    mock_resume.assert_called_once()
-                    assert mock_resume.call_args.kwargs["db_run"].run_id == "run-a"
+                # Verify only run-a was resumed
+                mock_resume.assert_called_once()
+                assert mock_resume.call_args.kwargs["db_run"].run_id == "run-a"
         finally:
             handler.shutdown()
 
@@ -1089,45 +1074,40 @@ class TestMultiplePausedRuns:
         handler.subscribe()
 
         try:
-            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-                mock_sup = MagicMock()
-                mock_sup.initialize.return_value = True
-                MockSupervisor.return_value = mock_sup
+            with patch(
+                "src.playbooks.runner.PlaybookRunner.resume",
+                new_callable=AsyncMock,
+            ) as mock_resume:
+                mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
 
-                with patch(
-                    "src.playbooks.runner.PlaybookRunner.resume",
-                    new_callable=AsyncMock,
-                ) as mock_resume:
-                    mock_resume.return_value = MagicMock(status="completed", tokens_used=80)
+                # Fire both resume events
+                await event_bus.emit(
+                    "human.review.completed",
+                    {
+                        "playbook_id": "human-review-playbook",
+                        "run_id": "run-a",
+                        "node_id": "review",
+                        "decision": "Approved A.",
+                    },
+                )
+                await event_bus.emit(
+                    "human.review.completed",
+                    {
+                        "playbook_id": "human-review-playbook",
+                        "run_id": "run-b",
+                        "node_id": "review",
+                        "decision": "Approved B.",
+                    },
+                )
 
-                    # Fire both resume events
-                    await event_bus.emit(
-                        "human.review.completed",
-                        {
-                            "playbook_id": "human-review-playbook",
-                            "run_id": "run-a",
-                            "node_id": "review",
-                            "decision": "Approved A.",
-                        },
-                    )
-                    await event_bus.emit(
-                        "human.review.completed",
-                        {
-                            "playbook_id": "human-review-playbook",
-                            "run_id": "run-b",
-                            "node_id": "review",
-                            "decision": "Approved B.",
-                        },
-                    )
+                await asyncio.sleep(0.1)
 
-                    await asyncio.sleep(0.1)
-
-                    # Both runs should be resumed
-                    assert mock_resume.call_count == 2
-                    resumed_run_ids = {
-                        call.kwargs["db_run"].run_id for call in mock_resume.call_args_list
-                    }
-                    assert resumed_run_ids == {"run-a", "run-b"}
+                # Both runs should be resumed
+                assert mock_resume.call_count == 2
+                resumed_run_ids = {
+                    call.kwargs["db_run"].run_id for call in mock_resume.call_args_list
+                }
+                assert resumed_run_ids == {"run-a", "run-b"}
         finally:
             handler.shutdown()
 
@@ -1377,31 +1357,26 @@ class TestStateSurvivesRestart:
         new_handler.subscribe()
 
         try:
-            with patch("src.runtimes.supervisor.Supervisor") as MockSupervisor:
-                mock_sup = MagicMock()
-                mock_sup.initialize.return_value = True
-                MockSupervisor.return_value = mock_sup
+            with patch(
+                "src.playbooks.runner.PlaybookRunner.resume",
+                new_callable=AsyncMock,
+            ) as mock_resume:
+                mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
 
-                with patch(
-                    "src.playbooks.runner.PlaybookRunner.resume",
-                    new_callable=AsyncMock,
-                ) as mock_resume:
-                    mock_resume.return_value = MagicMock(status="completed", tokens_used=100)
+                # Fire resume event on the new bus (post-restart)
+                await new_bus.emit(
+                    "human.review.completed",
+                    {
+                        "playbook_id": "human-review-playbook",
+                        "run_id": "paused-run-1",
+                        "node_id": "review",
+                        "decision": "Approved after restart.",
+                    },
+                )
 
-                    # Fire resume event on the new bus (post-restart)
-                    await new_bus.emit(
-                        "human.review.completed",
-                        {
-                            "playbook_id": "human-review-playbook",
-                            "run_id": "paused-run-1",
-                            "node_id": "review",
-                            "decision": "Approved after restart.",
-                        },
-                    )
+                await asyncio.sleep(0.05)
 
-                    await asyncio.sleep(0.05)
-
-                    mock_resume.assert_called_once()
-                    assert mock_resume.call_args.kwargs["human_input"] == "Approved after restart."
+                mock_resume.assert_called_once()
+                assert mock_resume.call_args.kwargs["human_input"] == "Approved after restart."
         finally:
             new_handler.shutdown()
