@@ -247,7 +247,7 @@ class TestAdapterHealthMethods:
 
     def test_discord_adapter_platform_name(self):
         """DiscordMessagingAdapter.platform_name is 'discord'."""
-        with patch("src.discord.bot.AgentQueueBot", autospec=False) as MockBot:
+        with patch("src.discord.bot.AgentQueueBot", autospec=False):
             from src.discord.adapter import DiscordMessagingAdapter
 
             adapter = DiscordMessagingAdapter(MagicMock(), MagicMock())

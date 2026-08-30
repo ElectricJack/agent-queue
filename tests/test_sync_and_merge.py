@@ -494,7 +494,6 @@ class TestSyncAndMergeRetry:
         mgr = GitManager()
         calls = []
 
-        original_run = mgr._run
 
         def mock_run(args, cwd=None):
             calls.append(args)

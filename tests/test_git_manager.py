@@ -507,7 +507,7 @@ class TestPrepareForTaskRebaseOnRetry:
         # First call: create the task branch and make a commit on it
         mgr.prepare_for_task(clone, "task-retry/feature")
         assert _current_branch(clone) == "task-retry/feature"
-        original_base = _git(["merge-base", "origin/main", "HEAD"], cwd=clone)
+        _git(["merge-base", "origin/main", "HEAD"], cwd=clone)
         _commit_file(clone, "work.txt", "agent work", "agent commit")
 
         # Advance origin/main via a second clone
@@ -797,7 +797,7 @@ class TestSwitchToBranchRebase:
         # Create a feature branch with a commit
         _git(["checkout", "-b", "feature/no-rebase"], cwd=clone)
         _commit_file(clone, "feature.txt", "feature", "feature work")
-        feature_sha = _head_sha(clone)
+        _head_sha(clone)
         _git(["checkout", "main"], cwd=clone)
 
         # Advance origin/main so there's something to rebase onto
@@ -989,12 +989,12 @@ class TestMidChainSync:
 
         mgr.prepare_for_task(clone, "chain/noop-sync")
         _commit_file(clone, "work.txt", "work", "subtask work")
-        pre_sha = _head_sha(clone)
+        _head_sha(clone)
 
         result = mgr.mid_chain_sync(clone, "chain/noop-sync")
         assert result is True
         # Branch should still have the same commit (rebase was no-op)
-        post_sha = _head_sha(clone)
+        _head_sha(clone)
         log = _git(["log", "--oneline"], cwd=clone)
         assert "subtask work" in log
 
@@ -1022,7 +1022,7 @@ class TestMergeBranchPullsBeforeMerge:
         subprocess.run(
             ["git", "clone", git_repo["remote"], clone2], check=True, capture_output=True
         )
-        other_sha = _git_commit(clone2, "other-agent.txt", "other work", "other agent commit")
+        _git_commit(clone2, "other-agent.txt", "other work", "other agent commit")
         _git(["push", "origin", "main"], cwd=clone2)
 
         # Local clone's main is behind origin — merge_branch should fetch first
@@ -1123,7 +1123,7 @@ class TestMergeBranchPullBeforeMerge:
         subprocess.run(
             ["git", "clone", git_repo["remote"], pusher], check=True, capture_output=True
         )
-        new_main_sha = _commit_file(pusher, "other.txt", "other work", "other agent")
+        _commit_file(pusher, "other.txt", "other work", "other agent")
         _git(["push", "origin", "main"], cwd=pusher)
 
         # Local main is now behind origin/main. merge_branch should
@@ -2598,7 +2598,7 @@ class TestRetryBranchRebaseComprehensive:
 
         mgr.prepare_for_task(clone, "task-retry/noop")
         _commit_file(clone, "work.txt", "work", "agent work")
-        original_sha = _head_sha(clone)
+        _head_sha(clone)
 
         # "Retry" — prepare_for_task on existing branch without main advancing
         mgr.prepare_for_task(clone, "task-retry/noop")

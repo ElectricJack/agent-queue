@@ -117,5 +117,11 @@ markers = [
 target-version = "py312"
 line-length = 100
 
+[tool.ruff.lint.per-file-ignores]
+# The `from aq_memory.service import ...` must follow the
+# `pytest.importorskip("aq_memory")` guard above it, or collection fails
+# outright on an install without the optional memory plugin.
+"tests/test_facts_bidirectional_sync.py" = ["E402"]
+
 [tool.ruff.format]
 quote-style = "double"

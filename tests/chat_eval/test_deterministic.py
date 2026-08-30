@@ -52,7 +52,7 @@ class TestSingleToolCall:
             "Created project My App.",
         )
 
-        response = await agent.chat("create a project called My App", user_name="test")
+        await agent.chat("create a project called My App", user_name="test")
 
         assert recorder.was_called("create_project")
         calls = recorder.calls_for("create_project")
@@ -90,7 +90,7 @@ class TestMultiToolSequence:
         )
         provider.add_reply("Done.")
 
-        response = await agent.chat("status", user_name="test")
+        await agent.chat("status", user_name="test")
 
         assert set(recorder.tool_names_called) == {"list_projects", "list_agents"}
 
@@ -108,7 +108,7 @@ class TestToolErrorPropagation:
         provider.add_tool_call("get_task", {"task_id": "nonexistent"})
         provider.add_reply("Sorry, that task wasn't found.")
 
-        response = await agent.chat("show task nonexistent", user_name="test")
+        await agent.chat("show task nonexistent", user_name="test")
 
         # The tool was called (and errored), then LLM got the error back
         assert recorder.was_called("get_task")
@@ -126,7 +126,7 @@ class TestToolErrorPropagation:
         provider.add_tool_call("nonexistent_tool", {})
         provider.add_reply("I couldn't do that.")
 
-        response = await agent.chat("do something weird", user_name="test")
+        await agent.chat("do something weird", user_name="test")
 
         # The error should have been propagated
         assert provider.call_count == 2

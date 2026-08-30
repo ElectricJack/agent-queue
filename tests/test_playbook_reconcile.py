@@ -83,7 +83,7 @@ async def test_compiles_uncompiled_playbook(tmp_path: Path) -> None:
         "new-playbook",
     )
 
-    provider = _make_mock_provider(num_compilations=1)
+    _make_mock_provider(num_compilations=1)
     manager = PlaybookManager(config=None, data_dir=str(tmp_path))
 
     result = await manager.reconcile_compilations(str(vault_root))
@@ -154,7 +154,7 @@ async def test_multiple_scopes(tmp_path: Path) -> None:
         scope="project",
     )
 
-    provider = _make_mock_provider(num_compilations=3)
+    _make_mock_provider(num_compilations=3)
     manager = PlaybookManager(config=None, data_dir=str(tmp_path))
 
     result = await manager.reconcile_compilations(str(vault_root))
@@ -173,7 +173,7 @@ async def test_missing_id_recorded_as_error(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    provider = _make_mock_provider(num_compilations=0)
+    _make_mock_provider(num_compilations=0)
     manager = PlaybookManager(config=None, data_dir=str(tmp_path))
 
     result = await manager.reconcile_compilations(str(vault_root))
@@ -186,7 +186,7 @@ async def test_missing_id_recorded_as_error(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_nonexistent_vault_root_is_noop(tmp_path: Path) -> None:
     """An invalid vault path returns an empty result, not an exception."""
-    provider = _make_mock_provider(num_compilations=0)
+    _make_mock_provider(num_compilations=0)
     manager = PlaybookManager(config=None, data_dir=str(tmp_path))
 
     result = await manager.reconcile_compilations(str(tmp_path / "does-not-exist"))
@@ -204,7 +204,7 @@ async def test_ignores_non_playbook_md(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    provider = _make_mock_provider(num_compilations=0)
+    _make_mock_provider(num_compilations=0)
     manager = PlaybookManager(config=None, data_dir=str(tmp_path))
 
     result = await manager.reconcile_compilations(str(vault_root))

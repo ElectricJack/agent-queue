@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import subprocess
 
-import pytest
 from sqlalchemy import create_engine, inspect
 
 from src.database.tables import metadata, task_proposals

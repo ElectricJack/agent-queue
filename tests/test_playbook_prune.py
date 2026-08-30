@@ -159,7 +159,7 @@ async def test_orphan_removed_from_active_registry(tmp_path: Path) -> None:
     # Compile a real playbook first (populates _active), then delete its .md
     # file so it becomes an orphan from the registry's perspective.
     md_path = _write_md(vault_root, "system/playbooks", "transient.md", "transient")
-    provider = _make_mock_provider(num_compilations=1)
+    _make_mock_provider(num_compilations=1)
     manager = PlaybookManager(config=None, data_dir=str(tmp_path))
     await manager.compile_playbook(md_path.read_text(), source_path=str(md_path))
     assert manager.get_playbook("transient") is not None

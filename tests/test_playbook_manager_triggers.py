@@ -255,7 +255,7 @@ class TestTriggerMapOnCompile:
     @pytest.mark.asyncio
     async def test_trigger_map_updated_on_successful_compilation(self, tmp_path: Path) -> None:
         """Successful compilation adds triggers to the mapping."""
-        provider = _make_mock_provider()
+        _make_mock_provider()
         manager = PlaybookManager(
             config=None,
             data_dir=str(tmp_path),
@@ -710,7 +710,7 @@ class TestTriggerMapConsistency:
     @pytest.mark.asyncio
     async def test_compile_then_remove_cleans_triggers(self, tmp_path: Path) -> None:
         """Compiling then removing a playbook leaves no stale triggers."""
-        provider = _make_mock_provider()
+        _make_mock_provider()
         manager = PlaybookManager(
             config=None,
             data_dir=str(tmp_path),
@@ -735,7 +735,7 @@ class TestTriggerMapConsistency:
         pb_disk = _make_playbook(playbook_id="disk-pb", triggers=["git.push"])
         (compiled_dir / "disk-pb.json").write_text(json.dumps(pb_disk.to_dict()))
 
-        provider = _make_mock_provider()
+        _make_mock_provider()
         manager = PlaybookManager(
             config=None,
             data_dir=str(tmp_path),

@@ -5,7 +5,7 @@ Tests GitManager.amerge_pr and CommandHandler._cmd_pr_merge.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 

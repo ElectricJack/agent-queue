@@ -171,8 +171,6 @@ class TestScenarioA_TasksContinueAfterPlaybookCrash:
         mock_db.transition_task.assert_not_called()
 
         # Tasks still have their original statuses
-        for t in tasks:
-            fetched = mock_db.get_task.return_value  # not used; we check the objects directly
         assert tasks[0].status == TaskStatus.IN_PROGRESS
         assert tasks[1].status == TaskStatus.IN_PROGRESS
         assert tasks[2].status == TaskStatus.DEFINED
@@ -614,7 +612,7 @@ class TestScenarioE_WorkflowRunningDuringOrphanPeriod:
         mock_db.get_playbook_run.return_value = run
 
         recovery = OrphanWorkflowRecovery(db=mock_db, event_bus=event_bus)
-        result = await recovery.recover_on_startup()
+        await recovery.recover_on_startup()
 
         # Workflow status was NOT changed
         mock_db.update_workflow_status.assert_not_called()
@@ -686,7 +684,7 @@ class TestScenarioE_WorkflowRunningDuringOrphanPeriod:
         mock_db.get_playbook_run.return_value = run
 
         recovery = OrphanWorkflowRecovery(db=mock_db, event_bus=event_bus)
-        result = await recovery.recover_on_startup()
+        await recovery.recover_on_startup()
 
         # THIS is the only case where status is updated
         mock_db.update_workflow_status.assert_called_once()
@@ -704,7 +702,7 @@ class TestScenarioE_WorkflowRunningDuringOrphanPeriod:
         mock_db.get_playbook_run.return_value = run
 
         recovery = OrphanWorkflowRecovery(db=mock_db, event_bus=event_bus)
-        result = await recovery.recover_on_startup()
+        await recovery.recover_on_startup()
 
         # The playbook RUN was marked failed
         mock_db.update_playbook_run.assert_called_once()

@@ -15,13 +15,6 @@ test_git_manager.py (TestMidChainSync, TestSubtaskChainDriftAndMidChainRebase).
 
 from __future__ import annotations
 
-import pytest
-
-pytestmark = pytest.mark.skip(
-    reason="mid_chain_rebase API replaced by mid_chain_sync; "
-    "see test_git_manager.py for current coverage"
-)
-
 import pathlib
 import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -31,6 +24,11 @@ import pytest
 from src.config import AutoTaskConfig
 from src.git.manager import GitError, GitManager
 from src.models import RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
+
+pytestmark = pytest.mark.skip(
+    reason="mid_chain_rebase API replaced by mid_chain_sync; "
+    "see test_git_manager.py for current coverage"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -188,13 +186,13 @@ class TestMidChainRebase:
         # Create a task branch with a commit
         _git(["checkout", "-b", "task/feature"], cwd=clone)
         _git_commit(clone, "feature.py", "print('hello')", "add feature")
-        task_sha_before = _head_sha(clone)
+        _head_sha(clone)
 
         # Advance main on origin (simulate another agent's merge)
         _git(["checkout", "main"], cwd=clone)
         _git_commit(clone, "other.py", "# other", "other agent's work")
         _git(["push", "origin", "main"], cwd=clone)
-        main_sha = _head_sha(clone)
+        _head_sha(clone)
 
         # mid_chain_rebase should put task branch on top of latest main
         result = mgr.mid_chain_rebase(clone, "task/feature", "main")
@@ -581,7 +579,6 @@ class TestCompleteWorkspaceMidChainRebase:
         # Use the _FakeOrchestrator pattern to isolate _complete_workspace
         # We'll test via _mid_chain_rebase being called
         task = _make_task(id="subtask-2")
-        agent = MagicMock(id="agent-1")
 
         # The full orchestrator is complex to mock. Instead, verify the
         # GitManager.mid_chain_rebase is called via the _mid_chain_rebase

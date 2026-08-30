@@ -53,7 +53,7 @@ class TestDiscordAdapterDelegation:
 
     @pytest.fixture
     def adapter(self):
-        with patch("src.discord.bot.AgentQueueBot") as mock_bot_cls:
+        with patch("src.discord.bot.AgentQueueBot"):
             config = MagicMock()
             config.discord.bot_token = "test-token"
             orch = MagicMock()

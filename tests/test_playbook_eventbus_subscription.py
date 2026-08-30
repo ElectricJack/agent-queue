@@ -815,7 +815,7 @@ class TestSubscriptionLifecycle:
         async def on_trigger(playbook: CompiledPlaybook, data: dict) -> None:
             triggered.append(playbook.id)
 
-        provider = _make_mock_provider()
+        _make_mock_provider()
         manager = PlaybookManager(
             config=None,
             event_bus=bus,

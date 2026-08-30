@@ -688,7 +688,7 @@ class TestEndToEndCompilation:
         vault = tmp_path / "vault"
         vault.mkdir()
 
-        provider = _make_mock_provider()
+        _make_mock_provider()
         manager = PlaybookManager(
             config=None,
             data_dir=str(tmp_path / "data"),
@@ -727,7 +727,7 @@ class TestEndToEndCompilation:
         data_dir = tmp_path / "data"
         vault.mkdir()
 
-        provider = _make_mock_provider()
+        _make_mock_provider()
         manager = PlaybookManager(
             config=None,
             data_dir=str(data_dir),
@@ -932,7 +932,7 @@ class TestEndToEndCompilation:
         vault = tmp_path / "vault"
         vault.mkdir()
 
-        provider = _make_mock_provider()
+        _make_mock_provider()
         manager = PlaybookManager(
             config=None,
             data_dir=str(tmp_path / "data"),

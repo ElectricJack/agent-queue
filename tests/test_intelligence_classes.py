@@ -12,7 +12,7 @@ from src.vault import ensure_default_intelligence_classes
 # only; no legacy aliases. Every class covers anthropic + openai + google.
 TIERS = {"fast", "standard", "deep"}
 THINKING = {"off", "low", "medium", "high"}
-DEFAULTS = {f"{t}-{l}" for t in TIERS for l in THINKING}
+DEFAULTS = {f"{tier}-{level}" for tier in TIERS for level in THINKING}
 
 
 def test_defaults_shipped(tmp_path):

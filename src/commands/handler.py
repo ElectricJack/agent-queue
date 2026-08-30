@@ -37,23 +37,6 @@ from src.config import AppConfig
 from src.orchestrator import Orchestrator
 from src.logging_config import CorrelationContext
 
-# Per-asyncio-task state. ContextVars give each concurrent caller (Discord
-# message, supervisor-platform task, hook LLM, reflection retry) its own
-# value without races, instead of stomping a shared singleton attribute.
-# Each new asyncio.Task inherits its parent's snapshot and can mutate freely.
-_active_project_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "_active_project_id_var", default=None
-)
-_current_conversation_context_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "_current_conversation_context_var", default=None
-)
-_caller_profile_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "_caller_profile_id_var", default=None
-)
-_plan_subtask_creation_mode_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "_plan_subtask_creation_mode_var", default=False
-)
-
 # Mixin imports — each provides one domain of _cmd_* methods
 from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.system_commands import SystemCommandsMixin
@@ -88,6 +71,23 @@ from src.commands.spec_commands import SpecCommandsMixin
 from src.playbooks.validator_command import PlaybookValidateInstallMixin
 
 logger = logging.getLogger(__name__)
+
+# Per-asyncio-task state. ContextVars give each concurrent caller (Discord
+# message, supervisor-platform task, hook LLM, reflection retry) its own
+# value without races, instead of stomping a shared singleton attribute.
+# Each new asyncio.Task inherits its parent's snapshot and can mutate freely.
+_active_project_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_active_project_id_var", default=None
+)
+_current_conversation_context_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_current_conversation_context_var", default=None
+)
+_caller_profile_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_caller_profile_id_var", default=None
+)
+_plan_subtask_creation_mode_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_plan_subtask_creation_mode_var", default=False
+)
 
 
 # Re-export helper functions from helpers module for backward compatibility

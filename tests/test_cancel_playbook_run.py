@@ -11,6 +11,7 @@ import pytest
 
 from src.models import PlaybookRun, PlaybookRunStatus
 from src.database import Database
+from tests.test_playbook_commands import _make_handler
 
 
 @pytest.fixture
@@ -66,9 +67,6 @@ def test_cancelled_is_terminal():
     from src.playbooks.state_machine import TERMINAL_STATUSES
 
     assert PlaybookRunStatus.CANCELLED in TERMINAL_STATUSES
-
-
-from tests.test_playbook_commands import _make_handler
 
 
 async def test_cancel_playbook_run_error_format():

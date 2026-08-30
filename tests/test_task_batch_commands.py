@@ -229,7 +229,7 @@ async def test_commit_partial_failure_rolls_back(handler, monkeypatch):
     remaining = [t for t in listing.get("tasks", []) if t.get("id") != pre_id]
     assert remaining == []
     # And no leaked edges TO the pre-existing task.
-    edges = await handler._db.get_typed_dependencies(pre_id)
+    await handler._db.get_typed_dependencies(pre_id)
     # get_typed_dependencies returns edges FROM pre_id; check the reverse direction.
     # Any leaked (a -> pre_id) would show up as a dep on `a`, which is gone —
     # but the row could still exist orphaned. Assert directly against the table.

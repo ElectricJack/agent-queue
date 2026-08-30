@@ -112,7 +112,7 @@ class TestVaultGlossary:
 
     def test_update_backlinks(self, tmp_path):
         glossary = VaultGlossary(tmp_path)
-        concept = glossary.add_concept(
+        glossary.add_concept(
             name="test", definition="Test.", aliases=["test"]
         )
         glossary.update_backlinks("test", "projects/foo/notes/bar.md")

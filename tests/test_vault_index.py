@@ -39,7 +39,7 @@ class TestVaultIndexGenerator:
         (sub2 / "playbook.md").write_text("# Playbook")
 
         gen = VaultIndexGenerator(vault)
-        written = gen.generate_all()
+        gen.generate_all()
 
         # Root hub named after directory: vault.md
         root_hub = vault / "vault.md"

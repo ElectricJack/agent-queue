@@ -251,7 +251,7 @@ def test_chat_skips_reflection_when_off():
     resp = _make_resp(text_parts=["Done."])
     sup._provider.create_message = AsyncMock(return_value=resp)
 
-    result = asyncio.run(sup.chat("Hello", "testuser"))
+    asyncio.run(sup.chat("Hello", "testuser"))
     assert sup._provider.create_message.call_count == 1
 
 
