@@ -511,3 +511,41 @@ async def test_get_task_dependencies_alias(handler, db):
     assert result_alias["task_id"] == result_direct["task_id"]
     assert result_alias["depends_on"] == result_direct["depends_on"]
     assert result_alias["blocks"] == result_direct["blocks"]
+
+
+@pytest.mark.asyncio
+async def test_task_deps_reports_discovered_from_provenance(handler, db):
+    """The edge a worker-filed task carries must be readable somewhere.
+
+    ``discovered-from`` is not a blocking edge, so it never appeared in
+    ``depends_on``/``blocks`` — the row existed, the dashboard's graph view
+    drew it, and no command would tell you which task a filing came out of.
+    It now lands in ``provenance``, kept separate from the two blocking
+    lists so nothing already reading those changes meaning.
+    """
+    await db.create_task(_task("held", title="The task a worker was holding"))
+    await db.create_task(_task("filed", title="Work discovered along the way"))
+    await db.add_dependency("filed", "held", "discovered-from")
+
+    result = await handler.execute("task_deps", {"task_id": "filed"})
+    assert result["depends_on"] == []  # not a blocking edge
+    assert result["provenance"] == [
+        {
+            "id": "held",
+            "title": "The task a worker was holding",
+            "status": "DEFINED",
+            "dep_type": "discovered-from",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_task_deps_provenance_excludes_blocking_edges(handler, db):
+    """A plain ``blocks`` edge belongs in ``depends_on``, not ``provenance``."""
+    await db.create_task(_task("upstream"))
+    await db.create_task(_task("downstream"))
+    await db.add_dependency("downstream", "upstream", "blocks")
+
+    result = await handler.execute("task_deps", {"task_id": "downstream"})
+    assert [d["id"] for d in result["depends_on"]] == ["upstream"]
+    assert result["provenance"] == []

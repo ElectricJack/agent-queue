@@ -234,12 +234,23 @@ class RemoveDependencyResponse(BaseModel):
     task_title: str
 
 
+class ProvenanceRef(BaseModel):
+    """A non-blocking incoming edge — today only ``discovered-from``."""
+
+    id: str
+    title: str = ""
+    status: str = ""
+    dep_type: str = ""
+
+
 class TaskDepsResponse(BaseModel):
     task_id: str
     title: str
     status: str = ""
     depends_on: list[TaskRef] = []
     blocks: list[TaskRef] = []
+    #: Where this task came from, as opposed to what holds it back.
+    provenance: list[ProvenanceRef] = []
 
 
 class GetTaskDiffResponse(BaseModel):

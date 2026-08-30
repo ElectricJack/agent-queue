@@ -1781,9 +1781,18 @@ class TaskCommandsMixin:
         Returns
         -------
         dict
-            ``task_id``, ``title``, ``status``, ``depends_on`` list, and
-            ``blocks`` list.  Each entry in those lists carries ``id``,
-            ``title``, and ``status``.
+            ``task_id``, ``title``, ``status``, ``depends_on``, ``blocks``
+            and ``provenance``.  Each entry carries ``id``, ``title`` and
+            ``status``; ``provenance`` entries add ``dep_type``.
+
+        ``depends_on`` / ``blocks`` are the *blocking* edges — "what holds
+        me back" and "what I hold back".  ``provenance`` is everything else
+        the graph records about where a task came from, which today means
+        ``discovered-from``: the edge ``create_task`` writes when a worker
+        files work mid-task (swarm-work-model §12).  Without it that edge
+        was invisible on every read surface — the row existed, the
+        dashboard's graph view drew it, and no command would tell you
+        which task a filing came out of.
         """
         task_id = args.get("task_id", "")
         if not task_id:
@@ -1821,12 +1830,31 @@ class TaskCommandsMixin:
                     }
                 )
 
+        # Provenance: every non-blocking outgoing edge — today that is
+        # ``discovered-from``, written when a worker files work mid-task.
+        provenance: list[dict] = []
+        for dep_id, dep_type in await self.db.get_typed_dependencies(task.id):
+            if dep_type in BLOCKING_DEP_TYPES:
+                continue
+            origin = await self.db.get_task(dep_id)
+            if origin is None:
+                continue
+            provenance.append(
+                {
+                    "id": origin.id,
+                    "title": origin.title,
+                    "status": origin.status.value,
+                    "dep_type": dep_type,
+                }
+            )
+
         return {
             "task_id": task.id,
             "title": task.title,
             "status": task.status.value,
             "depends_on": depends_on,
             "blocks": blocks,
+            "provenance": provenance,
         }
 
     async def _cmd_get_task_dependencies(self, args: dict) -> dict:
