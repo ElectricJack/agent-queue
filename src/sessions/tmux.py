@@ -23,6 +23,7 @@ import os
 import re
 import shlex
 import time
+import uuid
 from collections import defaultdict
 from pathlib import Path
 from typing import ClassVar
@@ -41,6 +42,7 @@ from src.sessions.provider import (
     SessionHandle,
     SessionProvider,
     SessionSpec,
+    validate_terminal_input,
 )
 from src.sessions.state_cache import TmuxStateCache, TmuxUnavailable
 from src.sessions.subprocess import _write_spec_files
@@ -83,7 +85,7 @@ class TmuxProvider(SessionProvider):
 
     name: ClassVar[str] = "tmux"
     capabilities: ClassVar[frozenset[Cap]] = frozenset(
-        {Cap.ATTACH, Cap.PEEK, Cap.NUDGE, Cap.ACTIVITY, Cap.RELAUNCH}
+        {Cap.ATTACH, Cap.PEEK, Cap.NUDGE, Cap.ACTIVITY, Cap.RELAUNCH, Cap.INPUT}
     )
 
     def __init__(self, config=None):
@@ -96,6 +98,7 @@ class TmuxProvider(SessionProvider):
         self._cache = TmuxStateCache(self._tmux, ttl=ttl)
         self._nudge_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._last_nudge_at: dict[str, float] = {}
+        self._last_input_at: dict[str, float] = {}
         #: Poke discounting state: name -> (send_ts, activity observed
         #: immediately before the send).
         self._poke: dict[str, tuple[float, float | None]] = {}
@@ -455,6 +458,59 @@ class TmuxProvider(SessionProvider):
             return ""
 
     # -- interaction -------------------------------------------------------
+
+    async def send_input(
+        self, h: SessionHandle, *, text: str | None = None, key: str | None = None
+    ) -> None:
+        """Direct human input, serialized with nudges and fenced to one pane.
+
+        A cached name token is insufficient here: a stale browser must never
+        type into a same-named successor. Resolve the exact pane, then read the
+        live token and send to that pane ID rather than the recyclable name.
+        """
+        validate_terminal_input(text, key)
+        async with self._nudge_locks[h.name]:
+            if not h.instance_token:
+                raise SessionError("Terminal input requires an instance token")
+            names = await self._process_names_hint(h.name)
+            pane = await self._find_agent_pane(h.name, names)
+            if pane is None:
+                raise SessionError("No live terminal pane")
+            observed = await self._tmux(
+                "show-environment", "-t", f"={h.name}", _META_TOKEN_KEY,
+            )
+            if _parse_environment_value(observed, _META_TOKEN_KEY) != h.instance_token:
+                raise SessionError("Terminal session instance changed")
+
+            # Unpark copy mode. A detached TUI may also need a one-time
+            # resize signal before accepting input after an idle period.
+            with contextlib.suppress(TmuxCommandError):
+                in_mode = (await self._tmux(
+                    "display-message", "-p", "-t", pane, "#{pane_in_mode}",
+                )).strip()
+                if in_mode == "1":
+                    await self._tmux("send-keys", "-t", pane, "-X", "cancel")
+                if time.monotonic() - self._last_input_at.get(h.name, 0) > 5:
+                    await self._tmux("resize-pane", "-t", pane, "-D", "1")
+                    await self._tmux("resize-pane", "-t", pane, "-U", "1")
+            if key is not None:
+                await self._tmux("send-keys", "-t", pane, key)
+            else:
+                assert text is not None
+                payload = text.encode("utf-8")
+                if len(payload) <= _SEND_KEYS_MAX_BYTES and "\n" not in text and "\r" not in text:
+                    await self._tmux("send-keys", "-t", pane, "-l", "--", text)
+                else:
+                    # Bracketed paste preserves multiline input. Each buffer
+                    # is unique, so two tiled terminals cannot swap pastes.
+                    buffer = "aq-input-" + uuid.uuid4().hex
+                    await self._tmux("load-buffer", "-b", buffer, "-", stdin=payload)
+                    try:
+                        await self._tmux("paste-buffer", "-p", "-d", "-b", buffer, "-t", pane)
+                    finally:
+                        with contextlib.suppress(TmuxCommandError):
+                            await self._tmux("delete-buffer", "-b", buffer)
+            self._last_input_at[h.name] = time.monotonic()
 
     async def nudge(self, h: SessionHandle, text: str) -> None:
         lock = self._nudge_locks[h.name]

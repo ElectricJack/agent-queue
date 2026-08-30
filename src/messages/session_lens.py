@@ -24,13 +24,13 @@ directly and never calls the lens for them.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
 import uuid
 from typing import Literal, Protocol, runtime_checkable
 
-from sqlalchemy.exc import IntegrityError
 
 from src.models import SessionRecord
 from src.sessions.provider import (
@@ -186,6 +186,7 @@ class SessionLens:
         #: forwards it to the harness via ``AQ_API_TOKEN``.  Tests may
         #: omit; the harness falls back to no bearer (LOCAL_SCOPE).
         self._token_store = token_store
+        self._start_locks: dict[str, asyncio.Lock] = {}
 
     # -- SessionManagerProto ------------------------------------------------
 
@@ -213,6 +214,17 @@ class SessionLens:
         return "idle"
 
     async def ensure_started(self, *, kind: str, target_id: str, project_id: str | None) -> bool:
+        # All message, button and reconciler wakes share this lock. Key it by
+        # runtime name so aliases cannot launch a second copy of the supervisor.
+        name = _resolve_runtime_session_name(kind, target_id)
+        async with self._start_locks.setdefault(name, asyncio.Lock()):
+            return await self._ensure_started_locked(
+                kind=kind, target_id=target_id, project_id=project_id,
+            )
+
+    async def _ensure_started_locked(
+        self, *, kind: str, target_id: str, project_id: str | None
+    ) -> bool:
         # Only supervisor-named sessions are wake-on-demand. Task sessions
         # are launched by the task lifecycle; spawning one from the message
         # path would race the orchestrator and violate ownership.
@@ -348,18 +360,12 @@ class SessionLens:
                     elevated=True,
                 )
             except Exception:
-                # Non-fatal: starting the session with an empty api_token
-                # is better than refusing to start at all — the agent will
-                # 401 on its own `aq` calls, which is loud enough to
-                # diagnose.  Log at WARNING with session id so the failure
-                # is visible in production instead of buried at DEBUG.
-                logger.warning(
-                    "token mint failed for supervisor %s (session_id=%s); "
-                    "session will start with empty api_token",
-                    target_id,
-                    session_id,
-                    exc_info=True,
-                )
+                logger.warning("token mint failed for supervisor %s", target_id, exc_info=True)
+                await self._token_store.revoke_session(session_id)
+                return False
+            if not api_token:
+                await self._token_store.revoke_session(session_id)
+                return False
 
         # Let the spec builder derive the provider session name from the
         # profile+project convention (``n-supervisor--<pid>``). The
@@ -370,43 +376,40 @@ class SessionLens:
         # :class:`~src.sessions.reconciler.SessionReconciler` adopt it
         # after a daemon restart — adoption only scans ``s-``/``n-``
         # prefixes.
-        spec = self._spec_builder.build_named_spec(
-            profile=profile,
-            harness=harness,
-            project_id=harness_project,
-            work_dir=work_dir,
-            session_id=session_id,
-            instance_token=instance_token,
-            epoch=self._epoch,
-            api_token=api_token,
+        history = await self._db.list_sessions(
+            name=_resolve_runtime_session_name(kind, target_id), lifecycle="named",
         )
+        previous = max(
+            (s for s in history if s.project_id == harness_project
+             and s.profile_id == profile.id and s.harness == harness.id
+             and s.state in {"sleeping", "stopped"}
+             and (agent is None or s.agent_id in {None, agent.id})),
+            key=lambda s: s.started_at or 0, default=None,
+        )
+        resume_key = (
+            previous.session_key if previous is not None
+            and getattr(profile, "wake_mode", None) == "resume"
+            and harness.resume.style != "none" else None
+        )
+        handle = None
         try:
-            await provider.start(spec)
-        except Exception:
-            logger.exception(
-                "failed to start supervisor session %s (project=%s)",
-                target_id,
-                derived_project,
+            spec = self._spec_builder.build_named_spec(
+                profile=profile,
+                harness=harness,
+                project_id=harness_project,
+                work_dir=work_dir,
+                session_id=session_id,
+                instance_token=instance_token,
+                epoch=self._epoch,
+                api_token=api_token,
+                wake="resume" if resume_key else "fresh",
+                resume_key=resume_key,
             )
-            return False
-
-        # Persist the sessions row so subsequent lens ops (``activity``,
-        # ``nudge``) can resolve the just-started supervisor.  Without this
-        # step the reconciler would eventually adopt the orphan on its next
-        # tick, but the delivery engine's *same-pass* nudge would already
-        # have failed to find a row.  Mirrors the ``provider.start`` →
-        # ``db.create_session`` ordering in
-        # ``src/orchestrator/execution.py`` (crash between start and row
-        # insert leaves an orphan the reconciler can heal; the reverse
-        # would leave a phantom row).
-        try:
+            # Precompute our fenced handle so partial starts can also be cleaned up.
+            handle = SessionHandle(spec.session_name, provider_name, instance_token)
+            await provider.start(spec)
             await self._db.create_session(
                 SessionRecord(
-                    # Mirror execution.py canon: the row id *is* the dashed
-                    # session id we handed the harness via ``--session-id``.
-                    # That single identity is what makes the row, the
-                    # harness's own conversation id and the resume key line
-                    # up on restart.
                     id=session_id,
                     agent_id=agent.id if agent is not None else None,
                     **resolve_launch_settings(profile, harness, self._spec_builder),
@@ -420,26 +423,30 @@ class SessionLens:
                     epoch=self._epoch,
                     instance_token=instance_token,
                     started_at=time.time(),
-                    # ``--session-id`` pinned the harness's conversation id
-                    # to ours, so the resume key *is* the session id — same
-                    # invariant execution.py relies on.
-                    session_key=session_id,
+                    session_key=resume_key or (session_id if harness.session_id_flag else None),
                     state="running",
-                    # Explicit rather than defaulted: a cold start is the
-                    # clearest statement of intent there is, and the
-                    # reconciler's up-convergence reads this column.
                     desired_state="running",
                 )
             )
-        except IntegrityError:
-            # A racing reconciler / concurrent lens call may have inserted
-            # the row already — either way the process is alive; the
-            # engine's next resolve will find it. Other failures propagate
-            # to ensure_started's caller.
-            logger.debug(
-                "supervisor session row insert lost the race (already exists)",
-                exc_info=True,
-            )
+        except BaseException as exc:
+            # Adoption can publish our exact row during a slow launch. A
+            # different instance is never ours to keep, stop, or overwrite.
+            own = await self._db.get_session(session_id)
+            if own is not None and own.instance_token == instance_token:
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                return True
+            if handle is not None:
+                try:
+                    await provider.stop(handle)
+                except Exception:
+                    logger.exception("failed to clean up supervisor %s", target_id)
+            if self._token_store is not None:
+                await self._token_store.revoke_session(session_id)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            logger.exception("failed to start supervisor session %s", target_id)
+            return False
         return True
 
     async def nudge(

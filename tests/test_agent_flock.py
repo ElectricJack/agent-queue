@@ -87,14 +87,14 @@ async def test_edit_does_not_mutate_shared_profile(handler):
     assert (await handler.db.get_profile("coder")).model == "profile-model"
 
 
-@pytest.mark.parametrize("command", ["create_agent", "edit_agent"])
+@pytest.mark.parametrize("command", ["create_agent", "edit_agent", "delete_agent", "start_agent_terminal"])
 def test_project_supervisor_cannot_change_global_worker_settings(command):
     scope = RequestScope(kind="session", session_id="s", project_id="p", elevated=True)
     error = check_command_scope(command, {"agent_id": "a"}, scope)
     assert error and "global" in error
 
 
-@pytest.mark.parametrize("command", ["create_agent", "edit_agent"])
+@pytest.mark.parametrize("command", ["create_agent", "edit_agent", "delete_agent", "start_agent_terminal"])
 def test_global_supervisor_can_change_worker_settings(command):
     scope = RequestScope(kind="session", session_id="s", project_id=None, elevated=True)
     assert check_command_scope(command, {}, scope) is None
@@ -314,3 +314,41 @@ async def test_disabled_but_live_worker_keeps_its_runtime_state(handler):
     assert row["state"] == "running"
     assert row["enabled"] is False
     assert row["session_id"] == "pool-a"
+
+
+async def test_delete_removes_idle_agent_from_flock_but_retains_identity(handler):
+    await handler.db.create_agent(Agent(id="a", name="Ada", profile_id="coder"))
+    delete = getattr(handler, "_cmd_delete_agent", None)
+    assert delete is not None, "the flock needs an explicit delete command"
+    result = await delete({"agent_id": "a"})
+    assert result == {"deleted": "a", "name": "Ada"}
+    assert (await handler.db.get_agent("a")).deleted_at is not None
+    assert (await handler._cmd_list_agents({}))["agents"] == []
+    assert "error" in await handler._cmd_get_agent({"agent_id": "a"})
+    assert "error" in await handler._cmd_edit_agent({"agent_id": "a", "enabled": True})
+
+
+async def test_delete_protects_supervisor_and_busy_worker(handler):
+    from src.models import AgentState
+    from src.agents.configuration import ensure_supervisor_agent
+    await ensure_supervisor_agent(handler.db)
+    await handler.db.create_agent(Agent(id="a", name="Ada", profile_id="coder", state=AgentState.BUSY))
+    delete = getattr(handler, "_cmd_delete_agent", None)
+    assert delete is not None
+    assert "supervisor" in (await delete({"agent_id": "supervisor-global"}))["error"].lower()
+    assert "idle" in (await delete({"agent_id": "a"}))["error"].lower()
+
+
+async def test_typed_delete_requires_global_scope_and_returns_agent_identity(handler):
+    import httpx
+    await handler.db.create_agent(Agent(id="a", name="Ada", profile_id="coder"))
+    scoped_app = _flock_api(handler, RequestScope(
+        kind="session", session_id="project-supervisor", project_id="p", elevated=True,
+    ))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=scoped_app), base_url="http://test") as client:
+        denied = await client.post("/api/agent/delete", json={"agent_id": "a"})
+        assert denied.status_code == 403
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_flock_api(handler)), base_url="http://test") as client:
+        deleted = await client.post("/api/agent/delete", json={"agent_id": "a"})
+        assert deleted.status_code == 200
+        assert deleted.json() == {"deleted": "a", "name": "Ada"}

@@ -882,6 +882,7 @@ _FORMULA_SCHEMAS: dict[str, EventSchema] = {
 EVENT_SCHEMAS: dict[str, EventSchema] = {
     "agent.created": {"required": ["agent_id"], "optional": ["event_type"]},
     "agent.updated": {"required": ["agent_id"], "optional": ["event_type"]},
+    "agent.deleted": {"required": ["agent_id"], "optional": ["event_type"]},
     **_TASK_SCHEMAS,
     **_WORK_GRAPH_SCHEMAS,
     **_NOTE_SCHEMAS,

@@ -448,6 +448,7 @@ class Agent:
     harness: str | None = None
     model: str | None = None
     intelligence_class: str | None = None
+    deleted_at: float | None = None
 
 
 @dataclass

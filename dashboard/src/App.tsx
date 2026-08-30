@@ -4,7 +4,6 @@ import { ShellPaneProvider } from "./panes/store";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
-const GlobalChat = lazy(() => import("./pages/GlobalChat"));
 const CommandCenterGraph = lazy(() => import("./pages/command-center/Graph"));
 const CommandCenterTasks = lazy(() => import("./pages/command-center/Tasks"));
 const CommandCenterAgents = lazy(() => import("./pages/command-center/Agents"));
@@ -51,7 +50,7 @@ export default function App() {
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route element={<AppShellV2 />}>
-            <Route index element={<GlobalChat />} />
+            <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
             <Route path="chat/:projectId" element={<ChatConversation />} />
 
@@ -100,7 +99,7 @@ export default function App() {
             <Route path="sessions/:sessionId" element={<SessionDetail />} />
             <Route path="playbooks/:playbookId" element={<PlaybookDetail />} />
 
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<Navigate to="/command-center" replace />} />
           </Route>
         </Routes>
       </Suspense>

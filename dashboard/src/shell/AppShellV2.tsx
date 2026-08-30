@@ -44,7 +44,7 @@ function usePaneSurfaceBridge() {
   }, [pane.state.kind]);
 }
 
-/** Section jumps: `g h`, `g c`, `g s`, `g p`. Two-key sequence. */
+/** Two-key section jumps; g h opens the supervisor terminal and g a opens the flock. */
 function useSectionJumps() {
   const navigate = useNavigate();
   const [pending, setPending] = useState(false);
@@ -57,12 +57,22 @@ function useSectionJumps() {
     },
   });
   useShortcut("h", {
-    label: "goto home",
+    label: "goto supervisor terminal",
     section: "Navigation",
     onFire: () => {
       if (!pending) return;
       setPending(false);
-      navigate("/");
+      navigate("/agents?agent=supervisor-global", { state: { agentSelection: "replace" } });
+    },
+    when: () => pending,
+  });
+  useShortcut("a", {
+    label: "goto agent flock",
+    section: "Navigation",
+    onFire: () => {
+      if (!pending) return;
+      setPending(false);
+      navigate("/agents");
     },
     when: () => pending,
   });
@@ -162,7 +172,7 @@ function ShellBody() {
       <CheatSheetModal open={cheat} onClose={() => setCheat(false)} />
       {gotoPending && (
         <div className="pointer-events-none fixed bottom-4 left-1/2 -translate-x-1/2 rounded bg-gray-800/90 px-3 py-1.5 text-xs text-gray-200 shadow">
-          Go to: <kbd className="font-mono">h</kbd> home · <kbd>c</kbd> cc ·{" "}
+          Go to: <kbd className="font-mono">h</kbd> supervisor · <kbd>a</kbd> flock · <kbd>c</kbd> cc ·{" "}
           <kbd>s</kbd> settings · <kbd>p</kbd> projects
         </div>
       )}

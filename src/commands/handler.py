@@ -667,10 +667,16 @@ class CommandHandler(
             # moment the inner one returned.
             _scope_token = _current_scope_var.set(scope)
             mutating = self._is_mutating(name)
+            # Terminal keystrokes may be secrets. They belong only to the
+            # terminal, never to general command logs or the activity feed.
+            log_args = (
+                {"session_id": args.get("session_id"), "input": "<redacted>"}
+                if name == "session_input" else args
+            )
             if mutating:
-                logger.info("cmd %s args=%s", name, self._preview(args))
+                logger.info("cmd %s args=%s", name, self._preview(log_args))
             else:
-                logger.debug("cmd %s args=%s", name, self._preview(args))
+                logger.debug("cmd %s args=%s", name, self._preview(log_args))
             # Snapshot for command.invoked emission — args may be mutated by
             # ``_resolve_project_id_in_args`` and by handler bodies (e.g. an
             # embedded body/plan being popped for storage), and the raw values
@@ -734,7 +740,7 @@ class CommandHandler(
                             logger.error(
                                 "Plugin command %s failed: args=%s err=%s",
                                 name,
-                                self._preview(args),
+                                self._preview(log_args),
                                 e,
                                 exc_info=True,
                             )
@@ -742,7 +748,7 @@ class CommandHandler(
                             _emit_error = f"Plugin command failed: {e.__class__.__name__}"
                             return {"error": f"Plugin command failed: {e}"}
 
-                logger.warning("Unknown command requested: %s args=%s", name, self._preview(args))
+                logger.warning("Unknown command requested: %s args=%s", name, self._preview(log_args))
                 _emit_ok = False
                 _emit_error = f"Unknown command: {name}"
                 return {"error": f"Unknown command: {name}"}
@@ -750,7 +756,7 @@ class CommandHandler(
                 logger.error(
                     "Command %s failed: args=%s err=%s",
                     name,
-                    self._preview(args),
+                    self._preview(log_args),
                     e,
                     exc_info=True,
                 )
@@ -765,7 +771,7 @@ class CommandHandler(
                 # any failure is swallowed so a broken bus never breaks
                 # command execution (spec constraint).
                 try:
-                    if getattr(self.config, "events", None) and (
+                    if name != "session_input" and getattr(self.config, "events", None) and (
                         self.config.events.command_invoked_enabled
                     ):
                         bus = getattr(self.orchestrator, "bus", None)

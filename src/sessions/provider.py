@@ -69,6 +69,35 @@ class Cap(StrEnum):
     NUDGE = "nudge"
     ACTIVITY = "activity"
     RELAUNCH = "relaunch"
+    INPUT = "input"
+
+
+TERMINAL_INPUT_KEYS: frozenset[str] = frozenset({
+    "Enter", "BSpace", "Tab", "BTab", "Escape",
+    "Up", "Down", "Left", "Right", "Home", "End", "PPage", "NPage", "DC",
+    "C-a", "C-b", "C-c", "C-d", "C-e", "C-f", "C-j", "C-k", "C-l",
+    "C-n", "C-p", "C-u", "C-w", "C-z",
+})
+
+
+def validate_terminal_input(text: str | None, key: str | None) -> None:
+    """Accept literal text or one known terminal key, never tmux commands."""
+    if (text is None) == (key is None):
+        raise ValueError("Provide exactly one of text or key")
+    if key is not None:
+        if not isinstance(key, str) or key not in TERMINAL_INPUT_KEYS:
+            raise ValueError("Unsupported terminal key")
+        return
+    if not isinstance(text, str) or not text:
+        raise ValueError("text must be a nonempty string")
+    if any(ord(char) < 32 and char not in "\t\n\r" for char in text):
+        raise ValueError("Use named keys for terminal control characters")
+    try:
+        size = len(text.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise ValueError("text must be valid Unicode") from exc
+    if size > 65536:
+        raise ValueError("Terminal input is limited to 64 KiB per paste")
 
 
 #: Valid ``SessionSpec.prompt_mode`` values (harness ``prompt_mode`` field).
@@ -327,6 +356,12 @@ class SessionProvider(ABC):
         confirmed, and :class:`CapabilityUnsupported` when the provider has
         no input channel at all.
         """
+
+    async def send_input(
+        self, h: SessionHandle, *, text: str | None = None, key: str | None = None
+    ) -> None:
+        """Type literal text or a key into a live terminal without submitting it."""
+        raise CapabilityUnsupported(self.name, Cap.INPUT)
 
     @abstractmethod
     async def attach_command(self, h: SessionHandle) -> str:

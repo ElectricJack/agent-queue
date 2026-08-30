@@ -108,7 +108,7 @@ class FlockCommandsMixin:
         if not agent_id:
             return {"error": "agent_id is required"}
         agent = await self.db.get_agent(agent_id)
-        if agent is None:
+        if agent is None or agent.deleted_at is not None:
             return {"error": f"Agent '{agent_id}' not found"}
         fields, error = await self._validate_agent_settings(args, agent)
         if error:
@@ -119,3 +119,38 @@ class FlockCommandsMixin:
                 "event_type": "agent.updated", "agent_id": agent.id,
             })
         return await self._cmd_get_agent({"agent_id": agent.id})
+
+    async def _cmd_delete_agent(self, args: dict) -> dict:
+        if error := self._agent_settings_scope_error():
+            return {"error": error}
+        agent_id = args.get("agent_id")
+        if not agent_id:
+            return {"error": "agent_id is required"}
+        agent = await self.db.get_agent(agent_id)
+        if agent is None or agent.deleted_at is not None:
+            return {"error": f"Agent '{agent_id}' not found"}
+        if agent.id == SUPERVISOR_AGENT_ID or agent.role == "supervisor":
+            return {"error": "The global supervisor cannot be deleted"}
+        if not await self.db.soft_delete_agent(agent.id):
+            return {
+                "error": "Agent must be idle with no active task, live session, "
+                "or held workspace before deletion."
+            }
+        await self.orchestrator.bus.emit("agent.deleted", {
+            "event_type": "agent.deleted", "agent_id": agent.id,
+        })
+        return {"deleted": agent.id, "name": agent.name}
+
+    async def _cmd_start_agent_terminal(self, args: dict) -> dict:
+        from src.agents.terminals import TerminalStartError, start_agent_terminal
+
+        if error := self._agent_settings_scope_error():
+            return {"error": error}
+        agent_id = args.get("agent_id")
+        if not isinstance(agent_id, str) or not agent_id:
+            return {"error": "agent_id is required"}
+        try:
+            await start_agent_terminal(self.orchestrator, agent_id, config=self.config)
+        except TerminalStartError as exc:
+            return {"error": str(exc)}
+        return await self._cmd_get_agent({"agent_id": agent_id})

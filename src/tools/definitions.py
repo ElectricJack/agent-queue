@@ -43,6 +43,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_agent": "agent",
     "create_agent": "agent",
     "edit_agent": "agent",
+    "delete_agent": "agent",
+    "start_agent_terminal": "agent",
     "get_agent_error": "agent",
     "list_profiles": "agent",
     "create_profile": "agent",
@@ -198,6 +200,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "session_peek": "system",
     "session_attach": "system",
     "session_nudge": "system",
+    "session_input": "system",
     "session_logs": "system",
     "session_kill": "system",
     "session_sleep": "system",
@@ -1244,6 +1247,46 @@ _ALL_TOOL_DEFINITIONS = [
                 "intelligence_class": {"type": "string"},
                 "enabled": {"type": "boolean"},
             },
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "delete_agent",
+        "description": (
+            "Delete an idle shared worker from the flock while preserving task and session history. "
+            "Active workers and the global supervisor cannot be deleted. Requires global admin."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"agent_id": {"type": "string"}},
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "session_input",
+        "description": (
+            "Type directly into a live terminal. Send exactly one literal text chunk or "
+            "named key; text is not automatically submitted. Requires global admin."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "text": {"type": "string", "maxLength": 65536},
+                "key": {"type": "string"},
+            },
+            "required": ["session_id"],
+        },
+    },
+    {
+        "name": "start_agent_terminal",
+        "description": (
+            "Explicitly start or resume one agent's interactive terminal, without creating "
+            "a task or sending a chat message. Requires global admin."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"agent_id": {"type": "string"}},
             "required": ["agent_id"],
         },
     },

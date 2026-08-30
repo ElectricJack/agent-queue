@@ -1,53 +1,9 @@
 import { useEffect, useId, useState } from "react";
 import { XMarkIcon, CommandLineIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
 import type { FlockAgent } from "../../api/agents";
-import { usePaneStream } from "../../ws/usePaneStream";
-import LivePaneConsole from "../../components/LivePaneConsole";
 import { AgentSubagents, AgentState, AgentEligibility } from "./AgentMetadata";
 import AgentSettings from "./AgentSettings";
-
-function AgentTerminal({ agent }: { agent: FlockAgent }) {
-  const running = !!agent.session_id && (agent.session_state === "running" || agent.session_state === "draining");
-  const tmux = agent.session_provider === "tmux";
-  const pane = usePaneStream(agent.session_id, { enabled: running && tmux });
-  if (running && !tmux) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
-        <CommandLineIcon className="mb-1 h-8 w-8 text-gray-600" />
-        <p className="text-sm text-gray-300">Tmux view unavailable</p>
-        <p className="max-w-sm text-xs leading-relaxed text-gray-500">
-          {agent.session_provider
-            ? "This session uses " + agent.session_provider + "; no tmux pane is available."
-            : "This session's terminal transport is unknown."}
-        </p>
-      </div>
-    );
-  }
-  if (!running) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
-        <CommandLineIcon className="mb-1 h-8 w-8 text-gray-600" />
-        <p className="text-sm text-gray-300">
-          {agent.session_state === "sleeping" ? "Session is sleeping" : "No active tmux session"}
-        </p>
-        <p className="max-w-sm text-xs leading-relaxed text-gray-500">
-          {agent.session_id
-            ? "Session state: " + (agent.session_state || "unknown") + ". Viewing this agent will not wake or restart it."
-            : "This worker has no live terminal. Viewing it does not start a session."}
-        </p>
-      </div>
-    );
-  }
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center justify-between border-b border-gray-800 px-3 py-1 text-[10px] text-gray-500">
-        <span>Live tmux · read-only</span>
-        <span className="capitalize">{pane.status}</span>
-      </div>
-      <LivePaneConsole screen={pane.screen} status={pane.status} error={pane.error} className="min-h-0 flex-1" />
-    </div>
-  );
-}
+import AgentTerminal from "./AgentTerminal";
 
 export default function AgentWindow({ agent, onClose, resetToken }: {
   agent: FlockAgent;
@@ -106,7 +62,7 @@ export default function AgentWindow({ agent, onClose, resetToken }: {
         </div>
       </header>
       <div role="tabpanel" id={id + "-panel"} aria-labelledby={id + "-" + tab} className="min-h-0 flex-1 overflow-hidden">
-        {tab === "terminal" ? <AgentTerminal agent={agent} /> : <AgentSettings agent={agent} />}
+        {tab === "terminal" ? <AgentTerminal agent={agent} /> : <AgentSettings agent={agent} onDeleted={onClose} />}
       </div>
     </section>
   );

@@ -146,7 +146,14 @@ class AgentReconciler:
                     name=f"{profile_id}-{len(agents) + 1}",
                     profile_id=profile_id,
                 )
-                await self._db.create_agent(agent)
+                # A deletion means the user sized this global roster. Keep
+                # reusing its workers, but never grow it back automatically;
+                # untouched registries retain their normal lazy bootstrap.
+                if not await self._db.create_automatic_agent(agent):
+                    report.skipped.append(
+                        (project.id, "roster was manually sized; add an agent explicitly")
+                    )
+                    break
                 agents.append(agent)
                 report.created.append((project.id, profile_id))
                 remaining -= 1

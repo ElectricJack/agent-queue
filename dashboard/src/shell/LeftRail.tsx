@@ -1,6 +1,5 @@
 import { NavLink } from "react-router-dom";
 import {
-  ChatBubbleLeftRightIcon,
   Squares2X2Icon,
   Cog6ToothIcon,
   FolderIcon,
@@ -10,7 +9,6 @@ import { useProjects } from "../api/hooks";
 import { useListNav } from "./hotkeys/useListNav";
 
 const sections = [
-  { to: "/", label: "Home", icon: ChatBubbleLeftRightIcon, end: true },
   { to: "/command-center", label: "Command Center", icon: Squares2X2Icon, end: false },
   { to: "/settings", label: "Settings", icon: Cog6ToothIcon, end: false },
 ];

@@ -205,6 +205,41 @@ class SessionCommandsMixin:
             return {"error": f"attach failed: {exc}"}
         return {"success": True, "session_id": session.id, "attach_command": command}
 
+    async def _cmd_session_input(self, args: dict) -> dict:
+        """Send direct human input; never queue a message or wake a session."""
+        from src.sessions.provider import validate_terminal_input
+
+        scope = self._current_scope
+        if scope and scope.get("kind") != "local" and not (
+            scope.get("elevated") and scope.get("project_id") is None
+        ):
+            return {"error": "out of scope: direct terminal input requires global admin"}
+        text, key = args.get("text"), args.get("key")
+        try:
+            validate_terminal_input(text, key)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        if session.state not in {"running", "draining"}:
+            return {"error": "No live terminal; start or resume the agent first"}
+        if session.agent_id:
+            agent = await self.db.get_agent(session.agent_id)
+            if agent is None or agent.deleted_at is not None:
+                return {"error": "This agent is no longer available"}
+        provider = self._provider_for_session(session)
+        if provider is None or not provider.supports(Cap.INPUT):
+            return {"error": "This session provider does not support terminal input"}
+        try:
+            await provider.send_input(self._session_handle(session), text=text, key=key)
+        except Exception:
+            # Provider errors can include argv containing the user's text.
+            # Neither return nor log it; failed input must not be auto-retried.
+            return {"error": "Terminal input failed. Refresh the session before typing again."}
+        await self.db.update_session(session.id, last_activity=time.time())
+        return {"success": True, "session_id": session.id, "accepted": True}
+
     async def _cmd_session_nudge(self, args: dict) -> dict:
         """Inject text into a session and submit it.
 

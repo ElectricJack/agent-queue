@@ -61,6 +61,11 @@ class ListAgentsResponse(BaseModel):
     project_id: str | None = None
 
 
+class DeleteAgentResponse(BaseModel):
+    deleted: str
+    name: str
+
+
 class GetAgentErrorResponse(BaseModel):
     task_id: str
     title: str = ""
@@ -220,7 +225,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_agent": AgentSummary,
     "create_agent": AgentSummary,
     "edit_agent": AgentSummary,
-    "delete_agent": ListAgentsResponse,  # deprecated, returns error
+    "delete_agent": DeleteAgentResponse,
+    "start_agent_terminal": AgentSummary,
     "pause_agent": ListAgentsResponse,  # deprecated, returns error
     "resume_agent": ListAgentsResponse,  # deprecated, returns error
     "get_agent_error": GetAgentErrorResponse,

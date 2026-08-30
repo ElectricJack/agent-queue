@@ -70,6 +70,12 @@ class SessionNudgeResponse(BaseModel):
     error: str | None = None
 
 
+class SessionInputResponse(BaseModel):
+    success: bool = True
+    session_id: str
+    accepted: bool = True
+
+
 class TranscriptEntryModel(BaseModel):
     uuid: str
     parent_uuid: str | None = None
@@ -138,6 +144,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "session_peek": SessionPeekResponse,
     "session_attach": SessionAttachResponse,
     "session_nudge": SessionNudgeResponse,
+    "session_input": SessionInputResponse,
     "session_logs": SessionLogsResponse,
     "session_kill": SessionKillResponse,
     "session_sleep": SessionDesiredStateResponse,

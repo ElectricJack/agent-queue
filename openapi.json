@@ -1075,6 +1075,53 @@
         }
       }
     },
+    "/api/agent/delete": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Delete an idle shared worker from the flock while preserving task and session history. Active workers and the global supervisor cannot be deleted. Requires global admin.",
+        "description": "Delete an idle shared worker from the flock while preserving task and session history. Active workers and the global supervisor cannot be deleted. Requires global admin.",
+        "operationId": "delete_agent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteAgentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agent/delete-profile": {
       "post": {
         "tags": [
@@ -1805,6 +1852,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ShowEffectiveProfileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agent/start-terminal": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Explicitly start or resume one agent's interactive terminal, without creating a task or sending a chat message. Requires global admin.",
+        "description": "Explicitly start or resume one agent's interactive terminal, without creating a task or sending a chat message. Requires global admin.",
+        "operationId": "start_agent_terminal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartAgentTerminalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSummary"
                 }
               }
             }
@@ -8201,6 +8295,53 @@
         }
       }
     },
+    "/api/system/session-input": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Type directly into a live terminal. Send exactly one literal text chunk or named key; text is not automatically submitted. Requires global admin.",
+        "description": "Type directly into a live terminal. Send exactly one literal text chunk or named key; text is not automatically submitted. Requires global admin.",
+        "operationId": "session_input",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionInputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInputResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/session-kill": {
       "post": {
         "tags": [
@@ -13859,6 +14000,38 @@
         "properties": {},
         "type": "object",
         "title": "DbPreflightHierarchyRequest"
+      },
+      "DeleteAgentRequest": {
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_id"
+        ],
+        "title": "DeleteAgentRequest"
+      },
+      "DeleteAgentResponse": {
+        "properties": {
+          "deleted": {
+            "type": "string",
+            "title": "Deleted"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deleted",
+          "name"
+        ],
+        "title": "DeleteAgentResponse"
       },
       "DeleteMcpServerRequest": {
         "properties": {
@@ -25990,6 +26163,67 @@
         "title": "SessionDesiredStateResponse",
         "description": "``session_sleep`` / ``session_wake`` \u2014 intent, not observation.\n\nBoth fields are returned so a caller can see the gap it just opened:\n``desired_state`` is what was written, ``state`` is what the runtime\nstill shows until the reconciler converges."
       },
+      "SessionInputRequest": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": ""
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text",
+            "description": ""
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionInputRequest"
+      },
+      "SessionInputResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "accepted": {
+            "type": "boolean",
+            "title": "Accepted",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionInputResponse"
+      },
       "SessionKillRequest": {
         "properties": {
           "session_id": {
@@ -27605,6 +27839,20 @@
         },
         "type": "object",
         "title": "SpecApproveResponse"
+      },
+      "StartAgentTerminalRequest": {
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_id"
+        ],
+        "title": "StartAgentTerminalRequest"
       },
       "StopTaskRequest": {
         "properties": {

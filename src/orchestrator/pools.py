@@ -283,7 +283,10 @@ class PoolsMixin:
         if agent is None:
             agent = Agent(id=f"agent-{uuid.uuid4().hex[:12]}",
                           name=f"{profile.id}-{uuid.uuid4().hex[:4]}", profile_id=profile.id)
-            await self.db.create_agent(agent)
+            # Only the fallback grows the roster. A persisted deletion opts
+            # out of automatic growth; remaining definitions were tried above.
+            if not await self.db.create_automatic_agent(agent):
+                return None
             if not await self.db.reserve_idle_agent(agent.id):
                 return None
         profile = apply_agent_overrides(profile, agent)

@@ -139,6 +139,19 @@ class ClaimQueryMixin:
         tell READY from IN_PROGRESS, so nothing's projection can move
         (``projection_stable``).  Returns ``None`` when the fence lost.
         """
+        # Serialize eligibility with soft deletion on PostgreSQL. A plain
+        # EXISTS check on the task UPDATE does not lock the worker, allowing a
+        # deletion to race the later record_holder write in this transaction.
+        eligible = await conn.execute(
+            select(agents.c.id).where(
+                agents.c.id == agent_id,
+                agents.c.enabled.is_(True),
+                agents.c.role == "worker",
+                agents.c.deleted_at.is_(None),
+            ).with_for_update()
+        )
+        if eligible.scalar_one_or_none() is None:
+            return None
         out = await self._apply_transition(
             conn,
             task_id,
@@ -156,6 +169,7 @@ class ClaimQueryMixin:
                     agents.c.id == agent_id,
                     agents.c.enabled.is_(True),
                     agents.c.role == "worker",
+                    agents.c.deleted_at.is_(None),
                 )),
             ),
             extra_values={"claim_epoch": tasks.c.claim_epoch + 1},

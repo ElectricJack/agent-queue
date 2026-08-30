@@ -63,7 +63,9 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     """
     if scope.kind == "local":
         return None
-    if command in {"create_agent", "edit_agent"} and not (
+    if command == "session_input" and not (scope.elevated and scope.project_id is None):
+        return "out of scope: direct terminal input requires global admin"
+    if command in {"create_agent", "edit_agent", "delete_agent", "start_agent_terminal"} and not (
         scope.elevated and scope.project_id is None
     ):
         return "out of scope: global agent settings require global admin"
@@ -95,6 +97,11 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         elif value != expected_pid:
             return "out of scope: project_id mismatch"
         return None
+    # A manually opened worker terminal has no task/project assignment.
+    # Its absent project must not grant access to every project's mutations.
+    # Assigned task/pool sessions always carry a concrete project scope.
+    if scope.project_id is None and command not in {"prime", "get_schema"}:
+        return "out of scope: this interactive agent has no assigned project"
     if command not in AGENT_COMMAND_SET:
         return f"out of scope: {command}"
     for key, expected in (

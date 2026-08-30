@@ -395,6 +395,7 @@ class SessionSpecBuilder:
     ) -> SessionSpec:
         files: list[tuple[str, str]] = []
 
+        class_config = self._resolve_class_config(profile, harness, task_intelligence_class)
         hook_files = self._hook_files(harness)
         prompt = None if harness.prompt_mode == "none" else bootstrap
         argv = self._compose_argv(
@@ -408,9 +409,24 @@ class SessionSpecBuilder:
             allow_skip_permissions=allow_skip_permissions,
             hook_files=hook_files,
             task_intelligence_class=task_intelligence_class,
+            class_config=class_config,
         )
 
         files.extend(hook_files)
+
+        launch_env = dict(extra_env or {})
+        provider = getattr(harness, "provider", "") or _infer_provider_from_harness(harness)
+        thinking = str(class_config.get("thinking") or "").strip()
+        if provider == "anthropic":
+            if thinking == "off":
+                # Claude has no --effort off. This documented switch disables
+                # thinking on Anthropic (except models such as Fable 5); on
+                # third-party endpoints the provider may still enable it.
+                launch_env["MAX_THINKING_TOKENS"] = "0"
+            elif thinking in {"low", "medium", "high", "xhigh", "max"} and harness.effort_flag:
+                # Claude's environment takes precedence over --effort. Keep
+                # inherited daemon settings from overriding the chosen class.
+                launch_env["CLAUDE_CODE_EFFORT_LEVEL"] = thinking
 
         env = build_session_env(
             session_id=session_id,
@@ -425,7 +441,7 @@ class SessionSpecBuilder:
             harness_env=harness.env_map,
             config=self.config,
             prompt_delivered=prompt is not None,
-            extra_env=extra_env,
+            extra_env=launch_env,
         )
 
         return SessionSpec(
@@ -458,7 +474,10 @@ class SessionSpecBuilder:
         allow_skip_permissions: bool = False,
         hook_files: list[tuple[str, str]] | None = None,
         task_intelligence_class: str | None = None,
+        class_config: dict | None = None,
     ) -> list[str]:
+        if class_config is None:
+            class_config = self._resolve_class_config(profile, harness, task_intelligence_class)
         argv: list[str] = [harness.command]
 
         # Resume, style "subcommand", goes immediately after the command
@@ -474,13 +493,29 @@ class SessionSpecBuilder:
         # default) wins over ``profile.model`` when it maps a slice for this
         # harness's provider.  Unknown class or missing mapping falls back
         # silently to the profile — a class typo must never break launch.
-        model = self._resolve_model(profile, harness, task_intelligence_class)
+        model = self._resolve_model(
+            profile, harness, task_intelligence_class, class_config=class_config
+        )
         if model and harness.model_flag:
             argv.extend([harness.model_flag, model])
 
-        effort = (getattr(profile, "effort", "") or "").strip()
+        effort = self._resolve_effort(profile, harness, class_config)
         if effort and harness.effort_flag:
             argv.extend([harness.effort_flag, effort])
+
+        if harness.id == "codex" and Path(harness.command).name in {"codex", "codex.exe"}:
+            # Codex uses a TOML config override, not a generic effort flag.
+            # Key and values verified against the installed CLI's generated
+            # Config/ReasoningEffort schema and its --help configuration syntax.
+            # https://developers.openai.com/codex/config-reference/
+            reasoning = class_config.get("reasoning_effort")
+            if reasoning is not None:
+                if isinstance(reasoning, str) and reasoning in {
+                    "none", "minimal", "low", "medium", "high", "xhigh",
+                }:
+                    argv.extend(["-c", f'model_reasoning_effort="{reasoning}"'])
+                else:
+                    logger.warning("Unsupported Codex reasoning effort %r; not applied", reasoning)
 
         tools = self._resolve_allowed_tools(profile, harness)
         if tools:
@@ -606,21 +641,41 @@ class SessionSpecBuilder:
         profile,
         harness,
         task_intelligence_class: str | None,
+        *,
+        class_config: dict | None = None,
     ) -> str:
-        """Pick the model for this launch.
-
-        Precedence: ``task.intelligence_class`` > ``profile.default_class`` >
-        no class (``profile.model`` unchanged).  Provider is taken from
-        ``harness.provider`` if declared, else inferred from the harness id
-        / command (:func:`_infer_provider_from_harness`).  Any failure to
-        resolve (unknown class id, no mapping for the provider, missing
-        ``model`` key) is logged at warning and yields ``profile.model`` —
-        session launch never fails because of a class typo.
-        """
+        """Pick a fixed worker model, selected class model, or profile fallback."""
         worker_model = getattr(profile, "_agent_model_override", None)
         if worker_model:
             return worker_model
-        fallback = (getattr(profile, "model", "") or "").strip()
+        if class_config is None:
+            class_config = self._resolve_class_config(profile, harness, task_intelligence_class)
+        return str(class_config.get("model") or getattr(profile, "model", "") or "").strip()
+
+    def _resolve_effort(self, profile, harness, class_config: dict) -> str:
+        """Only map thinking levels for the CLI whose semantics we support."""
+        effort = str(getattr(profile, "effort", "") or "").strip()
+        provider = getattr(harness, "provider", "") or _infer_provider_from_harness(harness)
+        if provider == "anthropic":
+            effort = str(class_config.get("thinking") or effort).strip()
+            if effort == "off":
+                return ""  # Applied separately through MAX_THINKING_TOKENS.
+            if effort and effort not in {"low", "medium", "high", "xhigh", "max"}:
+                logger.warning("Unsupported Claude thinking/effort value %r; not applied", effort)
+                return ""
+        # Other providers retain their explicit profile behavior. Codex class
+        # reasoning uses its own config override in _compose_argv; a provider's
+        # thinking_budget is not a generic CLI --effort argument either.
+        if effort and not harness.effort_flag:
+            logger.warning("Harness %r has no effort_flag; effort %r not applied", harness.id, effort)
+        return effort
+
+    def _resolve_class_config(self, profile, harness, task_intelligence_class) -> dict:
+        """Resolve the whole provider slice without dropping its thinking fields.
+
+        Worker class > task class > profile default. Unknown classes, providers,
+        or model mappings leave the profile fallback intact.
+        """
         class_id = (
             getattr(profile, "_agent_intelligence_class", None)
             or task_intelligence_class
@@ -628,14 +683,14 @@ class SessionSpecBuilder:
             or ""
         )
         if not class_id:
-            return fallback
+            return {}
         cls = self._intelligence_classes.get(class_id)
         if cls is None:
             logger.warning(
                 "intelligence-class '%s' not found; falling back to profile.model",
                 class_id,
             )
-            return fallback
+            return {}
         provider = (
             getattr(harness, "provider", "") or _infer_provider_from_harness(harness)
         )
@@ -646,7 +701,7 @@ class SessionSpecBuilder:
                 class_id,
                 getattr(harness, "id", "") or getattr(harness, "command", ""),
             )
-            return fallback
+            return {}
         from src.intelligence_classes import resolve_class
 
         slice_ = resolve_class(cls, provider)
@@ -658,8 +713,8 @@ class SessionSpecBuilder:
                 class_id,
                 provider,
             )
-            return fallback
-        return model
+            return {}
+        return slice_
 
     def _hook_files(self, harness: Harness) -> list[tuple[str, str]]:
         """Render the harness's declared hook templates.

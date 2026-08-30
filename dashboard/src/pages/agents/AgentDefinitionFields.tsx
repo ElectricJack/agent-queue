@@ -19,14 +19,16 @@ const harnesses = [
 ];
 
 export default function AgentDefinitionFields({
-  value, onChange,
+  value, onChange, allowSupervisor = false,
 }: {
   value: DefinitionForm;
+  allowSupervisor?: boolean;
   onChange: (next: DefinitionForm) => void;
 }) {
   const id = useId();
   const { data: profiles = [] } = useProfiles();
   const { data: classes } = useAgentIntelligenceClasses();
+  const availableProfiles = profiles.filter((profile) => allowSupervisor || profile.id !== "supervisor");
   const set = <K extends keyof DefinitionForm>(key: K, next: DefinitionForm[K]) => onChange({ ...value, [key]: next });
   return (
     <div className="grid gap-4 sm:grid-cols-2">
@@ -38,10 +40,10 @@ export default function AgentDefinitionFields({
         Profile
         <select id={id + "-profile"} required value={value.profile_id} onChange={(e) => set("profile_id", e.target.value)} className={inputClass}>
           <option value="">Choose a profile</option>
-          {value.profile_id && !profiles.some((p) => p.id === value.profile_id) && (
+          {value.profile_id && (allowSupervisor || value.profile_id !== "supervisor") && !availableProfiles.some((p) => p.id === value.profile_id) && (
             <option value={value.profile_id}>{value.profile_id}</option>
           )}
-          {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.id}</option>)}
+          {availableProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.id}</option>)}
         </select>
       </label>
       <label className="text-xs text-gray-400" htmlFor={id + "-harness"}>

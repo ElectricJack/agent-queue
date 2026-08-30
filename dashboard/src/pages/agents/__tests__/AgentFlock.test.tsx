@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import LeftRail from "../../../shell/LeftRail";
@@ -8,10 +8,10 @@ import type { FlockAgent } from "../../../api/agents";
 
 const api = vi.hoisted(() => ({
   listAgents: vi.fn(), listProjects: vi.fn(), listProfiles: vi.fn(),
-  getAgent: vi.fn(), editAgent: vi.fn(), createAgent: vi.fn(), listIntelligenceClasses: vi.fn(),
+  getAgent: vi.fn(), editAgent: vi.fn(), createAgent: vi.fn(), deleteAgent: vi.fn(), listIntelligenceClasses: vi.fn(),
+  sessionInput: vi.fn(), startAgentTerminal: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
-
 function agent(id: string, name: string): FlockAgent {
   return {
     id, name, profile_id: "implementer", role: "worker", enabled: true,
@@ -86,10 +86,22 @@ beforeEach(() => {
     roster = [...roster, created];
     return { data: created };
   });
+  api.deleteAgent.mockImplementation(async ({ body }: { body: { agent_id: string } }) => {
+    const deleted = roster.find((row) => row.id === body.agent_id)!;
+    roster = roster.filter((row) => row.id !== body.agent_id);
+    return { data: { deleted: deleted.id, name: deleted.name } };
+  });
+  api.sessionInput.mockResolvedValue({ data: { success: true, session_id: "session-b", accepted: true } });
+  api.startAgentTerminal.mockImplementation(async ({ body }: { body: { agent_id: string } }) => {
+    roster = roster.map((row) => row.id === body.agent_id
+      ? { ...row, session_id: "started-" + row.id, session_state: "running", session_provider: "tmux" }
+      : row);
+    return { data: roster.find((row) => row.id === body.agent_id) };
+  });
   api.listAgents.mockImplementation(async () => ({ data: { agents: roster, count: roster.length } }));
   api.listProjects.mockResolvedValue({ data: { projects: [] } });
   api.listIntelligenceClasses.mockResolvedValue({ data: { classes: [{ id: "standard-high", name: "Standard high" }, { id: "deep-high", name: "Deep high" }] } });
-  api.listProfiles.mockResolvedValue({ data: { profiles: [{ id: "implementer", name: "Implementer" }] } });
+  api.listProfiles.mockResolvedValue({ data: { profiles: [{ id: "implementer", name: "Implementer" }, { id: "supervisor", name: "Supervisor" }] } });
 });
 
 afterEach(() => {
@@ -99,6 +111,13 @@ afterEach(() => {
 });
 
 describe("Agent flock sidebar", () => {
+  it("keeps Command Center navigation and removes Home", async () => {
+    renderFlock();
+    await screen.findByRole("button", { name: "Open Supervisor" });
+    expect(screen.getByRole("link", { name: "Command Center" })).toHaveAttribute("href", "/command-center");
+    expect(screen.queryByRole("link", { name: "Home" })).not.toBeInTheDocument();
+  });
+
   it("shows the global supervisor and metadata even when there are no projects", async () => {
     renderFlock();
     const row = await screen.findByRole("button", { name: /open supervisor/i });
@@ -308,5 +327,160 @@ describe("Agents finishing current work", () => {
     expect(within(window).getByText("busy")).toBeInTheDocument();
     expect(within(window).getByText("New work disabled")).toBeInTheDocument();
     expect(PaneSource.sources.filter((source) => !source.closed)).toHaveLength(1);
+  });
+});
+
+describe("Deleting a defined worker", () => {
+  beforeEach(() => {
+    roster[1] = { ...roster[1]!, session_id: null, session_state: null };
+  });
+
+  async function builderSettings(initial = "/agents?agent=b") {
+    renderFlock(initial, true);
+    const window = await screen.findByRole("region", { name: "Builder agent window" });
+    fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
+    return window;
+  }
+
+  it("requires confirmation and lets cancellation leave the worker intact", async () => {
+    const window = await builderSettings();
+    fireEvent.click(within(window).getByRole("button", { name: "Delete agent" }));
+    expect(within(window).getByText(/task and session history.*preserved/i)).toBeInTheDocument();
+    expect(api.deleteAgent).not.toHaveBeenCalled();
+    fireEvent.click(within(window).getByRole("button", { name: "Cancel deletion" }));
+    expect(within(window).queryByRole("button", { name: "Confirm delete" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Builder" })).toBeInTheDocument();
+    expect(api.deleteAgent).not.toHaveBeenCalled();
+  });
+
+  it("deletes only after confirmation, removes the row, and closes only that view", async () => {
+    const window = await builderSettings("/agents?agent=a&agent=b");
+    fireEvent.click(within(window).getByRole("button", { name: "Delete agent" }));
+    expect(api.deleteAgent).not.toHaveBeenCalled();
+    fireEvent.click(within(window).getByRole("button", { name: "Confirm delete" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Builder agent window" })).not.toBeInTheDocument());
+    expect(api.deleteAgent).toHaveBeenCalledWith({ body: { agent_id: "b" }, throwOnError: true });
+    expect(api.deleteAgent).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Open Builder" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Supervisor agent window" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Current location").textContent).toBe("/agents?agent=a");
+    expect(api.editAgent).not.toHaveBeenCalled();
+  });
+
+  it("closes a deleted view after a tab switch without losing agents added during the request", async () => {
+    let finishDelete!: () => void;
+    api.deleteAgent.mockImplementationOnce(() => new Promise((resolve) => {
+      finishDelete = () => {
+        roster = roster.filter((row) => row.id !== "b");
+        resolve({ data: { deleted: "b", name: "Builder" } });
+      };
+    }));
+    const window = await builderSettings();
+    fireEvent.click(within(window).getByRole("button", { name: "Delete agent" }));
+    fireEvent.click(within(window).getByRole("button", { name: "Confirm delete" }));
+    await waitFor(() => expect(api.deleteAgent).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(window).getByRole("tab", { name: "Terminal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Reviewer" }), { shiftKey: true });
+    await act(async () => { finishDelete(); });
+    await waitFor(() => expect(screen.getByLabelText("Current location").textContent).toBe("/agents?agent=c"));
+    expect(screen.queryByRole("region", { name: "Builder agent window" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Reviewer agent window" })).toBeInTheDocument();
+  });
+
+  it("shows an authoritative backend refusal without closing or removing the agent", async () => {
+    api.deleteAgent.mockRejectedValueOnce(new Error("Agent has a live session; stop it first"));
+    const window = await builderSettings();
+    fireEvent.click(within(window).getByRole("button", { name: "Delete agent" }));
+    fireEvent.click(within(window).getByRole("button", { name: "Confirm delete" }));
+    expect(await within(window).findByRole("alert")).toHaveTextContent("Agent has a live session; stop it first");
+    expect(screen.getByRole("button", { name: "Open Builder" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Builder agent window" })).toBeInTheDocument();
+  });
+
+  it.each(["starting", "running", "draining"])("prevents deleting a worker with a %s session", async (state) => {
+    roster[1] = { ...roster[1]!, session_id: "live-session", session_state: state };
+    const window = await builderSettings();
+    expect(within(window).getByRole("button", { name: "Delete agent" })).toBeDisabled();
+    expect(within(window).getByText(/assigned work or a live session/i)).toBeInTheDocument();
+    expect(api.deleteAgent).not.toHaveBeenCalled();
+  });
+
+  it("prevents deleting an assigned worker even without a visible session", async () => {
+    roster[1] = { ...roster[1]!, state: "busy", current_task_id: "claimed-task" };
+    const window = await builderSettings();
+    expect(within(window).getByRole("button", { name: "Delete agent" })).toBeDisabled();
+    expect(api.deleteAgent).not.toHaveBeenCalled();
+  });
+
+  it("protects the supervisor from deletion", async () => {
+    renderFlock("/agents?agent=a", true);
+    const supervisor = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(supervisor).getByRole("tab", { name: "Settings" }));
+    expect(within(supervisor).queryByRole("button", { name: "Delete agent" })).not.toBeInTheDocument();
+    expect(within(supervisor).getByText(/supervisor agents cannot be deleted/i)).toBeInTheDocument();
+    expect(api.deleteAgent).not.toHaveBeenCalled();
+  });
+
+  it("does not offer the reserved Supervisor profile for new or existing workers", async () => {
+    const window = await builderSettings();
+    await within(window).findByRole("option", { name: "Implementer" });
+    expect(within(window).queryByRole("option", { name: "Supervisor" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
+    const form = screen.getByRole("form", { name: "Add agent" });
+    await within(form).findByRole("option", { name: "Implementer" });
+    expect(within(form).queryByRole("option", { name: "Supervisor" })).not.toBeInTheDocument();
+  });
+});
+
+describe("Starting and using agent terminals", () => {
+  it("offers direct terminal input for workers and the supervisor without a Chat tab", async () => {
+    renderFlock("/agents?agent=a&agent=b", true);
+    await screen.findByRole("region", { name: "Supervisor agent window" });
+    act(() => PaneSource.sources.forEach((source) => source.onopen?.()));
+    const builder = screen.getByRole("textbox", { name: "Builder terminal input" });
+    const supervisor = screen.getByRole("textbox", { name: "Supervisor terminal input" });
+    fireEvent.keyDown(builder, { key: "b" });
+    fireEvent.keyDown(supervisor, { key: "s" });
+    await waitFor(() => expect(api.sessionInput).toHaveBeenCalledTimes(2));
+    expect(api.sessionInput).toHaveBeenCalledWith({ body: { session_id: "session-b", text: "b" }, throwOnError: true });
+    expect(api.sessionInput).toHaveBeenCalledWith({ body: { session_id: "session-a", text: "s" }, throwOnError: true });
+    expect(screen.queryByRole("tab", { name: "Chat" })).not.toBeInTheDocument();
+    expect(api.startAgentTerminal).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "sleeping"])("starts or resumes a %s session only after clicking the button", async (state) => {
+    roster[1] = { ...roster[1]!, session_state: state, session_id: state ? "sleeping-b" : null };
+    renderFlock("/agents?agent=b", true);
+    const window = await screen.findByRole("region", { name: "Builder agent window" });
+    expect(api.startAgentTerminal).not.toHaveBeenCalled();
+    expect(PaneSource.sources).toHaveLength(0);
+    fireEvent.click(within(window).getByRole("button", { name: state ? "Resume terminal" : "Start terminal" }));
+    await waitFor(() => expect(PaneSource.sources).toHaveLength(1));
+    expect(api.startAgentTerminal).toHaveBeenCalledWith({ body: { agent_id: "b" }, throwOnError: true });
+    expect(new URL(PaneSource.sources[0]!.url).pathname).toBe("/api/sessions/started-b/pane");
+    expect(api.sessionInput).not.toHaveBeenCalled();
+  });
+
+  it.each(["disabled", "busy", "starting", "subprocess"])("does not offer to launch an unavailable %s agent", async (reason) => {
+    roster[1] = { ...roster[1]!, session_id: null, session_state: null,
+      enabled: reason !== "disabled", state: reason === "busy" ? "busy" : "idle",
+      current_task_id: reason === "busy" ? "task-owned" : null };
+    if (reason === "starting") roster[1]!.session_state = "starting";
+    if (reason === "subprocess") roster[1]!.session_provider = "subprocess";
+    renderFlock("/agents?agent=b", true);
+    const window = await screen.findByRole("region", { name: "Builder agent window" });
+    expect(within(window).getByRole("button", { name: /Start terminal|Starting/ })).toBeDisabled();
+    expect(api.startAgentTerminal).not.toHaveBeenCalled();
+  });
+
+  it("reports a rejected launch and does not retry or send input", async () => {
+    roster[1] = { ...roster[1]!, session_id: null, session_state: null };
+    api.startAgentTerminal.mockRejectedValueOnce(new Error("Terminal launch unavailable"));
+    renderFlock("/agents?agent=b", true);
+    const window = await screen.findByRole("region", { name: "Builder agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: "Start terminal" }));
+    expect(await within(window).findByRole("alert")).toHaveTextContent("Terminal launch unavailable");
+    expect(api.startAgentTerminal).toHaveBeenCalledTimes(1);
+    expect(api.sessionInput).not.toHaveBeenCalled();
   });
 });

@@ -353,6 +353,7 @@ agents = Table(
     Column("harness", Text, nullable=True),
     Column("model", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),
+    Column("deleted_at", Float, nullable=True),
     Column("created_at", Float, nullable=False),
 )
 

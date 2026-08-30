@@ -987,7 +987,11 @@ class SessionReconciler:
             logger.debug("listing wanted named sessions failed", exc_info=True)
             return
         for row in wanted:
-            if row.state in _LIVE_STATES:
+            # Generic agent terminals are explicitly started by the operator.
+            # They have no supervisor address and must not spend its retry
+            # budget (or be quarantined without any launch being attempted).
+            address = self._named_address(row)
+            if address is None or row.state in _LIVE_STATES:
                 continue
             if self._is_deferred(row.name):
                 continue
@@ -1003,9 +1007,6 @@ class SessionReconciler:
             # is not running: without stamping it, every tick would compute
             # the same elapsed time and retry immediately.
             await self.db.update_session(row.id, last_activity=now)
-            address = self._named_address(row)
-            if address is None:
-                continue
             try:
                 started = await self.starter.ensure_started(
                     kind="session", target_id=address, project_id=row.project_id

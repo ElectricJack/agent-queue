@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  listAgents, getAgent, createAgent, editAgent, listIntelligenceClasses,
-  type AgentSummary, type CreateAgentRequest, type EditAgentRequest,
+  listAgents, getAgent, createAgent, editAgent, deleteAgent, startAgentTerminal, listIntelligenceClasses,
+  type AgentSummary, type CreateAgentRequest, type EditAgentRequest, type DeleteAgentRequest, type StartAgentTerminalRequest,
 } from "./client";
 
 export type FlockAgent = AgentSummary;
@@ -47,6 +47,33 @@ export function useCreateAgent() {
     mutationFn: async (input: CreateAgentRequest) =>
       (await createAgent({ body: input, throwOnError: true })).data,
     onSuccess: () => { void client.invalidateQueries({ queryKey: ["agents"] }); },
+  });
+}
+
+export function useStartAgentTerminal() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: StartAgentTerminalRequest) =>
+      (await startAgentTerminal({ body: input, throwOnError: true })).data,
+    retry: false,
+    onSuccess: (agent) => {
+      client.setQueryData<FlockAgent[]>(["agents", "flock"], (rows) => rows?.map((row) => row.id === agent.id ? agent : row));
+      client.setQueryData(["agents", "detail", agent.id], agent);
+      void client.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+}
+
+export function useDeleteAgent() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: DeleteAgentRequest) =>
+      (await deleteAgent({ body: input, throwOnError: true })).data,
+    onSuccess: (_data, input) => {
+      client.setQueryData<FlockAgent[]>(["agents", "flock"], (rows) => rows?.filter((row) => row.id !== input.agent_id));
+      client.removeQueries({ queryKey: ["agents", "detail", input.agent_id], exact: true });
+      void client.invalidateQueries({ queryKey: ["agents"] });
+    },
   });
 }
 

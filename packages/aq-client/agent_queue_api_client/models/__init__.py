@@ -91,6 +91,9 @@ from .create_task_response import CreateTaskResponse
 from .create_task_response_422 import CreateTaskResponse422
 from .db_preflight_hierarchy_request import DbPreflightHierarchyRequest
 from .db_preflight_hierarchy_response_422 import DbPreflightHierarchyResponse422
+from .delete_agent_request import DeleteAgentRequest
+from .delete_agent_response import DeleteAgentResponse
+from .delete_agent_response_422 import DeleteAgentResponse422
 from .delete_mcp_server_request import DeleteMcpServerRequest
 from .delete_mcp_server_response import DeleteMcpServerResponse
 from .delete_mcp_server_response_422 import DeleteMcpServerResponse422
@@ -646,6 +649,9 @@ from .session_attach_request import SessionAttachRequest
 from .session_attach_response import SessionAttachResponse
 from .session_attach_response_422 import SessionAttachResponse422
 from .session_desired_state_response import SessionDesiredStateResponse
+from .session_input_request import SessionInputRequest
+from .session_input_response import SessionInputResponse
+from .session_input_response_422 import SessionInputResponse422
 from .session_kill_request import SessionKillRequest
 from .session_kill_response import SessionKillResponse
 from .session_kill_response_422 import SessionKillResponse422
@@ -706,6 +712,8 @@ from .skip_task_response_422 import SkipTaskResponse422
 from .spec_approve_request import SpecApproveRequest
 from .spec_approve_response import SpecApproveResponse
 from .spec_approve_response_422 import SpecApproveResponse422
+from .start_agent_terminal_request import StartAgentTerminalRequest
+from .start_agent_terminal_response_422 import StartAgentTerminalResponse422
 from .stop_task_request import StopTaskRequest
 from .stop_task_response import StopTaskResponse
 from .stop_task_response_422 import StopTaskResponse422
@@ -896,6 +904,9 @@ __all__ = (
     "CreateTaskResponse422",
     "DbPreflightHierarchyRequest",
     "DbPreflightHierarchyResponse422",
+    "DeleteAgentRequest",
+    "DeleteAgentResponse",
+    "DeleteAgentResponse422",
     "DeleteMcpServerRequest",
     "DeleteMcpServerResponse",
     "DeleteMcpServerResponse422",
@@ -1445,6 +1456,9 @@ __all__ = (
     "SessionAttachResponse",
     "SessionAttachResponse422",
     "SessionDesiredStateResponse",
+    "SessionInputRequest",
+    "SessionInputResponse",
+    "SessionInputResponse422",
     "SessionKillRequest",
     "SessionKillResponse",
     "SessionKillResponse422",
@@ -1505,6 +1519,8 @@ __all__ = (
     "SpecApproveRequest",
     "SpecApproveResponse",
     "SpecApproveResponse422",
+    "StartAgentTerminalRequest",
+    "StartAgentTerminalResponse422",
     "StopTaskRequest",
     "StopTaskResponse",
     "StopTaskResponse422",

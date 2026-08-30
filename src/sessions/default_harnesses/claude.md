@@ -22,6 +22,7 @@ vault watcher; no restart, no release.
   "prompt_mode": "arg",
   "permission_flag": "--dangerously-skip-permissions",
   "model_flag": "--model",
+  "effort_flag": "--effort",
   "session_id_flag": "--session-id",
   "settings_flag": "--settings",
   "resume": {
