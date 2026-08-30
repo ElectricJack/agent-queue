@@ -68,17 +68,17 @@ def test_other_openai_harnesses_keep_api_mapping(tmp_path, hid, command):
     harness = Harness(id=hid, command=command, model_flag="-m")
     harness = SimpleNamespace(**vars(harness), provider="openai", env_map={})
     cfg = specs._resolve_class_config(profile("off"), harness, None)
-    assert cfg == {"model": "gpt-5-mini", "reasoning_effort": "minimal"}
-    assert specs._resolve_model(profile("off"), harness, None) == "gpt-5-mini"
+    assert cfg == {"model": "gpt-5.6-luna", "reasoning_effort": "none"}
+    assert specs._resolve_model(profile("off"), harness, None) == "gpt-5.6-luna"
 
 
-def test_other_providers_and_api_tiers_are_unchanged(tmp_path):
+def test_google_mapping_is_unchanged_and_other_tiers_use_current_models(tmp_path):
     specs = builder(tmp_path)
-    assert specs._resolve_model(profile(), Harness(id="claude", command="claude"), None) == "claude-haiku-4-5"
+    assert specs._resolve_model(profile(), Harness(id="claude", command="claude"), None) == "claude-sonnet-5"
     assert specs._resolve_model(profile(), Harness(id="gemini", command="gemini"), None) == "gemini-2.5-flash"
     for cid, cls in specs._intelligence_classes.items():
         if not cid.startswith("fast-"):
-            assert cls.mapping["openai"]["model"] == "gpt-5"
+            assert cls.mapping["openai"]["model"] == ("gpt-5.6-sol" if cid.startswith("deep-") else "gpt-5.6-terra")
 
 
 def write_class(tmp_path, cid, mapping):
@@ -98,7 +98,7 @@ def test_legacy_fast_backfill_is_in_memory_and_preserves_other_settings(tmp_path
     original = path.read_bytes()
     cls = load_intelligence_classes(str(tmp_path))[cid]
     assert cls.mapping["codex"] == {"model": "gpt-5.6-luna", "reasoning_effort": effort}
-    assert cls.mapping["openai"] == mapping["openai"]
+    assert cls.mapping["openai"] == {"model": "gpt-5.6-luna", "reasoning_effort": "none" if level == "off" else level}
     assert cls.mapping["anthropic"] == mapping["anthropic"]
     assert cls.name == "Custom name" and path.read_bytes() == original
     specs = SessionSpecBuilder(SimpleNamespace(security=None), intelligence_classes={cid: cls})
@@ -110,7 +110,8 @@ def test_existing_codex_mapping_is_never_backfilled(tmp_path, override):
     mapping = {"openai": {"model": "gpt-5-mini", "reasoning_effort": "low"}, "codex": override}
     path = write_class(tmp_path, "fast-low", mapping)
     original = path.read_bytes()
-    assert load_intelligence_classes(str(tmp_path))["fast-low"].mapping == mapping
+    upgraded = load_intelligence_classes(str(tmp_path))["fast-low"].mapping
+    assert upgraded == {**mapping, "openai": {"model": "gpt-5.6-luna", "reasoning_effort": "low"}}
     assert path.read_bytes() == original
 
 

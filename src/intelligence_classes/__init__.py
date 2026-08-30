@@ -69,31 +69,52 @@ def _parse_file(path: str) -> IntelligenceClass | None:
     )
 
 
-def _backfill_legacy_codex(cls: IntelligenceClass) -> IntelligenceClass:
-    """Add the bundled CLI default only to unchanged legacy API defaults.
+# These identify historical bundled settings, independently of future defaults.
+_LEGACY_ANTHROPIC_MODELS = {
+    "fast": "claude-haiku-4-5", "standard": "claude-sonnet-5", "deep": "claude-opus-5",
+}
+_LEGACY_OPENAI_MODELS = {"fast": "gpt-5-mini", "standard": "gpt-5", "deep": "gpt-5"}
+_LEGACY_OPENAI_EFFORTS = {"off": "minimal", "low": "low", "medium": "medium", "high": "high"}
 
-    The vault is never rewritten. Explicit Codex entries (even empty ones),
-    custom OpenAI slices, other class IDs, and other providers are preserved.
-    Compare against the historical API slice, not tomorrow's bundled API model.
+
+def _upgrade_legacy_provider_defaults(cls: IntelligenceClass) -> IntelligenceClass:
+    """Refresh exact prior bundled slices without rewriting their vault file.
+
+    Each provider upgrades independently. Custom slices, explicit Codex entries
+    (including empty ones), and non-bundled class IDs remain untouched.
     """
     tier, _, level = cls.id.rpartition("-")
-    model = {"fast": "gpt-5-mini", "standard": "gpt-5", "deep": "gpt-5"}.get(tier)
-    effort = {"off": "minimal", "low": "low", "medium": "medium", "high": "high"}.get(level)
-    if model is None or effort is None or "codex" in cls.mapping:
+    if tier not in _LEGACY_OPENAI_MODELS or level not in _LEGACY_OPENAI_EFFORTS:
         return cls
-    if cls.mapping.get("openai") != {"model": model, "reasoning_effort": effort}:
+    historical = {
+        "anthropic": {"model": _LEGACY_ANTHROPIC_MODELS[tier], "thinking": level},
+        "openai": {"model": _LEGACY_OPENAI_MODELS[tier],
+                   "reasoning_effort": _LEGACY_OPENAI_EFFORTS[level]},
+    }
+    unchanged = [provider for provider, old in historical.items() if cls.mapping.get(provider) == old]
+    if not unchanged:
         return cls
     source = os.path.join(os.path.dirname(__file__), "..", "prompts",
                           "default_intelligence_classes", f"{cls.id}.md")
     try:
         bundled = _parse_file(source)
     except OSError:
-        logger.warning("Bundled Codex default for intelligence-class %s is unavailable", cls.id)
+        logger.warning("Bundled defaults for intelligence-class %s are unavailable", cls.id)
         return cls
-    codex = resolve_class(bundled, "codex") if bundled else {}
-    if not codex.get("model"):
+    if bundled is None:
         return cls
-    return replace(cls, mapping={**cls.mapping, "codex": codex})
+    mapping = dict(cls.mapping)
+    # Check the historical API slice before replacing it. A custom API slice
+    # must never acquire an inferred Codex model; an explicit Codex entry wins.
+    if "openai" in unchanged and "codex" not in mapping:
+        codex = resolve_class(bundled, "codex")
+        if codex.get("model"):
+            mapping["codex"] = codex
+    for provider in unchanged:
+        replacement = resolve_class(bundled, provider)
+        if replacement.get("model"):
+            mapping[provider] = replacement
+    return replace(cls, mapping=mapping)
 
 
 def load_intelligence_classes(data_dir: str) -> dict[str, IntelligenceClass]:
@@ -111,7 +132,7 @@ def load_intelligence_classes(data_dir: str) -> dict[str, IntelligenceClass]:
             continue
         cls = _parse_file(os.path.join(root, name))
         if cls is not None:
-            out[cls.id] = _backfill_legacy_codex(cls)
+            out[cls.id] = _upgrade_legacy_provider_defaults(cls)
     return out
 
 

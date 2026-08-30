@@ -58,14 +58,16 @@ def test_current_codex_tiers_reach_launch_and_flock_snapshot(tmp_path, tier, mod
 
 @pytest.mark.parametrize(("tier", "model"), TIERS)
 @pytest.mark.parametrize(("level", "effort"), LEVELS)
-def test_legacy_bundled_tiers_backfill_without_touching_vault_or_api(tmp_path, tier, model, level, effort):
+def test_legacy_bundled_tiers_upgrade_api_without_touching_vault(tmp_path, tier, model, level, effort):
     cid = f"{tier}-{level}"
     original = {"openai": {"model": "gpt-5", "reasoning_effort": "minimal" if level == "off" else level},
                 "anthropic": {"model": "custom-anthropic", "thinking": "custom"}}
     path = write_class(tmp_path, cid, original)
     content = path.read_bytes()
     cls = load_intelligence_classes(str(tmp_path))[cid]
-    assert cls.mapping == {**original, "codex": {"model": model, "reasoning_effort": effort}}
+    assert cls.mapping == {**original,
+                           "openai": {"model": model, "reasoning_effort": "none" if level == "off" else level},
+                           "codex": {"model": model, "reasoning_effort": effort}}
     assert cls.name == "User name" and path.read_bytes() == content
 
 
@@ -85,7 +87,10 @@ def test_custom_tier_slices_are_not_overridden(tmp_path, tier, model, case):
         mapping["codex"] = {}
     path = write_class(tmp_path, f"{tier}-low", mapping)
     content = path.read_bytes()
-    assert load_intelligence_classes(str(tmp_path))[f"{tier}-low"].mapping == mapping
+    expected = mapping if case not in {"codex", "empty_codex"} else {
+        **mapping, "openai": {"model": model, "reasoning_effort": "low"},
+    }
+    assert load_intelligence_classes(str(tmp_path))[f"{tier}-low"].mapping == expected
     assert path.read_bytes() == content
 
 
@@ -99,7 +104,7 @@ def test_current_tiers_preserve_agent_pins_and_other_provider_behavior(tmp_path,
     assert specs._resolve_model(profile, harness, None) == "operator-pin"
     profile = make_profile(f"{tier}-low")
     api_harness = SimpleNamespace(id="api", command="api", provider="openai")
-    assert specs._resolve_class_config(profile, api_harness, None) == {"model": "gpt-5", "reasoning_effort": "low"}
+    assert specs._resolve_class_config(profile, api_harness, None) == {"model": model, "reasoning_effort": "low"}
     custom = SimpleNamespace(id="codex", command="codex", provider="local")
     classes[f"{tier}-low"].mapping["local"] = {"model": "local-model"}
     assert specs._resolve_class_config(profile, custom, None) == {"model": "local-model"}

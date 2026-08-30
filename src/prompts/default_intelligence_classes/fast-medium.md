@@ -8,8 +8,8 @@ thinking: medium
 
 ```json
 {
-  "anthropic": {"model": "claude-haiku-4-5", "thinking": "medium"},
-  "openai":    {"model": "gpt-5-mini",    "reasoning_effort": "medium"},
+  "anthropic": {"model": "claude-sonnet-5", "thinking": "medium"},
+  "openai":    {"model": "gpt-5.6-luna", "reasoning_effort": "medium"},
   "codex":     {"model": "gpt-5.6-luna", "reasoning_effort": "medium"},
   "google":    {"model": "gemini-2.5-flash",    "thinking_budget": 8192}
 }

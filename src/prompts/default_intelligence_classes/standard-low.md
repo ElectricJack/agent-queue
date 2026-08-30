@@ -8,8 +8,8 @@ thinking: low
 
 ```json
 {
-  "anthropic": {"model": "claude-sonnet-5", "thinking": "low"},
-  "openai":    {"model": "gpt-5",    "reasoning_effort": "low"},
+  "anthropic": {"model": "claude-opus-5", "thinking": "low"},
+  "openai":    {"model": "gpt-5.6-terra", "reasoning_effort": "low"},
   "codex":     {"model": "gpt-5.6-terra", "reasoning_effort": "low"},
   "google":    {"model": "gemini-2.5-pro",    "thinking_budget": 2048}
 }
