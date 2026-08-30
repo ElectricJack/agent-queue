@@ -9229,17 +9229,101 @@ class TestRuntimeAwareNodeDispatch:
         registry.create = MagicMock(return_value=platform_obj)
         mock_services.runtimes = registry
 
+        # ``runtime`` is set to a non-empty legacy value on purpose: it must
+        # be ignored — the harness, not the retired runtime name, selects.
+        profile = AgentProfile(id="p", name="P", harness="claude", runtime="supervisor")
         runner = PlaybookRunner(simple_graph, event_data, mock_services)
-        runner._profile = AgentProfile(id="p", name="P", harness="claude")
+        runner._profile = profile
         await runner.run()
 
         # The in-process tool loop must NOT be used for harness-backed nodes.
         mock_services.llm.run_tools.assert_not_called()
-        # Runtime was built from the playbook profile and dispatched once.
-        registry.create.assert_called_once()
+        # The registry name is vestigial — the profile selects the harness.
+        registry.create.assert_called_once_with(
+            "", profile=profile, llm_logger=mock_services.llm_logger
+        )
         platform_obj.start.assert_called_once()
         platform_obj.wait.assert_called_once()
         platform_obj.stop.assert_called_once()
+
+    async def test_harness_dispatch_resets_last_transcript(
+        self, mock_services, event_data
+    ):
+        """A harness-dispatched node must not inherit the previous node's
+        transcript — ``output.extract`` would pull the wrong node's key."""
+        from src.models import AgentOutput, AgentProfile, AgentResult
+
+        platform_obj = AsyncMock()
+        platform_obj.start = AsyncMock()
+        platform_obj.wait = AsyncMock(
+            return_value=AgentOutput(result=AgentResult.COMPLETED, summary="prose only")
+        )
+        platform_obj.stop = AsyncMock()
+        registry = MagicMock()
+        registry.create = MagicMock(return_value=platform_obj)
+        mock_services.runtimes = registry
+
+        graph = {
+            "id": "harness-extract",
+            "version": 1,
+            "nodes": {
+                "a": {"entry": True, "prompt": "Go", "goto": "done", "output": {"extract": "x"}},
+                "done": {"terminal": True},
+            },
+        }
+        runner = PlaybookRunner(graph, event_data, mock_services)
+        runner._profile = AgentProfile(id="p", name="P", harness="claude")
+        # A stale transcript from an earlier node, carrying the key.
+        runner._last_transcript = [
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "content": '{"x": "stale"}'}],
+            }
+        ]
+
+        await runner.run()
+
+        assert runner._last_transcript == []
+        # The raw response is stored, not the stale tool result.
+        assert runner.node_outputs["a"] == "prose only"
+
+    async def test_active_project_cleared_after_node(
+        self, mock_services, simple_graph, event_data
+    ):
+        """``set_active_project`` is cleared in the same finally as the caller
+        profile — the ContextVar must not leak into later commands."""
+        calls: list[str | None] = []
+        handler = SimpleNamespace(
+            set_caller_profile=lambda _pid: None,
+            set_active_project=calls.append,
+            execute=AsyncMock(return_value={"success": True}),
+        )
+        mock_services.handler = handler
+
+        assert event_data["project_id"] == "test-proj"
+        runner = PlaybookRunner(simple_graph, event_data, mock_services)
+        await runner.run()
+
+        assert calls == ["test-proj", None]
+
+    async def test_active_project_cleared_when_node_raises(
+        self, mock_services, simple_graph, event_data
+    ):
+        """Even when the node blows up, the active project is released."""
+        calls: list[str | None] = []
+        handler = SimpleNamespace(
+            set_caller_profile=lambda _pid: None,
+            set_active_project=calls.append,
+            execute=AsyncMock(return_value={"success": True}),
+        )
+        mock_services.handler = handler
+        mock_services.llm.run_tools.side_effect = RuntimeError("boom")
+
+        runner = PlaybookRunner(simple_graph, event_data, mock_services)
+        result = await runner.run()
+
+        assert result.status == "failed"
+        assert calls == ["test-proj", None]
 
     async def test_harness_without_registry_runs_in_process(
         self, mock_services, simple_graph, event_data

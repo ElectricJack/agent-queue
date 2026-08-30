@@ -1747,9 +1747,13 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         context = self._build_node_context()
         timeout = node.get("timeout_seconds")
 
+        # Each node gets a fresh transcript — never let a previous node's
+        # tool results feed this node's ``output.extract`` fallback.
+        self._last_transcript = []
+
         # Bind caller profile so any create_task tool call from inside this
-        # node inherits / is bounded by the playbook's profile.  Cleared in
-        # finally so an exception can't leak it across runs.
+        # node inherits / is bounded by the playbook's profile.  Both bindings
+        # are cleared in finally so an exception can't leak them across runs.
         handler = self.services.handler
         caller_pid = self._profile.id if self._profile is not None else None
         handler.set_caller_profile(caller_pid)
@@ -1785,6 +1789,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             raise TimeoutError(f"Node '{node_id}' timed out after {timeout}s") from None
         finally:
             handler.set_caller_profile(None)
+            handler.set_active_project(None)
 
         # Extract structured output from tool results
         output = self._extract_output(node, response)
@@ -1843,8 +1848,10 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             checkout_path=None,  # Per-node sessions don't get a workspace.
             profile=self._profile,
         )
+        # ``runtime`` semantics are retired — the registry name is vestigial;
+        # the profile (harness, allowed_tools, model) is what selects the CLI.
         platform = self._runtimes.create(
-            self._profile.runtime,
+            "",
             profile=self._profile,
             llm_logger=self.services.llm_logger,
         )
