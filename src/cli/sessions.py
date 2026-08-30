@@ -211,6 +211,25 @@ def session_kill(ctx: click.Context, session_id) -> None:
     emit(ctx, _call(ctx, "session_kill", {"session_id": session_id}))
 
 
+@session.command("token")
+@click.argument("session_id")
+@click.pass_context
+@_handle_errors
+def session_token(ctx: click.Context, session_id) -> None:
+    """Mint a fresh API bearer token for SESSION_ID (dev / e2e facility).
+
+    Normally a session's token is minted once at launch and injected into
+    the session's environment as ``AQ_API_TOKEN``; nothing outside the
+    session needs it.  This exists so the functional test kit
+    (``scripts/e2e-smoke.sh``) can *act as* a pool worker while
+    ``sessions.provider: fake`` means no real agent is running.
+
+    Elevated/local callers only — an agent's own session token cannot mint
+    tokens.  Print it with ``--json`` and read ``.data.token``.
+    """
+    emit(ctx, _call(ctx, "session_token", {"session_id": session_id}))
+
+
 @session.command("drain-ack")
 @click.option(
     "--session-id",

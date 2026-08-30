@@ -246,6 +246,15 @@ _CODEGEN_INPUT_SCHEMAS: dict[str, dict] = {
             "task_id": {"type": "string", "description": "Resolve session from this task id"},
         },
     },
+    "session_token": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string", "description": "Session id (uuid4 hex)"},
+            "id": {"type": "string", "description": "Alias for session_id"},
+            "name": {"type": "string", "description": "Session name"},
+            "task_id": {"type": "string", "description": "Resolve session from this task id"},
+        },
+    },
     "session_kill": {
         "type": "object",
         "properties": {

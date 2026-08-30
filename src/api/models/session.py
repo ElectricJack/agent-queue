@@ -116,6 +116,22 @@ class SessionDesiredStateResponse(BaseModel):
     state: str | None = None
 
 
+class SessionTokenResponse(BaseModel):
+    """``session_token`` — a freshly minted bearer token for one session.
+
+    Dev/e2e facility (see ``SessionCommandsMixin._cmd_session_token``).
+    ``task_id`` is populated only for a task session; a pool worker's
+    scope pins no task.
+    """
+
+    model_config = {"extra": "allow"}
+    success: bool = True
+    session_id: str
+    project_id: str | None = None
+    task_id: str | None = None
+    token: str
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "session_list": ListSessionsResponse,
     "session_show": ShowSessionResponse,
@@ -126,4 +142,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "session_kill": SessionKillResponse,
     "session_sleep": SessionDesiredStateResponse,
     "session_wake": SessionDesiredStateResponse,
+    "session_token": SessionTokenResponse,
 }

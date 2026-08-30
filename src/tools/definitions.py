@@ -199,6 +199,10 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "session_kill": "system",
     "session_sleep": "system",
     "session_wake": "system",
+    # Dev/e2e facility — mints a bearer token for an existing session so a
+    # harness can act as it (see src/commands/session_commands.py).
+    # Elevated/local only: deliberately absent from AGENT_COMMAND_SET.
+    "session_token": "system",
     # gate — work-graph WG-3 operator surface
     "gate_create": "task",
     "gate_list": "task",

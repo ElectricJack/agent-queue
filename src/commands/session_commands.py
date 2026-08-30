@@ -348,6 +348,50 @@ class SessionCommandsMixin:
             ),
         }
 
+    async def _cmd_session_token(self, args: dict) -> dict:
+        """Mint a fresh API bearer token for an existing session.
+
+        **Dev / e2e facility.**  Normally a session's token is minted once,
+        at launch, and handed to the process through its environment
+        (``src/orchestrator/execution.py`` for task sessions,
+        ``PoolsMixin._launch_pool_session`` for pool workers) — nothing
+        outside the session ever needs it.  The functional test kit
+        (``scripts/e2e-smoke.sh``) is the exception: with
+        ``sessions.provider: fake`` no real agent runs, so the harness has
+        to *act as* the pool worker, and acting as it means holding its
+        token.
+
+        Deliberately **not** in :data:`~src.api.scope.AGENT_COMMAND_SET`,
+        so a plain session token cannot mint another session's token: the
+        command is reachable only from a trusted local caller (the CLI on
+        loopback with no bearer) or an elevated supervisor token, which is
+        the same trust level that can already kill the session outright.
+
+        The new token carries the session's own scope — ``session_id``,
+        ``project_id``, and ``task_id`` **only for a task session**.  A
+        pool worker's scope pins no task (its task changes with every
+        claim), matching what ``_launch_pool_session`` mints.
+        """
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        token_store = getattr(self.orchestrator, "token_store", None)
+        if token_store is None:
+            return {"success": False, "error": "no token store on this daemon"}
+        task_id = session.task_id if session.lifecycle == "task" else None
+        token = await token_store.mint(
+            session_id=session.id,
+            task_id=task_id,
+            project_id=session.project_id,
+        )
+        return {
+            "success": True,
+            "session_id": session.id,
+            "project_id": session.project_id,
+            "task_id": task_id,
+            "token": token,
+        }
+
     async def _cmd_session_sleep(self, args: dict) -> dict:
         """Record that a session is not wanted running.
 

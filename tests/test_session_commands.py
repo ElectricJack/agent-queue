@@ -402,6 +402,92 @@ class TestDrainAckCommand:
         assert "error" in await handler.execute("session_drain_ack", {"session_id": "x"})
 
 
+class TestSessionToken:
+    """``session_token`` — the dev/e2e credential minter.
+
+    Exists so ``scripts/e2e-smoke.sh`` can act as a pool worker while
+    ``sessions.provider: fake`` means no real agent is running.
+    """
+
+    @pytest.fixture
+    def store(self, db, orch):
+        from src.api.auth import SessionTokenStore
+
+        orch.token_store = SessionTokenStore(db)
+        return orch.token_store
+
+    async def test_mints_a_usable_token_for_a_task_session(
+        self, handler, db, provider, store
+    ):
+        await _make_task(db)
+        await _make_session(db, provider)
+        r = await handler.execute("session_token", {"session_id": "sess-1"})
+        assert r["success"] is True
+        assert r["token"].startswith("aqs_")
+        scope = await store.validate(r["token"])
+        assert scope is not None
+        assert (scope.session_id, scope.project_id, scope.task_id) == ("sess-1", "p1", "t1")
+        # Never elevated: the minted token is the worker's own scope, not
+        # the operator's.
+        assert scope.elevated is False
+
+    async def test_pool_session_token_pins_no_task(self, handler, db, provider, store):
+        """A pool worker's task changes with every claim, so it is not pinned.
+
+        Mirrors what ``PoolsMixin._launch_pool_session`` mints.
+        """
+        await _make_task(db)
+        await _make_session(db, provider, lifecycle="pool")
+        r = await handler.execute("session_token", {"session_id": "sess-1"})
+        scope = await store.validate(r["token"])
+        assert r["task_id"] is None
+        assert scope.task_id is None and scope.project_id == "p1"
+
+    async def test_each_call_mints_a_fresh_token(self, handler, db, provider, store):
+        await _make_task(db)
+        await _make_session(db, provider)
+        first = (await handler.execute("session_token", {"session_id": "sess-1"}))["token"]
+        second = (await handler.execute("session_token", {"session_id": "sess-1"}))["token"]
+        assert first != second
+        assert await store.validate(first) is not None
+        assert await store.validate(second) is not None
+
+    async def test_unknown_session(self, handler, store):
+        assert "error" in await handler.execute("session_token", {"session_id": "nope"})
+
+    async def test_without_a_token_store(self, handler, db, provider):
+        await _make_task(db)
+        await _make_session(db, provider)
+        r = await handler.execute("session_token", {"session_id": "sess-1"})
+        assert r["success"] is False and "token store" in r["error"]
+
+    def test_is_not_reachable_with_an_agent_token(self):
+        """A session token must never mint another session's token.
+
+        ``check_command_scope`` gates a plain session scope on
+        ``AGENT_COMMAND_SET``; keeping ``session_token`` out of that set is
+        the whole enforcement, so guard it here rather than trusting a
+        comment.
+        """
+        from src.api.auth import RequestScope
+        from src.api.scope import AGENT_COMMAND_SET, check_command_scope
+
+        assert "session_token" not in AGENT_COMMAND_SET
+        agent = RequestScope(kind="session", session_id="sess-1", project_id="p1")
+        assert check_command_scope("session_token", {}, agent) is not None
+        # Elevated (supervisor) and local callers are allowed through.
+        elevated = RequestScope(
+            kind="session", session_id="sup", project_id="p1", elevated=True
+        )
+        assert check_command_scope("session_token", {}, elevated) is None
+
+    def test_is_excluded_from_mcp(self):
+        """A credential minter is not an MCP tool, even for a trusted client."""
+        from src.mcp_registration import get_effective_exclusions
+
+        assert "session_token" in get_effective_exclusions()
+
+
 # ---------------------------------------------------------------------------
 # task_close / task_heartbeat
 # ---------------------------------------------------------------------------

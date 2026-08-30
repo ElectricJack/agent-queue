@@ -651,6 +651,11 @@ class TestDriftDetection:
             "gate_resolve",
             "gate_show",
             "project_ready",
+            # Dev/e2e credential minter (src/commands/session_commands.py).
+            # Excluded from MCP outright (DEFAULT_EXCLUDED_COMMANDS) and
+            # elevated/local-only on HTTP, so it carries a codegen-only
+            # schema rather than an LLM-facing definition.
+            "session_token",
         }
         all_commands = _discover_all_commands()
         explicit = {d["name"] for d in _ALL_TOOL_DEFINITIONS}
