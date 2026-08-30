@@ -2268,25 +2268,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             rate_limit_max_backoff_seconds=p.get("rate_limit_max_backoff_seconds", 300),
         )
 
-    if "chat_provider" in raw:
-        cp = raw["chat_provider"]
-        raw_model = cp.get("model", "")
-        base_url = cp.get("base_url", "")
-        # Provide default base_url for ollama (legacy migration support)
-        if cp.get("provider") == "ollama" and not base_url:
-            base_url = "http://localhost:11434/v1"
-        config.chat_provider = ChatProviderConfig(
-            provider=cp.get("provider", "anthropic"),
-            model=str(raw_model) if raw_model else "",
-            base_url=base_url,
-            api_key=cp.get("api_key", ""),
-            keep_alive=cp.get("keep_alive", "1h"),
-            num_ctx=cp.get("num_ctx", 0),
-            max_tokens=cp.get("max_tokens", 2048),
-            playbook_max_tokens=cp.get("playbook_max_tokens", 4096),
-            thinking_budget=cp.get("thinking_budget", 8192),
-        )
-
     llm_raw = raw.get("llm")
     legacy_raw = raw.get("chat_provider")
     if isinstance(llm_raw, dict):
@@ -2304,6 +2285,21 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             path,
         )
         config.llm = _llm_config_from_mapping(legacy_raw, legacy=True)
+
+    if "chat_provider" in raw and isinstance(llm_raw, dict):
+        cp = raw["chat_provider"]
+        raw_model = cp.get("model", "")
+        config.chat_provider = ChatProviderConfig(
+            provider=cp.get("provider", "anthropic"),
+            model=str(raw_model) if raw_model else "",
+            base_url=cp.get("base_url", ""),
+            api_key=cp.get("api_key", ""),
+            keep_alive=cp.get("keep_alive", "1h"),
+            num_ctx=cp.get("num_ctx", 0),
+            max_tokens=cp.get("max_tokens", 2048),
+            playbook_max_tokens=cp.get("playbook_max_tokens", 4096),
+            thinking_budget=cp.get("thinking_budget", 8192),
+        )
 
     if "supervisor" in raw:
         s = raw["supervisor"]
