@@ -302,6 +302,20 @@ async def test_pool_scale_db_row_matches_vault(pool_handler, tmp_path):
     assert (scoped.min_active, scoped.max_active) == (2, 5)
 
 
+async def test_pool_scale_never_touches_the_system_row(pool_handler, tmp_path):
+    """First scale with no override: the project row is created, the system
+    row (shared by every other project) keeps its bounds."""
+    before = await pool_handler.db.get_profile("worker")
+    res = await pool_handler._cmd_pool_scale(
+        {"project_id": PROJECT_ID, "profile_id": "worker", "min": 2, "max": 6}
+    )
+    assert res["success"], res
+    system = await pool_handler.db.get_profile("worker")
+    assert (system.min_active, system.max_active) == (before.min_active, before.max_active)
+    scoped = await pool_handler.db.get_profile(f"project:{PROJECT_ID}:worker")
+    assert (scoped.min_active, scoped.max_active, scoped.lifecycle) == (2, 6, "pool")
+
+
 async def test_pool_scale_survives_a_resync(pool_handler, tmp_path):
     """Re-syncing the vault must not revert the scale (the old bug)."""
     from src.profiles.sync import sync_profile_text_to_db

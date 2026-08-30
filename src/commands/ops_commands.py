@@ -308,9 +308,14 @@ class OpsCommandsMixin:
         The DB row is also updated directly and first, so the very next
         orchestrator tick sees the new bounds even if the sync is slow.
         """
+        import dataclasses
+
         scoped_id = f"project:{project_id}:{profile_id}"
-        target = await self.db.get_profile(scoped_id)
-        if target is None or getattr(target, "lifecycle", "task") != "pool":
+        scoped = await self.db.get_profile(scoped_id)
+        if scoped is not None and getattr(scoped, "lifecycle", "task") != "pool":
+            scoped = None
+        target = scoped
+        if target is None:
             target = await self.db.get_profile(profile_id)
         if target is None or getattr(target, "lifecycle", "task") != "pool":
             return None
@@ -321,15 +326,21 @@ class OpsCommandsMixin:
         if max_active is not None:
             updates["max_active"] = max_active
 
-        # 1. Immediate DB write on the row the scheduler currently reads, so
-        #    the next tick already honours the new bounds.
+        # 1. Immediate DB write so the next tick already honours the new
+        #    bounds.  The write always lands on the PROJECT-scoped row: when
+        #    no override exists yet it is created as a copy of the system
+        #    profile.  Touching the system row would resize every other
+        #    project's pool until the system file re-synced.
         if updates:
-            await self.db.update_profile(target.id, **updates)
+            if scoped is not None:
+                await self.db.update_profile(scoped_id, **updates)
+            else:
+                await self.db.upsert_profile(
+                    dataclasses.replace(target, id=scoped_id, **updates)
+                )
 
         # 2. Durable write: the project-scoped vault file.
         await self._write_pool_bounds_to_vault(project_id, profile_id, updates)
-
-        import dataclasses
 
         return dataclasses.replace(
             target,

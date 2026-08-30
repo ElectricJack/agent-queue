@@ -795,7 +795,7 @@ regenerate from it. `*` = new. Response models: add `src/api/models/task.py` ent
 | `aq task close <id> … [--abandon-children]` (containers) | `task_close` | yes (own container only) |
 | `aq db preflight hierarchy`* | `db_preflight_hierarchy`* — dry-run canonicalisation, committed report | no |
 | `aq task show <id>` (+ `parent`, `children`, `claimed_by`) | `task_show` | yes |
-| `aq task ready [-p] [--profile] [--brief]`* | `project_ready` (+ `profile_id` filter) | yes |
+| `aq project ready [--project-id] [--profile-id] [--brief]`* | `project_ready` (+ `profile_id` filter) | yes |
 | `aq formula list \| show \| cook`* | `formula_*`* | list/show yes; cook no |
 | `aq pool status [-p] [--profile]`* | `pool_status`* — desired/active/idle/claims per key, last `pool.scaled` reason | no |
 | `aq pool scale <profile> [-p] --min N --max N`* | `pool_scale`* — edits the profile's `## Config` in the vault (source of truth), sync follows | no |
