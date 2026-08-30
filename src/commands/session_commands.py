@@ -367,6 +367,16 @@ class SessionCommandsMixin:
         loopback with no bearer) or an elevated supervisor token, which is
         the same trust level that can already kill the session outright.
 
+        A **per-project** elevated token is trusted for its own project and
+        no further.  ``check_command_scope`` pins ``args["project_id"]``
+        for such a caller, but this command addresses a session by id (or
+        name, or task) and never reads ``project_id`` — so without the
+        fence below, ``supervisor-A`` could mint a token for a session in
+        project B and use it to read and write B's work.  A minted token is
+        a durable credential, which makes this a privilege escalation
+        rather than a scoping slip.  Local callers carry no project pin and
+        stay unrestricted, as does the global supervisor.
+
         The new token carries the session's own scope — ``session_id``,
         ``project_id``, and ``task_id`` **only for a task session**.  A
         pool worker's scope pins no task (its task changes with every
@@ -375,6 +385,12 @@ class SessionCommandsMixin:
         session, err = await self._resolve_session(args)
         if err:
             return err
+        scope_project = (self._current_scope or {}).get("project_id")
+        if scope_project is not None and session.project_id != scope_project:
+            return {
+                "success": False,
+                "error": "out of scope: session belongs to another project",
+            }
         token_store = getattr(self.orchestrator, "token_store", None)
         if token_store is None:
             return {"success": False, "error": "no token store on this daemon"}

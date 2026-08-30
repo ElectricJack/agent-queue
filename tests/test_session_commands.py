@@ -503,6 +503,64 @@ class TestSessionToken:
         )
         assert check_command_scope("session_token", {}, elevated) is None
 
+    async def test_a_project_supervisor_cannot_mint_across_projects(
+        self, handler, db, provider, store
+    ):
+        """`supervisor-A` must not mint a credential for project B.
+
+        ``check_command_scope`` pins ``args["project_id"]`` for a
+        per-project elevated caller, but this command addresses a session
+        by id and never reads ``project_id`` — so the pin is vacuous here
+        and the fence has to live in the command.  A minted token is a
+        durable credential, so this is escalation, not a scoping slip.
+        """
+        await db.create_project(Project(id="p2", name="P2"))
+        await _make_task(db)
+        row = await _make_session(db, provider)
+        await db.update_session(row.id, project_id="p2")
+
+        handler._current_scope = {
+            "kind": "session",
+            "session_id": "supervisor-p1",
+            "task_id": None,
+            "project_id": "p1",
+            "elevated": True,
+        }
+        try:
+            r = await handler._cmd_session_token({"session_id": "sess-1"})
+        finally:
+            handler._current_scope = None
+        assert r["success"] is False
+        assert "another project" in r["error"]
+        assert "token" not in r
+
+    async def test_a_project_supervisor_can_mint_inside_its_own_project(
+        self, handler, db, provider, store
+    ):
+        await _make_task(db)
+        await _make_session(db, provider)
+        handler._current_scope = {
+            "kind": "session",
+            "session_id": "supervisor-p1",
+            "task_id": None,
+            "project_id": "p1",
+            "elevated": True,
+        }
+        try:
+            r = await handler._cmd_session_token({"session_id": "sess-1"})
+        finally:
+            handler._current_scope = None
+        assert r["success"] is True and r["token"].startswith("aqs_")
+
+    async def test_a_local_caller_is_unrestricted(self, handler, db, provider, store):
+        """No project pin (loopback CLI, or the global supervisor) → no fence."""
+        await db.create_project(Project(id="p2", name="P2"))
+        await _make_task(db)
+        row = await _make_session(db, provider)
+        await db.update_session(row.id, project_id="p2")
+        r = await handler.execute("session_token", {"session_id": "sess-1"})
+        assert r["success"] is True and r["project_id"] == "p2"
+
     def test_is_excluded_from_mcp(self):
         """A credential minter is not an MCP tool, even for a trusted client."""
         from src.mcp_registration import get_effective_exclusions
