@@ -5,6 +5,10 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import LeftRail from "../../../shell/LeftRail";
 import AgentWorkspace from "../AgentWorkspace";
 import type { FlockAgent } from "../../../api/agents";
+import { TerminalMock, FitAddonMock, TerminalSocketMock } from "../../../testUtils/terminal";
+
+vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../../testUtils/terminal")).TerminalMock }));
+vi.mock("@xterm/addon-fit", async () => ({ FitAddon: (await import("../../../testUtils/terminal")).FitAddonMock }));
 
 const api = vi.hoisted(() => ({
   listAgents: vi.fn(), listProjects: vi.fn(), listProfiles: vi.fn(),
@@ -31,18 +35,6 @@ let roster = [agent("a", "Supervisor"), agent("b", "Builder"), agent("c", "Revie
   agent("d", "Tester"), agent("e", "Writer")];
 const clients: QueryClient[] = [];
 
-class PaneSource {
-  static sources: PaneSource[] = [];
-  onmessage: ((message: { data: string }) => void) | null = null;
-  onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  closed = false;
-  readyState = 1;
-  constructor(public url: string) { PaneSource.sources.push(this); }
-  close() { this.closed = true; this.readyState = 2; }
-}
-
-
 function Location() {
   const location = useLocation();
   return <output aria-label="Current location">{location.pathname}{location.search}</output>;
@@ -65,8 +57,11 @@ function renderFlock(initial = "/", workspace = false) {
 beforeEach(() => {
   localStorage.clear();
   vi.clearAllMocks();
-  PaneSource.sources = [];
-  vi.stubGlobal("EventSource", PaneSource);
+  TerminalSocketMock.instances = [];
+  TerminalMock.instances = [];
+  FitAddonMock.instances = [];
+  vi.stubGlobal("WebSocket", TerminalSocketMock);
+  vi.stubGlobal("EventSource", vi.fn());
   roster = [agent("a", "Supervisor"), agent("b", "Builder"), agent("c", "Reviewer"),
     agent("d", "Tester"), agent("e", "Writer")];
   roster[0] = { ...roster[0]!, role: "supervisor", state: "busy", current_task_id: "task-1",
@@ -172,8 +167,11 @@ describe("Tiled agent workspace", () => {
     renderFlock("/agents?agent=a", true);
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
     expect(within(window).getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
-    expect(PaneSource.sources.map((source) => new URL(source.url).pathname)).toEqual(["/api/sessions/session-a/pane"]);
-    act(() => PaneSource.sources[0]!.onmessage?.({ data: JSON.stringify({ type: "screen", screen: "REAL TMUX SCREEN", seq: 1 }) }));
+    expect(TerminalSocketMock.instances.map((source) => new URL(source.url).pathname)).toEqual(["/ws/terminal/session-a"]);
+    act(() => {
+      TerminalSocketMock.instances[0]!.ready();
+      TerminalSocketMock.instances[0]!.message(new TextEncoder().encode("REAL TMUX SCREEN"));
+    });
     expect(within(window).getByText("REAL TMUX SCREEN")).toBeInTheDocument();
     expect(within(window).getByText("REAL TMUX SCREEN").closest("button")).toBeNull();
     expect(api.createAgent).not.toHaveBeenCalled();
@@ -183,14 +181,14 @@ describe("Tiled agent workspace", () => {
   it("closes only the selected window and releases that terminal stream", async () => {
     renderFlock("/agents?agent=a&agent=b", true);
     await screen.findByRole("region", { name: "Builder agent window" });
-    expect(PaneSource.sources).toHaveLength(2);
+    expect(TerminalSocketMock.instances).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: "Close Supervisor view" }));
-    expect(PaneSource.sources.find((source) => source.url.includes("session-a"))?.closed).toBe(true);
-    expect(PaneSource.sources.find((source) => source.url.includes("session-b"))?.closed).toBe(false);
+    expect(TerminalSocketMock.instances.find((source) => source.url.includes("session-a"))?.closed).toBe(true);
+    expect(TerminalSocketMock.instances.find((source) => source.url.includes("session-b"))?.closed).toBe(false);
     expect(screen.queryByRole("region", { name: "Supervisor agent window" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=b");
     fireEvent.click(screen.getByRole("button", { name: "Close Builder view" }));
-    expect(PaneSource.sources.every((source) => source.closed)).toBe(true);
+    expect(TerminalSocketMock.instances.every((source) => source.closed)).toBe(true);
     expect(screen.getByText(/select an agent from the flock/i)).toBeInTheDocument();
     expect(api.editAgent).not.toHaveBeenCalled();
   });
@@ -200,10 +198,10 @@ describe("Tiled agent workspace", () => {
     await screen.findByRole("region", { name: "Tester agent window" });
     fireEvent.click(screen.getByRole("button", { name: "Open Writer" }), { shiftKey: true });
     expect(screen.getAllByRole("region", { name: /agent window/ })).toHaveLength(4);
-    expect(PaneSource.sources.filter((source) => !source.closed)).toHaveLength(4);
+    expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(4);
     fireEvent.click(screen.getByRole("button", { name: "Open Writer" }));
     expect(screen.getAllByRole("region", { name: /agent window/ })).toHaveLength(1);
-    expect(PaneSource.sources.filter((source) => !source.closed)).toHaveLength(1);
+    expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(1);
     expect(screen.getByRole("region", { name: "Writer agent window" })).toBeInTheDocument();
   });
 
@@ -211,7 +209,7 @@ describe("Tiled agent workspace", () => {
     renderFlock("/agents?agent=a&agent=a&agent=b&agent=c&agent=d&agent=e", true);
     await screen.findByRole("region", { name: "Tester agent window" });
     expect(screen.getAllByRole("region", { name: /agent window/ })).toHaveLength(4);
-    expect(PaneSource.sources.filter((source) => !source.closed)).toHaveLength(4);
+    expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(4);
     expect(screen.queryByRole("region", { name: "Writer agent window" })).not.toBeInTheDocument();
   });
 
@@ -221,7 +219,7 @@ describe("Tiled agent workspace", () => {
     renderFlock("/agents?agent=a&agent=b", true);
     expect(await screen.findByText("No active tmux session")).toBeInTheDocument();
     expect(screen.getByText(/session is sleeping/i)).toBeInTheDocument();
-    expect(PaneSource.sources).toHaveLength(0);
+    expect(TerminalSocketMock.instances).toHaveLength(0);
     expect(api.createAgent).not.toHaveBeenCalled();
     expect(api.editAgent).not.toHaveBeenCalled();
   });
@@ -230,10 +228,10 @@ describe("Tiled agent workspace", () => {
     renderFlock("/agents?agent=a", true);
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
-    expect(PaneSource.sources[0]!.closed).toBe(true);
+    expect(TerminalSocketMock.instances[0]!.closed).toBe(true);
     expect(within(window).getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(within(window).getByRole("tab", { name: "Terminal" }));
-    expect(PaneSource.sources.filter((source) => !source.closed)).toHaveLength(1);
+    expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(1);
   });
 
   it("saves only individual configured overrides and refreshes the roster", async () => {
@@ -289,7 +287,7 @@ describe("Tiled agent workspace", () => {
     expect(await screen.findByRole("button", { name: "Open Designer" })).toBeInTheDocument();
     await screen.findByRole("region", { name: "Designer agent window" });
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=new-agent");
-    expect(PaneSource.sources).toHaveLength(0);
+    expect(TerminalSocketMock.instances).toHaveLength(0);
   });
 });
 
@@ -300,7 +298,7 @@ describe("Agent terminal transport", () => {
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
     expect(within(window).getByText("Tmux view unavailable")).toBeInTheDocument();
     expect(within(window).queryByText(/live tmux/i)).not.toBeInTheDocument();
-    expect(PaneSource.sources).toHaveLength(0);
+    expect(TerminalSocketMock.instances).toHaveLength(0);
     if (provider) expect(within(window).getByText(/uses subprocess/)).toBeInTheDocument();
     else expect(within(window).getByText(/transport is unknown/)).toBeInTheDocument();
   });
@@ -311,8 +309,11 @@ describe("Agents finishing current work", () => {
     roster[0]!.session_state = "draining";
     renderFlock("/agents?agent=a", true);
     await screen.findByRole("region", { name: "Supervisor agent window" });
-    expect(PaneSource.sources.filter((source) => !source.closed)).toHaveLength(1);
-    act(() => PaneSource.sources[0]!.onmessage?.({ data: JSON.stringify({ type: "screen", screen: "FINISHING CURRENT TASK", seq: 1 }) }));
+    expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(1);
+    act(() => {
+      TerminalSocketMock.instances[0]!.ready();
+      TerminalSocketMock.instances[0]!.message(new TextEncoder().encode("FINISHING CURRENT TASK"));
+    });
     expect(screen.getByText("FINISHING CURRENT TASK")).toBeInTheDocument();
   });
 
@@ -326,7 +327,7 @@ describe("Agents finishing current work", () => {
     expect(within(sidebar).getByText("New work disabled")).toBeInTheDocument();
     expect(within(window).getByText("busy")).toBeInTheDocument();
     expect(within(window).getByText("New work disabled")).toBeInTheDocument();
-    expect(PaneSource.sources.filter((source) => !source.closed)).toHaveLength(1);
+    expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(1);
   });
 });
 
@@ -363,7 +364,7 @@ describe("Deleting a defined worker", () => {
     expect(api.deleteAgent).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "Open Builder" })).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Supervisor agent window" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Current location").textContent).toBe("/agents?agent=a");
+    await waitFor(() => expect(screen.getByLabelText("Current location").textContent).toBe("/agents?agent=a"));
     expect(api.editAgent).not.toHaveBeenCalled();
   });
 
@@ -436,14 +437,16 @@ describe("Starting and using agent terminals", () => {
   it("offers direct terminal input for workers and the supervisor without a Chat tab", async () => {
     renderFlock("/agents?agent=a&agent=b", true);
     await screen.findByRole("region", { name: "Supervisor agent window" });
-    act(() => PaneSource.sources.forEach((source) => source.onopen?.()));
-    const builder = screen.getByRole("textbox", { name: "Builder terminal input" });
-    const supervisor = screen.getByRole("textbox", { name: "Supervisor terminal input" });
-    fireEvent.keyDown(builder, { key: "b" });
-    fireEvent.keyDown(supervisor, { key: "s" });
-    await waitFor(() => expect(api.sessionInput).toHaveBeenCalledTimes(2));
-    expect(api.sessionInput).toHaveBeenCalledWith({ body: { session_id: "session-b", text: "b" }, throwOnError: true });
-    expect(api.sessionInput).toHaveBeenCalledWith({ body: { session_id: "session-a", text: "s" }, throwOnError: true });
+    act(() => TerminalSocketMock.instances.forEach((source) => source.ready()));
+    const builder = TerminalMock.instances.find((term) => term.textarea?.getAttribute("aria-label") === "Builder terminal input")!;
+    const supervisor = TerminalMock.instances.find((term) => term.textarea?.getAttribute("aria-label") === "Supervisor terminal input")!;
+    act(() => { builder.emitData("b"); supervisor.emitData("s"); });
+    const builderSocket = TerminalSocketMock.instances.find((socket) => socket.url.includes("/session-b"))!;
+    const supervisorSocket = TerminalSocketMock.instances.find((socket) => socket.url.includes("/session-a"))!;
+    expect(builderSocket.inputs().map((data) => new TextDecoder().decode(data))).toEqual(["b"]);
+    expect(supervisorSocket.inputs().map((data) => new TextDecoder().decode(data))).toEqual(["s"]);
+    expect(api.sessionInput).not.toHaveBeenCalled();
+    expect(EventSource).not.toHaveBeenCalled();
     expect(screen.queryByRole("tab", { name: "Chat" })).not.toBeInTheDocument();
     expect(api.startAgentTerminal).not.toHaveBeenCalled();
   });
@@ -453,11 +456,11 @@ describe("Starting and using agent terminals", () => {
     renderFlock("/agents?agent=b", true);
     const window = await screen.findByRole("region", { name: "Builder agent window" });
     expect(api.startAgentTerminal).not.toHaveBeenCalled();
-    expect(PaneSource.sources).toHaveLength(0);
+    expect(TerminalSocketMock.instances).toHaveLength(0);
     fireEvent.click(within(window).getByRole("button", { name: state ? "Resume terminal" : "Start terminal" }));
-    await waitFor(() => expect(PaneSource.sources).toHaveLength(1));
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     expect(api.startAgentTerminal).toHaveBeenCalledWith({ body: { agent_id: "b" }, throwOnError: true });
-    expect(new URL(PaneSource.sources[0]!.url).pathname).toBe("/api/sessions/started-b/pane");
+    expect(new URL(TerminalSocketMock.instances[0]!.url).pathname).toBe("/ws/terminal/started-b");
     expect(api.sessionInput).not.toHaveBeenCalled();
   });
 

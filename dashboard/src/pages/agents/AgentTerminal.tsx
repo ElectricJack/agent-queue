@@ -1,12 +1,10 @@
 import { CommandLineIcon } from "@heroicons/react/24/outline";
 import { useStartAgentTerminal, type FlockAgent } from "../../api/agents";
-import { usePaneStream } from "../../ws/usePaneStream";
 import InteractiveTerminal from "../../components/InteractiveTerminal";
 
 export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
   const running = !!agent.session_id && (agent.session_state === "running" || agent.session_state === "draining");
   const tmux = agent.session_provider === "tmux";
-  const pane = usePaneStream(agent.session_id, { enabled: running && tmux });
   const start = useStartAgentTerminal();
   const sleeping = agent.session_state === "sleeping";
   const starting = agent.session_state === "starting" || agent.session_state === "stopping";
@@ -56,14 +54,5 @@ export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
       </div>
     );
   }
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center justify-between border-b border-gray-800 px-3 py-1 text-[10px] text-gray-500">
-        <span>Live tmux · interactive</span>
-        <span className="capitalize">{pane.status}</span>
-      </div>
-      <InteractiveTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name}
-        screen={pane.screen} status={pane.status} error={pane.error} />
-    </div>
-  );
+  return <InteractiveTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name} />;
 }
