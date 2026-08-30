@@ -582,6 +582,57 @@ class SupervisorConfig:
         return errors
 
 
+LLM_PROVIDER_IDS = frozenset({"anthropic", "google", "openai"})
+_LEGACY_LLM_PROVIDER_IDS = {"gemini": "google", "ollama": "openai"}
+
+
+def normalize_llm_provider(name: str) -> str:
+    """Map legacy chat_provider ids (``gemini``, ``ollama``) to ``llm`` ids."""
+    return _LEGACY_LLM_PROVIDER_IDS.get(name, name)
+
+
+@dataclass
+class LLMConfig:
+    """The direct LLM path (``src/llm``): playbook nodes and transitions, plugin
+    ``invoke_llm``, stub enrichment, vault summaries.  Not the coding agents —
+    those run as tmux sessions selected by the profile's ``harness``."""
+
+    provider: str = "anthropic"  # "anthropic" | "google" | "openai"
+    model: str = ""  # explicit model id; empty = intelligence class, else provider default
+    api_key: str = ""  # optional; ANTHROPIC_API_KEY / GOOGLE_API_KEY / OPENAI_API_KEY otherwise
+    base_url: str = ""  # openai only: OpenAI-compatible endpoint (Ollama: http://localhost:11434/v1)
+    max_tokens: int = 4096
+    default_class: str = ""  # intelligence class used when a call names none
+
+    def __post_init__(self) -> None:
+        # YAML may parse ``model: 4`` as an int; APIs require a string.
+        if self.model and not isinstance(self.model, str):
+            object.__setattr__(self, "model", str(self.model))
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if self.provider not in LLM_PROVIDER_IDS:
+            errors.append(
+                ConfigError(
+                    "llm",
+                    "provider",
+                    f"must be one of {sorted(LLM_PROVIDER_IDS)}, got '{self.provider}'",
+                )
+            )
+        if self.provider == "openai" and not (
+            self.base_url or self.api_key or os.environ.get("OPENAI_API_KEY")
+        ):
+            errors.append(
+                ConfigError(
+                    "llm",
+                    "base_url",
+                    "provider 'openai' needs base_url (a local OpenAI-compatible endpoint) "
+                    "or an API key (api_key / OPENAI_API_KEY)",
+                )
+            )
+        return errors
+
+
 @dataclass
 class ChatProviderConfig:
     """LLM provider settings for the Discord chat agent (not the coding agents)."""
@@ -1386,6 +1437,7 @@ class AppConfig:
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     chat_provider: ChatProviderConfig = field(default_factory=ChatProviderConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
     chat_analyzer: ChatAnalyzerConfig = field(default_factory=ChatAnalyzerConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
@@ -1569,6 +1621,7 @@ class AppConfig:
         errors.extend(self.scheduling.validate())
         errors.extend(self.pause_retry.validate())
         errors.extend(self.chat_provider.validate())
+        errors.extend(self.llm.validate())
         errors.extend(self.chat_analyzer.validate())
         errors.extend(self.supervisor.validate())
         errors.extend(self.auto_task.validate())
@@ -1734,6 +1787,7 @@ RESTART_REQUIRED_SECTIONS = {
     "workspace_dir",
     "database_path",
     "chat_provider",
+    "llm",
     "memory",
     "health_check",
     # -- Framework-overhaul substrate sections --------------------------
@@ -1766,6 +1820,7 @@ _SECTION_FIELDS = {
     "scheduling",
     "pause_retry",
     "chat_provider",
+    "llm",
     "chat_analyzer",
     "health_check",
     "logging",
@@ -2023,6 +2078,23 @@ def _load_env_file(config_path: str) -> None:
             os.environ[key] = value
 
 
+def _llm_config_from_mapping(m: dict, *, legacy: bool) -> LLMConfig:
+    raw_provider = str(m.get("provider", "anthropic") or "anthropic")
+    provider = normalize_llm_provider(raw_provider)
+    raw_model = m.get("model", "")
+    base_url = str(m.get("base_url", "") or "")
+    if legacy and raw_provider == "ollama" and not base_url:
+        base_url = "http://localhost:11434/v1"
+    return LLMConfig(
+        provider=provider,
+        model=str(raw_model) if raw_model else "",
+        api_key=str(m.get("api_key", "") or ""),
+        base_url=base_url,
+        max_tokens=int(m.get("max_tokens", 4096)),
+        default_class=str(m.get("default_class", "") or ""),
+    )
+
+
 def load_config(path: str, profile: str | None = None) -> AppConfig:
     """Load and validate application configuration from a YAML file.
 
@@ -2199,10 +2271,14 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "chat_provider" in raw:
         cp = raw["chat_provider"]
         raw_model = cp.get("model", "")
+        base_url = cp.get("base_url", "")
+        # Provide default base_url for ollama (legacy migration support)
+        if cp.get("provider") == "ollama" and not base_url:
+            base_url = "http://localhost:11434/v1"
         config.chat_provider = ChatProviderConfig(
             provider=cp.get("provider", "anthropic"),
             model=str(raw_model) if raw_model else "",
-            base_url=cp.get("base_url", ""),
+            base_url=base_url,
             api_key=cp.get("api_key", ""),
             keep_alive=cp.get("keep_alive", "1h"),
             num_ctx=cp.get("num_ctx", 0),
@@ -2210,6 +2286,24 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             playbook_max_tokens=cp.get("playbook_max_tokens", 4096),
             thinking_budget=cp.get("thinking_budget", 8192),
         )
+
+    llm_raw = raw.get("llm")
+    legacy_raw = raw.get("chat_provider")
+    if isinstance(llm_raw, dict):
+        if isinstance(legacy_raw, dict):
+            logger.warning(
+                "%s: both 'llm:' and legacy 'chat_provider:' are present — using 'llm:' "
+                "and ignoring 'chat_provider:'",
+                path,
+            )
+        config.llm = _llm_config_from_mapping(llm_raw, legacy=False)
+    elif isinstance(legacy_raw, dict):
+        logger.warning(
+            "%s: 'chat_provider:' is deprecated — rename the block to 'llm:' "
+            "(provider ids: gemini→google, ollama→openai)",
+            path,
+        )
+        config.llm = _llm_config_from_mapping(legacy_raw, legacy=True)
 
     if "supervisor" in raw:
         s = raw["supervisor"]
