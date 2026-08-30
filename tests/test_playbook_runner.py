@@ -438,14 +438,14 @@ class TestSandboxedPlaybook:
     async def test_no_profile_id_means_unscoped(
         self, mock_services, mock_db, simple_graph, event_data
     ):
-        """A playbook without ``profile_id`` passes ``tool_overrides=None``
-        (default supervisor scope) to every chat() call."""
+        """A playbook without ``profile_id`` runs unscoped: no profile lookup,
+        no tool overrides, the registry's full catalogue on offer."""
         runner = PlaybookRunner(simple_graph, event_data, mock_services, db=mock_db)
         await runner.run()
         mock_db.get_profile.assert_not_called()
         assert runner._tool_overrides is None
-        # No profile → the registry's core tools.
-        mock_services.tool_registry.get_core_tools.assert_called()
+        # No profile → the registry's full tool catalogue.
+        mock_services.tool_registry.get_all_tools.assert_called()
 
     async def test_profile_allowed_tools_become_tool_overrides(
         self, mock_services, mock_db, simple_graph, event_data
