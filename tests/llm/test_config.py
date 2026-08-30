@@ -84,11 +84,16 @@ class TestLoadLLMBlock:
         assert cfg.llm.model == "gemini-2.5-flash"
         assert any("chat_provider" in r.message and "deprecated" in r.message for r in caplog.records)
 
-    def test_legacy_ollama_gets_default_base_url(self, tmp_path):
-        path = _write(tmp_path, {"chat_provider": {"provider": "ollama", "model": "qwen3"}})
+    def test_legacy_ollama_maps_to_openai(self, tmp_path):
+        path = _write(
+            tmp_path,
+            {"chat_provider": {"provider": "ollama", "model": "qwen3",
+                               "base_url": "http://localhost:11434/v1"}},
+        )
         cfg = load_config(path)
         assert cfg.llm.provider == "openai"
         assert cfg.llm.base_url == "http://localhost:11434/v1"
+        assert cfg.llm.model == "qwen3"
 
     def test_both_blocks_llm_wins(self, tmp_path, caplog):
         path = _write(

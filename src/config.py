@@ -2286,7 +2286,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         )
         config.llm = _llm_config_from_mapping(legacy_raw, legacy=True)
 
-    if "chat_provider" in raw and isinstance(llm_raw, dict):
+    if "chat_provider" in raw:
         cp = raw["chat_provider"]
         raw_model = cp.get("model", "")
         config.chat_provider = ChatProviderConfig(
