@@ -96,11 +96,14 @@ class SessionTokenStore:
         )
         return plaintext
 
-    async def validate(self, token: str) -> RequestScope | None:
+    async def validate(self, token: str, *, refresh: bool = False) -> RequestScope | None:
         if not token or not token.startswith(TOKEN_PREFIX):
             return None
         h = _hash(token)
         now = time.time()
+        # Long-lived terminal streams must observe revocation by another store/process.
+        if refresh:
+            self._cache.pop(h, None)
         cached = self._cache.get(h)
         if cached is not None:
             scope, expires_at = cached

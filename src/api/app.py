@@ -29,6 +29,7 @@ from src.api.task_files import router as task_files_router
 from src.api.workspace_files import router as workspace_files_router
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware
 from src.api.websocket import WebSocketManager
+from src.api.terminal_stream import build_terminal_router
 
 if TYPE_CHECKING:
     from src.config import AppConfig
@@ -138,6 +139,11 @@ def create_app(
     from src.api.routers import register_all_routers
 
     register_all_routers(app)
+
+    # Raw PTY terminal stream owns attach clients only, never agent processes.
+    app.include_router(build_terminal_router(
+        orchestrator, config, token_store=deps._token_store,
+    ))
 
     # WebSocket event stream — forward notify.* events to connected clients
     ws_manager = WebSocketManager(orchestrator.bus, db=orchestrator.db)

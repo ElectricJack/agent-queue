@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, or_, select, update
 
 from src.database.tables import agent_profiles, agents, sessions
 from src.models import AgentState, SessionRecord
@@ -365,11 +365,14 @@ class SessionQueryMixin:
             return int(row[0]) if row else 0
 
     async def touch_session_activity(self, session_id: str, ts: float) -> None:
-        """Record observed agent activity (monotonic in practice, not enforced)."""
+        """Advance activity without allowing a delayed observer to rewind it."""
         async with self._engine.begin() as conn:
             await conn.execute(
                 update(sessions)
-                .where(sessions.c.id == session_id)
+                .where(
+                    sessions.c.id == session_id,
+                    or_(sessions.c.last_activity.is_(None), sessions.c.last_activity < ts),
+                )
                 .values(last_activity=ts)
             )
 
