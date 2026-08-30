@@ -1109,7 +1109,9 @@ class TestSourceHashSkipEnrichment:
     """Tests for source_hash-based skip logic in enrich_stub() (Roadmap 6.3.3)."""
 
     @pytest.mark.asyncio
-    async def test_unchanged_hash_enriched_stub_is_skipped(self, enricher, fake_provider, vault_dir, tmp_path):
+    async def test_unchanged_hash_enriched_stub_is_skipped(
+        self, enricher, fake_provider, vault_dir, tmp_path
+    ):
         """Unchanged source + already-enriched stub → skip LLM call."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
@@ -1138,7 +1140,9 @@ class TestSourceHashSkipEnrichment:
         fake_provider.create_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_unchanged_hash_placeholder_stub_is_enriched(self, enricher, fake_provider, vault_dir, tmp_path):
+    async def test_unchanged_hash_placeholder_stub_is_enriched(
+        self, enricher, fake_provider, vault_dir, tmp_path
+    ):
         """Unchanged source + placeholder stub → must still enrich."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
@@ -1364,7 +1368,9 @@ class TestSourceHashEventHandler:
     """Tests for hash-based skip in the _on_spec_changed event handler."""
 
     @pytest.mark.asyncio
-    async def test_event_with_matching_hash_skips_enrichment(self, enricher, fake_provider, vault_dir, tmp_path):
+    async def test_event_with_matching_hash_skips_enrichment(
+        self, enricher, fake_provider, vault_dir, tmp_path
+    ):
         """Event carrying a content_hash that matches the stub skips LLM."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
@@ -1514,7 +1520,9 @@ class TestStaleStubDetection:
     """
 
     @pytest.mark.asyncio
-    async def test_manual_source_edit_detected_as_stale(self, enricher, fake_provider, vault_dir, tmp_path):
+    async def test_manual_source_edit_detected_as_stale(
+        self, enricher, fake_provider, vault_dir, tmp_path
+    ):
         """Editing source file on disk → hash mismatch → stub re-enriched (not skipped)."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
@@ -1580,7 +1588,9 @@ class TestStaleStubDetection:
         assert enricher.total_skipped == 0
 
     @pytest.mark.asyncio
-    async def test_stale_detection_in_event_flow(self, enricher, fake_provider, vault_dir, tmp_path):
+    async def test_stale_detection_in_event_flow(
+        self, enricher, fake_provider, vault_dir, tmp_path
+    ):
         """Event handler detects stale stub when source changed between events."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
@@ -1691,7 +1701,9 @@ class TestDeletedSourceOrphanedStub:
         assert enricher.total_skipped == 0
 
     @pytest.mark.asyncio
-    async def test_deleted_event_ignored_by_enricher(self, enricher, fake_provider, vault_dir, tmp_path):
+    async def test_deleted_event_ignored_by_enricher(
+        self, enricher, fake_provider, vault_dir, tmp_path
+    ):
         """Enricher ignores 'deleted' events — watcher handles stub removal."""
         project_id = "test-project"
         stub_name = "spec-orchestrator.md"
