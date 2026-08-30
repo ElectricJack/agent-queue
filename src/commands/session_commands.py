@@ -455,6 +455,18 @@ class SessionCommandsMixin:
         nudge, not a kill — otherwise an agent could end its own task by
         acking early, which is precisely the exit-as-signal failure this
         runtime exists to remove.
+
+        A **pool** session also gets ``desired_state="stopped"`` written
+        here.  ``_step_drain_ack`` never reads the provider meta key for a
+        pool row (a pool worker's teardown is
+        ``_terminate_pool_session``, not the task-session stop path) — it
+        keys entirely off ``desired_state``.  Writing only ``state`` left an
+        acked worker parked in ``draining`` forever: agent never RETIRED,
+        workspace lock never released, token never revoked.  The intent is
+        unambiguous — the agent just said it is finished, and for a pool
+        worker there is no further work to come back for
+        (``session_exhausted`` / ``drain_requested`` are the only two
+        results that tell it to ack).
         """
         session, err = await self._resolve_session(args)
         if err:
@@ -466,7 +478,12 @@ class SessionCommandsMixin:
             await provider.set_meta(self._session_handle(session), DRAIN_ACK_KEY, "1")
         except Exception as exc:
             return {"error": f"could not record drain-ack: {exc}"}
-        await self.db.update_session(session.id, state="draining")
+        if session.lifecycle == "pool":
+            await self.db.update_session(
+                session.id, state="draining", desired_state="stopped"
+            )
+        else:
+            await self.db.update_session(session.id, state="draining")
         return {
             "success": True,
             "session_id": session.id,

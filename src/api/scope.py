@@ -29,6 +29,17 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "memory_save",
         "memory_search",
         "task_claim",
+        # The second half of the completion protocol.  ``aq task close``
+        # transitions the task; ``aq session drain-ack`` says "I am done,
+        # you may kill me" — and it is the documented next move on
+        # ``session_exhausted`` and ``drain_requested`` (swarm-work-model
+        # §10, and ``_cmd_task_close``'s own ``next_step`` string).  Without
+        # it here, the only caller that is ever *supposed* to run it could
+        # not: an exhausted pool worker's own token was refused, so the
+        # session sat idle holding a workspace until a reconciler backstop
+        # noticed.  The ``session_id`` pin below is what keeps a worker from
+        # acking anyone else's session.
+        "session_drain_ack",
         "create_task",
         "project_ready",
         "formula_list",

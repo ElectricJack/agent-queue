@@ -401,6 +401,28 @@ class TestDrainAckCommand:
     async def test_unknown_session(self, handler):
         assert "error" in await handler.execute("session_drain_ack", {"session_id": "x"})
 
+    async def test_a_task_session_ack_does_not_touch_intent(self, handler, db, provider):
+        """A task session is stopped by the *provider* ack, not by intent."""
+        await _make_task(db)
+        await _make_session(db, provider)
+        await handler.execute("session_drain_ack", {"session_id": "sess-1"})
+        assert (await db.get_session("sess-1")).desired_state == "running"
+
+    async def test_a_pool_session_ack_also_records_the_intent(self, handler, db, provider):
+        """``_step_drain_ack`` tears a pool row down on ``desired_state``.
+
+        It never reads the provider meta key for a pool session — that path
+        is ``_terminate_pool_session``, gated on intent.  Writing only
+        ``state`` left an acked worker parked in ``draining`` forever with
+        its agent un-retired and its workspace still locked.
+        """
+        row = await _make_session(db, provider, lifecycle="pool", task_id=None)
+        r = await handler.execute("session_drain_ack", {"session_id": "sess-1"})
+        assert r["success"] is True
+        fresh = await db.get_session("sess-1")
+        assert (fresh.state, fresh.desired_state) == ("draining", "stopped")
+        assert await provider.get_meta(handler._session_handle(row), DRAIN_ACK_KEY) == "1"
+
 
 class TestSessionToken:
     """``session_token`` — the dev/e2e credential minter.

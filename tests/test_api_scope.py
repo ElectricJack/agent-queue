@@ -89,6 +89,22 @@ class TestCheckCommandScope:
         assert args["task_id"] == "t1"
         assert args["foo"] == "bar"
 
+    def test_agent_can_drain_ack_its_own_session(self):
+        """The completion protocol's second half must be reachable.
+
+        ``aq task close`` answers ``next_step: run `aq session drain-ack```
+        and ``task_claim`` answers ``session_exhausted``/``drain_requested``
+        with the same instruction — an agent that cannot run it strands its
+        session (and its workspace lock) until a reconciler backstop fires.
+        """
+        args: dict = {}
+        assert check_command_scope("session_drain_ack", args, SESSION) is None
+        assert args["session_id"] == "s1"
+
+    def test_agent_cannot_drain_ack_another_session(self):
+        msg = check_command_scope("session_drain_ack", {"session_id": "sX"}, SESSION)
+        assert msg is not None and "session_id mismatch" in msg
+
     def test_agent_command_set_contents(self):
         expected = {
             "prime",
@@ -107,6 +123,7 @@ class TestCheckCommandScope:
             "memory_save",
             "memory_search",
             "task_claim",
+            "session_drain_ack",
             "create_task",
             "project_ready",
             "formula_list",
