@@ -36,6 +36,7 @@ from src.sessions.dialogs import DialogBudget, run_dialog_dismissal
 from src.sessions.provider import (
     Cap,
     NotSubmitted,
+    NudgeDeferred,
     PartialListError,
     SessionDiedDuringStartup,
     SessionError,
@@ -63,6 +64,9 @@ _NBSP = " "
 
 #: ``send-keys -l`` payload ceiling; larger nudges go through a buffer.
 _SEND_KEYS_MAX_BYTES = 4096
+
+# tmux may accept manual input before the harness paints the updated draft.
+_MANUAL_INPUT_QUIET_SECONDS = 2.0
 
 _META_TOKEN_KEY = "AQ_INSTANCE_TOKEN"
 
@@ -517,6 +521,14 @@ class TmuxProvider(SessionProvider):
     async def nudge(self, h: SessionHandle, text: str) -> None:
         lock = self._nudge_locks[h.name]
         async with lock:
+            last_input = self._last_input_at.get(h.name)
+            if (
+                last_input is not None
+                and time.monotonic() - last_input < _MANUAL_INPUT_QUIET_SECONDS
+            ):
+                # An old empty frame is not proof the newly accepted input
+                # is empty. Defer immediately; do not sleep while holding input.
+                raise NudgeDeferred(f"terminal {h.name!r} has recent manual input")
             if not await self._fenced(h):
                 raise NotSubmitted(f"session {h.name!r} is gone")
 
@@ -531,22 +543,23 @@ class TmuxProvider(SessionProvider):
             if pane is None:
                 raise NotSubmitted(f"no live pane found for {h.name!r}")
 
+            # Never append a reminder to a user's draft or compete with an
+            # attached terminal. This guard shares send_input's lock and runs
+            # before any resize, key, or paste (including copy-mode cancel).
+            prefix = await self._ready_prefix_hint(h.name)
+            await self._require_empty_composer(h.name, pane, prefix)
+
             # Record pre-send activity for poke discounting.
             before = await self._raw_activity(h.name)
-
-            # Copy-mode parks the pane and swallows keys (§9).
-            with contextlib.suppress(TmuxCommandError):
-                in_mode = (
-                    await self._tmux("display-message", "-p", "-t", pane, "#{pane_in_mode}")
-                ).strip()
-                if in_mode == "1":
-                    await self._tmux("send-keys", "-t", pane, "-X", "cancel")
 
             # Detached TUIs drop pastes until a SIGWINCH wakes them (§9).
             with contextlib.suppress(TmuxCommandError):
                 await self._tmux("resize-pane", "-t", pane, "-D", "1")
                 await self._tmux("resize-pane", "-t", pane, "-U", "1")
 
+            # A repaint or a newly attached client can invalidate the first
+            # observation. Recheck immediately before writing the reminder.
+            await self._require_empty_composer(h.name, pane, prefix)
             payload = text.encode("utf-8")
             if len(payload) <= _SEND_KEYS_MAX_BYTES:
                 await self._tmux("send-keys", "-t", pane, "-l", "--", text)
@@ -588,7 +601,6 @@ class TmuxProvider(SessionProvider):
             # screen" is a false negative after a successful submit — the
             # check is anchored to the last prompt-prefixed line instead
             # (see :func:`_submit_pending`).
-            prefix = await self._ready_prefix_hint(h.name)
             for _attempt in range(3):
                 await self._tmux("send-keys", "-t", pane, "Enter")
                 for _poll in range(4):
@@ -699,6 +711,31 @@ class TmuxProvider(SessionProvider):
         trimmed = out.rstrip("\n")
         return "\n".join(trimmed.splitlines()[-lines:])
 
+    async def _require_empty_composer(self, name: str, pane: str, prefix: str) -> None:
+        """Fail closed on drafts, active terminal clients, and unknown TUIs."""
+        fmt = (
+            "#{cursor_x}\t#{cursor_y}\t#{pane_width}\t#{pane_height}\t"
+            "#{cursor_flag}\t#{pane_in_mode}\t#{session_attached}"
+        )
+        try:
+            before = await self._tmux("display-message", "-p", "-t", pane, fmt)
+            x, y, width, height, visible, in_mode, attached = map(int, before.split())
+            if (
+                not prefix.strip()
+                or visible != 1
+                or in_mode != 0
+                or attached != 0
+                or not 0 <= x < width
+                or not 0 <= y < height
+            ):
+                raise NudgeDeferred(f"terminal {name!r} is busy or its input is unknown")
+            screen = await self._tmux("capture-pane", "-p", "-e", "-t", pane)
+            after = await self._tmux("display-message", "-p", "-t", pane, fmt)
+        except (TmuxCommandError, ValueError) as exc:
+            raise NudgeDeferred(f"cannot inspect input for {name!r}") from exc
+        if before != after or not _composer_is_empty(screen, prefix, x, y, height):
+            raise NudgeDeferred(f"terminal {name!r} has a draft or its input is unknown")
+
     async def _process_names_hint(self, name: str) -> tuple[str, ...]:
         """The spec's ``process_names``, recovered from the session env."""
         try:
@@ -737,6 +774,58 @@ class TmuxProvider(SessionProvider):
             return True
         value = _parse_environment_value(out, "AQ_SKIP_ESCAPE")
         return value != "0"
+
+
+_SGR = re.compile(r"\x1b\[[0-9;:]*m")
+_CODEX_PLACEHOLDER = "Ask Codex to do anything"
+
+
+def _composer_is_empty(
+    screen: str, prompt_prefix: str, cursor_x: int, cursor_y: int, height: int
+) -> bool:
+    """Recognize an empty *current* input, never a prompt in scrollback.
+
+    Cursor position alone is insufficient: Home can leave text after the
+    cursor, and a multiline draft can begin with a blank line. Only accept
+    a blank composer with no continuation, both borders, or Codex's
+    actual dim placeholder. Unrecognized layouts defer without sending keys.
+    """
+    raw_lines = screen.splitlines()
+    if len(raw_lines) != height or not 0 <= cursor_y < len(raw_lines):
+        return False
+    lines = [_normalize(_SGR.sub("", line)) for line in raw_lines]
+    line = lines[cursor_y]
+    prefix = _normalize(prompt_prefix)
+    indent = len(line) - len(line.lstrip(" "))
+    if not prefix.strip() or not line[indent:].startswith(prefix):
+        return False
+    input_start = indent + len(prefix)
+    if cursor_x != input_start:
+        return False
+    suffix = line[input_start:]
+    below = lines[cursor_y + 1 :]
+    if suffix:
+        # A literal draft with these words must NOT be mistaken for the
+        # placeholder. Its verified dim styling is part of the contract.
+        placeholder = (
+            prefix == "› "
+            and suffix == _CODEX_PLACEHOLDER
+            and f"\x1b[2m{_CODEX_PLACEHOLDER}" in raw_lines[cursor_y]
+        )
+        return placeholder and len(below) == 2 and not below[0].strip()
+    # Continuation lines can contain a pasted prompt glyph. An indented
+    # one must never be mistaken for the start of an empty composer.
+    if indent:
+        return False
+    if prefix == "❯ " and cursor_y > 0 and below:
+        borders = (lines[cursor_y - 1].strip(), below[0].strip())
+        if all(len(border) >= 8 and set(border) <= {"─", "━"} for border in borders):
+            return True
+    # Without a known placeholder or both Claude borders, earlier prompt
+    # rows make the input boundary ambiguous for every harness.
+    if any(row.lstrip().startswith(prefix) for row in lines[:cursor_y]):
+        return False
+    return all(not row.strip() for row in below)
 
 
 def _submit_pending(tail: str, marker: str, prompt_prefix: str) -> bool:

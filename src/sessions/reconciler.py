@@ -37,6 +37,7 @@ from src.sessions.provider import (
     Cap,
     CapabilityUnsupported,
     NotSubmitted,
+    NudgeDeferred,
     PartialListError,
     SessionHandle,
 )
@@ -693,6 +694,30 @@ class SessionReconciler:
             if task is None or task.status is not TaskStatus.IN_PROGRESS:
                 continue
 
+            # A provider with no input channel (subprocess) has nothing to
+            # nudge *with*, so the ladder skips its nudge rungs entirely
+            # rather than burning three cycles talking to no one.
+            can_nudge = provider.supports(Cap.NUDGE)
+
+            nudge_due = can_nudge and rungs < self.sessions_config.stall_max_nudges
+            delivered: bool | None = False
+            if nudge_due:
+                minutes = int((now - last) // 60)
+                delivered = await self._try_nudge(
+                    provider,
+                    row,
+                    f"No progress for {minutes} min. Report status, finish the task, "
+                    "or report a blocker with "
+                    '`aq message send --to user --project "$AQ_PROJECT_ID" '
+                    '--body "Blocked: <question>"`.',
+                )
+                if delivered is None:
+                    # The input belongs to the user, or cannot be inspected.
+                    # Waiting for an empty composer is not a failed attempt.
+                    continue
+
+            # Only announce a stall once an action can actually be attempted;
+            # a draft can defer many polls without generating repeated notices.
             if rungs == 0:
                 await self._emit(
                     "task.stalled",
@@ -703,19 +728,7 @@ class SessionReconciler:
                     idle_seconds=now - last,
                 )
 
-            # A provider with no input channel (subprocess) has nothing to
-            # nudge *with*, so the ladder skips its nudge rungs entirely
-            # rather than burning three cycles talking to no one.
-            can_nudge = provider.supports(Cap.NUDGE)
-
-            if can_nudge and rungs < self.sessions_config.stall_max_nudges:
-                minutes = int((now - last) // 60)
-                delivered = await self._try_nudge(
-                    provider,
-                    row,
-                    f"No progress for {minutes} min. Report status, finish the task, "
-                    f"or run `aq ask` if you are blocked.",
-                )
+            if nudge_due:
                 await self.db.set_task_meta(row.task_id, META_STALL_NUDGES, str(rungs + 1))
                 await self.db.set_task_meta(row.task_id, META_STALL_LAST_ACTION, str(now))
                 if delivered:
@@ -1216,13 +1229,16 @@ class SessionReconciler:
         except Exception:
             logger.debug("could not persist resume key for task %s", task.id, exc_info=True)
 
-    async def _try_nudge(self, provider, row: SessionRecord, text: str) -> bool:
-        """Nudge, tolerating both "cannot" and "did not confirm"."""
+    async def _try_nudge(self, provider, row: SessionRecord, text: str) -> bool | None:
+        """True for delivery, False for failure, None for untouched input."""
         if not provider.supports(Cap.NUDGE):
             return False
         try:
             await provider.nudge(self._handle(row), text)
             return True
+        except NudgeDeferred:
+            logger.debug("Nudge to session %s deferred; terminal input untouched", row.id)
+            return None
         except NotSubmitted:
             logger.info("Nudge to session %s pasted but not submitted — will retry", row.id)
             return False

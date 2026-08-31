@@ -114,7 +114,7 @@ function PlaybookTable({ rows, from }: { rows: PlaybookSummary[]; from: string }
                     {(p.triggers ?? []).length === 0 ? (
                       <span className="text-gray-500">—</span>
                     ) : (
-                      (p.triggers ?? []).map((t) => (
+                      Array.from(new Set(p.triggers ?? [])).map((t) => (
                         <span
                           key={t}
                           className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-300"

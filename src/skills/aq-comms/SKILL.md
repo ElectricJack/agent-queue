@@ -1,6 +1,6 @@
 ---
 name: aq-comms
-description: Messages, inbox, and human questions in the aq daemon. Use to check for queued messages (`aq message inbox`), send a message to the user or another agent (`aq message send`), reply to a specific message (`aq message reply`), or escalate a blocking question with `ask_human`. Also covers the message-delivery model (session vs user vs task recipients).
+description: Messages, inbox, and human questions in the aq daemon. Use to check for queued messages (`aq message inbox`), send a message to the user or another agent (`aq message send`), reply to a specific message (`aq message reply`), or report a blocking question with `aq message send`. Also covers the message-delivery model (session vs user vs task recipients).
 allowed-tools:
   - Bash
 ---
@@ -55,31 +55,17 @@ aq message reply --message-id <original_msg_id> \
   --body "Yes, proceed. I've cleared the gate."
 ```
 
-## Ask the human a question
+## Report a blocker
 
-For a mid-task blocking question, don't message-and-guess — use
-`ask_human`:
+The ask_human command is not available in the current build. For a mid-task
+blocking question, report the blocker through the supported message queue:
 
 ```bash
-aq ask-human --project <pid> --task-id <task_id> \
-  --question "Should I use the v1 or v2 schema for the migration?"
+aq message send --to user --project <pid> --body "Blocked: should I use the v1 or v2 schema for the migration?"
 ```
 
-`ask_human` puts the task into `WAITING_INPUT`, notifies the human, and
-holds until they respond. Your response comes back via
-`aq task input-response` (or the human's inline reply in the chat
-thread — the daemon routes it into a `provide_input` command
-automatically).
-
-Use `ask_human` for:
-- Design decisions with multiple valid answers.
-- Missing spec context you can't infer from the code.
-- Permission asks ("delete this stale branch?").
-
-Don't use it for:
-- Anything you can derive from `aq task explain` (that's not blocked-
-  on-human, it's blocked-on-thinking).
-- Routine progress reports — those are `aq message send`.
+Include the task id and the decision needed in the message body so the
+supervisor or human can respond through the supported message flow.
 
 ## Message delivery model (why messages are reliable)
 

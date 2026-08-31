@@ -84,6 +84,7 @@ class GraphPlan:
     context_rows: list[dict] = field(default_factory=list)
     criteria_rows: list[dict] = field(default_factory=list)
     label_rows: list[dict] = field(default_factory=list)
+    routing_task_ids: list[str] = field(default_factory=list)
     #: graph key → assigned (or provisional) task id
     ids: dict[str, str] = field(default_factory=dict)
     #: True when the container already existed and node ids are provisional
@@ -350,7 +351,8 @@ def _rewrite_ids(plan: GraphPlan, real: dict[str, str]) -> None:
 
 
 async def write_plan(
-    db: Any, plan: GraphPlan, *, provenance: FormulaProvenance | None = None
+    db: Any, plan: GraphPlan, *, provenance: FormulaProvenance | None = None,
+    routing_manager=None,
 ) -> None:
     """Persist a :class:`GraphPlan` in exactly one transaction.
 
@@ -384,8 +386,16 @@ async def write_plan(
                 ordinal = await reserve_child_ordinal(conn, plan.parent_id)
                 real[key] = f"{plan.parent_id}.{ordinal}"
             _rewrite_ids(plan, real)
+        from src.playbooks.routing import requires_routing_gate
         for row in plan.node_rows:
             await _insert_task(conn, row)
+            if requires_routing_gate(routing_manager, row, {"parent_task_id": plan.parent_id}):
+                await db.create_gate(
+                    row["project_id"], "routing", "Route task",
+                    question="Assign profile + intelligence class (+ workspace if profile needs one).",
+                    waiter_task_ids=[row["id"]], conn=conn,
+                )
+                plan.routing_task_ids.append(row["id"])
         # One bulk link for the whole batch: the nodes were just inserted as
         # childless leaves with no edges yet, which is exactly the
         # precondition ``set_parent_bulk`` asserts.  Per-node ``set_parent``
@@ -516,7 +526,25 @@ async def create_graph(
     plan = await build_plan(db, graph, project_id=project_id, parent_id=parent_id)
     if dry_run:
         return build_report(graph, plan, dry_run=True, provenance=provenance)
-    await write_plan(db, plan, provenance=provenance)
+    await write_plan(
+        db, plan, provenance=provenance,
+        routing_manager=getattr(getattr(handler, "orchestrator", None), "playbook_manager", None),
+    )
+    for task_id in plan.routing_task_ids:
+        await handler._emit_admitted_routing_gates(task_id)
+        task = await db.get_task(task_id)
+        # The gate has committed. Dispatch the configured routing rule for
+        # these nodes as well as ordinary creates; custom project pipelines
+        # may route directly instead of using the default triage recovery.
+        try:
+            await handler.orchestrator._emit_task_event(
+                "task.created", task, parent_task_id=task.parent_task_id,
+                profile_id=task.profile_id, created_by_kind=None, created_by_id=None,
+            )
+        except Exception:
+            logger.exception("Graph task.created emission failed for %s", task_id)
+            if getattr(handler.config, "dev_strict", False) is True:
+                raise
     logger.info(
         "Created task graph parent=%s nodes=%d deps=%d project=%s",
         plan.parent_id,

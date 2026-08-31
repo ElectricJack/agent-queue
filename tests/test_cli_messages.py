@@ -195,6 +195,16 @@ class TestInboxAndList:
         # carries no pagination block (envelope.py adds it only for lists).
         assert "pagination" not in payload
 
+    def test_inbox_defaults_to_session_identity_before_task(self, runner, monkeypatch):
+        monkeypatch.setenv("AQ_SESSION_ID", "session-current")
+        monkeypatch.setenv("AQ_TASK_ID", "task-current")
+        client = _mock_client({"message_inbox": {"count": 0, "messages": []}})
+        result = _invoke(runner, ["message", "inbox"], client)
+        assert result.exit_code == 0, result.output
+        args = client.execute.await_args.args[1]
+        assert args["to_kind"] == "session"
+        assert args["to_id"] == "session-current"
+
     def test_inject_flag_is_forwarded(self, runner):
         client = _mock_client({"message_inbox": {"count": 0, "messages": []}})
         _invoke(

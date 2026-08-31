@@ -27,6 +27,23 @@ from src.messages.session_lens import _GLOBAL_SUPERVISOR_SUFFIX
 router = APIRouter(tags=["sessions"])
 
 
+class MessageSendRequest(BaseModel):
+    """Body of POST /api/messages/send for non-session recipients."""
+
+    project_id: str | None = Field(default=None, description="Owning project id")
+    to_kind: str = Field(description="Recipient kind: session | task | profile | user")
+    to_id: str = Field(description="Recipient id")
+    body: str = Field(description="Markdown message body")
+    from_id: str = Field(default="cli", description="Sender id")
+    from_kind: str = Field(default="user", description="Sender kind")
+    subject: str | None = Field(default=None)
+    thread_id: str | None = Field(default=None)
+    priority: int = Field(default=100)
+    archive_after_inject: bool = Field(default=False)
+    pane_open: dict | None = Field(default=None)
+    system_only: bool = Field(default=False, description="Request projectless system scope")
+
+
 class SessionMessageRequest(BaseModel):
     """Body of ``POST /api/sessions/{name}/message`` (design §7)."""
 
@@ -54,6 +71,31 @@ class SessionMessageResponse(BaseModel):
     success: bool = True
     message_id: str
     state: str  # "queued" | "delivered"
+
+
+@router.post("/api/messages/send")
+async def post_message(
+    payload: MessageSendRequest,
+    request: Request,
+    ch=Depends(get_command_handler),
+) -> dict:
+    """Queue a message to any supported recipient kind."""
+    scope = getattr(request.state, "scope", LOCAL_SCOPE)
+    args = payload.model_dump(exclude_none=True)
+    scope_err = check_command_scope("message_send", args, scope)
+    if scope_err is not None:
+        return JSONResponse({"error": scope_err}, status_code=403)
+    args["_scope"] = {
+        "kind": scope.kind,
+        "session_id": scope.session_id,
+        "task_id": scope.task_id,
+        "project_id": scope.project_id,
+        "elevated": scope.elevated,
+    }
+    result = await ch.execute("message_send", args)
+    if "error" in result:
+        return JSONResponse({"error": result["error"]}, status_code=422)
+    return {"success": True, **result}
 
 
 #: Logical session roles this build knows how to address.  ``planner`` and

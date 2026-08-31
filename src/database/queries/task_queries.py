@@ -7,6 +7,7 @@ import logging
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from sqlalchemy import delete, insert, literal, null, select, update, func, and_
@@ -119,17 +120,28 @@ class TransitionResult:
 class TaskQueryMixin:
     """Query mixin for task operations.  Expects ``self._engine``."""
 
-    async def create_task(self, task: Task, *, conn=None) -> None:
-        """Insert a new task row.
-
-        Pass ``conn`` to run inside a caller-owned transaction (e.g. worker
-        filing's ``immediate()`` block); without it this opens its own.
-        """
+    async def create_task(
+        self, task: Task, *, conn=None, routing_policy: Callable[[Task], bool] | None = None,
+    ) -> None:
+        """Insert a task and its configured routing gate in the same transaction."""
+        async def write(connection):
+            await self._insert_task_row(task, conn=connection)
+            gated = routing_policy is not None and routing_policy(task)
+            if gated:
+                await self.create_gate(
+                    task.project_id, "routing", "Route task",
+                    question="Assign profile + intelligence class (+ workspace if profile needs one).",
+                    waiter_task_ids=[task.id], conn=connection,
+                )
+                task.is_blocked = True
+            return gated
         if conn is not None:
-            await self._insert_task_row(task, conn=conn)
+            await write(conn)
             return
         async with self._engine.begin() as conn:
-            await self._insert_task_row(task, conn=conn)
+            gated = await write(conn)
+        if gated:
+            await self.log_blocked_flips({task.id})
 
     async def _insert_task_row(self, task: Task, *, conn) -> None:
         """Insert a single task row.  Caller owns the transaction."""

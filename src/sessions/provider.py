@@ -260,6 +260,14 @@ class NotSubmitted(SessionError):
     """
 
 
+class NudgeDeferred(NotSubmitted):
+    """No input was sent: the composer is busy, has a draft, or is unknown.
+
+    Retry later without treating this as an agent's failed response or
+    consuming a stall/restart attempt. Message delivery remains pending.
+    """
+
+
 class PartialListError(SessionError):
     """``list_running`` failed mid-way; carries whatever was enumerated.
 

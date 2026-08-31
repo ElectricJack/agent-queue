@@ -121,3 +121,119 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         if expected is not None and value != expected:
             return f"out of scope: {key} mismatch"
     return None
+
+
+# A triage task needs to inspect and route its project's queue. These are
+# capabilities of a saved, actively assigned triage session, never elevation
+# inferred from client arguments or the worker's model/name.
+_TRIAGE_COMMANDS = frozenset({
+    "list_tasks", "get_task", "task_show", "gate_list", "gate_show",
+    "list_profiles", "list_intelligence_classes", "task_route",
+})
+
+
+async def _has_live_triage_assignment(db, scope: RequestScope) -> bool:
+    from src.models import AgentState, TaskStatus
+
+    if db is None or not scope.session_id or not scope.project_id:
+        return False
+    session = await db.get_session(scope.session_id)
+    triage_profiles = {"triage", f"project:{scope.project_id}:triage"}
+    if (
+        session is None
+        or session.project_id != scope.project_id
+        or session.profile_id not in triage_profiles
+        or session.lifecycle not in {"task", "pool"}
+        or session.state not in {"starting", "running"}
+        or session.desired_state != "running"
+        or not session.task_id
+        or not session.agent_id
+        or (scope.task_id is not None and scope.task_id != session.task_id)
+        or (session.lifecycle == "task" and scope.task_id != session.task_id)
+    ):
+        return False
+    task = await db.get_task(session.task_id)
+    if (
+        task is None
+        or task.project_id != scope.project_id
+        or task.profile_id not in triage_profiles
+        or task.status != TaskStatus.IN_PROGRESS
+        or task.assigned_agent_id != session.agent_id
+    ):
+        return False
+    agent = await db.get_agent(session.agent_id)
+    return bool(
+        agent is not None
+        and agent.enabled
+        and agent.deleted_at is None
+        and agent.state == AgentState.BUSY
+        and agent.current_task_id == task.id
+    )
+
+
+async def check_request_scope(
+    command: str, args: dict, scope: RequestScope, *, db=None,
+) -> str | None:
+    """Apply the normal scope, with narrowly verified triage capabilities.
+
+    Both HTTP command surfaces use this guard. Tokens retain their ordinary
+    task/session identity; granting queue access never grants operator commands
+    or loosens the ownership checks for task mutations such as task_close.
+    """
+    if scope.kind != "session" or scope.elevated or command not in _TRIAGE_COMMANDS:
+        return check_command_scope(command, args, scope)
+
+    ordinary_args = dict(args)
+    error = check_command_scope(command, ordinary_args, scope)
+    if error is None:
+        args.update(ordinary_args)
+        return None
+    if not await _has_live_triage_assignment(db, scope):
+        return error
+
+    project_id = scope.project_id
+    if args.get("project_id") not in (None, project_id):
+        return "out of scope: project_id mismatch"
+    if args.get("session_id") not in (None, scope.session_id):
+        return "out of scope: session_id mismatch"
+
+    if command in {"get_task", "task_show", "task_route"}:
+        task_id = args.get("task_id")
+        task = await db.get_task(str(task_id)) if task_id else None
+        if task is None or task.project_id != project_id:
+            return "out of scope: task must belong to this triage project's queue"
+        if command == "task_route":
+            profile_id = str(args.get("profile_id") or "")
+            if profile_id.startswith("project:") and not profile_id.startswith(
+                f"project:{project_id}:"
+            ):
+                return "out of scope: profile belongs to another project"
+            gates = await db.get_gates_for_task(task.id)
+            if not any(
+                gate["project_id"] == project_id
+                and gate["gate_type"] == "routing"
+                and gate["status"] == "open"
+                for gate in gates
+            ):
+                return "out of scope: triage may only route tasks with an open routing gate"
+    elif command == "gate_show":
+        gate_id = args.get("gate_id")
+        gate = await db.get_gate(str(gate_id)) if gate_id else None
+        if (
+            gate is None
+            or gate["project_id"] != project_id
+            or gate["gate_type"] != "routing"
+            or gate["status"] != "open"
+        ):
+            return "out of scope: triage may only read its project's open routing gates"
+    elif command == "gate_list":
+        if args.get("gate_type") not in (None, "routing") or args.get("status") not in (
+            None, "open",
+        ):
+            return "out of scope: triage may only read open routing gates"
+        args["gate_type"] = "routing"
+        args["status"] = "open"
+
+    args["project_id"] = project_id
+    args["session_id"] = scope.session_id
+    return None

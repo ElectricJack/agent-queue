@@ -20,7 +20,8 @@ The system default pipeline. Reacts to task lifecycle events.
 Ships three rules:
 
 - **Routing** (`task.created`) — attaches a routing gate to every new task and
-  coalesces work by ensuring an open triage task per project.
+  coalesces work by waking one reusable triage task per project only when
+  open routing gates need attention.
 - **Per-task review** (`task.completed`) — on every `task.completed` whose task
   has a `branch_name`, spawns one reviewer task with a `discovered-from` edge
   to the reviewed task and attaches a `task` gate to each downstream dependent
@@ -53,6 +54,7 @@ Ships three rules:
     {
       "id": "task-created-routing",
       "on": "task.created",
+      "when": {"field": "event.task.profile_id", "is_null": true},
       "entry": "attach_routing_gate",
       "nodes": {
         "attach_routing_gate": {
@@ -73,7 +75,7 @@ Ships three rules:
             "project_id": "{{event.project_id}}",
             "dedup_key": "triage-open",
             "title": "Triage unrouted tasks",
-            "description": "Route every unrouted task in this project via `task_route`. Close this task when the queue is empty.",
+            "description": "Route every task with an open routing gate in this project via `task_route`. Close this task with a summary when the queue is empty. The framework reuses this task for new routing requests; do not create another triage task.",
             "profile_id": "triage",
             "priority": 1
           },

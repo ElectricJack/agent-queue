@@ -53,7 +53,7 @@ export default function PlaybookDetail() {
                 <span>{meta.scope}{meta.scope_identifier ? `:${meta.scope_identifier}` : ""}</span>
                 <span>v{meta.version}</span>
                 <span>{meta.node_count} nodes</span>
-                {(meta.triggers ?? []).map((t) => (
+                {Array.from(new Set(meta.triggers ?? [])).map((t) => (
                   <span key={t} className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-300">
                     {t}
                   </span>
