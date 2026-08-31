@@ -958,3 +958,146 @@ class TestEndToEndCompilation:
 
         assert manager.get_playbook("review") is not None
         assert manager.get_scope_identifier("review") == "my-app"
+
+
+# ---------------------------------------------------------------------------
+# Vault deletion and read-failure handling (coverage plan items 23-24)
+# ---------------------------------------------------------------------------
+
+
+_PIPELINE_MD_TEMPLATE = """---
+id: __ID__
+kind: pipeline
+role: __ID__
+scope: system
+triggers: [task.created]
+---
+
+```json
+{
+  "entry": "start",
+  "nodes": {
+    "start": {"command": "list_tasks", "args": {}, "on_success": "done"},
+    "done": {"terminal": true}
+  }
+}
+```
+"""
+
+
+def _pipeline_md(playbook_id: str) -> str:
+    return _PIPELINE_MD_TEMPLATE.replace("__ID__", playbook_id)
+
+
+class TestVaultDeletionAndReadFailure:
+    """on_playbook_changed against a real PlaybookManager registry."""
+
+    @pytest.mark.asyncio
+    async def test_deleted_playbook_is_removed_by_source_path_then_by_stem(
+        self, tmp_path, caplog
+    ):
+        from src.playbooks.manager import PlaybookManager
+
+        manager = PlaybookManager(config=None)
+        playbook_dir = tmp_path / "vault" / "system" / "playbooks"
+        playbook_dir.mkdir(parents=True)
+
+        # A survivor playbook proves deletes are targeted, not sweeping.
+        survivor_path = playbook_dir / "survivor.md"
+        result = await manager.compile_playbook_pipeline(
+            _pipeline_md("survivor"),
+            source_path=str(survivor_path),
+            rel_path="system/playbooks/survivor.md",
+        )
+        assert result.success, result.errors
+
+        # Case 1: frontmatter id differs from the filename stem — the
+        # source-path lookup must find the right id.
+        odd_path = playbook_dir / "different-stem.md"
+        result = await manager.compile_playbook_pipeline(
+            _pipeline_md("real-id"),
+            source_path=str(odd_path),
+            rel_path="system/playbooks/different-stem.md",
+        )
+        assert result.success, result.errors
+        assert "real-id" in manager.active_playbooks
+
+        await on_playbook_changed(
+            [
+                VaultChange(
+                    path=str(odd_path),
+                    rel_path="system/playbooks/different-stem.md",
+                    operation="deleted",
+                )
+            ],
+            playbook_manager=manager,
+        )
+
+        assert "real-id" not in manager.active_playbooks
+        assert "survivor" in manager.active_playbooks
+
+        # Case 2: source paths lost (e.g. manager restarted between compile
+        # and delete) — the filename-stem fallback must be used.
+        stem_path = playbook_dir / "stem-id.md"
+        result = await manager.compile_playbook_pipeline(
+            _pipeline_md("stem-id"),
+            source_path=str(stem_path),
+            rel_path="system/playbooks/stem-id.md",
+        )
+        assert result.success, result.errors
+        manager._source_paths.clear()
+
+        await on_playbook_changed(
+            [
+                VaultChange(
+                    path=str(stem_path),
+                    rel_path="system/playbooks/stem-id.md",
+                    operation="deleted",
+                )
+            ],
+            playbook_manager=manager,
+        )
+
+        assert "stem-id" not in manager.active_playbooks
+        assert "survivor" in manager.active_playbooks
+
+        # Case 3: a path with no derivable id logs and removes nothing.
+        with caplog.at_level(logging.WARNING):
+            await on_playbook_changed(
+                [
+                    VaultChange(
+                        path=str(playbook_dir / "weird"),
+                        rel_path="system/playbooks/weird",
+                        operation="deleted",
+                    )
+                ],
+                playbook_manager=manager,
+            )
+
+        assert "could not derive ID" in caplog.text
+        assert "survivor" in manager.active_playbooks
+
+    @pytest.mark.asyncio
+    async def test_unreadable_playbook_file_is_skipped(self, tmp_path, caplog):
+        from src.playbooks.manager import PlaybookManager
+
+        manager = PlaybookManager(config=None)
+        command_handler = AsyncMock()
+        manager.set_command_handler(command_handler)
+        missing = tmp_path / "vault" / "system" / "playbooks" / "ghost.md"
+
+        with caplog.at_level(logging.ERROR):
+            await on_playbook_changed(
+                [
+                    VaultChange(
+                        path=str(missing),
+                        rel_path="system/playbooks/ghost.md",
+                        operation="modified",
+                    )
+                ],
+                playbook_manager=manager,
+            )
+
+        assert "Could not read playbook file" in caplog.text
+        command_handler.execute.assert_not_called()
+        assert manager.active_playbooks == {}

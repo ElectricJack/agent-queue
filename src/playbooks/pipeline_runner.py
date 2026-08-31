@@ -3,6 +3,7 @@
 Walks a compiled pipeline graph and executes each action node by calling
 ``CommandHandler.execute()`` directly. No LLM anywhere in the loop.
 """
+
 from __future__ import annotations
 
 import logging
@@ -52,7 +53,7 @@ def _substitute(value: Any, event: dict, outputs: dict) -> Any:
         if m:
             return _resolve_ref(m.group(1), event, outputs)
         return _TMPL_RE.sub(
-            lambda mm: ("" if (v := _resolve_ref(mm.group(1), event, outputs)) is None else str(v)),
+            lambda mm: "" if (v := _resolve_ref(mm.group(1), event, outputs)) is None else str(v),
             value,
         )
     if isinstance(value, dict):
@@ -164,14 +165,19 @@ class PipelineRunner:
         cmd = node.get("command")
         args_tmpl = node.get("args") or {}
         var = fe["as"]
-        for item in src:
-            self.outputs[var] = item
-            args = _substitute(args_tmpl, self.event, self.outputs)
-            result = await self.handler.execute(cmd, args)
-            if not result.get("success"):
-                fail_hop = node.get("on_failure")
-                if fail_hop:
-                    return fail_hop
-                return RunResult(self.run_id, "failed", str(result.get("error")))
-        self.outputs.pop(var, None)
+        # The loop variable is scoped to the iterations: pop it on every exit
+        # (success, on_failure hop, failed result, raised command) so failure-
+        # branch substitutions can never resolve it to a stale item.
+        try:
+            for item in src:
+                self.outputs[var] = item
+                args = _substitute(args_tmpl, self.event, self.outputs)
+                result = await self.handler.execute(cmd, args)
+                if not result.get("success"):
+                    fail_hop = node.get("on_failure")
+                    if fail_hop:
+                        return fail_hop
+                    return RunResult(self.run_id, "failed", str(result.get("error")))
+        finally:
+            self.outputs.pop(var, None)
         return node.get("on_success")

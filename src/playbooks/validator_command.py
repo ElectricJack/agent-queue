@@ -9,6 +9,7 @@ compiler.  Two commands:
 - ``playbook_install(playbook_id, compiled_path)`` — re-validate a JSON
   artifact and install it through ``PlaybookManager``.
 """
+
 from __future__ import annotations
 
 import json
@@ -37,9 +38,13 @@ def _structure_errors(raw: list[str]) -> list[dict]:
             if end > 0:
                 node = e[6:end]
                 rest = e[end + 1 :].lstrip()
+                # "Node 'x': message" — drop the separator colon so the bare
+                # message is not misread as an empty field name.
+                if rest.startswith(":"):
+                    rest = rest[1:].lstrip()
                 if ":" in rest:
                     field_part, msg = rest.split(":", 1)
-                    field = field_part.strip()
+                    field = field_part.strip() or None
                     msg = msg.strip()
                 else:
                     msg = rest
@@ -75,17 +80,13 @@ class PlaybookValidateInstallMixin:
         if not path_arg:
             return {
                 "success": False,
-                "errors": [
-                    {"node": None, "field": "path", "message": "path is required"}
-                ],
+                "errors": [{"node": None, "field": "path", "message": "path is required"}],
             }
         resolved, err = _vault_bounded(self, str(path_arg))
         if err is not None:
             return {
                 "success": False,
-                "errors": [
-                    {"node": None, "field": "path", "message": err}
-                ],
+                "errors": [{"node": None, "field": "path", "message": err}],
             }
         path = resolved
         if not path.is_file():
@@ -160,9 +161,7 @@ class PlaybookValidateInstallMixin:
         except json.JSONDecodeError as exc:
             return {
                 "success": False,
-                "errors": [
-                    {"node": None, "field": None, "message": f"invalid JSON: {exc}"}
-                ],
+                "errors": [{"node": None, "field": None, "message": f"invalid JSON: {exc}"}],
             }
         try:
             pb = CompiledPlaybook.from_dict(data)
@@ -200,9 +199,7 @@ class PlaybookValidateInstallMixin:
         if err is not None:
             return {
                 "success": False,
-                "errors": [
-                    {"node": None, "field": "compiled_path", "message": err}
-                ],
+                "errors": [{"node": None, "field": "compiled_path", "message": err}],
             }
         compiled_path = str(resolved)
         # Server-side re-validation.
@@ -216,9 +213,7 @@ class PlaybookValidateInstallMixin:
                     {
                         "node": None,
                         "field": "compiled_path",
-                        "message": (
-                            "compiled_path must be a JSON artifact, not a markdown source"
-                        ),
+                        "message": ("compiled_path must be a JSON artifact, not a markdown source"),
                     }
                 ],
             }
@@ -231,9 +226,7 @@ class PlaybookValidateInstallMixin:
                     {
                         "node": None,
                         "field": "id",
-                        "message": (
-                            f"artifact id '{pb.id}' != requested '{playbook_id}'"
-                        ),
+                        "message": (f"artifact id '{pb.id}' != requested '{playbook_id}'"),
                     }
                 ],
             }
@@ -249,5 +242,15 @@ class PlaybookValidateInstallMixin:
                     }
                 ],
             }
-        await pm.install_compiled(pb)
+        try:
+            await pm.install_compiled(pb)
+        except Exception as exc:
+            # install_compiled fails loudly (and rolls back) on store-save
+            # failure (PB-5); keep the command's structured-error convention
+            # so the compiler agent sees an actionable failure.
+            logger.error("playbook_install failed for '%s'", playbook_id, exc_info=True)
+            return {
+                "success": False,
+                "errors": [{"node": None, "field": None, "message": f"install failed: {exc}"}],
+            }
         return {"success": True}

@@ -65,3 +65,46 @@ async def test_compile_task_project_id_is_deterministic_across_row_order():
 
 async def _projects(projects):
     return projects
+
+
+# ---------------------------------------------------------------------------
+# PB-5: store-save failure semantics — the install must fail loudly and
+# leave memory and disk consistent (previous version stays active in both).
+# ---------------------------------------------------------------------------
+
+
+def _broken_save(*args, **kwargs):
+    raise OSError("disk full")
+
+
+@pytest.mark.asyncio
+async def test_install_compiled_store_failure_rolls_back_and_raises(tmp_path):
+    store = CompiledPlaybookStore(SimpleNamespace(compiled_root=str(tmp_path)))
+    manager = PlaybookManager(config=None, store=store)
+    await manager.install_compiled(_playbook("pb", 1, "task.created"))
+
+    store.save = _broken_save
+    with pytest.raises(RuntimeError, match="store save failed"):
+        await manager.install_compiled(_playbook("pb", 2, "task.completed"))
+
+    # Memory rolled back to the version that is actually on disk.
+    assert manager.active_playbooks["pb"].version == 1
+    assert [p.version for p in manager.get_playbooks_by_trigger("task.created")] == [1]
+    assert manager.get_playbooks_by_trigger("task.completed") == []
+    del store.save  # restore the class method
+    assert store.load("pb", "system").version == 1
+
+
+@pytest.mark.asyncio
+async def test_install_compiled_store_failure_on_first_install_leaves_no_ghost(tmp_path):
+    store = CompiledPlaybookStore(SimpleNamespace(compiled_root=str(tmp_path)))
+    manager = PlaybookManager(config=None, store=store)
+    store.save = _broken_save
+
+    with pytest.raises(RuntimeError, match="store save failed"):
+        await manager.install_compiled(_playbook("pb", 1, "task.created"))
+
+    # Nothing is live in this process that would vanish on restart.
+    assert "pb" not in manager.active_playbooks
+    assert manager.get_playbooks_by_trigger("task.created") == []
+    assert "pb" not in manager._scope_identifiers

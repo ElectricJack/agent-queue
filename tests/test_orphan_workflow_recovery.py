@@ -437,6 +437,39 @@ class TestPeriodicMonitoring:
         assert len(orphan_events) == 1
         assert orphan_events[0]["workflow_id"] == "wf-1"
 
+    async def test_check_periodic_emits_for_missing_run_id_and_missing_run(
+        self, mock_db, event_bus
+    ):
+        """The production (run_one_cycle) path detects both orphan classes:
+        a workflow with no playbook_run_id and one whose run row is gone."""
+        no_run_id = _make_workflow(workflow_id="wf-no-run-id", playbook_run_id="")
+        run_missing = _make_workflow(
+            workflow_id="wf-run-missing", playbook_run_id="run-gone"
+        )
+        mock_db.list_workflows.return_value = [no_run_id, run_missing]
+        mock_db.get_playbook_run.return_value = None
+
+        orphan_events = []
+        event_bus.subscribe("workflow.orphaned", lambda d: orphan_events.append(d))
+
+        recovery = OrphanWorkflowRecovery(
+            db=mock_db, event_bus=event_bus, check_interval_seconds=0
+        )
+        await recovery.check_periodic()
+
+        assert len(orphan_events) == 2
+        reasons = {e["workflow_id"]: e["reason"] for e in orphan_events}
+        assert reasons == {
+            "wf-no-run-id": "no_playbook_run_id",
+            "wf-run-missing": "run_not_found",
+        }
+        assert recovery._reported_orphans == {"wf-no-run-id", "wf-run-missing"}
+
+        # A later cycle must not re-report the same orphans.
+        recovery._last_check_time = 0
+        await recovery.check_periodic()
+        assert len(orphan_events) == 2
+
     async def test_no_duplicate_events(self, mock_db, event_bus):
         """Already-reported orphan is not re-emitted."""
         workflow = _make_workflow()
