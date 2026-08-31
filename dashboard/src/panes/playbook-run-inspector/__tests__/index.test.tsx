@@ -115,6 +115,28 @@ describe("PlaybookRunInspectorPane", () => {
     expect(screen.getByText("classify")).toBeInTheDocument();
   });
 
+  it("renders the pinned graph for the run", () => {
+    vi.mocked(hooks.useInspectPlaybookRun).mockReturnValue({
+      data: mockRun({
+        graph: {
+          nodes: {
+            intake: { entry: true, goto: "classify", prompt: "Read the event" },
+            classify: { terminal: true },
+          },
+        },
+      }),
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as never);
+
+    render(<PlaybookRunInspectorPane {...baseProps()} />);
+
+    expect(screen.getByRole("region", { name: "Playbook graph" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("playbook-graph-node")).toHaveLength(2);
+  });
+
   it("defaults selection to the last trace entry", () => {
     vi.mocked(hooks.useInspectPlaybookRun).mockReturnValue({
       data: mockRun(),

@@ -39,6 +39,7 @@ from src.models import AgentProfile, PlaybookRun, PlaybookRunEvent, PlaybookRunS
 from src.playbooks.runner_context import ContextMixin, _parse_json_from_text
 from src.playbooks.runner_events import EventsMixin
 from src.playbooks.services import PlaybookServices
+from src.playbooks.run_task import sync_playbook_run_task
 from src.playbooks.runner_transitions import TransitionMixin, _event_to_fallback_status
 from src.playbooks.state_machine import (
     InvalidPlaybookRunTransition,
@@ -61,6 +62,7 @@ from src.playbooks.runner_transitions import (  # noqa: F401
 )
 
 if TYPE_CHECKING:
+    from src.commands.handler import CommandHandler
     from src.database.base import DatabaseBackend
     from src.event_bus import EventBus
 
@@ -414,6 +416,23 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
     # Public API
     # ------------------------------------------------------------------
 
+    async def _sync_run_task(
+        self,
+        status: str,
+        task_handler: CommandHandler | None = None,
+    ) -> None:
+        """Project this persisted run into the command-center task graph."""
+        task_handler = task_handler or getattr(self.services, "handler", None)
+        if task_handler is None:
+            return
+        await sync_playbook_run_task(
+            task_handler,
+            project_id=self.event.get("project_id") if isinstance(self.event, dict) else None,
+            playbook_id=self._playbook_id,
+            run_id=self.run_id,
+            status=status,
+        )
+
     async def run(self) -> RunResult:
         """Execute the playbook graph from entry to terminal node.
 
@@ -494,6 +513,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         )
         if self.db:
             await self.db.create_playbook_run(db_run)
+            await self._sync_run_task(self._status.value)
 
         # Daily playbook token cap check (roadmap 5.2.8).
         # Query today's cumulative usage before spending any tokens.
@@ -686,6 +706,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 tokens_used=self.tokens_used,
                 completed_at=completed_at,
             )
+            await self._sync_run_task(self._status.value)
 
         if self.on_progress:
             await self.on_progress("playbook_completed", self._playbook_id)
@@ -803,6 +824,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         # Update DB status to running
         if db:
             await db.update_playbook_run(db_run.run_id, status=runner._status.value)
+            await runner._sync_run_task(runner._status.value)
 
         # Emit playbook.run.resumed event (spec §9) for audit/notification
         paused_node_id = db_run.current_node
@@ -866,6 +888,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                     tokens_used=runner.tokens_used,
                     completed_at=completed_at,
                 )
+                await runner._sync_run_task(runner._status.value)
             # Emit playbook.run.completed event (roadmap 5.3.6)
             await runner._emit_completed_event(started_at=db_run.started_at)
             return RunResult(
@@ -980,6 +1003,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 tokens_used=runner.tokens_used,
                 completed_at=completed_at,
             )
+            await runner._sync_run_task(runner._status.value)
 
         # Emit playbook.run.completed event (roadmap 5.3.6)
         await runner._emit_completed_event(
@@ -1099,6 +1123,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 status=runner._status.value,
                 waiting_for_event=None,
             )
+            await runner._sync_run_task(runner._status.value)
 
         # Emit playbook.run.resumed event for audit/notification
         paused_node_id = db_run.current_node
@@ -1165,6 +1190,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                     tokens_used=runner.tokens_used,
                     completed_at=completed_at,
                 )
+                await runner._sync_run_task(runner._status.value)
             await runner._emit_completed_event(started_at=db_run.started_at)
             return RunResult(
                 run_id=db_run.run_id,
@@ -1272,6 +1298,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 tokens_used=runner.tokens_used,
                 completed_at=completed_at,
             )
+            await runner._sync_run_task(runner._status.value)
 
         await runner._emit_completed_event(
             final_context=final_response,
@@ -1299,6 +1326,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         db: DatabaseBackend | None = None,
         on_progress: Callable[[str, str | None], Awaitable[None]] | None = None,
         event_bus: EventBus | None = None,
+        task_handler: CommandHandler | None = None,
     ) -> RunResult:
         """Handle a paused run whose pause timeout has expired.
 
@@ -1325,6 +1353,9 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
             Optional progress callback.
         event_bus:
             Optional EventBus for emitting timeout events.
+        task_handler:
+            Optional command handler for updating the run's command-center
+            root task when timeout handling does not require services.
         """
         # Resolve effective graph (version pinning)
         if db_run.pinned_graph:
@@ -1396,6 +1427,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 completed_at=completed_at,
                 error=error,
             )
+            await runner._sync_run_task(runner._status.value, task_handler)
 
         if on_progress:
             await on_progress("playbook_timed_out", paused_node_id)
@@ -1470,6 +1502,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
         # Update DB status to running
         if db:
             await db.update_playbook_run(db_run.run_id, status=runner._status.value)
+            await runner._sync_run_task(runner._status.value)
 
         # Emit timeout event with transition info
         await runner._emit_timed_out_event(
@@ -1585,6 +1618,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 tokens_used=runner.tokens_used,
                 completed_at=completed_at,
             )
+            await runner._sync_run_task(runner._status.value)
 
         await runner._emit_completed_event(
             final_context=final_response,
@@ -2026,6 +2060,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 completed_at=time.time(),
                 error=error,
             )
+            await self._sync_run_task(status)
 
         if self.on_progress:
             await self.on_progress("playbook_failed", error)
@@ -2083,6 +2118,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 tokens_used=self.tokens_used,
                 paused_at=paused_at,
             )
+            await self._sync_run_task(self._status.value)
 
         if self.on_progress:
             await self.on_progress("playbook_paused", node_id)
@@ -2151,6 +2187,7 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 paused_at=paused_at,
                 waiting_for_event=event_type,
             )
+            await self._sync_run_task(self._status.value)
 
         if self.on_progress:
             await self.on_progress("playbook_paused_for_event", node_id)

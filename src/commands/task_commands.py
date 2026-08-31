@@ -1372,11 +1372,20 @@ class TaskCommandsMixin:
         has_blocking_edge = bool(parent_id) or any(
             dep_type in BLOCKING_DEP_TYPES for _, dep_type, _ in edges
         )
-        initial_status = (
-            TaskStatus.DEFINED
-            if (self._plan_subtask_creation_mode or has_blocking_edge or filing_session is not None)
-            else TaskStatus.READY
+        internal_initial_status = (
+            args.get("_initial_status") if filing_session is None else None
         )
+        if internal_initial_status is not None:
+            try:
+                initial_status = TaskStatus(internal_initial_status)
+            except ValueError:
+                return {"error": f"Invalid internal initial status '{internal_initial_status}'"}
+        else:
+            initial_status = (
+                TaskStatus.DEFINED
+                if (self._plan_subtask_creation_mode or has_blocking_edge or filing_session is not None)
+                else TaskStatus.READY
+            )
         auto_approve_plan = args.get("auto_approve_plan", False)
         skip_verification = args.get("skip_verification", False)
         workflow_id = args.get("workflow_id")
@@ -3609,6 +3618,23 @@ class TaskCommandsMixin:
             # ensure_task is the ensuring pipeline's responsibility.
             "_suppress_created_event": True,
         }
+        # Presentation tasks such as playbook-run roots must be born in their
+        # projected state. Creating them READY and editing them afterward
+        # leaves a window where a pull worker can claim control-plane data as
+        # executable work.
+        if args.get("initial_status"):
+            if not str(dedup_key).startswith("playbook-run:"):
+                return {
+                    "success": False,
+                    "error": "initial_status is reserved for playbook-run presentation tasks",
+                }
+            allowed = {"IN_PROGRESS", "PAUSED", "COMPLETED", "FAILED"}
+            if args["initial_status"] not in allowed:
+                return {
+                    "success": False,
+                    "error": f"Invalid playbook-run initial status '{args['initial_status']}'",
+                }
+            create_args["_initial_status"] = args["initial_status"]
         # Optional pre-routing: control-plane tasks skip triage, so the
         # ensuring pipeline may pin the executing profile directly (e.g.
         # the default pipeline pins 'triage' on the triage task).

@@ -16,6 +16,7 @@ class GraphTaskNode(BaseModel):
     assigned_agent_id: str | None = None
     branch_name: str | None = None
     pr_url: str | None = None
+    playbook_run_id: str | None = None
 
 
 class GraphEdge(BaseModel):

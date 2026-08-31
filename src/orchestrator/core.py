@@ -119,6 +119,7 @@ from src.orchestrator.pools import PoolsMixin
 from src.orchestrator.triage import TriageMixin
 
 from src.playbooks.conditions import eval_pipeline_when as _eval_pipeline_when
+from src.playbooks.run_task import sync_playbook_run_task
 
 logger = logging.getLogger(__name__)
 
@@ -934,6 +935,8 @@ class Orchestrator(
                     for g, _entry in pipeline_run_graphs
                 ]
                 primary_runner = runners[0]
+                for pipeline_runner in runners:
+                    pipeline_runner.run_id = primary_runner.run_id
 
                 # Create a run row now so the UNIQUE constraint provides
                 # idempotency for pipeline runs (Task 9 deferred this).
@@ -946,6 +949,7 @@ class Orchestrator(
                         trigger_event=_json.dumps(event_data),
                         status="running",
                         started_at=time.time(),
+                        pinned_graph=_json.dumps(graph),
                         event_id=event_id,
                     )
                     try:
@@ -968,6 +972,13 @@ class Orchestrator(
                 async def _run_pipeline() -> None:
                     with CorrelationContext(run_id=primary_runner.run_id):
                         status, error = "completed", None
+                        await sync_playbook_run_task(
+                            handler,
+                            project_id=project_id,
+                            playbook_id=playbook.id,
+                            run_id=primary_runner.run_id,
+                            status="running",
+                        )
                         try:
                             for r in runners:
                                 result = await r.run()
@@ -995,6 +1006,13 @@ class Orchestrator(
                                     "Failed to record pipeline run outcome (run=%s)",
                                     primary_runner.run_id,
                                 )
+                        await sync_playbook_run_task(
+                            handler,
+                            project_id=project_id,
+                            playbook_id=playbook.id,
+                            run_id=primary_runner.run_id,
+                            status=status,
+                        )
 
                 asyncio.create_task(
                     _run_pipeline(),

@@ -94,6 +94,11 @@ def build_graph_router(*, db) -> APIRouter:
                     assigned_agent_id=t.assigned_agent_id,
                     branch_name=t.branch_name,
                     pr_url=t.pr_url,
+                    playbook_run_id=(
+                        t.dedup_key.removeprefix("playbook-run:")
+                        if t.dedup_key and t.dedup_key.startswith("playbook-run:")
+                        else None
+                    ),
                 )
                 for t in tasks
             ],

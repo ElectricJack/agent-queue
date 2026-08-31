@@ -51,12 +51,12 @@ export default function CommandCenterTasks() {
             <tr key={task.id} tabIndex={0} data-listnav="1" data-task-row={task.id} aria-selected={selectedTaskId === task.id}
               onClick={(event) => {
                 if ((event.target as HTMLElement).closest('button, input, select, textarea, a, [role="dialog"]')) return;
-                selectTask(task.id);
+                selectTask(task);
               }}
               onKeyDown={(event) => {
                 if (event.target !== event.currentTarget) return;
                 if (event.key === "Enter" || event.key === " " || event.key === "o") {
-                  event.preventDefault(); selectTask(task.id);
+                  event.preventDefault(); selectTask(task);
                 }
               }}
               className={`cursor-pointer focus:outline focus:outline-1 focus:outline-indigo-400 ${selectedTaskId === task.id ? "bg-indigo-500/15" : "hover:bg-gray-900/70"}`}>

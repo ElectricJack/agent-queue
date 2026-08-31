@@ -686,6 +686,26 @@ class TestResponseFormatConsistency:
         assert "tokens_used" in result
         assert "trigger_event" in result
 
+    async def test_inspect_playbook_run_includes_pinned_graph(self):
+        graph = {
+            "id": "pipeline",
+            "pipeline_rules": {"task.completed": [{"entry": "route-start"}]},
+            "nodes": {
+                "route-start": {
+                    "entry": True,
+                    "action": {"command": "ensure_task", "on_success": "route-done"},
+                },
+                "route-done": {"terminal": True},
+            },
+        }
+        run = FakePlaybookRun(run_id="run-graph", pinned_graph=json.dumps(graph))
+        handler = _make_handler()
+        handler.db.get_playbook_run = AsyncMock(return_value=run)
+
+        result = await handler._cmd_inspect_playbook_run({"run_id": "run-graph"})
+
+        assert result["graph"] == graph
+
     async def test_inspect_playbook_run_error_format(self):
         """inspect_playbook_run with missing run_id returns dict with 'error' key."""
         handler = _make_handler()

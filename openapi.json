@@ -20831,6 +20831,17 @@
               }
             ],
             "title": "Pr Url"
+          },
+          "playbook_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Run Id"
           }
         },
         "type": "object",
@@ -21191,6 +21202,18 @@
               }
             ],
             "title": "Total Duration Seconds"
+          },
+          "graph": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph"
           }
         },
         "type": "object",

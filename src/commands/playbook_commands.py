@@ -11,6 +11,7 @@ import yaml
 
 from src.logging_config import CorrelationContext
 from src.models import PlaybookRunStatus
+from src.playbooks.run_task import sync_playbook_run_task
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +271,16 @@ class PlaybookCommandsMixin:
         except (json.JSONDecodeError, TypeError):
             trigger_event = {}
 
+        raw_pinned_graph = getattr(db_run, "pinned_graph", None)
+        try:
+            pinned_graph = (
+                json.loads(raw_pinned_graph)
+                if isinstance(raw_pinned_graph, str)
+                else raw_pinned_graph
+            )
+        except (json.JSONDecodeError, TypeError):
+            pinned_graph = None
+
         # Compute per-node durations from the trace
         enriched_trace = []
         for entry in node_trace:
@@ -295,6 +306,7 @@ class PlaybookCommandsMixin:
             "conversation_history": conversation_history,
             "message_count": len(conversation_history),
             "trigger_event": trigger_event,
+            "graph": pinned_graph,
         }
         if db_run.error:
             result["error"] = db_run.error
@@ -391,6 +403,7 @@ class PlaybookCommandsMixin:
                         services=services,
                         db=self.db,
                         event_bus=event_bus,
+                        task_handler=self,
                     )
             except Exception as exc:
                 logger.error("Timeout handling failed for run %s: %s", run_id, exc, exc_info=True)
@@ -399,6 +412,21 @@ class PlaybookCommandsMixin:
                     status="timed_out",
                     completed_at=time.time(),
                     error=f"Pause timeout exceeded ({pause_timeout_seconds}s)",
+                )
+                try:
+                    timeout_trigger = (
+                        json.loads(db_run.trigger_event)
+                        if isinstance(db_run.trigger_event, str)
+                        else db_run.trigger_event or {}
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    timeout_trigger = {}
+                await sync_playbook_run_task(
+                    self,
+                    project_id=timeout_trigger.get("project_id"),
+                    playbook_id=db_run.playbook_id,
+                    run_id=run_id,
+                    status="timed_out",
                 )
                 return {
                     "error": (
@@ -530,6 +558,14 @@ class PlaybookCommandsMixin:
             )
         except (json.JSONDecodeError, TypeError):
             trigger_event = {}
+
+        await sync_playbook_run_task(
+            self,
+            project_id=trigger_event.get("project_id"),
+            playbook_id=db_run.playbook_id,
+            run_id=run_id,
+            status="cancelled",
+        )
 
         event_bus = getattr(self.orchestrator, "bus", None)
         if event_bus:
@@ -1791,6 +1827,7 @@ class PlaybookCommandsMixin:
                         services=services,
                         db=self.db,
                         event_bus=event_bus,
+                        task_handler=self,
                     )
                 results.append(
                     {
@@ -1815,6 +1852,18 @@ class PlaybookCommandsMixin:
                         status="timed_out",
                         completed_at=time.time(),
                         error=f"Pause timeout exceeded ({timeout_seconds}s)",
+                    )
+                    trigger_event = (
+                        json.loads(db_run.trigger_event)
+                        if isinstance(db_run.trigger_event, str)
+                        else db_run.trigger_event or {}
+                    )
+                    await sync_playbook_run_task(
+                        self,
+                        project_id=trigger_event.get("project_id"),
+                        playbook_id=db_run.playbook_id,
+                        run_id=db_run.run_id,
+                        status="timed_out",
                     )
                 except Exception:
                     pass

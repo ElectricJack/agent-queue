@@ -232,6 +232,21 @@ class TestLinearExecution:
         assert result.node_trace[0]["node_id"] == "scan"
         assert result.node_trace[0]["status"] == "completed"
 
+    async def test_project_run_syncs_root_task_at_start_and_completion(
+        self, monkeypatch, mock_services, mock_db, simple_graph, event_data
+    ):
+        sync = AsyncMock(return_value="run-root")
+        monkeypatch.setattr("src.playbooks.runner.sync_playbook_run_task", sync)
+        runner = PlaybookRunner(simple_graph, event_data, mock_services, db=mock_db)
+
+        await runner.run()
+
+        assert [call.kwargs["status"] for call in sync.await_args_list] == [
+            "running",
+            "completed",
+        ]
+        assert all(call.kwargs["run_id"] == runner.run_id for call in sync.await_args_list)
+
     async def test_supervisor_called_with_node_prompt(
         self, mock_services, simple_graph, event_data
     ):

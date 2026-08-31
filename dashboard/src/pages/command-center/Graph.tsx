@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePlaybooks } from "../../api/hooks";
 import { useShellPaneStore } from "../../panes/store";
 import { projectPlaybooks } from "./playbooks";
@@ -25,10 +25,14 @@ export default function CommandCenterGraph() {
   const { projectId, projectIds, projects, filters, isLoadingProjects, projectsError } = useTaskWorkspace();
   const { data: graph, isLoading, errors } = useProjectGraphs(projectIds);
   const { selectedTaskId, selectTask, clearTask } = useTaskSelection();
+  const selectTaskById = useCallback((taskId: string) => {
+    const task = graph.tasks.find((candidate) => candidate.id === taskId);
+    if (task) selectTask(task);
+  }, [graph.tasks, selectTask]);
   const { data: definitions = [], isLoading: loadingPlaybooks, error: playbooksError, refetch: retryPlaybooks } = usePlaybooks();
   const { state: pane, open, close } = useShellPaneStore();
   const selectedPlaybookId = pane.kind === "open" && pane.view === "playbook-detail" ? (pane.args as { playbookId: string }).playbookId : null;
-  const clearSelection = () => { clearTask(); if (selectedPlaybookId || (pane.kind === "open" && pane.view === "playbook-run-inspector")) close(); };
+  const clearSelection = () => { clearTask(); if (selectedPlaybookId) close(); };
   const playbooks = useMemo(() => projectPlaybooks(definitions, projectIds, filters.query), [definitions, projectIds, filters.query]);
   const mobile = usePortraitMobile();
   const matchingTaskIds = useMemo(() => {
@@ -58,7 +62,7 @@ export default function CommandCenterGraph() {
       </div>
       <div className="relative min-h-0 flex-1" aria-busy={loading}>
         <View graph={graph} matchingTaskIds={matchingTaskIds} filtering={!!(filters.query.trim() || filters.status)}
-          selectedTaskId={selectedTaskId} onTaskClick={selectTask} onBackgroundClick={clearSelection}
+          selectedTaskId={selectedTaskId} onTaskClick={selectTaskById} onBackgroundClick={clearSelection}
           playbooks={playbooks} selectedPlaybookId={selectedPlaybookId} onPlaybookClick={playbookId => open("playbook-detail", { playbookId })} />
         {loading && graph.tasks.length === 0 && playbooks.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gray-950 text-sm text-gray-400">Loading tasks…</div>}
       </div>
