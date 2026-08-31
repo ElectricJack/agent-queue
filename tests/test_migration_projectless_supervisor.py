@@ -119,7 +119,10 @@ def test_upgrade_preserves_global_history_and_removes_placeholder(legacy_db):
             assert set(after) == set(before[table])
             for row_id, original in before[table].items():
                 expected_project = "p1" if row_id.startswith("other-project-") else None
-                assert after[row_id] == {**original, "project_id": expected_project}
+                # Later migrations may add columns; compare the columns that
+                # existed at the revision under test.
+                migrated = {k: after[row_id][k] for k in original}
+                assert migrated == {**original, "project_id": expected_project}
         assert conn.exec_driver_sql("PRAGMA foreign_key_check").all() == []
         assert conn.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
 
