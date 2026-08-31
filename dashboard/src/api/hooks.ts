@@ -45,6 +45,8 @@ import {
   listWorkspaces,
   orchestratorControl,
   pauseProject,
+  pauseTask,
+  resumeTask,
   probeMcpServer,
   provideInput,
   rejectPlan,
@@ -552,6 +554,27 @@ function useTaskMutationCallbacks() {
       queryClient.invalidateQueries({ queryKey: ["projectGraph"] });
     },
   };
+}
+
+export function usePauseTask() {
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string }) =>
+      (await pauseTask({ body: input, throwOnError: true })).data,
+    ...cb,
+    // Stop failure can still have persisted the hold. Refresh that state.
+    onError: cb.onSuccess,
+  });
+}
+
+export function useResumeTask() {
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string }) =>
+      (await resumeTask({ body: input, throwOnError: true })).data,
+    ...cb,
+    onError: cb.onSuccess,
+  });
 }
 
 export function useStopTask() {

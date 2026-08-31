@@ -75,11 +75,14 @@ def base_repo(tmp_path: Path) -> Path:
 
 
 class FakeDB:
-    """Minimal DB double: the four methods the slot manager actually calls."""
+    """Minimal DB double for workspace operations and optional task checkpoints."""
 
     def __init__(self):
         self.workspaces: dict[str, Workspace] = {}
         self.contexts: list[dict] = []
+
+    async def get_task_meta(self, task_id, key):
+        return None
 
     async def create_workspace(self, ws: Workspace) -> None:
         self.workspaces[ws.id] = ws

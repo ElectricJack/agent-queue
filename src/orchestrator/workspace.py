@@ -71,6 +71,13 @@ class WorkspaceMixin:
             pass
 
     async def _prepare_workspace(self, task: Task, agent) -> str | None:
+        async with self._task_control_lock(task.id):
+            current = await self.db.get_task(task.id)
+            if current and current.status == TaskStatus.PAUSED and current.resume_after is None:
+                return None
+            return await self._prepare_workspace_locked(task, agent)
+
+    async def _prepare_workspace_locked(self, task: Task, agent) -> str | None:
         """Acquire workspace(s) for the task and prepare the primary one.
 
         See workspaces-v2 spec §6.5 + §6.6.  This method delegates lock
@@ -271,6 +278,18 @@ class WorkspaceMixin:
                 f.write(f"{task.id}\n{agent.id}\n")
         except OSError as e:
             logger.warning("Failed to write sentinel to %s: %s", workspace, e)
+
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META, restore_checkpoint
+        if await self.db.get_task_meta(task.id, CHECKPOINT_META):
+            try:
+                branch = await restore_checkpoint(self.db, self.git, task.id, workspace)
+                await self.db.update_task(task.id, branch_name=branch)
+                return workspace  # Preserve the resumed task's plan files too.
+            except Exception as exc:
+                logger.error("Cannot restore paused task %s: %s", task.id, exc)
+                self._remove_sentinel(workspace)
+                await self._release_workspace_and_cleanup(ws)
+                return None
 
         repo_url = project.repo_url if project else ""
         default_branch = await self._get_default_branch(project, workspace)
@@ -677,6 +696,13 @@ class WorkspaceMixin:
         logger.info("Cleaned up worktree workspace %s at %s", ws.id, ws.workspace_path)
 
     async def _release_workspaces_for_task(self, task_id: str) -> None:
+        async with self._task_control_lock(task_id):
+            current = await self.db.get_task(task_id)
+            if current and current.status == TaskStatus.PAUSED and current.resume_after is None:
+                return
+            await self._release_workspaces_for_task_locked(task_id)
+
+    async def _release_workspaces_for_task_locked(self, task_id: str) -> None:
         """Release all workspace locks for a task, cleaning up worktrees.
 
         Wraps ``db.release_workspaces_for_task()`` with worktree awareness.

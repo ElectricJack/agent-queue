@@ -16,7 +16,9 @@ from sqlalchemy import and_, case, exists, false, func, literal, select, update
 
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.session_queries import _row_to_session
-from src.database.queries.task_queries import TransitionResult, supports_returning
+from src.database.queries.task_queries import (
+    ManualPauseActive, TransitionResult, _not_manually_paused, supports_returning,
+)
 from src.database.tables import agents, sessions, task_workspace_requirements, tasks, workspaces
 from src.models import AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
 
@@ -192,11 +194,13 @@ class ClaimQueryMixin:
 
     async def bump_claim_epoch(self, task_id: str, *, conn=None) -> int:
         async def _run(c):
-            await c.execute(
+            changed = await c.execute(
                 update(tasks)
-                .where(tasks.c.id == task_id)
+                .where(tasks.c.id == task_id, _not_manually_paused())
                 .values(claim_epoch=tasks.c.claim_epoch + 1)
             )
+            if changed.rowcount == 0:
+                raise ManualPauseActive(f"Task {task_id} is paused or missing; cannot launch.")
             return (
                 await c.execute(select(tasks.c.claim_epoch).where(tasks.c.id == task_id))
             ).scalar() or 0
@@ -265,6 +269,14 @@ class ClaimQueryMixin:
         """
 
         async def _run(c):
+            # Share the task row lock with pause. An EXISTS predicate alone
+            # can observe a pre-pause PostgreSQL statement snapshot.
+            claim = (await c.execute(select(tasks.c.id).where(
+                tasks.c.id == task_id, tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                tasks.c.claim_epoch == epoch,
+            ).with_for_update())).scalar_one_or_none()
+            if claim is None:
+                return None
             stmt = (
                 update(sessions)
                 .where(
@@ -272,6 +284,8 @@ class ClaimQueryMixin:
                         sessions.c.id == session_id,
                         sessions.c.claim_phase == "preparing",
                         sessions.c.task_id == task_id,
+                        sessions.c.desired_state == "running",
+                        sessions.c.state == "running",
                     )
                 )
                 .values(

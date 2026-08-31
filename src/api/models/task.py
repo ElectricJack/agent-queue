@@ -178,6 +178,11 @@ class DeletePlanResponse(BaseModel):
     draft_subtasks_deleted: int = 0
 
 
+class TaskControlResponse(BaseModel):
+    task_id: str
+    status: str
+
+
 class StopTaskResponse(BaseModel):
     stopped: str
 
@@ -589,6 +594,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "reject_plan": RejectPlanResponse,
     "delete_plan": DeletePlanResponse,
     "stop_task": StopTaskResponse,
+    "pause_task": TaskControlResponse,
+    "resume_task": TaskControlResponse,
     "restart_task": RestartTaskResponse,
     "reopen_with_feedback": ReopenWithFeedbackResponse,
     "skip_task": SkipTaskResponse,

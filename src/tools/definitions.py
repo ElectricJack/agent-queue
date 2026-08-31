@@ -82,6 +82,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # files — migrated to aq-files internal plugin (src/plugins/internal/files.py)
     # task — lifecycle, approval, dependencies, archives, results
     "stop_task": "task",
+    "pause_task": "task",
+    "resume_task": "task",
     "restart_task": "task",
     "reopen_with_feedback": "task",
     "delete_task": "task",
@@ -1395,6 +1397,24 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
             },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "pause_task",
+        "description": "Pause a queued or running task until explicit Resume. Preserves work, routing, retries, and approval state.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string", "description": "Task ID to pause"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "resume_task",
+        "description": "Resume a paused task, respecting its existing gates and approval state. Retries any unfinished session stop first.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string", "description": "Task ID to resume"}},
             "required": ["task_id"],
         },
     },

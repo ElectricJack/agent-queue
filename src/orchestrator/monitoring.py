@@ -40,6 +40,14 @@ class MonitoringMixin:
         paused = await self.db.list_tasks(status=TaskStatus.PAUSED)
         now = time.time()
         for task in paused:
+            if task.resume_after is None:
+                snapshot = await self.db.get_task_meta(task.id, "manual_pause")
+                if isinstance(snapshot, dict) and snapshot.get("cleanup_pending"):
+                    try:
+                        await self.pause_task(task.id)
+                    except Exception:
+                        logger.warning("Task %s remains paused; stop cleanup will retry", task.id, exc_info=True)
+                continue
             if task.resume_after and task.resume_after <= now:
                 await self.db.transition_task(
                     task.id,

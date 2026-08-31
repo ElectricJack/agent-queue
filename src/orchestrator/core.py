@@ -1169,6 +1169,89 @@ class Orchestrator(
 
         return None, unblocked
 
+    async def pause_task(self, task_id: str) -> None:
+        async with self._task_control_lock(task_id):
+            snapshot = await self.db.pause_task(task_id)
+            await self._finish_manual_pause(task_id, snapshot)
+
+    async def resume_task(self, task_id: str):
+        async with self._task_control_lock(task_id):
+            snapshot = await self.db.get_task_meta(task_id, "manual_pause")
+            if snapshot:
+                await self._finish_manual_pause(task_id, snapshot)
+            return await self.db.resume_task(task_id)
+
+    async def _finish_manual_pause(self, task_id: str, snapshot: dict) -> None:
+        """Confirm stop before releasing the old claim; safe to retry after reload."""
+        if not snapshot.get("cleanup_pending"):
+            return
+        from src.sessions.provider import SessionHandle
+
+        agent_id = snapshot.get("agent_id")
+        captured = snapshot.get("sessions")
+        if captured is None:  # Older persisted pauses predate exact-session snapshots.
+            captured = [{"id": row.id, "instance_token": row.instance_token}
+                        for row in await self.db.list_sessions(agent_id=agent_id)
+                        if row.task_id == task_id]
+        for identity in captured:
+            async with self._pool_teardown_lock(identity["id"]):
+                session = await self.db.get_session(identity["id"])
+                if (session is None or session.instance_token != identity["instance_token"]
+                        or session.task_id not in (None, task_id)):
+                    continue
+                # A reconciler's stopped marker is not confirmation that this
+                # pending pause stopped its exact process. Retry the provider.
+                await self.db.update_session(session.id, desired_state="stopped")
+                token_store = getattr(self, "token_store", None)
+                if token_store is not None:
+                    await token_store.revoke_session(session.id)
+                provider = self.session_providers.create(session.provider, self.config)
+                try:
+                    await provider.stop(SessionHandle(
+                        name=session.name, provider=session.provider,
+                        instance_token=session.instance_token,
+                    ), grace=2.0)
+                except Exception as exc:
+                    raise ValueError("Task is paused, but its session could not stop. Retry Resume.") from exc
+                if session.session_key:
+                    await self.db.set_task_meta(task_id, "session_resume_key", session.session_key)
+                await self.db.update_session(
+                    session.id, state="quarantined" if session.state == "quarantined" else "stopped",
+                    desired_state="stopped",
+                    task_id=None if session.lifecycle == "pool" else task_id,
+                    claim_phase=None, claim_phase_at=None,
+                    last_claim_result="manually_paused",
+                )
+        agent = await self.db.get_agent(agent_id) if agent_id else None
+        adapter = self._adapters.get(agent_id) if agent and agent.current_task_id == task_id else None
+        if adapter is not None:
+            try:
+                await adapter.stop()
+            except Exception as exc:
+                raise ValueError("Task is paused, but its adapter could not stop. Retry Resume.") from exc
+        bg_task = self._running_tasks.get(task_id)
+        if bg_task and not bg_task.done() and bg_task is not asyncio.current_task():
+            bg_task.cancel()
+            _, pending = await asyncio.wait({bg_task}, timeout=5.0)
+            if pending:
+                raise ValueError("Task is paused; execution cleanup is still running. Retry Resume.")
+        owned_workspaces = [ws for ws in await self.db.list_workspaces() if ws.locked_by_task_id == task_id]
+        if len(owned_workspaces) > 1:
+            raise ValueError("Task is paused with multiple locked workspaces; retaining resources for safe recovery.")
+        ws = owned_workspaces[0] if owned_workspaces else None
+        if ws:
+            from src.orchestrator.task_checkpoint import capture_checkpoint
+            try:
+                await capture_checkpoint(self.db, self.git, task_id, ws.workspace_path)
+            except Exception as exc:
+                raise ValueError(f"Task is paused, but its workspace could not be preserved: {exc}. Retry Resume.") from exc
+            self._remove_sentinel(ws.workspace_path)
+        await self.db.finish_task_pause(task_id, snapshot)
+        if adapter is not None and self._adapters.get(agent_id) is adapter:
+            self._adapters.pop(agent_id, None)
+        self._task_exec_start.pop(task_id, None)
+        self._task_pre_exec_sha.pop(task_id, None)
+
     async def stop_task(self, task_id: str) -> str | None:
         """Forcibly stop an in-progress task and release its agent.
 

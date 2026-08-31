@@ -459,15 +459,17 @@ class PoolsMixin:
         )
         return session_id
 
+    def _pool_teardown_lock(self, session_id):
+        locks = getattr(self, "_pool_teardown_locks", None)
+        if locks is None:
+            locks = self._pool_teardown_locks = {}
+        return locks.setdefault(session_id, asyncio.Lock())
+
     async def _terminate_pool_session(
         self, session, *, reason: str, task_status=TaskStatus.READY
     ) -> None:
         """Serialize teardown so late callers cannot clear a reused worker."""
-        locks = getattr(self, "_pool_teardown_locks", None)
-        if locks is None:
-            locks = self._pool_teardown_locks = {}
-        lock = locks.setdefault(session.id, asyncio.Lock())
-        async with lock:
+        async with self._pool_teardown_lock(session.id):
             await self._terminate_pool_session_locked(
                 session, reason=reason, task_status=task_status
             )
@@ -504,7 +506,17 @@ class PoolsMixin:
                 return
         # Repeated teardown of old history must not release a newer session's
         # workspace or overwrite the shared worker's current assignment.
-        if not other_live:
+        task = await self.db.get_task(session.task_id) if session.task_id else None
+        manually_paused = task and task.status == TaskStatus.PAUSED and task.resume_after is None
+        if manually_paused:
+            # Manual cleanup owns release and checkpoints after this confirmed stop.
+            await self.db.update_session(session.id, state="stopped", desired_state="stopped")
+            return
+        other_live = [row for row in await self.db.list_sessions(agent_id=session.agent_id, live_only=True)
+                      if row.id != session.id] if session.agent_id else []
+        agent = await self.db.get_agent(session.agent_id) if session.agent_id else None
+        still_owned = agent is None or agent.current_task_id in (None, session.task_id)
+        if not other_live and still_owned:
             await self.db.terminate_pool_session(session.id, reason=reason, task_status=task_status)
             from src.commands.claim_commands import remove_claim_file
             try:
@@ -513,5 +525,5 @@ class PoolsMixin:
                 logger.debug("pool session %s: claim file removal failed", session.id)
         if session.state not in ("stopped", "quarantined"):
             await self.db.update_session(session.id, state="stopped", desired_state="stopped")
-        if session.agent_id and not other_live:
+        if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)

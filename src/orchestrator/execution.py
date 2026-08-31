@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import logging
 import os
 import time
 from typing import Any
+
+from src.database.queries.task_queries import ManualPauseActive
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.logging_config import CorrelationContext
@@ -66,6 +69,24 @@ def _render_workspaces_block(attachments: list) -> str:
 class ExecutionMixin:
     """Agent execution pipeline methods mixed into Orchestrator."""
 
+    @asynccontextmanager
+    async def _task_control_lock(self, task_id: str):
+        locks = getattr(self, "_task_control_locks", None)
+        if locks is None:
+            locks = self._task_control_locks = {}
+            self._task_control_owners = {}
+        owners = self._task_control_owners
+        caller = asyncio.current_task()
+        if owners.get(task_id) is caller:
+            yield  # Completion/preparation may call guarded cleanup.
+            return
+        async with locks.setdefault(task_id, asyncio.Lock()):
+            owners[task_id] = caller
+            try:
+                yield
+            finally:
+                owners.pop(task_id, None)
+
     async def _execute_task_safe(self, action: AssignAction) -> None:
         """Top-level wrapper for background task execution (layer 1 of 3).
 
@@ -122,65 +143,73 @@ class ExecutionMixin:
             else:
                 await self._execute_task(action)
         except asyncio.TimeoutError:
-            logger.warning("Task %s timed out after %ds", action.task_id, timeout)
-            # Stop the adapter if it's still running
-            if action.agent_id in self._adapters:
-                try:
-                    await self._adapters[action.agent_id].stop()
-                except Exception:
-                    pass
-            # Clean up sentinel before releasing workspace lock (worktree-aware)
-            ws = await self.db.get_workspace_for_task(action.task_id)
-            if ws:
-                self._remove_sentinel(ws.workspace_path)
-            await self._release_workspaces_for_task(action.task_id)
-            await self.db.transition_task(
-                action.task_id, TaskStatus.BLOCKED, context="timeout", assigned_agent_id=None
-            )
-            await self.db.update_agent(action.agent_id, state=AgentState.IDLE, current_task_id=None)
-            self._adapters.pop(action.agent_id, None)
-            task = await self.db.get_task(action.task_id)
-            if task:
-                profile = await self._resolve_profile(task)
-                await self._emit_task_failure(
-                    task,
-                    "timeout",
-                    error=f"Task execution timed out after {timeout}s",
-                    agent_id=action.agent_id,
-                    agent_type=underlying_agent_type(profile.id) if profile else None,
-                )
-            await self._emit_text_notify(
-                f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED.",
-                project_id=action.project_id,
-            )
-            # Check if this blocked task breaks a dependency chain
-            task = await self.db.get_task(action.task_id)
-            if task:
-                await self._notify_stuck_chain(task)
-            return
-        except Exception as e:
-            logger.error("Error executing task %s", action.task_id, exc_info=True)
-            try:
+            async with self._task_control_lock(action.task_id):
+                current = await self.db.get_task(action.task_id)
+                if current and current.status == TaskStatus.PAUSED and current.resume_after is None:
+                    return
+                logger.warning("Task %s timed out after %ds", action.task_id, timeout)
+                # Stop the adapter if it's still running
+                if action.agent_id in self._adapters:
+                    try:
+                        await self._adapters[action.agent_id].stop()
+                    except Exception:
+                        pass
                 # Clean up sentinel before releasing workspace lock (worktree-aware)
                 ws = await self.db.get_workspace_for_task(action.task_id)
                 if ws:
                     self._remove_sentinel(ws.workspace_path)
                 await self._release_workspaces_for_task(action.task_id)
                 await self.db.transition_task(
-                    action.task_id,
-                    TaskStatus.READY,
-                    context="execution_error",
-                    assigned_agent_id=None,
+                    action.task_id, TaskStatus.BLOCKED, context="timeout", assigned_agent_id=None
                 )
-                await self.db.update_agent(
-                    action.agent_id, state=AgentState.IDLE, current_task_id=None
+                await self.db.update_agent(action.agent_id, state=AgentState.IDLE, current_task_id=None)
+                self._adapters.pop(action.agent_id, None)
+                task = await self.db.get_task(action.task_id)
+                if task:
+                    profile = await self._resolve_profile(task)
+                    await self._emit_task_failure(
+                        task,
+                        "timeout",
+                        error=f"Task execution timed out after {timeout}s",
+                        agent_id=action.agent_id,
+                        agent_type=underlying_agent_type(profile.id) if profile else None,
+                    )
+                await self._emit_text_notify(
+                    f"**Task Timed Out:** `{action.task_id}` — exceeded {timeout}s. Marked as BLOCKED.",
+                    project_id=action.project_id,
                 )
-            except Exception:
-                pass
-            await self._emit_text_notify(
-                f"**Error executing task** `{action.task_id}`: {e}",
-                project_id=action.project_id,
-            )
+                # Check if this blocked task breaks a dependency chain
+                task = await self.db.get_task(action.task_id)
+                if task:
+                    await self._notify_stuck_chain(task)
+                return
+        except Exception as e:
+            async with self._task_control_lock(action.task_id):
+                current = await self.db.get_task(action.task_id)
+                if current and current.status == TaskStatus.PAUSED and current.resume_after is None:
+                    return
+                logger.error("Error executing task %s", action.task_id, exc_info=True)
+                try:
+                    # Clean up sentinel before releasing workspace lock (worktree-aware)
+                    ws = await self.db.get_workspace_for_task(action.task_id)
+                    if ws:
+                        self._remove_sentinel(ws.workspace_path)
+                    await self._release_workspaces_for_task(action.task_id)
+                    await self.db.transition_task(
+                        action.task_id,
+                        TaskStatus.READY,
+                        context="execution_error",
+                        assigned_agent_id=None,
+                    )
+                    await self.db.update_agent(
+                        action.agent_id, state=AgentState.IDLE, current_task_id=None
+                    )
+                except Exception:
+                    pass
+                await self._emit_text_notify(
+                    f"**Error executing task** `{action.task_id}`: {e}",
+                    project_id=action.project_id,
+                )
         finally:
             self._running_tasks.pop(action.task_id, None)
 
@@ -841,7 +870,12 @@ class ExecutionMixin:
             except Exception:
                 pass
 
-        await adapter.start(ctx)
+        async with self._task_control_lock(task.id):
+            current = await self.db.get_task(task.id)
+            if current and current.status == TaskStatus.PAUSED and current.resume_after is None:
+                raise ManualPauseActive(f"Task {task.id} is manually paused")
+            await adapter.start(ctx)
+            await self.db.delete_task_meta(task.id, "manual_pause_checkpoint")
 
         # ------------------------------------------------------------------ #
         # Agent message streaming and question detection.
@@ -962,7 +996,11 @@ class ExecutionMixin:
             )
 
             # Re-initialise the adapter so the next call starts a fresh query.
-            await adapter.start(ctx)
+            async with self._task_control_lock(task.id):
+                current = await self.db.get_task(task.id)
+                if current and current.status == TaskStatus.PAUSED and current.resume_after is None:
+                    raise ManualPauseActive(f"Task {task.id} is manually paused")
+                await adapter.start(ctx)
 
         # ------------------------------------------------------------------ #
         # Token accounting and result persistence.
@@ -1649,7 +1687,12 @@ class ExecutionMixin:
             logger.debug("Task %s: could not clear stale resume key", task_id)
         return None
 
-    async def _launch_session_for_task(
+    async def _launch_session_for_task(self, action, task, profile, workspace) -> None:
+        # Pause must not release a workspace while a provider is still starting.
+        async with self._task_control_lock(task.id):
+            await self._launch_session_for_task_locked(action, task, profile, workspace)
+
+    async def _launch_session_for_task_locked(
         self, action: AssignAction, task, profile, workspace: str | None
     ) -> None:
         """Start a session for *task* and return.  No wait, no result branch.
@@ -1871,6 +1914,7 @@ class ExecutionMixin:
                 action, task, f"session started but its row could not be written: {exc}"
             )
             return
+        await self.db.delete_task_meta(task.id, "manual_pause_checkpoint")
         logger.info(
             "Task %s: session %s started (%s/%s) in %s",
             task.id,
@@ -1914,7 +1958,22 @@ class ExecutionMixin:
             project_id=action.project_id,
         )
 
-    async def complete_session_task(
+    async def complete_session_task(self, task, **kwargs) -> dict:
+        # Completion owns its workspace until its pipeline and final write finish.
+        # A pause queued behind it observes the committed outcome and never
+        # releases files still being verified or committed.
+        from src.database.queries.task_queries import ManualPauseActive, StaleClaim
+
+        async with self._task_control_lock(task.id):
+            current = await self.db.get_task(task.id)
+            if current and current.status == TaskStatus.PAUSED and current.resume_after is None:
+                raise ManualPauseActive(f"Task {task.id} is manually paused; use resume_task.")
+            expected = kwargs.get("expect_claim_epoch")
+            if expected is not None and (current is None or current.claim_epoch != expected):
+                raise StaleClaim(f"{task.id}: claim epoch {expected} is not current")
+            return await self._complete_session_task_locked(task, **kwargs)
+
+    async def _complete_session_task_locked(
         self,
         task,
         *,
@@ -2067,7 +2126,8 @@ class ExecutionMixin:
         # ``_cmd_task_close`` releases the claim itself via ``db.release_claim``.
         if not pool:
             await self.release_session_task_resources(
-                task.id, agent_id=task.assigned_agent_id, workspace_path=workspace_path
+                task.id, agent_id=task.assigned_agent_id, workspace_path=workspace_path,
+                expect_claim_epoch=task.claim_epoch,
             )
 
         return {
@@ -2078,6 +2138,25 @@ class ExecutionMixin:
         }
 
     async def release_session_task_resources(
+        self,
+        task_id: str,
+        *,
+        agent_id: str | None = None,
+        workspace_path: str | None = None,
+        expect_claim_epoch: int | None = None,
+    ) -> None:
+        async with self._task_control_lock(task_id):
+            current = await self.db.get_task(task_id)
+            if current is not None:
+                if current.status == TaskStatus.PAUSED and current.resume_after is None:
+                    return
+                if expect_claim_epoch is not None and current.claim_epoch != expect_claim_epoch:
+                    return
+            await self._release_session_task_resources_locked(
+                task_id, agent_id=agent_id, workspace_path=workspace_path,
+            )
+
+    async def _release_session_task_resources_locked(
         self,
         task_id: str,
         *,

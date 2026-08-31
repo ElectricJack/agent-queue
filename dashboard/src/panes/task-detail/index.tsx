@@ -17,6 +17,7 @@ import {
 import StatusBadge from "../../components/StatusBadge";
 import TaskActions from "../../components/TaskActions";
 import TaskComments from "../../components/TaskComments";
+import TaskDescription from "../../components/TaskDescription";
 import Modal from "../../components/Modal";
 import { useShellPaneStore } from "../store";
 import type { PaneViewProps } from "../types";
@@ -141,14 +142,7 @@ export default function TaskDetailPane({
 
       {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={close} />}
 
-      {task?.description ? (
-        <section>
-          <h3 className="mb-1.5 text-xs font-semibold uppercase text-gray-500">Description</h3>
-          <div className="whitespace-pre-wrap rounded-lg border border-gray-800 bg-gray-900 p-3 text-sm text-gray-300">
-            {task.description}
-          </div>
-        </section>
-      ) : null}
+      {task && <TaskDescription key={task.id} task={task} />}
 
       {task && <TaskComments taskId={args.taskId} />}
 

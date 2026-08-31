@@ -1220,7 +1220,7 @@ class SessionReconciler:
         if release is None:
             return
         try:
-            await release(task.id, agent_id=task.assigned_agent_id)
+            await release(task.id, agent_id=task.assigned_agent_id, expect_claim_epoch=task.claim_epoch)
         except Exception:
             logger.error(
                 "Session reconciler: releasing resources for task %s failed",

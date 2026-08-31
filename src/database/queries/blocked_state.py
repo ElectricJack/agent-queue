@@ -31,6 +31,7 @@ from src.database.tables import (
     task_dependencies,
     task_gates,
     task_labels,
+    task_metadata,
     tasks,
 )
 from src.models import BLOCKING_DEP_TYPES, DepType, HOLD_LABEL_PREFIX, Task, TaskStatus
@@ -96,6 +97,12 @@ def _parent_child_unsat():
     """``parent-child`` — satisfied once the container has been released."""
     pd = task_dependencies.alias()
     pt = tasks.alias()
+    hold = task_metadata.alias()
+    approval_held = select(literal(1)).where(
+        hold.c.task_id == pt.c.id,
+        hold.c.key == "manual_pause_withholds_children",
+        hold.c.value == "true",
+    ).exists()
     return (
         select(literal(1))
         .select_from(pd.join(pt, pt.c.id == pd.c.depends_on_task_id))
@@ -103,7 +110,10 @@ def _parent_child_unsat():
             and_(
                 pd.c.task_id == tasks.c.id,
                 pd.c.dep_type == DepType.PARENT_CHILD.value,
-                pt.c.status.in_(_WITHHOLDING_PARENT_STATUSES),
+                or_(
+                    pt.c.status.in_(_WITHHOLDING_PARENT_STATUSES),
+                    and_(pt.c.status == TaskStatus.PAUSED.value, approval_held),
+                ),
             )
         )
         .exists()

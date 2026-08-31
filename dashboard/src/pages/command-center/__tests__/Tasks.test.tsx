@@ -28,6 +28,8 @@ vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: mocks
 vi.mock("../../../api/hooks", () => ({
   useEditTask: () => ({ mutate: mocks.edit, isPending: false, error: null }),
   useDeleteTask: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  usePauseTask: () => ({ mutate: vi.fn(), isPending: false, error: null }),
+  useResumeTask: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useStopTask: () => ({ mutate: mocks.stop, isPending: false, error: null }),
   useRestartTask: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useApproveTask: () => ({ mutate: vi.fn(), isPending: false, error: null }),

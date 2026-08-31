@@ -107,7 +107,8 @@ class ProjectQueryMixin:
             result = await conn.execute(select(tasks.c.id).where(tasks.c.project_id == project_id))
             task_ids = [r[0] for r in result.fetchall()]
 
-            for tid in task_ids:
+            for tid in sorted(task_ids):
+                await self._assert_pause_cleanup_complete(tid, conn=conn)
                 await conn.execute(delete(task_results).where(task_results.c.task_id == tid))
                 await conn.execute(
                     delete(task_dependencies).where(

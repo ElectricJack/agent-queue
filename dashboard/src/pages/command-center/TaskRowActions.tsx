@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { StopIcon, ArrowPathIcon, CheckIcon, DocumentCheckIcon, ChatBubbleLeftIcon, TrashIcon } from "@heroicons/react/24/outline";
-import { useStopTask, useRestartTask, useApproveTask, useApprovePlan, useEditTask, type Task } from "../../api/hooks";
+import { PauseIcon, PlayIcon, StopIcon, ArrowPathIcon, CheckIcon, DocumentCheckIcon, ChatBubbleLeftIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { usePauseTask, useResumeTask, useStopTask, useRestartTask, useApproveTask, useApprovePlan, useEditTask, type Task } from "../../api/hooks";
 import DeleteTaskModal from "../../components/DeleteTaskModal";
 import { useShellPaneStore } from "../../panes/store";
 import { TASK_STATUSES } from "./taskFilters";
@@ -12,11 +12,13 @@ function QuickAction({
   title,
   onClick,
   variant = "default",
+  disabled = false,
 }: {
   icon: React.ReactNode;
   title: string;
   onClick: () => void;
   variant?: "default" | "success" | "danger";
+  disabled?: boolean;
 }) {
   const cls =
     variant === "success"
@@ -25,7 +27,7 @@ function QuickAction({
         ? "text-red-400 hover:bg-red-500/20"
         : "text-gray-400 hover:bg-gray-700";
   return (
-    <button type="button" aria-label={title} onClick={(event) => { event.stopPropagation(); onClick(); }} title={title} className={`rounded p-1 transition-colors ${cls}`}>
+    <button type="button" disabled={disabled} aria-label={title} onClick={(event) => { event.stopPropagation(); onClick(); }} title={title} className={`rounded p-1 transition-colors ${cls}`}>
       {icon}
     </button>
   );
@@ -33,6 +35,9 @@ function QuickAction({
 
 export function RowActions({ task }: { task: Task }) {
   const stopTask = useStopTask();
+  const pauseTask = usePauseTask();
+  const resumeTask = useResumeTask();
+  const controlPending = pauseTask.isPending || resumeTask.isPending;
   const restartTask = useRestartTask();
   const approveTask = useApproveTask();
   const approvePlan = useApprovePlan();
@@ -43,6 +48,16 @@ export function RowActions({ task }: { task: Task }) {
   return (
     <>
       <div className="flex items-center gap-0.5">
+        {["DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "WAITING_INPUT", "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL"].includes(s) && (
+          <QuickAction icon={<PauseIcon className="h-3.5 w-3.5" />}
+            title={pauseTask.isPending ? "Pausing…" : "Pause"} disabled={controlPending}
+            onClick={() => { resumeTask.reset(); pauseTask.mutate({ task_id: task.id }); }} />
+        )}
+        {s === "PAUSED" && (
+          <QuickAction icon={<PlayIcon className="h-3.5 w-3.5" />}
+            title={resumeTask.isPending ? "Resuming…" : "Resume"} disabled={controlPending}
+            onClick={() => { pauseTask.reset(); resumeTask.mutate({ task_id: task.id }); }} />
+        )}
         {s === "IN_PROGRESS" && (
           <QuickAction
             icon={<StopIcon className="h-3.5 w-3.5" />}
@@ -88,6 +103,9 @@ export function RowActions({ task }: { task: Task }) {
           variant="danger"
         />
       </div>
+      {(pauseTask.error || resumeTask.error) && <p role="alert" className="max-w-64 text-xs text-red-300">
+        {(pauseTask.error || resumeTask.error)?.message}
+      </p>}
       <DeleteTaskModal open={deleteOpen} onClose={() => setDeleteOpen(false)} task={task} />
     </>
   );
@@ -109,13 +127,13 @@ export function InlineStatus({ task }: { task: Task }) {
         if (!next || next === current) return;
         editTask.mutate({ task_id: task.id, status: next });
       }}
-      disabled={isPending}
+      disabled={isPending || current === "PAUSED"}
       onClick={(e) => e.stopPropagation()}
       title="Admin override — bypasses the state machine"
       className={`cursor-pointer rounded-full border-0 bg-transparent px-2 py-0.5 text-xs font-medium focus:ring-1 focus:ring-indigo-500 focus:outline-none disabled:opacity-50 ${tone}`}
     >
       {STATUS_OPTIONS.includes(current) ? null : <option value="">{current || "-"}</option>}
-      {STATUS_OPTIONS.map((s) => (
+      {STATUS_OPTIONS.filter((s) => s !== "PAUSED" || current === "PAUSED").map((s) => (
         <option key={s} value={s}>
           {s}
         </option>

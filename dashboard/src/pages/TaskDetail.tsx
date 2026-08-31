@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useRef, useState } from "react";
 import { useParams, Link, useLocation } from "react-router-dom";
 import {
   ArrowLeftIcon,
@@ -15,12 +15,12 @@ import {
 import StatusBadge from "../components/StatusBadge";
 import TaskActions from "../components/TaskActions";
 import TaskComments from "../components/TaskComments";
+import TaskDescription from "../components/TaskDescription";
 import TaskGraph, { TaskExplain } from "./task/TaskGraph";
 import { workspaceHref } from "../shell/projectNavigation";
 
 interface FormState {
   title: string;
-  description: string;
   status: string;
   priority: string;
   task_type: string;
@@ -58,7 +58,6 @@ interface TaskLike {
 function taskToForm(t: TaskLike | null | undefined): FormState {
   return {
     title: t?.title ?? "",
-    description: t?.description ?? "",
     status: t?.status ?? "",
     priority: t?.priority != null ? String(t.priority) : "",
     task_type: t?.task_type ?? "",
@@ -71,6 +70,10 @@ function taskToForm(t: TaskLike | null | undefined): FormState {
 
 export default function TaskDetail() {
   const { taskId } = useParams<{ taskId: string }>();
+  return <TaskDetailContent key={taskId} taskId={taskId ?? ""} />;
+}
+
+function TaskDetailContent({ taskId }: { taskId: string }) {
   const location = useLocation();
   const { data: task, isLoading } = useTask(taskId ?? "");
   const { data: profiles } = useProjectProfiles(task?.project_id ?? "");
@@ -78,12 +81,9 @@ export default function TaskDetail() {
 
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<FormState>(taskToForm(task));
+  const baseline = useRef<FormState>(taskToForm(task));
   const [fatal, setFatal] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"details" | "explain" | "graph">("details");
-
-  useEffect(() => {
-    if (task) setForm(taskToForm(task));
-  }, [task]);
 
   if (isLoading) return <p className="p-6 text-sm text-gray-500">Loading...</p>;
   if (!task) return <p className="p-6 text-sm text-gray-500">Task not found.</p>;
@@ -96,7 +96,8 @@ export default function TaskDetail() {
     .filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i);
 
   const startEdit = () => {
-    setForm(taskToForm(task));
+    baseline.current = taskToForm(task);
+    setForm(baseline.current);
     setFatal(null);
     setEditing(true);
   };
@@ -111,19 +112,18 @@ export default function TaskDetail() {
     setFatal(null);
     try {
       const body: Record<string, unknown> = { task_id: task.id };
-      if (form.title !== (task.title ?? "")) body.title = form.title;
-      if (form.description !== (task.description ?? "")) body.description = form.description;
-      if (form.status && form.status !== task.status) body.status = form.status;
+      if (form.title !== baseline.current.title) body.title = form.title;
+      if (form.status && form.status !== baseline.current.status && task.status !== "PAUSED") body.status = form.status;
       const priorityNum = parseOptionalInt(form.priority);
-      if (priorityNum !== (task.priority ?? null)) body.priority = priorityNum;
-      if (form.task_type !== (task.task_type ?? "")) body.task_type = form.task_type || null;
-      if (form.profile_id !== (task.profile_id ?? ""))
+      if (priorityNum !== parseOptionalInt(baseline.current.priority)) body.priority = priorityNum;
+      if (form.task_type !== baseline.current.task_type) body.task_type = form.task_type || null;
+      if (form.profile_id !== baseline.current.profile_id)
         body.profile_id = form.profile_id || null;
       const retriesNum = parseOptionalInt(form.max_retries);
-      if (retriesNum !== (task.max_retries ?? null)) body.max_retries = retriesNum;
-      if (form.auto_approve_plan !== !!task.auto_approve_plan)
+      if (retriesNum !== parseOptionalInt(baseline.current.max_retries)) body.max_retries = retriesNum;
+      if (form.auto_approve_plan !== baseline.current.auto_approve_plan)
         body.auto_approve_plan = form.auto_approve_plan;
-      if (form.skip_verification !== !!task.skip_verification)
+      if (form.skip_verification !== baseline.current.skip_verification)
         body.skip_verification = form.skip_verification;
 
       // No fields changed beyond task_id? Skip.
@@ -224,24 +224,7 @@ export default function TaskDetail() {
 
       {activeTab === "details" && (
         <>
-      {/* Description */}
-      <section>
-        <h2 className="mb-2 text-sm font-semibold uppercase text-gray-500">Description</h2>
-        {editing ? (
-          <textarea
-            value={form.description}
-            onChange={(e) => setForm({ ...form, description: e.target.value })}
-            rows={6}
-            className="w-full rounded-lg border border-gray-700 bg-gray-950 px-4 py-3 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none"
-          />
-        ) : task.description ? (
-          <div className="whitespace-pre-wrap rounded-lg border border-gray-800 bg-gray-900 p-4 text-sm text-gray-300">
-            {task.description}
-          </div>
-        ) : (
-          <p className="text-sm text-gray-500">No description.</p>
-        )}
-      </section>
+      <TaskDescription key={task.id} task={task} />
 
       <TaskComments taskId={task.id} />
 
@@ -252,7 +235,7 @@ export default function TaskDetail() {
           <ReadField label="Agent" value={agent ?? "-"} />
           <EditableSelect
             label="Status"
-            editing={editing}
+            editing={editing && task.status !== "PAUSED"}
             value={editing ? form.status : task.status ?? "-"}
             displayValue={task.status ?? "-"}
             options={STATUS_OPTIONS}

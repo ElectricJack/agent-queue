@@ -381,6 +381,25 @@ class WorktreeSlotManager:
             _validate_ref(resume_branch, field="resume branch")
 
         slot_dir = Path(slot_ws.workspace_path)
+        from src.orchestrator.task_checkpoint import prepare_checkpoint, restore_checkpoint
+        checkpoint = await prepare_checkpoint(self.db, self.git, task.id, str(slot_dir))
+        if checkpoint:
+            # No hard-reset/clean on the saved task branch. Previous users'
+            # dirty work is salvaged before switching back to the checkpoint.
+            prev = self.read_sentinel(slot_dir)
+            await self.salvage_dirty(slot_ws, prev.task_id if prev else None, incoming_task_id=task.id)
+            await self.git._arun(["reset", "--hard"], cwd=str(slot_dir))
+            await self.git._arun(["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir))
+            branch = await restore_checkpoint(self.db, self.git, task.id, str(slot_dir), saved=checkpoint)
+            self.write_sentinel(slot_dir, WorktreeSentinel(
+                slot=slot_name(slot_ws.slot_index or 0), slot_index=slot_ws.slot_index or 0,
+                base_workspace_id=slot_ws.base_workspace_id or "", project_id=slot_ws.project_id,
+                workspace_id=slot_ws.id, task_id=task.id, branch=branch,
+                created_at=prev.created_at if prev else time.time(),
+                assigned_at=time.time(), daemon_epoch=self.daemon_epoch,
+                setup_hash=prev.setup_hash if prev else "",
+            ))
+            return branch
         base_ws = await self._base_of(slot_ws)
         base_path = base_ws.workspace_path if base_ws else str(slot_dir)
         prev = self.read_sentinel(slot_dir)

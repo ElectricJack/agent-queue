@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import delete, insert, literal, null, select, update, func, and_
 
 from src.database.tables import (
+    agents,
     events,
     archived_tasks,
     gates,
@@ -35,6 +36,7 @@ from src.database.queries.blocked_state import (
     apply_label_filters,
 )
 from src.models import (
+    AgentState,
     HOLD_LABEL_PREFIX,
     Task,
     TaskStatus,
@@ -97,6 +99,16 @@ def _ready_reason(context: str) -> str:
 
 class StaleClaim(Exception):
     """A fenced write found the task held under a different claim epoch (spec §10)."""
+
+
+class ManualPauseActive(StaleClaim):
+    """A stale lifecycle writer tried to change an operator-paused task."""
+
+
+def _not_manually_paused():
+    # A row-local guard is important on PostgreSQL: after waiting for an
+    # UPDATE lock, a metadata subquery could still use an older snapshot.
+    return ~and_(tasks.c.status == TaskStatus.PAUSED.value, tasks.c.resume_after.is_(None))
 
 
 @dataclass
@@ -320,11 +332,124 @@ class TaskQueryMixin:
         values = self._coerce_task_values(kwargs)
         values["updated_at"] = time.time()
         async with self._engine.begin() as conn:
-            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**values))
+            stmt = update(tasks).where(tasks.c.id == task_id)
+            lifecycle = {"status", "resume_after", "assigned_agent_id", "retry_count", "claim_epoch"}
+            if lifecycle & kwargs.keys():
+                stmt = stmt.where(_not_manually_paused())
+            result = await conn.execute(stmt.values(**values))
+            if result.rowcount == 0 and lifecycle & kwargs.keys():
+                paused = (await conn.execute(select(tasks.c.id).where(
+                    tasks.c.id == task_id, ~_not_manually_paused()
+                ))).scalar_one_or_none()
+                if paused:
+                    raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
             flipped: set[str] = set()
             if PROJECTION_INPUT_COLUMNS & kwargs.keys():
                 flipped = await self.recompute_blocked({task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
+
+    async def pause_task(self, task_id: str) -> dict:
+        """Persist an operator hold and fence the previous claim in one transaction."""
+        async with self.immediate() as conn:
+            row = (await conn.execute(
+                select(tasks).where(tasks.c.id == task_id).with_for_update()
+            )).mappings().fetchone()
+            if row is None:
+                raise ValueError(f"Task '{task_id}' not found")
+            if row["status"] in self._TERMINAL_TASK_STATUSES:
+                raise ValueError(f"Cannot pause task in {row['status']}")
+            saved = (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
+            ))).scalar_one_or_none()
+            if saved is not None:
+                return json.loads(saved)
+            owned_workspaces = (await conn.execute(select(workspaces.c.id).where(
+                workspaces.c.locked_by_task_id == task_id
+            ))).scalars().all()
+            if len(owned_workspaces) > 1:
+                raise ValueError("Cannot pause a task with multiple locked workspaces safely. Stop or finish it before changing its workspace assignments.")
+            owned_sessions = (await conn.execute(select(
+                sessions.c.id, sessions.c.instance_token
+            ).where(sessions.c.task_id == task_id, sessions.c.state.not_in(("stopped", "quarantined"))))).mappings().all()
+            snapshot = {
+                "sessions": [dict(session) for session in owned_sessions],
+                "status": row["status"],
+                "resume_after": row["resume_after"],
+                "agent_id": row["assigned_agent_id"],
+                "claim_epoch": row["claim_epoch"],
+                "cleanup_pending": bool(row["assigned_agent_id"] or owned_sessions or owned_workspaces),
+            }
+            if row["status"] in ("DEFINED", "AWAITING_PLAN_APPROVAL"):
+                await self._upsert_meta(task_id, "manual_pause_withholds_children", True, conn=conn)
+            result = await self._apply_transition(
+                conn, task_id, TaskStatus.PAUSED, context="manual_pause", force=True,
+                _manual_pause_control=True, resume_after=None,
+                extra_values={"claim_epoch": tasks.c.claim_epoch + 1},
+            )
+            await self._upsert_meta(task_id, "manual_pause", snapshot, conn=conn)
+        await self.log_blocked_flips(result.flipped)
+        return snapshot
+
+    async def finish_task_pause(self, task_id: str, snapshot: dict) -> None:
+        """Release only this stopped claim's resources, never a reused worker's."""
+        async with self.immediate() as conn:
+            row = (await conn.execute(
+                select(tasks).where(tasks.c.id == task_id).with_for_update()
+            )).mappings().fetchone()
+            if row is None or row["status"] != "PAUSED" or row["resume_after"] is not None:
+                raise ValueError("Task pause changed while stopping its session")
+            agent_id = snapshot.get("agent_id")
+            await conn.execute(
+                update(workspaces).where(workspaces.c.locked_by_task_id == task_id)
+                .values(locked_by_task_id=None, locked_by_agent_id=None, locked_at=None)
+            )
+            if agent_id:
+                await conn.execute(update(agents).where(
+                    agents.c.id == agent_id, agents.c.current_task_id == task_id
+                ).values(state=AgentState.IDLE.value, current_task_id=None))
+            await conn.execute(update(tasks).where(
+                tasks.c.id == task_id,
+                tasks.c.assigned_agent_id == agent_id if agent_id else tasks.c.assigned_agent_id.is_(None),
+            ).values(assigned_agent_id=None))
+            saved = {**snapshot, "cleanup_pending": False}
+            await self._upsert_meta(task_id, "manual_pause", saved, conn=conn)
+
+    async def resume_task(self, task_id: str) -> Task:
+        """Remove only the explicit hold; keep approval and dependency state."""
+        async with self.immediate() as conn:
+            row = (await conn.execute(
+                select(tasks).where(tasks.c.id == task_id).with_for_update()
+            )).mappings().fetchone()
+            if row is None:
+                raise ValueError(f"Task '{task_id}' not found")
+            if row["status"] != TaskStatus.PAUSED.value:
+                raise ValueError(f"Task is not paused (status: {row['status']})")
+            encoded = (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
+            ))).scalar_one_or_none()
+            saved = json.loads(encoded) if encoded is not None else {}
+            if saved.get("cleanup_pending"):
+                raise ValueError("Task is paused but its session has not stopped; retry Resume.")
+            prior = TaskStatus(saved.get("status", "READY"))
+            if prior in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.PAUSED):
+                prior = (
+                    TaskStatus.IN_PROGRESS if await self.is_container(task_id, conn=conn)
+                    else TaskStatus.READY
+                )
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_withholds_children",
+            ))
+            result = await self._apply_transition(
+                conn, task_id, prior, context="manual_resume", force=True,
+                _manual_pause_control=True, resume_after=None, assigned_agent_id=None,
+            )
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
+            ))
+        await self.log_blocked_flips(result.flipped)
+        await self._notify_ready(result.ready)
+        return await self.get_task(task_id)
 
     def set_state_machine_enforcement(self, enforce: bool) -> None:
         """Toggle state-machine enforcement in ``transition_task``.
@@ -408,6 +533,7 @@ class TaskQueryMixin:
         extra_values: dict | None = None,
         returning: bool = False,
         assume_pre_state: tuple[TaskStatus, bool] | None = None,
+        _manual_pause_control: bool = False,
         **kwargs,
     ) -> TransitionResult:
         """Update task status with state-machine validation, on a caller-owned connection.
@@ -496,6 +622,8 @@ class TaskQueryMixin:
         async def _write(values: dict):
             """Run the guarded UPDATE; return ``(matched, row_or_None)``."""
             stmt = update(tasks).where(tasks.c.id == task_id)
+            if not _manual_pause_control:
+                stmt = stmt.where(_not_manually_paused())
             if expect_claim_epoch is not None:
                 stmt = stmt.where(
                     and_(
@@ -510,9 +638,21 @@ class TaskQueryMixin:
             stmt = stmt.values(**values)
             if returning and supports_returning(conn):
                 out = (await conn.execute(stmt.returning(*tasks.c))).mappings().fetchone()
+                if out is None and not _manual_pause_control and extra_where is None:
+                    paused = (await conn.execute(select(tasks.c.id).where(
+                        tasks.c.id == task_id, ~_not_manually_paused()
+                    ))).scalar_one_or_none()
+                    if paused:
+                        raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
                 return out is not None, (dict(out) if out is not None else None)
             res = await conn.execute(stmt)
             if res.rowcount == 0:
+                if not _manual_pause_control:
+                    paused = (await conn.execute(select(tasks.c.id).where(
+                        tasks.c.id == task_id, ~_not_manually_paused()
+                    ))).scalar_one_or_none()
+                    if paused:
+                        raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
                 return False, None
             if not returning:
                 return True, None
@@ -582,7 +722,7 @@ class TaskQueryMixin:
                         f"{task_id} has open child(ren): {', '.join(open_ids)}",
                     )
 
-            if not is_valid_status_transition(current_status, new_status):
+            if not _manual_pause_control and not is_valid_status_transition(current_status, new_status):
                 ctx = f" ({context})" if context else ""
                 # WG-5: enforce raises when the flag is on and the
                 # caller didn't opt out via ``force=True``.  Warn-only
@@ -854,6 +994,19 @@ class TaskQueryMixin:
             ready=ready + list(settle_result.ready),
         )
 
+    async def _assert_pause_cleanup_complete(self, task_id: str, *, conn) -> None:
+        # Lock the task before reading metadata: a concurrent pause cannot
+        # install a hold between this check and a cascading deletion.
+        if conn.dialect.name == "sqlite":
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(id=tasks.c.id))
+        else:
+            await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
+        saved = (await conn.execute(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
+        ))).scalar_one_or_none()
+        if saved and json.loads(saved).get("cleanup_pending"):
+            raise ValueError("Task pause cleanup is pending; retry Pause before deleting it.")
+
     async def _delete_one(
         self,
         task_id: str,
@@ -871,6 +1024,7 @@ class TaskQueryMixin:
         — which for a human gate means live Approve/Deny buttons in Discord
         for a task that no longer exists.
         """
+        await self._assert_pause_cleanup_complete(task_id, conn=conn)
         await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
         # token_ledger rows survive task deletion: the tokens were really
         # spent against the project's budget, so dropping them would

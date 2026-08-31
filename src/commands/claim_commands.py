@@ -476,6 +476,18 @@ class ClaimCommandsMixin:
         return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
 
     async def _prepare_and_activate(self, session, row, task, cap=None, *, slot=None) -> dict:
+        async with self.orchestrator._task_control_lock(task.id):
+            current = await self.db.get_task(task.id)
+            fresh = await self.db.get_session(session.id)
+            if (current is None or current.status != TaskStatus.IN_PROGRESS
+                    or current.claim_epoch != task.claim_epoch or fresh is None
+                    or fresh.task_id != task.id or fresh.claim_phase != "preparing"
+                    or fresh.desired_state != "running"):
+                self._resolve_claim_waiters(session.id, task.claim_epoch, "prepare_failed")
+                return self._simple(ClaimResult.PREPARE_FAILED, "claim changed before preparation", row, cap)
+            return await self._prepare_and_activate_locked(session, row, task, cap, slot=slot)
+
+    async def _prepare_and_activate_locked(self, session, row, task, cap=None, *, slot=None) -> dict:
         """Reset the slot, write the claim file, activate.
 
         *slot* is the workspace row ``record_holder`` already returned from
@@ -520,6 +532,7 @@ class ClaimCommandsMixin:
             remove_claim_file(row.work_dir)
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
             return self._simple(ClaimResult.PREPARE_FAILED, "released before activation", row, cap)
+        await self.db.delete_task_meta(task.id, "manual_pause_checkpoint")
         self._resolve_claim_waiters(session.id, epoch, "claimed")
         await self.orchestrator._emit_task_event(
             "task.claimed",

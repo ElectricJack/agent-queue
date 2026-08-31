@@ -15,6 +15,8 @@ vi.mock("../../api/hooks", () => {
   const mutation = () => ({ mutate: vi.fn(), isPending: false });
   return {
     useStopTask: mutation,
+    usePauseTask: mutation,
+    useResumeTask: mutation,
     useRestartTask: mutation,
     useSkipTask: mutation,
     useApproveTask: mutation,

@@ -2133,9 +2133,14 @@ class TaskCommandsMixin:
         }
 
     async def _cmd_edit_task(self, args: dict) -> dict:
+        if args.get("status") == "PAUSED":
+            return {"error": "Use pause_task to pause safely and stop any running session."}
         task = await self.db.get_task(args["task_id"])
         if not task:
             return {"error": f"Task '{args['task_id']}' not found"}
+
+        if "status" in args and task.status == TaskStatus.PAUSED and task.resume_after is None:
+            return {"error": "Task is manually paused; use resume_task."}
 
         routing_fields = {"profile_id", "intelligence_class"} & args.keys()
         if routing_fields and (task.status == TaskStatus.IN_PROGRESS or task.assigned_agent_id):
@@ -2289,6 +2294,34 @@ class TaskCommandsMixin:
                 "task.updated", task, project_id=updates["project_id"]
             )
         return result
+
+    async def _task_control_scope_error(self, task_id: str) -> dict | None:
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            return {"error": "out of scope: task Pause/Resume requires an operator"}
+        task = await self.db.get_task(task_id)
+        if task is not None:
+            return self._task_findings_scope_error(task)
+        return None
+
+    async def _cmd_pause_task(self, args: dict) -> dict:
+        task_id = args["task_id"]
+        error = await self._task_control_scope_error(task_id)
+        if error:
+            return error
+        await self.orchestrator.pause_task(task_id)
+        task = await self.db.get_task(task_id)
+        await self._emit_task_graph_change("task.updated", task)
+        return {"task_id": task_id, "status": task.status.value}
+
+    async def _cmd_resume_task(self, args: dict) -> dict:
+        task_id = args["task_id"]
+        error = await self._task_control_scope_error(task_id)
+        if error:
+            return error
+        task = await self.orchestrator.resume_task(task_id)
+        await self._emit_task_graph_change("task.updated", task)
+        return {"task_id": task_id, "status": task.status.value}
 
     async def _cmd_stop_task(self, args: dict) -> dict:
         error = await self.orchestrator.stop_task(args["task_id"])
@@ -3164,6 +3197,8 @@ class TaskCommandsMixin:
         }
 
     async def _cmd_set_task_status(self, args: dict) -> dict:
+        if args.get("status") == "PAUSED":
+            return {"error": "Use pause_task to pause safely and stop any running session."}
         task_id = args["task_id"]
         new_status = args["status"]
         task = await self.db.get_task(task_id)

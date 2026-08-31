@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   StopIcon,
+  PauseIcon,
+  PlayIcon,
   ArrowPathIcon,
   ForwardIcon,
   CheckIcon,
@@ -14,6 +16,8 @@ import {
 import type { Task } from "../api/hooks";
 import {
   useStopTask,
+  usePauseTask,
+  useResumeTask,
   useRestartTask,
   useSkipTask,
   useApproveTask,
@@ -42,6 +46,8 @@ export default function TaskActions({ task, returnTo, onDeleted }: TaskActionsPr
   const [textInput, setTextInput] = useState("");
 
   const stopTask = useStopTask();
+  const pauseTask = usePauseTask();
+  const resumeTask = useResumeTask();
   const restartTask = useRestartTask();
   const skipTask = useSkipTask();
   const approveTask = useApproveTask();
@@ -53,6 +59,7 @@ export default function TaskActions({ task, returnTo, onDeleted }: TaskActionsPr
   const provideInput = useProvideInput();
 
   const isPending =
+    pauseTask.isPending || resumeTask.isPending ||
     stopTask.isPending ||
     restartTask.isPending ||
     skipTask.isPending ||
@@ -94,6 +101,20 @@ export default function TaskActions({ task, returnTo, onDeleted }: TaskActionsPr
   };
 
   const buttons: { label: string; icon: React.ReactNode; onClick: () => void; variant: string; show: boolean }[] = [
+    {
+      label: pauseTask.isPending ? "Pausing…" : "Pause",
+      icon: <PauseIcon className="h-3.5 w-3.5" />,
+      onClick: () => { resumeTask.reset(); pauseTask.mutate({ task_id: task.id }); },
+      variant: "primary",
+      show: ["DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "WAITING_INPUT", "AWAITING_APPROVAL", "AWAITING_PLAN_APPROVAL"].includes(s),
+    },
+    {
+      label: resumeTask.isPending ? "Resuming…" : "Resume",
+      icon: <PlayIcon className="h-3.5 w-3.5" />,
+      onClick: () => { pauseTask.reset(); resumeTask.mutate({ task_id: task.id }); },
+      variant: "primary",
+      show: s === "PAUSED",
+    },
     {
       label: "Stop",
       icon: <StopIcon className="h-3.5 w-3.5" />,
@@ -200,6 +221,9 @@ export default function TaskActions({ task, returnTo, onDeleted }: TaskActionsPr
             </button>
           ))}
         </div>
+        {(pauseTask.error || resumeTask.error) && <p role="alert" className="mt-2 text-sm text-red-300">
+          {(pauseTask.error || resumeTask.error)?.message}
+        </p>}
       </section>
 
       <Modal open={modal !== null && modal !== "delete"} onClose={closeModal} title={modalTitles[modal ?? ""] ?? ""}>
