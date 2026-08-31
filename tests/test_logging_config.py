@@ -234,3 +234,73 @@ class TestStructlogOutput:
         parsed = json.loads(lines[-1])
         assert "task_id" not in parsed
         assert "project_id" not in parsed
+
+
+# ---------------------------------------------------------------------------
+# Platform plan 22: rotating-file setup + auto exc_info are idempotent
+# ---------------------------------------------------------------------------
+
+
+def test_setup_logging_rotating_file_and_auto_exc_info_are_idempotent(tmp_path):
+    """Repeated setup_logging keeps exactly one console and one rotating
+    file handler, and an ERROR logged inside an except block without
+    exc_info still lands in the JSONL file with its traceback — once."""
+    from logging.handlers import RotatingFileHandler
+
+    from src.logging_config import _AutoExcInfoFilter
+
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_filters = root.filters[:]
+    saved_level = root.level
+    log_file = str(tmp_path / "logs" / "agent-queue.jsonl")
+    test_logger = logging.getLogger("test.rotating.excinfo")
+
+    def _log_error(marker: str) -> None:
+        try:
+            raise ValueError(marker)
+        except ValueError:
+            # No exc_info=True — the auto-attach filter must supply it.
+            test_logger.error("operation failed %s", marker)
+
+    try:
+        setup_logging(level="INFO", format="plain", log_file=log_file)
+        _log_error("boom-first")
+        setup_logging(level="INFO", format="plain", log_file=log_file)
+        _log_error("boom-second")
+
+        rotating = [h for h in root.handlers if isinstance(h, RotatingFileHandler)]
+        assert len(rotating) == 1, "duplicate setup must not stack file handlers"
+        assert len(root.handlers) == 2  # one console + one rotating file
+        # The auto-exc filter must sit on the handlers (a root-logger
+        # filter never sees records propagated from child loggers).
+        for handler in root.handlers:
+            assert sum(1 for f in handler.filters if isinstance(f, _AutoExcInfoFilter)) == 1
+        rotating[0].flush()
+
+        lines = [
+            line
+            for line in (tmp_path / "logs" / "agent-queue.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+        for marker in ("boom-first", "boom-second"):
+            matching = [line for line in lines if f"operation failed {marker}" in line]
+            assert len(matching) == 1, f"expected exactly one record for {marker}"
+            record = json.loads(matching[0])  # the file handler always writes JSONL
+            # The traceback is rendered text, not a repr of the tuple.
+            assert f"ValueError: {marker}" in record["exception"]
+            assert "Traceback" in record["exception"]
+    finally:
+        for h in root.handlers[:]:
+            root.removeHandler(h)
+            if isinstance(h, RotatingFileHandler):
+                h.close()
+        for f in root.filters[:]:
+            root.removeFilter(f)
+        for h in saved_handlers:
+            root.addHandler(h)
+        for f in saved_filters:
+            root.addFilter(f)
+        root.setLevel(saved_level)

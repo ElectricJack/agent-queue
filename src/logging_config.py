@@ -361,6 +361,14 @@ def setup_logging(
     for handler in root.handlers[:]:
         root.removeHandler(handler)
 
+    # Auto-attach sys.exc_info() to any ERROR record raised inside an
+    # except block, so callers that did `logger.error("...", e)` without
+    # exc_info=True still get the full traceback in the log.  Attached to
+    # the *handlers*: stdlib logger filters never run for records
+    # propagated from child loggers, so a root-logger filter would miss
+    # every `logging.getLogger(__name__)` record.
+    auto_exc_filter = _AutoExcInfoFilter()
+
     # Console handler (stderr) — uses the user's chosen format
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(
@@ -370,6 +378,7 @@ def setup_logging(
         )
     )
     console_handler.setLevel(log_level)
+    console_handler.addFilter(auto_exc_filter)
     root.addHandler(console_handler)
 
     # File handler (JSONL) — always JSON regardless of console mode
@@ -384,21 +393,20 @@ def setup_logging(
             structlog.stdlib.ProcessorFormatter(
                 processors=[
                     structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                    # Render the exc_info tuple into an "exception" string —
+                    # JSONRenderer alone would serialize a useless
+                    # "<traceback object at 0x...>" repr.
+                    structlog.processors.format_exc_info,
                     structlog.processors.JSONRenderer(),
                 ],
                 foreign_pre_chain=shared_processors,
             )
         )
         file_handler.setLevel(log_level)
+        file_handler.addFilter(auto_exc_filter)
         root.addHandler(file_handler)
 
     root.setLevel(log_level)
-
-    # Auto-attach sys.exc_info() to any ERROR record raised inside an
-    # except block, so callers that did `logger.error("...", e)` without
-    # exc_info=True still get the full traceback in the log.
-    if not any(isinstance(f, _AutoExcInfoFilter) for f in root.filters):
-        root.addFilter(_AutoExcInfoFilter())
 
     # Quiet down noisy third-party loggers
     for noisy in ("discord", "discord.http", "discord.gateway", "aiohttp", "uvicorn"):
