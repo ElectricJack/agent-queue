@@ -876,3 +876,57 @@ class TestIntrospection:
         watcher.clear_snapshot("proj")
         assert watcher.get_snapshot("proj") is None
         assert watcher.get_tracked_project_count() == 0
+
+
+class TestErrorIsolation:
+    """Neither an unreadable source file nor a bad project may abort the scan."""
+
+    def test_unreadable_source_file_yields_placeholder_excerpt(self, tmp_path):
+        """A stub is still produced when the source cannot be read."""
+        missing = tmp_path / "workspaces" / "proj" / "specs" / "gone.md"
+
+        content = generate_stub_content(
+            rel_path="specs/gone.md",
+            abs_path=str(missing),
+            content_hash="deadbeef",
+            workspace_path=str(tmp_path / "workspaces" / "proj"),
+            project_id="proj",
+            max_excerpt_lines=10,
+        )
+
+        assert "*(source file not readable)*" in content
+        assert "source_hash: deadbeef" in content
+        assert "# Spec: Gone" in content
+
+    @pytest.mark.asyncio
+    async def test_one_failing_project_does_not_abort_the_scan(
+        self, watcher, fake_db, tmp_path, caplog
+    ):
+        """A project whose workspace lookup raises is logged and skipped."""
+        fake_db.projects = [FakeProject(id="bad"), FakeProject(id="good")]
+        good_ws = _create_workspace(tmp_path, "good", {"specs/api.md": "# API\n\nbody\n"})
+        fake_db.workspaces = [FakeWorkspace(id="w1", project_id="good", workspace_path=good_ws)]
+
+        original = fake_db.list_workspaces
+
+        async def flaky_list_workspaces(project_id=None):
+            if project_id == "bad":
+                raise RuntimeError("workspace table unavailable")
+            return await original(project_id=project_id)
+
+        fake_db.list_workspaces = flaky_list_workspaces
+
+        # First pass only establishes the baseline snapshot for "good"; the
+        # "bad" project raises on both passes.
+        with caplog.at_level("WARNING", logger="src.workspace_spec_watcher"):
+            assert await watcher.check() == []
+            (tmp_path / "workspaces" / "good" / "specs" / "api.md").write_text(
+                "# API\n\nbody, now longer\n"
+            )
+            changes = await watcher.check()
+
+        assert [c.project_id for c in changes] == ["good"]
+        assert [c.rel_path for c in changes] == ["specs/api.md"]
+        assert changes[0].operation == "modified"
+        assert "bad" in caplog.text
+        assert "workspace table unavailable" in caplog.text

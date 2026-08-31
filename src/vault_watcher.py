@@ -108,6 +108,12 @@ class VaultWatcher:
     debounce_seconds:
         Seconds to wait after the last detected change before dispatching.
         Default 2.0.
+    max_pending_age_seconds:
+        Upper bound on how long a change may sit in the pending buffer.  The
+        debounce window is recomputed from the *newest* pending change, so a
+        vault that receives at least one change per window would otherwise
+        never flush; once the oldest pending change reaches this age it is
+        dispatched regardless of ongoing activity.  Default 30.0.
     """
 
     def __init__(
@@ -115,10 +121,12 @@ class VaultWatcher:
         vault_root: str,
         poll_interval: float = 5.0,
         debounce_seconds: float = 2.0,
+        max_pending_age_seconds: float = 30.0,
     ) -> None:
         self.vault_root = vault_root
         self.poll_interval = poll_interval
         self.debounce_seconds = debounce_seconds
+        self.max_pending_age_seconds = max_pending_age_seconds
 
         # Registered handlers: {handler_id: _HandlerEntry}
         self._handlers: dict[str, _HandlerEntry] = {}
@@ -400,9 +408,24 @@ class VaultWatcher:
 
         now = time.time()
         latest_time = max(t for _, t in self._pending)
+        oldest_time = min(t for _, t in self._pending)
 
         if not force and (now - latest_time) < self.debounce_seconds:
-            return  # Still within debounce window
+            # Still within the debounce window.  The window is measured from
+            # the newest pending change, so continuous activity (a bulk
+            # ``aq vault rebuild-index``, an Obsidian sync, a git checkout in
+            # the vault) would hold the whole buffer hostage for its entire
+            # duration.  Bound that: once the *oldest* pending change has
+            # aged past ``max_pending_age_seconds`` it is dispatched anyway.
+            if (now - oldest_time) < self.max_pending_age_seconds:
+                return
+            logger.info(
+                "VaultWatcher: flushing %d pending change(s) after %.1fs "
+                "of continuous activity (max age %.1fs)",
+                len(self._pending),
+                now - oldest_time,
+                self.max_pending_age_seconds,
+            )
 
         # Deduplicate: keep the latest operation for each path
         # If created then modified → created

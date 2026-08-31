@@ -183,3 +183,48 @@ class TestMigrateBacklinks:
 
         content = (sub / "note.md").read_text()
         assert content == original
+
+
+class TestGenerateAllWithSummaries:
+    async def test_generate_all_with_summaries_preserves_summary_through_pass_three(self, tmp_path):
+        """Pass 3 rewrites breadcrumbs without clobbering pass 2's summaries.
+
+        Both passes write the same hub files; the summary only survives
+        because pass 3 re-reads it out of the file it is about to replace.
+        """
+        from src.llm import LLMClient
+        from src.llm.fake import FakeProvider
+
+        memory = tmp_path / "memory"
+        deep = memory / "deep"
+        deep.mkdir(parents=True)
+        for i in range(3):
+            (memory / f"note{i}.md").write_text(f"# Note {i}\n\nshallow knowledge {i}\n")
+        # A leaf directory only earns a hub once it is large; ``memory`` earns
+        # one because it has a subdirectory.
+        for i in range(10):
+            (deep / f"deep{i}.md").write_text(f"# Deep {i}\n\nnested knowledge {i}\n")
+
+        fake = FakeProvider()
+        # os.walk is bottom-up in pass 1, so ``deep`` is summarised first.
+        fake.add_text('"Covers the nested knowledge."')
+        fake.add_text('"Covers the shallow knowledge."')
+        fake.add_text('"Covers the vault root."')
+
+        gen = VaultIndexGenerator(str(tmp_path))
+        written = await gen.generate_all_with_summaries(LLMClient.with_provider(fake))
+
+        deep_hub = deep / "deep.md"
+        memory_hub = memory / "memory.md"
+        assert deep_hub.exists() and memory_hub.exists()
+        assert str(deep_hub) in written and str(memory_hub) in written
+
+        deep_text = deep_hub.read_text()
+        memory_text = memory_hub.read_text()
+        assert "Covers the nested knowledge." in deep_text
+        assert "Covers the shallow knowledge." in memory_text
+        # Pass 3 ran: the child hub now carries a parent breadcrumb.
+        assert "Parent:" in deep_text
+        # And the summary survived that rewrite verbatim.
+        assert gen._extract_summary(deep_hub) == "Covers the nested knowledge."
+        assert gen._extract_summary(memory_hub) == "Covers the shallow knowledge."

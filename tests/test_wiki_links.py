@@ -107,3 +107,15 @@ class TestStripFrontmatter:
     def test_incomplete_frontmatter(self):
         content = "---\nunclosed"
         assert strip_frontmatter(content) == content
+
+
+class TestVaultPathToWikiLinkEdgeCases:
+    def test_vault_path_to_wiki_link_returns_none_for_path_outside_root(self, tmp_path):
+        """A path outside the vault has no wiki-link — return None, don't raise."""
+        assert vault_path_to_wiki_link("/vault", "/elsewhere/x.md") is None
+        assert vault_path_to_wiki_link("/vault", None) is None
+
+    def test_resolve_wiki_link_returns_none_for_empty_target(self, tmp_path):
+        """An empty target resolves to nothing rather than the vault root."""
+        assert resolve_wiki_link(str(tmp_path), "") is None
+        assert resolve_wiki_link(str(tmp_path), "   ") is None

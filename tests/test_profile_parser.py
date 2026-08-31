@@ -33,6 +33,7 @@ from src.profiles.parser import (
     parse_frontmatter,
     parse_profile,
     parsed_profile_to_agent_profile,
+    update_config_keys,
 )
 
 # ---------------------------------------------------------------------------
@@ -2297,3 +2298,94 @@ class TestGetRegistryToolNames:
         # but our custom tools should be there
         assert "alpha" in names
         assert "beta" in names
+
+
+# ---------------------------------------------------------------------------
+# update_config_keys — surgical rewrite of the ## Config block
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateConfigKeys:
+    def test_update_config_keys_replaces_unparseable_config_block(self):
+        """An unrecoverable Config block is replaced, not appended to.
+
+        Merging into a block that cannot be parsed would either raise or
+        silently produce two JSON objects in one section; the surrounding
+        prose must survive either way.
+        """
+        markdown = """\
+---
+id: coding
+name: Coding Agent
+---
+
+## Role
+
+You write code. Keep the diff small.
+
+## Config
+
+```json
+{"model": "x",
+```
+"""
+        result = update_config_keys(markdown, {"harness": "codex"})
+
+        parsed = parse_profile(result)
+        assert parsed.config == {"harness": "codex"}
+        assert parsed.errors == []
+        assert parsed.role == "You write code. Keep the diff small."
+        assert result.startswith("---\nid: coding\nname: Coding Agent\n---\n")
+        assert result.count("```json") == 1
+
+    def test_update_config_keys_appends_config_section_when_absent(self):
+        """A document with no Config section gains one at the end."""
+        markdown = """\
+---
+id: coding
+name: Coding Agent
+---
+
+## Role
+
+You write code.
+"""
+        result = update_config_keys(
+            markdown, {"harness": "codex", "model": None, "permission_mode": "auto"}
+        )
+
+        parsed = parse_profile(result)
+        assert parsed.config == {"harness": "codex", "permission_mode": "auto"}
+        assert "model" not in parsed.config
+        assert parsed.role == "You write code."
+        assert result.index("## Role") < result.index("## Config")
+
+    def test_update_config_keys_leaves_other_sections_untouched(self):
+        """Only the Config block is rewritten; sibling sections are verbatim."""
+        markdown = """\
+---
+id: coding
+name: Coding Agent
+---
+
+## Role
+
+Ship small diffs.
+
+## Config
+
+```json
+{"model": "sonnet", "permission_mode": "auto"}
+```
+
+## Rules
+
+- Never force-push.
+"""
+        result = update_config_keys(markdown, {"model": "opus"})
+
+        parsed = parse_profile(result)
+        assert parsed.config["model"] == "opus"
+        assert parsed.config["permission_mode"] == "auto"
+        assert "## Rules\n\n- Never force-push." in result
+        assert "Ship small diffs." in result

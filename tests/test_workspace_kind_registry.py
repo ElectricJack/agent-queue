@@ -295,3 +295,59 @@ class TestModeUpgradePath:
 
         kind = await db.get_workspace_kind(SYSTEM_KIND_SCOPE, "project-repo")
         assert kind.mode == KIND_MODE_EXCLUSIVE_CLONE
+
+
+async def test_sync_from_vault_skips_unparseable_kind_file_and_keeps_others(
+    vault_root: Path, db, caplog
+):
+    """A malformed edit must not evict working state (X6).
+
+    A parse failure means "this file is temporarily unreadable", not "this
+    file was deleted" — pruning its row would drop the operator's last good
+    definition on a mid-edit save.
+    """
+    sys_dir = vault_root / "workspace-kinds"
+    sys_dir.mkdir()
+
+    def _kind(kind_id: str) -> str:
+        return textwrap.dedent(
+            f"""
+            ---
+            id: {kind_id}
+            writable: true
+            lockable: true
+            is_git_repo: false
+            default_lock_mode: exclusive
+            ---
+            The {kind_id} kind.
+            """
+        ).strip()
+
+    (sys_dir / "good-kind.md").write_text(_kind("good-kind"))
+    (sys_dir / "broken-kind.md").write_text(_kind("broken-kind"))
+    # A generated Obsidian hub — no frontmatter contract, must not produce a row.
+    (sys_dir / "workspace-kinds.md").write_text("# Workspace Kinds\n\n- [[good-kind]]\n")
+
+    store = WorkspaceKindStore(db, vault_root=vault_root)
+    await store.scan()
+
+    ids = {k.id for k in await db.list_all_workspace_kinds()}
+    assert {"good-kind", "broken-kind"} <= ids
+    assert "workspace-kinds" not in ids
+
+    # Now break one file's frontmatter and re-scan.
+    (sys_dir / "broken-kind.md").write_text("---\nid: [unclosed\n---\nbroken\n")
+
+    with caplog.at_level("WARNING", logger="src.profiles.workspace_kind_registry"):
+        await store.scan()
+
+    after = {k.id for k in await db.list_all_workspace_kinds()}
+    assert "good-kind" in after, "a sibling's parse failure must not prune valid rows"
+    assert "broken-kind" in after, "a parse failure is not a file deletion"
+    assert "broken-kind.md" in caplog.text
+    assert "Failed to parse" in caplog.text
+
+    # A real deletion still prunes.
+    (sys_dir / "broken-kind.md").unlink()
+    await store.scan()
+    assert "broken-kind" not in {k.id for k in await db.list_all_workspace_kinds()}

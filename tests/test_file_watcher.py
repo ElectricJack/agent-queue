@@ -393,3 +393,104 @@ class TestFileState:
     def test_resolve_absolute_path(self):
         result = FileWatcher._resolve_path("/abs/path.py", "/project")
         assert result == "/abs/path.py"
+
+
+class TestRecursiveFolderWatchAndDebounce:
+    @pytest.mark.asyncio
+    async def test_recursive_folder_watch_detects_nested_file(self, watcher, bus, tmp_path):
+        """Recursive watches see nested files; non-recursive ones do not."""
+        root = tmp_path / "w"
+        (root / "a" / "b").mkdir(parents=True)
+
+        events: list[dict] = []
+        bus.subscribe("folder.changed", lambda d: events.append(d))
+
+        watcher.add_watch(
+            WatchRule(
+                watch_id="rec",
+                project_id="proj-1",
+                paths=[str(root)],
+                watch_type="folder",
+                recursive=True,
+                extensions=[".md"],
+            )
+        )
+
+        (root / "a" / "b" / "deep.md").write_text("deep")
+        (root / "a" / "b" / "ignore.txt").write_text("nope")
+        (root / "a" / ".hidden.md").write_text("hidden")
+
+        await watcher.check()
+        await asyncio.sleep(0.2)  # past the debounce
+        await watcher.check()
+
+        assert len(events) == 1
+        changes = {c["path"]: c["operation"] for c in events[0]["changes"]}
+        assert changes == {os.path.join("a", "b", "deep.md"): "created"}
+        assert events[0]["count"] == 1
+
+        # The same tree under a non-recursive watch reports nothing.
+        events.clear()
+        watcher.remove_watch("rec")
+        watcher.add_watch(
+            WatchRule(
+                watch_id="flat",
+                project_id="proj-1",
+                paths=[str(root)],
+                watch_type="folder",
+                recursive=False,
+                extensions=[".md"],
+            )
+        )
+        (root / "a" / "b" / "deeper.md").write_text("deeper")
+
+        await watcher.check()
+        await asyncio.sleep(0.2)
+        await watcher.check()
+
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_folder_debounce_collapses_create_then_delete(self, bus, tmp_path):
+        """Create-then-delete inside one debounce window emits nothing."""
+        watcher = FileWatcher(bus, debounce_seconds=5.0, poll_interval=0.0)
+        root = tmp_path / "w"
+        root.mkdir()
+
+        events: list[dict] = []
+        bus.subscribe("folder.changed", lambda d: events.append(d))
+
+        watcher.add_watch(
+            WatchRule(
+                watch_id="deb",
+                project_id="proj-1",
+                paths=[str(root)],
+                watch_type="folder",
+            )
+        )
+
+        transient = root / "transient.md"
+        transient.write_text("here")
+        await watcher.check()
+        transient.unlink()
+        await watcher.check()
+
+        # Force the flush past the debounce window without sleeping for it.
+        await watcher._flush_pending_folder_changes(time.time() + 10)
+
+        assert events == []
+
+        # Create-then-modify, by contrast, collapses to a single "created".
+        kept = root / "kept.md"
+        kept.write_text("v1")
+        await watcher.check()
+        time.sleep(0.01)
+        kept.write_text("v2 — longer content so size changes too")
+        await watcher.check()
+
+        await watcher._flush_pending_folder_changes(time.time() + 10)
+
+        assert len(events) == 1
+        assert [(c["path"], c["operation"]) for c in events[0]["changes"]] == [
+            ("kept.md", "created")
+        ]

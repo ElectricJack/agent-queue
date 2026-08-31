@@ -854,3 +854,64 @@ def test_run_vault_migration_includes_passive_rules(tmp_path):
     # Check passive_rules section exists in report
     assert "passive_rules" in report
     assert report["passive_rules"]["moved"] == 1
+
+
+def test_dry_run_counts_match_apply_counts_for_passive_rules(tmp_path):
+    """The dry-run preview must predict exactly what the apply run does.
+
+    The two paths are separate code (``_scan_passive_rule_migration`` vs
+    ``migrate_passive_rules_to_memory``), so they can drift silently and tell
+    an operator the wrong thing before a destructive run.
+    """
+    import shutil
+
+    def _build(root) -> str:
+        system_playbooks = root / "vault" / "system" / "playbooks"
+        system_playbooks.mkdir(parents=True)
+        _write_rule_file(
+            str(system_playbooks / "rule-style-guide.md"),
+            "rule-style-guide",
+            "passive",
+            content="# Style Guide",
+        )
+        _write_rule_file(
+            str(system_playbooks / "rule-already-there.md"),
+            "rule-already-there",
+            "passive",
+            content="# Already migrated",
+        )
+        # An active rule must be counted by neither path.
+        _write_rule_file(
+            str(system_playbooks / "rule-active.md"),
+            "rule-active",
+            "active",
+            content="# Active",
+        )
+        # One destination already exists, so that file is skipped.
+        guidance = root / "vault" / "system" / "memory" / "guidance"
+        guidance.mkdir(parents=True)
+        (guidance / "rule-already-there.md").write_text("# Already migrated\n")
+        return str(root)
+
+    preview_dir = _build(tmp_path / "preview")
+    apply_dir = tmp_path / "apply"
+    shutil.copytree(preview_dir, apply_dir)
+
+    dry = run_vault_migration(preview_dir, dry_run=True)
+    wet = run_vault_migration(str(apply_dir), dry_run=False)
+
+    assert dry["dry_run"] is True
+    assert dry["passive_rules"]["would_move"] == wet["passive_rules"]["moved"] == 1
+    assert dry["passive_rules"]["would_skip"] == wet["passive_rules"]["skipped"] == 1
+    assert wet["passive_rules"]["errors"] == 0
+
+    # The dry run changed nothing on disk; the apply run did the predicted work.
+    assert (
+        tmp_path / "preview" / "vault" / "system" / "playbooks" / "rule-style-guide.md"
+    ).exists()
+    assert not (
+        tmp_path / "preview" / "vault" / "system" / "memory" / "guidance" / "rule-style-guide.md"
+    ).exists()
+    assert (apply_dir / "vault" / "system" / "memory" / "guidance" / "rule-style-guide.md").exists()
+    assert not (apply_dir / "vault" / "system" / "playbooks" / "rule-style-guide.md").exists()
+    assert (apply_dir / "vault" / "system" / "playbooks" / "rule-active.md").exists()
