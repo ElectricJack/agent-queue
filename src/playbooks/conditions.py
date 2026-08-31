@@ -65,8 +65,8 @@ def eval_pipeline_when(when: dict, event: dict) -> bool:
 
     # Walk the dot-path into the event dict
     val: object = event
-    for part in field_path.split("."):
-        if part == "event":
+    for index, part in enumerate(field_path.split(".")):
+        if index == 0 and part == "event":
             # "event.foo" means the event itself as root — skip the prefix
             continue
         if isinstance(val, dict):
@@ -75,8 +75,10 @@ def eval_pipeline_when(when: dict, event: dict) -> bool:
             val = None
             break
 
-    if when.get("truthy") or when.get("not_null"):
-        return bool(val) if when.get("truthy") else val is not None and val != ""
+    if "truthy" in when:
+        return bool(val) is bool(when["truthy"])
+    if "not_null" in when:
+        return (val is not None and val != "") is bool(when["not_null"])
 
     if "equals" in when:
         return val == when["equals"]

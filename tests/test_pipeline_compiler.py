@@ -1,4 +1,3 @@
-
 from src.playbooks.pipeline_compiler import compile_pipeline
 
 
@@ -122,9 +121,9 @@ triggers: [task.created]
     assert not r.success
     # Either unreachable ('done' can't be reached from entry) or trapped
     # (a,b in cycle) — both are compile errors here. We accept either.
-    assert any(
-        "reachable" in e or "cycle" in e or "path to a terminal" in e for e in r.errors
-    ), r.errors
+    assert any("reachable" in e or "cycle" in e or "path to a terminal" in e for e in r.errors), (
+        r.errors
+    )
 
 
 def test_rejects_node_claiming_entry():
@@ -171,3 +170,65 @@ def test_store_roundtrip_preserves_pipeline_fields(tmp_path):
     # validate() accepts the reloaded pipeline
     errs = loaded.validate()
     assert errs == [], errs
+
+
+def test_frontmatter_validation_errors():
+    for field in ("role", "id", "scope"):
+        result = compile_pipeline(
+            VALID.replace(
+                f"{field}: " + ("default-pipeline" if field != "scope" else "system") + "\n", ""
+            )
+        )
+        assert not result.success
+        assert any(error["field"] == field for error in result.structured_errors)
+    result = compile_pipeline(VALID.replace("triggers: [task.created]", "triggers: []"))
+    assert not result.success
+    assert any(error["field"] == "triggers" for error in result.structured_errors)
+
+
+def test_node_shape_validation_errors():
+    cases = {
+        "command": VALID.replace('"command": "gate_create"', '"command": ""'),
+        "args": VALID.replace(
+            '"args": {"project_id": "{{event.project_id}}", "gate_type": "routing", "title": "Route task", "waiter_task_ids": ["{{event.task_id}}"]}',
+            '"args": []',
+        ),
+        "on_success": VALID.replace('"on_success": "ensure_triage"', '"on_success": {}'),
+        "for_each": VALID.replace(
+            '"on_success": "ensure_triage"', '"for_each": {"source": "items"}'
+        ),
+        "output": VALID.replace('"on_success": "ensure_triage"', '"output": {}'),
+    }
+    for field, markdown in cases.items():
+        result = compile_pipeline(markdown)
+        assert not result.success
+        assert any(
+            error["field"] == field and error["node"] == "attach_gate"
+            for error in result.structured_errors
+        )
+
+
+def test_body_without_json_fence_and_with_bad_json_are_rejected():
+    frontmatter, _, _ = VALID[4:].partition("---\n")
+    for body in ("plain prose", "```json\n{broken\n```"):
+        result = compile_pipeline(f"---\n{frontmatter}---\n{body}")
+        assert not result.success
+        assert result.structured_errors[0]["field"] == "body"
+
+
+def test_multi_rule_errors_are_reported_per_rule():
+    base = VALID.replace(
+        '"entry": "attach_gate",\n  "nodes":',
+        '"rules": [{"id": "one", "on": "task.created", "entry": "attach_gate", "nodes":',
+    ).replace("\n  }\n}\n```", "\n  }}]\n}\n```")
+    cases = [
+        base.replace('{"id": "one"', "null", 1),
+        base.replace('"id": "one", ', ""),
+        base.replace('"on": "task.created", ', ""),
+        base.replace('"nodes": {', '"nodes": {}', 1),
+        base.replace('"entry": "attach_gate"', '"entry": "missing"'),
+    ]
+    for markdown in cases:
+        result = compile_pipeline(markdown)
+        assert not result.success
+        assert result.structured_errors

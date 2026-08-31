@@ -30,6 +30,7 @@ import pytest
 from src.llm import LLMClient, LLMRunResult
 from src.llm.fake import FakeProvider
 from src.models import PlaybookRun
+from src.models import PlaybookRunEvent, PlaybookRunStatus
 from src.playbooks.services import PlaybookServices
 from src.playbooks.runner import (
     DailyTokenTracker,
@@ -82,7 +83,6 @@ def _messages_of(call) -> list[dict]:
 
 def _tools_of(call) -> list[dict]:
     return call.args[1]
-
 
 
 @pytest.fixture
@@ -244,9 +244,7 @@ class TestLinearExecution:
         assert _prompt_of(call).endswith("Run scan on files.")
         assert call.kwargs["spec"].caller == "playbook:test-playbook:scan"
 
-    async def test_conversation_history_accumulates(
-        self, mock_services, simple_graph, event_data
-    ):
+    async def test_conversation_history_accumulates(self, mock_services, simple_graph, event_data):
         mock_services.llm.run_tools.return_value = _run_result("Scan complete, no issues found.")
         runner = PlaybookRunner(simple_graph, event_data, mock_services)
         await runner.run()
@@ -554,9 +552,7 @@ class TestSandboxedPlaybook:
         handler.set_active_project = lambda _pid: None
         handler.execute = AsyncMock(return_value={"success": True})
         mock_services.handler = handler
-        mock_services.tool_registry.get_all_tools.return_value = [
-            {"name": "mcp__email__read"}
-        ]
+        mock_services.tool_registry.get_all_tools.return_value = [{"name": "mcp__email__read"}]
 
         graph = {**simple_graph, "profile_id": "project:test-proj:email-triager"}
         mock_db.get_profile = AsyncMock(
@@ -913,9 +909,7 @@ class TestTokenBudget:
 
         # Resume — the apply node response pushes over budget
         mock_services.llm.run_tools.return_value = _run_result("x" * 200)
-        resumed = await PlaybookRunner.resume(
-            db_run, graph, mock_services, "Approved!", db=mock_db
-        )
+        resumed = await PlaybookRunner.resume(db_run, graph, mock_services, "Approved!", db=mock_db)
 
         assert resumed.status == "failed"
         assert "token_budget_exceeded" in resumed.error
@@ -1653,9 +1647,7 @@ class TestDBPersistence:
         result = await runner.run()
         assert result.status == "completed"
 
-    async def test_persisted_conversation_history_content(
-        self, mock_services, event_data, mock_db
-    ):
+    async def test_persisted_conversation_history_content(self, mock_services, event_data, mock_db):
         """Verify the actual JSON content of persisted conversation history."""
         graph = {
             "id": "history-persist",
@@ -2735,9 +2727,7 @@ class TestTransitionEvaluationLLMCall:
         assert len(history) == 4
         assert "I found 3 issues" in history[2]["content"]
 
-    async def test_transition_call_uses_no_tools(
-        self, mock_services, branching_graph, event_data
-    ):
+    async def test_transition_call_uses_no_tools(self, mock_services, branching_graph, event_data):
         """Transition evaluation runs on ``complete`` — no tool loop at all."""
         responses = iter(["findings", "1"])
         _script_iter(mock_services, responses)
@@ -2760,8 +2750,7 @@ class TestTransitionEvaluationLLMCall:
 
         transition_call = mock_services.llm.complete.call_args_list[0]
         assert (
-            transition_call.kwargs["spec"].caller
-            == "playbook:branching-playbook:transition:scan"
+            transition_call.kwargs["spec"].caller == "playbook:branching-playbook:transition:scan"
         )
 
     async def test_transition_tokens_tracked(self, mock_services, branching_graph, event_data):
@@ -3254,9 +3243,7 @@ class TestBranchingTransitionEvaluation:
         assert transition_call.kwargs["spec"].model == "claude-haiku-4-20250414"
         assert transition_call.kwargs["spec"].provider == "anthropic"
 
-    async def test_transition_node_level_config_overrides_playbook(
-        self, mock_services, event_data
-    ):
+    async def test_transition_node_level_config_overrides_playbook(self, mock_services, event_data):
         """(d) extended — node-level transition_llm_config overrides playbook-level."""
         graph = {
             "id": "node-transition-config",
@@ -3495,9 +3482,7 @@ class TestBranchingTransitionEvaluation:
             "no transition matched" in result.error.lower() or "otherwise" in result.error.lower()
         )
 
-    async def test_no_match_no_default_descriptive_error(
-        self, mock_services, event_data, mock_db
-    ):
+    async def test_no_match_no_default_descriptive_error(self, mock_services, event_data, mock_db):
         """(g) extended — error message includes conditions and is persisted."""
         graph = {
             "id": "descriptive-error",
@@ -5155,9 +5140,7 @@ class TestPlaybookExecutionHappyPath:
         # Each node's compiled prompt is passed verbatim
         calls = mock_services.llm.run_tools.call_args_list
         assert _prompt_of(calls[0]).endswith("Begin the analysis of the codebase.")
-        assert _prompt_of(calls[1]) == (
-            "Based on the analysis above, group findings by severity."
-        )
+        assert _prompt_of(calls[1]) == ("Based on the analysis above, group findings by severity.")
         assert _prompt_of(calls[2]) == ("Generate a summary report of the grouped findings.")
 
     # (d) Supervisor.chat() is invoked once per node with correct parameters
@@ -5521,9 +5504,7 @@ class TestRoadmap5217:
 
     # (e) budget-exceeded run → status "failed" with the node where budget was exhausted
 
-    async def test_e_budget_exceeded_run_identifies_node(
-        self, mock_services, event_data, mock_db
-    ):
+    async def test_e_budget_exceeded_run_identifies_node(self, mock_services, event_data, mock_db):
         """(e) Budget-exceeded run has status 'failed' with the node where
         budget was exhausted (spec §6 Token Budget)."""
         # Use a very small token budget so it exhausts after the first node
@@ -5797,9 +5778,7 @@ class TestDailyPlaybookTokenCap:
         assert "daily_playbook_token_cap_exceeded" in update_kwargs["error"]
         assert update_kwargs["completed_at"] is not None
 
-    async def test_daily_cap_exceeded_sends_notification(
-        self, mock_services, mock_db, event_data
-    ):
+    async def test_daily_cap_exceeded_sends_notification(self, mock_services, mock_db, event_data):
         """A notification is sent via on_progress when daily cap is exceeded."""
         graph = {
             "id": "notify-daily",
@@ -5858,9 +5837,7 @@ class TestDailyPlaybookTokenCap:
         assert result.node_trace == []
         assert result.tokens_used == 0
 
-    async def test_daily_cap_error_includes_usage_details(
-        self, mock_services, mock_db, event_data
-    ):
+    async def test_daily_cap_error_includes_usage_details(self, mock_services, mock_db, event_data):
         """Error message includes both the daily cap and the actual usage."""
         graph = {
             "id": "error-detail",
@@ -6714,9 +6691,7 @@ class TestResumePlaybookCommand:
             return_value=_resume_cmd_services(configured=False)
         )
 
-        result = await handler._cmd_resume_playbook(
-            {"run_id": "run-no-sup", "human_input": "ok"}
-        )
+        result = await handler._cmd_resume_playbook({"run_id": "run-no-sup", "human_input": "ok"})
 
         assert "error" in result
         assert "not configured" in result["error"]
@@ -8504,7 +8479,9 @@ class TestPauseTimeoutSpec:
 
         mock_db.update_playbook_run.reset_mock()
         # Supervisor returns NEEDS_WORK (doesn't match APPROVED → loops)
-        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("NEEDS_WORK — please revise."))
+        mock_services.llm.run_tools = AsyncMock(
+            return_value=_run_result("NEEDS_WORK — please revise.")
+        )
 
         runner2 = PlaybookRunner(loop_graph, {"type": "test"}, mock_services, mock_db)
         result2 = await runner2.run()
@@ -8723,6 +8700,42 @@ class _TestContext:
         instance._seed_message = ""
         instance._llm_config = None
         return instance
+
+
+def test_render_template_pipe_filters():
+    ctx = _TestContext()
+    ctx.node_outputs = {"items": [1, 2, 3], "obj": {"a": 1}}
+    assert ctx._render_template("{{items | length}}") == "3"
+    assert ctx._render_template("{{missing | length}}") == "0"
+    assert ctx._render_template("{{missing | json}}") == "null"
+    assert ctx._render_template("{{obj | bogus}}") == "{'a': 1}"
+
+
+def test_render_template_unresolved_sentinel_and_auto_json(caplog):
+    ctx = _TestContext()
+    ctx.node_outputs = {"obj": {"a": 1}}
+    with caplog.at_level("WARNING"):
+        rendered = ctx._render_template("{{nope}} {{obj}}")
+    assert "{{UNRESOLVED:nope}}" in rendered
+    assert '{"a": 1}' in rendered
+    assert "node_outputs" in caplog.text
+
+
+def test_evaluate_filter_operators():
+    ctx = _TestContext()
+    active, done = {"status": "ACTIVE"}, {"status": "DONE"}
+    assert ctx._evaluate_filter('item.status == "ACTIVE"', active, "item")
+    assert not ctx._evaluate_filter('item.status == "ACTIVE"', done, "item")
+    assert ctx._evaluate_filter('item.status=="ACTIVE"', active, "item")
+    assert ctx._evaluate_filter('item.status != "ACTIVE"', done, "item")
+    assert ctx._evaluate_filter('item.status in ["ACTIVE", "DONE"]', active, "item")
+    assert not ctx._evaluate_filter('item.status not in ["ACTIVE", "DONE"]', done, "item")
+
+
+def test_invalid_transition_never_overwrites_terminal_status(simple_graph, mock_services):
+    runner = PlaybookRunner(simple_graph, {}, mock_services)
+    runner._status = PlaybookRunStatus.COMPLETED
+    assert runner._transition(PlaybookRunEvent.NODE_FAILED) == PlaybookRunStatus.COMPLETED
 
 
 class TestExtractOutputTextFallback:
@@ -9205,9 +9218,7 @@ class TestRuntimeAwareNodeDispatch:
         # No harness → the in-process tool loop.
         mock_services.llm.run_tools.assert_called_once()
 
-    async def test_harness_dispatches_via_registry(
-        self, mock_services, simple_graph, event_data
-    ):
+    async def test_harness_dispatches_via_registry(self, mock_services, simple_graph, event_data):
         from src.models import AgentOutput, AgentProfile, AgentResult
 
         # Mock platform that records calls and returns a known summary.
@@ -9243,9 +9254,7 @@ class TestRuntimeAwareNodeDispatch:
         platform_obj.wait.assert_called_once()
         platform_obj.stop.assert_called_once()
 
-    async def test_harness_dispatch_resets_last_transcript(
-        self, mock_services, event_data
-    ):
+    async def test_harness_dispatch_resets_last_transcript(self, mock_services, event_data):
         """A harness-dispatched node must not inherit the previous node's
         transcript — ``output.extract`` would pull the wrong node's key."""
         from src.models import AgentOutput, AgentProfile, AgentResult
@@ -9284,9 +9293,7 @@ class TestRuntimeAwareNodeDispatch:
         # The raw response is stored, not the stale tool result.
         assert runner.node_outputs["a"] == "prose only"
 
-    async def test_active_project_cleared_after_node(
-        self, mock_services, simple_graph, event_data
-    ):
+    async def test_active_project_cleared_after_node(self, mock_services, simple_graph, event_data):
         """``set_active_project`` is cleared in the same finally as the caller
         profile — the ContextVar must not leak into later commands."""
         calls: list[str | None] = []

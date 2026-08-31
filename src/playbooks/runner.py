@@ -42,6 +42,7 @@ from src.playbooks.services import PlaybookServices
 from src.playbooks.runner_transitions import TransitionMixin, _event_to_fallback_status
 from src.playbooks.state_machine import (
     InvalidPlaybookRunTransition,
+    is_terminal,
     validate_transition,
 )
 from src.playbooks.token_tracker import (
@@ -401,6 +402,9 @@ class PlaybookRunner(EventsMixin, TransitionMixin, ContextMixin):
                 self._status.value,
                 event.value,
             )
+            if is_terminal(self._status):
+                logger.warning("Playbook run %s: preserving terminal status", self.run_id)
+                return self._status
             # Derive the intended status from the event
             target = _event_to_fallback_status(event)
         self._status = target
