@@ -6,19 +6,25 @@ concatenation across orchestrator, adapters, and supervisor.  Each prompt
 is built by stacking named sections (identity, memory context, tool
 instructions) with YAML-driven templates that can be overridden per-project.
 
-The pipeline has four layers, assembled in order:
+The pipeline has five layers, assembled in order:
 
 1. **Identity** — who the LLM is (loaded from a Markdown template).
 2. **Project context** — project profile from the memory system.
-3. **Context blocks** — arbitrary named sections (task depth, active
+3. **Relevant rules** — removed; retained as a no-op (rules were
+   replaced by playbooks and vault memory).
+4. **Context blocks** — arbitrary named sections (task depth, active
    project, dependency results, etc.).
-4. **Tools** — JSON Schema tool definitions for the LLM's tool-use loop.
+5. **Tools** — JSON Schema tool definitions for the LLM's tool-use loop.
+
+``build()`` additionally prepends the memory tiers before layer 1:
+L0 role → override → L1 facts → L1 guidance → L2 context (see
+``docs/specs/design/memory-scoping.md`` §2 for the tier budgets).
 
 Templates live in ``src/prompts/*.md`` as Markdown files with YAML
 frontmatter.  The ``{{variable}}`` placeholders use Mustache-style
 syntax for variable substitution.
 
-See ``specs/prompt-system.md`` for the full design specification.
+See ``docs/specs/prompt-builder.md`` for the full design specification.
 """
 
 from __future__ import annotations
@@ -48,6 +54,7 @@ _CHARS_PER_TOKEN = 4
 # (which trips at 2×) again means "this profile has genuinely run away".
 _L0_TOKEN_BUDGET = 400  # ~1600 chars — Role + Rules + Reflection
 _L1_TOKEN_BUDGET = 200  # ~800 chars
+_L1_GUIDANCE_TOKEN_BUDGET = 300  # ~1200 chars
 _L2_TOKEN_BUDGET = 500  # ~2000 chars
 
 # Tier-overflow warnings are emitted from setters that run once per prompt
@@ -137,8 +144,12 @@ class PromptBuilder:
     Layers:
         1. Identity — who is the LLM? (loaded from template)
         2. Project context — what project? (from memory)
-        3. Specific context — named context blocks
-        4. Tools — JSON Schema tool definitions
+        3. Relevant rules — removed, retained as a no-op
+        4. Specific context — named context blocks
+        5. Tools — JSON Schema tool definitions
+
+    Memory tiers (L0 role, override, L1 facts, L1 guidance, L2 context)
+    are prepended before layer 1 by ``build()``.
     """
 
     def __init__(
@@ -378,10 +389,17 @@ class PromptBuilder:
         Deterministically loaded from ``memory/guidance/`` directories
         under the agent-type and project vault paths.  Guidance contains
         rules that should always be present in the agent's prompt.
+
+        See ``docs/specs/design/memory-scoping.md`` §2 (L1 guidance tier).
         """
         text = guidance_text.strip()
         if not text:
             return
+        estimated_tokens = len(text) / _CHARS_PER_TOKEN
+        if estimated_tokens > _L1_GUIDANCE_TOKEN_BUDGET * 2:
+            _warn_tier_overflow(
+                "L1 guidance", text, int(estimated_tokens), _L1_GUIDANCE_TOKEN_BUDGET
+            )
         self._l1_guidance = text
 
     def set_l2_context(self, context_text: str) -> None:

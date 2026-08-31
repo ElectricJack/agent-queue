@@ -32,33 +32,47 @@ based on how and when it's loaded into agent context:
 
 | Tier   | Name           | Token Budget | When Loaded          | What It Contains                                                                                                                       |
 | ------ | -------------- | ------------ | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| **L0** | Identity       | ~50 tokens   | Always               | Agent type role description from [[profiles]] `## Role` section                                                                        |
+| **L0** | Identity       | ~400 tokens  | Always               | Agent type identity from [[profiles]] `## Role` + `## Rules` + `## Reflection` sections, composed as one block                         |
 | **L1** | Critical Facts | ~200 tokens  | Always at task start | Project `facts.md` KV entries + agent-type `facts.md` entries. Eagerly loaded, no search needed.                                       |
+| **L1** | Guidance       | ~300 tokens  | Always at task start | Behavioral rules deterministically loaded from `memory/guidance/` directories under the agent-type and project vault paths.            |
 | **L2** | Topic Context  | ~500 tokens  | On-demand by topic   | Memories filtered by `topic` field matching the current work area. Loaded when the agent enters a topic or the playbook specifies one. |
 | **L3** | Deep Search    | Variable     | Explicit query       | Full semantic search across all scopes. Agent calls `memory_search` when it needs to find something not covered by L0–L2.              |
+
+Token budgets are **advisory, never enforced by truncation**: silently dropping
+identity, facts, or behavioral rules is worse than a large prompt. The prompt
+builder warns once per distinct content when a tier exceeds 2× its budget
+(`src/prompt_builder.py`), so runaway profiles surface in the logs without a
+rebuild loop flooding them. L0's budget is ~400 (not a one-line role blurb)
+because every shipped profile composes Role + Rules + Reflection into the
+identity block.
 
 ### How Tiers Compose at Task Start
 
 When an agent starts a task on project `mech-fighters`:
 
 ```
-1. L0: Inject profile.md ## Role section (always present)
-2. L1: Load project facts.md + agent-type facts.md KV entries
+1. L0: Inject profile.md ## Role + ## Rules + ## Reflection sections
+       (always present)
+2. L1 facts: Load project facts.md + agent-type facts.md KV entries
        → "tech_stack: [Python, SQLAlchemy, Pygame]"
        → "test_command: pytest tests/ -v"
        → "deploy_branch: main"
-3. L2: If the task description mentions "combat system", pre-filter
+3. L1 guidance: Load memory/guidance/ rules from agent-type + project
+       vault paths
+       → "Never commit directly to main; open a PR"
+4. L2: If the task description mentions "combat system", pre-filter
        memories with topic: combat from project + agent-type scopes
        → "vibecop frequently catches unhandled None checks in combat systems"
-4. L3: Available via memory_search tool if the agent needs more
+5. L3: Available via memory_search tool if the agent needs more
 ```
 
 L0 and L1 are **injected automatically** — the agent never needs to search for them.
 L2 is **topic-triggered** — loaded when the context implies a topic. L3 is
 **agent-initiated** — the agent decides when to search.
 
-This tiering keeps the base context small (~250 tokens of always-present knowledge)
-while ensuring critical facts are never missed because the agent forgot to search.
+This tiering keeps the base context small (~900 tokens of always-present
+knowledge: L0 identity + L1 facts + L1 guidance) while ensuring critical facts
+are never missed because the agent forgot to search.
 
 ---
 
