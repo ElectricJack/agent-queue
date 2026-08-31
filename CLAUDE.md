@@ -75,7 +75,7 @@ alembic upgrade head  # apply locally
 - **Plugins:** 4 internal plugins (files, git, notes, vibecop) + external aq-memory + third-party support. See `docs/specs/plugin-system.md`.
 - **MCP Server:** Auto-exposes ~150 CommandHandler commands. See `docs/specs/mcp-server.md`.
 - **Vault:** `~/.agent-queue/vault/` — Obsidian-compatible markdown for playbooks, profiles, memory, facts, knowledge bases.
-- **Prompt Builder:** 5-layer context assembly pipeline: L0 role → override → L1 facts → L2 context → identity → tools. Budget-aware per tier.
+- **Prompt Builder:** 5-layer context assembly pipeline: L0 role → override → L1 facts → L1 guidance → L2 context → identity → tools. Budget-aware per tier (advisory, warn at 2×).
 
 ## Detailed Context
 
