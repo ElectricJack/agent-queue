@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -113,6 +113,30 @@ class TaskShowResponse(TaskDetail):
     context: list[dict[str, Any]] = []
     labels: list[str] = []
     claimed_by: ClaimedBy | None = None
+
+
+class TaskSetResponse(TaskShowResponse):
+    fields_changed: list[str] = []
+
+
+class TaskComment(BaseModel):
+    id: str
+    task_id: str
+    body: str
+    author_kind: Literal["user", "agent", "supervisor"]
+    author_id: str
+    created_at: float
+
+
+class TaskCommentResponse(BaseModel):
+    comment: TaskComment
+
+
+class TaskCommentsResponse(BaseModel):
+    comments: list[TaskComment] = []
+    total: int
+    limit: int
+    offset: int
 
 
 class EditTaskResponse(BaseModel):
@@ -555,6 +579,9 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "create_task": CreateTaskResponse,
     "get_task": GetTaskResponse,
     "task_show": TaskShowResponse,
+    "task_set": TaskSetResponse,
+    "task_comment": TaskCommentResponse,
+    "task_comments": TaskCommentsResponse,
     "edit_task": EditTaskResponse,
     "delete_task": DeleteTaskResponse,
     "approve_task": ApproveTaskResponse,

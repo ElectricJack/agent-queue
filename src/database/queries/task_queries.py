@@ -14,9 +14,11 @@ from sqlalchemy import delete, insert, literal, null, select, update, func, and_
 
 from src.database.tables import (
     events,
+    archived_tasks,
     gates,
     sessions,
     task_context,
+    task_comments,
     task_criteria,
     task_dependencies,
     task_gates,
@@ -145,6 +147,11 @@ class TaskQueryMixin:
 
     async def _insert_task_row(self, task: Task, *, conn) -> None:
         """Insert a single task row.  Caller owns the transaction."""
+        archived_project = (await conn.execute(
+            select(archived_tasks.c.project_id).where(archived_tasks.c.id == task.id).with_for_update()
+        )).scalar_one_or_none()
+        if archived_project is not None and archived_project != task.project_id:
+            raise ValueError("Cannot recreate an archived task in another project")
         now = time.time()
         await conn.execute(
             insert(tasks).values(
@@ -925,6 +932,9 @@ class TaskQueryMixin:
         )
 
         await conn.execute(delete(tasks).where(tasks.c.id == task_id))
+        # The parent DELETE waits for an accepted comment's UPDATE lock.
+        # Cleanup afterwards cannot miss a concurrently committed append.
+        await conn.execute(delete(task_comments).where(task_comments.c.task_id == task_id))
 
     async def get_task_updated_at(self, task_id: str) -> float | None:
         """Return the ``updated_at`` timestamp for a task, or *None*."""

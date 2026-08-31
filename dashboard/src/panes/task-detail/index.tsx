@@ -16,6 +16,7 @@ import {
 } from "../../api/hooks";
 import StatusBadge from "../../components/StatusBadge";
 import TaskActions from "../../components/TaskActions";
+import TaskComments from "../../components/TaskComments";
 import Modal from "../../components/Modal";
 import { useShellPaneStore } from "../store";
 import type { PaneViewProps } from "../types";
@@ -148,6 +149,8 @@ export default function TaskDetailPane({
           </div>
         </section>
       ) : null}
+
+      {task && <TaskComments taskId={args.taskId} />}
 
       <section>
         <h3 className="mb-1.5 text-xs font-semibold uppercase text-gray-500">Details</h3>

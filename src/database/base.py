@@ -49,6 +49,20 @@ class DatabaseBackend(Protocol):
     protocol so consumers are backend-agnostic.
     """
 
+    async def update_task_description(
+        self, task_id: str, description: str, *, expected_description: str | None = None,
+        fence: dict | None = None,
+    ) -> None: ...
+
+    async def add_task_comment(
+        self, task_id: str, body: str, *, author_kind: str, author_id: str,
+        fence: dict | None = None,
+    ) -> dict: ...
+
+    async def list_task_comments(
+        self, task_id: str, *, limit: int = 50, offset: int = 0, project_id: str | None = None,
+    ) -> dict: ...
+
     # --- Lifecycle ---
 
     async def initialize(self) -> None:

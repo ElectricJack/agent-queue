@@ -187,6 +187,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # and those win over the auto-generated variants by name collision.
     "task_show": "task",
     "task_set": "task",
+    "task_comment": "task",
+    "task_comments": "task",
     "task_close": "task",
     "task_heartbeat": "task",
     "task_claim": "task",
@@ -3593,10 +3595,36 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "task_comment",
+        "description": "Append a durable task comment. Author and time are assigned by the server; comments never resolve approval gates.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task id to comment on."},
+                "body": {"type": "string", "minLength": 1, "maxLength": 16000, "description": "Comment text (not blank; at most 16000 characters)."},
+                "claim_epoch": {"type": "integer", "description": "Current claim epoch; required for pool workers."},
+            },
+            "required": ["task_id", "body"],
+        },
+    },
+    {
+        "name": "task_comments",
+        "description": "Read authored task comments, newest first, with total and pagination metadata.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task id to read."},
+                "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 200, "description": "Page size (1..200)."},
+                "offset": {"type": "integer", "default": 0, "minimum": 0, "description": "Number of newest comments to skip."},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
         "name": "task_set",
         "description": (
             "Write work-state fields on a task and return the updated task: "
-            "branch, PR URL, work_dir, a note, label add/remove, and arbitrary "
+            "description, branch, PR URL, work_dir, a note, label add/remove, and arbitrary "
             "metadata. Never performs a status transition (the state machine "
             "belongs to work-graph's task_close — use the lifecycle commands for "
             "that).  Returns 'fields_changed' listing what was written; a call "
@@ -3607,6 +3635,14 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task id to update."},
+                "description": {
+                    "type": "string",
+                    "description": "Replace the canonical task description, preserving requirements and adding durable findings.",
+                },
+                "expected_description": {
+                    "type": "string",
+                    "description": "Exact description previously read; rejects concurrent edits before changing any fields.",
+                },
                 "branch": {
                     "type": "string",
                     "description": "Branch name for this task's work (optional).",

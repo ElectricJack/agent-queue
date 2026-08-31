@@ -25,11 +25,14 @@ describe("WebSocket wire discriminators", () => {
     client.setQueryData(["tasks", "p1"], []);
     client.setQueryData(["task", "t1"], {});
     client.setQueryData(["agents"], []);
+    client.setQueryData(["task", "t1", "comments", 0], { comments: [] });
+    client.setQueryData(["task", "other", "comments", 0], { comments: [] });
     const seen = vi.fn();
     renderHook(() => useEventStream({ onEvent: seen }), { wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> });
     transport.instance.onmessage?.({ data: JSON.stringify({ _event_type: "task.updated", project_id: "p1", task_id: "t1", seq: 2 }) });
     expect(seen).toHaveBeenCalledWith(expect.objectContaining({ _event_type: "task.updated", event_type: "task.updated", seq: 2 }));
-    for (const key of [["tasks", "p1"], ["task", "t1"], ["agents"]]) expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    for (const key of [["tasks", "p1"], ["task", "t1"], ["task", "t1", "comments", 0], ["agents"]]) expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["task", "other", "comments", 0])?.isInvalidated).toBe(false);
     client.clear();
   });
 

@@ -14,6 +14,7 @@ import {
 } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 import TaskActions from "../components/TaskActions";
+import TaskComments from "../components/TaskComments";
 import TaskGraph, { TaskExplain } from "./task/TaskGraph";
 import { workspaceHref } from "../shell/projectNavigation";
 
@@ -241,6 +242,8 @@ export default function TaskDetail() {
           <p className="text-sm text-gray-500">No description.</p>
         )}
       </section>
+
+      <TaskComments taskId={task.id} />
 
       {/* Metadata grid */}
       <section>

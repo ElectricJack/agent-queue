@@ -98,23 +98,31 @@ def naming_depth(task_id: str) -> int:
     return task_id.count(".") + 1
 
 
+async def _task_identity_exists(conn, name: str) -> bool:
+    from sqlalchemy import select, union_all
+    from src.database.tables import archived_tasks, tasks
+
+    row = (
+        await conn.execute(
+            union_all(
+                select(tasks.c.id).where(tasks.c.id == name),
+                select(archived_tasks.c.id).where(archived_tasks.c.id == name),
+            ).limit(1)
+        )
+    ).first()
+    return row is not None
+
+
 async def fresh_root_id(conn) -> str:
-    """A fresh adjective-noun root id, collision-checked on *conn*."""
-    from sqlalchemy import select
-
-    from src.database.tables import tasks
-
-    async def _exists(name: str) -> bool:
-        row = (await conn.execute(select(tasks.c.id).where(tasks.c.id == name))).fetchone()
-        return row is not None
+    """A fresh adjective-noun root id, reserving active and archived identities."""
 
     for _ in range(_MAX_RETRIES):
         name = f"{random.choice(ADJECTIVES)}-{random.choice(NOUNS)}"
-        if not await _exists(name):
+        if not await _task_identity_exists(conn, name):
             return name
     while True:
         name = f"{random.choice(ADJECTIVES)}-{random.choice(NOUNS)}-{random.randint(10, 99)}"
-        if not await _exists(name):
+        if not await _task_identity_exists(conn, name):
             return name
 
 
@@ -157,8 +165,11 @@ async def child_task_id(conn, parent_id: str) -> tuple[str, bool]:
             "child_task_id: parent '%s' at naming depth cap — minting a root id", parent_id
         )
         return (await fresh_root_id(conn), True)
-    n = await reserve_child_ordinal(conn, parent_id)
-    return (f"{parent_id}.{n}", False)
+    while True:
+        n = await reserve_child_ordinal(conn, parent_id)
+        name = f"{parent_id}.{n}"
+        if not await _task_identity_exists(conn, name):
+            return (name, False)
 
 
 async def generate_task_id(db, parent_id: str | None = None) -> str:

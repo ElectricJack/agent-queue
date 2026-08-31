@@ -18,6 +18,7 @@ aq task list                        # active tasks, current project scope
 aq task list --status IN_PROGRESS   # filter by status
 aq task list --json --brief         # scriptable projection
 aq task show <task_id>              # full detail for one task
+aq task comments <task_id>          # durable comment history, newest first
 aq task get <task_id>               # single-row summary
 aq task explain <task_id>           # "why isn't this running?" — blockers,
                                     # gates, budget, cooldown, lease info.
@@ -32,6 +33,32 @@ aq task progress <id>               # computed group progress: counts, waves,
                                     # max parallelism — never stored, always
                                     # derived from the current graph
 ```
+
+## Findings and task comments
+
+Keep confirmed findings in the task description so the next worker starts with the
+current understanding. Preserve the original goal, requirements, and acceptance criteria.
+Read the description with `aq task show` before updating the complete text. Use the
+expected value to avoid overwriting concurrent edits:
+
+```bash
+aq task set <id> --description "<original requirements plus confirmed findings>" \
+  --expected-description "<description just read>"
+aq task comment <id> --body "Finding: ... Evidence: ... Decision/next step: ..."
+aq task comments <id> --limit 50 --offset 0
+```
+
+On a description conflict, re-read and merge; never retry blindly without the expected
+value. Comments append attributed, timestamped history without rewriting the description.
+Use them for meaningful progress, evidence, test outcomes, decisions, and blockers. Keep
+hypotheses clearly marked and omit secrets. There is no need to invent findings or post
+noise after every command. `--note` remains a legacy task-context field, not the comment log.
+
+Save useful findings as you discover them and **before close, handoff, or waiting for input**.
+Do not leave discoveries only in terminal output or the final close summary. New sessions
+receive a bounded recent-comment excerpt in prime; read full history if needed. A comment
+is not approval, an escalation, or a user notification: still use the question/message
+workflow when input is needed. `task comment` resolves `--claim-epoch` like `task set`.
 
 ## The close-a-task loop
 
@@ -224,6 +251,6 @@ aq task restore <task_id>
 
 - Read before writing. `aq task get` / `aq task show` before any mutation.
 - Explain non-obvious moves. When you close a task with `--outcome pass`, the
-  summary is your one chance to tell the reviewer what you did and why.
+  summary should tell the reviewer what you did and why; link to relevant findings and comments.
 - Don't create tasks from a worker session. That's the supervisor's
   job — message the supervisor if you notice missing work.

@@ -11263,8 +11263,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Write work-state fields on a task and return the updated task: branch, PR URL, work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the state machine belongs to work-graph's task_close \u2014 use the lifecycle commands for that).  Returns 'fields_changed' listing what was written; a call with no recognised field is an error rather than a no-op.  Backs `aq task set`.",
-        "description": "Write work-state fields on a task and return the updated task: branch, PR URL, work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the state machine belongs to work-graph's task_close \u2014 use the lifecycle commands for that).  Returns 'fields_changed' listing what was written; a call with no recognised field is an error rather than a no-op.  Backs `aq task set`.",
+        "summary": "Write work-state fields on a task and return the updated task: description, branch, PR URL, work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the state machine belongs to work-graph's task_close \u2014 use the lifecycle commands for that).  Returns 'fields_changed' listing what was written; a call with no recognised field is an error rather than a no-op.  Backs `aq task set`.",
+        "description": "Write work-state fields on a task and return the updated task: description, branch, PR URL, work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the state machine belongs to work-graph's task_close \u2014 use the lifecycle commands for that).  Returns 'fields_changed' listing what was written; a call with no recognised field is an error rather than a no-op.  Backs `aq task set`.",
         "operationId": "task_set",
         "requestBody": {
           "content": {
@@ -11281,7 +11281,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSetResponse"
+                }
               }
             }
           },
@@ -11464,6 +11466,100 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/comment": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Append a durable task comment. Author and time are assigned by the server; comments never resolve approval gates.",
+        "description": "Append a durable task comment. Author and time are assigned by the server; comments never resolve approval gates.",
+        "operationId": "task_comment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCommentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCommentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/comments": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Read authored task comments, newest first, with total and pagination metadata.",
+        "description": "Read authored task comments, newest first, with total and pagination metadata.",
+        "operationId": "task_comments",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCommentsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCommentsResponse"
+                }
               }
             }
           },
@@ -29483,6 +29579,30 @@
             "title": "Task Id",
             "description": "Task id to update."
           },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "Replace the canonical task description, preserving requirements and adding durable findings."
+          },
+          "expected_description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Description",
+            "description": "Exact description previously read; rejects concurrent edits before changing any fields."
+          },
           "branch": {
             "anyOf": [
               {
@@ -30690,6 +30810,382 @@
           "reason"
         ],
         "title": "QuestionEscalateRequest"
+      },
+      "TaskComment": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "author_kind": {
+            "type": "string",
+            "enum": [
+              "user",
+              "agent",
+              "supervisor"
+            ],
+            "title": "Author Kind"
+          },
+          "author_id": {
+            "type": "string",
+            "title": "Author Id"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "task_id",
+          "body",
+          "author_kind",
+          "author_id",
+          "created_at"
+        ],
+        "title": "TaskComment"
+      },
+      "TaskCommentRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task id to comment on."
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": "Comment text (not blank; at most 16000 characters)."
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": "Current claim epoch; required for pool workers."
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "body"
+        ],
+        "title": "TaskCommentRequest"
+      },
+      "TaskCommentResponse": {
+        "properties": {
+          "comment": {
+            "$ref": "#/components/schemas/TaskComment"
+          }
+        },
+        "type": "object",
+        "required": [
+          "comment"
+        ],
+        "title": "TaskCommentResponse"
+      },
+      "TaskCommentsRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task id to read."
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Page size (1..200).",
+            "default": 50
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "Number of newest comments to skip.",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "TaskCommentsRequest"
+      },
+      "TaskCommentsResponse": {
+        "properties": {
+          "comments": {
+            "items": {
+              "$ref": "#/components/schemas/TaskComment"
+            },
+            "type": "array",
+            "title": "Comments",
+            "default": []
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "TaskCommentsResponse"
+      },
+      "TaskSetResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 0
+          },
+          "assigned_agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigned Agent"
+          },
+          "retry_count": {
+            "type": "integer",
+            "title": "Retry Count",
+            "default": 0
+          },
+          "max_retries": {
+            "type": "integer",
+            "title": "Max Retries",
+            "default": 3
+          },
+          "requires_approval": {
+            "type": "boolean",
+            "title": "Requires Approval",
+            "default": false
+          },
+          "is_blocked": {
+            "type": "boolean",
+            "title": "Is Blocked",
+            "default": false
+          },
+          "is_plan_subtask": {
+            "type": "boolean",
+            "title": "Is Plan Subtask",
+            "default": false
+          },
+          "task_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Type"
+          },
+          "parent_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Task Id"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "auto_approve_plan": {
+            "type": "boolean",
+            "title": "Auto Approve Plan",
+            "default": false
+          },
+          "skip_verification": {
+            "type": "boolean",
+            "title": "Skip Verification",
+            "default": false
+          },
+          "pr_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Url"
+          },
+          "depends_on": {
+            "items": {
+              "$ref": "#/components/schemas/TaskRef"
+            },
+            "type": "array",
+            "title": "Depends On",
+            "default": []
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskRef"
+            },
+            "type": "array",
+            "title": "Blocks",
+            "default": []
+          },
+          "subtasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskRef"
+            },
+            "type": "array",
+            "title": "Subtasks",
+            "default": []
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At",
+            "default": 0.0
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At",
+            "default": 0.0
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "children": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Children"
+          },
+          "context": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Context",
+            "default": []
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labels",
+            "default": []
+          },
+          "claimed_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimedBy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fields_changed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Fields Changed",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "title"
+        ],
+        "title": "TaskSetResponse"
       }
     }
   }

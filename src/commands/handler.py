@@ -43,6 +43,7 @@ from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.system_commands import SystemCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
+from src.commands.task_comment_commands import TaskCommentCommandsMixin
 from src.commands.agent_commands import AgentCommandsMixin
 from src.commands.profile_commands import ProfileCommandsMixin
 from src.commands.mcp_commands import McpCommandsMixin
@@ -212,7 +213,7 @@ _ARGS_SUMMARY_REDACT_KEYS: tuple[str, ...] = (
 _ARGS_SUMMARY_MAX_LEN: int = 200
 
 
-def _summarize_args(command: str, args: dict | None) -> str:  # noqa: ARG001 -- command reserved for per-cmd redaction
+def _summarize_args(command: str, args: dict | None) -> str:
     """Short, redacted rendering of *args* for the ``command.invoked`` event.
 
     Never dumps raw values on the bus.  Rules:
@@ -235,7 +236,9 @@ def _summarize_args(command: str, args: dict | None) -> str:  # noqa: ARG001 -- 
             # Server-injected trust envelope — never on the wire.
             continue
         key_lower = key.lower()
-        if any(needle in key_lower for needle in _ARGS_SUMMARY_REDACT_KEYS):
+        if (
+            command == "task_set" and key_lower in {"description", "expected_description"}
+        ) or any(needle in key_lower for needle in _ARGS_SUMMARY_REDACT_KEYS):
             n = len(value) if isinstance(value, (str, bytes, list, dict)) else 0
             parts.append(f"{key}=<redacted len={n}>")
             continue
@@ -304,6 +307,7 @@ class CommandHandler(
     SystemCommandsMixin,
     ProjectCommandsMixin,
     TaskCommandsMixin,
+    TaskCommentCommandsMixin,
     AgentCommandsMixin,
     ProfileCommandsMixin,
     McpCommandsMixin,

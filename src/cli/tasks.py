@@ -556,7 +556,9 @@ def task_details_alias(ctx: click.Context, task_id: str) -> None:
 @click.option("--branch", default=None, help="Set the task's branch name")
 @click.option("--pr-url", default=None, help="Set the task's PR URL")
 @click.option("--work-dir", default=None, help="Record the task's working directory")
-@click.option("--note", default=None, help="Append a note to the task's context")
+@click.option("--note", default=None, help="Append a legacy note to task context")
+@click.option("--description", default=None, help="Update findings while preserving the task requirements")
+@click.option("--expected-description", default=None, help="Only update if the current description matches this value")
 @click.option(
     "--label",
     "labels",
@@ -581,11 +583,13 @@ def task_set(
     pr_url: str | None,
     work_dir: str | None,
     note: str | None,
+    description: str | None,
+    expected_description: str | None,
     labels: tuple[str, ...],
     meta_kv: tuple[str, ...],
     claim_epoch: int | None,
 ) -> None:
-    """Work-state contract writes: branch, PR URL, work dir, notes, labels, metadata.
+    """Work-state writes: findings, branch, PR URL, work dir, notes, labels, metadata.
 
     Never changes task status — use `aq task approve|stop|restart` for that.
     """
@@ -618,6 +622,10 @@ def task_set(
         args["work_dir"] = work_dir
     if note is not None:
         args["note"] = note
+    if description is not None:
+        args["description"] = description
+    if expected_description is not None:
+        args["expected_description"] = expected_description
     if labels_add:
         args["labels_add"] = labels_add
     if labels_remove:
@@ -641,3 +649,57 @@ def task_set(
             console.print(f"  [dim]Fields:[/] {', '.join(changed)}")
 
     emit(ctx, result, entity="task", render=_render)
+
+
+@task.command("comment")
+@click.argument("task_id")
+@click.option("--body", required=True, help="Progress, evidence, a decision, or a blocker (up to 16,000 characters)")
+@claim_epoch_option
+@click.pass_context
+@_handle_errors
+def task_comment(ctx: click.Context, task_id: str, body: str, claim_epoch: int | None) -> None:
+    """Append an attributed comment to a task's durable history."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    args: dict[str, Any] = {"task_id": task_id, "body": body}
+    epoch = resolve_claim_epoch(claim_epoch)
+    if epoch is not None:
+        args["claim_epoch"] = epoch
+
+    async def _comment():
+        async with _get_client(api_url) as client:
+            return await client.execute("task_comment", args)
+
+    def _render(data: dict) -> None:
+        console.print(f"Comment added to {task_id}", markup=False)
+
+    emit(ctx, _run(_comment()), entity="task_comment", render=_render)
+
+
+@task.command("comments")
+@click.argument("task_id")
+@click.option("--limit", default=50, type=click.IntRange(1, 200), show_default=True)
+@click.option("--offset", default=0, type=click.IntRange(min=0), show_default=True)
+@click.pass_context
+@_handle_errors
+def task_comments(ctx: click.Context, task_id: str, limit: int, offset: int) -> None:
+    """Read a task's comments, newest first."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _comments():
+        async with _get_client(api_url) as client:
+            return await client.execute("task_comments", {"task_id": task_id, "limit": limit, "offset": offset})
+
+    def _render(data: dict) -> None:
+        from datetime import datetime, timezone
+
+        rows = _getval(data, "comments", [])
+        console.print(f"{len(rows)} comments shown; {_getval(data, 'total', len(rows))} total (offset {offset})", markup=False)
+        for row in rows:
+            timestamp = _getval(row, "created_at", "")
+            if isinstance(timestamp, (int, float)):
+                timestamp = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+            author = f"{_getval(row, 'author_kind', '')}:{_getval(row, 'author_id', '')}"
+            console.print(f"\n{author} · {timestamp}", markup=False)
+            console.print(_getval(row, "body", ""), markup=False, highlight=False)
+
+    emit(ctx, _run(_comments()), entity="task_comments", render=_render)

@@ -9,6 +9,8 @@ from sqlalchemy import delete, insert, select, update
 
 from src.database.tables import (
     chat_analyzer_suggestions,
+    archived_tasks,
+    task_comments,
     events,
     project_constraints,
     projects,
@@ -83,6 +85,24 @@ class ProjectQueryMixin:
     async def delete_project(self, project_id: str) -> None:
         """Delete a project and all associated data (cascading)."""
         async with self._engine.begin() as conn:
+            # Block concurrent task FK insertion before collecting identities.
+            # SQLite needs an actual write to acquire its database write lock.
+            if conn.dialect.name == "sqlite":
+                await conn.execute(
+                    update(projects)
+                    .where(projects.c.id == project_id)
+                    .values(
+                        id=projects.c.id,
+                    )
+                )
+            else:
+                await conn.execute(
+                    select(projects.c.id)
+                    .where(
+                        projects.c.id == project_id,
+                    )
+                    .with_for_update()
+                )
             # Get all task IDs for this project
             result = await conn.execute(select(tasks.c.id).where(tasks.c.project_id == project_id))
             task_ids = [r[0] for r in result.fetchall()]
@@ -108,6 +128,18 @@ class ProjectQueryMixin:
             # hooks and hook_runs tables removed (playbooks spec §13 Phase 3)
             await conn.execute(delete(token_ledger).where(token_ledger.c.project_id == project_id))
             await conn.execute(delete(tasks).where(tasks.c.project_id == project_id))
+            # Delete after active parents so an in-flight append cannot
+            # commit between child cleanup and the parent deletion.
+            await conn.execute(
+                delete(task_comments).where(
+                    task_comments.c.task_id.in_(task_ids)
+                    | task_comments.c.task_id.in_(
+                        select(archived_tasks.c.id).where(
+                            archived_tasks.c.project_id == project_id,
+                        )
+                    )
+                )
+            )
             await conn.execute(delete(workspaces).where(workspaces.c.project_id == project_id))
             await conn.execute(delete(repos).where(repos.c.project_id == project_id))
             await conn.execute(delete(events).where(events.c.project_id == project_id))

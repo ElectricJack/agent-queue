@@ -14,6 +14,7 @@ from src.database.tables import (
     agents,
     archived_tasks,
     task_context,
+    task_comments,
     task_criteria,
     task_dependencies,
     task_labels,
@@ -79,6 +80,18 @@ class ArchiveQueryMixin:
     async def _archive_one(self, task, *, conn) -> None:
         """Move a single task row from ``tasks`` into ``archived_tasks``."""
         task_id = task.id
+        # Serialize archive with accepted description/comment writes, then
+        # snapshot the current task rather than the earlier unlocked read.
+        locked = await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == task_id)
+            .values(
+                updated_at=tasks.c.updated_at,
+            )
+        )
+        if locked.rowcount != 1:
+            return
+        task = await self._get_task_conn(task_id, conn=conn)
         now = time.time()
         # Insert into archive (skip if already archived).
         # on_conflict_do_nothing requires dialect-specific insert.
@@ -164,6 +177,8 @@ class ArchiveQueryMixin:
             .values(locked_by_task_id=None, locked_at=None)
         )
         await conn.execute(delete(task_labels).where(task_labels.c.task_id == task_id))
+        # Comments use the stable task identity, so archive retains them.
+        # The parent DELETE serializes with a concurrent comment append.
         await conn.execute(delete(tasks).where(tasks.c.id == task_id))
 
     async def archive_completed_tasks(
@@ -292,6 +307,14 @@ class ArchiveQueryMixin:
             if not result.fetchone():
                 return False
             await conn.execute(delete(archived_tasks).where(archived_tasks.c.id == task_id))
+            # Restoration may recreate the active identity before removing
+            # its archive snapshot. Only permanent deletion removes history.
+            await conn.execute(
+                delete(task_comments).where(
+                    task_comments.c.task_id == task_id,
+                    ~exists(select(tasks.c.id).where(tasks.c.id == task_id)),
+                )
+            )
         return True
 
     async def count_archived_tasks(

@@ -5,7 +5,7 @@ costs far less context than reasoning about a large tool schema, and it works id
 across harnesses.
 
 A small, fixed set of native tools also exists for calls you'll make mid-turn where a native
-tool call beats shelling out: `task_show`, `task_set`, `task_close`, `task_heartbeat`,
+tool call beats shelling out: `task_show`, `task_set`, `task_comment`, `task_comments`, `task_close`, `task_heartbeat`,
 `task_claim`, `task_handoff`, `message_send`, `message_inbox`, `memory_save`,
 `memory_search`. Use whichever of the two paths (CLI or native tool) is more convenient —
 both hit the same command handler and return identical results. The ask_human command is not

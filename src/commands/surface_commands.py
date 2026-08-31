@@ -149,7 +149,8 @@ class SurfaceCommandsMixin:
     async def _cmd_task_set(self, args: dict) -> dict:
         """Work-state contract writes. Never performs status transitions.
 
-        Supported fields: ``branch``, ``pr_url``, ``work_dir``, ``note``,
+        Supported fields: ``description`` (optional ``expected_description`` CAS),
+        ``branch``, ``pr_url``, ``work_dir``, ``note``,
         ``labels_add``, ``labels_remove``, ``meta``.
 
         ``work_dir`` is recorded as task metadata (``task_metadata`` key
@@ -162,9 +163,16 @@ class SurfaceCommandsMixin:
         if not task_id:
             return {"error": "task_id is required"}
 
+        # Validate the description contract before touching any legacy field.
+        for field in ("description", "expected_description"):
+            if field in args and not isinstance(args[field], str):
+                return {"error": f"{field} must be a string"}
+        if "expected_description" in args and "description" not in args:
+            return {"error": "expected_description requires description"}
+        scope = self._current_scope or {}
         err = await self._assert_session_owns(
             task_id,
-            session_id=(self._current_scope or {}).get("session_id"),
+            session_id=scope.get("session_id") if not scope.get("elevated") else None,
             claim_epoch=args.get("claim_epoch"),
         )
         if err:
@@ -174,7 +182,24 @@ class SurfaceCommandsMixin:
         if not task:
             return {"error": f"Task '{task_id}' not found"}
 
+        scope_error = self._task_findings_scope_error(task)
+        if scope_error:
+            return scope_error
         fields_changed: list[str] = []
+        if "description" in args:
+            from src.database.queries.task_comment_queries import TaskFindingsConflict
+
+            fence, error = await self._task_findings_write_fence(task, args)
+            if error:
+                return error
+            try:
+                await self.db.update_task_description(
+                    task_id, args["description"],
+                    expected_description=args.get("expected_description"), fence=fence,
+                )
+            except TaskFindingsConflict as error:
+                return self._task_findings_conflict(error)
+            fields_changed.append("description")
 
         updates: dict = {}
         if "branch" in args:
@@ -219,11 +244,13 @@ class SurfaceCommandsMixin:
         if not fields_changed:
             return {
                 "error": (
-                    "No fields to update. Provide branch, pr_url, work_dir, note, "
+                    "No fields to update. Provide description, branch, pr_url, work_dir, note, "
                     "labels_add, labels_remove, or meta."
                 )
             }
 
+        if "description" in fields_changed:
+            await self._emit_task_findings_updated(task)
         result = await self._cmd_task_show({"task_id": task_id})
         result["fields_changed"] = fields_changed
         return result
