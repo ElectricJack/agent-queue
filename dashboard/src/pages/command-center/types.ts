@@ -1,3 +1,4 @@
+import type { PlaybookSummary } from "../../api/hooks";
 import type { ProjectGraphResponse } from "@aq/ts-client";
 
 /** Fixed card dimensions keep wrapped rows and connection handles aligned. */
@@ -19,6 +20,9 @@ export interface MergedGraph {
 
 export interface GraphViewProps {
   graph: MergedGraph;
+  playbooks?: PlaybookSummary[];
+  selectedPlaybookId?: string | null;
+  onPlaybookClick?: (playbookId: string) => void;
   onTaskClick: (taskId: string) => void;
   selectedTaskId?: string | null;
   onBackgroundClick?: () => void;
@@ -48,4 +52,9 @@ export interface TaskNodeData extends Record<string, unknown> {
   hierarchy: TaskHierarchy;
   onOpenTask?: (taskId: string) => void;
   onToggleChildren?: (taskId: string) => void;
+}
+
+export interface PlaybookNodeData extends Record<string, unknown> {
+  playbook: PlaybookSummary;
+  onOpenPlaybook?: (playbookId: string) => void;
 }

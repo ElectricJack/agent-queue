@@ -4,12 +4,14 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import TaskNode from "./TaskNode";
+import PlaybookNode from "./PlaybookNode";
 import AgentAvatarLayer from "./AgentAvatarLayer";
-import { columnsForWidth, edgeStyleForType, layoutGraph } from "./layout";
+import { columnsForWidth, edgeStyleForType, layoutGraph, prependPlaybookRows } from "./layout";
 import { useGraphHierarchy } from "./useGraphHierarchy";
-import type { GraphViewProps, TaskNodeData } from "./types";
+import type { GraphViewProps } from "./types";
 
-const nodeTypes = { task: TaskNode };
+const nodeTypes = { task: TaskNode, playbook: PlaybookNode };
+const NO_PLAYBOOKS: NonNullable<GraphViewProps["playbooks"]> = [];
 const initialViewport = { x: 0, y: 0, zoom: 1 };
 const RELATION_LABELS: Record<string, string> = {
   blocks: "blocks",
@@ -36,17 +38,17 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
 }
 
 export default function GraphCanvas(props: GraphViewProps) {
-  const { graph, onTaskClick, onBackgroundClick, selectedTaskId } = props;
+  const { graph, onTaskClick, onBackgroundClick, selectedTaskId, selectedPlaybookId, onPlaybookClick, playbooks = NO_PLAYBOOKS } = props;
   const { projection, toggleExpanded } = useGraphHierarchy(props);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [canvasWidth, setCanvasWidth] = useState(0);
   const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
-  const selectedId = selectedTaskId === undefined ? localSelectedId : selectedTaskId;
+  const selectedId = selectedPlaybookId ? `playbook:${selectedPlaybookId}` : selectedTaskId === undefined ? localSelectedId : selectedTaskId;
 
   useEffect(() => {
-    if (selectedTaskId !== undefined) setFocusId(selectedTaskId);
-  }, [selectedTaskId]);
+    if (selectedTaskId !== undefined || selectedPlaybookId !== undefined) setFocusId(selectedId);
+  }, [selectedTaskId, selectedPlaybookId, selectedId]);
 
   useEffect(() => {
     const element = wrapRef.current;
@@ -59,16 +61,27 @@ export default function GraphCanvas(props: GraphViewProps) {
     return () => observer.disconnect();
   }, []);
   const columns = columnsForWidth(canvasWidth);
-  const { nodes, edges } = useMemo(
+  const { nodes: taskNodes, edges } = useMemo(
     () => layoutGraph(graph, { projection, columns }),
     [graph, projection, columns],
   );
+
+  const nodes = useMemo(() => prependPlaybookRows(taskNodes, playbooks, columns), [taskNodes, playbooks, columns]);
 
   const openTask = useCallback((id: string) => {
     setFocusId(id);
     setLocalSelectedId(id);
     onTaskClick(id);
   }, [onTaskClick]);
+  const openPlaybook = useCallback((id: string) => {
+    setFocusId(`playbook:${id}`);
+    setLocalSelectedId(`playbook:${id}`);
+    onPlaybookClick?.(id);
+  }, [onPlaybookClick]);
+  const openNode = (node: Node) => {
+    if (node.type === "playbook") openPlaybook(String((node.data.playbook as { id: string }).id));
+    else openTask(node.id);
+  };
   const clearSelection = useCallback(() => {
     setFocusId(null);
     setLocalSelectedId(null);
@@ -79,8 +92,8 @@ export default function GraphCanvas(props: GraphViewProps) {
     ...node,
     selected: node.id === selectedId,
     className: node.id === focusId ? "aq-focused" : undefined,
-    data: { ...node.data, onOpenTask: openTask, onToggleChildren: toggleExpanded },
-  })), [nodes, selectedId, focusId, openTask, toggleExpanded]);
+    data: { ...node.data, onOpenTask: openTask, onToggleChildren: toggleExpanded, onOpenPlaybook: openPlaybook },
+  })), [nodes, selectedId, focusId, openTask, openPlaybook, toggleExpanded]);
   const relationTypes = useMemo(
     () => [...new Set(edges.map((edge) => String(edge.data?.depType)))].sort(),
     [edges],
@@ -96,9 +109,9 @@ export default function GraphCanvas(props: GraphViewProps) {
       wrapRef.current?.focus({ preventScroll: true });
       return;
     }
-    const taskButton = target.closest<HTMLButtonElement>("button[data-task-id]");
+    const taskButton = target.closest<HTMLButtonElement>("button[data-task-id], button[data-graph-node-id]");
     if (target.closest("button, a, summary") && !taskButton) return;
-    const fromId = taskButton?.dataset.taskId ?? focusId ?? selectedId;
+    const fromId = taskButton?.dataset.graphNodeId ?? taskButton?.dataset.taskId ?? focusId ?? selectedId;
     const from = nodes.find((node) => node.id === fromId) ?? nodes[0];
     if (!from) return;
     const directions: Record<string, "up" | "down" | "left" | "right"> = {
@@ -110,13 +123,13 @@ export default function GraphCanvas(props: GraphViewProps) {
       event.preventDefault();
       if (next) {
         setFocusId(next.id);
-        const button = [...(wrapRef.current?.querySelectorAll<HTMLButtonElement>("button[data-task-id]") ?? [])]
-          .find((element) => element.dataset.taskId === next.id);
+        const button = [...(wrapRef.current?.querySelectorAll<HTMLButtonElement>("button[data-task-id], button[data-graph-node-id]") ?? [])]
+          .find((element) => (element.dataset.graphNodeId ?? element.dataset.taskId) === next.id);
         button?.focus({ preventScroll: true });
       }
     } else if (!taskButton && (event.key === "Enter" || event.key === "o")) {
       event.preventDefault();
-      openTask(from.id);
+      openNode(from);
     }
   }
 
@@ -143,7 +156,7 @@ export default function GraphCanvas(props: GraphViewProps) {
           panOnScroll
           zoomOnScroll={false}
           proOptions={{ hideAttribution: true }}
-          onNodeClick={(_, node: Node<TaskNodeData>) => openTask(node.id)}
+          onNodeClick={(_, node) => openNode(node)}
           onPaneClick={clearSelection}
         >
           <Background gap={24} color="#1f2937" />
@@ -169,7 +182,7 @@ export default function GraphCanvas(props: GraphViewProps) {
           )}
         </ReactFlow>
       </ReactFlowProvider>
-      {nodes.length === 0 && <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-500">No tasks match these filters.</p>}
+      {nodes.length === 0 && <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-500">No tasks or playbooks match these filters.</p>}
     </div>
   );
 }

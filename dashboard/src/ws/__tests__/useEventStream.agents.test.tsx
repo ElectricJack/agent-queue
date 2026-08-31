@@ -30,3 +30,18 @@ describe("Agent flock live invalidation", () => {
     },
   );
 });
+
+describe("playbook graph live updates", () => {
+  it.each(["notify.playbook_run_started", "notify.playbook_run_completed", "notify.playbook_run_failed", "notify.playbook_run_paused", "notify.playbook_run_resumed", "notify.playbook_run_cancelled", "playbook.compiled", "playbook.deleted"])(
+    "invalidates definitions and run history after %s", event_type => {
+      const client = new QueryClient();
+      client.setQueryData(["playbooks", "all"], []);
+      client.setQueryData(["playbook-runs", "audit"], []);
+      renderHook(() => useEventStream(), { wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> });
+      __dispatchEventForTests({ event_type, run_id: "r" } as NotifyEvent);
+      expect(client.getQueryState(["playbooks", "all"])?.isInvalidated).toBe(true);
+      expect(client.getQueryState(["playbook-runs", "audit"])?.isInvalidated).toBe(true);
+      client.clear();
+    },
+  );
+});

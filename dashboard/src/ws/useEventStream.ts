@@ -185,6 +185,12 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
 
       const type = event.event_type;
 
+      if (type.startsWith("notify.playbook_run_") || type.startsWith("playbook.")) {
+        // Let in-flight snapshots finish; subsequent polling also recovers missed frames.
+        queryClient.invalidateQueries({ queryKey: ["playbooks"] }, { cancelRefetch: false });
+        queryClient.invalidateQueries({ queryKey: ["playbook-runs"] }, { cancelRefetch: false });
+      }
+
       // Flock metadata includes assignments and direct-child activity across projects.
       if (/^(agent|session|task|message)\./.test(type)) {
         queryClient.invalidateQueries({ queryKey: ["agents"] });

@@ -1,3 +1,5 @@
+import type { PlaybookSummary } from "../../api/hooks";
+import type { PlaybookNodeData } from "./types";
 import type { CSSProperties } from "react";
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
 import { projectHierarchy, type HierarchyOptions, type HierarchyProjection, type ProjectedEdge } from "./hierarchy";
@@ -117,4 +119,20 @@ export function edgeStyleForType(depType: string): CSSProperties {
     case "discovered-from": return { stroke: "#6b7280", strokeWidth: 1.5, strokeDasharray: "2 4" };
     default: return { stroke: "#9ca3af", strokeWidth: 1 };
   }
+}
+
+/** Keep recurring definitions above task rows; task filters never remove them. */
+export function prependPlaybookRows(
+  taskNodes: Node<TaskNodeData>[], playbooks: PlaybookSummary[], columns: number,
+): Node<TaskNodeData | PlaybookNodeData>[] {
+  const offset = Math.ceil(playbooks.length / columns) * (NODE_HEIGHT + ROW_GAP);
+  return [
+    ...playbooks.map((playbook, index) => ({
+      id: `playbook:${playbook.id}`, type: "playbook",
+      position: { x: PADDING + (index % columns) * (NODE_WIDTH + COLUMN_GAP), y: PADDING + Math.floor(index / columns) * (NODE_HEIGHT + ROW_GAP) },
+      width: NODE_WIDTH, height: NODE_HEIGHT, data: { playbook },
+      draggable: false, connectable: false,
+    })),
+    ...taskNodes.map(node => ({ ...node, position: { ...node.position, y: node.position.y + offset } })),
+  ];
 }

@@ -43,3 +43,21 @@ describe("mobile task hierarchy", () => {
     expect(clear).toHaveBeenCalledTimes(2);
   });
 });
+
+it("retains the same playbook card when a run finishes, even with all tasks filtered out", () => {
+  const openTask = vi.fn(), openPlaybook = vi.fn();
+  const props = { graph: graph([task("done", { status: "COMPLETED" })]), onTaskClick: openTask,
+    onPlaybookClick: openPlaybook, matchingTaskIds: new Set<string>() };
+  const definition = { id: "audit", scope: "system", triggers: ["timer.24h"] };
+  const view = render(<MobileCardList {...props} playbooks={[{ ...definition, running_count: 1 }]} />);
+  const card = screen.getByRole("button", { name: "Open playbook audit" });
+  expect(card).toHaveTextContent("Running");
+  view.rerender(<MobileCardList {...props} playbooks={[{ ...definition, running_count: 0, last_run: { run_id: "r", status: "completed" } }]} />);
+  expect(screen.getByRole("button", { name: "Open playbook audit" })).toBe(card);
+  expect(card).toHaveTextContent("Waiting for trigger");
+  expect(card).toHaveTextContent("Last run: completed");
+  expect(screen.queryByText("Task done")).not.toBeInTheDocument();
+  fireEvent.click(card);
+  expect(openPlaybook).toHaveBeenCalledExactlyOnceWith("audit");
+  expect(openTask).not.toHaveBeenCalled();
+});

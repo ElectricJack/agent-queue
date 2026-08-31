@@ -1,10 +1,11 @@
 import { useState } from "react";
+import { PlaybookCard } from "./PlaybookNode";
 import { TaskCard } from "./TaskNode";
 import { useGraphHierarchy } from "./useGraphHierarchy";
 import type { GraphViewProps } from "./types";
 
 export default function MobileCardList(props: GraphViewProps) {
-  const { graph, onTaskClick, onBackgroundClick, selectedTaskId } = props;
+  const { graph, onTaskClick, onBackgroundClick, selectedTaskId, playbooks = [], selectedPlaybookId, onPlaybookClick } = props;
   const { projection, toggleExpanded } = useGraphHierarchy(props);
   const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
   const selectedId = selectedTaskId === undefined ? localSelectedId : selectedTaskId;
@@ -24,7 +25,7 @@ export default function MobileCardList(props: GraphViewProps) {
       tabIndex={0}
       className="h-full overflow-y-auto space-y-3 p-3 outline-none"
       onClick={(event) => {
-        if (!(event.target as HTMLElement).closest("[data-task-card], button, a")) clearSelection();
+        if (!(event.target as HTMLElement).closest("[data-task-card], [data-playbook-card], button, a")) clearSelection();
       }}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
@@ -34,7 +35,10 @@ export default function MobileCardList(props: GraphViewProps) {
         }
       }}
     >
-      {projection.tasks.length === 0 && <p className="py-6 text-center text-sm text-gray-500">No tasks match these filters.</p>}
+      {playbooks.map(playbook => <PlaybookCard key={playbook.id} fluid
+        selected={selectedPlaybookId === playbook.id}
+        data={{ playbook, onOpenPlaybook: onPlaybookClick }} />)}
+      {playbooks.length === 0 && projection.tasks.length === 0 && <p className="py-6 text-center text-sm text-gray-500">No tasks or playbooks match these filters.</p>}
       {projection.tasks.map((task) => {
         const hierarchy = projection.details.get(task.id)!;
         const dependencies = projection.edges.filter((edge) => edge.from === task.id && edge.dep_type !== "parent-child");

@@ -4,15 +4,15 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import GraphCanvas from "../GraphCanvas";
-import type { TaskNodeData } from "../types";
+import type { TaskNodeData, PlaybookNodeData } from "../types";
 import { edge, graph, task } from "./fixtures";
 
 interface FlowProps {
-  nodes: Node<TaskNodeData>[];
+  nodes: Node<TaskNodeData | PlaybookNodeData>[];
   edges: Edge[];
-  nodeTypes: { task: ComponentType<{ id: string; data: TaskNodeData; selected: boolean }> };
+  nodeTypes: Record<string, ComponentType<{ id: string; data: TaskNodeData | PlaybookNodeData; selected: boolean }>>;
   children: ReactNode;
-  onNodeClick: (event: MouseEvent, node: Node<TaskNodeData>) => void;
+  onNodeClick: (event: MouseEvent, node: Node<TaskNodeData | PlaybookNodeData>) => void;
   onPaneClick?: (event: MouseEvent) => void;
   nodesDraggable?: boolean;
   nodesConnectable?: boolean;
@@ -28,14 +28,15 @@ vi.mock("@xyflow/react", () => ({
   ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
   ReactFlow: (props: FlowProps) => {
     flow.current = props;
-    const NodeView = props.nodeTypes.task;
     return <div>
       <button type="button" aria-label="Blank canvas" onClick={(event) => props.onPaneClick?.(event)} />
-      {props.nodes.map((node) => (
+      {props.nodes.map((node) => {
+        const NodeView = props.nodeTypes[node.type ?? "task"]!;
+        return (
         <div key={node.id} data-testid={`node-${node.id}`} onClick={(event) => props.onNodeClick(event, node)}>
           <NodeView id={node.id} data={node.data} selected={Boolean(node.selected)} />
         </div>
-      ))}
+      ); })}
       {props.children}
     </div>;
   },
@@ -207,4 +208,23 @@ describe("GraphCanvas interactions", () => {
     rerender(<GraphCanvas graph={data} onTaskClick={vi.fn()} />);
     expect(screen.queryByText("Task child")).not.toBeInTheDocument();
   });
+});
+
+it("renders persistent playbook nodes before task rows, keeps their positions after completion, and never opens them as tasks", () => {
+  const openTask = vi.fn(), openPlaybook = vi.fn();
+  const definitions = Array.from({ length: 5 }, (_, i) => ({ id: `book-${i}`, scope: "system", triggers: ["timer.24h"], running_count: 1 }));
+  const props = { graph: graph([task("one")]), onTaskClick: openTask, onPlaybookClick: openPlaybook };
+  const view = render(<GraphCanvas {...props} playbooks={definitions} selectedPlaybookId="book-0" />);
+  const positions = flow.current!.nodes.map(n => ({ id: n.id, position: n.position }));
+  expect(positions.find(n => n.id === "one")!.position.y).toBeGreaterThan(Math.max(...positions.filter(n => n.id.startsWith("playbook:")).map(n => n.position.y)));
+  fireEvent.click(screen.getByTestId("node-playbook:book-0"));
+  fireEvent.click(screen.getByRole("button", { name: "Open playbook book-0" }));
+  expect(openPlaybook.mock.calls).toEqual([["book-0"], ["book-0"]]);
+  expect(openTask).not.toHaveBeenCalled();
+  view.rerender(<GraphCanvas {...props} playbooks={definitions.map(p => ({ ...p, running_count: 0, last_run: { run_id: "r", status: "completed" } }))} />);
+  expect(flow.current!.nodes.map(n => ({ id: n.id, position: n.position }))).toEqual(positions);
+  expect(screen.getAllByText("Waiting for trigger")).toHaveLength(5);
+  screen.getByRole("button", { name: "Open playbook book-0" }).focus();
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+  expect(screen.getByRole("button", { name: "Open playbook book-1" })).toHaveFocus();
 });

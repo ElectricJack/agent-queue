@@ -56,6 +56,7 @@ import {
   reopenWithFeedback,
   restartTask,
   resumePlaybook,
+  runPlaybook,
   inspectPlaybookRun,
   cancelPlaybookRun,
   resumeProject,
@@ -118,6 +119,8 @@ import type {
   McpServerSummary,
   OrchestratorControlResponse2 as OrchestratorControlResponse,
   PlaybookRunSummary,
+  RunPlaybookRequest,
+  RunPlaybookResponse,
   PlaybookSummary,
   ProbedToolModel,
   ProbeMcpServerResponse,
@@ -709,6 +712,19 @@ export function usePlaybooks(scope?: string) {
       return (data as ListPlaybooksResponse).playbooks ?? [];
     },
     refetchInterval: 30_000,
+  });
+}
+
+export function useRunPlaybook() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationKey: ["run-playbook"],
+    mutationFn: async (input: RunPlaybookRequest) =>
+      (await runPlaybook({ body: input, throwOnError: true })).data as RunPlaybookResponse,
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+      queryClient.invalidateQueries({ queryKey: ["playbook-runs"] });
+    },
   });
 }
 
