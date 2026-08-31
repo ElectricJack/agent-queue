@@ -161,16 +161,139 @@ class PlaybookHealthResponse(BaseModel):
     metrics: dict[str, Any] = {}
 
 
+class PlaybookGraphTrigger(BaseModel):
+    """One compiled trigger on the visualized playbook."""
+
+    event_type: str
+    filter: dict[str, Any] | None = None
+
+
+class PlaybookGraphIdentity(BaseModel):
+    """Identity block of the graph view — the compiled playbook itself."""
+
+    id: str
+    version: int = 0
+    scope: str = ""
+    triggers: list[PlaybookGraphTrigger] = []
+    node_count: int = 0
+    compiled_at: str | None = None
+
+
+class PlaybookGraphPosition(BaseModel):
+    """A stable grid coordinate produced by the backend layout."""
+
+    x: int = 0
+    y: int = 0
+
+
+class PlaybookGraphNodeColors(BaseModel):
+    fill: str
+    stroke: str
+    text: str
+
+
+class PlaybookTransitionDetail(BaseModel):
+    """One compiled transition as serialized by ``PlaybookTransition.to_dict``."""
+
+    goto: str
+    #: Natural-language condition (str) or structured check (dict).
+    when: str | dict[str, Any] | None = None
+    otherwise: bool | None = None
+
+
+class PlaybookNodeLlmConfig(BaseModel):
+    """``LlmConfig.to_dict()`` — every field omitted when unset."""
+
+    provider: str | None = None
+    model: str | None = None
+    max_tokens: int | None = None
+    temperature: float | None = None
+
+
+class CompiledPlaybookNode(BaseModel):
+    """The serializable fields produced by ``PlaybookNode.to_dict()``.
+
+    Each field is optional according to the compiled-node rules: a key is
+    present only when the compiler set it.  This is what the dashboard node
+    inspector renders, so the prompt here is the full untruncated text.
+    """
+
+    prompt: str | None = None
+    entry: bool | None = None
+    terminal: bool | None = None
+    transitions: list[PlaybookTransitionDetail] | None = None
+    goto: str | None = None
+    wait_for_human: bool | None = None
+    timeout_seconds: int | None = None
+    pause_timeout_seconds: int | None = None
+    on_timeout: str | None = None
+    llm_config: PlaybookNodeLlmConfig | None = None
+    transition_llm_config: PlaybookNodeLlmConfig | None = None
+    for_each: dict[str, Any] | None = None
+    output: dict[str, Any] | None = None
+    action: dict[str, Any] | None = None
+
+
+class PlaybookGraphNode(BaseModel):
+    """One positioned, classified node in the compiled graph."""
+
+    id: str
+    #: entry | entry+decision | terminal | checkpoint | decision | action
+    type: str
+    symbol: str = ""
+    label: str = ""
+    position: PlaybookGraphPosition = PlaybookGraphPosition()
+    colors: PlaybookGraphNodeColors
+    entry: bool = False
+    terminal: bool = False
+    wait_for_human: bool = False
+    prompt_preview: str | None = None
+    timeout_seconds: int | None = None
+    on_timeout: str | None = None
+    out_degree: int = 0
+    details: CompiledPlaybookNode
+
+
+class PlaybookGraphEdge(BaseModel):
+    """One directed, labelled edge between two compiled nodes."""
+
+    source: str
+    target: str
+    label: str = ""
+    #: goto | condition | otherwise | timeout
+    edge_type: str
+
+
+class PlaybookGraphNodesEdges(BaseModel):
+    nodes: list[PlaybookGraphNode] = []
+    edges: list[PlaybookGraphEdge] = []
+
+
+class PlaybookGraphLayout(BaseModel):
+    #: "TD" (top-down) or "LR" (left-right).
+    direction: str = "TD"
+    grid_positions: dict[str, PlaybookGraphPosition] = {}
+
+
 class PlaybookGraphViewResponse(BaseModel):
-    """Build-graph-view output — keeps the wire shape loose because the
-    payload is consumed wholesale by the dashboard renderer."""
+    """``build_graph_view`` output — the nested shape the builder actually
+    produces (design spec §4).
+
+    The overlay blocks (``live_state``, ``run_overlay``, ``run_history``,
+    ``node_metrics``) stay loosely typed: they are opt-in, richly dynamic,
+    and not part of the first Graph tab.  They are declared here so the
+    response model never silently drops them.
+    """
 
     success: bool = True
-    playbook_id: str = ""
-    nodes: list[dict[str, Any]] = []
-    edges: list[dict[str, Any]] = []
-    direction: str = "TD"
-    overlays: dict[str, Any] = {}
+    playbook: PlaybookGraphIdentity
+    graph: PlaybookGraphNodesEdges = PlaybookGraphNodesEdges()
+    layout: PlaybookGraphLayout = PlaybookGraphLayout()
+    legend: dict[str, Any] = {}
+    live_state: dict[str, Any] | None = None
+    run_overlay: dict[str, Any] | None = None
+    run_history: list[dict[str, Any]] | None = None
+    node_metrics: dict[str, Any] | None = None
 
 
 class GetPlaybookSourceResponse(BaseModel):

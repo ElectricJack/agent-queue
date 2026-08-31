@@ -36,6 +36,7 @@ from src.playbooks.graph_view import (
 )
 from src.playbooks.models import (
     CompiledPlaybook,
+    LlmConfig,
     PlaybookNode,
     PlaybookTransition,
 )
@@ -1043,3 +1044,164 @@ class TestCombinedOverlays:
         # Metrics present for evaluate and approve
         assert "evaluate" in view["node_metrics"]
         assert "approve" in view["node_metrics"]
+
+
+# ===========================================================================
+# Compiled node details (spec §4 / §7.1) — every graph node carries the full
+# untruncated compiled configuration under ``details``.
+# ===========================================================================
+
+
+def _rich_node() -> PlaybookNode:
+    """A compiled node exercising every optional compiled field."""
+    return PlaybookNode(
+        prompt=(
+            "Analyse the diff.\n"
+            "\n"
+            "Rules:\n"
+            "  - never guess\n"
+            "  - cite file:line\n"
+        ),
+        entry=True,
+        transitions=[
+            PlaybookTransition(goto="escalate", when="findings exist"),
+            PlaybookTransition(
+                goto="deterministic",
+                when={"function": "has_tool_output", "contains": "no findings"},
+            ),
+            PlaybookTransition(goto="done", otherwise=True),
+        ],
+        timeout_seconds=300,
+        pause_timeout_seconds=1800,
+        on_timeout="done",
+        llm_config=LlmConfig(
+            provider="anthropic", model="claude-opus-5", max_tokens=4096, temperature=0.2
+        ),
+        transition_llm_config=LlmConfig(provider="anthropic", model="claude-haiku-4-5"),
+        for_each={"items": "findings", "as": "finding"},
+        output={"schema": {"verdict": "string"}},
+        action={"command": "task_comment", "args": {"body": "{{ finding }}"}},
+    )
+
+
+def _details_playbook() -> CompiledPlaybook:
+    return CompiledPlaybook(
+        id="details-playbook",
+        version=7,
+        source_hash="deadbeef",
+        triggers=["task.completed"],
+        scope="project",
+        compiled_at="2026-08-31T00:00:00Z",
+        nodes={
+            "analyse": _rich_node(),
+            "escalate": PlaybookNode(prompt="Escalate", wait_for_human=True, goto="done"),
+            "deterministic": PlaybookNode(prompt="Record", goto="done"),
+            "done": PlaybookNode(terminal=True),
+        },
+    )
+
+
+class TestNodeDetails:
+    def test_every_node_carries_details_equal_to_to_dict(self):
+        pb = _details_playbook()
+        nodes = build_nodes(pb, _compute_layout(pb, "TD"))
+
+        by_id = {n["id"]: n for n in nodes}
+        assert set(by_id) == set(pb.nodes)
+        for nid, node in pb.nodes.items():
+            assert by_id[nid]["details"] == node.to_dict()
+
+    def test_details_preserve_full_untruncated_prompt(self):
+        pb = _details_playbook()
+        view = build_graph_view(pb, max_prompt_len=10)
+        node = next(n for n in view["graph"]["nodes"] if n["id"] == "analyse")
+
+        assert node["details"]["prompt"] == pb.nodes["analyse"].prompt
+        assert "\n" in node["details"]["prompt"]
+        # The preview is still truncated — details is the untruncated source.
+        assert len(node["prompt_preview"]) < len(node["details"]["prompt"])
+
+    def test_details_preserve_transitions_timeouts_llm_and_payloads(self):
+        pb = _details_playbook()
+        view = build_graph_view(pb)
+        details = next(
+            n for n in view["graph"]["nodes"] if n["id"] == "analyse"
+        )["details"]
+
+        assert details["entry"] is True
+        assert details["transitions"] == [
+            {"goto": "escalate", "when": "findings exist"},
+            {
+                "goto": "deterministic",
+                "when": {"function": "has_tool_output", "contains": "no findings"},
+            },
+            {"goto": "done", "otherwise": True},
+        ]
+        assert details["timeout_seconds"] == 300
+        assert details["pause_timeout_seconds"] == 1800
+        assert details["on_timeout"] == "done"
+        assert details["llm_config"] == {
+            "provider": "anthropic",
+            "model": "claude-opus-5",
+            "max_tokens": 4096,
+            "temperature": 0.2,
+        }
+        assert details["transition_llm_config"] == {
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5",
+        }
+        assert details["for_each"] == {"items": "findings", "as": "finding"}
+        assert details["output"] == {"schema": {"verdict": "string"}}
+        assert details["action"] == {
+            "command": "task_comment",
+            "args": {"body": "{{ finding }}"},
+        }
+
+    def test_details_omit_absent_optional_fields(self):
+        pb = _details_playbook()
+        view = build_graph_view(pb)
+        details = next(n for n in view["graph"]["nodes"] if n["id"] == "done")["details"]
+
+        assert details == {"terminal": True}
+
+    def test_details_survive_json_round_trip(self):
+        pb = _details_playbook()
+        view = build_graph_view(pb)
+        restored = json.loads(json.dumps(view))
+        for node in restored["graph"]["nodes"]:
+            assert node["details"] == pb.nodes[node["id"]].to_dict()
+
+
+class TestGraphViewTopLevelShape:
+    """The top-level shape is identical for populated and empty playbooks."""
+
+    TOP_LEVEL = {"playbook", "graph", "layout", "legend"}
+
+    def test_populated_playbook_shape(self):
+        view = build_graph_view(_details_playbook())
+        assert self.TOP_LEVEL <= set(view)
+        assert set(view["playbook"]) == {
+            "id", "version", "scope", "triggers", "node_count", "compiled_at",
+        }
+        assert set(view["graph"]) == {"nodes", "edges"}
+        assert set(view["layout"]) == {"direction", "grid_positions"}
+        assert view["playbook"]["compiled_at"] == "2026-08-31T00:00:00Z"
+        assert view["playbook"]["triggers"] == [{"event_type": "task.completed"}]
+
+    def test_empty_playbook_keeps_same_shape_with_empty_lists(self):
+        pb = CompiledPlaybook(
+            id="empty", version=1, source_hash="x",
+            triggers=["test"], scope="system", nodes={},
+        )
+        view = build_graph_view(pb)
+
+        assert self.TOP_LEVEL <= set(view)
+        assert set(view["playbook"]) == {
+            "id", "version", "scope", "triggers", "node_count", "compiled_at",
+        }
+        assert view["playbook"]["node_count"] == 0
+        assert view["playbook"]["triggers"] == [{"event_type": "test"}]
+        assert view["playbook"]["compiled_at"] is None
+        assert view["graph"] == {"nodes": [], "edges": []}
+        assert view["layout"] == {"direction": "TD", "grid_positions": {}}
+        assert "legend" in view

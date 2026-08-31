@@ -58,6 +58,18 @@ API_EXCLUDED = {
 
 
 # ---------------------------------------------------------------------------
+# Response serialization overrides
+# ---------------------------------------------------------------------------
+#
+# Commands whose responses model "absent" as an omitted key rather than an
+# explicit null.  ``playbook_graph_view`` returns compiled node details
+# straight from ``PlaybookNode.to_dict()``, where a key is present only when
+# the compiler set it; serializing the unset fields as ``null`` would fill the
+# dashboard's node inspector with empty rows (design spec §3.4).
+RESPONSE_EXCLUDE_NONE: frozenset[str] = frozenset({"playbook_graph_view"})
+
+
+# ---------------------------------------------------------------------------
 # Codegen-only input schema overrides
 # ---------------------------------------------------------------------------
 #
@@ -494,6 +506,7 @@ def build_category_routers() -> list[APIRouter]:
                     handler,
                     methods=["POST"],
                     response_model=response_model,
+                    response_model_exclude_none=cmd_name in RESPONSE_EXCLUDE_NONE,
                     summary=defn.get("description", cmd_name),
                     description=defn.get("description", ""),
                     operation_id=cmd_name,
