@@ -184,6 +184,28 @@ class ExecutionMixin:
         finally:
             self._running_tasks.pop(action.task_id, None)
 
+    async def _check_agent_routing(self, task, agent) -> str | None:
+        """Validate current routing independently of an earlier scheduler snapshot."""
+        from src.agents.routing import (
+            resolve_agent_profile, resolve_task_profile, task_agent_mismatch,
+        )
+
+        if agent is None or not agent.enabled or agent.role != "worker":
+            return "worker is unavailable"
+        profiles = {profile.id: profile for profile in await self.db.list_profiles()}
+        project = await self.db.get_project(task.project_id)
+        task_profile = resolve_task_profile(task, project, profiles)
+        if task.profile_id and task_profile is None:
+            return f"required profile '{task.profile_id}' is not configured"
+        return task_agent_mismatch(
+            task, agent, task_profile=task_profile,
+            agent_profile=resolve_agent_profile(agent, task.project_id, profiles),
+            harness_registry=getattr(self, "harness_registry", None),
+            intelligence_classes=getattr(
+                getattr(self, "session_spec_builder", None), "_intelligence_classes", None,
+            ),
+        )
+
     async def _check_constraints_before_assignment(self, action: AssignAction) -> str | None:
         """Re-check project constraints right before committing an assignment.
 
@@ -206,6 +228,14 @@ class ExecutionMixin:
         - ``max_agents_by_type`` — per-agent-type concurrency limits; if the
           agent's type has reached its cap, the assignment is rejected.
         """
+        task = await self.db.get_task(action.task_id)
+        if task is not None:
+            if task.is_blocked:
+                return "task has unresolved gates or dependencies"
+            agent = await self.db.get_agent(action.agent_id)
+            mismatch = await self._check_agent_routing(task, agent)
+            if mismatch:
+                return mismatch
         constraint = await self.db.get_project_constraint(action.project_id)
         if not constraint:
             return None  # no constraint → always allowed
@@ -322,7 +352,11 @@ class ExecutionMixin:
         profile = await self._resolve_profile(task)
         from src.agents.configuration import apply_agent_overrides
         if profile:
-            profile = apply_agent_overrides(profile, agent)
+            worker_profile = (
+                await self.db.get_profile(f"project:{task.project_id}:{agent.profile_id}")
+                or await self.db.get_profile(agent.profile_id)
+            )
+            profile = apply_agent_overrides(profile, agent, agent_profile=worker_profile)
         if profile:
             # Report the route actually taken.  This used to print
             # ``platform=<profile.runtime>`` unconditionally, which was
@@ -1635,8 +1669,32 @@ class ExecutionMixin:
 
         from src.models import SessionRecord
         from src.agents.configuration import apply_agent_overrides, resolve_launch_settings
+        current = await self.db.get_task(action.task_id)
+        if (
+            current is None
+            or current.status not in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+            or current.assigned_agent_id != action.agent_id
+            or current.claim_epoch != task.claim_epoch
+        ):
+            logger.info("Task %s changed ownership or stopped before session launch", action.task_id)
+            return
+        task = current
         agent = await self.db.get_agent(action.agent_id)
-        profile = apply_agent_overrides(profile, agent)
+        mismatch = (
+            "task has unresolved gates or dependencies" if task.is_blocked
+            else await self._check_agent_routing(task, agent)
+        )
+        if mismatch:
+            await self._fail_session_launch(action, task, f"worker routing changed: {mismatch}")
+            return
+        # Re-resolve unmodified definitions: workspace preparation may await
+        # long enough for either routing or worker settings to change.
+        profile = await self._resolve_profile(task)
+        worker_profile = (
+            await self.db.get_profile(f"project:{task.project_id}:{agent.profile_id}")
+            or await self.db.get_profile(agent.profile_id)
+        )
+        profile = apply_agent_overrides(profile, agent, agent_profile=worker_profile)
         from src.sessions.provider import SessionDiedDuringStartup, SessionHandle
 
         harness_name = getattr(profile, "harness", "") or ""

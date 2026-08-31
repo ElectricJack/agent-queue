@@ -264,6 +264,7 @@ async def build_plan(
                 "is_plan_subtask": 0,
                 "task_type": node.task_type,
                 "profile_id": node.profile,
+                "intelligence_class": node.intelligence_class,
                 "attachments": "[]",
                 "auto_approve_plan": 0,
                 "skip_verification": 0,

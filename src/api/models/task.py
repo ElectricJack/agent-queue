@@ -31,6 +31,7 @@ class TaskDetail(BaseModel):
     task_type: str | None = None
     parent_task_id: str | None = None
     profile_id: str | None = None
+    intelligence_class: str | None = None
     auto_approve_plan: bool = False
     skip_verification: bool = False
     pr_url: str | None = None
@@ -73,6 +74,7 @@ class CreateTaskResponse(BaseModel):
     requires_approval: bool = False
     task_type: str | None = None
     profile_id: str | None = None
+    intelligence_class: str | None = None
     preferred_workspace_id: str | None = None
     attachments: list[str] | None = None
     auto_approve_plan: bool = False

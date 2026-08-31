@@ -296,3 +296,16 @@ class TestClaimTransaction:
         await mktask(db, "c")
         await mktask(db, "d", status=TaskStatus.DEFINED, profile_id="worker")
         assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 2, None: 1}
+
+
+class TestPushAssignmentRoutingGate:
+    async def test_push_assignment_cannot_cross_existing_routing_gate(self, db):
+        await db.create_agent(Agent(id="worker-1", name="Worker", profile_id="worker"))
+        await mktask(db, "unrouted")
+        await db.create_gate(PROJECT_ID, "routing", "Choose worker", waiter_task_ids=["unrouted"])
+        assert (await db.get_task("unrouted")).is_blocked
+        assert await db.assign_task_to_agent("unrouted", "worker-1") is False
+        task = await db.get_task("unrouted")
+        agent = await db.get_agent("worker-1")
+        assert task.status == TaskStatus.READY and task.assigned_agent_id is None
+        assert agent.state == AgentState.IDLE and agent.current_task_id is None

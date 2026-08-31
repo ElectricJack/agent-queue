@@ -22,7 +22,7 @@ import logging
 import time
 import uuid
 
-from src.models import AgentProfile, Agent, AgentState, ProjectStatus, SessionRecord, TaskStatus
+from src.models import AgentProfile, Agent, AgentState, ProjectStatus, SessionRecord, Task, TaskStatus
 from src.scheduler import PoolKey, PoolSupply, size_pools
 from src.sessions.spec import pool_session_name
 
@@ -253,6 +253,7 @@ class PoolsMixin:
         from src.sessions.provider import SessionDiedDuringStartup, SessionHandle
 
         from src.agents.configuration import apply_agent_overrides, resolve_launch_settings
+        from src.agents.routing import resolve_agent_profile, task_agent_mismatch
 
         # Don't manufacture a durable definition when no execution workspace
         # could be acquired. Worktree slots still count as lazy capacity.
@@ -272,24 +273,46 @@ class PoolsMixin:
 
         # Reserve the identity before any await that starts a process. A live
         # session owns its worker even while it has no currently claimed task.
+        profiles = {item.id: item for item in await self.db.list_profiles()}
+        requirement = Task(
+            id="", project_id=project.id, title="", description="", profile_id=profile.id,
+        )
+        classes = self.session_spec_builder._intelligence_classes
         candidates = await self.db.list_agents(state=AgentState.IDLE)
         candidates.sort(key=lambda candidate: (candidate.profile_id != profile.id, candidate.created_at))
         agent = None
+        worker_profile = None
         for candidate in candidates:
-            if candidate.enabled and candidate.role == "worker":
-                if await self.db.reserve_idle_agent(candidate.id):
-                    agent = candidate
-                    break
+            if not candidate.enabled or candidate.role != "worker":
+                continue
+            own_profile = resolve_agent_profile(candidate, project.id, profiles)
+            if task_agent_mismatch(
+                requirement, candidate, task_profile=profile, agent_profile=own_profile,
+                harness_registry=self.harness_registry, intelligence_classes=classes,
+            ):
+                continue
+            if await self.db.reserve_idle_agent(candidate.id):
+                agent = candidate
+                worker_profile = own_profile
+                break
         if agent is None:
             agent = Agent(id=f"agent-{uuid.uuid4().hex[:12]}",
                           name=f"{profile.id}-{uuid.uuid4().hex[:4]}", profile_id=profile.id)
+            worker_profile = resolve_agent_profile(agent, project.id, profiles) or profile
+            mismatch = task_agent_mismatch(
+                requirement, agent, task_profile=profile, agent_profile=worker_profile,
+                harness_registry=self.harness_registry, intelligence_classes=classes,
+            )
+            if mismatch:
+                logger.info("pool %s/%s cannot start: %s", project.id, profile.id, mismatch)
+                return None
             # Only the fallback grows the roster. A persisted deletion opts
-            # out of automatic growth; remaining definitions were tried above.
+            # out of automatic growth; compatible definitions were tried above.
             if not await self.db.create_automatic_agent(agent):
                 return None
             if not await self.db.reserve_idle_agent(agent.id):
                 return None
-        profile = apply_agent_overrides(profile, agent)
+        profile = apply_agent_overrides(profile, agent, agent_profile=worker_profile)
         harness_name = getattr(profile, "harness", "") or ""
         harness = self.harness_registry.get(harness_name, project.id)
         if harness is None:

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy import and_, case, exists, func, literal, select, update
+from sqlalchemy import and_, case, exists, false, func, literal, select, update
 
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.session_queries import _row_to_session
@@ -92,7 +92,8 @@ class ClaimQueryMixin:
         )
 
     async def select_ready_for_profile(
-        self, conn, *, project_id, profile_id, default_profile_id, agent_id, task_id=None
+        self, conn, *, project_id, profile_id, default_profile_id, agent_id, task_id=None,
+        enforce_routing=False, intelligence_class=None, allow_unclassified=True,
     ) -> str | None:
         """The §10 work query.  Postgres takes the row FOR UPDATE SKIP LOCKED."""
         profile_ok = tasks.c.profile_id == profile_id
@@ -118,6 +119,16 @@ class ClaimQueryMixin:
             .limit(1)
         )
         stmt = apply_label_filters(stmt, exclude_hold=True)
+        if enforce_routing:
+            # Apply this before LIMIT so a high-priority incompatible task
+            # cannot hide lower-priority work the live session can execute.
+            routing_ok = (
+                tasks.c.intelligence_class == intelligence_class
+                if intelligence_class else false()
+            )
+            if allow_unclassified:
+                routing_ok = routing_ok | tasks.c.intelligence_class.is_(None) | (tasks.c.intelligence_class == "")
+            stmt = stmt.where(routing_ok)
         if task_id is not None:
             stmt = stmt.where(tasks.c.id == task_id)
         if conn.dialect.name == "postgresql":

@@ -32,6 +32,15 @@ Never refuse. For any question: (1) check active project context with the availa
 
 Task descriptions MUST be self-contained and actionable — the agent has never seen this conversation. Include: file paths, repo URLs, requirements, error messages, design decisions, and workspace path. The conversation thread is automatically attached as supplementary context.
 
+When a user specifies a provider, model, or intelligence class, inspect the
+available profiles and `list_intelligence_classes`, then pass `profile_id`
+and `intelligence_class` together in `create_task`. In a task graph, use
+`defaults.profile`/`defaults.intelligence_class` or explicit node fields. Do
+not create runnable tasks and route them afterward: they may start before
+the second command. Affinity and instructions in the description are not
+hard execution constraints. Keep the requested route if its worker is busy;
+never silently substitute a lighter model.
+
 ## Presentation
 
 - Be concise in Discord messages. Use markdown.

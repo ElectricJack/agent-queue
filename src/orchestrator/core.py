@@ -102,7 +102,7 @@ from src.models import (
     Task,
     TaskStatus,
 )
-from src.scheduler import AssignAction, Scheduler, SchedulerState
+from src.scheduler import AssignAction, Scheduler, SchedulerState, idle_workers
 from src.tokens.budget import BudgetManager
 from src.vault_manager import VaultManager
 
@@ -249,15 +249,9 @@ CreateThreadCallback = _CreateThreadCallbackType
 
 
 def _idle_by_project(state: "SchedulerState") -> dict[str, int]:
-    """Count idle agents grouped by project id."""
-    counts: dict[str, int] = {}
-    for agent in state.agents:
-        if agent.state != AgentState.IDLE:
-            continue
-        pid = getattr(agent, "project_id", None)
-        if pid:
-            counts[pid] = counts.get(pid, 0) + 1
-    return counts
+    """Every project shares the same available global worker roster."""
+    count = len(idle_workers(state))
+    return {project.id: count for project in state.projects}
 
 
 class Orchestrator(
@@ -3077,7 +3071,12 @@ class Orchestrator(
         # Reconciler runs first: ensures the agents table has idle rows
         # for any project with dispatchable READY tasks, subject to
         # project.max_concurrent_agents.  See spec §4.1.
-        rep = await self._agent_reconciler.reconcile(provider_cooldowns=self._provider_cooldowns)
+        classes = dict(self.session_spec_builder._intelligence_classes)
+        rep = await self._agent_reconciler.reconcile(
+            provider_cooldowns=self._provider_cooldowns,
+            harness_registry=self.harness_registry,
+            intelligence_classes=classes,
+        )
         if rep.created or rep.reassigned:
             logger.info(
                 "reconciler: created=%d reassigned=%d skipped=%d",
@@ -3209,6 +3208,9 @@ class Orchestrator(
             project_constraints=constraint_map,
             now=time.time(),
             affinity_wait_seconds=self.config.scheduling.affinity_wait_seconds,
+            profiles={profile.id: profile for profile in all_profiles},
+            harness_registry=self.harness_registry,
+            intelligence_classes=classes,
         )
 
         actions = Scheduler.schedule(state)

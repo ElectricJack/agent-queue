@@ -443,6 +443,8 @@ class TaskCommandsMixin:
                 "status": t.status.value,
                 "priority": t.priority,
                 "assigned_agent": t.assigned_agent_id,
+                "profile_id": t.profile_id,
+                "intelligence_class": t.intelligence_class,
                 "parent_task_id": t.parent_task_id,
                 "is_plan_subtask": t.is_plan_subtask,
                 "task_type": t.task_type.value if t.task_type else None,
@@ -773,6 +775,8 @@ class TaskCommandsMixin:
             "status": t.status.value,
             "priority": t.priority,
             "assigned_agent": t.assigned_agent_id,
+            "profile_id": t.profile_id,
+            "intelligence_class": t.intelligence_class,
             "parent_task_id": t.parent_task_id,
             "is_plan_subtask": t.is_plan_subtask,
             "task_type": t.task_type.value if t.task_type else None,
@@ -1015,6 +1019,29 @@ class TaskCommandsMixin:
         await self.db.log_blocked_flips(flipped)
         return task.id, gate_id, origin, depth_cap_fallback
 
+    def _validate_routing_class(self, class_id, profile=None) -> str | None:
+        """Reject invalid explicit routing instead of launching a fallback model."""
+        if class_id is None:
+            return None
+        if not isinstance(class_id, str) or not class_id.strip():
+            return "intelligence_class must be a nonempty class id"
+        from src.intelligence_classes import load_intelligence_classes, resolve_class
+
+        classes = load_intelligence_classes(self.config.data_dir)
+        cls = classes.get(class_id)
+        if cls is None:
+            return f"intelligence class '{class_id}' not found in vault"
+        if profile is not None:
+            provider = _harness_provider(profile.harness)
+            mapping = resolve_class(cls, "codex") if profile.harness == "codex" else {}
+            mapping = mapping or (resolve_class(cls, provider) if provider else {})
+            if provider and not mapping.get("model"):
+                return (
+                    f"intelligence class '{class_id}' has no model mapping for "
+                    f"provider '{provider}' (profile '{profile.id}')"
+                )
+        return None
+
     async def _cmd_create_task(self, args: dict) -> dict:
         # ----- Worker-filed work (swarm work model §12) --------------------
         # A session-scoped, non-elevated caller is a pool worker currently
@@ -1124,6 +1151,7 @@ class TaskCommandsMixin:
                     "capability bound."
                 }
 
+        profile = caller_profile
         if profile_id:
             profile = await self.db.get_profile(profile_id)
             if not profile:
@@ -1141,6 +1169,9 @@ class TaskCommandsMixin:
         elif caller_profile is not None:
             # Default-inherit so the child cannot exceed the caller.
             profile_id = caller_profile.id
+        class_error = self._validate_routing_class(args.get("intelligence_class"), profile)
+        if class_error:
+            return {"success": False, "error": class_error}
         # Validate optional preferred_workspace_id
         preferred_workspace_id = args.get("preferred_workspace_id")
         if preferred_workspace_id:
@@ -1523,6 +1554,8 @@ class TaskCommandsMixin:
             result["task_type"] = task_type.value
         if profile_id:
             result["profile_id"] = profile_id
+        if task.intelligence_class:
+            result["intelligence_class"] = task.intelligence_class
         if preferred_workspace_id:
             result["preferred_workspace_id"] = preferred_workspace_id
         if attachments:
@@ -1692,9 +1725,28 @@ class TaskCommandsMixin:
         except OSError as exc:
             return {"error": f"Could not read spec '{spec_path}': {exc}"}
 
+        for node in graph.nodes:
+            if node.profile is None and args.get("profile_id"):
+                node.profile = args["profile_id"]
+            if node.intelligence_class is None and args.get("intelligence_class"):
+                node.intelligence_class = args["intelligence_class"]
+
         findings = await validate_graph(
             graph, project_id=project_id, db=self.db, vault_root=vault_root
         )
+        from src.task_graph.models import GraphError
+        class_errors: dict[tuple[str | None, str], str | None] = {}
+        for node in graph.nodes:
+            if node.intelligence_class is None:
+                continue
+            route = (node.profile, node.intelligence_class)
+            if route not in class_errors:
+                profile = await self.db.get_profile(node.profile) if node.profile else None
+                class_errors[route] = self._validate_routing_class(node.intelligence_class, profile)
+            if class_errors[route]:
+                findings.append(GraphError(
+                    rule="invalid_intelligence_class", detail=class_errors[route], node=node.key,
+                ))
         errors, warnings = split_findings(findings)
         if errors:
             return {
@@ -1747,6 +1799,7 @@ class TaskCommandsMixin:
             "task_type": task.task_type.value if task.task_type else None,
             "parent_task_id": task.parent_task_id,
             "profile_id": task.profile_id,
+            "intelligence_class": task.intelligence_class,
             "auto_approve_plan": task.auto_approve_plan,
             "skip_verification": task.skip_verification,
             "workflow_id": task.workflow_id,
@@ -2054,6 +2107,10 @@ class TaskCommandsMixin:
         if not task:
             return {"error": f"Task '{args['task_id']}' not found"}
 
+        routing_fields = {"profile_id", "intelligence_class"} & args.keys()
+        if routing_fields and (task.status == TaskStatus.IN_PROGRESS or task.assigned_agent_id):
+            return {"error": "Task is running or claimed; stop the task before changing its routing."}
+
         VERIFICATION_VALUES = frozenset(v.value for v in VerificationType)
 
         # Handle status change separately — uses transition_task for logging
@@ -2066,11 +2123,6 @@ class TaskCommandsMixin:
                 valid = ", ".join(s.value for s in TaskStatus)
                 return {"error": f"Invalid status '{new_status_raw}'. Valid: {valid}"}
             old_status = task.status.value
-            await self.db.transition_task(
-                args["task_id"],
-                new_status,
-                context="edit_task",
-            )
             status_changed = True
 
         updates = {}
@@ -2113,6 +2165,16 @@ class TaskCommandsMixin:
                 if not profile:
                     return {"error": f"Profile '{pid}' not found"}
             updates["profile_id"] = pid  # None clears the profile
+        if "intelligence_class" in args:
+            updates["intelligence_class"] = args["intelligence_class"]
+        if routing_fields:
+            routed_profile_id = updates.get("profile_id", task.profile_id)
+            routed_profile = await self.db.get_profile(routed_profile_id) if routed_profile_id else None
+            class_error = self._validate_routing_class(
+                updates.get("intelligence_class", task.intelligence_class), routed_profile
+            )
+            if class_error:
+                return {"error": class_error}
         if "auto_approve_plan" in args:
             updates["auto_approve_plan"] = bool(args["auto_approve_plan"])
         if "skip_verification" in args:
@@ -2147,8 +2209,23 @@ class TaskCommandsMixin:
                     f"Allowed: {', '.join(sorted(WORKSPACE_MODE_VALUES))}"
                 }
 
-        if updates:
-            await self.db.update_task(args["task_id"], **updates)
+        if routing_fields:
+            updated = await self.db.update_task_routing(
+                task.id,
+                profile_id=updates.get("profile_id", task.profile_id),
+                intelligence_class=updates.get("intelligence_class", task.intelligence_class),
+                preferred_workspace_id=None,
+                clear_intelligence_class=(
+                    "intelligence_class" in updates and updates["intelligence_class"] is None
+                ),
+            )
+            if not updated:
+                return {"error": "Task is running or claimed; stop the task before changing its routing."}
+        other_updates = {key: value for key, value in updates.items() if key not in routing_fields}
+        if other_updates:
+            await self.db.update_task(args["task_id"], **other_updates)
+        if status_changed:
+            await self.db.transition_task(args["task_id"], new_status, context="edit_task")
 
         all_fields = list(updates.keys())
         if status_changed:
@@ -2159,7 +2236,7 @@ class TaskCommandsMixin:
                 "error": (
                     "No fields to update. Provide project_id, title, description, priority, "
                     "task_type, status, max_retries, verification_type, profile_id, "
-                    "auto_approve_plan, skip_verification, affinity_agent_id, "
+                    "auto_approve_plan, skip_verification, intelligence_class, affinity_agent_id, "
                     "affinity_reason, or workspace_mode."
                 )
             }
@@ -3437,9 +3514,9 @@ class TaskCommandsMixin:
         Args:
             task_id: Target task id (required).
             profile_id: AgentProfile id (required).
-            intelligence_class: Optional vault class id.  Falls back to
-                ``profile.default_class`` when omitted; ``None``/empty
-                skips class validation entirely.
+            intelligence_class: Optional vault class id. Preserves the task's
+                existing class when omitted, then falls back to the profile
+                default. Routing a running or claimed task is refused.
             workspace_id: Optional workspace id.  When supplied, must belong
                 to the task's project (deadlock-safe & scope-safe).
 
@@ -3460,27 +3537,12 @@ class TaskCommandsMixin:
         if profile is None:
             return {"success": False, "error": f"profile '{profile_id}' not found"}
 
-        cls_id = args.get("intelligence_class") or (profile.default_class or None)
-        if cls_id:
-            from src.intelligence_classes import load_intelligence_classes, resolve_class
-
-            classes = load_intelligence_classes(self.config.data_dir)
-            cls = classes.get(cls_id)
-            if cls is None:
-                return {
-                    "success": False,
-                    "error": f"intelligence class '{cls_id}' not found in vault",
-                }
-            provider = _harness_provider(profile.harness)
-            if provider and not resolve_class(cls, provider):
-                return {
-                    "success": False,
-                    "error": (
-                        f"intelligence class '{cls_id}' has no mapping for "
-                        f"provider '{provider}' (required by profile "
-                        f"'{profile.id}' harness '{profile.harness}')"
-                    ),
-                }
+        cls_id = (
+            args.get("intelligence_class") or task.intelligence_class or profile.default_class or None
+        )
+        class_error = self._validate_routing_class(cls_id, profile)
+        if class_error:
+            return {"success": False, "error": class_error}
 
         workspace_id = args.get("workspace_id")
         if workspace_id:
@@ -3499,12 +3561,17 @@ class TaskCommandsMixin:
                     ),
                 }
 
-        await self.db.update_task_routing(
+        updated = await self.db.update_task_routing(
             str(task_id),
             profile_id=str(profile_id),
             intelligence_class=cls_id,
             preferred_workspace_id=str(workspace_id) if workspace_id else None,
         )
+        if not updated:
+            return {
+                "success": False,
+                "error": "Task is running or claimed; stop the task before changing its routing.",
+            }
 
         resolved: list[str] = []
         for gate in await self.db.get_gates_for_task(str(task_id)):

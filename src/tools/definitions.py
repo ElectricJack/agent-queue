@@ -746,6 +746,14 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Agent profile ID to configure the agent with specific tools/capabilities (optional)",
                 },
+                "intelligence_class": {
+                    "type": "string",
+                    "description": (
+                        "Execution intelligence class id, e.g. deep-high or standard-medium. "
+                        "Use list_intelligence_classes for current IDs. Set profile_id and "
+                        "this field together at creation to route work atomically."
+                    ),
+                },
                 "preferred_workspace_id": {
                     "type": "string",
                     "description": (
@@ -947,9 +955,9 @@ _ALL_TOOL_DEFINITIONS = [
                 "intelligence_class": {
                     "type": "string",
                     "description": (
-                        "Intelligence class id (e.g. 'fast', 'standard', 'deep') "
-                        "from vault/intelligence-classes/. Overrides the profile's "
-                        "model at session launch. Optional."
+                        "Intelligence class id (e.g. 'fast-low', 'standard-medium', 'deep-high') "
+                        "from vault/intelligence-classes/. Requires a matching worker at "
+                        "launch. Omit to preserve the task's existing class or profile default."
                     ),
                 },
                 "workspace_id": {
@@ -1305,7 +1313,7 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Edit a task's properties: project_id, title, description, priority, task_type, "
             "status, max_retries, verification_type, profile_id, auto_approve_plan, "
-            "skip_verification, affinity_agent_id, affinity_reason, "
+            "skip_verification, intelligence_class, affinity_agent_id, affinity_reason, "
             "or workspace_mode. Use this "
             "to move a task to a different project, rename tasks, change priority, override status "
             "(admin), assign a profile, adjust retry/verification settings, or set coordination "
@@ -1351,6 +1359,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {
                     "type": ["string", "null"],
                     "description": "Agent profile ID (optional, set to null to clear)",
+                },
+                "intelligence_class": {
+                    "type": ["string", "null"],
+                    "description": "Intelligence class id; change only while unassigned. Null clears it.",
                 },
                 "auto_approve_plan": {
                     "type": "boolean",
@@ -4006,6 +4018,14 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "profile_id": {
+                    "type": "string",
+                    "description": "Default profile for graph nodes without an explicit profile.",
+                },
+                "intelligence_class": {
+                    "type": "string",
+                    "description": "Default intelligence class for graph nodes without an explicit class.",
+                },
                 "project_id": {"type": "string", "description": "Owning project"},
                 "graph": {
                     "type": "object",

@@ -1245,22 +1245,33 @@ class TaskQueryMixin:
         self,
         task_id: str,
         *,
-        profile_id: str,
+        profile_id: str | None,
         intelligence_class: str | None,
         preferred_workspace_id: str | None,
-    ) -> None:
-        """Set profile + intelligence class + optional preferred workspace.
+        clear_intelligence_class: bool = False,
+    ) -> bool:
+        """Update routing only while no worker holds the task.
 
-        Used by ``_cmd_task_route`` (dv2 phase 1) to commit routing
-        decisions before resolving the ``routing`` gate on the task.
-        Nullable fields are only touched when the caller passes a value;
-        this keeps ``task_route`` narrow — it never accidentally clears
-        an already-set ``intelligence_class`` or ``preferred_workspace_id``.
+        The predicate is in the write itself so a claim that wins after the
+        command's read cannot be silently retargeted. Nullable values retain
+        existing overrides unless editing explicitly clears the class.
         """
         vals: dict = {"profile_id": profile_id}
-        if intelligence_class is not None:
+        if intelligence_class is not None or clear_intelligence_class:
             vals["intelligence_class"] = intelligence_class
         if preferred_workspace_id is not None:
             vals["preferred_workspace_id"] = preferred_workspace_id
+        active_session = select(sessions.c.id).where(
+            sessions.c.task_id == tasks.c.id,
+            sessions.c.state.in_(("starting", "running", "draining")),
+        ).exists()
         async with self._engine.begin() as conn:
-            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(**vals))
+            result = await conn.execute(
+                update(tasks).where(
+                    tasks.c.id == task_id,
+                    tasks.c.status != TaskStatus.IN_PROGRESS.value,
+                    tasks.c.assigned_agent_id.is_(None),
+                    ~active_session,
+                ).values(**vals)
+            )
+        return result.rowcount == 1

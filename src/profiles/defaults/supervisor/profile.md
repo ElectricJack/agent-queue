@@ -77,6 +77,17 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   than one task becomes a spec in `specs/` plus `aq task create --from-spec`
   (or `--graph`). Never fire off a series of individual `task create` calls
   for related work — the dependency structure is the point.
+- **Set execution requirements when creating work.** When the user requests a
+  provider, model, or intelligence class, inspect `aq agent list-profiles` and
+  `aq system list-intelligence-classes` first. Pick a profile whose harness
+  matches the provider and a valid class ID such as `deep-high`. For graphs,
+  set `defaults.profile` and `defaults.intelligence_class` (or each node's
+  `profile`/`intelligence_class`); CLI `--profile` and `--intelligence-class`
+  fill missing node routes. For individual tasks, pass both at creation.
+  Never create runnable work and add the requested route in a later call.
+  A task's description or agent affinity is not an execution constraint.
+  If the requested worker is unavailable, keep the requirement; do not
+  substitute a lighter worker or claim that routing implies execution.
 - **Attach spec references.** Every task you create carries `context` entries
   (`spec_ref` to the spec section that defines it, plus relevant files). A
   task an agent cannot understand from its own prompt is a task you wrote

@@ -12,19 +12,28 @@ from src.sessions.spec import _infer_provider_from_harness
 SUPERVISOR_AGENT_ID = "supervisor-global"
 
 
-def apply_agent_overrides(profile, agent):
-    """Copy a task capability profile and apply this worker's launch choices."""
+def apply_agent_overrides(profile, agent, *, agent_profile=None):
+    """Copy capabilities and apply the worker's saved or inherited launch choices."""
     if profile is None or agent is None:
         return profile
     effective = replace(profile) if is_dataclass(profile) else copy(profile)
-    harness = getattr(agent, "harness", None)
+    inherited_harness = getattr(agent_profile, "harness", None)
+    harness = getattr(agent, "harness", None) or inherited_harness
     model = getattr(agent, "model", None)
-    class_id = getattr(agent, "intelligence_class", None)
+    inherited_model = getattr(agent_profile, "model", None)
+    class_id = (
+        getattr(agent, "intelligence_class", None)
+        or getattr(agent_profile, "default_class", None)
+    )
     if harness:
         if harness != getattr(profile, "harness", None) and not model:
             # A model name from one CLI is not a valid default for another.
             effective.model = ""
         effective.harness = harness
+    if inherited_model and (not inherited_harness or harness == inherited_harness):
+        # Profile models remain fallbacks beneath the selected class; only an
+        # explicit worker model is fixed above class resolution.
+        effective.model = inherited_model
     if model:
         effective.model = model
         effective._agent_model_override = model

@@ -21,12 +21,17 @@ For each unrouted task:
 1. Read the task title, description, and any attached spec / provenance.
 2. Pick the best `profile_id` from the curated set — call `list_profiles` to
    see the current set. Prefer the narrowest profile that matches the work.
-3. Pick an `intelligence_class`: `fast` (mechanical), `standard` (typical),
-   or `deep` (cross-cutting design judgment). Omit to accept the profile's
-   default class.
+3. Preserve any provider/model/class requirement already on the task or
+   explicitly requested by the user. Do not replace it with a lighter worker.
+   Call `list_intelligence_classes` for valid IDs, such as `fast-low`,
+   `standard-medium`, and `deep-high`; bare tier names are not class IDs.
+   Omit the class to preserve an existing task class, otherwise accept the
+   chosen profile's default. A provider request must match the profile's harness.
 4. If the profile has `needs_workspace: true` and the project has more than
    one repo workspace, pick a `workspace_id`. Otherwise omit it.
 5. Call `task_route(task_id=..., profile_id=..., intelligence_class=..., workspace_id=...)`.
+   A running or claimed task must be stopped before its routing can change;
+   report that state instead of pretending a route change moved the session.
 
 If nothing in the curated set fits a task, leave it unrouted and note the gap
 by creating a follow-up task (`create_task`) that proposes a new profile —
@@ -68,6 +73,7 @@ When the routing queue is empty, close this task with a short summary:
     "list_tasks",
     "get_task",
     "list_profiles",
+    "list_intelligence_classes",
     "gate_list",
     "create_task",
     "edit_task"

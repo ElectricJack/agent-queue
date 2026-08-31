@@ -83,6 +83,8 @@ def _create_task_graph(
     from_spec: str | None,
     dry_run: bool,
     parent_id: str | None = None,
+    profile_id: str | None = None,
+    intelligence_class: str | None = None,
 ) -> None:
     """Back ``aq task create --graph|--from-spec|--dry-run``."""
     if graph_file and from_spec:
@@ -98,6 +100,10 @@ def _create_task_graph(
         params["spec_path"] = from_spec
     if parent_id:
         params["parent_id"] = parent_id
+    if profile_id:
+        params["profile_id"] = profile_id
+    if intelligence_class:
+        params["intelligence_class"] = intelligence_class
 
     async def _create():
         async with _get_client(api_url) as client:
@@ -155,6 +161,11 @@ def _create_task_graph(
     help="Agent profile id (e.g. claude-opus, claude-sonnet, claude-code)",
 )
 @click.option(
+    "--intelligence-class",
+    default=None,
+    help="Intelligence class id (e.g. deep-high); also fills missing graph node classes",
+)
+@click.option(
     "--agent-type",
     default=None,
     help="Agent type override (cascade falls back to the global profile of this name)",
@@ -194,6 +205,7 @@ def task_create(
     task_type: str | None,
     approval: bool,
     profile_id: str | None,
+    intelligence_class: str | None,
     agent_type: str | None,
     graph_file: str | None,
     from_spec: str | None,
@@ -220,6 +232,8 @@ def task_create(
             from_spec=from_spec,
             dry_run=dry_run,
             parent_id=parent_id,
+            profile_id=profile_id,
+            intelligence_class=intelligence_class,
         )
         return
     if dry_run:
@@ -258,6 +272,9 @@ def task_create(
             params["profile_id"] = profile_id
         if agent_type and "agent_type" not in params:
             params["agent_type"] = agent_type
+
+    if intelligence_class:
+        params["intelligence_class"] = intelligence_class
 
     if parent_id and "parent_id" not in params:
         params["parent_id"] = parent_id

@@ -119,6 +119,7 @@ def substitute_vars(graph: TaskGraph) -> tuple[set[str], set[str]]:
         node.acceptance = [expand(v) or "" for v in node.acceptance]
         node.labels = [expand(v) or "" for v in node.labels]
         node.profile = expand(node.profile)
+        node.intelligence_class = expand(node.intelligence_class)
         node.task_type = expand(node.task_type)
         for ctx in node.context:
             ctx.type = expand(ctx.type) or ctx.type
@@ -158,6 +159,7 @@ def _surviving_var_names(graph: TaskGraph) -> set[str]:
         scan(node.title)
         scan(node.description)
         scan(node.profile)
+        scan(node.intelligence_class)
         scan(node.task_type)
         for value in list(node.acceptance) + list(node.labels):
             scan(value)

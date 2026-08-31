@@ -148,6 +148,22 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
     else:
         node.profile = profile
 
+    intelligence_class = raw.get("intelligence_class", defaults.get("intelligence_class"))
+    if intelligence_class is not None and (
+        not isinstance(intelligence_class, str) or not intelligence_class.strip()
+    ):
+        errors.append(_err("bad_field_type", "'intelligence_class' must be a nonempty string", key))
+    else:
+        node.intelligence_class = intelligence_class
+
+    # Worker affinity and model/provider pins are not graph fields. Report
+    # attempted routing instead of accepting it and discarding user intent.
+    for unsupported in ("affinity_agent_id", "agent_id", "assigned_agent_id", "model", "provider", "harness"):
+        if unsupported in raw or unsupported in defaults:
+            errors.append(_err(
+                "unsupported_routing", f"'{unsupported}' is not supported in graphs; use profile and intelligence_class", key,
+            ))
+
     task_type = raw.get("task_type", defaults.get("task_type"))
     if task_type is not None and not isinstance(task_type, str):
         errors.append(

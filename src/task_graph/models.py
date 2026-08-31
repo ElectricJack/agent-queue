@@ -112,6 +112,7 @@ class GraphNode:
     labels: list[str] = field(default_factory=list)
     priority: int = 100
     profile: str | None = None
+    intelligence_class: str | None = None
     task_type: str | None = None
     #: Present only when the author (wrongly) scoped a node to a project —
     #: graphs are single-project, so the validator rejects it.
@@ -128,6 +129,7 @@ class GraphNode:
             "labels": list(self.labels),
             "priority": self.priority,
             "profile": self.profile,
+            "intelligence_class": self.intelligence_class,
             "task_type": self.task_type,
         }
 

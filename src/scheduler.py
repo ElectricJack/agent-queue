@@ -67,8 +67,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from src.agents.routing import resolve_agent_profile, resolve_task_profile, task_agent_mismatch
 from src.models import (
     Agent,
+    AgentProfile,
     AgentState,
     Project,
     ProjectConstraint,
@@ -160,6 +162,40 @@ class SchedulerState:
     # ``config.scheduling.affinity_wait_seconds``.
     affinity_wait_seconds: float = 120.0
 
+    # Execution metadata is a read-only snapshot. None retains compatibility
+    # for callers that do not provide profiles/classes (legacy unit fixtures).
+    profiles: dict[str, AgentProfile] | None = None
+    harness_registry: object | None = None
+    intelligence_classes: dict | None = None
+
+
+def idle_workers(state: SchedulerState, *, include_cooldown: bool = False) -> list[Agent]:
+    """Global worker availability shared by matching and diagnostics."""
+    import time
+
+    now = state.now or time.time()
+    return [
+        agent for agent in state.agents
+        if agent.state == AgentState.IDLE and agent.current_task_id is None
+        and agent.enabled and agent.role == "worker"
+        and getattr(agent, "deleted_at", None) is None
+        and (include_cooldown or state.provider_cooldowns.get(agent.profile_id, 0) <= now)
+    ]
+
+def routing_mismatch(task: Task, agent: Agent, state: SchedulerState) -> str | None:
+    """Use the same execution compatibility rule as pre-launch admission."""
+    profiles = state.profiles or {}
+    project = next((p for p in state.projects if p.id == task.project_id), None)
+    profile = resolve_task_profile(task, project, profiles)
+    if state.profiles is not None and task.profile_id and profile is None:
+        return f"required profile '{task.profile_id}' is not available"
+    return task_agent_mismatch(
+        task, agent, task_profile=profile,
+        agent_profile=resolve_agent_profile(agent, task.project_id, profiles),
+        harness_registry=state.harness_registry,
+        intelligence_classes=state.intelligence_classes,
+    )
+
 
 def _workspace_available(task: Task, locks: dict[str, str | None]) -> bool:
     """Check if a task's preferred workspace is available (unlocked).
@@ -238,23 +274,14 @@ class Scheduler:
         if state.global_budget is not None and state.global_tokens_used >= state.global_budget:
             return []
 
-        import time as _time
-
-        now = _time.time()
-        idle_agents = [
-            a
-            for a in state.agents
-            if a.state == AgentState.IDLE and a.current_task_id is None
-            and a.enabled and a.role == "worker"
-            and state.provider_cooldowns.get(a.profile_id, 0) <= now
-        ]
+        idle_agents = idle_workers(state)
         if not idle_agents:
             return []
 
         # Group ready tasks by project
         ready_by_project: dict[str, list[Task]] = {}
         for task in state.tasks:
-            if task.status == TaskStatus.READY:
+            if task.status == TaskStatus.READY and not task.is_blocked:
                 ready_by_project.setdefault(task.project_id, []).append(task)
 
         # Sort tasks within each project by priority (lower = higher priority),
@@ -407,6 +434,7 @@ class Scheduler:
                     for t in ready_by_project.get(project.id, [])
                     if t.id not in assigned_tasks
                     and _workspace_available(t, state.workspace_locks)
+                    and routing_mismatch(t, agent, state) is None
                 ]
                 if not available:
                     continue

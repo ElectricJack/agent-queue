@@ -1131,6 +1131,87 @@ class TestEndToEndOnFakeProvider:
         assert await db.assign_task_to_agent("t1", "a1") is True
         assert (await db.get_agent("a1")).current_task_id == "t1"
 
+    @pytest.mark.parametrize("harness,model,class_id", [
+        ("claude", "claude-fable-5", "deep-high"),
+        ("codex", "gpt-5.6-luna", "fast-low"),
+    ])
+    async def test_dispatch_rechecks_routing_before_assignment(
+        self, db, real_orch, provider, tmp_path, monkeypatch, harness, model, class_id
+    ):
+        wd = await self._setup(db, tmp_path, ready=True)
+        await db.create_profile(AgentProfile(
+            id="worker-deep-codex", name="Codex Sol", harness="codex",
+            model="gpt-5.6-sol", default_class="deep-high",
+        ))
+        await db.update_task("t1", profile_id="worker-deep-codex", intelligence_class="deep-high")
+        # The action was decided before this worker's settings changed.
+        await db.update_agent("a1", harness=harness, model=model, intelligence_class=class_id)
+
+        async def prepare(task, agent):
+            return wd
+
+        monkeypatch.setattr(real_orch, "_prepare_workspace", prepare)
+        await real_orch._execute_task(AssignAction("a1", "t1", "p1"))
+        task = await db.get_task("t1")
+        assert task.status == TaskStatus.READY
+        assert task.assigned_agent_id is None
+        assert (await db.get_agent("a1")).state == AgentState.IDLE
+        assert await db.get_session_for_task("t1") is None
+        assert provider.starts == []
+
+    async def test_launch_rechecks_worker_after_workspace_preparation(
+        self, db, real_orch, provider, tmp_path
+    ):
+        wd = await self._setup(db, tmp_path)
+        await db.create_profile(AgentProfile(
+            id="worker-deep-codex", name="Codex Sol", harness="codex",
+            model="gpt-5.6-sol", default_class="deep-high",
+        ))
+        await db.update_task("t1", profile_id="worker-deep-codex", intelligence_class="deep-high")
+        profile = await db.get_profile("worker-deep-codex")
+        task = await db.get_task("t1")
+        await db.update_agent("a1", harness="codex", model="gpt-5.6-luna", intelligence_class="fast-low")
+        await real_orch._launch_session_for_task(AssignAction("a1", "t1", "p1"), task, profile, wd)
+        assert await db.get_session_for_task("t1") is None
+        assert provider.starts == []
+        task = await db.get_task("t1")
+        assert task.status == TaskStatus.PAUSED
+        assert task.assigned_agent_id is None
+        assert task.intelligence_class == "deep-high"
+        assert (await db.get_agent("a1")).state == AgentState.IDLE
+        assert (await db.get_workspace("ws1")).locked_by_task_id is None
+
+    async def test_launch_keeps_inherited_worker_harness_for_generic_profile(
+        self, db, real_orch, provider, tmp_path
+    ):
+        from src.intelligence_classes import IntelligenceClass
+
+        wd = await self._setup(db, tmp_path)
+        await db.create_profile(AgentProfile(
+            id="worker-deep", name="Generic deep", harness="claude", default_class="deep-high",
+        ))
+        await db.create_profile(AgentProfile(
+            id="codex-worker", name="Codex worker", harness="codex", default_class="deep-high",
+        ))
+        await db.update_task("t1", profile_id="worker-deep", intelligence_class="deep-high")
+        await db.update_agent("a1", profile_id="codex-worker")
+        real_orch.session_spec_builder._intelligence_classes = {
+            "deep-high": IntelligenceClass("deep-high", "Deep", "", {
+                "anthropic": {"model": "claude-fable-5"},
+                "codex": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
+            }),
+        }
+        task = await db.get_task("t1")
+        profile = await db.get_profile("worker-deep")
+        await real_orch._launch_session_for_task(AssignAction("a1", "t1", "p1"), task, profile, wd)
+        session = await db.get_session_for_task("t1")
+        assert session.harness == "codex"
+        assert session.model == "gpt-5.6-sol"
+        assert session.intelligence_class == "deep-high"
+        assert len(provider.starts) == 1
+        assert (await db.get_agent("a1")).harness is None
+        assert (await db.get_profile("worker-deep")).harness == "claude"
+
     async def test_task_launch_links_worker_and_freezes_individual_settings(
         self, db, real_orch, provider, tmp_path
     ):
@@ -1174,7 +1255,9 @@ class TestEndToEndOnFakeProvider:
     ):
         wd = await self._setup(db, tmp_path)
         task = await db.get_task("t1")
-        profile = AgentProfile(id="claude-opus", name="C", harness="does-not-exist")
+        # Launch re-reads the saved definition after workspace preparation.
+        await db.update_profile("claude-opus", harness="does-not-exist")
+        profile = await db.get_profile("claude-opus")
         action = AssignAction(task_id="t1", agent_id="a1", project_id="p1")
         await real_orch._launch_session_for_task(action, task, profile, wd)
         assert await db.get_session_for_task("t1") is None

@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from src.agents.routing import resolve_agent_profile, resolve_task_profile, task_agent_mismatch
 from src.database import Database
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,8 @@ class AgentReconciler:
         self._worktrees_enabled = worktrees_enabled
 
     async def reconcile(
-        self, *, provider_cooldowns: dict[str, float] | None = None
+        self, *, provider_cooldowns: dict[str, float] | None = None,
+        harness_registry=None, intelligence_classes: dict | None = None,
     ) -> ReconcileReport:
         """Supply durable global workers without changing any existing definition."""
         import time
@@ -83,7 +85,6 @@ class AgentReconciler:
             and agent.id not in live_agents
             and agent.profile_id in profiles
         ]
-        supplied = bool(idle)
         for project in projects:
             if project.status != ProjectStatus.ACTIVE:
                 continue
@@ -91,18 +92,39 @@ class AgentReconciler:
                 task
                 for task in tasks
                 if task.project_id == project.id and task.status == TaskStatus.READY
+                and not task.is_blocked
             ]
             if not ready:
                 continue
-            # An existing global worker already supplies this demand. Keep a
-            # missing project default missing so its saved profile can apply.
-            if supplied:
+            # A global worker supplies only work that preserves its saved
+            # execution identity. An idle triage worker cannot suppress supply
+            # for an explicitly routed Codex/deep task.
+            def supplied(task):
+                profile = resolve_task_profile(task, project, profiles)
+                if task.profile_id and profile is None:
+                    return False
+                return any(
+                    task_agent_mismatch(
+                        task, worker, task_profile=profile,
+                        agent_profile=resolve_agent_profile(worker, project.id, profiles),
+                        harness_registry=harness_registry,
+                        intelligence_classes=intelligence_classes,
+                    ) is None
+                    for worker in idle
+                )
+
+            uncovered = [task for task in ready if not supplied(task)]
+            if not uncovered:
+                # Keep a missing project default missing when existing workers
+                # can supply their own defaults.
                 continue
             default_pid = project.default_profile_id
-            if not default_pid and any(not task.profile_id for task in ready):
+            if not default_pid and any(not task.profile_id for task in uncovered):
                 default_pid = await self._backfill_project_default(project, profiles, report)
-            needed = {task.profile_id or default_pid for task in ready}
-            needed.discard(None)
+            needed = {
+                (task.profile_id or default_pid, task.intelligence_class or ""): task
+                for task in uncovered if task.profile_id or default_pid
+            }
             if not needed:
                 reason = "no resolvable profile_id (no usable agent profiles are registered)"
                 self._warn_once(project.id, reason)
@@ -115,7 +137,8 @@ class AgentReconciler:
                 and by_task[agent.current_task_id].project_id == project.id
             )
             remaining = max(0, project.max_concurrent_agents - busy)
-            for profile_id in sorted(needed):
+            for profile_id, task_class in sorted(needed):
+                requested = needed[(profile_id, task_class)]
                 profile = profiles.get(f"project:{project.id}:{profile_id}") or profiles.get(
                     profile_id
                 )
@@ -145,7 +168,16 @@ class AgentReconciler:
                     id=f"agent-{uuid.uuid4().hex[:12]}",
                     name=f"{profile_id}-{len(agents) + 1}",
                     profile_id=profile_id,
+                    intelligence_class=task_class or None,
                 )
+                mismatch = task_agent_mismatch(
+                    requested, agent, task_profile=profile, agent_profile=profile,
+                    harness_registry=harness_registry,
+                    intelligence_classes=intelligence_classes,
+                )
+                if mismatch:
+                    report.skipped.append((project.id, mismatch))
+                    continue
                 # A deletion means the user sized this global roster. Keep
                 # reusing its workers, but never grow it back automatically;
                 # untouched registries retain their normal lazy bootstrap.
@@ -155,9 +187,9 @@ class AgentReconciler:
                     )
                     break
                 agents.append(agent)
+                idle.append(agent)
                 report.created.append((project.id, profile_id))
                 remaining -= 1
-                supplied = True
         return report
 
     async def _backfill_project_default(

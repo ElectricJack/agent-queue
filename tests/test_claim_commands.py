@@ -147,6 +147,95 @@ class TestClaim:
         assert (await db.get_session(sid)).claim_phase == "active"
         assert "task.claimed" in emitted(handler) and "task.started" in emitted(handler)
 
+    @pytest.mark.parametrize("live_class,live_model", [
+        ("fast-low", "gpt-5.6-luna"),
+        ("deep-high", "gpt-5.6-luna"),
+        (None, None),
+    ])
+    async def test_pool_claim_never_downgrades_explicit_task_class(
+        self, handler, db, tmp_path, live_class, live_model
+    ):
+        from src.intelligence_classes import IntelligenceClass
+
+        handler.orchestrator.session_spec_builder._intelligence_classes = {
+            "deep-high": IntelligenceClass("deep-high", "Deep", "", {"codex": {"model": "gpt-5.6-sol"}}),
+        }
+        await mktask(db, "deep", profile_id="worker", intelligence_class="deep-high")
+        sid, wd = await pool_session(db, tmp_path)
+        await db.update_session(sid, harness="codex", intelligence_class=live_class, model=live_model)
+        # Edits affect the next launch, not the already-running pool's model.
+        await db.update_agent("agent-1", harness="codex", intelligence_class="deep-high", model="gpt-5.6-sol")
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert res["result"] == "no_ready_work"
+        task = await db.get_task("deep")
+        assert task.status == TaskStatus.READY and task.claim_epoch == 0
+        assert task.assigned_agent_id is None
+        assert (await db.get_session(sid)).claim_phase is None
+        assert not (wd / ".aq" / "claim.json").exists()
+
+    async def test_pool_claim_uses_live_sol_even_after_next_launch_settings_change(self, handler, db, tmp_path):
+        from src.intelligence_classes import IntelligenceClass
+
+        handler.orchestrator.session_spec_builder._intelligence_classes = {
+            "deep-high": IntelligenceClass("deep-high", "Deep", "", {"codex": {"model": "gpt-5.6-sol"}}),
+        }
+        await mktask(db, "deep", profile_id="worker", intelligence_class="deep-high")
+        sid, _ = await pool_session(db, tmp_path)
+        await db.update_session(sid, harness="codex", intelligence_class="deep-high", model="gpt-5.6-sol")
+        await db.update_agent("agent-1", harness="codex", intelligence_class="fast-low", model="gpt-5.6-luna")
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert res["result"] == "claimed" and res["task"]["id"] == "deep"
+        assert res["task"]["intelligence_class"] == "deep-high"
+        assert (await db.get_task("deep")).assigned_agent_id == "agent-1"
+
+    async def test_waiting_pool_rechecks_updated_profile_before_claiming(self, handler, db, tmp_path, monkeypatch):
+        from src.intelligence_classes import IntelligenceClass
+
+        handler.orchestrator.session_spec_builder._intelligence_classes = {
+            "deep-high": IntelligenceClass("deep-high", "Deep", "", {"codex": {"model": "gpt-5.6-sol"}}),
+            "fast-low": IntelligenceClass("fast-low", "Fast", "", {"codex": {"model": "gpt-5.6-luna"}}),
+        }
+        sid, _ = await pool_session(db, tmp_path)
+        await db.update_session(sid, harness="codex", intelligence_class="deep-high", model="gpt-5.6-sol")
+        waiting = asyncio.Event()
+        attempt = handler._attempt_claim
+
+        async def observe_attempt(*args, **kwargs):
+            result = await attempt(*args, **kwargs)
+            if result["result"] == "no_ready_work":
+                waiting.set()
+            return result
+
+        monkeypatch.setattr(handler, "_attempt_claim", observe_attempt)
+        claim = asyncio.create_task(scoped(handler, sid)._cmd_task_claim({"next": True, "wait": 1}))
+        try:
+            await asyncio.wait_for(waiting.wait(), timeout=5)
+            await db.update_profile("worker", default_class="fast-low")
+            await mktask(db, "new-fast", status=TaskStatus.DEFINED, profile_id="worker")
+            await db.transition_task("new-fast", TaskStatus.READY, context="profile_changed")
+            result = await claim
+            assert result["result"] == "no_ready_work"
+            assert (await db.get_task("new-fast")).status == TaskStatus.READY
+        finally:
+            if not claim.done():
+                claim.cancel()
+                await asyncio.gather(claim, return_exceptions=True)
+
+    async def test_pool_claim_skips_incompatible_higher_priority_task(self, handler, db, tmp_path):
+        from src.intelligence_classes import IntelligenceClass
+
+        handler.orchestrator.session_spec_builder._intelligence_classes = {
+            "deep-high": IntelligenceClass("deep-high", "Deep", "", {"codex": {"model": "gpt-5.6-sol"}}),
+            "fast-low": IntelligenceClass("fast-low", "Fast", "", {"codex": {"model": "gpt-5.6-luna"}}),
+        }
+        await mktask(db, "deep", profile_id="worker", intelligence_class="deep-high", priority=1)
+        await mktask(db, "fast", profile_id="worker", intelligence_class="fast-low", priority=100)
+        sid, _ = await pool_session(db, tmp_path)
+        await db.update_session(sid, harness="codex", intelligence_class="fast-low", model="gpt-5.6-luna")
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert res["result"] == "claimed" and res["task"]["id"] == "fast"
+        assert (await db.get_task("deep")).status == TaskStatus.READY
+
     async def test_no_ready_work_without_wait(self, handler, db, tmp_path):
         sid, _ = await pool_session(db, tmp_path)
         res = await scoped(handler, sid)._cmd_task_claim({"next": True})

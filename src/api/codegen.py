@@ -355,6 +355,11 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
         # typed routes.  Strip any client-supplied ``_scope`` before we
         # inject the middleware-derived one — clients cannot spoof identity.
         args = body.model_dump(exclude_none=True)
+        if cmd_name == "edit_task":
+            # Explicit null clears routing; omitted option defaults must not.
+            for field in {"profile_id", "intelligence_class"} & body.model_fields_set:
+                if getattr(body, field) is None:
+                    args[field] = None
         args.pop("_scope", None)
 
         scope: RequestScope = (

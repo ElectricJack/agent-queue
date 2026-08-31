@@ -53,6 +53,7 @@ def _task_block(task) -> dict:
         "task_type": task.task_type.value if task.task_type else None,
         "parent_task_id": task.parent_task_id,
         "profile_id": task.profile_id,
+        "intelligence_class": task.intelligence_class,
         "auto_approve_plan": task.auto_approve_plan,
         "skip_verification": task.skip_verification,
         "workflow_id": task.workflow_id,
@@ -236,8 +237,17 @@ class ClaimCommandsMixin:
         cap = getattr(profile, "max_claims_per_session", None)
         project = await self.db.get_project(session.project_id)
         default_profile = getattr(project, "default_profile_id", None)
+        refresh_routing = False
 
         while True:
+            if refresh_routing:
+                # Long-poll wakes may follow profile/class edits. Keep the
+                # session's frozen launch settings but refresh its requirements.
+                profile = await self.db.get_profile(session.profile_id)
+                cap = getattr(profile, "max_claims_per_session", None)
+                project = await self.db.get_project(session.project_id)
+                default_profile = getattr(project, "default_profile_id", None)
+            refresh_routing = True
             # Subscribe before checking admissibility (same discipline as
             # the frontier waiter below) — otherwise a ``project.resumed`` /
             # ``constraint.released`` / ``snapshot.refreshed`` landing
@@ -269,7 +279,8 @@ class ClaimCommandsMixin:
                 # missed-``task.ready`` check below; a non-waiting claim
                 # never reads it (spec §15).
                 seq0 = await self.db.max_event_id() if wait else 0
-                outcome = await self._attempt_claim(session, want_id, cap, default_profile)
+                routing = self._pool_claim_routing(session, profile)
+                outcome = await self._attempt_claim(session, want_id, cap, default_profile, routing=routing)
                 result = outcome["result"]
                 if result == ClaimResult.NO_READY_WORK.value and wait:
                     remaining = deadline - time.monotonic()
@@ -294,7 +305,46 @@ class ClaimCommandsMixin:
             finally:
                 waiter.close()
 
-    async def _attempt_claim(self, session, want_id, cap, default_profile) -> dict:
+    def _pool_claim_routing(self, session, profile) -> tuple[str | None, bool]:
+        """Restrict claims to the recorded live session, not next-launch settings.
+
+        A running pool cannot change model or reasoning class between claims.
+        Unknown legacy launch metadata cannot prove an explicit class request;
+        unclassified work keeps its existing behavior.
+        """
+        from src.agents.routing import task_agent_mismatch
+        from src.models import Agent, Task
+
+        live_class = session.intelligence_class or None
+        worker = Agent(
+            id=session.agent_id or session.id, name=session.name,
+            profile_id=session.profile_id, harness=session.harness,
+            model=session.model, intelligence_class=live_class,
+        )
+        classes = getattr(
+            getattr(self.orchestrator, "session_spec_builder", None),
+            "_intelligence_classes", None,
+        )
+
+        def matches(class_id):
+            required_class = class_id or getattr(profile, "default_class", None)
+            if required_class and (required_class != live_class or not session.model):
+                return False
+            if not required_class and getattr(profile, "model", None) and not session.model:
+                return False
+            task = Task(
+                id="", project_id=session.project_id, title="", description="",
+                profile_id=session.profile_id, intelligence_class=class_id,
+            )
+            return task_agent_mismatch(
+                task, worker, task_profile=profile, agent_profile=profile,
+                harness_registry=getattr(self.orchestrator, "harness_registry", None),
+                intelligence_classes=classes,
+            ) is None
+
+        return (live_class if live_class and matches(live_class) else None, matches(None))
+
+    async def _attempt_claim(self, session, want_id, cap, default_profile, *, routing=None) -> dict:
         """Decide the outcome on one ``immediate()`` transaction, on *conn* only.
 
         Every read/write in here must take ``conn`` explicitly (never a
@@ -362,6 +412,9 @@ class ClaimCommandsMixin:
                     default_profile_id=default_profile,
                     agent_id=row.agent_id,
                     task_id=want_id,
+                    enforce_routing=routing is not None,
+                    intelligence_class=routing[0] if routing else None,
+                    allow_unclassified=routing[1] if routing else True,
                 )
                 task = None
                 if tid is not None:

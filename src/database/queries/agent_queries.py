@@ -269,6 +269,7 @@ class AgentQueryMixin:
                     .where(
                         tasks.c.id == task_id,
                         tasks.c.status == TaskStatus.READY.value,
+                        tasks.c.is_blocked == 0,
                         ~live_task,
                         ~busy_owner,
                     )

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypedDict
 
-from src.models import AgentState, ProjectStatus
+from src.models import ProjectStatus
 
 if TYPE_CHECKING:  # pragma: no cover
     from src.scheduler import SchedulerState
@@ -35,6 +35,7 @@ class Reason(TypedDict):
 
     ``code`` is a stable machine-readable identifier — one of
     ``blocked_dependency``, ``blocked_gate``, ``no_idle_agent``,
+    ``no_compatible_agent``,
     ``workspace_locked``, ``budget_exhausted``, ``rate_limited``,
     ``held``, ``project_paused``.  ``detail`` is a human string.
     ``ref`` names the specific entity (task id, gate id, workspace id,
@@ -59,6 +60,8 @@ def build_capacity_reasons(
     caller (``_cmd_explain_task``) concatenates graph reasons first, then
     these.
     """
+    from src.scheduler import idle_workers, routing_mismatch
+
     reasons: list[Reason] = []
     project = next((p for p in state.projects if p.id == task.project_id), None)
     if project is None:
@@ -99,12 +102,24 @@ def build_capacity_reasons(
                 ref=task.project_id,
             )
         )
-    idle = idle_by_project.get(task.project_id, 0)
-    if idle == 0:
+    candidates = idle_workers(state, include_cooldown=True)
+    compatible = [agent for agent in candidates if routing_mismatch(task, agent, state) is None]
+    if candidates and not compatible:
+        mismatches = list(dict.fromkeys(
+            routing_mismatch(task, agent, state) for agent in candidates
+        ))
+        reasons.append(
+            Reason(
+                code="no_compatible_agent",
+                detail="no compatible worker available: " + "; ".join(mismatches[:3]),
+                ref=task.profile_id,
+            )
+        )
+    elif idle_by_project.get(task.project_id, 0) == 0:
         reasons.append(
             Reason(
                 code="no_idle_agent",
-                detail=f"no idle agent on project '{task.project_id}'",
+                detail="no idle global worker available",
                 ref=task.project_id,
             )
         )
@@ -119,21 +134,17 @@ def build_capacity_reasons(
                 ref=None,
             )
         )
-    for agent in state.agents:
-        if (
-            agent.state == AgentState.IDLE
-            and getattr(agent, "project_id", None) == task.project_id
-        ):
-            cool = (state.provider_cooldowns or {}).get(agent.profile_id, 0)
-            if cool > state.now:
-                reasons.append(
-                    Reason(
-                        code="rate_limited",
-                        detail=(
-                            f"provider '{agent.profile_id}' in cooldown for "
-                            f"{int(cool - state.now)}s"
-                        ),
-                        ref=agent.profile_id,
-                    )
+    for agent in compatible:
+        cool = (state.provider_cooldowns or {}).get(agent.profile_id, 0)
+        if cool > state.now:
+            reasons.append(
+                Reason(
+                    code="rate_limited",
+                    detail=(
+                        f"provider '{agent.profile_id}' in cooldown for "
+                        f"{int(cool - state.now)}s"
+                    ),
+                    ref=agent.profile_id,
                 )
+            )
     return reasons
