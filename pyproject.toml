@@ -128,6 +128,7 @@ dev = [
     # directory names, allowing local DoS or possible privilege escalation.
     "pytest>=9.0.3",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=6.0",
     "pytest-xdist>=3.5",
     "ruff>=0.4.0",
     "pre-commit>=3.5.0",
