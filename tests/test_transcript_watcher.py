@@ -110,7 +110,7 @@ async def test_new_entry_emits_task_message(tmp_path, db, bus):
 
     msgs = bus.payloads("notify.task_message")
     assert len(msgs) == 1
-    assert msgs[0]["stream_id"] == "s1a"
+    assert msgs[0]["stream_id"] == "s1a:a1"
     assert msgs[0]["task_id"] == "t1a"
     assert "hello world" in msgs[0]["message"]
 

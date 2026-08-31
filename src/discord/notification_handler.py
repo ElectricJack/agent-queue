@@ -851,11 +851,12 @@ class DiscordNotificationHandler:
                 return
             event.message = cleaned
 
-        # Streaming runtimes (ACPX) set stream_id and send the cumulative
-        # turn text on each update.  Edit a single Discord message in place
-        # rather than posting a new one per chunk.  Chain to additional
-        # messages when the stream's text exceeds Discord's ~2000-char
-        # limit.  Brief notifications never stream — they always post.
+        # A stream id identifies exactly one logical response.  Streaming
+        # runtimes (ACPX) send cumulative text for that response on each
+        # update; transcript entries use a distinct id per completed entry.
+        # Edit a single Discord message only for cumulative updates within
+        # one stream, and chain messages when it exceeds Discord's ~2000-char
+        # limit. Brief notifications never stream — they always post.
         if event.stream_id and event.message_type != "brief":
             await self._handle_streamed_task_message(event)
             return
@@ -949,7 +950,10 @@ class DiscordNotificationHandler:
             }
             self._stream_states[event.stream_id] = state
 
-        # Always overwrite — text is cumulative, newer strictly contains older.
+        # Each stream's producer promises cumulative text: newer text strictly
+        # contains older text. TranscriptWatcher gives each completed entry a
+        # unique stream id, preventing separate turns from reaching this path
+        # under the same key.
         state["latest_text"] = event.message or ""
         if event.stream_done:
             state["latest_done"] = True

@@ -2,9 +2,9 @@
 
 For each live session with a resolvable transcript:
 
-* new entries → ``notify.task_message`` events (``stream_id=session_id``,
-  so the Discord per-stream worker edits one message in place instead of
-  spamming per line),
+* new entries → ``notify.task_message`` events (``stream_id`` is scoped to
+  the session *and transcript entry*), so each completed agent turn gets its
+  own Discord message,
 * assistant entries carrying ``usage`` → one ``record_token_usage`` row,
 * in-turn tail → ``touch_session_activity`` + agent ``last_heartbeat`` so
   the stall ladder does not climb on a busy session.
@@ -222,7 +222,13 @@ class TranscriptWatcher:
         logger.info("learned %s session key %s for session %s", row.harness, key, row.id)
 
     async def _emit_entry(self, row, entry: TranscriptEntry) -> None:
-        """One ``notify.task_message`` per entry, stream-keyed by session id.
+        """One ``notify.task_message`` per entry, stream-keyed by entry.
+
+        ``message`` is this entry's complete text, not a cumulative session
+        transcript.  Scope its stream id to the entry UUID so the Discord
+        streaming renderer never mistakes a later assistant turn for a
+        cumulative update to an earlier one.  Producers that genuinely stream
+        cumulative text (such as ACPX) retain their own per-turn stream ids.
 
         Entries with no renderable text are skipped entirely.  An assistant
         turn whose content was only ``thinking`` blocks flattens to an empty
@@ -248,7 +254,7 @@ class TranscriptWatcher:
             # relay had no way to distinguish them and posted the bootstrap
             # prompt, injected messages and system frames verbatim.
             "role": entry.type,
-            "stream_id": row.id,
+            "stream_id": f"{row.id}:{entry.uuid}",
             "stream_done": False,
         }
         try:

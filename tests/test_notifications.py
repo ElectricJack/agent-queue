@@ -848,6 +848,38 @@ async def _wait_for(predicate, timeout: float = 2.0):
 
 @pytest.mark.asyncio
 class TestStreamedTaskMessages:
+    async def test_distinct_turn_streams_append_without_editing_prior_turn(self):
+        """Completed transcript turns have distinct stream ids, so they append.
+
+        The worker may still edit repeatedly within either individual turn;
+        this test verifies that a later turn never edits the prior turn's
+        Discord message.
+        """
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        thread = _FakeThread()
+        bot = _make_stream_bot(thread)
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            await handler._on_task_message(
+                _stream_event("first turn", stream_id="session:a1", done=True)
+            )
+            await handler._stream_states["session:a1"]["worker"]
+
+            await handler._on_task_message(
+                _stream_event("second turn", stream_id="session:a2", done=True)
+            )
+            await handler._stream_states["session:a2"]["worker"]
+
+            assert [message.content for message in thread.sent] == ["first turn", "second turn"]
+            assert thread.sent[0].edits == []
+            assert thread.sent[1].edits == []
+            assert handler._stream_states == {}
+        finally:
+            handler.shutdown()
+
     async def test_streamed_output_coalesces_cumulative_updates_into_one_edit(self):
         """Approved plan item 16: cumulative frames sharing a stream_id
         produce one initial thread send, then in-place edits — pending
