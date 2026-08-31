@@ -43,6 +43,23 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = os.path.expanduser("~/.agent-queue/config.yaml")
 
 
+async def _cancel_readiness_tasks(pending: set[asyncio.Task]) -> None:
+    """Request cancellation without letting a broken adapter block scheduling."""
+    if not pending:
+        return
+    for task in pending:
+        task.cancel()
+    done, lingering = await asyncio.wait(pending, timeout=5.0)
+    for task in done:
+        if not task.cancelled():
+            task.exception()  # retrieve failures so asyncio does not warn later
+    if lingering:
+        logger.warning(
+            "%d messaging readiness task(s) did not finish cancellation; continuing degraded",
+            len(lingering),
+        )
+
+
 async def _run_scheduler_cycles(orch: Orchestrator, shutdown_event: asyncio.Event) -> None:
     """Keep periodic reconciliation alive after a single degraded cycle."""
     while not shutdown_event.is_set():
@@ -189,14 +206,7 @@ async def run(config_path: str, profile: str | None = None) -> bool:
                 timeout=120,
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            for t in pending:
-                t.cancel()
-            if pending:
-                # Await the losers so their cancellation cleanup completes
-                # before scheduling starts — a cancelled-but-unawaited
-                # readiness coroutine can survive as a pending task into
-                # shutdown (PLA-2).
-                await asyncio.gather(*pending, return_exceptions=True)
+            await _cancel_readiness_tasks(pending)
             if not done:
                 logger.warning(
                     "Messaging adapter not ready after 120s — running in degraded mode "

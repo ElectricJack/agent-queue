@@ -291,3 +291,24 @@ async def test_scheduler_cycle_failure_is_logged_and_next_cycle_runs(monkeypatch
     await _run_scheduler_cycles(orch, shutdown)
     assert calls == 2
     assert "Orchestrator cycle failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_pending_readiness_cleanup_is_bounded(monkeypatch, caplog):
+    from unittest.mock import MagicMock
+    from src.main import _cancel_readiness_tasks
+
+    lingering = MagicMock()
+    finished = MagicMock()
+    finished.cancelled.return_value = True
+
+    async def bounded_wait(tasks, timeout):
+        assert tasks == {lingering, finished}
+        assert timeout == 5.0
+        return {finished}, {lingering}
+
+    monkeypatch.setattr(asyncio, "wait", bounded_wait)
+    await _cancel_readiness_tasks({lingering, finished})
+    lingering.cancel.assert_called_once()
+    finished.cancel.assert_called_once()
+    assert "did not finish cancellation" in caplog.text
