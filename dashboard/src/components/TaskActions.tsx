@@ -29,17 +29,19 @@ import {
   useProvideInput,
 } from "../api/hooks";
 import Modal from "./Modal";
+import TaskAgentTerminalButton from "./TaskAgentTerminalButton";
 import { workspaceHref } from "../shell/projectNavigation";
 
 interface TaskActionsProps {
   task: Task;
   returnTo?: string;
   onDeleted?: () => void;
+  onOpenTerminal?: () => void;
 }
 
 type ModalType = "reject-plan" | "reopen" | "answer" | "delete" | null;
 
-export default function TaskActions({ task, returnTo, onDeleted }: TaskActionsProps) {
+export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal }: TaskActionsProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const [modal, setModal] = useState<ModalType>(null);
@@ -209,6 +211,7 @@ export default function TaskActions({ task, returnTo, onDeleted }: TaskActionsPr
       <section>
         <h2 className="mb-3 text-sm font-semibold uppercase text-gray-500">Actions</h2>
         <div className="flex flex-wrap gap-2">
+          {task.assigned_agent && <TaskAgentTerminalButton task={task} onOpen={onOpenTerminal} />}
           {visible.map((b) => (
             <button
               key={b.label}

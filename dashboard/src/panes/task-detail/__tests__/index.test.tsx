@@ -6,6 +6,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import TaskDetailPane from "../index";
 import type { Task } from "../../../api/hooks";
 
+const mockUseAgentFlock = vi.fn();
+vi.mock("../../../api/agents", () => ({ useAgentFlock: () => mockUseAgentFlock() }));
+
 const mockUseTask = vi.fn();
 const mockUseGates = vi.fn();
 const mockUseResolveGate = vi.fn();
@@ -87,6 +90,7 @@ function renderWithRouter(ui: React.ReactElement) {
 }
 
 beforeEach(() => {
+  mockUseAgentFlock.mockReturnValue({ data: [] });
   mockUseTask.mockReset();
   mockUseGates.mockReset();
   mockUseResolveGate.mockReset();
@@ -98,6 +102,21 @@ beforeEach(() => {
 });
 
 describe("TaskDetailPane — header, description, actions", () => {
+  it("jumps from a selected task to its current worker and closes the pane", () => {
+    mockUseTask.mockReturnValue({ data: { ...fixtureTask, status: "IN_PROGRESS" } });
+    mockUseAgentFlock.mockReturnValue({ data: [{
+      id: "agent-1", name: "Solar Eagle", current_task_id: "t1", current_project_id: "demo",
+      session_id: "session-1", session_state: "running", session_provider: "tmux",
+    }] });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    screen.getByRole("button", { name: "Open agent terminal" }).click();
+    expect(mockNavigate).toHaveBeenCalledWith(
+      { pathname: "/agents", search: "agent=agent-1" },
+      { state: { agentSelection: "replace" } },
+    );
+    expect(mockClose).toHaveBeenCalledOnce();
+  });
+
   it("renders title, status badge, and metadata badges without crashing", () => {
     mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
     renderWithRouter(<TaskDetailPane {...noopProps()} />);

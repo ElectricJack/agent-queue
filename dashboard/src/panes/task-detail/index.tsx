@@ -140,7 +140,7 @@ export default function TaskDetailPane({
         </div>
       </header>
 
-      {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={close} />}
+      {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={close} onOpenTerminal={close} />}
 
       {task && <TaskDescription key={task.id} task={task} />}
 
