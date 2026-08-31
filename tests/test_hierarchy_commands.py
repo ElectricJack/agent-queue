@@ -153,11 +153,13 @@ class TestAbandonChildren:
         assert rows, "expected a task.unblocked audit row for 'sib'"
 
     async def test_abandon_forces_invalid_transition(self, handler, db):
-        """A PAUSED descendant has no ordinary path to COMPLETED; the abandon
-        must pass ``force=True`` so it succeeds even with state-machine
-        enforcement on (review finding #3)."""
+        """A timed/backoff PAUSED descendant has no ordinary path to COMPLETED;
+        abandonment forces the state-machine edge, but a manual pause is
+        separately protected (see the next test)."""
         await container_with_open_child(db)
-        await db.transition_task("c", TaskStatus.PAUSED, context="test-setup", force=True)
+        await db.transition_task(
+            "c", TaskStatus.PAUSED, context="test-setup", force=True, resume_after=time.time() + 60,
+        )
         assert (await db.get_task("c")).status == TaskStatus.PAUSED
         db.set_state_machine_enforcement(True)
 
@@ -167,6 +169,22 @@ class TestAbandonChildren:
         assert res["success"] is True
         assert res["abandoned"] == ["c"]
         assert (await db.get_task("c")).status == TaskStatus.COMPLETED
+
+    async def test_abandon_does_not_override_manual_pause(self, handler, db):
+        from src.database.queries.task_queries import ManualPauseActive
+
+        await container_with_open_child(db)
+        await mktask(db, "sibling", status=TaskStatus.READY)
+        await db.add_dependency("sibling", "p", "parent-child")
+        await db.transition_task("c", TaskStatus.PAUSED, context="test-setup", force=True)
+        with pytest.raises(ManualPauseActive, match="resume_task"):
+            await handler._cmd_task_close(
+                {"task_id": "p", "outcome": "pass", "summary": "x", "abandon_children": True}
+            )
+        assert (await db.get_task("c")).status == TaskStatus.PAUSED
+        assert (await db.get_task("sibling")).status == TaskStatus.READY
+        assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS
+        assert await db.get_task_meta("p", "outcome") is None
 
     async def test_abandons_deepest_first_multi_level(self, handler, db):
         """container -> child -> grandchild, only the grandchild open: both

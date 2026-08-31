@@ -24,6 +24,40 @@ class AgentWaitingQuestion(BaseModel):
     created_at: float
 
 
+class AgentQuestionDetail(AgentWaitingQuestion):
+    """Durable question returned by scoped list/answer/escalate commands."""
+
+    # Event delivery may decorate a returned row with event_id/_event_type.
+    model_config = {"extra": "allow"}
+
+    session_id: str
+    session_name: str
+    instance_token: str
+    task_id: str
+    project_id: str
+    agent_id: str
+    turn_id: str
+    claim_epoch: int
+    answer: str | None = None
+    answered_by: str | None = None
+    updated_at: float
+    source_ts: float
+    discord_channel_id: str | None = None
+    discord_message_id: str | None = None
+    supervisor_routed_at: float | None = None
+    notification_next_at: float = 0.0
+    notification_attempts: int = 0
+    delivery_token: str | None = None
+    delivery_lease_until: float | None = None
+    delivered_at: float | None = None
+    reason: str | None = None
+
+
+class QuestionListResponse(BaseModel):
+    questions: list[AgentQuestionDetail] = Field(default_factory=list)
+    count: int = 0
+
+
 class AgentSummary(BaseModel):
     id: str
     name: str
@@ -232,6 +266,9 @@ class ShowEffectiveProfileResponse(BaseModel):
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "question_list": QuestionListResponse,
+    "question_answer": AgentQuestionDetail,
+    "question_escalate": AgentQuestionDetail,
     "list_agents": ListAgentsResponse,
     "get_agent": AgentSummary,
     "create_agent": AgentSummary,

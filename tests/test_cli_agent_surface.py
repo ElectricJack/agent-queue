@@ -125,9 +125,7 @@ class TestPrimeCLI:
 
         mock = _mock_client({"prime": {"success": True, "body": "primed body"}})
         with patch("src.cli.agent_surface._get_client", return_value=mock):
-            result = runner.invoke(
-                cli, ["prime", "--task-id", "task-1", "--hook-format", "claude"]
-            )
+            result = runner.invoke(cli, ["prime", "--task-id", "task-1", "--hook-format", "claude"])
         payload = json.loads(result.output)
         assert payload["hookSpecificOutput"]["additionalContext"] == "primed body"
 
@@ -136,9 +134,7 @@ class TestPrimeCLI:
 
         mock = _mock_client({"prime": {"success": True, "body": "primed body"}})
         with patch("src.cli.agent_surface._get_client", return_value=mock):
-            result = runner.invoke(
-                cli, ["prime", "--task-id", "task-1", "--hook-format", "codex"]
-            )
+            result = runner.invoke(cli, ["prime", "--task-id", "task-1", "--hook-format", "codex"])
         assert result.output.strip() == "primed body"
 
     def test_suppressed_when_startup_prompt_already_delivered(self, runner, monkeypatch):
@@ -182,13 +178,17 @@ class TestPrimeCLI:
 
 
 class TestHandoffCLI:
-    def test_sends_subject_detail_and_task_id(self, runner):
+    def test_sends_subject_detail_and_task_id(self, runner, monkeypatch):
         from src.cli.app import cli
 
+        monkeypatch.delenv("AQ_CLAIM_EPOCH", raising=False)
         mock = _mock_client(
             {"task_handoff": {"success": True, "handoff_id": "h1", "restart_requested": True}}
         )
-        with patch("src.cli.agent_surface._get_client", return_value=mock):
+        with (
+            patch("src.cli.agent_surface._get_client", return_value=mock),
+            patch("src.cli.agent_surface.resolve_claim_epoch", return_value=None),
+        ):
             result = runner.invoke(
                 cli, ["handoff", "--task-id", "task-1", "partial fix", "stopped early"]
             )
@@ -205,13 +205,17 @@ class TestHandoffCLI:
             )
         ]
 
-    def test_auto_flag_forwarded(self, runner):
+    def test_auto_flag_forwarded(self, runner, monkeypatch):
         from src.cli.app import cli
 
+        monkeypatch.delenv("AQ_CLAIM_EPOCH", raising=False)
         mock = _mock_client(
             {"task_handoff": {"success": True, "handoff_id": "h1", "restart_requested": False}}
         )
-        with patch("src.cli.agent_surface._get_client", return_value=mock):
+        with (
+            patch("src.cli.agent_surface._get_client", return_value=mock),
+            patch("src.cli.agent_surface.resolve_claim_epoch", return_value=None),
+        ):
             runner.invoke(cli, ["handoff", "--auto", "--task-id", "task-1"])
         assert mock.calls == [("task_handoff", {"auto": True, "task_id": "task-1"})]
 
@@ -220,10 +224,14 @@ class TestHandoffCLI:
 
         monkeypatch.setenv("AQ_TASK_ID", "env-task")
         monkeypatch.setenv("AQ_SESSION_ID", "env-session")
+        monkeypatch.delenv("AQ_CLAIM_EPOCH", raising=False)
         mock = _mock_client(
             {"task_handoff": {"success": True, "handoff_id": "h1", "restart_requested": True}}
         )
-        with patch("src.cli.agent_surface._get_client", return_value=mock):
+        with (
+            patch("src.cli.agent_surface._get_client", return_value=mock),
+            patch("src.cli.agent_surface.resolve_claim_epoch", return_value=None),
+        ):
             runner.invoke(cli, ["handoff"])
         assert mock.calls == [
             ("task_handoff", {"auto": False, "task_id": "env-task", "session_id": "env-session"})

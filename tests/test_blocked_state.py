@@ -516,17 +516,18 @@ class TestConditionalDisposal:
         sql = str(sa_select(tasks_t.c.id).where(or_(_blocks_unsat(), _blocks_unsat())).compile())
         assert sql.count("EXISTS") == 2
         # `_blocked_ignoring_conditional` shares four clauses with
-        # `blocked_predicate`; both must still carry every term.
+        # `blocked_predicate`; both must still carry every term, including
+        # the manual-pause dependency guard.
         from src.database.queries.blocked_state import _blocked_ignoring_conditional
 
         assert (
-            str(sa_select(tasks_t.c.id).where(blocked_predicate()).compile()).count("EXISTS") == 6
+            str(sa_select(tasks_t.c.id).where(blocked_predicate()).compile()).count("EXISTS") == 7
         )
         assert (
             str(sa_select(tasks_t.c.id).where(_blocked_ignoring_conditional()).compile()).count(
                 "EXISTS"
             )
-            == 5
+            == 6
         )
 
 
@@ -685,7 +686,15 @@ class TestRecomputeProperty:
             else:
                 # Change a status.
                 tid = rng.choice(ids)
-                await db.transition_task(tid, rng.choice(statuses))
+                from src.database.queries.task_queries import ManualPauseActive
+
+                previous = await db.get_task(tid)
+                try:
+                    await db.transition_task(tid, rng.choice(statuses))
+                except ManualPauseActive:
+                    # Random automatic transitions cannot override a manual hold.
+                    assert previous.status == TaskStatus.PAUSED
+                    assert (await db.get_task(tid)).status == TaskStatus.PAUSED
 
             persisted = await db.get_blocked_map(ids)
             brute = await db.evaluate_blocked(ids)

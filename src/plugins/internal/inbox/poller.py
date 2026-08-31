@@ -85,9 +85,7 @@ class InboxPoller:
             except asyncio.CancelledError:
                 pass
         self._task = None
-        logger.info(
-            "InboxPoller stopped for %s (stats=%s)", self._project_id, self._stats
-        )
+        logger.info("InboxPoller stopped for %s (stats=%s)", self._project_id, self._stats)
 
     async def _loop(self) -> None:
         # Consume initial history without emitting so the first poll sees
@@ -115,6 +113,7 @@ class InboxPoller:
         every message returned by the bootstrap query (up to a day of
         mail).  We anchor on the current profile.historyId instead.
         """
+
         def _fetch():
             svc = self._gmail._ensure_service()  # noqa: SLF001
             profile = svc.users().getProfile(userId=self._gmail._config.user_id).execute()  # noqa: SLF001
@@ -140,29 +139,36 @@ class InboxPoller:
             history_id=self._history_id,
             query=self._bootstrap_query,
         )
-        self._history_id = new_hid
-
+        completed = True
         for msg_id in ids:
             if msg_id in self._seen_ids:
                 continue
-            self._seen_ids.add(msg_id)
-            # Cap the set so it doesn't grow unboundedly.
-            if len(self._seen_ids) > 10000:
-                self._seen_ids = set(list(self._seen_ids)[-5000:])
-
             try:
                 await self._process_message(msg_id)
             except Exception:
+                # Leave both the history checkpoint and message ID untouched.
+                # A later poll can retry a message whose fetch or delivery failed.
+                completed = False
                 self._stats["errors"] += 1
                 logger.exception(
                     "InboxPoller %s: process_message %s failed",
                     self._project_id,
                     msg_id,
                 )
+                continue
+            self._seen_ids.add(msg_id)
+            # Cap the set so it doesn't grow unboundedly.
+            if len(self._seen_ids) > 10000:
+                self._seen_ids = set(list(self._seen_ids)[-5000:])
+
+        if completed:
+            self._history_id = new_hid
 
     async def _process_message(self, msg_id: str) -> None:
         meta = await asyncio.to_thread(self._gmail.get_message, msg_id)
-        headers = {h["name"].lower(): h["value"] for h in meta.get("payload", {}).get("headers", [])}
+        headers = {
+            h["name"].lower(): h["value"] for h in meta.get("payload", {}).get("headers", [])
+        }
         from_hdr = headers.get("from", "")
         subject = headers.get("subject", "")
         auth_raw = headers.get("authentication-results", "")

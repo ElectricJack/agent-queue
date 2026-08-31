@@ -15,6 +15,7 @@ from src.database.tables import (
     archived_tasks,
     sessions,
     task_comments,
+    task_completion_records,
     tasks,
 )
 from src.models import TaskStatus
@@ -173,6 +174,7 @@ class ArchiveQueryMixin:
             task_id,
             conn=conn,
             preserve_comments=True,
+            preserve_completion=True,
             gate_resolution="last waiter task archived",
         )
 
@@ -301,6 +303,12 @@ class ArchiveQueryMixin:
             )
             if not result.fetchone():
                 return False
+            await conn.execute(
+                delete(task_completion_records).where(
+                    task_completion_records.c.task_id == task_id,
+                    ~exists(select(tasks.c.id).where(tasks.c.id == task_id)),
+                )
+            )
             await conn.execute(delete(archived_tasks).where(archived_tasks.c.id == task_id))
             # Restoration may recreate the active identity before removing
             # its archive snapshot. Only permanent deletion removes history.

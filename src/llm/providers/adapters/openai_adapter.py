@@ -109,7 +109,22 @@ def parse_response(response: object) -> ChatResponse:
         for tc in choice.message.tool_calls:
             args = tc.function.arguments
             if isinstance(args, str):
-                args = json.loads(args)
+                try:
+                    args = json.loads(args)
+                except (json.JSONDecodeError, TypeError):
+                    # Tool arguments are model-supplied text: a truncated or
+                    # otherwise malformed payload must not raise out of the
+                    # adapter and abort the caller's tool loop.  Report it as
+                    # text instead of invoking the tool with junk input.
+                    content.append(
+                        TextBlock(
+                            text=(
+                                f"[provider error] tool call '{tc.function.name}' was dropped: "
+                                "its arguments were not valid JSON"
+                            )
+                        )
+                    )
+                    continue
             content.append(
                 ToolUseBlock(
                     id=tc.id or str(uuid.uuid4())[:8],

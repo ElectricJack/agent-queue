@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from src.database.engine import create_postgres_engine, create_sqlite_engine
 from src.database.tables import (
     agent_profiles,
+    agent_questions,
     agents,
     api_session_tokens,
     archived_tasks,
@@ -31,6 +32,7 @@ from src.database.tables import (
     hierarchy_migration_rejects,
     merge_slots,
     messages,
+    message_discord_receipts,
     playbook_runs,
     plugin_data,
     plugins,
@@ -41,6 +43,8 @@ from src.database.tables import (
     sessions,
     system_config,
     task_context,
+    task_comments,
+    task_completion_records,
     task_criteria,
     task_dependencies,
     task_gates,
@@ -80,6 +84,9 @@ _ORDERED_TABLES = [
     api_session_tokens,
     chat_analyzer_suggestions,
     archived_tasks,
+    task_completion_records,
+    task_comments,
+    agent_questions,
     # FK → agent_profiles
     projects,
     # FK → projects
@@ -91,6 +98,7 @@ _ORDERED_TABLES = [
     workflows,
     # FK → projects (reply_to_id is a self-FK — deferred)
     messages,
+    message_discord_receipts,
     # FK → repos (current_task_id deferred)
     agents,
     # FK → projects, repos, agents, agent_profiles, workflows

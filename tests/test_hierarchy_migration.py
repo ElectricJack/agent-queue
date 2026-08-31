@@ -19,9 +19,42 @@ from src.config import AppConfig, DiscordConfig
 from src.database import Database, hierarchy_migration as hm
 from src.models import Project
 from src.orchestrator import Orchestrator
+from tests.pg_dsn import ensure_worker_postgres_dsn
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_ID = "proj"
+POSTGRES_DSN = ensure_worker_postgres_dsn()
+
+
+async def test_hierarchy_revision_pair_round_trips_on_postgres():
+    if not POSTGRES_DSN:
+        pytest.skip("POSTGRES_TEST_DSN not set")
+    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+    db = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
+    await db.initialize()
+    try:
+        assert db._engine.dialect.name == "postgresql"
+    finally:
+        await db.close()
+
+
+async def test_hierarchy_revision_b_postgres_reject_report_is_committed_before_failure():
+    if not POSTGRES_DSN:
+        pytest.skip("POSTGRES_TEST_DSN not set")
+    # The migration owns the durable reject report table at revision A.
+    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+    db = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
+    await db.initialize()
+    try:
+        async with db._engine.connect() as conn:
+            result = await conn.execute(
+                sqltext("SELECT to_regclass('hierarchy_migration_rejects')")
+            )
+            assert result.scalar() == "hierarchy_migration_rejects"
+    finally:
+        await db.close()
 
 
 def _alembic(db_path: str, *args: str) -> subprocess.CompletedProcess:

@@ -133,11 +133,17 @@ class TestProjectQueries:
         assert p.name == "new"
 
     async def test_delete_project_cascades(self, db):
+        from src.models import TaskCompletion
+
         await _make_project(db, "p-1")
         await _make_task(db, "t-1", "p-1")
+        await db.save_task_completion(
+            TaskCompletion(id="close-1", task_id="t-1", outcome="pass", completed_at=1.0)
+        )
         await db.delete_project("p-1")
         assert await db.get_project("p-1") is None
         assert await db.get_task("t-1") is None
+        assert await db.get_task_completion("t-1") is None
 
 
 # ── Profile Queries ──────────────────────────────────────────────────────

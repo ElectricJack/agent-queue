@@ -3732,6 +3732,24 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "commit": {"type": "string", "description": "Commit SHA (optional)"},
                 "notes": {"type": "string", "description": "Closing notes (optional)"},
+                "changes": {
+                    "type": "string",
+                    "description": "What changed while completing the task (optional)",
+                },
+                "verification": {
+                    "type": "string",
+                    "description": "How the completed work was verified (optional)",
+                },
+                "tests": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Test commands run while completing the task (optional)",
+                },
+                "commands": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Other commands run while completing the task (optional)",
+                },
                 "summary": {
                     "type": "string",
                     "description": (

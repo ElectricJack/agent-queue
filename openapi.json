@@ -149,6 +149,50 @@
         }
       }
     },
+    "/api/messages/send": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Post Message",
+        "description": "Queue a message to any supported recipient kind.",
+        "operationId": "post_message_api_messages_send_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageSendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Post Message Api Messages Send Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/sessions/{name}/message": {
       "post": {
         "tags": [
@@ -4153,6 +4197,147 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MessageReplyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/message/question-answer": {
+      "post": {
+        "tags": [
+          "message"
+        ],
+        "summary": "Answer a pending worker question in its original live session. Human approval cannot be supplied by supervisors.",
+        "description": "Answer a pending worker question in its original live session. Human approval cannot be supplied by supervisors.",
+        "operationId": "question_answer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionAnswerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentQuestionDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/message/question-escalate": {
+      "post": {
+        "tags": [
+          "message"
+        ],
+        "summary": "Escalate a worker question to the human when a factual answer is not sufficient.",
+        "description": "Escalate a worker question to the human when a factual answer is not sufficient.",
+        "operationId": "question_escalate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionEscalateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentQuestionDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/message/question-list": {
+      "post": {
+        "tags": [
+          "message"
+        ],
+        "summary": "List pending worker questions visible to the human or live supervisor.",
+        "description": "List pending worker questions visible to the human or live supervisor.",
+        "operationId": "question_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionListResponse"
                 }
               }
             }
@@ -9481,8 +9666,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, auto_approve_plan, skip_verification, affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different project, rename tasks, change priority, override status (admin), assign a profile, adjust retry/verification settings, or set coordination parameters.",
-        "description": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, auto_approve_plan, skip_verification, affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different project, rename tasks, change priority, override status (admin), assign a profile, adjust retry/verification settings, or set coordination parameters.",
+        "summary": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, auto_approve_plan, skip_verification, intelligence_class, affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different project, rename tasks, change priority, override status (admin), assign a profile, adjust retry/verification settings, or set coordination parameters.",
+        "description": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, auto_approve_plan, skip_verification, intelligence_class, affinity_agent_id, affinity_reason, or workspace_mode. Use this to move a task to a different project, rename tasks, change priority, override status (admin), assign a profile, adjust retry/verification settings, or set coordination parameters.",
         "operationId": "edit_task",
         "requestBody": {
           "content": {
@@ -10228,19 +10413,19 @@
         }
       }
     },
-    "/api/task/process-plan": {
+    "/api/task/pause": {
       "post": {
         "tags": [
           "task"
         ],
-        "summary": "Manually scan project workspaces for plan.md files and present them for approval. Use when the supervisor missed auto-detection or a plan was dropped into a workspace manually.",
-        "description": "Manually scan project workspaces for plan.md files and present them for approval. Use when the supervisor missed auto-detection or a plan was dropped into a workspace manually.",
-        "operationId": "process_plan",
+        "summary": "Pause a queued or running task until explicit Resume. Preserves work, routing, retries, and approval state.",
+        "description": "Pause a queued or running task until explicit Resume. Preserves work, routing, retries, and approval state.",
+        "operationId": "pause_task",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ProcessPlanRequest"
+                "$ref": "#/components/schemas/PauseTaskRequest"
               }
             }
           },
@@ -10252,54 +10437,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProcessPlanResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/task/process-completion": {
-      "post": {
-        "tags": [
-          "task"
-        ],
-        "summary": "Internal: Process a task completion to discover and archive plan files. Called by Supervisor after task completion.",
-        "description": "Internal: Process a task completion to discover and archive plan files. Called by Supervisor after task completion.",
-        "operationId": "process_task_completion",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ProcessTaskCompletionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProcessTaskCompletionResponse"
+                  "$ref": "#/components/schemas/TaskControlResponse"
                 }
               }
             }
@@ -10535,6 +10673,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RestartTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/resume": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Resume a paused task, respecting its existing gates and approval state. Retries any unfinished session stop first.",
+        "description": "Resume a paused task, respecting its existing gates and approval state. Retries any unfinished session stop first.",
+        "operationId": "resume_task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskControlResponse"
                 }
               }
             }
@@ -11072,6 +11257,100 @@
         }
       }
     },
+    "/api/task/comment": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Append a durable task comment. Author and time are assigned by the server; comments never resolve approval gates.",
+        "description": "Append a durable task comment. Author and time are assigned by the server; comments never resolve approval gates.",
+        "operationId": "task_comment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCommentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCommentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/comments": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Read authored task comments, newest first, with total and pagination metadata.",
+        "description": "Read authored task comments, newest first, with total and pagination metadata.",
+        "operationId": "task_comments",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCommentsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCommentsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/deps": {
       "post": {
         "tags": [
@@ -11351,329 +11630,6 @@
           }
         }
       }
-    },
-    "/api/message/question-list": {
-      "post": {
-        "tags": [
-          "message"
-        ],
-        "summary": "List pending worker questions visible to the human or live supervisor.",
-        "description": "List pending worker questions visible to the human or live supervisor.",
-        "operationId": "question_list",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/QuestionListRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/message/question-answer": {
-      "post": {
-        "tags": [
-          "message"
-        ],
-        "summary": "Answer a pending worker question in its original live session. Human approval cannot be supplied by supervisors.",
-        "description": "Answer a pending worker question in its original live session. Human approval cannot be supplied by supervisors.",
-        "operationId": "question_answer",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/QuestionAnswerRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/message/question-escalate": {
-      "post": {
-        "tags": [
-          "message"
-        ],
-        "summary": "Escalate a worker question to the human when a factual answer is not sufficient.",
-        "description": "Escalate a worker question to the human when a factual answer is not sufficient.",
-        "operationId": "question_escalate",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/QuestionEscalateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/task/comment": {
-      "post": {
-        "tags": [
-          "task"
-        ],
-        "summary": "Append a durable task comment. Author and time are assigned by the server; comments never resolve approval gates.",
-        "description": "Append a durable task comment. Author and time are assigned by the server; comments never resolve approval gates.",
-        "operationId": "task_comment",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TaskCommentRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TaskCommentResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/task/comments": {
-      "post": {
-        "tags": [
-          "task"
-        ],
-        "summary": "Read authored task comments, newest first, with total and pagination metadata.",
-        "description": "Read authored task comments, newest first, with total and pagination metadata.",
-        "operationId": "task_comments",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TaskCommentsRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TaskCommentsResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/task/pause": {
-      "post": {
-        "tags": [
-          "task"
-        ],
-        "summary": "Pause a queued or running task until explicit Resume. Preserves work, routing, retries, and approval state.",
-        "description": "Pause a queued or running task until explicit Resume. Preserves work, routing, retries, and approval state.",
-        "operationId": "pause_task",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PauseTaskRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TaskControlResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/task/resume": {
-      "post": {
-        "tags": [
-          "task"
-        ],
-        "summary": "Resume a paused task, respecting its existing gates and approval state. Retries any unfinished session stop first.",
-        "description": "Resume a paused task, respecting its existing gates and approval state. Retries any unfinished session stop first.",
-        "operationId": "resume_task",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ResumeTaskRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TaskControlResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Command error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
@@ -11826,6 +11782,200 @@
           "workspace_path"
         ],
         "title": "AddWorkspaceResponse"
+      },
+      "AgentQuestionDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "requires_human": {
+            "type": "boolean",
+            "title": "Requires Human"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "session_name": {
+            "type": "string",
+            "title": "Session Name"
+          },
+          "instance_token": {
+            "type": "string",
+            "title": "Instance Token"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "turn_id": {
+            "type": "string",
+            "title": "Turn Id"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "title": "Claim Epoch"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "answered_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answered By"
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At"
+          },
+          "source_ts": {
+            "type": "number",
+            "title": "Source Ts"
+          },
+          "discord_channel_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discord Channel Id"
+          },
+          "discord_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discord Message Id"
+          },
+          "supervisor_routed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supervisor Routed At"
+          },
+          "notification_next_at": {
+            "type": "number",
+            "title": "Notification Next At",
+            "default": 0.0
+          },
+          "notification_attempts": {
+            "type": "integer",
+            "title": "Notification Attempts",
+            "default": 0
+          },
+          "delivery_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Token"
+          },
+          "delivery_lease_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Lease Until"
+          },
+          "delivered_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered At"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "question",
+          "state",
+          "requires_human",
+          "created_at",
+          "session_id",
+          "session_name",
+          "instance_token",
+          "task_id",
+          "project_id",
+          "agent_id",
+          "turn_id",
+          "claim_epoch",
+          "updated_at",
+          "source_ts"
+        ],
+        "title": "AgentQuestionDetail",
+        "description": "Durable question returned by scoped list/answer/escalate commands."
       },
       "AgentSettings": {
         "properties": {
@@ -12114,6 +12264,39 @@
           "settings"
         ],
         "title": "AgentSummary"
+      },
+      "AgentWaitingQuestion": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "requires_human": {
+            "type": "boolean",
+            "title": "Requires Human"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "question",
+          "state",
+          "requires_human",
+          "created_at"
+        ],
+        "title": "AgentWaitingQuestion"
       },
       "AppendNoteRequest": {
         "properties": {
@@ -13980,6 +14163,30 @@
       },
       "CreateTaskGraphRequest": {
         "properties": {
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id",
+            "description": "Default profile for graph nodes without an explicit profile."
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class",
+            "description": "Default intelligence class for graph nodes without an explicit class."
+          },
           "project_id": {
             "anyOf": [
               {
@@ -14105,6 +14312,18 @@
             ],
             "title": "Profile Id",
             "description": "Agent profile ID to configure the agent with specific tools/capabilities (optional)"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class",
+            "description": "Execution intelligence class id, e.g. deep-high or standard-medium. Use list_intelligence_classes for current IDs. Set profile_id and this field together at creation to route work atomically."
           },
           "preferred_workspace_id": {
             "anyOf": [
@@ -14288,6 +14507,17 @@
               }
             ],
             "title": "Profile Id"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
           },
           "preferred_workspace_id": {
             "anyOf": [
@@ -16133,6 +16363,18 @@
             "title": "Profile Id",
             "description": "Agent profile ID (optional, set to null to clear)"
           },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class",
+            "description": "Intelligence class id; change only while unassigned. Null clears it."
+          },
           "auto_approve_plan": {
             "anyOf": [
               {
@@ -16411,17 +16653,44 @@
             "default": true
           },
           "task_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Task Id"
           },
           "created": {
             "type": "boolean",
             "title": "Created"
+          },
+          "restarted": {
+            "type": "boolean",
+            "title": "Restarted",
+            "default": false
+          },
+          "skipped": {
+            "type": "boolean",
+            "title": "Skipped",
+            "default": false
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
           }
         },
         "type": "object",
         "required": [
-          "task_id",
           "created"
         ],
         "title": "EnsureTaskResponse"
@@ -18454,6 +18723,17 @@
             "title": "Model",
             "default": ""
           },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
           "default_class": {
             "type": "string",
             "title": "Default Class",
@@ -19009,6 +19289,17 @@
             ],
             "title": "Profile Id"
           },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
           "auto_approve_plan": {
             "type": "boolean",
             "title": "Auto Approve Plan",
@@ -19087,6 +19378,16 @@
               }
             ],
             "title": "Children"
+          },
+          "completion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskCompletionDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -22621,6 +22922,107 @@
         ],
         "title": "MessageReplyResponse"
       },
+      "MessageSendRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Owning project id"
+          },
+          "to_kind": {
+            "type": "string",
+            "title": "To Kind",
+            "description": "Recipient kind: session | task | profile | user"
+          },
+          "to_id": {
+            "type": "string",
+            "title": "To Id",
+            "description": "Recipient id"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": "Markdown message body"
+          },
+          "from_id": {
+            "type": "string",
+            "title": "From Id",
+            "description": "Sender id",
+            "default": "cli"
+          },
+          "from_kind": {
+            "type": "string",
+            "title": "From Kind",
+            "description": "Sender kind",
+            "default": "user"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 100
+          },
+          "archive_after_inject": {
+            "type": "boolean",
+            "title": "Archive After Inject",
+            "default": false
+          },
+          "pane_open": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pane Open"
+          },
+          "system_only": {
+            "type": "boolean",
+            "title": "System Only",
+            "description": "Request projectless system scope",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "to_kind",
+          "to_id",
+          "body"
+        ],
+        "title": "MessageSendRequest",
+        "description": "Body of POST /api/messages/send for non-session recipients."
+      },
       "NoteSummary": {
         "properties": {
           "name": {
@@ -22745,6 +23147,20 @@
           "name"
         ],
         "title": "PauseProjectResponse"
+      },
+      "PauseTaskRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task ID to pause"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "PauseTaskRequest"
       },
       "PlaybookGraphViewRequest": {
         "properties": {
@@ -24037,217 +24453,6 @@
         ],
         "title": "ProbedToolModel"
       },
-      "ProcessPlanRequest": {
-        "properties": {
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id",
-            "description": "Project ID to scan for plan files. Uses active project if omitted."
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Id",
-            "description": "Optional existing task ID to attach the plan to. If omitted, a new task is created."
-          }
-        },
-        "type": "object",
-        "title": "ProcessPlanRequest"
-      },
-      "ProcessPlanResponse": {
-        "properties": {
-          "status": {
-            "type": "string",
-            "title": "Status",
-            "default": ""
-          },
-          "project_id": {
-            "type": "string",
-            "title": "Project Id",
-            "default": ""
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Id"
-          },
-          "plan_path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Plan Path"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          },
-          "phases": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Phases"
-          },
-          "draft_subtasks": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Draft Subtasks"
-          },
-          "total_plan_files_found": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Total Plan Files Found"
-          },
-          "workspaces_scanned": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Workspaces Scanned"
-          },
-          "message": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Message"
-          },
-          "note": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Note"
-          }
-        },
-        "additionalProperties": true,
-        "type": "object",
-        "title": "ProcessPlanResponse"
-      },
-      "ProcessTaskCompletionRequest": {
-        "properties": {
-          "task_id": {
-            "type": "string",
-            "title": "Task Id",
-            "description": "Task ID that completed"
-          },
-          "workspace_path": {
-            "type": "string",
-            "title": "Workspace Path",
-            "description": "Path to the workspace where the task was executed"
-          }
-        },
-        "type": "object",
-        "required": [
-          "task_id",
-          "workspace_path"
-        ],
-        "title": "ProcessTaskCompletionRequest"
-      },
-      "ProcessTaskCompletionResponse": {
-        "properties": {
-          "plan_found": {
-            "type": "boolean",
-            "title": "Plan Found",
-            "default": false
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          },
-          "plan_file": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Plan File"
-          },
-          "archived_path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Archived Path"
-          }
-        },
-        "additionalProperties": true,
-        "type": "object",
-        "title": "ProcessTaskCompletionResponse"
-      },
       "ProfileDetail": {
         "properties": {
           "id": {
@@ -24267,6 +24472,17 @@
             "type": "string",
             "title": "Model",
             "default": ""
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
           },
           "default_class": {
             "type": "string",
@@ -24332,6 +24548,17 @@
             "type": "string",
             "title": "Model",
             "default": ""
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
           },
           "default_class": {
             "type": "string",
@@ -24815,6 +25042,82 @@
           "project_id"
         ],
         "title": "PushBranchResponse"
+      },
+      "QuestionAnswerRequest": {
+        "properties": {
+          "question_id": {
+            "type": "string",
+            "title": "Question Id",
+            "description": ""
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "question_id",
+          "body"
+        ],
+        "title": "QuestionAnswerRequest"
+      },
+      "QuestionEscalateRequest": {
+        "properties": {
+          "question_id": {
+            "type": "string",
+            "title": "Question Id",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "question_id",
+          "reason"
+        ],
+        "title": "QuestionEscalateRequest"
+      },
+      "QuestionListRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "QuestionListRequest"
+      },
+      "QuestionListResponse": {
+        "properties": {
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/AgentQuestionDetail"
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "QuestionListResponse"
       },
       "QueueSyncWorkspacesRequest": {
         "properties": {
@@ -26197,6 +26500,20 @@
           "name"
         ],
         "title": "ResumeProjectResponse"
+      },
+      "ResumeTaskRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task ID to resume"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "ResumeTaskRequest"
       },
       "RunPlaybookRequest": {
         "properties": {
@@ -29130,6 +29447,56 @@
             "title": "Notes",
             "description": "Closing notes (optional)"
           },
+          "changes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changes",
+            "description": "What changed while completing the task (optional)"
+          },
+          "verification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification",
+            "description": "How the completed work was verified (optional)"
+          },
+          "tests": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tests",
+            "description": "Test commands run while completing the task (optional)"
+          },
+          "commands": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commands",
+            "description": "Other commands run while completing the task (optional)"
+          },
           "summary": {
             "anyOf": [
               {
@@ -29191,6 +29558,284 @@
           "outcome"
         ],
         "title": "TaskCloseRequest"
+      },
+      "TaskComment": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "author_kind": {
+            "type": "string",
+            "enum": [
+              "user",
+              "agent",
+              "supervisor"
+            ],
+            "title": "Author Kind"
+          },
+          "author_id": {
+            "type": "string",
+            "title": "Author Id"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "task_id",
+          "body",
+          "author_kind",
+          "author_id",
+          "created_at"
+        ],
+        "title": "TaskComment"
+      },
+      "TaskCommentRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task id to comment on."
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": "Comment text (not blank; at most 16000 characters)."
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": "Current claim epoch; required for pool workers."
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "body"
+        ],
+        "title": "TaskCommentRequest"
+      },
+      "TaskCommentResponse": {
+        "properties": {
+          "comment": {
+            "$ref": "#/components/schemas/TaskComment"
+          }
+        },
+        "type": "object",
+        "required": [
+          "comment"
+        ],
+        "title": "TaskCommentResponse"
+      },
+      "TaskCommentsRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task id to read."
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Page size (1..200).",
+            "default": 50
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "Number of newest comments to skip.",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "TaskCommentsRequest"
+      },
+      "TaskCommentsResponse": {
+        "properties": {
+          "comments": {
+            "items": {
+              "$ref": "#/components/schemas/TaskComment"
+            },
+            "type": "array",
+            "title": "Comments",
+            "default": []
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "TaskCommentsResponse"
+      },
+      "TaskCompletionDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "work_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Outcome"
+          },
+          "failure_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Class"
+          },
+          "changes": {
+            "type": "string",
+            "title": "Changes",
+            "default": ""
+          },
+          "verification": {
+            "type": "string",
+            "title": "Verification",
+            "default": ""
+          },
+          "tests": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tests",
+            "default": []
+          },
+          "commands": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Commands",
+            "default": []
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "commits": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Commits",
+            "default": []
+          },
+          "pr_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Url"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "default": ""
+          },
+          "notes": {
+            "type": "string",
+            "title": "Notes",
+            "default": ""
+          },
+          "completed_at": {
+            "type": "number",
+            "title": "Completed At",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "task_id",
+          "outcome"
+        ],
+        "title": "TaskCompletionDetail"
+      },
+      "TaskControlResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "status"
+        ],
+        "title": "TaskControlResponse"
       },
       "TaskDepsRequest": {
         "properties": {
@@ -29351,6 +29996,17 @@
             ],
             "title": "Profile Id"
           },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
           "auto_approve_plan": {
             "type": "boolean",
             "title": "Auto Approve Plan",
@@ -29429,6 +30085,16 @@
               }
             ],
             "title": "Children"
+          },
+          "completion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskCompletionDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -29618,7 +30284,7 @@
               }
             ],
             "title": "Intelligence Class",
-            "description": "Intelligence class id (e.g. 'fast', 'standard', 'deep') from vault/intelligence-classes/. Overrides the profile's model at session launch. Optional."
+            "description": "Intelligence class id (e.g. 'fast-low', 'standard-medium', 'deep-high') from vault/intelligence-classes/. Requires a matching worker at launch. Omit to preserve the task's existing class or profile default."
           },
           "workspace_id": {
             "anyOf": [
@@ -29803,6 +30469,248 @@
         ],
         "title": "TaskSetRequest"
       },
+      "TaskSetResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 0
+          },
+          "assigned_agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigned Agent"
+          },
+          "retry_count": {
+            "type": "integer",
+            "title": "Retry Count",
+            "default": 0
+          },
+          "max_retries": {
+            "type": "integer",
+            "title": "Max Retries",
+            "default": 3
+          },
+          "requires_approval": {
+            "type": "boolean",
+            "title": "Requires Approval",
+            "default": false
+          },
+          "is_blocked": {
+            "type": "boolean",
+            "title": "Is Blocked",
+            "default": false
+          },
+          "is_plan_subtask": {
+            "type": "boolean",
+            "title": "Is Plan Subtask",
+            "default": false
+          },
+          "task_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Type"
+          },
+          "parent_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Task Id"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "auto_approve_plan": {
+            "type": "boolean",
+            "title": "Auto Approve Plan",
+            "default": false
+          },
+          "skip_verification": {
+            "type": "boolean",
+            "title": "Skip Verification",
+            "default": false
+          },
+          "pr_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Url"
+          },
+          "depends_on": {
+            "items": {
+              "$ref": "#/components/schemas/TaskRef"
+            },
+            "type": "array",
+            "title": "Depends On",
+            "default": []
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskRef"
+            },
+            "type": "array",
+            "title": "Blocks",
+            "default": []
+          },
+          "subtasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskRef"
+            },
+            "type": "array",
+            "title": "Subtasks",
+            "default": []
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At",
+            "default": 0.0
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At",
+            "default": 0.0
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "children": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Children"
+          },
+          "completion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskCompletionDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "context": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Context",
+            "default": []
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Labels",
+            "default": []
+          },
+          "claimed_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimedBy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fields_changed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Fields Changed",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "title"
+        ],
+        "title": "TaskSetResponse"
+      },
       "TaskShowRequest": {
         "properties": {
           "task_id": {
@@ -29915,6 +30823,17 @@
             ],
             "title": "Profile Id"
           },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
           "auto_approve_plan": {
             "type": "boolean",
             "title": "Auto Approve Plan",
@@ -29993,6 +30912,16 @@
               }
             ],
             "title": "Children"
+          },
+          "completion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskCompletionDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "context": {
             "items": {
@@ -30813,519 +31742,6 @@
         },
         "type": "object",
         "title": "WriteNoteResponse"
-      },
-      "AgentWaitingQuestion": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "question": {
-            "type": "string",
-            "title": "Question"
-          },
-          "state": {
-            "type": "string",
-            "title": "State"
-          },
-          "requires_human": {
-            "type": "boolean",
-            "title": "Requires Human"
-          },
-          "created_at": {
-            "type": "number",
-            "title": "Created At"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "question",
-          "state",
-          "requires_human",
-          "created_at"
-        ],
-        "title": "AgentWaitingQuestion"
-      },
-      "QuestionListRequest": {
-        "properties": {
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id",
-            "description": ""
-          }
-        },
-        "type": "object",
-        "title": "QuestionListRequest"
-      },
-      "QuestionAnswerRequest": {
-        "properties": {
-          "question_id": {
-            "type": "string",
-            "title": "Question Id",
-            "description": ""
-          },
-          "body": {
-            "type": "string",
-            "title": "Body",
-            "description": ""
-          }
-        },
-        "type": "object",
-        "required": [
-          "question_id",
-          "body"
-        ],
-        "title": "QuestionAnswerRequest"
-      },
-      "QuestionEscalateRequest": {
-        "properties": {
-          "question_id": {
-            "type": "string",
-            "title": "Question Id",
-            "description": ""
-          },
-          "reason": {
-            "type": "string",
-            "title": "Reason",
-            "description": ""
-          }
-        },
-        "type": "object",
-        "required": [
-          "question_id",
-          "reason"
-        ],
-        "title": "QuestionEscalateRequest"
-      },
-      "TaskComment": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "task_id": {
-            "type": "string",
-            "title": "Task Id"
-          },
-          "body": {
-            "type": "string",
-            "title": "Body"
-          },
-          "author_kind": {
-            "type": "string",
-            "enum": [
-              "user",
-              "agent",
-              "supervisor"
-            ],
-            "title": "Author Kind"
-          },
-          "author_id": {
-            "type": "string",
-            "title": "Author Id"
-          },
-          "created_at": {
-            "type": "number",
-            "title": "Created At"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "task_id",
-          "body",
-          "author_kind",
-          "author_id",
-          "created_at"
-        ],
-        "title": "TaskComment"
-      },
-      "TaskCommentRequest": {
-        "properties": {
-          "task_id": {
-            "type": "string",
-            "title": "Task Id",
-            "description": "Task id to comment on."
-          },
-          "body": {
-            "type": "string",
-            "title": "Body",
-            "description": "Comment text (not blank; at most 16000 characters)."
-          },
-          "claim_epoch": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Claim Epoch",
-            "description": "Current claim epoch; required for pool workers."
-          }
-        },
-        "type": "object",
-        "required": [
-          "task_id",
-          "body"
-        ],
-        "title": "TaskCommentRequest"
-      },
-      "TaskCommentResponse": {
-        "properties": {
-          "comment": {
-            "$ref": "#/components/schemas/TaskComment"
-          }
-        },
-        "type": "object",
-        "required": [
-          "comment"
-        ],
-        "title": "TaskCommentResponse"
-      },
-      "TaskCommentsRequest": {
-        "properties": {
-          "task_id": {
-            "type": "string",
-            "title": "Task Id",
-            "description": "Task id to read."
-          },
-          "limit": {
-            "type": "integer",
-            "title": "Limit",
-            "description": "Page size (1..200).",
-            "default": 50
-          },
-          "offset": {
-            "type": "integer",
-            "title": "Offset",
-            "description": "Number of newest comments to skip.",
-            "default": 0
-          }
-        },
-        "type": "object",
-        "required": [
-          "task_id"
-        ],
-        "title": "TaskCommentsRequest"
-      },
-      "TaskCommentsResponse": {
-        "properties": {
-          "comments": {
-            "items": {
-              "$ref": "#/components/schemas/TaskComment"
-            },
-            "type": "array",
-            "title": "Comments",
-            "default": []
-          },
-          "total": {
-            "type": "integer",
-            "title": "Total"
-          },
-          "limit": {
-            "type": "integer",
-            "title": "Limit"
-          },
-          "offset": {
-            "type": "integer",
-            "title": "Offset"
-          }
-        },
-        "type": "object",
-        "required": [
-          "total",
-          "limit",
-          "offset"
-        ],
-        "title": "TaskCommentsResponse"
-      },
-      "TaskSetResponse": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "project_id": {
-            "type": "string",
-            "title": "Project Id"
-          },
-          "title": {
-            "type": "string",
-            "title": "Title"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description",
-            "default": ""
-          },
-          "status": {
-            "type": "string",
-            "title": "Status",
-            "default": ""
-          },
-          "priority": {
-            "type": "integer",
-            "title": "Priority",
-            "default": 0
-          },
-          "assigned_agent": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Assigned Agent"
-          },
-          "retry_count": {
-            "type": "integer",
-            "title": "Retry Count",
-            "default": 0
-          },
-          "max_retries": {
-            "type": "integer",
-            "title": "Max Retries",
-            "default": 3
-          },
-          "requires_approval": {
-            "type": "boolean",
-            "title": "Requires Approval",
-            "default": false
-          },
-          "is_blocked": {
-            "type": "boolean",
-            "title": "Is Blocked",
-            "default": false
-          },
-          "is_plan_subtask": {
-            "type": "boolean",
-            "title": "Is Plan Subtask",
-            "default": false
-          },
-          "task_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Type"
-          },
-          "parent_task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Parent Task Id"
-          },
-          "profile_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Profile Id"
-          },
-          "intelligence_class": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Intelligence Class"
-          },
-          "auto_approve_plan": {
-            "type": "boolean",
-            "title": "Auto Approve Plan",
-            "default": false
-          },
-          "skip_verification": {
-            "type": "boolean",
-            "title": "Skip Verification",
-            "default": false
-          },
-          "pr_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pr Url"
-          },
-          "depends_on": {
-            "items": {
-              "$ref": "#/components/schemas/TaskRef"
-            },
-            "type": "array",
-            "title": "Depends On",
-            "default": []
-          },
-          "blocks": {
-            "items": {
-              "$ref": "#/components/schemas/TaskRef"
-            },
-            "type": "array",
-            "title": "Blocks",
-            "default": []
-          },
-          "subtasks": {
-            "items": {
-              "$ref": "#/components/schemas/TaskRef"
-            },
-            "type": "array",
-            "title": "Subtasks",
-            "default": []
-          },
-          "created_at": {
-            "type": "number",
-            "title": "Created At",
-            "default": 0.0
-          },
-          "updated_at": {
-            "type": "number",
-            "title": "Updated At",
-            "default": 0.0
-          },
-          "parent": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Parent"
-          },
-          "children": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Children"
-          },
-          "context": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Context",
-            "default": []
-          },
-          "labels": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Labels",
-            "default": []
-          },
-          "claimed_by": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ClaimedBy"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "fields_changed": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Fields Changed",
-            "default": []
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "project_id",
-          "title"
-        ],
-        "title": "TaskSetResponse"
-      },
-      "PauseTaskRequest": {
-        "properties": {
-          "task_id": {
-            "type": "string",
-            "title": "Task Id",
-            "description": "Task ID to pause"
-          }
-        },
-        "type": "object",
-        "required": [
-          "task_id"
-        ],
-        "title": "PauseTaskRequest"
-      },
-      "ResumeTaskRequest": {
-        "properties": {
-          "task_id": {
-            "type": "string",
-            "title": "Task Id",
-            "description": "Task ID to resume"
-          }
-        },
-        "type": "object",
-        "required": [
-          "task_id"
-        ],
-        "title": "ResumeTaskRequest"
-      },
-      "TaskControlResponse": {
-        "properties": {
-          "task_id": {
-            "type": "string",
-            "title": "Task Id"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          }
-        },
-        "type": "object",
-        "required": [
-          "task_id",
-          "status"
-        ],
-        "title": "TaskControlResponse"
       }
     }
   }

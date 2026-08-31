@@ -724,3 +724,16 @@ async def test_question_observation_failure_preserves_native_activity_and_stream
     await watcher.tick()
     assert len(await env.db.list_agent_questions()) == 1
     assert len(streams) == 1
+
+
+async def test_question_response_models_preserve_durable_delivery_fields(env):
+    from src.api.models.agent import AgentQuestionDetail, QuestionListResponse
+
+    svc, question = await capture(env)
+    envelope = {"questions": [question], "count": 1}
+    assert QuestionListResponse.model_validate(envelope).model_dump() == envelope
+    escalated = await svc.escalate(question["id"], "Human decision needed")
+    assert AgentQuestionDetail.model_validate(escalated).model_dump() == escalated
+    answered = await svc.answer(question["id"], "Use staging", actor="local", human=True)
+    assert answered["state"] == "delivered"
+    assert AgentQuestionDetail.model_validate(answered).model_dump() == answered

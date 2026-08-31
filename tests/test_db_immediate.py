@@ -81,3 +81,28 @@ async def test_immediate_survives_concurrent_plain_writers(db):
         assert imm is not None and imm.title == f"touched-{i}"
         plain = await db.get_task(f"plain-{i}")
         assert plain is not None and plain.status == TaskStatus.IN_PROGRESS
+
+
+async def test_immediate_rolls_back_every_write_after_exception(db):
+    with pytest.raises(RuntimeError, match="rollback"):
+        async with db.immediate() as conn:
+            await conn.execute(
+                text("INSERT INTO projects (id, name, created_at) VALUES ('rolled-back', 'r', 0)")
+            )
+            raise RuntimeError("rollback")
+    assert await db.get_project("rolled-back") is None
+
+
+async def test_file_sqlite_adapters_serialize_immediate_writers_without_cross_commit(tmp_path):
+    first = Database(str(tmp_path / "shared.db"))
+    second = Database(str(tmp_path / "shared.db"))
+    await first.initialize()
+    await second.initialize()
+    try:
+        await first.create_project(Project(id="shared", name="shared"))
+        async with first.immediate() as conn:
+            await conn.execute(text("UPDATE projects SET name = 'first' WHERE id = 'shared'"))
+        assert (await second.get_project("shared")).name == "first"
+    finally:
+        await first.close()
+        await second.close()

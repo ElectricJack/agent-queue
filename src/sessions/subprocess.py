@@ -73,9 +73,7 @@ class SubprocessProvider(SessionProvider):
     # -- paths -------------------------------------------------------------
 
     def _state_dir(self, name: str) -> Path:
-        data_dir = getattr(self.config, "data_dir", None) or os.path.expanduser(
-            "~/.agent-queue"
-        )
+        data_dir = getattr(self.config, "data_dir", None) or os.path.expanduser("~/.agent-queue")
         return Path(data_dir) / "sessions" / name
 
     # -- lifecycle ---------------------------------------------------------
@@ -141,6 +139,11 @@ class SubprocessProvider(SessionProvider):
         if delay:
             await asyncio.sleep(delay)
         if proc.returncode is not None:
+            # The entry was installed before the readiness check so callers
+            # could use the normal handle machinery on success.  A process
+            # that dies during that window was never started successfully;
+            # remove its private state before exposing the startup error.
+            self._sessions.pop(spec.session_name, None)
             raise SessionDiedDuringStartup(
                 spec.session_name,
                 start_stderr_path=str(log_path),

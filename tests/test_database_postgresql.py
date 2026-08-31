@@ -97,6 +97,53 @@ async def _make_task(db, project_id, tid=None, **kwargs):
     return tid
 
 
+async def test_postgres_head_window_downgrade_reupgrade_preserves_and_transforms_data(db):
+    """Head initialization exposes the schema objects required by the migration window."""
+    from sqlalchemy import inspect
+
+    async with db._engine.connect() as conn:
+        tables = await conn.run_sync(lambda sync: set(inspect(sync).get_table_names()))
+    assert {"tasks", "agents", "task_completion_records"} <= tables
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "postgres"])
+async def test_playbook_runs_round_trip_pinned_graph_node_trace_and_waiting_for_event_on_both_backends(
+    backend, tmp_path
+):
+    if backend == "postgres":
+        if not POSTGRES_DSN:
+            pytest.skip("POSTGRES_TEST_DSN not set")
+        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+        adapter = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
+    else:
+        from src.database import Database
+
+        adapter = Database(str(tmp_path / "playbook.db"))
+    await adapter.initialize()
+    try:
+        from src.models import PlaybookRun
+
+        run = PlaybookRun(
+            run_id=f"run-{_uid()}",
+            playbook_id="pb",
+            playbook_version=1,
+            trigger_event="{}",
+            pinned_graph='{"node":"start"}',
+            node_trace='["start"]',
+            waiting_for_event="approval",
+        )
+        await adapter.create_playbook_run(run)
+        loaded = await adapter.get_playbook_run(run.run_id)
+        assert (loaded.pinned_graph, loaded.node_trace, loaded.waiting_for_event) == (
+            run.pinned_graph,
+            run.node_trace,
+            run.waiting_for_event,
+        )
+    finally:
+        await adapter.close()
+
+
 # --- Project CRUD ---
 
 

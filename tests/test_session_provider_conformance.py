@@ -34,6 +34,7 @@ from src.sessions.provider import (
     NotSubmitted,
     PartialListError,
     SessionHandle,
+    SessionDiedDuringStartup,
     SessionSpec,
 )
 from src.sessions.subprocess import SubprocessProvider
@@ -117,6 +118,61 @@ def _spec(case, tmp_path, name="s-t1", token="tok-1") -> SessionSpec:
     )
 
 
+class TestSubprocessFailures:
+    async def test_early_exit_raises_startup_error_with_log_path(self, tmp_path):
+        """A failed readiness check must not leave an addressable handle."""
+
+        class _Cfg:
+            data_dir = str(tmp_path / "state")
+
+        provider = SubprocessProvider(config=_Cfg())
+        spec = SessionSpec(
+            session_name="s-early-exit",
+            work_dir=str(tmp_path / "work"),
+            command=(sys.executable, "-c", "import sys; print('failed'); sys.exit(7)"),
+            env={},
+            prompt=None,
+            prompt_mode="none",
+            ready_delay_ms=100,
+            instance_token="early-token",
+        )
+
+        with pytest.raises(SessionDiedDuringStartup) as caught:
+            await provider.start(spec)
+
+        assert caught.value.start_stderr_path
+        assert "failed" in open(caught.value.start_stderr_path, encoding="utf-8").read()
+        assert await provider.list_running("s-") == []
+        # list_running filters dead children, but retaining the entry still
+        # leaks per-session metadata until some unrelated cleanup occurs.
+        assert provider._sessions == {}
+
+    async def test_hook_file_path_escape_is_refused(self, tmp_path):
+        class _Cfg:
+            data_dir = str(tmp_path / "state")
+
+        provider = SubprocessProvider(config=_Cfg())
+        work_dir = tmp_path / "work"
+        outside = tmp_path / "escape"
+        spec = SessionSpec(
+            session_name="s-hooks",
+            work_dir=str(work_dir),
+            command=_python_sleeper(),
+            env={},
+            prompt=None,
+            prompt_mode="none",
+            files=((".aq/hooks/in-tree.json", "{}"), ("../escape", "bad")),
+            instance_token="hook-token",
+        )
+
+        handle = await provider.start(spec)
+        try:
+            assert (work_dir / ".aq/hooks/in-tree.json").read_text() == "{}"
+            assert not outside.exists()
+        finally:
+            await provider.stop(handle)
+
+
 class TestLifecycle:
     async def test_start_returns_a_handle_carrying_the_instance_token(
         self, provider, case, tmp_path
@@ -146,9 +202,7 @@ class TestLifecycle:
         finally:
             await provider.stop(live)
 
-    async def test_interrupt_does_not_raise_on_a_live_session(
-        self, provider, case, tmp_path
-    ):
+    async def test_interrupt_does_not_raise_on_a_live_session(self, provider, case, tmp_path):
         handle = await provider.start(_spec(case, tmp_path))
         try:
             await provider.interrupt(handle)

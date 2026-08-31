@@ -994,9 +994,7 @@ class TestRoadmap5310:
         bus = _make_event_bus()
         manager = _make_playbook_manager(["timer.30m"])
         state = str(tmp_path / "timer_state.json")
-        service = TimerService(
-            event_bus=bus, playbook_manager=manager, state_path=state
-        )
+        service = TimerService(event_bus=bus, playbook_manager=manager, state_path=state)
 
         service.start()
         # Force the interval to elapse so there is a fire time to persist.
@@ -1022,9 +1020,7 @@ class TestRoadmap5310:
         bus = _make_event_bus()
         manager = _make_playbook_manager(["timer.1m"])
         state = str(tmp_path / "timer_state.json")
-        service = TimerService(
-            event_bus=bus, playbook_manager=manager, state_path=state
-        )
+        service = TimerService(event_bus=bus, playbook_manager=manager, state_path=state)
 
         service.start()
         assert await service.tick() == 0  # nothing fires on boot
@@ -1073,6 +1069,59 @@ class TestNoFireOnStartup:
         assert await service.tick() == 0
         service._last_fire["timer.1m"] = time.monotonic() - 61
         assert await service.tick() == 1
+
+
+class TestStatePersistenceFailureModes:
+    def test_load_state_ignores_bad_entries_and_clamps_future_wall_clock(self, tmp_path):
+        import datetime as dt
+        import json
+
+        state = tmp_path / "timer_state.json"
+        state.write_text(
+            json.dumps(
+                {
+                    "cron_last_fired_date": {
+                        "cron.07:00": "2026-08-30",
+                        "cron.08:00": "bad",
+                        "cron.09:00": None,
+                    },
+                    "interval_last_fire": {"timer.30m": time.time() + 3600, "timer.1h": "bad"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        service = TimerService(
+            event_bus=_make_event_bus(),
+            playbook_manager=_make_playbook_manager(
+                ["cron.07:00", "cron.08:00", "cron.09:00", "timer.30m", "timer.1h"]
+            ),
+            state_path=str(state),
+        )
+        service.start()
+        assert service._cron_last_fired_date == {"cron.07:00": dt.date(2026, 8, 30)}
+        assert service.time_until_next("timer.30m") == pytest.approx(1800.0, abs=5.0)
+        assert service.time_until_next("timer.1h") == pytest.approx(3600.0, abs=5.0)
+
+    @pytest.mark.asyncio
+    async def test_tick_survives_atomic_state_save_oserror_after_timer_emit(self, tmp_path, caplog):
+        state = tmp_path / "nested" / "timer_state.json"
+        bus = _make_event_bus()
+        service = TimerService(
+            event_bus=bus,
+            playbook_manager=_make_playbook_manager(["timer.1m"]),
+            state_path=str(state),
+        )
+        service.start()
+        service._last_fire["timer.1m"] = time.monotonic() - 61
+        with caplog.at_level("WARNING", logger="src.timer_service"):
+            with patch("src.timer_service.os.replace", side_effect=OSError(28, "no space")):
+                assert await service.tick() == 1
+        bus.emit.assert_awaited_once()
+        assert any("could not save cron state" in record.getMessage() for record in caplog.records)
+        assert not state.exists()
+        bus.reset_mock()
+        assert await service.tick() == 0
+        bus.emit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_restart_resumes_schedule_instead_of_resetting_it(self, tmp_path):

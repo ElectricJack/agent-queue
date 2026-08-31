@@ -47,6 +47,7 @@ See ``docs/specs/design/vault.md`` Section 4 for the stub format specification.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -1008,6 +1009,12 @@ class ReferenceStubEnricher:
     def _update_stub_file(self, stub_path: str, sections: dict[str, str]) -> bool:
         """Read an existing stub, update its sections, and write it back.
 
+        The rewrite is atomic — the new content is written to a sibling temp
+        file and then ``os.replace``d over the stub — so a write error never
+        leaves a truncated or empty reference document behind.  Enrichment
+        costs an LLM call; losing the previous stub on top of losing the new
+        one is the worst possible outcome.
+
         Returns ``True`` if the file was updated, ``False`` if the stub
         file does not exist.
         """
@@ -1022,7 +1029,16 @@ class ReferenceStubEnricher:
 
         updated = update_stub_content(existing, sections)
 
-        with open(stub_path, "w", encoding="utf-8") as f:
-            f.write(updated)
+        tmp_path = f"{stub_path}.{os.getpid()}.tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(updated)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, stub_path)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.remove(tmp_path)
+            raise
 
         return True

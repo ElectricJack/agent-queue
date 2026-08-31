@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from src.aq_uri import AqUriError, is_aq_uri, rewrite_aq_uris
+from src.aq_uri import AqUriError, allowed_roots, is_aq_uri, path_is_within, rewrite_aq_uris
 
 
 @dataclass
@@ -85,13 +85,10 @@ def test_rewrite_preserves_runtime_placeholders(config: FakeConfig):
 
 
 def test_rewrite_handles_multiple_uris(config: FakeConfig):
-    text = (
-        'read_file(path="aq://vault/a.md")\n'
-        'render_prompt(path="aq://prompts/b.md")'
-    )
+    text = 'read_file(path="aq://vault/a.md")\nrender_prompt(path="aq://prompts/b.md")'
     out = rewrite_aq_uris(text, config=config)
     assert "aq://" not in out
-    assert f'{config.vault_root}/a.md' in out
+    assert f"{config.vault_root}/a.md" in out
 
 
 def test_rewrite_leaves_non_uri_text_alone(config: FakeConfig):
@@ -119,6 +116,23 @@ def test_rewrite_rejects_workspace_authority(config: FakeConfig):
 def test_rewrite_rejects_traversal(config: FakeConfig):
     with pytest.raises(AqUriError, match="rejects '..'"):
         rewrite_aq_uris("aq://vault/../etc/passwd", config=config)
+
+
+def test_rewrite_rejects_backslash_parent_segments_and_consumer_checks_allowed_roots(
+    config: FakeConfig, tmp_path: Path
+):
+    """Backslash traversal and symlink escape must not be accepted as vault paths."""
+    with pytest.raises(AqUriError, match="rejects '..'"):
+        rewrite_aq_uris(r"aq://vault/safe\\..\\outside", config=config)
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    escape = vault / "escape"
+    escape.symlink_to(outside, target_is_directory=True)
+    assert not path_is_within(escape / "secret.txt", vault)
+    assert path_is_within(vault / "safe.txt", allowed_roots(config)[1])
 
 
 # ---------------------------------------------------------------------------

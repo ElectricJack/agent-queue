@@ -281,6 +281,10 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
 )
 @click.option("--commit", default=None, help="Commit SHA (optional).")
 @click.option("--notes", default=None, help="Closing notes (optional).")
+@click.option("--changes", default=None, help="What changed while completing the task.")
+@click.option("--verification", default=None, help="How the work was verified.")
+@click.option("--test", "tests", multiple=True, help="Test command run; repeatable.")
+@click.option("--command", "commands", multiple=True, help="Other command run; repeatable.")
 @click.option("--abandon-children", is_flag=True, help="Abandon open child tasks.")
 @click.option(
     "--claim-next",
@@ -303,6 +307,10 @@ def task_close(
     work_outcome,
     commit,
     notes,
+    changes,
+    verification,
+    tests,
+    commands,
     abandon_children,
     claim_next,
     wait,
@@ -331,6 +339,14 @@ def task_close(
         args["commit"] = commit
     if notes:
         args["notes"] = notes
+    if changes:
+        args["changes"] = changes
+    if verification:
+        args["verification"] = verification
+    if tests:
+        args["tests"] = list(tests)
+    if commands:
+        args["commands"] = list(commands)
     if abandon_children:
         args["abandon_children"] = True
     if claim_next:

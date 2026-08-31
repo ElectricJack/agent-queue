@@ -30,6 +30,12 @@ class _FakeRuntime(Runtime):
         return False
 
 
+class _ConfigAwareRuntime(_FakeRuntime):
+    def __init__(self, profile=None, llm_logger=None, config=None):
+        super().__init__(profile, llm_logger)
+        self.config = config
+
+
 class TestRuntimeRegistry:
     def test_empty_registry_unknown_returns_none(self):
         reg = RuntimeRegistry(runtimes={})
@@ -55,9 +61,29 @@ class TestRuntimeRegistry:
         with pytest.raises(ValueError, match="Unknown runtime"):
             reg.create("nope", profile=None)
 
+    def test_singleton_is_returned_and_listed_without_construction(self):
+        singleton = _FakeRuntime()
+        reg = RuntimeRegistry(runtimes={}, singletons={"shared": singleton})
+
+        assert reg.names() == ["shared"]
+        assert reg.create("shared", profile="ignored", llm_logger="ignored") is singleton
+
+    def test_create_passes_registry_config_only_to_runtime_that_declares_it(self):
+        config = object()
+        reg = RuntimeRegistry(runtimes={"aware": _ConfigAwareRuntime}, config=config)
+
+        runtime = reg.create("aware", profile="profile", llm_logger="logger")
+
+        assert runtime.profile == "profile"
+        assert runtime.llm_logger == "logger"
+        assert runtime.config is config
+
 
 def test_default_registry_is_empty():
     """No in-tree runtimes: every agent runs as a tmux session."""
     from src.runtimes import default_registry
 
-    assert default_registry().names() == []
+    config = object()
+    registry = default_registry(config=config)
+    assert registry.names() == []
+    assert registry._config is config

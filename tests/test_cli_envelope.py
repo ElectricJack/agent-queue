@@ -464,6 +464,52 @@ class TestTaskShowSetListDetailsCLI:
         assert "Test task" in result.output
         assert "urgent" in result.output
 
+    def test_show_human_mode_renders_completion_story(self, runner):
+        """Human task detail must make the durable completion account visible."""
+        from src.cli.app import cli
+
+        mock = _mock_client(
+            {
+                "task_show": {
+                    "id": "task-1",
+                    "project_id": "proj",
+                    "title": "Completed task",
+                    "status": "COMPLETED",
+                    "priority": 100,
+                    "description": "d",
+                    "depends_on": [],
+                    "blocks": [],
+                    "context": [],
+                    "labels": [],
+                    "completion": {
+                        "outcome": "pass",
+                        "work_outcome": "shipped",
+                        "changes": "Added durable completion records.",
+                        "verification": "Focused tests passed.",
+                        "tests": ["pytest tests/test_surface_commands.py -q"],
+                        "commands": ["ruff check src tests"],
+                        "branch": "feature/completion",
+                        "commits": ["abc123"],
+                        "summary": "Completion story stored.",
+                        "notes": "Ready for review.",
+                        "completed_at": 1234.5,
+                    },
+                }
+            }
+        )
+
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["task", "show", "task-1"])
+
+        assert result.exit_code == 0, result.output
+        assert "Completion" in result.output
+        assert "Added durable completion records." in result.output
+        assert "Focused tests passed." in result.output
+        assert "pytest tests/test_surface_commands.py -q" in result.output
+        assert "ruff check src tests" in result.output
+        assert "abc123" in result.output
+        assert "Ready for review." in result.output
+
     def test_details_is_an_alias_of_show(self, runner):
         from src.cli.app import cli
 

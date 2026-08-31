@@ -8,7 +8,7 @@ import pytest
 
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
-from src.models import Project, Task, TaskStatus
+from src.models import Project, Task, TaskCompletion, TaskStatus
 
 PROJECT_ID = "proj"
 
@@ -60,10 +60,14 @@ class TestDelete:
 
     async def test_cascade_deletes_subtree(self, db):
         await tree(db)
+        await db.save_task_completion(
+            TaskCompletion(id="close-1", task_id="c1", outcome="pass", completed_at=1.0)
+        )
         await db.delete_task("p", cascade=True)
         assert await db.get_task("p") is None
         assert await db.get_task("c1") is None
         assert await db.get_task("c2") is None
+        assert await db.get_task_completion("c1") is None
 
     async def test_deleting_last_child_settles_container(self, db):
         await tree(db, statuses=("IN_PROGRESS", "COMPLETED", "READY"))
@@ -85,6 +89,23 @@ class TestArchive:
             assert await db.get_task(tid) is None
             assert (await db.get_archived_task(tid)) is not None
         assert (await db.get_archived_task("c1"))["parent_task_id"] == "p"
+
+    async def test_completion_story_survives_archive(self, db):
+        await mktask(db, "done", status=TaskStatus.COMPLETED)
+        await db.save_task_completion(
+            TaskCompletion(
+                id="close-1",
+                task_id="done",
+                outcome="pass",
+                summary="Shipped with tests.",
+                completed_at=1234.5,
+            )
+        )
+
+        assert await db.archive_task("done") is True
+        archived_completion = await db.get_task_completion("done")
+        assert archived_completion is not None
+        assert archived_completion.summary == "Shipped with tests."
 
     async def test_sweep_selects_only_terminal_subtree_roots(self, db):
         await tree(db, statuses=("COMPLETED", "COMPLETED", "READY"))

@@ -323,10 +323,15 @@ class TestBuilders:
 
     def test_build_agent_summary_preserves_global_identity_and_settings(self):
         agent = Agent(
-            id="worker-a", name="Ada", profile_id="coder",
-            state=AgentState.BUSY, current_task_id="task-a",
-            harness="codex", model="configured-next-model",
-            intelligence_class="deep", enabled=False,
+            id="worker-a",
+            name="Ada",
+            profile_id="coder",
+            state=AgentState.BUSY,
+            current_task_id="task-a",
+            harness="codex",
+            model="configured-next-model",
+            intelligence_class="deep",
+            enabled=False,
         )
         summary = build_agent_summary(agent)
         assert summary.id == "worker-a"
@@ -427,6 +432,27 @@ def _make_mock_bot():
 
 class TestDiscordNotificationHandler:
     """DiscordNotificationHandler event routing and thread management."""
+
+    @pytest.mark.asyncio
+    async def test_deleted_thread_lookup_caches_negative_result(self):
+        """A deleted task thread is looked up once, then stays negatively cached."""
+        from src.discord.notification_handler import DiscordNotificationHandler
+
+        bus = EventBus()
+        bot = _make_mock_bot()
+        bot.thread_callbacks_for_task = AsyncMock(return_value=None)
+        handler = DiscordNotificationHandler(bot, bus)
+        payload = TaskMessageEvent(
+            task_id="deleted-thread", message="first", message_type="agent_output"
+        ).model_dump(mode="json")
+
+        await handler._on_task_message(payload)
+        payload["message"] = "second"
+        await handler._on_task_message(payload)
+
+        assert bot.thread_callbacks_for_task.await_count == 1
+        bot._send_message.assert_not_called()
+        handler.shutdown()
 
     @pytest.mark.asyncio
     async def test_task_started_sends_message(self):
@@ -642,7 +668,9 @@ class TestDiscordNotificationHandler:
         handler = DiscordNotificationHandler(bot, bus)
 
         event = TaskMessageEvent(
-            task_id="t1", message="status update", project_id="proj",
+            task_id="t1",
+            message="status update",
+            project_id="proj",
             message_type="status",
         )
         await bus.emit("notify.task_message", event.model_dump(mode="json"))

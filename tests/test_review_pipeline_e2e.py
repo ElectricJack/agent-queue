@@ -69,7 +69,7 @@ def orchestrator_factory(tmp_path):
             return (pr, True)
         o._run_completion_pipeline = _noop_pipeline
         # Resource-release cleanup touches workspaces we never created.
-        async def _noop_release(task_id, *, agent_id=None, workspace_path=None):
+        async def _noop_release(task_id, *, agent_id=None, workspace_path=None, expect_claim_epoch=None):
             return None
         o.release_session_task_resources = _noop_release
         return o
@@ -139,7 +139,7 @@ async def test_full_review_chain_end_to_end(
 
     # Worker closes with a summary (Task 2).
     close_result = await _close_task(h, worker_task, summary="did the work")
-    assert close_result["success"], close_result
+    assert close_result.get("success"), close_result
     # Summary landed in task_metadata.
     meta_summary = await h.db.get_task_meta(worker_task, "summary")
     assert meta_summary == "did the work"

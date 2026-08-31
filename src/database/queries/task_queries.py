@@ -20,6 +20,7 @@ from src.database.tables import (
     sessions,
     task_context,
     task_comments,
+    task_completion_records,
     task_criteria,
     task_dependencies,
     task_gates,
@@ -1013,9 +1014,10 @@ class TaskQueryMixin:
         *,
         conn,
         preserve_comments: bool = False,
+        preserve_completion: bool = False,
         gate_resolution: str = "last waiter task deleted",
     ) -> None:
-        """Delete an active task and its FK references; archives retain comments.
+        """Delete an active task and its FK references; archives retain comments and completion history.
 
         Gates the task was waiting on are unhooked here too, and any gate
         left with no waiters at all is marked ``expired``. Without this the
@@ -1026,6 +1028,10 @@ class TaskQueryMixin:
         """
         await self._assert_pause_cleanup_complete(task_id, conn=conn)
         await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
+        if not preserve_completion:
+            await conn.execute(
+                delete(task_completion_records).where(task_completion_records.c.task_id == task_id)
+            )
         # token_ledger rows survive task deletion: the tokens were really
         # spent against the project's budget, so dropping them would
         # understate cost.  `delete_project` remains the bulk escape hatch

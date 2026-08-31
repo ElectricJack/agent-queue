@@ -98,6 +98,7 @@ def _is_pipeline_markdown(md: str) -> bool:
         return False
     return fm.get("kind") == "pipeline"
 
+
 if TYPE_CHECKING:
     from src.event_bus import EventBus
     from src.playbooks.store import CompiledPlaybookStore
@@ -530,9 +531,7 @@ class PlaybookManager:
                 json.dump(payload, fh)
             os.replace(tmp, self._cooldown_path)
         except OSError as exc:
-            logger.warning(
-                "Could not save playbook cooldowns to %s (%s)", self._cooldown_path, exc
-            )
+            logger.warning("Could not save playbook cooldowns to %s (%s)", self._cooldown_path, exc)
 
     def get_triggerable_playbooks(
         self, trigger: str, scope: str = "system"
@@ -1046,11 +1045,7 @@ class PlaybookManager:
 
         kept = []
         for pb in candidates:
-            if (
-                pb.kind == "pipeline"
-                and pb.scope == "system"
-                and pb.role in shadowed_roles
-            ):
+            if pb.kind == "pipeline" and pb.scope == "system" and pb.role in shadowed_roles:
                 logger.debug(
                     "Shadowing system pipeline '%s' (role=%r) — project pipeline takes precedence",
                     pb.id,
@@ -1613,9 +1608,7 @@ class PlaybookManager:
             len(compiled.nodes),
         )
 
-    async def compile_task_project_id(
-        self, scope: str, identifier: str | None
-    ) -> str | None:
+    async def compile_task_project_id(self, scope: str, identifier: str | None) -> str | None:
         """Pick the project to attach a playbook-compile task to.
 
         - ``project`` scope → the project id itself.
@@ -1636,7 +1629,9 @@ class PlaybookManager:
         except Exception:
             return None
         if projects:
-            return projects[0].id
+            # ``list_projects`` has no ordering contract across database
+            # backends; compiler tasks must attach deterministically.
+            return min(project.id for project in projects)
         return None
 
     async def compile_playbook_pipeline(

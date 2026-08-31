@@ -11,6 +11,7 @@ lands on real optional fields of :class:`CompiledPlaybook` and
 :class:`PlaybookNode` — no monkey-patches, no ``__dict__`` stashes — so the
 data round-trips cleanly through :class:`CompiledPlaybookStore`.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -45,9 +46,7 @@ PIPELINE_COMMAND_WHITELIST: frozenset[str] = frozenset(
 )
 
 
-def _err(
-    node: str | None, field: str | None, message: str
-) -> dict[str, Any]:
+def _err(node: str | None, field: str | None, message: str) -> dict[str, Any]:
     """Build a structured compile-error record."""
     return {"node": node, "field": field, "message": message}
 
@@ -94,9 +93,7 @@ def _extract_json(body: str) -> tuple[dict | None, dict[str, Any] | None]:
     try:
         return json.loads(m.group(1)), None
     except json.JSONDecodeError as exc:
-        return None, _err(
-            None, "body", f"Invalid JSON in body: {exc.msg} (line {exc.lineno})"
-        )
+        return None, _err(None, "body", f"Invalid JSON in body: {exc.msg} (line {exc.lineno})")
 
 
 def _validate_frontmatter(fm: dict) -> list[dict[str, Any]]:
@@ -108,7 +105,9 @@ def _validate_frontmatter(fm: dict) -> list[dict[str, Any]]:
     if not fm.get("id"):
         errs.append(_err(None, "id", "Frontmatter requires 'id'"))
     if not fm.get("scope"):
-        errs.append(_err(None, "scope", "Frontmatter requires 'scope' (system|project|agent-type:...)"))
+        errs.append(
+            _err(None, "scope", "Frontmatter requires 'scope' (system|project|agent-type:...)")
+        )
     triggers = fm.get("triggers")
     if not triggers or not isinstance(triggers, list):
         errs.append(_err(None, "triggers", "Frontmatter 'triggers' must be a non-empty list"))
@@ -145,8 +144,7 @@ def _validate_node(nid: str, node: Any) -> list[dict[str, Any]]:
             _err(
                 nid,
                 "command",
-                f"command '{cmd}' not in pipeline whitelist "
-                f"({sorted(PIPELINE_COMMAND_WHITELIST)})",
+                f"command '{cmd}' not in pipeline whitelist ({sorted(PIPELINE_COMMAND_WHITELIST)})",
             )
         )
     if "args" in node and not isinstance(node["args"], dict):
@@ -158,7 +156,9 @@ def _validate_node(nid: str, node: Any) -> list[dict[str, Any]]:
     fe = node.get("for_each")
     if fe is not None:
         if not isinstance(fe, dict) or "source" not in fe or "as" not in fe:
-            errs.append(_err(nid, "for_each", "'for_each' must be an object with 'source' and 'as'"))
+            errs.append(
+                _err(nid, "for_each", "'for_each' must be an object with 'source' and 'as'")
+            )
     out = node.get("output")
     if out is not None and (not isinstance(out, dict) or "as" not in out):
         errs.append(_err(nid, "output", "'output' must be an object with 'as'"))
@@ -186,9 +186,7 @@ def _reachable(nodes: dict[str, dict], entry_id: str) -> set[str]:
 
 def _reaches_terminal(nodes: dict[str, dict]) -> set[str]:
     """Reverse BFS from terminal nodes over on_success/on_failure edges."""
-    terminals = [
-        nid for nid, nd in nodes.items() if isinstance(nd, dict) and nd.get("terminal")
-    ]
+    terminals = [nid for nid, nd in nodes.items() if isinstance(nd, dict) and nd.get("terminal")]
     if not terminals:
         return set()
     reverse: dict[str, set[str]] = {nid: set() for nid in nodes}
@@ -220,6 +218,7 @@ def _normalize_nodes(nodes: dict, entry_id: str, prefix: str = "") -> dict[str, 
     This allows multiple rules to coexist in a single CompiledPlaybook without
     ID collisions.
     """
+
     def _remap(val: Any) -> Any:
         """Prefix a node reference if a prefix is active."""
         if prefix and isinstance(val, str):
@@ -258,9 +257,7 @@ def _validate_and_check_graph(nodes: dict, entry_id: str) -> list[dict[str, Any]
         for hop in ("on_success", "on_failure"):
             target = node.get(hop)
             if target and isinstance(target, str) and target not in nodes:
-                errs.append(
-                    _err(nid, hop, f"{hop} target '{target}' does not exist")
-                )
+                errs.append(_err(nid, hop, f"{hop} target '{target}' does not exist"))
     if not has_terminal:
         errs.append(_err(None, "nodes", "Pipeline must have at least one terminal node"))
 
@@ -415,8 +412,9 @@ def _validate_when(when: Any, rule_id: str) -> list[dict[str, Any]]:
         elif isinstance(clauses, list):
             for c in clauses:
                 errs.extend(_validate_when(c, rule_id))
+    comparator_keys = ("truthy", "not_null", "equals", "is_null")
     if "field" in when:
-        comparators = [k for k in ("truthy", "not_null", "equals", "is_null") if k in when]
+        comparators = [k for k in comparator_keys if k in when]
         if len(comparators) != 1:
             errs.append(
                 _err(
@@ -428,6 +426,8 @@ def _validate_when(when: Any, rule_id: str) -> list[dict[str, Any]]:
             )
         elif "is_null" in when and not isinstance(when["is_null"], bool):
             errs.append(_err(rule_id, "when.is_null", "'is_null' must be a boolean"))
+    elif any(key in when for key in comparator_keys):
+        errs.append(_err(rule_id, "when.field", "leaf 'when' clause requires a 'field'"))
     return errs
 
 

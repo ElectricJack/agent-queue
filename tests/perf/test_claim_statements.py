@@ -182,8 +182,11 @@ class TestClaimStatementBudgets:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
         dialect = any_db._engine.dialect.name
-        # M10: tightened from 20/18 to the achieved 14 plus a small margin.
-        budget = 16 if dialect == "sqlite" else 15
+        # The durable-worker eligibility guard (+1), pre-launch task/session
+        # revalidation (+2), activation claim fence (+1), and pause-checkpoint
+        # cleanup (+1) bring the measured SQLite path from 14 to 19. These
+        # protect a concurrent pause/reassignment; retain a bounded budget.
+        budget = 19 if dialect == "sqlite" else 17
         print(f"\ntask_claim happy path ({dialect}): {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 

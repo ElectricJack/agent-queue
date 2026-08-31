@@ -65,6 +65,66 @@ Every table is declared as a SQLAlchemy Core `Table` in `src/database/tables.py`
 
 > **This catalog is enforced.** `tests/test_docs_sync.py` compares the `### Table:` headings below against `src/database/tables.py` and fails when they drift, so a schema change lands with its doc row in the same commit (see `docs/specs/design/trust-and-ops.md` §6). `alembic_version` is the one deliberate exclusion.
 
+### Table: `agent_questions`
+
+Durable questions raised by worker turns. Session identity, instance token and claim epoch fence answers to the originating task attempt; human-only questions remain human-only. Notification retry and delivery-lease fields prevent repeated or stale delivery.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `session_id` | TEXT | NOT NULL |
+| `session_name` | TEXT | NOT NULL |
+| `instance_token` | TEXT | NOT NULL |
+| `task_id` | TEXT | NOT NULL |
+| `project_id` | TEXT | NOT NULL |
+| `agent_id` | TEXT | NOT NULL |
+| `turn_id` | TEXT | NOT NULL |
+| `claim_epoch` | INTEGER | NOT NULL |
+| `question` | TEXT | NOT NULL |
+| `requires_human` | BOOLEAN | NOT NULL |
+| `state` | TEXT | NOT NULL |
+| `answer` | TEXT | nullable |
+| `answered_by` | TEXT | nullable |
+| `created_at` | FLOAT | NOT NULL |
+| `updated_at` | FLOAT | NOT NULL |
+| `source_ts` | FLOAT | NOT NULL |
+| `discord_channel_id` | TEXT | nullable |
+| `discord_message_id` | TEXT | nullable |
+| `supervisor_routed_at` | FLOAT | nullable |
+| `notification_next_at` | FLOAT | NOT NULL DEFAULT 0 |
+| `notification_attempts` | INTEGER | NOT NULL DEFAULT 0 |
+| `delivery_token` | TEXT | nullable |
+| `delivery_lease_until` | FLOAT | nullable |
+| `delivered_at` | FLOAT | nullable |
+| `reason` | TEXT | nullable |
+
+Indexes: `idx_agent_questions_pending` (`state`, `created_at`), `idx_agent_questions_session` (`session_id`, `instance_token`).
+
+### Table: `message_discord_receipts`
+
+Records successful Discord delivery per AQ message. The message ID is the primary key so repeated event processing does not repost an acknowledged reply.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `message_id` | TEXT | PRIMARY KEY |
+| `discord_channel_id` | TEXT | nullable |
+| `discord_message_id` | TEXT | nullable |
+
+### Table: `task_comments`
+
+Append-only authored task feedback. The task ID is a logical reference so comments survive archiving and restoration; permanent task or project deletion removes them. Author identity comes from the authenticated request scope. Bodies must contain 1–16000 characters, and author_kind is user, agent or supervisor.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `task_id` | TEXT | NOT NULL |
+| `body` | TEXT | NOT NULL |
+| `author_kind` | TEXT | NOT NULL |
+| `author_id` | TEXT | NOT NULL |
+| `created_at` | FLOAT | NOT NULL |
+
+Indexes: `idx_task_comments_task_created` (`task_id`, `created_at`, `id`).
+
 ### Table: `projects`
 
 | Column | Type | Constraints | Notes |
@@ -612,6 +672,30 @@ One row per playbook execution. Playbooks replaced the removed `hooks` /
 | `pinned_graph` | TEXT | nullable | JSON of the compiled graph used by this run |
 | `paused_at` | REAL | nullable | Set when the run pauses on a human/event wait |
 | `waiting_for_event` | TEXT | nullable | Event type the run is waiting for |
+
+### Table: `task_completion_records`
+
+Append-only audit records for accepted task-close operations.  This deliberately
+uses a logical `task_id` reference rather than a foreign key, so completion
+history survives archival of the active task row.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Completion record identifier |
+| `task_id` | TEXT | NOT NULL | Logical task reference |
+| `outcome` | TEXT | NOT NULL | Close outcome |
+| `work_outcome` | TEXT | nullable | Work result classification |
+| `failure_class` | TEXT | nullable | Failure classification when applicable |
+| `changes` | TEXT | NOT NULL DEFAULT '' | Reported changes |
+| `verification` | TEXT | NOT NULL DEFAULT '' | Verification summary |
+| `tests` | TEXT | NOT NULL DEFAULT '[]' | JSON test list |
+| `commands` | TEXT | NOT NULL DEFAULT '[]' | JSON command list |
+| `branch` | TEXT | nullable | Source branch |
+| `commits` | TEXT | NOT NULL DEFAULT '[]' | JSON commit list |
+| `pr_url` | TEXT | nullable | Pull request URL |
+| `summary` | TEXT | NOT NULL DEFAULT '' | Human-readable close summary |
+| `notes` | TEXT | NOT NULL DEFAULT '' | Supplemental close notes |
+| `completed_at` | REAL | NOT NULL | Unix timestamp |
 
 ### Table: `workflows`
 

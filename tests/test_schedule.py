@@ -663,3 +663,15 @@ class TestDescribeScheduleExtended:
         desc = describe_schedule({"days_of_week": [0, 4]})
         assert "0" in desc
         assert "4" in desc
+
+
+class TestCronZeroStep:
+    def test_cron_zero_step_is_invalid_not_exception(self):
+        now = datetime(2026, 3, 23, 2, 0, tzinfo=timezone.utc)
+        assert matches_schedule({"cron": "*/2 * * * *"}, now) is True
+        assert matches_schedule({"cron": "*/0 * * * *"}, now) is False
+        assert matches_schedule({"cron": "* */0 * * *"}, now) is False
+        assert matches_schedule({"cron": "1-5/0 * * * *"}, now) is False
+        assert matches_schedule({"cron": "5,*/0 * * * *"}, now) is False
+        assert matches_schedule({"cron": "0,*/0 * * * *"}, now) is True
+        assert _cron_field_matches("*/-1", 0, 0, 59) is False

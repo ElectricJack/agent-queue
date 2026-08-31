@@ -37,3 +37,10 @@ docs/.obsidian
 # Per-workspace agent state: hook settings, worktree slots, sentinels.
 # Generated per checkout by the session runtime — never shared.
 /.aq/
+
+# Coverage output (pytest-cov / coverage.py). The `.coverage.<host>.<pid>.*`
+# form is what `-n auto` leaves behind, one per xdist worker.
+.coverage
+.coverage.*
+coverage.json
+htmlcov/

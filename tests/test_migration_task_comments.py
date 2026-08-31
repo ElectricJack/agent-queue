@@ -65,3 +65,26 @@ def test_comments_migration_preserves_notes_and_assignment(tmp_path, foreign_key
             assert conn.exec_driver_sql("PRAGMA foreign_key_check").fetchall() == []
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize("prior_revision, existing_table", [
+    ("7ac492b83fd1", "task_comments"),
+    ("c8f4a1d2e6b9", "task_completion_records"),
+])
+def test_merged_head_upgrades_from_either_deployed_branch(tmp_path, prior_revision, existing_table):
+    engine = sa.create_engine(f"sqlite:///{tmp_path / 'merged-migration.db'}")
+    try:
+        upgrade(engine, prior_revision)
+        with engine.begin() as conn:
+            if existing_table == "task_comments":
+                conn.execute(sa.text("INSERT INTO task_comments VALUES ('c','t','Finding','user','local',1)"))
+            else:
+                conn.execute(sa.text("INSERT INTO task_completion_records(id,task_id,outcome,completed_at) VALUES ('c','t','pass',1)"))
+        upgrade(engine, "head")
+        upgrade(engine, "head")
+        with engine.connect() as conn:
+            assert {"task_comments", "task_completion_records"} <= set(sa.inspect(conn).get_table_names())
+            assert conn.execute(sa.text(f"SELECT count(*) FROM {existing_table}")).scalar_one() == 1
+            assert conn.execute(sa.text("SELECT count(*) FROM alembic_version")).scalar_one() == 1
+    finally:
+        engine.dispose()

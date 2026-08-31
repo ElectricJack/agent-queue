@@ -345,19 +345,16 @@ class ContextMixin:
         extra = {item_var: item, "item": item}
         expr = expr.strip()
 
-        # Simple truthy: "item.findings"
-        if " " not in expr:
-            val = self._resolve_output_var(expr, extra)
-            return bool(val)
-
         # Comparison: "item.status == 'ACTIVE'"
         import re as _re
 
         # Match: path OP value
-        m = _re.match(
-            r"([\w.]+)\s*(==|!=|in|not\s+in)\s*(.+)$", expr
-        )
+        m = _re.match(r"([\w.]+)\s*(==|!=|in|not\s+in)\s*(.+)$", expr)
         if not m:
+            # Simple truthy: "item.findings"
+            if " " not in expr:
+                val = self._resolve_output_var(expr, extra)
+                return bool(val)
             # Can't parse — include the item (permissive)
             logger.debug("for_each filter: can't parse '%s', including item", expr)
             return True

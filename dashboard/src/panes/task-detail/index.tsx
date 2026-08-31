@@ -11,6 +11,7 @@ import {
   useDeleteTask,
   useReopenWithFeedback,
   type Task,
+  type TaskCompletionDetail,
   type TaskRef,
   type GateSummary,
 } from "../../api/hooks";
@@ -26,6 +27,7 @@ import type { TaskDetailArgs } from "./manifest";
 type TaskWithLooseFields = Task & {
   intelligence_class?: string;
   branch_name?: string;
+  completion?: TaskCompletionDetail | null;
 };
 
 type LocalModal = "close" | "reopen" | null;
@@ -197,6 +199,44 @@ export default function TaskDetailPane({
         </section>
       )}
 
+      {loose?.completion && (
+        <section>
+          <h3 className="mb-1.5 text-xs font-semibold uppercase text-gray-500">Completion</h3>
+          <div className="space-y-3 rounded-lg border border-gray-800 bg-gray-900 p-3 text-sm">
+            <div className="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2">
+              <MetaField label="Outcome" value={loose.completion.outcome} />
+              <MetaField label="Work outcome" value={loose.completion.work_outcome ?? "—"} />
+              <MetaField label="Branch" value={loose.completion.branch ?? "—"} mono />
+              <MetaField
+                label="Completed"
+                value={formatDate(loose.completion.completed_at)}
+              />
+            </div>
+            <CompletionText label="Changes" value={loose.completion.changes} />
+            <CompletionText label="Verification" value={loose.completion.verification} />
+            <CompletionList label="Tests" values={loose.completion.tests} />
+            <CompletionList label="Commands" values={loose.completion.commands} />
+            <CompletionList label="Commits" values={loose.completion.commits} mono />
+            <CompletionText label="Summary" value={loose.completion.summary} />
+            <CompletionText label="Notes" value={loose.completion.notes} />
+            {loose.completion.pr_url && (
+              <div>
+                <p className="text-xs text-gray-500">Pull request</p>
+                <a
+                  href={loose.completion.pr_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-0.5 inline-flex items-center gap-1.5 text-indigo-400 hover:underline"
+                >
+                  {loose.completion.pr_url}
+                  <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
+                </a>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
       {taskGates.length > 0 && (
         <section>
           <h3 className="mb-1.5 text-xs font-semibold uppercase text-gray-500">Gates</h3>
@@ -352,6 +392,36 @@ export default function TaskDetailPane({
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+function CompletionText({ label, value }: { label: string; value?: string }) {
+  if (!value) return null;
+  return (
+    <div>
+      <p className="text-xs text-gray-500">{label}</p>
+      <p className="mt-0.5 whitespace-pre-wrap text-gray-300">{value}</p>
+    </div>
+  );
+}
+
+function CompletionList({
+  label,
+  values,
+  mono = false,
+}: {
+  label: string;
+  values?: string[];
+  mono?: boolean;
+}) {
+  if (!values?.length) return null;
+  return (
+    <div>
+      <p className="text-xs text-gray-500">{label}</p>
+      <ul className={`mt-0.5 space-y-1 text-gray-300 ${mono ? "font-mono text-xs" : ""}`}>
+        {values.map((value) => <li key={value}>{value}</li>)}
+      </ul>
     </div>
   );
 }

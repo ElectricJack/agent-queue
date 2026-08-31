@@ -138,13 +138,28 @@ class McpCommandsMixin:
 
         return vault_path_for(self.config.data_dir, name, project_id)
 
+    def _mcp_project_scope(self, args: dict) -> str | None:
+        """Return the validated project scope for a mutation.
+
+        Raises ``ValueError`` when ``project_id`` is not a single safe path
+        segment — otherwise it composes a vault path outside the project
+        directory (see :func:`src.profiles.mcp_registry.validate_vault_id`).
+        """
+        from src.profiles.mcp_registry import validate_vault_id
+
+        project_id = (args.get("project_id") or "").strip() or None
+        if project_id is not None:
+            validate_vault_id(project_id, kind="project_id")
+        return project_id
+
     def _build_mcp_config(self, args: dict, *, project_id: str | None):
         """Validate args and build an :class:`McpServerConfig`."""
-        from src.profiles.mcp_registry import McpServerConfig
+        from src.profiles.mcp_registry import McpServerConfig, validate_vault_id
 
         name = (args.get("name") or "").strip()
         if not name:
             raise ValueError("name is required")
+        validate_vault_id(name, kind="name")
 
         transport = (args.get("transport") or "").strip().lower()
         if transport not in {"stdio", "http"}:
@@ -199,8 +214,8 @@ class McpCommandsMixin:
         """
         from src.profiles.mcp_registry import render_server_markdown
 
-        project_id = (args.get("project_id") or "").strip() or None
         try:
+            project_id = self._mcp_project_scope(args)
             config = self._build_mcp_config(args, project_id=project_id)
         except ValueError as exc:
             return {"error": str(exc)}
@@ -258,12 +273,17 @@ class McpCommandsMixin:
         from src.profiles.mcp_registry import (
             parse_server_markdown,
             render_server_markdown,
+            validate_vault_id,
         )
 
         name = (args.get("name") or "").strip()
         if not name:
             return {"error": "name is required"}
-        project_id = (args.get("project_id") or "").strip() or None
+        try:
+            validate_vault_id(name, kind="name")
+            project_id = self._mcp_project_scope(args)
+        except ValueError as exc:
+            return {"error": str(exc)}
 
         target = self._vault_mcp_server_path(name, project_id)
         if not os.path.isfile(target):
@@ -324,10 +344,16 @@ class McpCommandsMixin:
         list of referencing profiles so the dashboard can deep-link
         each one for cleanup).
         """
+        from src.profiles.mcp_registry import validate_vault_id
+
         name = (args.get("name") or "").strip()
         if not name:
             return {"error": "name is required"}
-        project_id = (args.get("project_id") or "").strip() or None
+        try:
+            validate_vault_id(name, kind="name")
+            project_id = self._mcp_project_scope(args)
+        except ValueError as exc:
+            return {"error": str(exc)}
 
         registry = getattr(self.orchestrator, "mcp_registry", None)
         if registry is not None:

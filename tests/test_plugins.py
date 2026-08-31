@@ -16,6 +16,7 @@ from src.plugins.base import (
     PluginContext,
     PluginInfo,
     PluginPermission,
+    PluginStatus,
 )
 from src.plugins.base import cron
 from src.plugins.loader import (
@@ -133,6 +134,52 @@ def mock_config(tmp_path: Path):
     config.data_dir = str(tmp_path / "data")
     os.makedirs(config.data_dir, exist_ok=True)
     return config
+
+
+@pytest.mark.asyncio
+async def test_install_from_git_reserved_name_leaves_no_residue(
+    mock_db, mock_bus, mock_config, monkeypatch
+):
+    """A metadata-derived reserved name must not leave a discoverable clone."""
+    registry = PluginRegistry(db=mock_db, bus=mock_bus, config=mock_config)
+    rejected_path = registry._plugins_dir / "task"
+    rejected_path.mkdir()
+    (rejected_path / "plugin.yaml").write_text("name: task\n")
+
+    async def fake_install(*args, **kwargs):
+        return {
+            "name": "task",
+            "version": "1",
+            "source_rev": "rev",
+            "install_path": str(rejected_path),
+            "default_config": {},
+            "permissions": [],
+        }
+
+    monkeypatch.setattr("src.plugins.registry.install_plugin_from_url", fake_install)
+
+    with pytest.raises(ValueError, match="reserved"):
+        await registry.install_from_git("https://example.invalid/task.git")
+
+    assert not rejected_path.exists()
+    assert "task" not in await registry.discover_plugins()
+
+
+@pytest.mark.asyncio
+async def test_enable_plugin_failed_load_sets_error_status(
+    mock_db, mock_bus, mock_config, monkeypatch
+):
+    registry = PluginRegistry(db=mock_db, bus=mock_bus, config=mock_config)
+
+    async def fail_load(name):
+        raise RuntimeError("initialize failed")
+
+    monkeypatch.setattr(registry, "load_plugin", fail_load)
+    with pytest.raises(RuntimeError, match="initialize failed"):
+        await registry.enable_plugin("broken")
+
+    mock_db.update_plugin.assert_awaited_once_with("broken", status=PluginStatus.ERROR.value)
+    assert "broken" not in registry._plugins
 
 
 # ---------------------------------------------------------------------------
@@ -1060,30 +1107,56 @@ class TestInvokeLLM:
     async def test_invoke_llm_calls_callback(self, tmp_path):
         callback = AsyncMock(return_value="LLM response")
         ctx = PluginContext(
-            plugin_name="test", install_path=str(tmp_path), db=AsyncMock(), bus=MagicMock(),
-            command_registry={}, tool_registry={}, event_type_registry=set(),
+            plugin_name="test",
+            install_path=str(tmp_path),
+            db=AsyncMock(),
+            bus=MagicMock(),
+            command_registry={},
+            tool_registry={},
+            event_type_registry=set(),
             invoke_llm_callback=callback,
         )
         assert await ctx.invoke_llm("What is 2+2?") == "LLM response"
         callback.assert_called_once_with(
-            "What is 2+2?", "test", intelligence_class=None, model=None, provider=None,
-            tools=None, system="",
+            "What is 2+2?",
+            "test",
+            intelligence_class=None,
+            model=None,
+            provider=None,
+            tools=None,
+            system="",
         )
 
     @pytest.mark.asyncio
     async def test_invoke_llm_passes_overrides(self, tmp_path):
         callback = AsyncMock(return_value="ok")
         ctx = PluginContext(
-            plugin_name="test", install_path=str(tmp_path), db=AsyncMock(), bus=MagicMock(),
-            command_registry={}, tool_registry={}, event_type_registry=set(),
+            plugin_name="test",
+            install_path=str(tmp_path),
+            db=AsyncMock(),
+            bus=MagicMock(),
+            command_registry={},
+            tool_registry={},
+            event_type_registry=set(),
             invoke_llm_callback=callback,
         )
         tools = [{"name": "t", "input_schema": {"type": "object"}}]
-        await ctx.invoke_llm("p", intelligence_class="fast-low", model="m", provider="google",
-                             tools=tools, system="s")
+        await ctx.invoke_llm(
+            "p",
+            intelligence_class="fast-low",
+            model="m",
+            provider="google",
+            tools=tools,
+            system="s",
+        )
         callback.assert_called_once_with(
-            "p", "test", intelligence_class="fast-low", model="m", provider="google",
-            tools=tools, system="s",
+            "p",
+            "test",
+            intelligence_class="fast-low",
+            model="m",
+            provider="google",
+            tools=tools,
+            system="s",
         )
 
     @pytest.mark.asyncio

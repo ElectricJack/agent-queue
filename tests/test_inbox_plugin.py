@@ -41,12 +41,7 @@ class TestAuthResultsParser:
         assert r.dkim_signing_domain == ""
 
     def test_spf_fail_dkim_pass(self):
-        hdr = (
-            "mx.google.com; "
-            "dkim=pass header.d=example.com; "
-            "spf=fail; "
-            "dmarc=fail"
-        )
+        hdr = "mx.google.com; dkim=pass header.d=example.com; spf=fail; dmarc=fail"
         r = parse_authentication_results(hdr)
         assert r.spf_pass is False
         assert r.dkim_pass is True
@@ -96,11 +91,7 @@ class TestAuthResultsParser:
 
     def test_google_workspace_multi_label_domain(self):
         # example.co.uk -> example-co-uk.<sel>.gappssmtp.com
-        hdr = (
-            "mx.google.com; "
-            "dkim=pass header.i=@example-co-uk.202501.gappssmtp.com; "
-            "spf=pass"
-        )
+        hdr = "mx.google.com; dkim=pass header.i=@example-co-uk.202501.gappssmtp.com; spf=pass"
         r = parse_authentication_results(hdr)
         assert r.dkim_matches_from_domain("bob@example.co.uk") is True
 
@@ -344,8 +335,10 @@ async def test_poller_emits_correct_event_types(tmp_path):
                         "headers": [
                             {"name": "From", "value": "Jack <jack@example.com>"},
                             {"name": "Subject", "value": "hi"},
-                            {"name": "Authentication-Results",
-                             "value": "mx.google.com; dkim=pass header.d=example.com; spf=pass; dmarc=pass"},
+                            {
+                                "name": "Authentication-Results",
+                                "value": "mx.google.com; dkim=pass header.d=example.com; spf=pass; dmarc=pass",
+                            },
                         ],
                         "body": {"data": "aGVsbG8gd29ybGQKZnVsbCBib2R5IGhlcmU="},
                     },
@@ -354,23 +347,31 @@ async def test_poller_emits_correct_event_types(tmp_path):
                     "threadId": "thr-2",
                     "snippet": "stranger says hi",
                     "internalDate": "1700000001000",
-                    "payload": {"headers": [
-                        {"name": "From", "value": "stranger@random.org"},
-                        {"name": "Subject", "value": "hello"},
-                        {"name": "Authentication-Results",
-                         "value": "mx.google.com; dkim=pass header.d=random.org; spf=pass; dmarc=pass"},
-                    ]},
+                    "payload": {
+                        "headers": [
+                            {"name": "From", "value": "stranger@random.org"},
+                            {"name": "Subject", "value": "hello"},
+                            {
+                                "name": "Authentication-Results",
+                                "value": "mx.google.com; dkim=pass header.d=random.org; spf=pass; dmarc=pass",
+                            },
+                        ]
+                    },
                 },
                 "msg-spoofed": {
                     "threadId": "thr-3",
                     "snippet": "pretending to be jack",
                     "internalDate": "1700000002000",
-                    "payload": {"headers": [
-                        {"name": "From", "value": "jack@example.com"},
-                        {"name": "Subject", "value": "urgent"},
-                        {"name": "Authentication-Results",
-                         "value": "mx.google.com; dkim=pass header.d=attacker.com; spf=fail"},
-                    ]},
+                    "payload": {
+                        "headers": [
+                            {"name": "From", "value": "jack@example.com"},
+                            {"name": "Subject", "value": "urgent"},
+                            {
+                                "name": "Authentication-Results",
+                                "value": "mx.google.com; dkim=pass header.d=attacker.com; spf=fail",
+                            },
+                        ]
+                    },
                 },
             }
 
@@ -382,8 +383,11 @@ async def test_poller_emits_correct_event_types(tmp_path):
                             class _G:
                                 def execute(self_g):
                                     return {"historyId": "0"}
+
                             return _G()
+
                     return _U()
+
             return _S()
 
         def list_new_message_ids(self, *, history_id, query):
@@ -430,3 +434,60 @@ async def test_poller_emits_correct_event_types(tmp_path):
     assert t == EVENT_UNKNOWN
     assert "spf_failed" in p["classification_reasons"]
     assert "dkim_domain_mismatch" in p["classification_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_transient_get_message_failure_does_not_advance_history_or_seen(tmp_path):
+    """A fetch failure must remain retryable on the next polling cycle."""
+    from src.plugins.internal.inbox.poller import InboxPoller
+
+    allowlist_path = tmp_path / "allowlist.yaml"
+    _write_allowlist(allowlist_path, senders=["jack@example.com"])
+
+    class StubGmail:
+        def __init__(self):
+            self.calls = 0
+
+        def list_new_message_ids(self, *, history_id, query):
+            return ["X"], "next-history"
+
+        def get_message(self, message_id):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary Gmail failure")
+            return {
+                "threadId": "thread",
+                "internalDate": "0",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "jack@example.com"},
+                        {"name": "Subject", "value": "hello"},
+                        {
+                            "name": "Authentication-Results",
+                            "value": "spf=pass; dkim=pass header.d=example.com",
+                        },
+                    ]
+                },
+            }
+
+    emitted = []
+
+    async def emit(event_type, payload):
+        emitted.append((event_type, payload))
+
+    poller = InboxPoller(
+        project_id="project",
+        gmail=StubGmail(),
+        allowlist=Allowlist(allowlist_path),
+        emit=emit,
+        mark_read_on_emit=False,
+    )
+    poller._history_id = "initial"
+    await poller._poll_once()
+    assert poller._history_id == "initial"
+    assert "X" not in poller._seen_ids
+
+    await poller._poll_once()
+    assert poller._history_id == "next-history"
+    assert "X" in poller._seen_ids
+    assert emitted[0][1]["message_id"] == "X"

@@ -13,10 +13,12 @@ from src.sessions.harness_parser import (
 )
 from src.sessions.harness_registry import (
     HarnessRegistry,
+    _on_harness_changed,
     derive_harness_id,
     load_from_vault,
     vault_path_for,
 )
+from src.vault_watcher import VaultChange
 
 
 def _md(config_json: str, *, frontmatter: str = "id: claude\nname: Claude Code\n") -> str:
@@ -149,9 +151,7 @@ class TestValidationRefusesRatherThanGuesses:
         assert any("requires 'prompt_flag'" in e for e in parsed.errors)
 
     def test_invalid_resume_style(self):
-        parsed = parse_harness_markdown(
-            _md('{"command": "x", "resume": {"style": "magic"}}')
-        )
+        parsed = parse_harness_markdown(_md('{"command": "x", "resume": {"style": "magic"}}'))
         assert not parsed.is_valid
         assert any("invalid resume.style" in e for e in parsed.errors)
 
@@ -254,9 +254,7 @@ class TestRegistry:
     def test_load_from_vault_populates_both_scopes(self, tmp_path):
         vault = tmp_path / "vault"
         self._write(vault, "harnesses/claude.md", '{"command": "claude"}')
-        self._write(
-            vault, "projects/p1/harnesses/claude.md", '{"command": "claude-custom"}'
-        )
+        self._write(vault, "projects/p1/harnesses/claude.md", '{"command": "claude-custom"}')
         registry = HarnessRegistry()
         errors = load_from_vault(registry, str(vault))
         assert errors == []
@@ -298,6 +296,74 @@ class TestRegistry:
         assert len(errors) == 1 and "bad.md" in errors[0]
         assert registry.get("good") is not None
         assert registry.get("bad") is None
+
+
+class TestRegistryWatcher:
+    @staticmethod
+    def _write(root, rel, cfg, hid="claude"):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_md(cfg, frontmatter=f"id: {hid}\n"), encoding="utf-8")
+
+    async def test_malformed_watcher_update_keeps_previous_harness_and_does_not_reload(
+        self, tmp_path
+    ):
+        registry = HarnessRegistry()
+        path = tmp_path / "harnesses" / "claude.md"
+        path.parent.mkdir()
+        path.write_text(_md('{"command": "old"}'))
+        load_from_vault(registry, str(tmp_path))
+        path.write_text("not a harness")
+        reloaded = []
+
+        async def on_reload(touched):
+            reloaded.append(touched)
+
+        await _on_harness_changed(
+            [VaultChange(str(path), "harnesses/claude.md", "modified")],
+            registry=registry,
+            on_reload=on_reload,
+        )
+        assert registry.get("claude").command == "old"
+        assert reloaded == []
+
+    async def test_delete_shadow_reveals_system_harness_and_reports_touched_scope(self, tmp_path):
+        registry = HarnessRegistry()
+        system = tmp_path / "harnesses" / "claude.md"
+        project = tmp_path / "projects" / "p1" / "harnesses" / "claude.md"
+        system.parent.mkdir(parents=True)
+        project.parent.mkdir(parents=True)
+        system.write_text(_md('{"command": "system"}'))
+        project.write_text(_md('{"command": "project"}'))
+        load_from_vault(registry, str(tmp_path))
+        touched = []
+
+        async def on_reload(changes):
+            touched.extend(changes)
+
+        await _on_harness_changed(
+            [VaultChange(str(project), "projects/p1/harnesses/claude.md", "deleted")],
+            registry=registry,
+            on_reload=on_reload,
+        )
+        assert registry.get("claude", "p1").command == "system"
+        assert touched == [("p1", "claude")]
+
+    async def test_reload_hook_exception_does_not_undo_valid_update(self, tmp_path):
+        registry = HarnessRegistry()
+        path = tmp_path / "harnesses" / "claude.md"
+        path.parent.mkdir()
+        path.write_text(_md('{"command": "new"}'))
+
+        async def on_reload(_touched):
+            raise RuntimeError("hook failed")
+
+        await _on_harness_changed(
+            [VaultChange(str(path), "harnesses/claude.md", "created")],
+            registry=registry,
+            on_reload=on_reload,
+        )
+        assert registry.get("claude").command == "new"
 
     def test_missing_vault_root_is_not_an_error(self, tmp_path):
         registry = HarnessRegistry()
@@ -348,8 +414,10 @@ class TestShippedClaudeHarness:
 
         ensure_default_harnesses(str(tmp_path))
         target = tmp_path / "vault" / "harnesses" / "claude.md"
-        target.write_text("---\nid: claude\n---\n\n## Config\n\n```json\n"
-                          '{"command": "my-claude"}\n```\n', encoding="utf-8")
+        target.write_text(
+            '---\nid: claude\n---\n\n## Config\n\n```json\n{"command": "my-claude"}\n```\n',
+            encoding="utf-8",
+        )
         result = ensure_default_harnesses(str(tmp_path))
         assert result["created"] == []
         assert "claude.md" in result["skipped"]

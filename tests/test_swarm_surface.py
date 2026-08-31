@@ -35,6 +35,58 @@ def test_close_and_mutators_carry_claim_epoch():
     assert {"claim_next", "wait"} <= set(d["task_close"]["input_schema"]["properties"])
 
 
+def test_close_surface_accepts_structured_completion_details(tmp_path, monkeypatch):
+    """Repeatable close flags must preserve verification detail in the request."""
+    from src.cli import agent_surface
+    from src.cli.app import cli
+
+    sent = {}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def execute(self, command, args=None):
+            sent.update(command=command, args=args or {})
+            return {"success": True}
+
+    monkeypatch.setattr(agent_surface, "_get_client", lambda *a, **k: FakeClient())
+    monkeypatch.delenv("AQ_CLAIM_EPOCH", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "task", "close", "t1", "--outcome", "pass", "--summary", "Done.",
+            "--changes", "Added durable completion records.",
+            "--verification", "Focused tests passed.",
+            "--test", "pytest tests/test_swarm_surface.py -q",
+            "--command", "ruff check src tests",
+            "--command", "npm test -- task-detail",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sent == {
+        "command": "task_close",
+        "args": {
+            "task_id": "t1",
+            "outcome": "pass",
+            "summary": "Done.",
+            "changes": "Added durable completion records.",
+            "verification": "Focused tests passed.",
+            "tests": ["pytest tests/test_swarm_surface.py -q"],
+            "commands": ["ruff check src tests", "npm test -- task-detail"],
+        },
+    }
+    props = defs()["task_close"]["input_schema"]["properties"]
+    assert props["tests"]["type"] == "array"
+    assert props["commands"]["type"] == "array"
+
+
 def test_create_task_accepts_swarm_fields():
     props = defs()["create_task"]["input_schema"]["properties"]
     assert {"depends_on", "discovered_from", "dedup_key", "parent_id"} <= set(props)

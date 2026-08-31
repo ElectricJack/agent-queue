@@ -14,6 +14,24 @@ from . import TaskRef
 # ---------------------------------------------------------------------------
 
 
+class TaskCompletionDetail(BaseModel):
+    id: str
+    task_id: str
+    outcome: str
+    work_outcome: str | None = None
+    failure_class: str | None = None
+    changes: str = ""
+    verification: str = ""
+    tests: list[str] = []
+    commands: list[str] = []
+    branch: str | None = None
+    commits: list[str] = []
+    pr_url: str | None = None
+    summary: str = ""
+    notes: str = ""
+    completed_at: float = 0.0
+
+
 class TaskDetail(BaseModel):
     id: str
     project_id: str
@@ -42,6 +60,7 @@ class TaskDetail(BaseModel):
     updated_at: float = 0.0
     parent: dict | None = None
     children: dict | None = None
+    completion: TaskCompletionDetail | None = None
 
 
 class TaskDict(BaseModel):

@@ -13,8 +13,12 @@ import pkgutil
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import pytest
+
+
+REPO_ROOT = str(Path(__file__).resolve().parents[1])
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +144,8 @@ def test_shim_provides_pkg_resources_when_missing() -> None:
             raise AssertionError("DistributionNotFound was not raised")
 
         print("SHIM_OK")
-        """ % ("/mnt/d/Dev/agent-queue3",)
+        """
+        % (REPO_ROOT,)
     )
 
     assert "SHIM_OK" in result.stdout, (
@@ -169,12 +174,98 @@ def test_shim_installs_imp_importer_stub_when_missing() -> None:
         pkgutil.ImpImporter()  # stub must be instantiable
 
         print("STUB_OK")
-        """ % ("/mnt/d/Dev/agent-queue3",)
+        """
+        % (REPO_ROOT,)
     )
 
     assert "STUB_OK" in result.stdout, (
         f"subprocess failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
+
+
+_FORCED_SHIM_PROLOGUE = """
+import sys
+class _Blocker:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "pkg_resources" or fullname.startswith("pkg_resources."):
+            raise ModuleNotFoundError(f"blocked: {fullname}")
+        return None
+sys.meta_path.insert(0, _Blocker())
+for m in list(sys.modules):
+    if m == "pkg_resources" or m.startswith("pkg_resources."):
+        del sys.modules[m]
+sys.path.insert(0, %r)
+sys.path.insert(0, %r)
+from src import _compat
+_compat.apply()
+sys.meta_path.pop(0)
+import pkg_resources
+assert pkg_resources.__doc__ and "shim" in pkg_resources.__doc__
+"""
+
+
+def _forced_shim_code(fixture_root: Path, body: str) -> str:
+    return _FORCED_SHIM_PROLOGUE % (REPO_ROOT, str(fixture_root)) + textwrap.dedent(body)
+
+
+def _build_fake_distribution(root: Path) -> None:
+    package = root / "aq_compat_fixture"
+    package.mkdir()
+    (package / "__init__.py").write_text("alpha = beta = None\n", encoding="utf-8")
+    (package / "asset.txt").write_text("resource-payload\n", encoding="utf-8")
+    info = root / "aq_compat_fixture-1.2.3.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: aq-compat-fixture\nVersion: 1.2.3\n", encoding="utf-8"
+    )
+    (info / "entry_points.txt").write_text(
+        "[aq.compat.fixture]\nalpha = aq_compat_fixture:alpha\nbeta = aq_compat_fixture:beta\n",
+        encoding="utf-8",
+    )
+
+
+def test_missing_pkg_resources_shim_exposes_entry_points_require_and_resource_filename(
+    tmp_path: Path,
+) -> None:
+    _build_fake_distribution(tmp_path)
+    result = _run_in_subprocess(
+        _forced_shim_code(
+            tmp_path,
+            """
+        import os
+        assert pkg_resources.require("aq-compat-fixture") == []
+        eps = list(pkg_resources.iter_entry_points("aq.compat.fixture"))
+        assert sorted(ep.name for ep in eps) == ["alpha", "beta"]
+        assert [ep.name for ep in pkg_resources.iter_entry_points("aq.compat.fixture", "alpha")] == ["alpha"]
+        path = pkg_resources.resource_filename("aq_compat_fixture", "asset.txt")
+        assert os.path.isfile(path)
+        assert open(path, encoding="utf-8").read() == "resource-payload\\n"
+        d = pkg_resources.get_distribution("aq-compat-fixture")
+        assert repr(d) == "Distribution(aq-compat-fixture==1.2.3)"
+        assert d.key == "aq-compat-fixture"
+        print("SURFACE_OK")
+    """,
+        )
+    )
+    assert "SURFACE_OK" in result.stdout, result.stderr
+
+
+def test_resource_filename_falls_back_when_importlib_resources_fails(tmp_path: Path) -> None:
+    _build_fake_distribution(tmp_path)
+    result = _run_in_subprocess(
+        _forced_shim_code(
+            tmp_path,
+            """
+        import importlib.resources as resources
+        import os
+        assert os.path.isfile(pkg_resources.resource_filename("aq_compat_fixture", "asset.txt"))
+        resources.files = lambda *args, **kwargs: (_ for _ in ()).throw(ModuleNotFoundError("missing"))
+        assert pkg_resources.resource_filename("missing.package", "asset.txt") == "asset.txt"
+        print("FALLBACK_OK")
+    """,
+        )
+    )
+    assert "FALLBACK_OK" in result.stdout, result.stderr
 
 
 @pytest.mark.integration

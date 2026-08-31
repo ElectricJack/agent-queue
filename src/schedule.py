@@ -289,6 +289,9 @@ def _cron_field_matches(field: str, value: int, min_val: int, max_val: int) -> b
             step = int(step_str)
         except ValueError:
             return False
+        if step <= 0:
+            logger.warning("Invalid cron step (must be >= 1): %s", field)
+            return False
         if base == "*":
             return (value - min_val) % step == 0
         if "-" in base:
