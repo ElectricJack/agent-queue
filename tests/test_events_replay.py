@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from fastapi import WebSocketDisconnect
 
 from src.api.websocket import WebSocketManager
 from src.database import SQLiteDatabaseAdapter
@@ -293,6 +294,171 @@ class TestWebSocketReplay:
         assert ws_with_seq.sent[0].get("type") == "hello", (
             "hello frame must be first, even when replay follows"
         )
+
+
+# ── Replay hardening (FU-5): cursor abuse, compaction, disconnect ────────
+
+
+async def _drive_handler(mgr, ws, settle: float = 0.05):
+    """Run ``mgr.handle(ws)`` until it settles into the live wait, then cancel."""
+    task = asyncio.create_task(mgr.handle(ws))
+    await asyncio.sleep(settle)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+class TestReplayHardening:
+    """API/websocket-boundary hardening for ``after_seq`` replay (FU-5).
+
+    Pins the tolerant-cursor contract: a malformed cursor degrades to
+    live-only streaming, a negative/stale/compacted cursor replays
+    whatever the event log still holds, and a client vanishing mid-replay
+    never leaves the manager in a corrupted state.
+    """
+
+    @pytest.mark.parametrize("raw", ["abc", "12.5", "", "0x10"])
+    async def test_malformed_after_seq_degrades_to_live_only(self, db, raw):
+        """Non-integer cursors are treated as absent: no replay, no crash."""
+        await db.log_event("notify.pre", project_id=PROJECT, payload="p")
+
+        bus = EventBus()
+        mgr = WebSocketManager(bus, db=db)
+        mgr.start()
+        ws = _FakeWS(after_seq=raw)
+
+        task = asyncio.create_task(mgr.handle(ws))
+        await asyncio.sleep(0.05)
+        # Live streaming must still work after the malformed cursor.
+        await bus.emit("notify.live", {"project_id": PROJECT, "seq": None})
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert ws.accepted
+        assert ws.sent[0].get("type") == "hello"
+        # No replay of the persisted row — only hello + the live frame.
+        types = [f.get("_event_type") for f in ws.sent]
+        assert "notify.pre" not in types
+        assert "notify.live" in types
+
+    async def test_negative_after_seq_replays_full_history(self, db):
+        """A negative cursor is honest 'give me everything after N': the
+        whole retained forwarded history replays, ascending, once."""
+        seqs = [
+            await db.log_event(f"notify.n.{i}", project_id=PROJECT, payload=str(i))
+            for i in range(4)
+        ]
+
+        bus = EventBus()
+        mgr = WebSocketManager(bus, db=db)
+        mgr.start()
+        ws = _FakeWS(after_seq="-5")
+        await _drive_handler(mgr, ws)
+
+        replayed = [f["seq"] for f in ws.sent if isinstance(f.get("seq"), int)]
+        assert replayed == seqs
+
+    async def test_after_seq_beyond_head_resyncs_to_live_without_replay(self, db):
+        """A cursor past the newest row (stale client / swapped DB within an
+        epoch) yields an empty replay and clean handoff to live."""
+        await db.log_event("notify.old", project_id=PROJECT, payload="o")
+        head = await db.max_event_id()
+
+        bus = EventBus()
+        mgr = WebSocketManager(bus, db=db)
+        mgr.start()
+        ws = _FakeWS(after_seq=str(head + 1000))
+
+        task = asyncio.create_task(mgr.handle(ws))
+        await asyncio.sleep(0.05)
+        await bus.emit("notify.fresh", {"project_id": PROJECT, "seq": None})
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        types = [f.get("_event_type") for f in ws.sent]
+        assert "notify.old" not in types, "must not replay rows at/below the cursor"
+        assert "notify.fresh" in types, "live streaming must resume after empty replay"
+
+    async def test_compacted_history_replays_only_retained_rows(self, db):
+        """Cursor pointing into a compacted (deleted) id range: replay
+        skips the gap and resumes at the first retained row — the client
+        resyncs from what the log still holds instead of erroring."""
+        from sqlalchemy import delete
+
+        from src.database.tables import events
+
+        seqs = [
+            await db.log_event(f"notify.c.{i}", project_id=PROJECT, payload=str(i))
+            for i in range(6)
+        ]
+        # Compact away everything up to and including the 4th row; the
+        # client's cursor (2nd row) now points into the deleted range.
+        async with db._engine.begin() as conn:
+            await conn.execute(delete(events).where(events.c.id <= seqs[3]))
+
+        bus = EventBus()
+        mgr = WebSocketManager(bus, db=db)
+        mgr.start()
+        ws = _FakeWS(after_seq=str(seqs[1]))
+        await _drive_handler(mgr, ws)
+
+        replayed = [f["seq"] for f in ws.sent if isinstance(f.get("seq"), int)]
+        assert replayed == seqs[4:], "replay must resume at the first retained row after the gap"
+        assert len(replayed) == len(set(replayed)), "no duplicates across the compaction gap"
+
+    async def test_disconnect_mid_replay_unregisters_client_cleanly(self, db, monkeypatch):
+        """A client vanishing between replay pages must not leak manager
+        state or raise out of ``handle``."""
+        import src.api.websocket as ws_mod
+
+        # Force multi-page replay with a small page so the disconnect
+        # lands between pages, not after replay finished.
+        monkeypatch.setattr(ws_mod, "_REPLAY_PAGE", 2)
+
+        seqs = [
+            await db.log_event(f"notify.d.{i}", project_id=PROJECT, payload=str(i))
+            for i in range(6)
+        ]
+
+        bus = EventBus()
+        mgr = WebSocketManager(bus, db=db)
+        mgr.start()
+        ws = _FakeWS(after_seq=str(seqs[0]))
+
+        sent_before_drop = 3  # hello + first page (2 replay frames)
+        original_send = ws.send_json
+
+        async def _dropping_send(frame):
+            if len(ws.sent) >= sent_before_drop:
+                raise WebSocketDisconnect(code=1006)
+            await original_send(frame)
+
+        ws.send_json = _dropping_send
+
+        # handle() must swallow the disconnect and return on its own.
+        await asyncio.wait_for(mgr.handle(ws), timeout=2)
+
+        assert ws not in mgr._clients, "disconnected client must be unregistered"
+        assert ws not in mgr._client_scope, "scope entry must be cleaned up"
+        # Only the frames sent before the drop went out; replay stopped.
+        replayed = [f["seq"] for f in ws.sent if isinstance(f.get("seq"), int)]
+        assert replayed == seqs[1:3], "replay must stop at the disconnect"
+
+        # The manager keeps serving other clients afterwards.
+        ws2 = _FakeWS(after_seq=str(seqs[0]))
+        await _drive_handler(mgr, ws2)
+        replayed2 = [f["seq"] for f in ws2.sent if isinstance(f.get("seq"), int)]
+        assert replayed2 == seqs[1:]
 
 
 # ── Registry invariant + task.blocked/unblocked emitters ─────────────────

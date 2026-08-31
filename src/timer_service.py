@@ -577,7 +577,19 @@ class TimerService:
             )
 
     def _save_state(self) -> None:
-        """Persist ``_cron_last_fired_date`` to disk, if configured."""
+        """Persist ``_cron_last_fired_date`` to disk, if configured.
+
+        Availability-first by design (EVT-3): a persistence failure is
+        logged and suppressed, and the already-advanced in-memory fire
+        state stands, so ticking continues on a full disk or read-only
+        filesystem.  The accepted cost is that a restart after such a
+        failure may re-fire an interval/cron trigger once (disk state is
+        stale).  The alternative — failing the tick or rolling back the
+        in-memory fire — would either stop all scheduling on persistent
+        I/O errors or re-fire every tick, both worse than one duplicate
+        after a restart.  Pinned by
+        ``test_tick_survives_atomic_state_save_oserror_after_timer_emit``.
+        """
         if not self._state_path:
             return
         payload = {

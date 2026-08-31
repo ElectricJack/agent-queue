@@ -658,6 +658,183 @@ class TestMessageSentRenderer:
         assert args[0] is parsed_channel
         assert "delivered body" in args[1]
 
+    async def test_pane_open_payload_routes_to_project_channel(self, db):
+        """Approved plan item 13: a user-addressed supervisor reply carrying
+        ``pane_open`` and no thread produces a real delivery payload with the
+        parsed pane metadata, and the renderer posts it exactly once via the
+        project channel — never the thread/global lookup path."""
+        from src.config import MessagesConfig
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+        from src.messages.delivery import MessageDeliveryEngine
+
+        class _RecBus:
+            def __init__(self):
+                self.events = []
+
+            async def emit(self, event, payload):
+                self.events.append((event, dict(payload)))
+
+        class _NoSessions:
+            async def activity(self, **_):
+                return "absent"
+
+            async def ensure_started(self, **_):
+                return False
+
+            async def nudge(self, **_):
+                return False
+
+            async def tail_assistant_turn(self, **_):
+                return None
+
+        msg = await db.create_message(
+            project_id="p1",
+            from_kind="session",
+            from_id="supervisor-p1",
+            to_kind="user",
+            to_id="discord:42",
+            body="opening the board for you",
+            body_kind="pane_open",
+            pane_open='{"view": "task_board", "args": {"task_id": "t1"}}',
+        )
+
+        spy = _RecBus()
+        engine = MessageDeliveryEngine(
+            db=db, sessions=_NoSessions(), config=MessagesConfig(enabled=True), bus=spy
+        )
+        result = await engine.run_delivery_pass()
+        assert result["delivered"] == 1
+
+        sent = [p for e, p in spy.events if e == "message.sent"]
+        assert len(sent) == 1
+        payload = sent[0]
+        assert payload["message_id"] == msg.id
+        # The pane metadata rides the payload, parsed, for pane-capable
+        # surfaces (dashboard); there is no thread_id.
+        assert payload["pane_open"] == {"view": "task_board", "args": {"task_id": "t1"}}
+        assert "thread_id" not in payload
+
+        bus = EventBus(env="dev", validate_events=False)
+        bot = await self._make_bot(db)
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            await bus.emit("message.sent", payload)
+        finally:
+            handler.shutdown()
+
+        # Exactly one render, routed by project id — no thread lookup, no
+        # long-message/global fallback path.
+        assert bot._send_message.await_count == 1
+        call = bot._send_message.await_args
+        assert call.args[0] == "opening the board for you"
+        assert call.kwargs["project_id"] == "p1"
+        bot.get_channel.assert_not_called()
+        assert bot._send_long_message.await_count == 0
+
+    async def test_malformed_discord_thread_id_falls_back_to_project_channel(self, db, caplog):
+        """Approved plan item 14: ``thread_id="discord:not-an-int"`` logs a
+        warning and produces exactly one project-channel send — no
+        exception, no thread lookup with a garbage id."""
+        import logging
+
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        reply = await db.create_message(
+            project_id="p1",
+            from_kind="session",
+            from_id="supervisor-p1",
+            to_kind="user",
+            to_id="discord:42",
+            body="fallback body",
+            thread_id="discord:not-an-int",
+        )
+        bus = EventBus(env="dev", validate_events=False)
+        bot = await self._make_bot(db)
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            with caplog.at_level(logging.WARNING, logger="src.discord.agent_questions"):
+                await bus.emit(
+                    "message.sent",
+                    {
+                        "message_id": reply.id,
+                        "project_id": "p1",
+                        "from_kind": "session",
+                        "from_id": "supervisor-p1",
+                        "to_kind": "user",
+                        "to_id": "discord:42",
+                        "thread_id": "discord:not-an-int",
+                    },
+                )
+        finally:
+            handler.shutdown()
+
+        assert any("Malformed Discord thread id" in r.message for r in caplog.records)
+        bot.get_channel.assert_not_called()
+        assert bot._send_message.await_count == 1
+        call = bot._send_message.await_args
+        assert call.args[0] == "fallback body"
+        assert call.kwargs["project_id"] == "p1"
+        assert bot._send_long_message.await_count == 0
+
+    async def test_deleted_thread_falls_back_once_to_channel_without_duplicate_post(self, db):
+        """Approved plan item 15: a cached thread whose send raises
+        ``NotFound`` (deleted between lookup and send) falls back to the
+        project channel exactly once; the recorded receipt suppresses any
+        repeat post for the same message."""
+        import discord as discord_mod
+
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        reply = await db.create_message(
+            project_id="p1",
+            from_kind="session",
+            from_id="supervisor-p1",
+            to_kind="user",
+            to_id="discord:42",
+            body="thread went away",
+            thread_id="discord:999",
+        )
+        cached_thread = MagicMock()
+        bot = await self._make_bot(db, channel=cached_thread)
+        bot._send_long_message = AsyncMock(
+            side_effect=discord_mod.NotFound(
+                MagicMock(status=404, reason="Not Found"), "Unknown Channel"
+            )
+        )
+        fallback_msg = MagicMock()
+        fallback_msg.id = 111
+        fallback_msg.channel = MagicMock()
+        fallback_msg.channel.id = 222
+        bot._send_message = AsyncMock(return_value=fallback_msg)
+
+        payload = {
+            "message_id": reply.id,
+            "project_id": "p1",
+            "from_kind": "session",
+            "from_id": "supervisor-p1",
+            "to_kind": "user",
+            "to_id": "discord:42",
+            "thread_id": "discord:999",
+        }
+        bus = EventBus(env="dev", validate_events=False)
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            await bus.emit("message.sent", payload)
+            # A retry/redelivery of the same message must not post again.
+            await bus.emit("message.sent", payload)
+        finally:
+            handler.shutdown()
+
+        # First attempt hit the cached thread and failed; the single
+        # fallback went to the project channel; the second event was a
+        # no-op thanks to the delivery receipt.
+        assert bot._send_long_message.await_count == 1
+        assert bot._send_message.await_count == 1
+        assert bot._send_message.await_args.kwargs["project_id"] == "p1"
+
     async def test_renders_system_authored_parked_message_as_warning(self, db):
         """Delivery-engine parked-message notifications (from_kind="system")
         must render in the originating Discord channel as a warning embed

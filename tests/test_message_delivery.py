@@ -264,6 +264,70 @@ class TestDeliveryPolicy:
         text = sessions.nudges[0][3]
         assert text.count("[msg-") == 2
 
+    async def test_unknown_recipient_kind_is_left_pending_without_session_calls(self, db):
+        """A defensive to_kind the engine doesn't route (not in today's
+        MESSAGE_TO_KINDS routing) must be left pending: no activity probe,
+        no start, no nudge, no mark_delivered — and no exception.
+
+        The real table CHECK-constrains to_kind, so the unknown kind is
+        injected through a DB double rather than a stored row.
+        """
+        from src.models import Message
+
+        pending_row = Message(
+            id="msg-unknown",
+            project_id="p1",
+            from_kind="user",
+            from_id="discord:1",
+            to_kind="webhook",
+            to_id="w1",
+            body="who routes this?",
+            created_at=time.time(),
+        )
+
+        class _UnknownRecipientDB:
+            def __init__(self):
+                self.marked: list = []
+                self.archived: list = []
+
+            async def get_pending_recipients(self):
+                return [("webhook", "w1", "p1")]
+
+            async def get_pending_messages(self, to_kind, to_id, limit):
+                assert (to_kind, to_id) == ("webhook", "w1")
+                return [pending_row]
+
+            async def mark_delivered(self, message_id, via=None):
+                self.marked.append((message_id, via))
+                return True
+
+            async def archive_messages(self, ids):
+                self.archived.append(list(ids))
+
+        class _NeverCalledSessions:
+            async def activity(self, **kwargs):
+                raise AssertionError(f"activity() called for unknown kind: {kwargs}")
+
+            async def ensure_started(self, **kwargs):
+                raise AssertionError(f"ensure_started() called for unknown kind: {kwargs}")
+
+            async def nudge(self, **kwargs):
+                raise AssertionError(f"nudge() called for unknown kind: {kwargs}")
+
+            async def tail_assistant_turn(self, **kwargs):
+                raise AssertionError(f"tail_assistant_turn() called: {kwargs}")
+
+        double = _UnknownRecipientDB()
+        bus = RecordingBus()
+        engine = make_engine(double, _NeverCalledSessions(), bus=bus)
+
+        result = await engine.run_delivery_pass()
+
+        assert result == {"success": True, "delivered": 0, "skipped_busy": 0, "parked": 0}
+        assert double.marked == []
+        assert double.archived == []
+        assert bus.events == []
+
     async def test_priority_ordering_preserved_in_nudge(self, db):
         sessions = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
         engine = make_engine(db, sessions)
@@ -434,6 +498,51 @@ class TestReplyTimeouts:
 
         assert await engine.check_reply_timeouts() == 0
         assert len(await db.list_messages(project_id="p1", to_kind="user")) == 1
+
+    async def test_tail_reply_to_session_sender_is_not_fanned_out_as_platform_message(self, db):
+        """Redesign of the approved plan's item 7: the requested
+        "profile-originated timed-out message" cannot exist — ``messages.
+        from_kind`` is CHECK-constrained (``ck_messages_from_kind``) to
+        ``{session, user, system}``, so ``from_kind="profile"`` is
+        unrepresentable.  The contract the item was after is the general
+        one: a transcript-tail reply addressed back to a *non-user*
+        sender must emit ``message.replied`` only — ``message.sent`` is
+        the platform fan-out envelope and firing it here would make
+        Discord render an agent-to-agent reply as if it were addressed
+        to the user.
+        """
+        sessions = FakeSessionManager(tail_map={("task", "review", "p1"): "worker tail reply"})
+        bus = RecordingBus()
+        engine = make_engine(db, sessions, bus=bus)
+        original = await _send(
+            db,
+            from_kind="session",
+            from_id="s-owner",
+            to_kind="task",
+            to_id="review",
+            thread_id="t-a2a",
+        )
+        await db.mark_delivered(original.id, via="prime")
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                sa_update(messages)
+                .where(messages.c.id == original.id)
+                .values(delivered_at=time.time() - 999)
+            )
+
+        assert await engine.check_reply_timeouts() == 1
+
+        replies = await db.list_messages(project_id="p1", to_kind="session")
+        assert len(replies) == 1
+        reply = replies[0]
+        assert reply.reply_to_id == original.id
+        assert reply.to_kind == "session"
+        assert reply.to_id == "s-owner"
+        assert reply.via == "transcript_tail"
+        # message.replied only — never the platform message.sent envelope.
+        assert [e.event for e in bus.events] == ["message.replied"]
+        assert bus.events[0].payload["reply_id"] == reply.id
+        assert await db.list_messages(project_id="p1", to_kind="user") == []
 
     async def test_transcript_tail_creates_reply(self, db):
         sessions = FakeSessionManager()

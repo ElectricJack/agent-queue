@@ -11,7 +11,7 @@ import logging
 
 import pytest
 
-from src import workspace_spec_watcher
+from src import vault_watcher, workspace_spec_watcher
 from src.vault_watcher import VaultChange, VaultWatcher
 
 
@@ -35,9 +35,8 @@ class _Clock:
 
 # The production patterns registered by the orchestrator, at every depth they
 # are expected to hit, plus the negatives that distinguish ``**`` from ``*``.
-# ``workspace_spec_watcher._match_segments`` is a near-identical private copy
-# of this algorithm (analysis note B5), so the table is shared with the drift
-# guard below.
+# The table is shared between both watcher entry points so their path-selection
+# contracts cannot drift even though they now delegate to one implementation.
 DOUBLE_STAR_CASES: list[tuple[str, str, bool]] = [
     # ``**/*.md`` matches zero or more leading directory segments.
     ("note.md", "**/*.md", True),
@@ -75,7 +74,22 @@ def test_spec_watcher_matcher_agrees_with_vault_watcher(rel_path, pattern, expec
     the same algorithm is a drift hazard (analysis note B5).  Running the same
     table through both pins them together until one of them is deleted.
     """
-    assert workspace_spec_watcher._match_recursive(rel_path, pattern) is expected
+    assert workspace_spec_watcher.matches_any_pattern(rel_path, (pattern,)) is expected
+
+
+def test_both_watchers_delegate_to_one_glob_matcher(monkeypatch):
+    """Vault and workspace-spec dispatch must share one matcher implementation."""
+    calls: list[tuple[str, str]] = []
+
+    def shared(rel_path: str, pattern: str) -> bool:
+        calls.append((rel_path, pattern))
+        return True
+
+    monkeypatch.setattr(vault_watcher, "matches_path_pattern", shared, raising=False)
+
+    assert VaultWatcher._matches_pattern("note.txt", "*.md") is True
+    assert workspace_spec_watcher.matches_any_pattern("note.txt", ("*.md",)) is True
+    assert calls == [("note.txt", "*.md"), ("note.txt", "*.md")]
 
 
 @pytest.mark.asyncio

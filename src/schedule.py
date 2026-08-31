@@ -43,7 +43,11 @@ Supported cron features:
 - ``N,M,O`` (list)
 - ``N`` (exact value)
 
-See ``docs/specs/design/playbooks.md`` for the playbook-based automation specification.
+Matching, tolerance-window, and dedup semantics (including the midnight
+wraparound rule shared by matching and dedup) are specified in
+``docs/specs/schedule.md``.  The synthetic ``timer.*``/``cron.HH:MM``
+playbook triggers are a different subsystem — see
+``docs/specs/design/playbooks.md`` §7.
 """
 
 from __future__ import annotations
@@ -170,9 +174,17 @@ def _same_time_window(
     last_run: datetime,
     tolerance_seconds: int,
 ) -> bool:
-    """Check if last_run and now are in the same time-matching window."""
-    # If they're on different dates, they can't be the same window
-    if now.date() != last_run.date():
+    """Check if last_run and now are in the same time-matching window.
+
+    Uses the same midnight-wraparound rule as ``_matches_times`` so a
+    tolerance window spanning midnight counts as ONE window (EVT-2, see
+    ``docs/specs/schedule.md``).  Window occurrences of the same target are
+    24h apart, so two timestamps can only share an occurrence when they are
+    at most the window width (2 × tolerance) apart in real elapsed time —
+    that guard replaces the old same-calendar-date check, which wrongly
+    split the cross-midnight window in two.
+    """
+    if abs((now - last_run).total_seconds()) > 2 * tolerance_seconds:
         return False
 
     now_seconds = now.hour * 3600 + now.minute * 60 + now.second
@@ -183,9 +195,14 @@ def _same_time_window(
             parts = t.strip().split(":")
             target_h, target_m = int(parts[0]), int(parts[1])
             target_seconds = target_h * 3600 + target_m * 60
-            # Both now and last_run within tolerance of same target
+            # Both now and last_run within tolerance of the same target,
+            # measured with midnight wrap like _matches_times.
             now_diff = abs(now_seconds - target_seconds)
+            if now_diff > 43200:  # 12 hours
+                now_diff = 86400 - now_diff
             last_diff = abs(last_seconds - target_seconds)
+            if last_diff > 43200:
+                last_diff = 86400 - last_diff
             if now_diff <= tolerance_seconds and last_diff <= tolerance_seconds:
                 return True
         except (ValueError, IndexError):

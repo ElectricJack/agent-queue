@@ -141,6 +141,34 @@ class TestVaultIndexGenerator:
         content = (sub / "notes.md").read_text()
         assert "note-new" in content
 
+    def test_index_update_after_spec_stub_write_preserves_summary(self, tmp_path):
+        """The watcher handoff converges without clobbering a rebuilt summary.
+
+        The orchestrator runs the spec watcher after the vault watcher.  Its
+        new stub is therefore indexed by the vault watcher's next debounced
+        update, which must retain any LLM summary already stored in the hub.
+        """
+        vault = tmp_path / "vault"
+        refs = vault / "projects" / "proj" / "references"
+        refs.mkdir(parents=True)
+        for i in range(10):
+            (refs / f"spec-{i}.md").write_text(f"# Spec {i}")
+
+        gen = VaultIndexGenerator(vault)
+        gen.generate_all()
+        gen._generate_hub_for_dir(
+            str(refs),
+            "projects/proj/references",
+            summary="Summarizes the project specifications.",
+        )
+
+        (refs / "spec-new.md").write_text("# New")
+        gen.update_directory("projects/proj/references")
+
+        content = (refs / "references.md").read_text()
+        assert "Summarizes the project specifications." in content
+        assert "[[projects/proj/references/spec-new|spec-new]]" in content
+
 
 class TestMigrateBacklinks:
     def test_adds_backlinks(self, tmp_path):

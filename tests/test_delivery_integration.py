@@ -175,6 +175,38 @@ async def _seed_busy_task_session(orch, *, task_id: str = "t-busy"):
     return handle
 
 
+async def _seed_idle_supervisor_session(orch):
+    """Running FakeProvider supervisor session with stale activity (idle)."""
+    fake = orch.session_providers.create("fake")
+    runtime_name = _supervisor_runtime_name()
+    handle = await fake.start(
+        SessionSpec(
+            session_name=runtime_name,
+            work_dir=str(orch.config.workspace_dir),
+            command=("claude",),
+            instance_token="tok-sup",
+        )
+    )
+    fake.sessions[handle.name].activity = time.time() - 300  # stale → idle
+    await orch.db.create_session(
+        SessionRecord(
+            id="sess-sup",
+            project_id=PROJECT_ID,
+            profile_id="supervisor",
+            harness="claude",
+            provider="fake",
+            name=runtime_name,
+            lifecycle="named",
+            work_dir=str(orch.config.workspace_dir),
+            epoch="e1",
+            instance_token="tok-sup",
+            started_at=time.time(),
+            state="running",
+        )
+    )
+    return handle
+
+
 # ---------------------------------------------------------------------------
 # 1. Nudge into a sleeping supervisor
 # ---------------------------------------------------------------------------
@@ -237,6 +269,135 @@ class TestUserToSupervisorNudge:
         assert row.epoch == orch.daemon_epoch
         assert row.project_id == PROJECT_ID
         assert row.profile_id == "supervisor"
+
+
+class TestRunningSupervisorAddressResolution:
+    """Approved plan item 1: an already-*running* supervisor session is
+    reached through the messaging address — one provider nudge lands on
+    the runtime handle (``n-supervisor--<pid>``), no cold start."""
+
+    async def test_session_address_delivery_resolves_supervisor_runtime_name(self, orch, handler):
+        await _seed_project(orch)
+        handle = await _seed_idle_supervisor_session(orch)
+
+        result = await handler.execute(
+            "message_send",
+            {
+                "project_id": PROJECT_ID,
+                "to_kind": "session",
+                "to_id": _supervisor_address(),
+                "from_kind": "user",
+                "from_id": "discord:1",
+                "body": "already awake?",
+            },
+        )
+        assert "error" not in result, result
+        message_id = result["message_id"]
+
+        await orch._deliver_messages()
+
+        fake = orch.session_providers.create("fake")
+        # No second session was started — the seeded one was reused.
+        assert len(fake.starts) == 1
+        assert list(fake.sessions) == [handle.name]
+        # Exactly one nudge, addressed to the runtime handle.
+        assert len(fake.sent_nudges) == 1
+        nudged_name, nudged_text = fake.sent_nudges[0]
+        assert nudged_name == handle.name == _supervisor_runtime_name()
+        assert message_id in nudged_text
+
+        stored = await orch.db.get_message(message_id)
+        assert stored.delivered_at is not None
+        assert stored.via == "nudge"
+
+
+class TestMixedRecipientPass:
+    """Approved plan item 2: one pass over a busy task, an idle supervisor
+    and a user recipient delivers exactly the deliverable two, skips the
+    busy task without touching it, and fans the user message out as
+    ``message.sent``."""
+
+    async def test_mixed_pass_keeps_busy_task_pending_but_delivers_user_and_idle_supervisor(
+        self, orch, handler
+    ):
+        await _seed_project(orch)
+        await _seed_busy_task_session(orch, task_id="t-busy")
+        await _seed_idle_supervisor_session(orch)
+
+        to_task = await handler.execute(
+            "message_send",
+            {
+                "project_id": PROJECT_ID,
+                "to_kind": "task",
+                "to_id": "t-busy",
+                "from_kind": "user",
+                "from_id": "discord:1",
+                "body": "for the busy worker",
+            },
+        )
+        to_supervisor = await handler.execute(
+            "message_send",
+            {
+                "project_id": PROJECT_ID,
+                "to_kind": "session",
+                "to_id": _supervisor_address(),
+                "from_kind": "user",
+                "from_id": "discord:1",
+                "body": "for the supervisor",
+            },
+        )
+        to_user = await handler.execute(
+            "message_send",
+            {
+                "project_id": PROJECT_ID,
+                "to_kind": "user",
+                "to_id": "discord:1",
+                "from_kind": "session",
+                "from_id": _supervisor_address(),
+                "body": "for the human",
+            },
+        )
+        for r in (to_task, to_supervisor, to_user):
+            assert "error" not in r, r
+
+        # Record platform fan-out from the delivery pass only (message_send
+        # itself also emits message.sent for the enqueue).
+        sent_events: list[dict] = []
+
+        async def _record(data: dict) -> None:
+            sent_events.append(dict(data))
+
+        unsub = orch.bus.subscribe("message.sent", _record)
+        try:
+            result = await orch.message_delivery.run_delivery_pass()
+        finally:
+            unsub()
+
+        assert result == {
+            "success": True,
+            "delivered": 2,
+            "skipped_busy": 1,
+            "parked": 0,
+        }
+
+        # Only the supervisor was nudged, on its runtime handle.
+        fake = orch.session_providers.create("fake")
+        assert [n for n, _ in fake.sent_nudges] == [_supervisor_runtime_name()]
+
+        # The user message fanned out exactly once as message.sent.
+        payloads = [p for p in sent_events if p.get("message_id") == to_user["message_id"]]
+        assert len(payloads) == 1
+        assert payloads[0]["to_kind"] == "user"
+        assert (await orch.db.get_message(to_user["message_id"])).via == "platform"
+        assert (await orch.db.get_message(to_supervisor["message_id"])).via == "nudge"
+
+        # The busy task's message and the task row itself are untouched.
+        task_msg = await orch.db.get_message(to_task["message_id"])
+        assert task_msg.delivered_at is None
+        assert task_msg.archived_at is None
+        task_row = await orch.db.get_task("t-busy")
+        assert task_row.status == TaskStatus.IN_PROGRESS
+        assert task_row.assigned_agent_id is None
 
 
 # ---------------------------------------------------------------------------

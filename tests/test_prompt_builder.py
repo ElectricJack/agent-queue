@@ -784,10 +784,10 @@ def test_l1_facts_ordering_in_full_assembly(prompts_dir):
 def test_complete_five_layer_pipeline_and_memory_tier_order(prompts_dir):
     """Lock the full observable assembly order of build().
 
-    The module docstring still describes four layers while the class and the
-    memory-scoping design require five plus the memory tiers (INT-4).  This
-    test pins the order the implementation actually emits so a documentation
-    fix cannot silently change behaviour.
+    The module docs now describe the five layers plus the prepended memory
+    tiers (INT-4, fixed via FU-11).  This test pins the order the
+    implementation actually emits so documentation edits cannot silently
+    change behaviour.
     """
     import asyncio
 
@@ -875,5 +875,53 @@ def test_tier_overflow_warns_once_per_content_and_reset_reenables_warning(prompt
             PromptBuilder(prompts_dir=prompts_dir).set_l0_role(big_role)
         warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert sum("L0 role" in w for w in warnings) == 1
+    finally:
+        reset_tier_overflow_warnings()
+
+
+def test_l1_guidance_overflow_warns_and_content_is_preserved_in_order(prompts_dir, caplog):
+    """L1 guidance carries the same advisory budget contract as the other tiers.
+
+    FU-11 / INT-1 decision: guidance has a 300-token budget and warns once
+    above 2x, exactly like L0/L1-facts/L2 — advisory only, never truncated,
+    because silently dropping behavioural rules is worse than a large prompt.
+    """
+    import logging
+
+    from src.prompt_builder import PromptBuilder, reset_tier_overflow_warnings
+
+    reset_tier_overflow_warnings()
+    try:
+        # >2x the 300-token guidance budget (4 chars per token).
+        big_guidance = "## Guidance\n" + "G" * (300 * 2 * 4 + 100)
+
+        builder = PromptBuilder(prompts_dir=prompts_dir)
+        builder.set_l1_facts("## Critical Facts\n- lang: Python")
+        builder.set_l2_context("## Topic Context\nLogin flow notes.")
+        with caplog.at_level(logging.WARNING, logger="src.prompt_builder"):
+            builder.set_l1_guidance(big_guidance)
+            # Re-setting the same content (a rebuild) must not warn again.
+            builder.set_l1_guidance(big_guidance)
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert sum("L1 guidance" in w for w in warnings) == 1
+        assert "budget ~300" in next(w for w in warnings if "L1 guidance" in w)
+
+        # Advisory only: the oversized guidance is preserved verbatim in its
+        # slot between L1 facts and L2 context — never truncated.
+        prompt, _ = builder.build()
+        assert big_guidance in prompt
+        assert (
+            prompt.index("Critical Facts")
+            < prompt.index(big_guidance)
+            < prompt.index("Topic Context")
+        )
+
+        # Positive control: guidance within budget never warns.
+        caplog.clear()
+        reset_tier_overflow_warnings()
+        with caplog.at_level(logging.WARNING, logger="src.prompt_builder"):
+            PromptBuilder(prompts_dir=prompts_dir).set_l1_guidance("## Guidance\nAlways run ruff.")
+        assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
     finally:
         reset_tier_overflow_warnings()

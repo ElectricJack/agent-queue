@@ -42,6 +42,34 @@ from typing import Callable
 logger = logging.getLogger(__name__)
 
 
+def _match_path_segments(path_parts: list[str], pattern_parts: list[str]) -> bool:
+    """Match path segments, treating ``**`` as zero or more segments."""
+    if not pattern_parts:
+        return not path_parts
+
+    head = pattern_parts[0]
+    rest = pattern_parts[1:]
+    if head == "**":
+        while rest and rest[0] == "**":
+            rest = rest[1:]
+        return any(_match_path_segments(path_parts[i:], rest) for i in range(len(path_parts) + 1))
+
+    return bool(
+        path_parts
+        and fnmatch.fnmatch(path_parts[0], head)
+        and _match_path_segments(path_parts[1:], rest)
+    )
+
+
+def matches_path_pattern(rel_path: str, pattern: str) -> bool:
+    """Match a normalized relative path against a glob with recursive ``**``."""
+    rel_path = rel_path.replace("\\", "/").replace(os.sep, "/")
+    pattern = pattern.replace("\\", "/").replace(os.sep, "/")
+    if "**" not in pattern:
+        return fnmatch.fnmatch(rel_path, pattern)
+    return _match_path_segments(rel_path.split("/"), pattern.split("/"))
+
+
 @dataclass(frozen=True)
 class VaultChange:
     """A single file change detected in the vault.
@@ -499,51 +527,7 @@ class VaultWatcher:
             _matches_pattern("projects/app/memory/k/a.md", "**/memory/**/*.md") → True
             _matches_pattern("a/b/c/d.md", "**/*.md")                          → True
         """
-        # Normalise separators
-        rel_path = rel_path.replace(os.sep, "/")
-        pattern = pattern.replace(os.sep, "/")
-
-        if "**" not in pattern:
-            return fnmatch.fnmatch(rel_path, pattern)
-
-        # Split pattern into segments and match recursively
-        return VaultWatcher._match_segments(
-            rel_path.split("/"),
-            pattern.split("/"),
-        )
-
-    @staticmethod
-    def _match_segments(path_parts: list[str], pattern_parts: list[str]) -> bool:
-        """Recursively match path segments against pattern segments.
-
-        ``**`` in *pattern_parts* matches zero or more path segments.
-        Other segments use :func:`fnmatch.fnmatch` for wildcard matching.
-        """
-        if not pattern_parts:
-            return not path_parts
-
-        head = pattern_parts[0]
-        rest_pattern = pattern_parts[1:]
-
-        if head == "**":
-            # Skip consecutive ** segments
-            while rest_pattern and rest_pattern[0] == "**":
-                rest_pattern = rest_pattern[1:]
-
-            # ** matches zero or more path segments
-            # Try matching the rest of the pattern at every position
-            for i in range(len(path_parts) + 1):
-                if VaultWatcher._match_segments(path_parts[i:], rest_pattern):
-                    return True
-            return False
-
-        if not path_parts:
-            return False
-
-        if fnmatch.fnmatch(path_parts[0], head):
-            return VaultWatcher._match_segments(path_parts[1:], rest_pattern)
-
-        return False
+        return matches_path_pattern(rel_path, pattern)
 
     # ------------------------------------------------------------------
     # Background loop

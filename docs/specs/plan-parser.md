@@ -14,6 +14,10 @@ tags: [spec, plans, tasks]
 > **What exists now:** `src/plan_parser.py` provides only
 > `find_plan_file`/`find_all_plan_files`/`read_plan_file` — plain file-discovery
 > and reading utilities, no parsing into structured steps and no LLM call.
+> The sole production caller is the post-approval plan-cleanup step in
+> `src/commands/task_commands.py`, which uses `find_all_plan_files` to delete
+> leftover plan files from project workspaces; `find_plan_file`/`read_plan_file`
+> are retained for manual/remediation use only (EVT-4).
 > The `process_plan` and `process_task_completion` commands that used to drive
 > plan discovery (`process_plan` → `AWAITING_PLAN_APPROVAL` → `approve_plan`)
 > were deleted outright — the LLM plan parser they depended on is gone, so a

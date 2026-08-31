@@ -665,6 +665,38 @@ class TestDescribeScheduleExtended:
         assert "4" in desc
 
 
+class TestMidnightWindowDedup:
+    """EVT-2: dedup must use the same midnight-wraparound rule as matching.
+
+    Decided semantics (docs/specs/schedule.md §4): a tolerance window that
+    spans midnight is ONE window.  A hook that fired just before midnight
+    must not fire again just after; a fire ~24h earlier (same time-of-day,
+    previous day's window) must never suppress today's fire.
+    """
+
+    def test_midnight_time_window_dedup_uses_same_wraparound_rule_as_matching(self):
+        schedule = {"times": ["00:00"]}
+        last_run = datetime(2026, 3, 22, 23, 59, 30, tzinfo=timezone.utc)
+        now = datetime(2026, 3, 23, 0, 0, 30, tzinfo=timezone.utc)
+        # Both timestamps sit inside the single 00:00±60s window: same
+        # window ⇒ deduped, no second fire across midnight.
+        assert matches_schedule(schedule, now=now, last_run=last_run, tolerance_seconds=60) is False
+
+    def test_fire_from_previous_days_window_does_not_suppress_today(self):
+        schedule = {"times": ["00:00"]}
+        # Same time-of-day but a full day earlier: a DIFFERENT window
+        # occurrence, so today's window must still fire.
+        last_run = datetime(2026, 3, 22, 0, 0, 30, tzinfo=timezone.utc)
+        now = datetime(2026, 3, 23, 0, 0, 30, tzinfo=timezone.utc)
+        assert matches_schedule(schedule, now=now, last_run=last_run, tolerance_seconds=60) is True
+
+    def test_same_date_window_dedup_still_applies(self):
+        schedule = {"times": ["00:00"]}
+        last_run = datetime(2026, 3, 23, 0, 0, 10, tzinfo=timezone.utc)
+        now = datetime(2026, 3, 23, 0, 0, 50, tzinfo=timezone.utc)
+        assert matches_schedule(schedule, now=now, last_run=last_run, tolerance_seconds=60) is False
+
+
 class TestCronZeroStep:
     def test_cron_zero_step_is_invalid_not_exception(self):
         now = datetime(2026, 3, 23, 2, 0, tzinfo=timezone.utc)

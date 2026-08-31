@@ -180,7 +180,7 @@ class VaultGlossary:
                         aliases = _parse_alias_field(line[len("aliases:") :].strip())
 
                 # Body after frontmatter
-                body = content[end + 4:].strip()
+                body = content[end + 4 :].strip()
             else:
                 body = content
         else:
@@ -267,70 +267,65 @@ class VaultGlossary:
                 skip_regions.append((m.start(), m.end()))
         skip_regions.sort()
 
-        def in_skip_region(pos: int, length: int) -> bool:
+        def in_skip_region(pos: int, end_pos: int) -> bool:
             for start, end in skip_regions:
-                if pos < end and pos + length > start:
+                if pos < end and end_pos > start:
                     return True
             return False
 
-        # Split content into sections by ## headings
-        # Process each section independently (first mention per section)
-        result = content
-        offset = 0  # Track cumulative offset from replacements
-
-        # Sort aliases longest first for greedy matching
-        alias_pairs: list[tuple[str, str]] = []
-        for alias, concept_name in sorted(
-            self._alias_index.items(), key=lambda x: len(x[0]), reverse=True
-        ):
-            alias_pairs.append((alias, concept_name))
-
-        replaced_in_current: set[str] = set()
-        # Track section boundaries
+        # A top-level preamble is a section too.  Ignore apparent headings in
+        # protected regions (most importantly fenced code blocks).
         section_starts = [0]
         for m in re.finditer(r"^##\s", content, re.MULTILINE):
-            section_starts.append(m.start())
+            if not in_skip_region(m.start(), m.end()):
+                section_starts.append(m.start())
+        section_starts.append(len(content))
 
-        for alias, concept_name in alias_pairs:
-            if concept_name in replaced_in_current:
-                continue
+        # Find replacements against the original text, then apply them from
+        # right to left.  Original coordinates remain valid and protected
+        # regions do not need adjustment after every inserted wiki-link.
+        replacements: list[tuple[int, int, str]] = []
+        alias_pairs = sorted(self._alias_index.items(), key=lambda item: len(item[0]), reverse=True)
 
-            pattern = re.compile(r"\b" + re.escape(alias) + r"\b", re.IGNORECASE)
-            m = pattern.search(result, offset)
-            if not m:
-                continue
+        for section_start, section_end in zip(section_starts, section_starts[1:]):
+            first_by_concept: dict[str, tuple[int, int, str]] = {}
+            for alias, concept_name in alias_pairs:
+                pattern = re.compile(r"\b" + re.escape(alias) + r"\b", re.IGNORECASE)
+                for match in pattern.finditer(content, section_start, section_end):
+                    if in_skip_region(match.start(), match.end()):
+                        continue
+                    candidate = (match.start(), match.end(), match.group(0))
+                    previous = first_by_concept.get(concept_name)
+                    if (
+                        previous is None
+                        or candidate[0] < previous[0]
+                        or (
+                            candidate[0] == previous[0]
+                            and (candidate[1] - candidate[0]) > (previous[1] - previous[0])
+                        )
+                    ):
+                        first_by_concept[concept_name] = candidate
+                    break
 
-            # Adjust for offset
-            real_pos = m.start()
-            if in_skip_region(real_pos, len(alias)):
-                # Try to find another occurrence outside skip regions
-                pos = m.end()
-                found = False
-                while True:
-                    m = pattern.search(result, pos)
-                    if not m:
-                        break
-                    if not in_skip_region(m.start(), len(alias)):
-                        real_pos = m.start()
-                        found = True
-                        break
-                    pos = m.end()
-                if not found:
+            # Prefer the longest match when aliases for different concepts
+            # overlap at the same location, and never emit overlapping links.
+            section_candidates = sorted(
+                (
+                    (start, end, f"[[glossary/{concept_name}|{matched_text}]]")
+                    for concept_name, (start, end, matched_text) in first_by_concept.items()
+                ),
+                key=lambda item: (item[0], -(item[1] - item[0])),
+            )
+            last_end = section_start
+            for candidate in section_candidates:
+                if candidate[0] < last_end:
                     continue
+                replacements.append(candidate)
+                last_end = candidate[1]
 
-            # Replace with wiki-link
-            matched_text = result[m.start():m.end()] if m else result[real_pos:real_pos + len(alias)]
-            # Use the actual matched text to preserve case
-            m2 = pattern.search(result, real_pos)
-            if m2:
-                matched_text = m2.group(0)
-                replacement = f"[[glossary/{concept_name}|{matched_text}]]"
-                result = result[:m2.start()] + replacement + result[m2.end():]
-                # Update skip regions for the new wiki-link
-                skip_regions.append((m2.start(), m2.start() + len(replacement)))
-                skip_regions.sort()
-                replaced_in_current.add(concept_name)
-
+        result = content
+        for start, end, replacement in reversed(replacements):
+            result = result[:start] + replacement + result[end:]
         return result
 
     def update_backlinks(

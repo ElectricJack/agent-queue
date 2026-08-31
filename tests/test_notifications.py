@@ -9,6 +9,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -782,3 +783,167 @@ class TestDiscordNotificationHandler:
         assert "t1" not in handler._task_threads
 
         handler.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Streamed task messages (stream_id coalescing / chaining / failure isolation)
+# ---------------------------------------------------------------------------
+
+
+class _FakeThreadMessage:
+    """A Discord message owned by the stream worker: records edits."""
+
+    def __init__(self, content: str):
+        self.content = content
+        self.edits: list[str] = []
+        self.edit_error: Exception | None = None
+
+    async def edit(self, *, content: str):
+        if self.edit_error is not None:
+            raise self.edit_error
+        self.edits.append(content)
+        self.content = content
+        return self
+
+
+class _FakeThread:
+    """Task-thread fake: ``send`` returns editable message objects."""
+
+    def __init__(self):
+        self.sent: list[_FakeThreadMessage] = []
+
+    async def send(self, content: str):
+        msg = _FakeThreadMessage(content)
+        self.sent.append(msg)
+        return msg
+
+
+def _make_stream_bot(thread: _FakeThread, task_id: str = "t1"):
+    bot = MagicMock()
+    bot._task_thread_objects = {task_id: thread}
+    bot._send_message = AsyncMock()
+    return bot
+
+
+def _stream_event(text: str, *, stream_id: str, done: bool = False, task_id: str = "t1"):
+    return TaskMessageEvent(
+        task_id=task_id,
+        project_id="proj",
+        message=text,
+        message_type="agent_output",
+        role="assistant",
+        stream_id=stream_id,
+        stream_done=done,
+    ).model_dump(mode="json")
+
+
+async def _wait_for(predicate, timeout: float = 2.0):
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while not predicate():
+        assert _time.monotonic() < deadline, "condition not reached in time"
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+class TestStreamedTaskMessages:
+    async def test_streamed_output_coalesces_cumulative_updates_into_one_edit(self):
+        """Approved plan item 16: cumulative frames sharing a stream_id
+        produce one initial thread send, then in-place edits — pending
+        frames coalesce so the final text lands in a single edit, and the
+        main channel is never posted to."""
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        thread = _FakeThread()
+        bot = _make_stream_bot(thread)
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            await handler._on_task_message(_stream_event("Hello", stream_id="st1"))
+            # Wait for the worker to render the first frame.
+            await _wait_for(lambda: len(thread.sent) == 1 and thread.sent[0].content == "Hello")
+
+            # Two more cumulative frames, enqueued back-to-back: the worker
+            # must coalesce them into one edit carrying the newest text.
+            await handler._on_task_message(_stream_event("Hello wor", stream_id="st1"))
+            await handler._on_task_message(
+                _stream_event("Hello world, done.", stream_id="st1", done=True)
+            )
+            worker = handler._stream_states["st1"]["worker"]
+            await worker
+
+            assert len(thread.sent) == 1  # never a second message
+            assert thread.sent[0].edits == ["Hello world, done."]
+            bot._send_message.assert_not_called()
+            assert "st1" not in handler._stream_states
+        finally:
+            handler.shutdown()
+
+    async def test_streamed_output_over_limit_chains_messages_and_finishes_cleanly(self):
+        """Approved plan item 17: final cumulative text over two Discord
+        message limits chains ordered in-limit messages with no loss or
+        duplication, and the stream state drains away afterwards."""
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        thread = _FakeThread()
+        bot = _make_stream_bot(thread)
+        handler = DiscordNotificationHandler(bot, bus)
+        limit = 1990  # DISCORD_LIMIT in _stream_worker
+        text = "".join(f"{i % 10}" for i in range(2 * limit + 137))
+        try:
+            await handler._on_task_message(_stream_event(text, stream_id="st2", done=True))
+            worker = handler._stream_states["st2"]["worker"]
+            await worker
+
+            assert len(thread.sent) == 3
+            chunks = [m.content for m in thread.sent]
+            assert all(len(c) <= limit for c in chunks)
+            assert "".join(chunks) == text  # ordered, lossless, no duplication
+            assert all(m.edits == [] for m in thread.sent)
+            bot._send_message.assert_not_called()
+            # Worker removed after drain.
+            assert "st2" not in handler._stream_states
+        finally:
+            handler.shutdown()
+
+    async def test_stream_edit_failure_logs_and_does_not_kill_next_stream(self, caplog):
+        """Approved plan item 18: a Discord edit failure on one stream is
+        logged and that stream's state is cleaned up; a subsequent stream
+        renders normally."""
+        import logging
+
+        from src.discord.notification_handler import DiscordNotificationHandler
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        thread = _FakeThread()
+        bot = _make_stream_bot(thread)
+        handler = DiscordNotificationHandler(bot, bus)
+        try:
+            await handler._on_task_message(_stream_event("first stream", stream_id="stA"))
+            await _wait_for(lambda: len(thread.sent) == 1)
+            thread.sent[0].edit_error = RuntimeError("edit rejected")
+
+            with caplog.at_level(logging.ERROR, logger="src.discord.notification_handler"):
+                await handler._on_task_message(
+                    _stream_event("first stream, grown", stream_id="stA", done=True)
+                )
+                await handler._stream_states["stA"]["worker"]
+
+            assert any("Discord I/O failed" in r.getMessage() for r in caplog.records)
+            # Failed stream is cleaned up, not wedged.
+            assert "stA" not in handler._stream_states
+
+            # A second stream is unaffected.
+            await handler._on_task_message(
+                _stream_event("second stream", stream_id="stB", done=True)
+            )
+            await handler._stream_states["stB"]["worker"]
+            assert thread.sent[-1].content == "second stream"
+            assert "stB" not in handler._stream_states
+        finally:
+            handler.shutdown()
