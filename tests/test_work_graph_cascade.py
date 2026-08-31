@@ -551,3 +551,25 @@ class TestGateSweepBehavior:
         assert call_order.index("sweep") < call_order.index("check_defined")
         # Behaviour: the waiter promoted to READY on this cycle.
         assert (await orch.db.get_task("t")).status == TaskStatus.READY
+
+
+@pytest.mark.parametrize("authoritative", [False, True])
+@pytest.mark.parametrize("reason", ["stuck_timeout", "session_rapid_crash", "prepare_timeout"])
+async def test_attention_blocked_task_does_not_auto_recover(orch, authoritative, reason):
+    orch.config.work_graph.blocked_state_authoritative = authoritative
+    await mktask(orch, "dep", status=TaskStatus.COMPLETED)
+    for tid in ("needs-operator", "ordinary-dependent"):
+        await mktask(orch, tid, status=TaskStatus.BLOCKED)
+        await orch.db.add_dependency(tid, "dep")
+    await orch.db.set_task_meta("needs-operator", "needs_attention", reason)
+
+    for _ in range(2):
+        await orch._check_defined_tasks()
+    assert await status_of(orch, "needs-operator") == TaskStatus.BLOCKED
+    assert await status_of(orch, "ordinary-dependent") == TaskStatus.READY
+    assert await orch.db.get_task_meta("needs-operator", "needs_attention") == reason
+
+    # Explicitly clearing the attention hold restores ordinary dependency recovery.
+    await orch.db.delete_task_meta("needs-operator", "needs_attention")
+    await orch._check_defined_tasks()
+    assert await status_of(orch, "needs-operator") == TaskStatus.READY

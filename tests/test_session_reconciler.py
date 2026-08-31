@@ -887,6 +887,36 @@ class TestBackstop:
         assert await db.get_task_meta("t1", "needs_attention") == "stuck_timeout"
         assert "task.quarantined" in bus.types()
 
+    @pytest.mark.parametrize("authoritative", [False, True])
+    async def test_backstop_block_survives_next_promotion_cycle(
+        self, db, provider, reconciler, config, authoritative, tmp_path
+    ):
+        from src.orchestrator import Orchestrator
+
+        config.data_dir = str(tmp_path / "data")
+        config.workspace_dir = str(tmp_path / "workspaces")
+        config.database_path = str(tmp_path / "unused.db")
+        config.sessions.lease_ttl_seconds = 0
+        config.agents_config.stuck_timeout_seconds = 3600
+        config.work_graph.blocked_state_authoritative = authoritative
+        await _task(db)
+        await db.create_task(Task(
+            id="completed-dependency", project_id="p1", title="Done", description="Done",
+            status=TaskStatus.COMPLETED,
+        ))
+        await db.add_dependency("t1", "completed-dependency")
+        await _session(db, provider, started_at=NOW - 7200, last_activity=NOW)
+        await reconciler.tick(now=NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+
+        # Exercise the next real cascade, not just the backstop in isolation.
+        orch = Orchestrator(config)
+        orch.db = db
+        await orch._check_defined_tasks()
+        assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+        assert (await db.get_session("s1")).state == "stopped"
+        assert await db.get_task_meta("t1", "needs_attention") == "stuck_timeout"
+
     async def test_backstop_off_when_the_timeout_is_zero(self, db, provider, reconciler):
         await _task(db)
         await _session(db, provider, started_at=NOW - 999_999)

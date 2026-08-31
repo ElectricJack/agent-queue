@@ -78,6 +78,13 @@ class MonitoringMixin:
         # Also check BLOCKED tasks — their dependencies may have been
         # satisfied since they were blocked, allowing them to proceed.
         blocked = await self.db.list_tasks(status=TaskStatus.BLOCKED)
+        # Session failures and timeouts require explicit attention even when
+        # their old graph dependencies are satisfied. Otherwise this cascade
+        # immediately undoes the reconciler's BLOCKED/quarantine decision.
+        blocked = [
+            task for task in blocked
+            if not await self.db.get_task_meta(task.id, "needs_attention")
+        ]
 
         legacy, deferred = await self._legacy_promotion_decisions(defined, blocked)
         projected = await self._projected_promotion_decisions(defined, blocked)
