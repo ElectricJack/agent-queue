@@ -62,7 +62,11 @@ describe("task session history", () => {
     expect(rows[1]).toHaveTextContent("Process exited with code 1");
     expect(rows[1]).toHaveTextContent("failed");
     expect(rows[1]!.querySelectorAll("time[datetime]")).toHaveLength(2);
-    expect(rows[0]).toHaveTextContent("Not recorded");
+    expect(rows[0]).not.toHaveTextContent("Not recorded");
+    expect(within(rows[0]!).queryByText("Details")).not.toBeInTheDocument();
+    expect(within(rows[1]!).getByText("Process exited with code 1")).not.toBeVisible();
+    fireEvent.click(within(rows[1]!).getByText("Details"));
+    expect(within(rows[1]!).getByText("Process exited with code 1")).toBeVisible();
     expect(screen.getByText("Workspace acquisition failed: disk full")).toBeInTheDocument();
     const link = within(rows[1]!).getByRole("link", { name: /Original Worker/ });
     expect(link).toHaveAttribute("href", "/sessions/worker-a?attempt=attempt-1&taskId=task-a");
