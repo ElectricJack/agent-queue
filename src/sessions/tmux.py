@@ -200,7 +200,12 @@ class TmuxProvider(SessionProvider):
 
         # ``exec`` so the agent *is* the pane process, not a child of a
         # lingering shell — process discovery and signalling depend on it.
-        shell_cmd = "exec " + " ".join(shlex.quote(a) for a in spec.command)
+        # tmux replaces a pane's PATH with the client's PATH even when
+        # new-session -e PATH=... set the session environment. Restore the
+        # same lookup context used by preflight at exec time; quote it as
+        # literal data, including relative entries and shell metacharacters.
+        launch_path = shlex.quote(spec.env.get("PATH", os.defpath))
+        shell_cmd = f"PATH={launch_path} exec " + " ".join(shlex.quote(a) for a in spec.command)
 
         args = ["new-session", "-d", "-s", spec.session_name, "-c", str(work_dir)]
         for key, value in spec.env.items():
