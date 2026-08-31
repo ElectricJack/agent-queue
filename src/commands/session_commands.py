@@ -790,6 +790,11 @@ class SessionCommandsMixin:
                 now=time.time(),
             )
             remove_claim_file(session.work_dir)
+            if self.config.swarm.fresh_context_per_task:
+                # Only after close/release: keep context for active work, human
+                # questions and retries. The reconciler stops this idle session
+                # before its global worker/workspace can serve another task.
+                await self.db.update_session(session.id, desired_state="stopped")
         elif session is not None and session.lifecycle == "task" and session.work_dir:
             # Push launches join the claim fence too (execution.py) and
             # write the same claim file — clean it up on a task-session

@@ -97,6 +97,8 @@ async def orch(db, tmp_path):
     o._agent_reconciler._db = db
     o.session_reconciler.db = db
     o.session_lens.db = db
+    o.agent_questions.db = db
+    o.transcript_watcher.db = db
     o.git = MagicMock()
     o.bus.emit = AsyncMock()
     o.harness_registry.upsert(
@@ -155,7 +157,37 @@ async def mktask(db, tid, **kw):
 
 
 class TestSwarmWorkerLoopEndToEnd:
+    async def test_default_next_task_gets_fresh_session_on_same_worker(self, orch, handler, db):
+        await mktask(db, "t1")
+        await mktask(db, "t2")
+        await orch.run_one_cycle()
+        old = (await db.list_sessions(lifecycle="pool", live_only=True))[0]
+        first = await scoped(handler, old.id)._cmd_task_claim({"next": True})
+        await handler._cmd_task_close({
+            "task_id": "t1", "outcome": "pass", "summary": "done",
+            "claim_epoch": first["claim_epoch"], "claim_next": True,
+        })
+        assert (await db.get_task("t2")).status == TaskStatus.READY
+        # No simulated process exit: the daemon itself retires the old context.
+        await orch.run_one_cycle()
+        await orch.run_one_cycle()
+        live = await db.list_sessions(lifecycle="pool", live_only=True)
+        assert len(live) == 1
+        fresh = live[0]
+        assert fresh.id != old.id and fresh.instance_token != old.instance_token
+        assert fresh.agent_id == old.agent_id
+        provider = orch.session_providers.create("fake")
+        old_spec = next(spec for spec in provider.starts if spec.session_name == old.name)
+        fresh_spec = next(spec for spec in provider.starts if spec.session_name == fresh.name)
+        assert "--resume" not in fresh_spec.command
+        assert old_spec.command[old_spec.command.index("--session-id") + 1] == old.id
+        assert fresh_spec.command[fresh_spec.command.index("--session-id") + 1] == fresh.id
+        assert (await db.get_session(old.id)).state == "stopped"
+        next_task = await scoped(handler, fresh.id)._cmd_task_claim({"next": True})
+        assert (next_task["result"], next_task["task"]["id"]) == ("claimed", "t2")
+
     async def test_pool_worker_loop_end_to_end(self, orch, handler, db):
+        orch.config.swarm.fresh_context_per_task = False
         await mktask(db, "t1")
         await mktask(db, "t2")
         await mktask(db, "t3")

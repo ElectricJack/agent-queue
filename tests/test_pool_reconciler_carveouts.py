@@ -73,6 +73,7 @@ async def orch(db, tmp_path, registry):
     # ``AgentReconciler`` was built in ``__init__`` against the (real,
     # uninitialized) db the constructor saw -- point it at the test db too.
     o._agent_reconciler._db = db
+    o.agent_questions.db = db
     o.git = MagicMock()
     o.bus.emit = AsyncMock()
     o.session_providers = registry

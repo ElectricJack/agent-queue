@@ -1301,6 +1301,8 @@ class SwarmConfig:
     """
 
     enabled: bool = False
+    # Retire a pool conversation after each task; the global worker is reused.
+    fresh_context_per_task: bool = True
     claim_wait_max: int = 60  # seconds a `task_claim --wait` may block
     max_starts_per_tick: int = 2
     max_drains_per_tick: int = 5
@@ -2400,6 +2402,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         sw = raw["swarm"]
         config.swarm = SwarmConfig(
             enabled=bool(sw.get("enabled", False)),
+            fresh_context_per_task=bool(sw.get("fresh_context_per_task", True)),
             claim_wait_max=int(sw.get("claim_wait_max", 60)),
             max_starts_per_tick=int(sw.get("max_starts_per_tick", 2)),
             max_drains_per_tick=int(sw.get("max_drains_per_tick", 5)),

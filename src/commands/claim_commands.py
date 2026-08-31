@@ -234,7 +234,7 @@ class ClaimCommandsMixin:
                 "error": "task sessions cannot claim other work",
             }
 
-        cap = getattr(profile, "max_claims_per_session", None)
+        cap = self._pool_context_claim_cap(profile)
         project = await self.db.get_project(session.project_id)
         default_profile = getattr(project, "default_profile_id", None)
         refresh_routing = False
@@ -244,7 +244,7 @@ class ClaimCommandsMixin:
                 # Long-poll wakes may follow profile/class edits. Keep the
                 # session's frozen launch settings but refresh its requirements.
                 profile = await self.db.get_profile(session.profile_id)
-                cap = getattr(profile, "max_claims_per_session", None)
+                cap = self._pool_context_claim_cap(profile)
                 project = await self.db.get_project(session.project_id)
                 default_profile = getattr(project, "default_profile_id", None)
             refresh_routing = True
@@ -282,6 +282,10 @@ class ClaimCommandsMixin:
                 routing = self._pool_claim_routing(session, profile)
                 outcome = await self._attempt_claim(session, want_id, cap, default_profile, routing=routing)
                 result = outcome["result"]
+                if (result == ClaimResult.SESSION_EXHAUSTED.value
+                        and self.config.swarm.fresh_context_per_task):
+                    # Also retire idle sessions that predate this policy.
+                    await self.db.update_session(session.id, desired_state="stopped")
                 if result == ClaimResult.NO_READY_WORK.value and wait:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -304,6 +308,13 @@ class ClaimCommandsMixin:
                 return outcome
             finally:
                 waiter.close()
+
+    def _pool_context_claim_cap(self, profile):
+        # A reused global worker must not carry a previous task's conversation.
+        # Same-task active/preparing claims remain idempotent in take_claim_slot.
+        if self.config.swarm.fresh_context_per_task:
+            return 1
+        return getattr(profile, "max_claims_per_session", None)
 
     def _pool_claim_routing(self, session, profile) -> tuple[str | None, bool]:
         """Restrict claims to the recorded live session, not next-launch settings.

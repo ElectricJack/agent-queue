@@ -93,8 +93,12 @@ does) and the daemon closes whichever task this session currently holds —
 which is the only sane form for a pool worker, whose task changes with every
 claim. The same goes for `aq task heartbeat`.
 
-`task_close --claim-next` chains straight into the next claim after closing,
-so the loop above is really one command per iteration. `aq task heartbeat`,
+`task_close --claim-next` attempts another claim after closing. By default,
+AQ retires the conversation after one task and returns `drain_requested` or
+`session_exhausted`; stop and let AQ start fresh context for the next task.
+Do not send `/clear` yourself. Operators can explicitly disable this policy
+with `swarm.fresh_context_per_task: false` to retain the multi-task loop.
+`aq task heartbeat`,
 `aq task set`, and `aq handoff` all accept `--claim-epoch` too — every one of
 them reads it from `.aq/claim.json` (falling back to `$AQ_CLAIM_EPOCH`)
 automatically, so you don't normally need to pass it by hand. A pool session

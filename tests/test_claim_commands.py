@@ -315,7 +315,44 @@ class TestClaim:
         res = await scoped(handler, s2)._cmd_task_claim({"task_id": "t1"})
         assert res["result"] == "claim_conflict"
 
+    @pytest.mark.parametrize("cap", [None, 1, 8])
+    @pytest.mark.parametrize("claim_next", [False, True])
+    async def test_default_close_retires_context_without_claiming_next_task(
+        self, handler, db, tmp_path, cap, claim_next
+    ):
+        await db.update_profile("worker", max_claims_per_session=cap)
+        await mktask(db, "t1", profile_id="worker")
+        await mktask(db, "t2", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        first = await h._cmd_task_claim({"next": True})
+        # Reading/retrying the currently held task must not clear its context.
+        again = await h._cmd_task_claim({"next": True})
+        assert again["claim_epoch"] == first["claim_epoch"]
+        assert (await db.get_session(sid)).desired_state == "running"
+        closed = await h._cmd_task_close({
+            "task_id": "t1", "outcome": "pass", "summary": "done",
+            "claim_epoch": first["claim_epoch"], "claim_next": claim_next,
+        })
+        assert closed["success"] is True
+        assert (await db.get_session(sid)).desired_state == "stopped"
+        second = await db.get_task("t2")
+        assert second.status == TaskStatus.READY and second.assigned_agent_id is None
+        if claim_next:
+            assert closed["next"]["result"] == "drain_requested"
+        assert (await h._cmd_task_claim({"task_id": "t2"}))["result"] == "drain_requested"
+
+    async def test_old_idle_pool_cannot_reuse_completed_context(self, handler, db, tmp_path):
+        sid, _ = await pool_session(db, tmp_path)
+        await db.update_session(sid, claims=3)
+        await mktask(db, "t2", profile_id="worker")
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert result["result"] == "session_exhausted"
+        assert (await db.get_session(sid)).desired_state == "stopped"
+        assert (await db.get_task("t2")).status == TaskStatus.READY
+
     async def test_session_exhausted_after_cap_via_close_claim_next(self, handler, db, tmp_path):
+        handler.config.swarm.fresh_context_per_task = False
         await db.update_profile("worker", max_claims_per_session=1)
         await mktask(db, "t1", profile_id="worker")
         await mktask(db, "t2", profile_id="worker")
@@ -400,6 +437,7 @@ class TestClaim:
 
 class TestFence:
     async def test_stale_epoch_rejected_on_close(self, handler, db, tmp_path):
+        handler.config.swarm.fresh_context_per_task = False
         await mktask(db, "t1", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
         h = scoped(handler, sid)

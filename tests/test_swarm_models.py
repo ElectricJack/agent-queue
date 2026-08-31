@@ -153,3 +153,11 @@ class TestSwarmConfig:
 
     def test_app_config_has_swarm(self):
         assert isinstance(AppConfig().swarm, SwarmConfig)
+
+
+@pytest.mark.parametrize("setting, expected", [("", True), ("fresh_context_per_task: false", False), ("fresh_context_per_task: true", True)])
+def test_fresh_context_policy_loads_from_config(tmp_path, setting, expected):
+    from src.config import load_config
+    path = tmp_path / "config.yaml"
+    path.write_text("database_path: " + str(tmp_path / "aq.db") + "\ndiscord:\n  bot_token: test\n  guild_id: '1'\nswarm:\n  enabled: true\n  " + setting + "\n")
+    assert load_config(str(path)).swarm.fresh_context_per_task is expected

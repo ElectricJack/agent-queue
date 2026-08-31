@@ -55,3 +55,16 @@ This feature handles assistant questions in native conversation transcripts. It
 does not automatically approve harness permission dialogs or grant additional
 filesystem, network, API, or project access. Ended sessions are not rebound to a
 new worker to deliver historical answers.
+
+## Context between tasks
+
+Task workers start new conversations for new tasks. Pool workers now do the same
+by default: after a task closes, AQ retires its session and starts a fresh one
+for the next task while retaining the global worker identity. This resets model
+context without injecting provider-specific slash commands into the terminal.
+Task summaries, files, and project instructions remain available.
+
+Pending questions, active tasks, same-task recovery, and named supervisor chats
+retain their context. Operators who deliberately want the older multi-task pool
+conversation can set `swarm.fresh_context_per_task: false`; profile
+`max_claims_per_session` then applies as before.
