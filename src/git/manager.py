@@ -284,8 +284,10 @@ class GitManager:
                     f"git {' '.join(args)} timed out after "
                     f"{effective_timeout}s (possible credential prompt)"
                 )
-        except FileNotFoundError:
-            raise GitError("git executable not found")
+        except FileNotFoundError as exc:
+            if cwd is not None and not Path(cwd).is_dir():
+                raise GitError(f"git working directory does not exist: {cwd}") from exc
+            raise GitError("git executable not found") from exc
         stdout_str = stdout.decode(errors="replace").strip()
         stderr_str = stderr.decode(errors="replace").strip()
         if proc.returncode != 0:

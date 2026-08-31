@@ -908,8 +908,19 @@ class WorktreeSlotManager:
 
         base_path = base_ws.workspace_path
         _validate_ref(default_branch, field="default branch")
+        if not Path(base_path).is_dir():
+            logger.debug("Skipping branch cleanup for missing repository %s", base_path)
+            return []
 
         async with self._git_mutex(base_path):
+            # A merged or failed branch may still belong to a worktree. Never
+            # delete it or detach that worktree as part of routine cleanup.
+            try:
+                worktrees = await self.git.aworktree_list(base_path)
+            except GitError as exc:
+                logger.warning("Skipping branch cleanup; worktree inventory failed in %s: %s", base_path, exc)
+                return []
+            attached = {entry["branch"] for entry in worktrees if entry.get("branch")}
             try:
                 merged = await self.git.alist_merged_branches(
                     base_path, into=default_branch, prefix=BRANCH_PREFIX
@@ -920,6 +931,8 @@ class WorktreeSlotManager:
 
             deleted: list[str] = []
             for br in merged:
+                if br in attached:
+                    continue
                 try:
                     await self.git.adelete_local_branch(base_path, br)
                     deleted.append(br)
@@ -948,7 +961,7 @@ class WorktreeSlotManager:
                     if len(parts) != 2:
                         continue
                     br, ts_raw = parts
-                    if br in deleted:
+                    if br in deleted or br in attached:
                         continue
                     try:
                         ts = float(ts_raw)

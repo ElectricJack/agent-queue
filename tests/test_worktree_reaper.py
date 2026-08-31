@@ -431,3 +431,60 @@ class TestRecoveryPreservesInProgressSlots:
             assert await o.db.get_workspace(slot_ws.id) is not None
         finally:
             await o.shutdown()
+
+
+class TestMonitorSafety:
+    async def test_missing_repo_is_not_reported_as_missing_git(self, tmp_path):
+        from src.git.manager import GitError
+        o = await _orch(tmp_path)
+        try:
+            with pytest.raises(GitError, match="working directory.*does not exist"):
+                await o.git._arun(["status", "--short"], cwd=str(tmp_path / "missing"))
+        finally:
+            await o.shutdown()
+
+    async def test_prune_never_attempts_checked_out_branch(self, tmp_path, base_repo):
+        from unittest.mock import AsyncMock, patch
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            attached = tmp_path / "attached"
+            _git(["worktree", "add", "-b", "aq/attached", str(attached), "main"], cwd=base_repo)
+            (attached / "uncommitted.txt").write_text("preserve this work")
+            _git(["branch", "aq/free", "main"], cwd=base_repo)
+            mgr = o._worktree_slots()
+            with patch.object(mgr.git, "adelete_local_branch", AsyncMock(wraps=mgr.git.adelete_local_branch)) as delete:
+                pruned = await mgr.prune_branches(await o.db.get_workspace("ws-base"), default_branch="main")
+                assert all(call.args[1] != "aq/attached" for call in delete.await_args_list)
+            assert pruned == ["aq/free"]
+            assert (attached / "uncommitted.txt").read_text() == "preserve this work"
+        finally:
+            await o.shutdown()
+
+    async def test_prune_skips_when_worktree_inventory_is_unknown(self, tmp_path, base_repo):
+        from unittest.mock import AsyncMock, patch
+        from src.git.manager import GitError
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            _git(["branch", "aq/keep", "main"], cwd=base_repo)
+            mgr = o._worktree_slots()
+            with patch.object(mgr.git, "aworktree_list", AsyncMock(side_effect=GitError("inventory unavailable"))):
+                assert await mgr.prune_branches(await o.db.get_workspace("ws-base"), default_branch="main") == []
+            assert "aq/keep" in _git(["branch", "--list"], cwd=base_repo)
+        finally:
+            await o.shutdown()
+
+    async def test_prune_skips_missing_repository(self, tmp_path, base_repo):
+        from unittest.mock import AsyncMock, patch
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            base = await o.db.get_workspace("ws-base")
+            base.workspace_path = str(tmp_path / "missing")
+            mgr = o._worktree_slots()
+            with patch.object(mgr.git, "alist_merged_branches", AsyncMock(return_value=[])) as merged:
+                assert await mgr.prune_branches(base, default_branch="main") == []
+                merged.assert_not_awaited()
+        finally:
+            await o.shutdown()
