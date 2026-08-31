@@ -194,7 +194,14 @@ class PluginCommandsMixin:
                 if isinstance(new_config, str):
                     import json
 
-                    new_config = json.loads(new_config)
+                    # Caller-supplied JSON: a parse failure is a bad request,
+                    # not a handler crash — keep the {"error": ...} convention.
+                    try:
+                        new_config = json.loads(new_config)
+                    except (json.JSONDecodeError, ValueError) as exc:
+                        return {"error": f"config is not valid JSON: {exc}"}
+                if not isinstance(new_config, dict):
+                    return {"error": "config must be a JSON object"}
                 await loaded.context.save_config(new_config)
                 return {"name": name, "config": new_config, "message": "Config updated"}
             return {"name": name, "config": config}

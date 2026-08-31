@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -371,10 +372,39 @@ def derive_server_id(rel_path: str) -> tuple[str | None, str] | None:
     return None
 
 
+# A vault path component: one filesystem-safe segment.  Anything with a
+# separator, a leading dot, or a traversal element is rejected before it can
+# reach ``os.path.join`` — otherwise a caller-supplied ``name``/``project_id``
+# escapes ``mcp-servers/`` or the project directory entirely.
+_VAULT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def validate_vault_id(value: str, *, kind: str) -> str:
+    """Return ``value`` stripped, or raise ``ValueError`` if it is unsafe.
+
+    ``kind`` names the field for the error message (``"name"``,
+    ``"project_id"``).
+    """
+    candidate = (value or "").strip()
+    if not candidate or ".." in candidate or not _VAULT_ID_RE.match(candidate):
+        raise ValueError(
+            f"invalid {kind} {value!r}: must be a single path segment matching "
+            "[A-Za-z0-9][A-Za-z0-9._-]*"
+        )
+    return candidate
+
+
 def vault_path_for(data_dir: str, name: str, project_id: str | None) -> str:
-    """Return the absolute vault path where this server's markdown lives."""
+    """Return the absolute vault path where this server's markdown lives.
+
+    ``name`` and ``project_id`` are validated as single path segments; a
+    traversal or absolute component raises ``ValueError`` rather than
+    composing a path outside the vault roots.
+    """
     base = os.path.join(data_dir, "vault")
+    name = validate_vault_id(name, kind="name")
     if project_id:
+        project_id = validate_vault_id(project_id, kind="project_id")
         return os.path.join(base, "projects", project_id, "mcp-servers", f"{name}.md")
     return os.path.join(base, "mcp-servers", f"{name}.md")
 
