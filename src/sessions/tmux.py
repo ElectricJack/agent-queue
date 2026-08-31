@@ -817,7 +817,14 @@ def _composer_is_empty(
             and suffix == _CODEX_PLACEHOLDER
             and f"\x1b[2m{_CODEX_PLACEHOLDER}" in raw_lines[cursor_y]
         )
-        return placeholder and len(below) == 2 and not below[0].strip()
+        # Codex can leave blank screen rows below its status footer after
+        # resizing. Accept padding only; extra content still fails closed.
+        return (
+            placeholder
+            and len(below) >= 2
+            and not below[0].strip()
+            and all(not row.strip() for row in below[2:])
+        )
     # Continuation lines can contain a pasted prompt glyph. An indented
     # one must never be mistaken for the start of an empty composer.
     if indent:

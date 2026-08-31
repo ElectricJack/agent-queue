@@ -251,3 +251,37 @@ class TestBackgroundNudgeDrafts:
         assert composer.draft == draft
         assert composer.submitted == []
         assert composer.mutations == []
+
+
+class TestCodexFooterPadding:
+    async def test_detached_empty_codex_with_bottom_padding_accepts_reminder(self):
+        composer = Composer(
+            row=CODEX_PLACEHOLDER,
+            cursor_y=17,
+            height=22,
+            below=["", "  gpt-5.6-sol high · /project", "", ""],
+        )
+        await provider_for(composer).nudge(handle(), REMINDER)
+        assert composer.submitted == [REMINDER]
+
+    @pytest.mark.parametrize("unsafe", ["attached", "literal-placeholder", "text-after-footer"])
+    async def test_padding_does_not_bypass_input_safety(self, unsafe):
+        composer = Composer(
+            row=CODEX_PLACEHOLDER,
+            cursor_y=17,
+            height=22,
+            below=["", "  gpt-5.6-sol high · /project", "", ""],
+        )
+        if unsafe == "attached":
+            composer.attached = 1
+        elif unsafe == "literal-placeholder":
+            composer.draft = "Ask Codex to do anything"
+            composer.row = composer.prefix + composer.draft
+        else:
+            composer.below[-1] = "  unsent continuation"
+        original = composer.draft
+        with pytest.raises(NotSubmitted):
+            await provider_for(composer).nudge(handle(), REMINDER)
+        assert composer.draft == original
+        assert composer.submitted == []
+        assert composer.mutations == []
