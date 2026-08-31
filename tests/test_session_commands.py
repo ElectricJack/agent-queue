@@ -205,7 +205,8 @@ class TestSessionList:
     async def test_lists_and_derives_stalled(self, handler, db, provider, config):
         await _make_task(db)
         row = await _make_session(db, provider)
-        await db.touch_session_activity(row.id, time.time() - 10_000)
+        # touch_session_activity refuses to rewind; backdate the row directly.
+        await db.update_session(row.id, last_activity=time.time() - 10_000)
         config.sessions.lease_ttl_seconds = 480
         result = await handler.execute("session_list", {})
         entry = result["sessions"][0]
