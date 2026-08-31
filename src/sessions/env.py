@@ -35,6 +35,7 @@ are actually honoured at the launch site.  ``CLAUDECODE`` /
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping
 
 from src.env_scrub import STRIP_ALWAYS, scrub_env, scrub_env_from_config
@@ -173,10 +174,21 @@ def build_session_env(
             )
             explicit.pop(key, None)
 
+    # A daemon can itself be running inside an AQ session (notably in tests
+    # and when a supervisor launches a named child).  Never inherit that
+    # parent's identity into a child: named/prompt-less sessions deliberately
+    # omit some markers, and stale inherited values would put them in the
+    # wrong task scope.  The current launch's markers above are authoritative.
+    inherited = {
+        key: value
+        for key, value in (base if base is not None else os.environ).items()
+        if not key.startswith("AQ_")
+    }
+
     if config is not None:
-        result = scrub_env_from_config(config, base=base, explicit=explicit)
+        result = scrub_env_from_config(config, base=inherited, explicit=explicit)
     else:
-        result = scrub_env(base, explicit=explicit)
+        result = scrub_env(inherited, explicit=explicit)
 
     if result.dropped:
         logger.debug(
