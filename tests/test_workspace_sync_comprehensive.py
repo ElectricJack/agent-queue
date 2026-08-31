@@ -1166,3 +1166,98 @@ class TestOrchestratorMidChainRebaseIntegration:
 
         result = await orch._mid_chain_rebase(task, repo, "/workspace")
         assert result is False
+
+
+# ===========================================================================
+# 8. Orchestrator integration: _execute_sync_workflow error cleanup
+# ===========================================================================
+
+
+class TestSyncWorkflowErrorCleanup:
+    """The ``finally`` contract of ``_execute_sync_workflow``: whatever goes
+    wrong mid-sync, every workspace lock the sync task holds is released, the
+    project is resumed, and the agent is freed."""
+
+    @pytest.mark.asyncio
+    async def test_sync_workflow_resumes_project_and_releases_every_lock_after_git_error(
+        self, orchestrator_factory, tmp_path
+    ):
+        from src.models import (
+            Agent,
+            AgentProfile,
+            Project,
+            ProjectStatus,
+            TaskStatus,
+            TaskType,
+            Workspace,
+        )
+        from src.scheduler import AssignAction
+
+        orch = await orchestrator_factory()
+        try:
+            db = orch.db
+            await db.create_project(Project(id="p-sync", name="p-sync"))
+            await db.upsert_profile(
+                AgentProfile(
+                    id="sync-profile",
+                    name="sync",
+                    model="claude-haiku-4-5-20251001",
+                    permission_mode="bypassPermissions",
+                )
+            )
+            await db.create_agent(Agent(id="a-sync", name="a-sync", profile_id="sync-profile"))
+            sync = Task(
+                id="sync-task",
+                project_id="p-sync",
+                title="sync",
+                description="",
+                status=TaskStatus.IN_PROGRESS,
+                task_type=TaskType.SYNC,
+            )
+            await db.create_task(sync)
+
+            # Two workspaces locked by the sync task itself, as if acquired
+            # earlier in the workflow.  Real directories so the early-out
+            # branch check actually consults git.
+            for n in (1, 2):
+                ws_dir = tmp_path / f"sync-ws-{n}"
+                ws_dir.mkdir()
+                await db.create_workspace(
+                    Workspace(
+                        id=f"sync-ws-{n}",
+                        project_id="p-sync",
+                        workspace_path=str(ws_dir),
+                        source_type=RepoSourceType.LINK,
+                    )
+                )
+                await db.update_workspace(
+                    f"sync-ws-{n}",
+                    locked_by_task_id="sync-task",
+                    locked_by_agent_id="a-sync",
+                )
+
+            # The git error during sync: the branch inspection blows up, which
+            # forces the merge phase; with no runtimes registry the workflow
+            # then fails the task and must clean up in its ``finally``.
+            orch.git.aget_current_branch = AsyncMock(side_effect=GitError("git exploded"))
+            orch.git.alist_branches = AsyncMock(side_effect=GitError("git exploded"))
+            assert orch._runtimes is None
+
+            agent = await db.get_agent("a-sync")
+            action = AssignAction(agent_id="a-sync", task_id="sync-task", project_id="p-sync")
+            await orch._execute_sync_workflow(action, sync, agent)
+
+            # Failed per contract — not left IN_PROGRESS, not COMPLETED.
+            assert (await db.get_task("sync-task")).status == TaskStatus.FAILED
+            # The project paused in phase 1 is resumed by the finally path.
+            assert (await db.get_project("p-sync")).status == ProjectStatus.ACTIVE
+            # Every lock is released by the finally path.
+            for n in (1, 2):
+                ws = await db.get_workspace(f"sync-ws-{n}")
+                assert (ws.locked_by_task_id, ws.locked_by_agent_id) == (None, None)
+            # The agent is freed.
+            post_agent = await db.get_agent("a-sync")
+            assert post_agent.current_task_id is None
+            assert "a-sync" not in orch._adapters
+        finally:
+            await orch.db.close()

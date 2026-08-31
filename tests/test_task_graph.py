@@ -625,6 +625,45 @@ class TestValidatorDetails:
         assert {f.rule for f in warnings} == {"unused_var", "no_acceptance"}
 
 
+async def test_validator_reports_blocking_cycle_but_allows_related_cycle(vault):
+    """§8.3: only blocking dep types (BLOCKING_DEP_TYPES) can form a forbidden
+    cycle — an informational `related` cycle must not raise the `cycle` rule."""
+
+    def two_node_cycle(dep_type: str) -> TaskGraph:
+        return parse_graph(
+            {
+                "version": 1,
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "needs": [{"on": "b", "dep_type": dep_type}],
+                    },
+                    {
+                        "key": "b",
+                        "title": "B",
+                        "acceptance": ["x"],
+                        "needs": [{"on": "a", "dep_type": dep_type}],
+                    },
+                ],
+            }
+        )
+
+    blocking = await validate_graph(
+        two_node_cycle("conditional-blocks"), project_id="p1", db=_FakeDB(), vault_root=vault
+    )
+    cycle_errors = [f for f in blocking if f.rule == "cycle"]
+    assert len(cycle_errors) == 1
+    assert cycle_errors[0].is_error
+    assert "a" in cycle_errors[0].detail and "b" in cycle_errors[0].detail
+
+    related = await validate_graph(
+        two_node_cycle("related"), project_id="p1", db=_FakeDB(), vault_root=vault
+    )
+    assert [f.rule for f in related if f.rule == "cycle"] == []
+
+
 # ---------------------------------------------------------------------------
 # Creator
 # ---------------------------------------------------------------------------

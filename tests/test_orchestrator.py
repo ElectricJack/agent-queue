@@ -204,6 +204,74 @@ async def test_conditional_autoclose_disabled_leaves_contingency_defined(orchest
         await orch.db.close()
 
 
+async def test_child_completion_settles_all_terminal_container_ancestors_once(
+    orchestrator_factory,
+):
+    """Spec §7: one leaf completion settles every eligible container ancestor
+    in the same transition, each exactly once — the sweep backstop then finds
+    nothing left, and a container with an open child is never touched."""
+    orch = await orchestrator_factory()
+    try:
+        orch.register_settlement_listener()
+        await orch.db.create_project(Project(id="p-settle", name="p-settle"))
+
+        async def mktask(tid, status):
+            await orch.db.create_task(
+                Task(
+                    id=tid,
+                    project_id="p-settle",
+                    title=tid,
+                    description="",
+                    status=status,
+                )
+            )
+
+        # grand ── mid ── {last-leaf (IN_PROGRESS), done-sib (COMPLETED)}
+        #      └── side-sib (COMPLETED)
+        await mktask("grand", TaskStatus.IN_PROGRESS)
+        await mktask("mid", TaskStatus.IN_PROGRESS)
+        await mktask("last-leaf", TaskStatus.IN_PROGRESS)
+        await mktask("done-sib", TaskStatus.COMPLETED)
+        await mktask("side-sib", TaskStatus.COMPLETED)
+        # Open edges first so no ancestor settles during setup.
+        await orch.db.add_dependency("mid", "grand", "parent-child")
+        await orch.db.add_dependency("last-leaf", "mid", "parent-child")
+        await orch.db.add_dependency("done-sib", "mid", "parent-child")
+        await orch.db.add_dependency("side-sib", "grand", "parent-child")
+        # A container that still has an open child must never settle.
+        await mktask("open-container", TaskStatus.IN_PROGRESS)
+        await mktask("open-child", TaskStatus.READY)
+        await orch.db.add_dependency("open-child", "open-container", "parent-child")
+
+        def completed_events(task_id):
+            return [
+                call
+                for call in orch.bus.emit.await_args_list
+                if call.args[0] == "task.completed" and call.args[1]["task_id"] == task_id
+            ]
+
+        # The normal transition path: completing the last open leaf.
+        await orch.db.transition_task("last-leaf", TaskStatus.COMPLETED, context="test")
+
+        assert (await orch.db.get_task("mid")).status == TaskStatus.COMPLETED
+        assert (await orch.db.get_task("grand")).status == TaskStatus.COMPLETED
+        assert (await orch.db.get_task("open-container")).status == TaskStatus.IN_PROGRESS
+        assert len(completed_events("mid")) == 1
+        assert len(completed_events("grand")) == 1
+        assert completed_events("open-container") == []
+
+        # The low-cadence sweep backstop finds nothing left to settle and
+        # emits no duplicate completion events.
+        orch._last_container_sweep = 0.0
+        assert await orch.db.settle_candidates() == []
+        await orch._sweep_container_completion()
+        assert len(completed_events("mid")) == 1
+        assert len(completed_events("grand")) == 1
+        assert (await orch.db.get_task("open-container")).status == TaskStatus.IN_PROGRESS
+    finally:
+        await orch.db.close()
+
+
 class TestOrchestratorLifecycle:
     async def test_full_task_lifecycle(self, orch):
         """DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED"""

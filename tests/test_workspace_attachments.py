@@ -221,12 +221,13 @@ class TestEffectiveRequirements:
 
 
 class TestAcquireForTask:
-    @pytest.mark.xfail(
-        run=False,
-        reason="ORC-1: SQLite multi-kind concurrent acquisition can block inside its per-kind transactions",
-    )
     async def test_concurrent_opposite_requirement_orders_complete_without_partial_locks(self, db):
-        """Canonical ordering means a two-kind race has one complete winner."""
+        """Canonical ordering means a two-kind race has one complete winner.
+
+        ORC-1 follow-up: the winner also receives the auto-attached vault
+        workspace, so the expected lockable set is asserted over lockable
+        attachments only, mirroring the PostgreSQL twin below.
+        """
         for kind in ("alpha", "beta"):
             await _add_kind(
                 db,
@@ -252,16 +253,19 @@ class TestAcquireForTask:
                 acquire_for_task(db, second, second_agent.id),
                 return_exceptions=True,
             ),
-            timeout=2,
+            timeout=10,
         )
         winners = [result for result in results if not isinstance(result, Exception)]
-        assert len(winners) == 1
-        assert {attachment.workspace.id for attachment in winners[0].attachments} == {
-            "ws-alpha",
-            "ws-beta",
-        }
+        losers = [result for result in results if isinstance(result, AcquisitionFailed)]
+        assert len(winners) == 1 and len(losers) == 1
+        winner_task = first.id if results[0] is winners[0] else second.id
+        assert {
+            attachment.workspace.id
+            for attachment in winners[0].attachments
+            if attachment.lockable
+        } == {"ws-alpha", "ws-beta"}
         for workspace_id in ("ws-alpha", "ws-beta"):
-            assert (await db.get_workspace(workspace_id)).locked_by_task_id in {first.id, second.id}
+            assert (await db.get_workspace(workspace_id)).locked_by_task_id == winner_task
 
     async def test_second_task_acquires_both_kinds_after_first_releases(self, db):
         for kind in ("alpha", "beta"):
@@ -486,7 +490,8 @@ async def pg_db():
     modes — a concurrent second backend, rollback of already-taken locks,
     recovery from a crash between per-kind transactions — only mean
     anything against a server that runs the two acquirers genuinely
-    concurrently (the SQLite twin of the race test is xfail'd as ORC-1).
+    concurrently (the SQLite twin of the race test runs above and relies on
+    WAL + busy_timeout serialization instead).
     """
     if not POSTGRES_DSN:
         pytest.skip("POSTGRES_TEST_DSN not set")
