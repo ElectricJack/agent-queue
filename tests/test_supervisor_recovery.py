@@ -120,6 +120,23 @@ async def test_notification_survives_restart_without_duplicates_and_has_diagnost
     assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
 
 
+async def test_stale_pending_incident_is_superseded_when_task_resumes(env):
+    current = await incident(env)
+    message_id = "msg-" + current["id"]
+
+    await env.db.transition_task("t", TaskStatus.READY, force=True, context="restart")
+    await env.db.queue_task_recovery_notifications()
+
+    stale = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert stale["decision"] == "superseded"
+    assert (await env.db.get_message(message_id)).archived_at is not None
+
+    await env.db.transition_task("t", TaskStatus.BLOCKED, force=True)
+    replacement = await incident(env, sid="replacement", started=9000)
+    assert replacement["id"] != current["id"]
+    assert (await env.db.get_message("msg-" + replacement["id"])).archived_at is None
+
+
 async def test_retry_preserves_work_and_routing_records_comment_and_consumes_budget_once(env):
     current = await incident(env)
     results = await asyncio.gather(decide(env, current), decide(env, current))

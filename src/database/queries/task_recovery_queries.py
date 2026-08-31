@@ -92,6 +92,7 @@ class TaskRecoveryQueryMixin:
         delivery engine wakes the existing supervisor and handles retries.
         Ordinary dependency blocks and operator pauses produce no messages.
         """
+        await self._supersede_stale_task_recovery_incidents()
         async with self._engine.connect() as conn:
             ids = (
                 (
@@ -114,6 +115,71 @@ class TaskRecoveryQueryMixin:
             except Exception:
                 logger.exception("Could not queue recovery incident for %s", task_id)
         return queued
+
+    async def _supersede_stale_task_recovery_incidents(self):
+        """Archive pending incidents after their task or attempt changes."""
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_metadata.c.task_id, task_metadata.c.value).where(
+                        task_metadata.c.key == INCIDENT_KEY
+                    )
+                )
+            ).all()
+        for task_id, raw in rows:
+            try:
+                incident = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(incident, dict) or incident.get("decision") or not incident.get("id"):
+                continue
+            try:
+                await self._supersede_stale_task_recovery_incident(task_id, incident["id"])
+            except Exception:
+                logger.exception("Could not reconcile recovery incident for %s", task_id)
+
+    async def _supersede_stale_task_recovery_incident(self, task_id, expected_id):
+        async with self.immediate() as conn:
+            task = (
+                (await conn.execute(select(tasks).where(tasks.c.id == task_id).with_for_update()))
+                .mappings()
+                .first()
+            )
+            if task is None:
+                return
+            meta, attempt = await self._recovery_context(conn, task)
+            incident = meta.get(INCIDENT_KEY) or {}
+            if incident.get("id") != expected_id or incident.get("decision"):
+                return
+            reason = meta.get("needs_attention")
+            current = (
+                task["status"] == "BLOCKED"
+                and isinstance(reason, str)
+                and bool(reason)
+                and attempt is not None
+                and attempt["state"] in ("stopped", "quarantined")
+                and expected_id == _incident_id(task, attempt, reason)
+            )
+            if current:
+                return
+            now = time.time()
+            await self._upsert_meta(
+                task_id,
+                INCIDENT_KEY,
+                {
+                    **incident,
+                    "decision": "superseded",
+                    "decision_reason": "Task or execution attempt changed before supervisor decision.",
+                    "decided_at": now,
+                    "decided_by": "system:reconciler",
+                },
+                conn=conn,
+            )
+            await conn.execute(
+                update(messages)
+                .where(messages.c.id == "msg-" + expected_id)
+                .values(archived_at=now)
+            )
 
     async def _queue_task_recovery_notification(self, task_id):
         async with self.immediate() as conn:
