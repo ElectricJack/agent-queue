@@ -244,6 +244,15 @@ These auto-expose through the existing MCP registration and
 mounted at `src/api/app.py:83–85`) — no bespoke plumbing. `message_send`,
 `message_reply`, `message_inbox` join the slim task-scoped MCP allowlist (G.2).
 
+**Mailbox fence** (`_inbox_mailbox_scope_error`): `message_inbox` is not a pure
+read — `inject=true` marks the returned rows delivered, and
+`get_pending_messages` has no project filter. A non-elevated session token may
+therefore only address the mailboxes it owns: `session:<its own session_id>`,
+`task:<the task pinned in its token>` (for pool tokens, the live claim on its
+session row), and `profile:<its session row's profile_id>`. `user` mailboxes
+are delivered by the delivery engine and are never agent-readable through this
+command. Local callers and elevated supervisor tokens are unrestricted.
+
 ### 6.2 Relay API (`src/api/messages.py`)
 
 Explicit router (path parameters don't fit the codegen pattern), registered in

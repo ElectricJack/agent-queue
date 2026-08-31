@@ -90,6 +90,51 @@ class MessageCommandsMixin:
                 return {"error": "out of scope: system messages require global admin"}
         return None
 
+    async def _inbox_mailbox_scope_error(self, to_kind: str, to_id: str) -> dict | None:
+        """Fence a plain agent session to its own mailboxes.
+
+        ``message_inbox`` does not just read: with ``inject=true`` it marks
+        the returned rows delivered, so an unfenced caller could silently
+        consume another recipient's messages (``get_pending_messages`` has no
+        project filter, so even across projects).  A non-elevated session
+        token may therefore only address the mailboxes it owns:
+
+        - ``session:<its own session_id>``
+        - ``task:<the task pinned in its token>``, or, for pool tokens that
+          pin no task, the live claim on its session row
+        - ``profile:<its session row's profile_id>``
+
+        ``user`` mailboxes are delivered by the daemon's delivery engine and
+        are never read through this command by an agent.  Local callers and
+        elevated supervisor sessions are untouched.
+        """
+        scope = self._current_scope
+        if not scope or scope.get("kind") != "session" or scope.get("elevated"):
+            return None
+        error = {
+            "error": (
+                f"out of scope: a session may only read its own mailboxes, "
+                f"not {to_kind}:{to_id}"
+            )
+        }
+        session_id = scope.get("session_id")
+        if to_kind == "session":
+            return None if session_id and to_id == session_id else error
+        if to_kind == "task":
+            task_id = scope.get("task_id")
+            if task_id is None and session_id:
+                session = await self.db.get_session(session_id)
+                task_id = session.task_id if session else None
+            return None if task_id and to_id == task_id else error
+        if to_kind == "profile":
+            profile_id = None
+            if session_id:
+                session = await self.db.get_session(session_id)
+                profile_id = session.profile_id if session else None
+            return None if profile_id and to_id == profile_id else error
+        # "user" (and any future to_kind) — daemon-delivered, never agent-read.
+        return error
+
     async def _emit_message_event(self, event_type: str, payload: dict) -> None:
         """Emit a ``message.*`` event without letting it fail the command."""
         try:
@@ -339,6 +384,10 @@ class MessageCommandsMixin:
             scope_error = self._system_message_scope_error()
             if scope_error:
                 return scope_error
+
+        mailbox_error = await self._inbox_mailbox_scope_error(to_kind, to_id)
+        if mailbox_error:
+            return mailbox_error
 
         inject = bool(args.get("inject", False))
         limit = args.get("limit")
