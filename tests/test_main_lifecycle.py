@@ -264,3 +264,30 @@ async def test_readiness_race_tasks_are_awaited_after_cancellation(monkeypatch, 
     # …and had been *awaited to completion* before the first scheduler cycle.
     assert cleanup_seen_at_first_cycle == [True]
     assert adapter.ready_cleanup_finished is True
+
+
+@pytest.mark.asyncio
+async def test_scheduler_cycle_failure_is_logged_and_next_cycle_runs(monkeypatch, caplog):
+    from unittest.mock import AsyncMock
+    from src.main import _run_scheduler_cycles
+
+    shutdown = asyncio.Event()
+    orch = SimpleNamespace(run_one_cycle=AsyncMock())
+    calls = 0
+
+    async def cycle():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("one broken cycle")
+        shutdown.set()
+
+    async def no_wait(awaitable, timeout):
+        awaitable.close()
+        raise asyncio.TimeoutError
+
+    orch.run_one_cycle.side_effect = cycle
+    monkeypatch.setattr(asyncio, "wait_for", no_wait)
+    await _run_scheduler_cycles(orch, shutdown)
+    assert calls == 2
+    assert "Orchestrator cycle failed" in caplog.text

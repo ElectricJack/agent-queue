@@ -43,6 +43,23 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = os.path.expanduser("~/.agent-queue/config.yaml")
 
 
+async def _run_scheduler_cycles(orch: Orchestrator, shutdown_event: asyncio.Event) -> None:
+    """Keep periodic reconciliation alive after a single degraded cycle."""
+    while not shutdown_event.is_set():
+        try:
+            await orch.run_one_cycle()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Orchestrator cycle failed; retrying on the next interval")
+        if shutdown_event.is_set():
+            break
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def run(config_path: str, profile: str | None = None) -> bool:
     """Run the daemon. Returns True if a restart was requested."""
     # Set up structured logging early (before any other import logs)
@@ -221,12 +238,7 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         if adapter_handler is not None:
             orch.set_command_handler(adapter_handler)
 
-        while not shutdown_event.is_set():
-            await orch.run_one_cycle()
-            try:
-                await asyncio.wait_for(shutdown_event.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                pass
+        await _run_scheduler_cycles(orch, shutdown_event)
 
     # Start embedded MCP server (if enabled).  Lazy-imports the MCP SDK
     # (~3s) inside the task so it never blocks orchestrator startup.
