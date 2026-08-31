@@ -1,13 +1,18 @@
 """Plan file discovery and reading utilities.
 
-When an agent completes a task that results in an implementation plan
-(written to ``.claude/plan.md`` or a similar file in the workspace), this
-module provides utilities to find and read plan files.
+Nothing discovers plan files for approval anymore: the completion-pipeline
+plan flow (discovery → parse → ``AWAITING_PLAN_APPROVAL``) was deleted with
+the LLM plan parser (llm-direct-path §6.3; see the supersession notice in
+``docs/specs/plan-parser.md``).  ``approve_plan``/``reject_plan`` survive
+only as remediation commands for pre-existing rows and do not call into
+this module for discovery.
 
-Automatic plan-to-subtask breakdown was removed (llm-direct-path §6.3); a
-plan file found here is stored as raw content and presented for manual
-approval via ``TaskCommandsMixin._cmd_approve_plan`` /
-``_cmd_reject_plan``.
+Current ownership (EVT-4): the sole production caller is the plan-cleanup
+step of ``TaskCommandsMixin`` (``src/commands/task_commands.py``), which
+uses ``find_all_plan_files`` to delete leftover plan files from project
+workspaces after a plan is approved.  ``find_plan_file`` and
+``read_plan_file`` are retained as manual/remediation utilities with no
+in-tree production caller.
 """
 
 from __future__ import annotations

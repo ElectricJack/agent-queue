@@ -670,6 +670,17 @@ synthetic `timer.*` and `cron.*` events.
    fire on the day 02:30 doesn't exist). Not suitable for load-bearing
    scheduling; playbooks are the target use case.
 
+**Persistence-failure trade-off (EVT-3, decided):** state saves to
+`timer_state.json` are atomic (temp file + rename), but a failed save is
+logged and suppressed while the in-memory fire state stays advanced — the
+timer service prefers availability over durability. Ticking continues on a
+full disk or read-only filesystem; the accepted cost is that a restart after
+such a failure may re-fire a trigger once, because disk state lagged the
+in-memory fire. Failing the tick instead would stop all scheduled playbooks
+on persistent I/O errors, and rolling back the in-memory fire would re-fire
+every tick until the disk recovered — both strictly worse than one duplicate
+fire after a restart.
+
 Timer/cron events carry `project_id: null` — they are inherently system-scoped.
 A project-scoped playbook can still trigger on them: the executor injects the
 playbook's own `project_id` before scope matching, so the run is scoped to that
