@@ -54,3 +54,10 @@ class TestRuntimeRegistry:
         reg = RuntimeRegistry(runtimes={"fake": _FakeRuntime})
         with pytest.raises(ValueError, match="Unknown runtime"):
             reg.create("nope", profile=None)
+
+
+def test_default_registry_is_empty():
+    """No in-tree runtimes: every agent runs as a tmux session."""
+    from src.runtimes import default_registry
+
+    assert default_registry().names() == []

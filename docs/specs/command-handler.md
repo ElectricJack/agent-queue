@@ -2134,8 +2134,6 @@ available or the channel cannot be found.
 ### Task Lifecycle Extensions
 - `reopen_with_feedback` — reopen a completed/failed task with appended feedback
 - `provide_input` — answer an agent's question (WAITING_INPUT → READY)
-- `process_task_completion` — post-completion plan discovery (called by [[specs/supervisor|Supervisor]])
-- `process_plan` — manually trigger plan file scanning
 - `list_active_tasks_all_projects` — cross-project active task listing
 
 ### Task Archive

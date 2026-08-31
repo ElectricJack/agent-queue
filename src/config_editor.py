@@ -41,7 +41,6 @@ SECTION_NOTES: dict[str, str] = {
     "pricing": "Framework overhaul: model price table for token-ledger cost rollups.",
     "messages": "Framework overhaul: inter-agent message queue. Disabled until the lane lands.",
     "supervisor_agent": "Framework overhaul: supervisor-as-a-session. Disabled until the lane lands.",
-    "planner": "Framework overhaul: plan-discovery rollout switch.",
     "api_auth": "Framework overhaul: session-token auth for the local HTTP API.",
     "surface": "Framework overhaul: agent-surface ergonomics knobs.",
     "state_machine": "Framework overhaul: task state-machine enforcement (warn-only while off).",
@@ -64,11 +63,6 @@ FLAG_NOTES: dict[str, str] = {
         "Temporary — overhaul pause. When false PlaybookManager, TimerService, "
         "the resume handlers and workflow recovery are not started. "
         "playbook_runs rows and compiled JSON are preserved. "
-        "See docs/specs/design/feature-pauses.md."
-    ),
-    "supervisor.observation.enabled": (
-        "Temporary — overhaul pause. ``observation.enabled`` is the chat "
-        "analyzer switch; false means ChatObserver is not constructed. "
         "See docs/specs/design/feature-pauses.md."
     ),
 }

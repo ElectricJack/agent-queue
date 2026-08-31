@@ -10,7 +10,6 @@ from src.config import (
     AppConfig,
     ArchiveConfig,
     AutoTaskConfig,
-    ChatProviderConfig,
     ConfigError,
     ConfigValidationError,
     DiscordConfig,
@@ -129,29 +128,6 @@ class TestPauseRetryConfigValidation:
         cfg = PauseRetryConfig(rate_limit_max_backoff_seconds=0)
         errors = cfg.validate()
         assert any("rate_limit_max_backoff" in e.field for e in errors)
-
-
-# ── ChatProviderConfig ────────────────────────────────────────────────
-
-
-class TestChatProviderConfigValidation:
-    def test_valid_anthropic(self):
-        assert ChatProviderConfig(provider="anthropic").validate() == []
-
-    def test_valid_ollama_with_url(self):
-        cfg = ChatProviderConfig(provider="ollama", base_url="http://localhost:11434")
-        assert cfg.validate() == []
-
-    def test_invalid_provider(self):
-        cfg = ChatProviderConfig(provider="openai")
-        errors = cfg.validate()
-        assert len(errors) == 1
-        assert "provider" in errors[0].field
-
-    def test_ollama_without_base_url(self):
-        cfg = ChatProviderConfig(provider="ollama")
-        errors = cfg.validate()
-        assert any("base_url" in e.field for e in errors)
 
 
 # ── AutoTaskConfig ────────────────────────────────────────────────────

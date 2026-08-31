@@ -33,7 +33,6 @@ Key method call hierarchy (read these to understand the full lifecycle)::
                 ├── adapter.start(ctx)    #   Launch agent process
                 ├── adapter.wait()        #   Stream output + rate-limit retries
                 ├── _run_completion_pipeline() # Post-completion phases:
-                │   ├── _phase_plan_discover() # Plan discovery + approval
                 │   └── _phase_verify()        # Verify git state, reopen if bad
                 └── cleanup               #   Release workspace + free agent
 
@@ -335,8 +334,7 @@ class Orchestrator(
         # task_id.  Cleaned up each cycle; prevents double-launching.
         self._running_tasks: dict[str, asyncio.Task] = {}
         # Timestamps (time.time()) recording when each task's agent execution
-        # started, keyed by task_id.  Used by _discover_and_store_plan() to
-        # detect stale plan files that predate the current task's execution.
+        # started, keyed by task_id.
         self._task_exec_start: dict[str, float] = {}
         # Git HEAD SHA recorded just before the agent starts, keyed by
         # task_id.  Used by write_task_summary to show only the commits
@@ -412,23 +410,6 @@ class Orchestrator(
         # tests can toggle it deterministically.
         self._gate_event_unsub = None
         self._config_watcher: ConfigWatcher | None = None
-        self._supervisor = None  # Set via set_supervisor() in Discord bot
-        # Chat provider for LLM-based plan parsing.  Optionally used by
-        # ``_generate_tasks_from_plan`` to parse agent-written plan files
-        # with an LLM instead of the regex parser, producing higher-quality
-        # task splits.  Wrapped with ``LoggedChatProvider`` so plan-parsing
-        # token usage appears in analytics under the ``plan_parser`` caller.
-        self._chat_provider = None
-        if config.auto_task.use_llm_parser:
-            try:
-                from src.chat_providers import create_chat_provider, LoggedChatProvider
-
-                provider = create_chat_provider(config.chat_provider)
-                if provider and self.llm_logger._enabled:
-                    provider = LoggedChatProvider(provider, self.llm_logger, caller="plan_parser")
-                self._chat_provider = provider
-            except Exception:
-                pass
         # Tracks the last time we sent a reminder for an AWAITING_APPROVAL
         # task that has no PR URL (keyed by task_id).
         self._no_pr_reminded_at: dict[str, float] = {}
@@ -466,6 +447,13 @@ class Orchestrator(
             config,
             self.harness_registry,
             intelligence_classes=load_intelligence_classes(config.data_dir),
+        )
+        from src.llm import LLMClient
+
+        self.llm = LLMClient(
+            config.llm,
+            classes_loader=lambda: load_intelligence_classes(self.config.data_dir),
+            llm_logger=self.llm_logger if self.llm_logger._enabled else None,
         )
         # AQ_DAEMON_EPOCH: identifies this daemon *run*.  Provenance for
         # adoption, never a validity test — an older-epoch session is still
@@ -544,7 +532,10 @@ class Orchestrator(
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
         self._command_handler: Any = None
-        # Project IDs currently undergoing plan processing (supervisor is
+        # Shared tool registry, set by set_tool_registry() during daemon
+        # wiring. May be None (e.g. before wiring, or in tests) — read
+        # defensively; playbook_services() passes it through unchanged.
+        self._tool_registry: Any = None
         # Tracks per-project budget warning thresholds already sent so we
         # don't spam the same warning.  Keyed by project_id, value is the
         # highest threshold percentage (e.g. 80, 95) already notified.
@@ -607,76 +598,71 @@ class Orchestrator(
         ):
             playbook_manager.set_command_handler(handler)
 
+        plugin_registry = getattr(self, "plugin_registry", None)
+        if plugin_registry is not None:
+            plugin_registry.set_active_project_id_getter(lambda: handler._active_project_id)
+            plugin_registry.set_execute_command_callback(handler.execute)
+
     def _get_handler(self) -> Any:
         """Return the command handler or None. Used by interactive views."""
         return self._command_handler
 
-    def set_supervisor(self, supervisor) -> None:
-        """Set the Supervisor reference for post-task delegation."""
-        self._supervisor = supervisor
+    def playbook_services(self):
+        """Everything a PlaybookRunner needs, built from daemon-wide singletons."""
+        from src.playbooks.services import PlaybookServices
 
-        # Expose plugin tools to the supervisor's tool registry so the LLM
-        # can discover and call plugin-provided tools (e.g. memory_save).
-        if hasattr(self, "plugin_registry") and self.plugin_registry:
-            supervisor._registry.set_plugin_registry(self.plugin_registry)
+        if self._command_handler is None:
+            raise RuntimeError("playbook_services: command handler not wired yet")
+        return PlaybookServices(
+            llm=self.llm,
+            handler=self._command_handler,
+            tool_registry=self._tool_registry,
+            llm_logger=self.llm_logger,
+            runtimes=self._runtimes,
+        )
 
-        # Store the registry on the orchestrator so command handlers can access
-        # the shared instance (with plugin tools and the tool index).
-        self._tool_registry = supervisor._registry
+    async def _plugin_invoke_llm(
+        self,
+        prompt: str,
+        plugin_name: str,
+        *,
+        intelligence_class: str | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+        tools: list[dict] | None = None,
+        system: str = "",
+    ) -> str:
+        from src.llm import LLMCallSpec
 
-        # Wire LLM invocation callback into the plugin registry so plugins
-        # can call ctx.invoke_llm() from cron jobs and command handlers.
-        if hasattr(self, "plugin_registry") and self.plugin_registry:
+        spec = LLMCallSpec(
+            provider=provider,
+            model=model,
+            intelligence_class=intelligence_class,
+            caller=f"plugin:{plugin_name}",
+        )
+        system_prompt = system or f"You are a helper for plugin:{plugin_name}."
+        if not tools:
+            resp = await self.llm.complete(prompt, system=system_prompt, spec=spec)
+            return resp.text
+        handler = self._command_handler
+        if handler is None:
+            raise RuntimeError("invoke_llm with tools needs the command handler wired")
+        result = await self.llm.run_tools(
+            prompt, tools, handler.execute, system=system_prompt, spec=spec
+        )
+        return result.text
 
-            async def _plugin_invoke_llm(
-                prompt: str,
-                plugin_name: str,
-                *,
-                model: str | None = None,
-                provider: str | None = None,
-                tools: list[dict] | None = None,
-                thinking_budget: int | None = None,
-            ) -> str:
-                if model or provider or thinking_budget is not None:
-                    import dataclasses
-                    from src.chat_providers import create_chat_provider
+    def set_tool_registry(self, registry) -> None:
+        """Daemon-wide ToolRegistry (tool definitions for playbook nodes / plugins).
 
-                    sys_cfg = self.config.chat_provider
-                    cfg = dataclasses.replace(
-                        sys_cfg,
-                        provider=provider or sys_cfg.provider,
-                        model=model or sys_cfg.model,
-                        thinking_budget=(
-                            thinking_budget
-                            if thinking_budget is not None
-                            else sys_cfg.thinking_budget
-                        ),
-                    )
-                    one_shot = create_chat_provider(cfg)
-                    if one_shot is None:
-                        raise RuntimeError(
-                            f"Plugin {plugin_name}: chat provider '{cfg.provider}' "
-                            "is not configured (missing credentials)"
-                        )
-                    resp = await one_shot.create_message(
-                        messages=[{"role": "user", "content": prompt}],
-                        system=f"You are a helper for plugin:{plugin_name}.",
-                    )
-                    return "".join(resp.text_parts)
-                # Default: use the supervisor (has tool loop)
-                return await supervisor.chat(
-                    prompt,
-                    user_name=f"plugin:{plugin_name}",
-                )
-
-            self.plugin_registry.set_invoke_llm_callback(_plugin_invoke_llm)
-
-        # Wire active project getter so internal plugins can resolve context
-        if hasattr(self, "plugin_registry") and self.plugin_registry:
-            self.plugin_registry.set_active_project_id_getter(
-                lambda: supervisor.handler._active_project_id
-            )
-            self.plugin_registry.set_execute_command_callback(supervisor.handler.execute)
+        Also hands the registry the plugin registry so LLM callers can
+        discover plugin-provided tools (e.g. ``memory_save``).  Call after
+        ``initialize()`` — that is where ``plugin_registry`` is built.
+        """
+        self._tool_registry = registry
+        plugin_registry = getattr(self, "plugin_registry", None)
+        if plugin_registry is not None and hasattr(registry, "set_plugin_registry"):
+            registry.set_plugin_registry(plugin_registry)
 
     async def _get_default_branch(self, project, workspace: str | None = None) -> str:
         """Get the default branch for a project, with dynamic detection fallback.
@@ -892,13 +878,12 @@ class Orchestrator(
 
         Registered as ``playbook_manager.on_trigger`` at startup.  The
         manager has already applied cooldown + concurrency checks before
-        calling us, so we just build the runtime context (Supervisor,
-        event bus, plugin registry) and fire a PlaybookRunner.  The run
-        is intentionally fire-and-forget — the event dispatch path must
-        not block waiting for an LLM-driven graph walk.
+        calling us, so we just build the runtime context (PlaybookServices,
+        event bus) and fire a PlaybookRunner.  The run is intentionally
+        fire-and-forget — the event dispatch path must not block waiting for
+        an LLM-driven graph walk.
         """
         try:
-            from src.runtimes.supervisor import Supervisor
             from src.playbooks.runner import PlaybookRunner
             from src.models import PlaybookRun as PlaybookRunModel
 
@@ -1108,29 +1093,26 @@ class Orchestrator(
                 )
                 return
 
-            supervisor = Supervisor(self, self.config, llm_logger=self.llm_logger)
-            if not supervisor.initialize():
+            try:
+                services = self.playbook_services()
+            except RuntimeError as exc:
+                logger.error("Playbook trigger for '%s': %s — skipping", playbook.id, exc)
+                return
+            if not services.llm.is_configured():
                 logger.error(
-                    "Playbook trigger for '%s': failed to initialise LLM — skipping",
+                    "Playbook trigger for '%s': LLM not configured (config.llm) — skipping",
                     playbook.id,
                 )
                 return
 
             project_id = event_data.get("project_id")
-            if project_id:
-                supervisor.set_active_project(project_id)
-
-            plugin_registry = getattr(self, "plugin_registry", None)
-            if plugin_registry:
-                supervisor._registry.set_plugin_registry(plugin_registry)
 
             runner = PlaybookRunner(
                 graph=graph,
                 event=event_data,
-                supervisor=supervisor,
+                services=services,
                 db=self.db,
                 event_bus=self.bus,
-                runtimes=getattr(self, "_runtimes", None),
             )
 
             async def _run() -> None:
@@ -1791,9 +1773,10 @@ class Orchestrator(
                 bus=self.bus,
                 vault_projects_dir=self.config.vault_projects,
                 config=self.config.memory,
+                llm=self.llm,
                 enabled=True,
                 max_source_chars=self.config.memory.stub_enrichment_max_source_chars,
-                max_tokens=self.config.chat_provider.max_tokens,
+                max_tokens=self.config.llm.max_tokens,
             )
             self.reference_stub_enricher.subscribe()
             logger.info("ReferenceStubEnricher initialized and subscribed")
@@ -1810,6 +1793,9 @@ class Orchestrator(
             config=self.config,
             doctor_registry=self.doctor_registry,
         )
+        self.plugin_registry.set_invoke_llm_callback(self._plugin_invoke_llm)
+        if self._command_handler is not None:
+            self.set_command_handler(self._command_handler)
 
         # Build and inject services for internal plugins
         internal_services = build_internal_services(

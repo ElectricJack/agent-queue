@@ -88,39 +88,28 @@ async def run(config_path: str, profile: str | None = None) -> bool:
     orch.doctor_registry = default_doctor_registry()
     logger.info("Doctor registry: %d built-in checks", len(orch.doctor_registry))
 
-    # Daemon-wide Supervisor — used by the messaging adapter for chat AND
-    # registered as the singleton ``"supervisor"`` platform so tasks with
-    # ``profile.platform="supervisor"`` execute in-process via the same
-    # instance.  Construct before the registry so default_registry() can
-    # register the singleton.
-    from src.runtimes.supervisor import Supervisor
+    # Daemon-wide wiring.  No in-process runtime is registered: every agent
+    # runs as a tmux session selected by its profile's ``harness``; the
+    # registry stays as the injection seam for tests and ``sync_workflow``.
+    #
+    # The handler is wired BEFORE any task is created (messaging-rework M0;
+    # 1B review fix 1).  The embedded MCP task and the HTTP API start below
+    # and ``src/api/app.py::create_app`` constructs a throwaway
+    # CommandHandler if ``orch._command_handler`` is still None when it runs
+    # — permanently binding the API and MCP surfaces to a handler nobody
+    # else shares.  ``run_mcp``'s synchronous MCP SDK import (~3s) never
+    # yields, so a handler set later inside the scheduler loop always loses
+    # that race.  ``set_tool_registry`` must follow ``initialize()``: the
+    # plugin registry it forwards is built there.
+    from src.commands.handler import CommandHandler
+    from src.tools.registry import ToolRegistry
 
-    shared_supervisor = Supervisor(orch, config, llm_logger=orch.llm_logger)
-    registry = default_registry(supervisor=shared_supervisor, config=config)
+    registry = default_registry(config=config)
     orch._runtimes = registry
     await orch.initialize()
-    # Initialise the shared Supervisor's chat provider.  Non-fatal: chat runs
-    # via supervisor sessions; this provider only serves supervisor-runtime
-    # tasks, playbooks, and the plugin invoke_llm fallback.
-    if not shared_supervisor.initialize():
-        logger.warning(
-            "Shared Supervisor: chat provider failed to initialise — "
-            "supervisor-runtime tasks and playbook LLM calls will fail until "
-            "credentials are configured"
-        )
-
-    # Wire the daemon-wide command handler / supervisor BEFORE any task is
-    # created (messaging-rework M0; 1B review fix 1).  The embedded MCP task
-    # and the HTTP API are started below and ``src/api/app.py::create_app``
-    # constructs a throwaway CommandHandler if ``orch._command_handler`` is
-    # still None when it runs — permanently binding the API and MCP surfaces
-    # to a handler nobody else shares.  ``run_mcp``'s synchronous MCP SDK
-    # import (~3s) never yields, so a handler set later inside the scheduler
-    # loop always loses that race.  Setting it here makes the wiring
-    # deterministic; the messaging adapter still overrides both below when it
-    # owns a handler/supervisor of its own (Discord does, Null does not).
-    orch.set_command_handler(shared_supervisor.handler)
-    orch.set_supervisor(shared_supervisor)
+    handler = CommandHandler(orch, config)
+    orch.set_command_handler(handler)
+    orch.set_tool_registry(ToolRegistry())
 
     # Start health check server (if enabled)
     async def _plan_content(task_id: str) -> str | None:
@@ -216,19 +205,15 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             )
 
         # Decoupled from the messaging adapter (messaging-rework M0): not
-        # every adapter owns a CommandHandler/Supervisor of its own — e.g.
-        # NullMessagingAdapter (messaging_platform: "none") returns None
-        # from both getters so the daemon boots with no adapter at all.
-        # The daemon-wide shared_supervisor is already wired in before any
-        # task starts (see above), so this is purely the adapter *override*
-        # for adapters that do own one — never the fallback that CLI, MCP and
-        # the HTTP API depend on.
+        # every adapter owns a CommandHandler of its own — e.g.
+        # NullMessagingAdapter (messaging_platform: "none") returns None so
+        # the daemon boots with no adapter at all.  The daemon-wide handler
+        # is already wired in before any task starts (see above), so this is
+        # purely the adapter *override* for adapters that do own one — never
+        # the fallback that CLI, MCP and the HTTP API depend on.
         adapter_handler = adapter.get_command_handler()
         if adapter_handler is not None:
             orch.set_command_handler(adapter_handler)
-        adapter_supervisor = adapter.get_supervisor()
-        if adapter_supervisor is not None:
-            orch.set_supervisor(adapter_supervisor)
 
         while not shutdown_event.is_set():
             await orch.run_one_cycle()

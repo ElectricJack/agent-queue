@@ -313,7 +313,7 @@ class PlaybookCommandsMixin:
         """Resume a paused (human-in-the-loop) playbook run.
 
         Fetches the paused run from the database, validates it is in
-        ``paused`` status, creates a Supervisor for LLM calls, and invokes
+        ``paused`` status, builds PlaybookServices for LLM calls, and invokes
         :meth:`PlaybookRunner.resume` with the human's input.
 
         The human input is injected into the conversation history and the
@@ -376,23 +376,19 @@ class PlaybookCommandsMixin:
             # Handle timeout — may transition to a timeout node if configured
             event_bus = getattr(self.orchestrator, "bus", None)
 
-            # Try to create a Supervisor for timeout node execution
-            supervisor = None
+            # PlaybookServices are only needed when an on_timeout node runs.
+            services = None
             paused_node = (timeout_graph or {}).get("nodes", {}).get(db_run.current_node or "", {})
             on_timeout_node = paused_node.get("on_timeout")
             if on_timeout_node:
-                from src.runtimes.supervisor import Supervisor as SupervisorCls
-
-                supervisor = SupervisorCls(self.orchestrator, self.config)
-                if not supervisor.initialize():
-                    supervisor = None
+                services = self.orchestrator.playbook_services()
 
             try:
                 with CorrelationContext(run_id=db_run.run_id):
                     result = await PlaybookRunner.handle_timeout(
                         db_run=db_run,
                         graph=timeout_graph or {},
-                        supervisor=supervisor,
+                        services=services,
                         db=self.db,
                         event_bus=event_bus,
                     )
@@ -447,12 +443,10 @@ class PlaybookCommandsMixin:
                 )
             }
 
-        # Create a Supervisor for LLM calls during resume
-        from src.runtimes.supervisor import Supervisor
-
-        supervisor = Supervisor(self.orchestrator, self.config)
-        if not supervisor.initialize():
-            return {"error": "Failed to initialize LLM provider for playbook resume"}
+        # Build the PlaybookServices for LLM calls during resume
+        services = self.orchestrator.playbook_services()
+        if not services.llm.is_configured():
+            return {"error": "LLM is not configured (config.llm)"}
 
         # Resolve event_bus
         event_bus = getattr(self.orchestrator, "bus", None)
@@ -464,7 +458,7 @@ class PlaybookCommandsMixin:
                 result = await PlaybookRunner.resume(
                     db_run=db_run,
                     graph=graph,
-                    supervisor=supervisor,
+                    services=services,
                     human_input=human_input,
                     db=self.db,
                     event_bus=event_bus,
@@ -827,7 +821,7 @@ class PlaybookCommandsMixin:
     async def _cmd_run_playbook(self, args: dict) -> dict:
         """Manually trigger a playbook run.
 
-        Looks up the compiled playbook by ID, creates a Supervisor for
+        Looks up the compiled playbook by ID, builds PlaybookServices for
         LLM calls, and executes the full graph from entry to terminal.
         The run is persisted to the database and emits events like any
         trigger-initiated run.
@@ -896,26 +890,14 @@ class PlaybookCommandsMixin:
         graph = playbook.to_dict()
 
         # Pipeline playbooks execute deterministically via PipelineRunner —
-        # never through the Supervisor LLM (dv2-p1 invariant).
+        # never through the playbook LLM path (dv2-p1 invariant).
         if graph.get("kind") == "pipeline":
             return await self._run_pipeline_playbook(playbook, graph, event)
 
-        # Create a Supervisor for LLM calls
-        from src.runtimes.supervisor import Supervisor
-
-        llm_logger = getattr(self.orchestrator, "llm_logger", None)
-        supervisor = Supervisor(self.orchestrator, self.config, llm_logger=llm_logger)
-        if not supervisor.initialize():
-            return {"error": "Failed to initialize LLM provider for playbook execution"}
-        # Set the active project so the supervisor's system prompt includes
-        # project context, and tools like create_task and memory_search
-        # default to the correct project.
-        if event.get("project_id"):
-            supervisor.set_active_project(event["project_id"])
-        # Wire plugin tools so the supervisor can discover and load them
-        plugin_registry = getattr(self.orchestrator, "plugin_registry", None)
-        if plugin_registry:
-            supervisor._registry.set_plugin_registry(plugin_registry)
+        # Build the PlaybookServices for LLM calls
+        services = self.orchestrator.playbook_services()
+        if not services.llm.is_configured():
+            return {"error": "LLM is not configured (config.llm)"}
 
         event_bus = getattr(self.orchestrator, "bus", None)
 
@@ -924,10 +906,9 @@ class PlaybookCommandsMixin:
         runner = PlaybookRunner(
             graph=graph,
             event=event,
-            supervisor=supervisor,
+            services=services,
             db=self.db,
             event_bus=event_bus,
-            runtimes=getattr(self.orchestrator, "_runtimes", None),
         )
 
         try:
@@ -1793,21 +1774,12 @@ class PlaybookCommandsMixin:
                 timeout_seconds,
             )
 
-            # Check if a Supervisor is needed (on_timeout node present)
-            supervisor = None
+            # PlaybookServices are only needed when an on_timeout node runs.
             paused_node = graph.get("nodes", {}).get(db_run.current_node or "", {})
             on_timeout_node = paused_node.get("on_timeout")
+            services = None
             if on_timeout_node and on_timeout_node in graph.get("nodes", {}):
-                from src.runtimes.supervisor import Supervisor
-
-                supervisor = Supervisor(self.orchestrator, self.config)
-                if not supervisor.initialize():
-                    logger.warning(
-                        "Failed to create Supervisor for timeout transition "
-                        "on run %s — will mark as timed_out",
-                        db_run.run_id,
-                    )
-                    supervisor = None
+                services = self.orchestrator.playbook_services()
 
             event_bus = getattr(self.orchestrator, "bus", None)
 
@@ -1816,7 +1788,7 @@ class PlaybookCommandsMixin:
                     result = await PlaybookRunner.handle_timeout(
                         db_run=db_run,
                         graph=graph,
-                        supervisor=supervisor,
+                        services=services,
                         db=self.db,
                         event_bus=event_bus,
                     )

@@ -110,7 +110,9 @@ class TestEditProjectChannelToolDefinition:
     """
 
     def test_edit_project_has_channel_field(self):
-        from src.chat_agent import TOOLS
+        from src.tools.registry import ToolRegistry
+
+        TOOLS = ToolRegistry().get_all_tools()
 
         tool = next(t for t in TOOLS if isinstance(t, dict) and t["name"] == "edit_project")
         schema = tool["input_schema"]

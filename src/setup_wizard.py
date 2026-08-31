@@ -1128,261 +1128,11 @@ def _probe_session_harnesses() -> bool:
     return bool(found)
 
 
-# ── Step 4: Chat Provider (LLM Backend) ──────────────────────────────────────
-
-
-def _is_ollama_installed() -> bool:
-    """Check if the ollama CLI is available."""
-    import shutil
-
-    return shutil.which("ollama") is not None
-
-
-def _is_ollama_running(base_url: str = "http://localhost:11434") -> bool:
-    """Check if Ollama is responding at the given URL."""
-    import urllib.request
-
-    try:
-        req = urllib.request.Request(f"{base_url}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
-
-
-def _ollama_list_models(base_url: str = "http://localhost:11434") -> list[str]:
-    """List locally available Ollama models."""
-    import json
-    import urllib.request
-
-    try:
-        req = urllib.request.Request(f"{base_url}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-            return [m["name"] for m in data.get("models", [])]
-    except Exception:
-        return []
-
-
-def _install_ollama() -> bool:
-    """Install Ollama using the official install script (Linux) or Homebrew (macOS)."""
-    import platform
-
-    os_name = platform.system()
-
-    if os_name == "Linux":
-        import shutil
-
-        # The Ollama install script requires zstd and curl
-        missing_deps = []
-        if not shutil.which("zstd"):
-            missing_deps.append("zstd")
-        if not shutil.which("curl"):
-            missing_deps.append("curl")
-
-        if missing_deps:
-            dep_list = " ".join(missing_deps)
-            info(f"Installing required dependencies: {dep_list}")
-            if shutil.which("apt-get"):
-                subprocess.run(["sudo", "apt-get", "install", "-y"] + missing_deps, check=False)
-            elif shutil.which("dnf"):
-                subprocess.run(["sudo", "dnf", "install", "-y"] + missing_deps, check=False)
-            elif shutil.which("yum"):
-                subprocess.run(["sudo", "yum", "install", "-y"] + missing_deps, check=False)
-            elif shutil.which("pacman"):
-                subprocess.run(["sudo", "pacman", "-S", "--noconfirm"] + missing_deps, check=False)
-            else:
-                error(f"Could not install {dep_list} — no supported package manager found.")
-                info(f"Install {dep_list} manually and re-run setup.")
-                return False
-
-        info("Installing Ollama via official install script...")
-        try:
-            result = subprocess.run(
-                ["bash", "-c", "curl -fsSL https://ollama.com/install.sh | sh"],
-                check=False,
-            )
-            return result.returncode == 0
-        except Exception as e:
-            error(f"Install failed: {e}")
-            return False
-
-    elif os_name == "Darwin":
-        import shutil
-
-        if not shutil.which("brew"):
-            error("Homebrew not found. Install Ollama manually from https://ollama.com/download")
-            return False
-        info("Installing Ollama via Homebrew...")
-        try:
-            result = subprocess.run(["brew", "install", "ollama"], check=False)
-            return result.returncode == 0
-        except Exception as e:
-            error(f"Install failed: {e}")
-            return False
-
-    else:
-        error(f"Automatic install not supported on {os_name}.")
-        info("Download Ollama manually from: https://ollama.com/download")
-        return False
-
-
-def _start_ollama() -> bool:
-    """Start the Ollama server in the background."""
-    try:
-        subprocess.Popen(
-            ["ollama", "serve"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        import time
-
-        for _ in range(10):
-            time.sleep(1)
-            if _is_ollama_running():
-                return True
-        return False
-    except Exception as e:
-        error(f"Failed to start Ollama: {e}")
-        return False
-
-
-def _pull_ollama_model(model: str) -> bool:
-    """Pull an Ollama model (streams progress to terminal)."""
-    try:
-        result = subprocess.run(["ollama", "pull", model], check=False)
-        return result.returncode == 0
-    except Exception as e:
-        error(f"Pull failed: {e}")
-        return False
-
-
-def step_chat_provider(existing: dict) -> dict:
-    step_header(4, "Chat Provider (LLM Backend)")
-
-    yaml_cfg = existing.get("_yaml", {})
-    existing_cp = yaml_cfg.get("chat_provider", {})
-    existing_provider = existing_cp.get("provider", "anthropic")
-
-    info("The chat provider controls which LLM powers the Discord chat interface.")
-    info("This is separate from the Claude Code agents that execute tasks.")
-    print()
-    print(f"    {BOLD}[1] Anthropic{RESET}  (Claude API — default, same as task agents)")
-    print(f"    {BOLD}[2] Ollama{RESET}     (local models — free, private, no API key needed)")
-    print()
-
-    default_choice = "2" if existing_provider == "ollama" else "1"
-    choice = prompt("Choice", default_choice)
-
-    if choice != "2":
-        model = existing_cp.get("model", "")
-        if model:
-            info(f"Using configured model: {model}")
-        else:
-            info("Using default Anthropic model (same as task agents)")
-        return {"provider": "anthropic", "model": model, "base_url": ""}
-
-    # ── Ollama setup ──
-
-    default_base_url = existing_cp.get("base_url", "http://localhost:11434/v1")
-    check_url = default_base_url.rstrip("/")
-    if check_url.endswith("/v1"):
-        check_url = check_url[:-3]
-
-    if not _is_ollama_installed():
-        warn("Ollama is not installed.")
-        if prompt_yes_no("Install Ollama now?", default=True):
-            if _install_ollama():
-                success("Ollama installed successfully")
-            else:
-                error("Ollama installation failed")
-                info("Install manually from: https://ollama.com/download")
-                info("Then re-run this setup.")
-                return {"provider": "anthropic", "model": "", "base_url": ""}
-        else:
-            info("Skipping Ollama setup — falling back to Anthropic.")
-            return {"provider": "anthropic", "model": "", "base_url": ""}
-
-    print()
-    if not _is_ollama_running(check_url):
-        warn("Ollama is installed but not running.")
-        if prompt_yes_no("Start Ollama now?", default=True):
-            info("Starting Ollama server...")
-            if _start_ollama():
-                success("Ollama is running")
-            else:
-                error("Could not start Ollama")
-                info("Start it manually with: ollama serve")
-        else:
-            info("Continuing without verifying Ollama connectivity.")
-    else:
-        success("Ollama is running")
-
-    print()
-    local_models = _ollama_list_models(check_url)
-    if local_models:
-        info("Locally available models:")
-        for i, m in enumerate(local_models, 1):
-            print(f"      {i}. {m}")
-    else:
-        info("No models downloaded yet.")
-
-    print()
-    default_model = existing_cp.get("model", "")
-    if not default_model:
-        default_model = local_models[0] if local_models else "qwen3.5:35b"
-
-    model = prompt("Model name or number", default_model)
-
-    # Resolve numeric selection to model name
-    if model.isdigit() and local_models and 1 <= int(model) <= len(local_models):
-        model = local_models[int(model) - 1]
-
-    if model not in local_models:
-        print()
-        if prompt_yes_no(f"Model '{model}' is not downloaded. Pull it now?", default=True):
-            info(f"Pulling {model} (this may take a while)...")
-            if _pull_ollama_model(model):
-                success(f"Model '{model}' is ready")
-            else:
-                error(f"Failed to pull '{model}'")
-                info("Pull it manually with: ollama pull " + model)
-        else:
-            info(f"Pull it later with: ollama pull {model}")
-    else:
-        success(f"Model '{model}' is available locally")
-
-    base_url = prompt("Ollama base URL", default_base_url)
-
-    print()
-    try:
-        import openai  # noqa: F401
-
-        success("openai package is installed (required for Ollama provider)")
-    except ImportError:
-        warn("openai Python package is not installed (required for Ollama provider)")
-        if prompt_yes_no("Install it now?", default=True):
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "openai>=1.0.0", "--quiet"],
-                check=False,
-            )
-            if result.returncode == 0:
-                success("openai package installed")
-            else:
-                error("Failed to install openai package")
-                info("Install manually with: pip install 'openai>=1.0.0'")
-        else:
-            info("Install it before running with Ollama: pip install 'openai>=1.0.0'")
-
-    return {"provider": "ollama", "model": model, "base_url": base_url}
-
-
-# ── Step 5: Scheduling & Budget ──────────────────────────────────────────────
+# ── Step 4: Scheduling & Budget ──────────────────────────────────────────────
 
 
 def step_scheduling(existing: dict) -> dict:
-    step_header(5, "Scheduling & Budget")
+    step_header(4, "Scheduling & Budget")
 
     yaml_cfg = existing.get("_yaml", {})
     existing_sched = yaml_cfg.get("scheduling", {})
@@ -1435,7 +1185,7 @@ def step_scheduling(existing: dict) -> dict:
     return config
 
 
-# ── Step 6: Write Config ─────────────────────────────────────────────────────
+# ── Step 5: Write Config ─────────────────────────────────────────────────────
 
 
 def step_write_config(
@@ -1444,9 +1194,8 @@ def step_write_config(
     discord_cfg: dict,
     agents_cfg: dict,
     sched_cfg: dict,
-    chat_provider_cfg: dict,
 ) -> Path:
-    step_header(6, "Write Configuration")
+    step_header(5, "Write Configuration")
 
     config_dir = Path(os.path.expanduser("~/.agent-queue"))
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -1513,21 +1262,13 @@ def step_write_config(
 
     yaml_lines.append("")
 
-    # Chat provider config
-    cp = chat_provider_cfg
-    if cp.get("provider") and cp["provider"] != "anthropic":
-        yaml_lines.append("chat_provider:")
-        yaml_lines.append(f"  provider: {cp['provider']}")
-        if cp.get("model"):
-            yaml_lines.append(f"  model: {cp['model']}")
-        if cp.get("base_url"):
-            yaml_lines.append(f"  base_url: {cp['base_url']}")
-        yaml_lines.append("")
-    elif cp.get("model"):
-        yaml_lines.append("chat_provider:")
-        yaml_lines.append("  provider: anthropic")
-        yaml_lines.append(f"  model: {cp['model']}")
-        yaml_lines.append("")
+    yaml_lines.append("llm:")
+    yaml_lines.append("  provider: anthropic      # anthropic | google | openai")
+    yaml_lines.append("  default_class: fast-medium")
+    yaml_lines.append(
+        "  # api_key: ...           # or ANTHROPIC_API_KEY / GOOGLE_API_KEY / OPENAI_API_KEY"
+    )
+    yaml_lines.append("")
 
     if sched_cfg.get("global_token_budget_daily"):
         yaml_lines.append(f"global_token_budget_daily: {sched_cfg['global_token_budget_daily']}")
@@ -1583,11 +1324,11 @@ def _offer_shell_env(env_path: Path):
         info(f"You'll need to source {env_path} before running agent-queue")
 
 
-# ── Step 7: Test Connectivity ─────────────────────────────────────────────────
+# ── Step 6: Test Connectivity ─────────────────────────────────────────────────
 
 
-def step_test_connectivity(discord_cfg: dict, agents_cfg: dict, chat_provider_cfg: dict):
-    step_header(7, "Connectivity Summary")
+def step_test_connectivity(discord_cfg: dict, agents_cfg: dict):
+    step_header(6, "Connectivity Summary")
 
     if discord_cfg.get("connected"):
         success("Discord: connected")
@@ -1606,24 +1347,12 @@ def step_test_connectivity(discord_cfg: dict, agents_cfg: dict, chat_provider_cf
     elif claude_cfg:
         error("session harnesses: no agent CLI found (claude / codex / gemini)")
 
-    cp = chat_provider_cfg
-    if cp.get("provider") == "ollama":
-        check_url = cp.get("base_url", "http://localhost:11434/v1").rstrip("/")
-        if check_url.endswith("/v1"):
-            check_url = check_url[:-3]
-        if _is_ollama_running(check_url):
-            success(f"Chat provider: Ollama ({cp.get('model', 'default')})")
-        else:
-            warn("Chat provider: Ollama (not running — start with: ollama serve)")
-    else:
-        success("Chat provider: Anthropic (default)")
 
-
-# ── Step 8: Launch Daemon ─────────────────────────────────────────────────────
+# ── Step 7: Launch Daemon ─────────────────────────────────────────────────────
 
 
 def step_launch(config_path: Path):
-    step_header(8, "Launch Daemon")
+    step_header(7, "Launch Daemon")
 
     log_dir = Path(os.path.expanduser("~/.agent-queue"))
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1668,11 +1397,10 @@ def main():
     db_config = step_database(existing)
     discord_cfg = step_discord(existing)
     agents_cfg = step_agents(existing)
-    chat_provider_cfg = step_chat_provider(existing)
     sched_cfg = step_scheduling(existing)
 
     config_path = step_write_config(
-        workspace, db_config, discord_cfg, agents_cfg, sched_cfg, chat_provider_cfg
+        workspace, db_config, discord_cfg, agents_cfg, sched_cfg
     )
 
     # Run data migration if switching from SQLite to PostgreSQL
@@ -1697,7 +1425,7 @@ def main():
             error(f"Migration failed: {e}")
             warn("Your SQLite database is unchanged. You can retry migration later.")
 
-    step_test_connectivity(discord_cfg, agents_cfg, chat_provider_cfg)
+    step_test_connectivity(discord_cfg, agents_cfg)
     step_launch(config_path)
 
     print(f"\n{GREEN}{BOLD}Setup complete!{RESET}\n")

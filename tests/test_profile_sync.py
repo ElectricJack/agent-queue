@@ -21,6 +21,7 @@ Covers:
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 
@@ -3231,6 +3232,130 @@ name: No ID Agent
         assert "software engineering agent" in profile.system_prompt_suffix
         assert "Always run existing tests" in profile.system_prompt_suffix
 
+
+# ---------------------------------------------------------------------------
+# Startup strip — retired ``runtime`` config key (llm-direct-path L6)
+# ---------------------------------------------------------------------------
+
+
+#: A vault profile written before the in-process Supervisor was deleted: its
+#: ``## Config`` still carries ``runtime``, which the parser now rejects.
+_PROFILE_WITH_RUNTIME = """\
+---
+id: supervisor
+name: Supervisor
+---
+
+## Role
+Coordinate the queue.
+
+## Config
+```json
+{
+  "runtime": "supervisor",
+  "harness": "claude",
+  "needs_workspace": false
+}
+```
+
+## Tools
+```json
+{"allowed": ["Read"]}
+```
+
+## Rules
+- Never edit code directly
+"""
+
+
+class TestRetiredRuntimeKeyStrip:
+    """The startup scan self-heals vault profiles carrying ``runtime``.
+
+    ``runtime`` selected a Runtime implementation; the last one (the
+    in-process Supervisor) is gone, so ``_validate_config`` rejects the key.
+    Without the strip an existing vault would stop syncing that profile
+    entirely — the compat path this class covers.
+    """
+
+    @pytest.mark.asyncio
+    async def test_profile_with_runtime_still_syncs(self, db, tmp_path):
+        """(1) No parse error — the profile lands in the DB."""
+        vault = tmp_path / "vault"
+        path = vault / "agent-types" / "supervisor" / "profile.md"
+        _create_file(str(path), _PROFILE_WITH_RUNTIME)
+
+        results = await scan_and_sync_existing_profiles(str(vault), db)
+
+        assert len(results) == 1
+        assert results[0].success, results[0].errors
+        assert results[0].profile_id == "supervisor"
+        assert await db.get_profile("supervisor") is not None
+
+    @pytest.mark.asyncio
+    async def test_runtime_key_is_removed(self, db, tmp_path):
+        """(2) The key is gone from the file's Config block."""
+        vault = tmp_path / "vault"
+        path = vault / "agent-types" / "supervisor" / "profile.md"
+        _create_file(str(path), _PROFILE_WITH_RUNTIME)
+
+        await scan_and_sync_existing_profiles(str(vault), db)
+
+        rewritten = path.read_text()
+        assert '"runtime"' not in rewritten
+        assert "runtime" not in parse_profile(rewritten).config
+        # Re-parsing the rewritten file must be clean — otherwise the next
+        # boot would fail sync on the very file this pass just wrote.
+        assert parse_profile(rewritten).is_valid
+
+    @pytest.mark.asyncio
+    async def test_other_sections_survive_the_rewrite(self, db, tmp_path):
+        """(3) The file is rewritten surgically — everything else intact."""
+        vault = tmp_path / "vault"
+        path = vault / "agent-types" / "supervisor" / "profile.md"
+        _create_file(str(path), _PROFILE_WITH_RUNTIME)
+
+        await scan_and_sync_existing_profiles(str(vault), db)
+
+        parsed = parse_profile(path.read_text())
+        assert parsed.frontmatter.id == "supervisor"
+        assert parsed.frontmatter.name == "Supervisor"
+        assert "Coordinate the queue." in parsed.role
+        assert "Never edit code directly" in parsed.rules
+        assert parsed.tools == {"allowed": ["Read"]}
+        # The rest of the Config block is preserved, not just re-emitted empty.
+        assert parsed.config["harness"] == "claude"
+        assert parsed.config["needs_workspace"] is False
+
+    @pytest.mark.asyncio
+    async def test_profile_without_runtime_is_not_rewritten(self, db, tmp_path):
+        """A clean profile is left byte-identical — no gratuitous churn."""
+        vault = tmp_path / "vault"
+        path = vault / "agent-types" / "coding" / "profile.md"
+        _create_file(str(path), FULL_PROFILE)
+
+        await scan_and_sync_existing_profiles(str(vault), db)
+
+        assert path.read_text() == FULL_PROFILE
+
+    @pytest.mark.asyncio
+    async def test_unwritable_file_still_syncs_and_warns(self, db, tmp_path, caplog):
+        """Read-only file: strip in memory, warn, still sync."""
+        vault = tmp_path / "vault"
+        path = vault / "agent-types" / "supervisor" / "profile.md"
+        _create_file(str(path), _PROFILE_WITH_RUNTIME)
+        path.chmod(0o444)
+
+        try:
+            with caplog.at_level(logging.WARNING, logger="src.profiles.sync"):
+                results = await scan_and_sync_existing_profiles(str(vault), db)
+        finally:
+            path.chmod(0o644)
+
+        assert results[0].success, results[0].errors
+        assert await db.get_profile("supervisor") is not None
+        # File on disk is untouched (couldn't be written) but the operator is told.
+        assert '"runtime"' in path.read_text()
+        assert any("runtime" in r.getMessage() for r in caplog.records)
 
 # ---------------------------------------------------------------------------
 # Roadmap 4.1.12 — File watcher profile sync integration tests

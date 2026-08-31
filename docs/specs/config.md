@@ -168,20 +168,18 @@ Maps to `PauseRetryConfig`. The YAML key is `pause_retry`.
 | `rate_limit_max_retries` | `int` | `3` | Maximum number of in-process retries for rate limit errors before the task is paused at the orchestrator level. |
 | `rate_limit_max_backoff_seconds` | `int` | `300` | Maximum backoff duration (in seconds) for exponential in-process retry, capping the growth of the delay. |
 
-### 4.6 `chat_provider` Section
+### 4.6 `llm` — the direct LLM path
 
-Maps to `ChatProviderConfig`. The YAML key is `chat_provider`.
+| Key | Default | Meaning |
+|---|---|---|
+| `provider` | `anthropic` | `anthropic` \| `google` \| `openai` (Ollama = `openai` + `base_url`) |
+| `model` | `""` | explicit model id; empty = intelligence class, else the adapter's default |
+| `api_key` | `""` | optional; `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` otherwise |
+| `base_url` | `""` | `openai` only: an OpenAI-compatible endpoint, e.g. `http://localhost:11434/v1` |
+| `max_tokens` | `4096` | response budget when a call names none |
+| `default_class` | `""` | intelligence class for calls that name none (`vault/intelligence-classes/*.md`) |
 
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `provider` | `str` | `"anthropic"` | LLM provider to use for the chat agent. Valid values are `"anthropic"`, `"ollama"`, and `"gemini"`. |
-| `model` | `str` | `""` | Model name to use. An empty string means the provider's own default model is used. |
-| `base_url` | `str` | `""` | Base URL for the provider's API endpoint. Primarily used for Ollama installations. Empty string means the provider SDK's default URL is used. |
-| `api_key` | `str` | `""` | API key for the provider. Currently used by Gemini (falls back to `GEMINI_API_KEY` or `GOOGLE_API_KEY` env vars). |
-| `keep_alive` | `str` | `"1h"` | Ollama only: how long to keep the model loaded in memory after the last request. Accepts Go-style durations (`"1h"`, `"30m"`, `"-1"` for infinite, `"0"` for immediate unload). |
-| `num_ctx` | `int` | `0` | Ollama only: context window size override. `0` means use the model's default. |
-
-**Note:** The `__post_init__` method coerces `model` to a string, since YAML may parse numeric model names (e.g., `model: 4`) as integers.
+The legacy `chat_provider:` block still loads (ids `gemini→google`, `ollama→openai`) with a one-time deprecation warning. Used by playbook nodes and transitions, plugin `invoke_llm`, reference-stub enrichment, and `aq vault rebuild-index --with-summaries`. Coding agents never use it — they are tmux sessions selected by the profile's `harness`.
 
 ### 4.7 `monitoring` Section
 
@@ -241,7 +239,7 @@ The subsystem is **disabled by default** — set `enabled: true` to activate it.
 | `recall_top_k` | `int` | `5` | Number of memory chunks to inject during automatic recall. |
 | `compact_enabled` | `bool` | `False` | Whether periodic LLM-based memory compaction is active. |
 | `compact_interval_hours` | `int` | `24` | Hours between compaction runs when `compact_enabled` is `true`. |
-| `compact_llm_provider` | `str` | `""` | LLM provider for compaction (defaults to `revision_provider` or `chat_provider`). |
+| `compact_llm_provider` | `str` | `""` | LLM provider for compaction (defaults to `revision_provider` or the `llm` section's provider). |
 | `compact_llm_model` | `str` | `""` | Model override for compaction. |
 | `compact_recent_days` | `int` | `7` | Task memories younger than this many days are kept as-is during compaction. |
 | `compact_archive_days` | `int` | `30` | Task memories older than this many days are deleted after digesting during compaction. |
@@ -254,7 +252,7 @@ The subsystem is **disabled by default** — set `enabled: true` to activate it.
 | `profile_enabled` | `bool` | `True` | Toggle project profiles — auto-generated summaries of each project. |
 | `profile_max_size` | `int` | `5000` | Maximum characters for project profile content. |
 | `revision_enabled` | `bool` | `True` | Toggle post-task profile revision — updates the project profile after each task completes. |
-| `revision_provider` | `str` | `""` | LLM provider for profile revision (defaults to `chat_provider`). |
+| `revision_provider` | `str` | `""` | LLM provider for profile revision (defaults to the `llm` section's provider). |
 | `revision_model` | `str` | `""` | Model override for profile revision. |
 | `auto_generate_notes` | `bool` | `False` | Auto-note generation after tasks. Off by default as it can be noisy. |
 | `notes_inform_profile` | `bool` | `True` | Include notes in profile revision context for richer profiles. |

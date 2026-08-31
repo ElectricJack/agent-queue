@@ -4,7 +4,6 @@ Covers ``docs/specs/implementation/feature-pauses.md`` §10 (Test Plan):
 
 * config defaults and hot-reload classification (§2)
 * the memory plugin skip set (M1/M2)
-* reflection forced to ``level="off"`` while memory is paused (M5)
 * the playbook wiring block not being constructed (P1-P8, P11)
 * housekeeping early returns (P9, P10)
 * the ``CommandHandler.execute()`` gate and its exact error strings (§5)
@@ -32,7 +31,6 @@ from src.config import (
     RESTART_REQUIRED_SECTIONS,
     AppConfig,
     MemoryConfig,
-    ObservationConfig,
     PlaybooksConfig,
     diff_configs,
     load_config,
@@ -64,13 +62,11 @@ class TestConfigDefaults:
     def test_dataclass_defaults_are_paused(self):
         assert MemoryConfig().enabled is False
         assert PlaybooksConfig().enabled is False
-        assert ObservationConfig().enabled is False
 
     def test_appconfig_defaults_are_paused(self, tmp_path):
         cfg = AppConfig(data_dir=str(tmp_path / "data"))
         assert cfg.memory.enabled is False
         assert cfg.playbooks.enabled is False
-        assert cfg.supervisor.observation.enabled is False
 
     def test_playbooks_config_validate_is_clean(self):
         assert PlaybooksConfig().validate() == []
@@ -100,6 +96,8 @@ class TestConfigDefaults:
             "memory:\n"
             "  recall_top_k: 9\n"
             "playbooks: {}\n"
+            # Retired section (deleted with the in-process Supervisor) — an
+            # old config file carrying it must still load.
             "supervisor:\n"
             "  observation:\n"
             "    max_buffer_size: 7\n",
@@ -108,8 +106,6 @@ class TestConfigDefaults:
         assert cfg.memory.enabled is False
         assert cfg.memory.recall_top_k == 9
         assert cfg.playbooks.enabled is False
-        assert cfg.supervisor.observation.enabled is False
-        assert cfg.supervisor.observation.max_buffer_size == 7
 
     def test_explicit_true_round_trips(self, tmp_path):
         path = self._write(
@@ -117,21 +113,16 @@ class TestConfigDefaults:
             "memory:\n"
             "  enabled: true\n"
             "playbooks:\n"
-            "  enabled: true\n"
-            "supervisor:\n"
-            "  observation:\n"
-            "    enabled: true\n",
+            "  enabled: true\n",
         )
         cfg = load_config(path)
         assert cfg.memory.enabled is True
         assert cfg.playbooks.enabled is True
-        assert cfg.supervisor.observation.enabled is True
 
     def test_absent_sections_keep_paused_defaults(self, tmp_path):
         cfg = load_config(self._write(tmp_path, "agents:\n  max_concurrent: 2\n"))
         assert cfg.memory.enabled is False
         assert cfg.playbooks.enabled is False
-        assert cfg.supervisor.observation.enabled is False
 
     def test_both_flags_are_restart_required(self):
         assert "playbooks" in RESTART_REQUIRED_SECTIONS
@@ -274,44 +265,6 @@ class TestPluginSkip:
         rows = [{"id": "aq-memory", "status": "installed"}]
         registry, _ = self._registry(rows)
         assert await registry.load_all() == 1
-
-
-# ---------------------------------------------------------------------------
-# M5 / §10 — Reflection forced off
-# ---------------------------------------------------------------------------
-
-
-class TestReflectionForcedOff:
-    def _supervisor(self, *, memory_enabled: bool):
-        from src.runtimes.supervisor import Supervisor
-
-        config = AppConfig()
-        config.memory.enabled = memory_enabled
-        config.supervisor.reflection.level = "full"
-        orch = MagicMock()
-        return Supervisor(orch, config)
-
-    def test_reflection_is_off_when_memory_paused(self):
-        sup = self._supervisor(memory_enabled=False)
-        assert sup.reflection._config.level == "off"
-        assert sup.reflection.should_reflect("task.completed") is False
-        assert sup.reflection.should_reflect("user.request") is False
-        assert sup.reflection.determine_depth("task.completed", {}) is None
-
-    def test_reflection_untouched_when_memory_enabled(self):
-        sup = self._supervisor(memory_enabled=True)
-        assert sup.reflection._config.level == "full"
-        assert sup.reflection.should_reflect("task.completed") is True
-
-    def test_app_config_reflection_object_is_not_mutated(self):
-        """The override is a copy — the caller's config object is intact."""
-        from src.runtimes.supervisor import Supervisor
-
-        config = AppConfig()
-        config.memory.enabled = False
-        config.supervisor.reflection.level = "full"
-        Supervisor(MagicMock(), config)
-        assert config.supervisor.reflection.level == "full"
 
 
 # ---------------------------------------------------------------------------

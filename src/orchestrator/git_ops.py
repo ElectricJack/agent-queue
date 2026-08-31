@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 
 from src.git.manager import GitError
 from src.notifications.builder import build_task_detail
@@ -338,185 +337,19 @@ class GitOpsMixin:
             logger.debug("_task_has_code_changes failed (will proceed normally): %s", e)
             return False
 
-    async def _discover_and_store_plan(self, task: Task, workspace: str) -> bool:
-        """Discover a plan file, parse it, and store the parsed data for approval.
-
-        Called after a task completes successfully.  Searches the workspace
-        for a plan file (e.g. ``.claude/plan.md``) using configurable glob
-        patterns, parses it, and stores the parsed plan data as task_context
-        entries so the plan can be presented to the user for approval.
-
-        The plan file is archived to ``.claude/plans/<task_id>-plan.md``
-        after processing to prevent re-processing if the workspace is reused.
-
-        Returns True if a plan was found, parsed, and stored for approval.
-        """
-        from src.plan_parser import find_plan_file, read_plan_file
-
-        config = self.config.auto_task
-        if not config.enabled:
-            return False
-
-        # Prevent recursive plan explosion: subtasks must not generate
-        # further sub-plans.
-        if task.is_plan_subtask:
-            return False
-
-        # Git-diff heuristic: if the task already made substantial code
-        # changes (beyond the plan file itself), the plan was likely
-        # already executed during this task — skip generating subtasks.
-        if config.skip_if_implemented:
-            try:
-                project = await self.db.get_project(task.project_id) if task.project_id else None
-                default_branch = await self._get_default_branch(project, workspace)
-                if await self.git.ahas_non_plan_changes(workspace, default_branch):
-                    logger.info(
-                        "Auto-task: skipping plan approval for task %s — "
-                        "branch has substantial code changes beyond the plan file, "
-                        "indicating the plan was already implemented",
-                        task.id,
-                    )
-                    return False
-            except Exception as e:
-                # On any error, fall through to normal behaviour
-                logger.debug(
-                    "Auto-task: skip_if_implemented check failed for task %s: %s",
-                    task.id,
-                    e,
-                )
-
-        plan_path = find_plan_file(workspace, config.plan_file_patterns)
-        if not plan_path:
-            logger.debug(
-                "Auto-task: no plan file found for task %s in workspace %s (searched patterns: %s)",
-                task.id,
-                workspace,
-                config.plan_file_patterns,
-            )
-            return False
-
-        # Staleness check: compare the plan file's mtime against the
-        # recorded execution start time.  If the plan file predates the
-        # agent's execution start, it was written by a previous task and
-        # should not be attributed to this one.  This prevents stale plan
-        # files (left behind by failed cleanups) from being incorrectly
-        # picked up by unrelated tasks sharing the same workspace.
-        exec_start = self._task_exec_start.get(task.id)
-        if exec_start is not None:
-            try:
-                plan_mtime = os.path.getmtime(plan_path)
-                # Use a 2-second tolerance to account for filesystem
-                # timestamp granularity (some filesystems round to 1s).
-                # In practice, stale plans are minutes/hours old.
-                if plan_mtime < exec_start - 2.0:
-                    logger.warning(
-                        "Auto-task: ignoring stale plan file %s for task %s "
-                        "(plan mtime %.0f < exec start %.0f — file "
-                        "predates this task's execution)",
-                        plan_path,
-                        task.id,
-                        plan_mtime,
-                        exec_start,
-                    )
-                    # Archive it so it's not rediscovered by future tasks
-                    try:
-                        plans_dir = os.path.join(workspace, ".claude", "plans")
-                        os.makedirs(plans_dir, exist_ok=True)
-                        stale_archive = os.path.join(plans_dir, f"stale-{task.id}-plan.md")
-                        os.rename(plan_path, stale_archive)
-                    except OSError:
-                        pass
-                    return False
-            except OSError as e:
-                logger.debug(
-                    "Auto-task: staleness check failed for %s: %s (proceeding)",
-                    plan_path,
-                    e,
-                )
-
-        try:
-            raw = read_plan_file(plan_path)
-        except Exception as e:
-            logger.warning("Auto-task: failed to read plan file %s: %s", plan_path, e)
-            return False
-
-        if not raw or not raw.strip():
-            logger.info("Auto-task: plan file %s is empty", plan_path)
-            return False
-
-        logger.info("Auto-task: found plan file %s for task %s", plan_path, task.id)
-
-        # Archive the plan file for traceability (so it won't be re-processed
-        # if the workspace is reused for another task).
-        archived_path = None
-        try:
-            plans_dir = os.path.join(workspace, ".claude", "plans")
-            os.makedirs(plans_dir, exist_ok=True)
-            archived_path = os.path.join(plans_dir, f"{task.id}-plan.md")
-            os.rename(plan_path, archived_path)
-        except OSError:
-            pass
-
-        # Store the raw plan content as task_context.  The actual
-        # plan-to-task splitting is done by the supervisor LLM at
-        # approval time (not by algorithmic parsing here).
-        await self.db.add_task_context(
-            task.id,
-            type="plan_raw",
-            label="Plan Raw Content",
-            content=raw,
-        )
-        if archived_path:
-            await self.db.add_task_context(
-                task.id,
-                type="plan_archived_path",
-                label="Plan Archived Path",
-                content=archived_path,
-            )
-
-        logger.info(
-            "Auto-task: stored plan for task %s — awaiting user approval",
-            task.id,
-        )
-        return True
-
     # ── Completion pipeline ────────────────────────────────────────────────
     #
-    # The completion pipeline runs: commit → plan_generate → merge.
-    # Plan generation runs BEFORE merge so the plan file is archived
-    # (and the archival committed) before the branch is merged to the
-    # default branch.  This prevents the plan file from persisting on
-    # main and being re-discovered by subsequent tasks.
+    # The completion pipeline runs: commit → verify → integrate.
     # Each phase receives a PipelineContext and returns a PhaseResult.
 
     async def _run_completion_pipeline(self, ctx: PipelineContext) -> tuple[str | None, bool]:
         """Run the post-completion pipeline. Returns (pr_url, completed_ok).
 
         Phase execution strategy:
-        - **plan_discover**: Non-critical — if it crashes, log and continue
-          to the verify phase.  Plan discovery failure should not prevent
-          git verification and auto-remediation from running.
         - **verify**: Critical — if it crashes or returns STOP, the task
           cannot be marked completed.
         """
-        # Phase 1: Plan discovery (non-critical)
-        try:
-            result = await self._phase_plan_discover(ctx)
-            if result == PhaseResult.STOP or result == PhaseResult.ERROR:
-                logger.warning(
-                    "Pipeline phase 'plan_discover' returned %s for task %s — continuing to verify",
-                    result,
-                    ctx.task.id,
-                )
-        except Exception as e:
-            logger.error(
-                "Pipeline phase 'plan_discover' failed for task %s: %s — continuing to verify",
-                ctx.task.id,
-                e,
-                exc_info=True,
-            )
-
-        # Phase 2: Git verification (critical)
+        # Phase 1: Git verification (critical)
         try:
             result = await self._phase_verify(ctx)
         except Exception as e:
@@ -532,7 +365,7 @@ class GitOpsMixin:
         if result == PhaseResult.ERROR:
             return (ctx.pr_url, False)
 
-        # Phase 3: Integration (worktree-mode only).  For exclusive-clone
+        # Phase 2: Integration (worktree-mode only).  For exclusive-clone
         # tasks the verify phase already handled the merge; for worktree
         # slots this is where rebase + push + merge happens under the
         # per-project merge slot lease.  Worktree-execution spec §6.5.

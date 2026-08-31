@@ -30,6 +30,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.event_bus import EventBus
+from src.llm import LLMClient
+from src.llm.providers.base import LLMProvider
+from src.llm.types import ChatResponse as FakeChatResponse
+from src.llm.types import TextBlock as FakeTextBlock
 from src.reference_stub_enricher import ReferenceStubEnricher
 from src.workspace_spec_watcher import (
     SpecChange,
@@ -80,31 +84,37 @@ class FakeDB:
 
 
 @dataclass
-class FakeChatResponse:
-    """Minimal ChatResponse stand-in for testing."""
-
-    content: list
-
-    @property
-    def text_parts(self) -> list[str]:
-        return [block.text for block in self.content if hasattr(block, "text")]
-
-
-@dataclass
-class FakeTextBlock:
-    text: str
-
-
-@dataclass
 class FakeMemoryConfig:
     """Minimal MemoryConfig-like object with stub_enrichment fields."""
 
     stub_enrichment_enabled: bool = True
-    stub_enrichment_provider: str = ""
-    stub_enrichment_model: str = ""
+    stub_enrichment_class: str = ""
     stub_enrichment_max_source_chars: int = 20_000
-    revision_provider: str = ""
-    revision_model: str = ""
+
+
+class _AdaptedLLMProvider(LLMProvider):
+    """Adapts an object exposing an async ``create_message`` (e.g. an
+    ``AsyncMock``) into an ``LLMProvider`` so it can back an ``LLMClient``."""
+
+    def __init__(self, create_message):
+        self._create_message = create_message
+
+    async def create_message(self, **kwargs):
+        return await self._create_message(**kwargs)
+
+    @property
+    def model_name(self) -> str:
+        return "fake"
+
+
+def _llm_from(provider) -> LLMClient:
+    """Wrap a mock/object exposing ``create_message`` as an ``LLMClient``."""
+    from src.config import LLMConfig
+
+    adapted = provider if isinstance(provider, LLMProvider) else _AdaptedLLMProvider(
+        provider.create_message
+    )
+    return LLMClient.with_provider(adapted, config=LLMConfig())
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +191,7 @@ def enricher(event_bus, vault_dir):
         bus=event_bus,
         vault_projects_dir=vault_dir,
         config=FakeMemoryConfig(),
-        provider=provider,
+        llm=_llm_from(provider),
         enabled=True,
     )
 
@@ -345,7 +355,7 @@ class TestRegeneratedStubReflectsNewContent:
                 interfaces="- `POST /orders` -- create order\n- `POST /payments` -- process payment",
             )
         )
-        enricher._provider = v2_provider
+        enricher._llm = _llm_from(v2_provider)
 
         # Re-write the stub (simulating watcher regeneration)
         stub_content_v2 = generate_stub_content(
@@ -798,7 +808,7 @@ class TestLargeSpecFileHandling:
             bus=event_bus,
             vault_projects_dir=vault_dir,
             config=FakeMemoryConfig(stub_enrichment_max_source_chars=max_chars),
-            provider=provider,
+            llm=_llm_from(provider),
             enabled=True,
             max_source_chars=max_chars,
         )
@@ -851,7 +861,7 @@ class TestLargeSpecFileHandling:
             bus=event_bus,
             vault_projects_dir=vault_dir,
             config=FakeMemoryConfig(),
-            provider=provider,
+            llm=_llm_from(provider),
             enabled=True,
             max_source_chars=500,
         )

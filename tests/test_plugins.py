@@ -1058,56 +1058,32 @@ class TestConfigHelpers:
 class TestInvokeLLM:
     @pytest.mark.asyncio
     async def test_invoke_llm_calls_callback(self, tmp_path):
-        """invoke_llm routes through the callback."""
         callback = AsyncMock(return_value="LLM response")
         ctx = PluginContext(
-            plugin_name="test",
-            install_path=str(tmp_path),
-            db=AsyncMock(),
-            bus=MagicMock(),
-            command_registry={},
-            tool_registry={},
-            event_type_registry=set(),
+            plugin_name="test", install_path=str(tmp_path), db=AsyncMock(), bus=MagicMock(),
+            command_registry={}, tool_registry={}, event_type_registry=set(),
             invoke_llm_callback=callback,
         )
-        result = await ctx.invoke_llm("What is 2+2?")
-        assert result == "LLM response"
+        assert await ctx.invoke_llm("What is 2+2?") == "LLM response"
         callback.assert_called_once_with(
-            "What is 2+2?",
-            "test",
-            model=None,
-            provider=None,
-            tools=None,
-            thinking_budget=None,
+            "What is 2+2?", "test", intelligence_class=None, model=None, provider=None,
+            tools=None, system="",
         )
 
     @pytest.mark.asyncio
     async def test_invoke_llm_passes_overrides(self, tmp_path):
-        """invoke_llm passes model/provider/tools overrides."""
-        callback = AsyncMock(return_value="response")
+        callback = AsyncMock(return_value="ok")
         ctx = PluginContext(
-            plugin_name="test",
-            install_path=str(tmp_path),
-            db=AsyncMock(),
-            bus=MagicMock(),
-            command_registry={},
-            tool_registry={},
-            event_type_registry=set(),
+            plugin_name="test", install_path=str(tmp_path), db=AsyncMock(), bus=MagicMock(),
+            command_registry={}, tool_registry={}, event_type_registry=set(),
             invoke_llm_callback=callback,
         )
-        await ctx.invoke_llm(
-            "prompt",
-            model="claude-opus-4-20250514",
-            provider="anthropic",
-            tools=[{"name": "t"}],
-        )
+        tools = [{"name": "t", "input_schema": {"type": "object"}}]
+        await ctx.invoke_llm("p", intelligence_class="fast-low", model="m", provider="google",
+                             tools=tools, system="s")
         callback.assert_called_once_with(
-            "prompt",
-            "test",
-            model="claude-opus-4-20250514",
-            provider="anthropic",
-            tools=[{"name": "t"}],
-            thinking_budget=None,
+            "p", "test", intelligence_class="fast-low", model="m", provider="google",
+            tools=tools, system="s",
         )
 
     @pytest.mark.asyncio

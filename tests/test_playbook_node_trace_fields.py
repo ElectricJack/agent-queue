@@ -1,12 +1,14 @@
 """Tests for NodeTraceEntry.output / .error population (pane spec §5.3.1)."""
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.llm import LLMClient, LLMRunResult
+from src.llm.fake import FakeProvider
 from src.playbooks.runner import NodeTraceEntry, PlaybookRunner
+from src.playbooks.services import PlaybookServices
 
 
 def _make_graph() -> dict:
@@ -24,12 +26,14 @@ def _make_graph() -> dict:
     }
 
 
-def _make_supervisor(chat_response: str = "Hi there!"):
-    supervisor = AsyncMock()
-    supervisor.chat = AsyncMock(return_value=chat_response)
-    supervisor.summarize = AsyncMock(return_value="Summary of prior steps.")
-    supervisor.config = SimpleNamespace(chat_provider=SimpleNamespace(playbook_max_tokens=2048))
-    return supervisor
+def _make_services(response_text: str = "Hi there!"):
+    services = PlaybookServices.for_tests(LLMClient.with_provider(FakeProvider()))
+    services.llm = MagicMock()
+    services.llm.run_tools = AsyncMock(
+        return_value=LLMRunResult(text=response_text, transcript=[], turns=1, stopped_by="done")
+    )
+    services.llm.complete = AsyncMock(return_value=MagicMock(text="1", tool_calls=[]))
+    return services
 
 
 def test_node_trace_entry_has_new_optional_fields():
@@ -72,9 +76,9 @@ async def test_execute_node_populates_output(monkeypatch):
     """After a node executes successfully, its trace entry's .output holds
     the node's response text."""
     graph = _make_graph()
-    supervisor = _make_supervisor("Hi there!")
+    services = _make_services("Hi there!")
 
-    runner = PlaybookRunner(graph=graph, event={}, supervisor=supervisor, db=None)
+    runner = PlaybookRunner(graph=graph, event={}, services=services, db=None)
     result = await runner.run()
 
     assert result.status == "completed"
@@ -85,9 +89,9 @@ async def test_execute_node_populates_output(monkeypatch):
 @pytest.mark.asyncio
 async def test_dry_run_populates_output():
     graph = _make_graph()
-    supervisor = _make_supervisor()
+    services = _make_services()
 
-    runner = PlaybookRunner(graph=graph, event={}, supervisor=supervisor, db=None)
+    runner = PlaybookRunner(graph=graph, event={}, services=services, db=None)
     runner._dry_run = True
     result = await runner.run()
 

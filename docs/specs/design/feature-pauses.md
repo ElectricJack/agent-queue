@@ -208,16 +208,17 @@ the existing timeout sweep and resume handlers pick them up unchanged.
 
 ## 6. Chat Analyzer and Dormant Modules
 
-- **Chat analyzer `observe()`**: the real switch — verified in `src/chat_observer.py` and
-  `src/config.py` — is `supervisor.observation.enabled` (there is no `chat_analyzer.enabled`;
-  the `chat_analyzer:` section only tunes post-observe gates). Its default flips to
-  `false`; the Discord bot already gates `ChatObserver` construction on it, so the observer
-  is simply never built.
-- **`src/runtimes/supervisor.py` + `src/chat_providers/` go dormant, not paused here.**
-  They keep serving chat (Discord/CLI → `Supervisor.chat()`) until the new supervisor-agent
-  lands; unwiring them from boot is **owned by the supervisor-agent spec** (todo §4, B.3)
-  and is explicitly out of scope for this one. While memory is paused the Supervisor runs
-  with empty L1/L2 tiers and reflection off — no code change needed beyond §4.
+- **Chat analyzer `observe()` and `src/chat_observer.py`**: **removed**, not paused.
+  Both the module and `supervisor.observation.enabled` switch went away with the
+  in-process Supervisor — see
+  `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`.
+- **`src/runtimes/supervisor.py` + `src/chat_providers/` — removed, not dormant.**
+  This section originally deferred unwiring them to the supervisor-agent spec; the
+  llm-direct-path cutover (2026-08-30) deleted both outright rather than leaving them
+  dormant. `src/runtimes/base.py` and `RuntimeRegistry` survive as an inert
+  test/dispatch seam (nothing registered in production); coding agents run as
+  `harness`-selected tmux sessions, and playbook/plugin LLM calls go through
+  `src/llm/` (`LLMClient`). See the direct-path spec for the full cutover.
 - **Rules/hook-engine**: already removed (playbooks spec §13 Phase 3 — migration complete).
   Only comments and one no-op stub (`PromptBuilder.load_relevant_rules`) remain; the stub's
   deletion is deferred to the aq-surface prompt work rather than done here, because callers

@@ -42,15 +42,12 @@ class RuntimeRegistry:
 
     Construction takes an explicit ``runtimes`` dict so tests can build
     isolated registries.  Production wiring (in :mod:`src.main`) calls
-    :func:`default_registry` to populate the in-tree set.
+    :func:`default_registry`, which registers nothing.
 
-    Some runtimes — notably the in-process :class:`Supervisor` — are
-    daemon-wide singletons rather than instances-per-task.  Pass them
-    via the ``singletons`` dict at construction time; ``create(name,
-    profile=...)`` returns the registered singleton verbatim instead of
-    constructing fresh.  The singleton's ``start(task)`` / ``wait()`` /
-    ``stop()`` lifecycle methods rely on ContextVars to keep per-task
-    state isolated across concurrent dispatches.
+    A runtime that is a daemon-wide singleton rather than an
+    instance-per-task is passed via the ``singletons`` dict at construction
+    time; ``create(name, profile=...)`` returns it verbatim instead of
+    constructing fresh.
 
     ``config`` is the daemon's :class:`~src.config.AppConfig`.  It is handed
     to every runtime the registry constructs so runtime-side policy that lives
@@ -85,9 +82,9 @@ class RuntimeRegistry:
         profile: AgentProfile | None,
         llm_logger=None,
     ) -> Runtime:
-        # Singleton runtimes (e.g. Supervisor) are returned verbatim — the
-        # caller's ``profile`` rides on TaskContext.profile so the singleton
-        # can read it inside ``start(task)`` without a constructor argument.
+        # Singleton runtimes are returned verbatim — the caller's ``profile``
+        # rides on TaskContext.profile so the singleton can read it inside
+        # ``start(task)`` without a constructor argument.
         if name in self._singletons:
             return self._singletons[name]
         cls = self._runtimes.get(name)
@@ -106,39 +103,14 @@ class RuntimeRegistry:
         return cls(profile=profile, llm_logger=llm_logger)
 
 
-def default_registry(
-    supervisor: "Runtime | None" = None,
-    config=None,
-) -> RuntimeRegistry:
-    """Return a :class:`RuntimeRegistry` populated with all in-tree runtimes.
+def default_registry(config=None) -> RuntimeRegistry:
+    """Return the daemon's :class:`RuntimeRegistry`.
 
-    Since the tmux-harness migration there is exactly one: the in-process
-    :class:`Supervisor`.  Every *coding* agent runs as a session — a CLI
-    wrapped in tmux, selected by the profile's ``harness`` — so no Runtime
-    class spawns agents any more.  ``claude_sdk`` (Claude Agent SDK
-    subprocess) and ``acpx`` (ACP fan-out) were deleted: two parallel
-    execution paths alongside sessions meant the same profile could run
-    three different ways depending on flags, which is exactly the ambiguity
-    the migration set out to remove.
+    No in-tree runtimes are registered: every agent runs as a tmux session
+    selected by the profile's ``harness``.  The registry remains the
+    injection seam for tests and for ``sync_workflow``.
 
-    Supervisor stays because it is not a coding agent: it is tool-call-only,
-    holds no workspace, and runs in-process as the daemon-wide chat brain,
-    so there is no CLI to wrap.
-
-    ``supervisor`` is the daemon-wide :class:`Supervisor` instance.  When
-    provided it's registered as a singleton (one shared brain across all
-    supervisor-runtime tasks).  When *None*, supervisor-runtime tasks
-    fail with a clear "unknown runtime" error instead of misbehaving.
-
-    ``config`` is the daemon ``AppConfig``; it is threaded through for
-    parity with the previous signature and for any future runtime.
+    ``config`` is the daemon ``AppConfig``; it is threaded through for any
+    runtime a plugin or a test registers.
     """
-    singletons: dict[str, Runtime] = {}
-    if supervisor is not None:
-        singletons[supervisor.name] = supervisor
-
-    return RuntimeRegistry(
-        runtimes={},
-        config=config,
-        singletons=singletons,
-    )
+    return RuntimeRegistry(runtimes={}, config=config, singletons={})

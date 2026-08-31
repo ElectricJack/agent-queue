@@ -100,11 +100,9 @@ They are grouped by category (see `src/tools/registry.py`):
 | `list_archived` | List archived tasks |
 | `restore_task` | Restore an archived task |
 | `approve_task` | Approve a task |
-| `process_task_completion` | Process task completion |
 | `approve_plan` | Approve a plan |
 | `reject_plan` | Reject a plan |
 | `delete_plan` | Delete a plan |
-| `process_plan` | Process a plan |
 | `skip_task` | Skip a task |
 | `get_task_dependencies` | Get task dependencies |
 | `add_dependency` | Add a dependency |

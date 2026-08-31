@@ -17,13 +17,20 @@ from __future__ import annotations
 
 import json
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.event_bus import EventBus
+from src.llm import LLMClient, LLMRunResult
+from src.llm.fake import FakeProvider
 from src.models import PlaybookRun
 from src.playbooks.runner import PlaybookRunner
+from src.playbooks.services import PlaybookServices
+
+
+def _run_result(text: str) -> LLMRunResult:
+    return LLMRunResult(text=text, transcript=[], turns=1, stopped_by="done")
 
 
 # ---------------------------------------------------------------------------
@@ -32,12 +39,13 @@ from src.playbooks.runner import PlaybookRunner
 
 
 @pytest.fixture
-def mock_supervisor():
-    """A mock Supervisor with a controllable chat() return value."""
-    supervisor = AsyncMock()
-    supervisor.chat = AsyncMock(return_value="Done.")
-    supervisor.summarize = AsyncMock(return_value="Summary of prior steps.")
-    return supervisor
+def mock_services():
+    """PlaybookServices with a controllable llm.run_tools() return value."""
+    services = PlaybookServices.for_tests(LLMClient.with_provider(FakeProvider()))
+    services.llm = MagicMock()
+    services.llm.run_tools = AsyncMock(return_value=_run_result("Done."))
+    services.llm.complete = AsyncMock(return_value=MagicMock(text="1", tool_calls=[]))
+    return services
 
 
 @pytest.fixture
@@ -153,13 +161,13 @@ class TestCompletedEventEmission:
     """Tests for playbook.run.completed event."""
 
     async def test_completed_event_emitted_on_success(
-        self, mock_supervisor, simple_graph, event_data, event_bus
+        self, mock_services, simple_graph, event_data, event_bus
     ):
         """Successful run emits playbook.run.completed with required fields."""
         captured = []
         event_bus.subscribe("playbook.run.completed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(simple_graph, event_data, mock_services, event_bus=event_bus)
         result = await runner.run()
 
         assert result.status == "completed"
@@ -171,87 +179,87 @@ class TestCompletedEventEmission:
         assert payload["_event_type"] == "playbook.run.completed"
 
     async def test_completed_event_includes_final_context(
-        self, mock_supervisor, simple_graph, event_data, event_bus
+        self, mock_services, simple_graph, event_data, event_bus
     ):
         """Completed event includes final_context from the last response."""
-        mock_supervisor.chat = AsyncMock(return_value="Final analysis complete.")
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("Final analysis complete."))
         captured = []
         event_bus.subscribe("playbook.run.completed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(simple_graph, event_data, mock_services, event_bus=event_bus)
         await runner.run()
 
         assert captured[0]["final_context"] == "Final analysis complete."
 
     async def test_completed_event_includes_project_id(
-        self, mock_supervisor, simple_graph, event_data, event_bus
+        self, mock_services, simple_graph, event_data, event_bus
     ):
         """Completed event includes project_id from trigger event."""
         captured = []
         event_bus.subscribe("playbook.run.completed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(simple_graph, event_data, mock_services, event_bus=event_bus)
         await runner.run()
 
         assert captured[0]["project_id"] == "test-proj"
 
     async def test_completed_event_omits_project_id_when_absent(
-        self, mock_supervisor, simple_graph, event_data_no_project, event_bus
+        self, mock_services, simple_graph, event_data_no_project, event_bus
     ):
         """Completed event does not include project_id when trigger lacks one."""
         captured = []
         event_bus.subscribe("playbook.run.completed", lambda d: captured.append(d))
 
         runner = PlaybookRunner(
-            simple_graph, event_data_no_project, mock_supervisor, event_bus=event_bus
+            simple_graph, event_data_no_project, mock_services, event_bus=event_bus
         )
         await runner.run()
 
         assert "project_id" not in captured[0]
 
     async def test_completed_event_includes_tokens_used(
-        self, mock_supervisor, simple_graph, event_data, event_bus
+        self, mock_services, simple_graph, event_data, event_bus
     ):
         """Completed event includes tokens_used."""
         captured = []
         event_bus.subscribe("playbook.run.completed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(simple_graph, event_data, mock_services, event_bus=event_bus)
         await runner.run()
 
         assert "tokens_used" in captured[0]
         assert isinstance(captured[0]["tokens_used"], int)
 
     async def test_completed_event_includes_duration(
-        self, mock_supervisor, simple_graph, event_data, event_bus
+        self, mock_services, simple_graph, event_data, event_bus
     ):
         """Completed event includes duration_seconds."""
         captured = []
         event_bus.subscribe("playbook.run.completed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(simple_graph, event_data, mock_services, event_bus=event_bus)
         await runner.run()
 
         assert "duration_seconds" in captured[0]
         assert captured[0]["duration_seconds"] >= 0
 
-    async def test_no_event_without_bus(self, mock_supervisor, simple_graph, event_data):
+    async def test_no_event_without_bus(self, mock_services, simple_graph, event_data):
         """No event is emitted when event_bus is None."""
-        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor)
+        runner = PlaybookRunner(simple_graph, event_data, mock_services)
         result = await runner.run()
 
         # Should complete without errors — no bus, no emission
         assert result.status == "completed"
 
     async def test_completed_event_with_db(
-        self, mock_supervisor, mock_db, simple_graph, event_data, event_bus
+        self, mock_services, mock_db, simple_graph, event_data, event_bus
     ):
         """Completed event is emitted even when DB persistence is active."""
         captured = []
         event_bus.subscribe("playbook.run.completed", lambda d: captured.append(d))
 
         runner = PlaybookRunner(
-            simple_graph, event_data, mock_supervisor, db=mock_db, event_bus=event_bus
+            simple_graph, event_data, mock_services, db=mock_db, event_bus=event_bus
         )
         await runner.run()
 
@@ -268,13 +276,13 @@ class TestFailedEventEmission:
     """Tests for playbook.run.failed event."""
 
     async def test_failed_event_on_missing_node(
-        self, mock_supervisor, failing_graph, event_data, event_bus
+        self, mock_services, failing_graph, event_data, event_bus
     ):
         """Failed event emitted when graph references a non-existent node."""
         captured = []
         event_bus.subscribe("playbook.run.failed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(failing_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(failing_graph, event_data, mock_services, event_bus=event_bus)
         result = await runner.run()
 
         assert result.status == "failed"
@@ -287,13 +295,13 @@ class TestFailedEventEmission:
         assert "missing_node" in payload.get("error", "")
 
     async def test_failed_event_on_no_entry_node(
-        self, mock_supervisor, no_entry_graph, event_data, event_bus
+        self, mock_services, no_entry_graph, event_data, event_bus
     ):
         """Failed event emitted when no entry node exists."""
         captured = []
         event_bus.subscribe("playbook.run.failed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(no_entry_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(no_entry_graph, event_data, mock_services, event_bus=event_bus)
         result = await runner.run()
 
         assert result.status == "failed"
@@ -304,10 +312,10 @@ class TestFailedEventEmission:
         assert "No entry node" in payload.get("error", "")
 
     async def test_failed_event_includes_failed_at_node(
-        self, mock_supervisor, event_data, event_bus
+        self, mock_services, event_data, event_bus
     ):
         """Failed event includes the node where execution failed."""
-        mock_supervisor.chat = AsyncMock(side_effect=RuntimeError("LLM error"))
+        mock_services.llm.run_tools = AsyncMock(side_effect=RuntimeError("LLM error"))
 
         graph = {
             "id": "node-fail-playbook",
@@ -325,7 +333,7 @@ class TestFailedEventEmission:
         captured = []
         event_bus.subscribe("playbook.run.failed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(graph, event_data, mock_services, event_bus=event_bus)
         result = await runner.run()
 
         assert result.status == "failed"
@@ -333,38 +341,38 @@ class TestFailedEventEmission:
         assert captured[0]["failed_at_node"] == "step1"
 
     async def test_failed_event_includes_project_id(
-        self, mock_supervisor, no_entry_graph, event_data, event_bus
+        self, mock_services, no_entry_graph, event_data, event_bus
     ):
         """Failed event includes project_id from trigger event."""
         captured = []
         event_bus.subscribe("playbook.run.failed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(no_entry_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(no_entry_graph, event_data, mock_services, event_bus=event_bus)
         await runner.run()
 
         assert captured[0]["project_id"] == "test-proj"
 
     async def test_failed_event_includes_error(
-        self, mock_supervisor, no_entry_graph, event_data, event_bus
+        self, mock_services, no_entry_graph, event_data, event_bus
     ):
         """Failed event includes error message."""
         captured = []
         event_bus.subscribe("playbook.run.failed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(no_entry_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(no_entry_graph, event_data, mock_services, event_bus=event_bus)
         await runner.run()
 
         assert "error" in captured[0]
         assert len(captured[0]["error"]) > 0
 
     async def test_failed_event_includes_tokens_and_duration(
-        self, mock_supervisor, no_entry_graph, event_data, event_bus
+        self, mock_services, no_entry_graph, event_data, event_bus
     ):
         """Failed event includes tokens_used and duration_seconds."""
         captured = []
         event_bus.subscribe("playbook.run.failed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(no_entry_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(no_entry_graph, event_data, mock_services, event_bus=event_bus)
         await runner.run()
 
         assert "tokens_used" in captured[0]
@@ -372,7 +380,7 @@ class TestFailedEventEmission:
         assert captured[0]["duration_seconds"] >= 0
 
     async def test_failed_event_on_token_budget_exceeded(
-        self, mock_supervisor, event_data, event_bus
+        self, mock_services, event_data, event_bus
     ):
         """Failed event emitted when token budget is exceeded."""
         graph = {
@@ -390,12 +398,12 @@ class TestFailedEventEmission:
         }
 
         # Simulate token usage that exceeds budget
-        mock_supervisor.chat = AsyncMock(return_value="A" * 100)
+        mock_services.llm.run_tools = AsyncMock(return_value=_run_result("A" * 100))
 
         captured = []
         event_bus.subscribe("playbook.run.failed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(graph, event_data, mock_services, event_bus=event_bus)
         result = await runner.run()
 
         assert result.status == "failed"
@@ -403,16 +411,16 @@ class TestFailedEventEmission:
         assert len(captured) == 1
         assert "token_budget_exceeded" in captured[0].get("error", "")
 
-    async def test_no_failed_event_without_bus(self, mock_supervisor, no_entry_graph, event_data):
+    async def test_no_failed_event_without_bus(self, mock_services, no_entry_graph, event_data):
         """No failed event when event_bus is None."""
-        runner = PlaybookRunner(no_entry_graph, event_data, mock_supervisor)
+        runner = PlaybookRunner(no_entry_graph, event_data, mock_services)
         result = await runner.run()
 
         assert result.status == "failed"
         # No crash — event_bus is None
 
     async def test_failed_event_on_daily_cap_preflight(
-        self, mock_supervisor, simple_graph, event_data, event_bus
+        self, mock_services, simple_graph, event_data, event_bus
     ):
         """Failed event emitted on daily token cap pre-flight rejection."""
         from src.playbooks.runner import DailyTokenTracker
@@ -426,7 +434,7 @@ class TestFailedEventEmission:
         runner = PlaybookRunner(
             simple_graph,
             event_data,
-            mock_supervisor,
+            mock_services,
             event_bus=event_bus,
             daily_token_tracker=tracker,
             daily_token_cap=500,  # Cap is 500, but 1000 already used
@@ -449,11 +457,11 @@ class TestResumeEventEmission:
     """Tests for event emission during resume() paths."""
 
     async def test_resume_completion_emits_completed_event(
-        self, mock_supervisor, mock_db, human_review_graph, event_data, event_bus
+        self, mock_services, mock_db, human_review_graph, event_data, event_bus
     ):
         """Resumed run that completes emits playbook.run.completed."""
         # First, run to pause
-        runner = PlaybookRunner(human_review_graph, event_data, mock_supervisor, db=mock_db)
+        runner = PlaybookRunner(human_review_graph, event_data, mock_services, db=mock_db)
         paused_result = await runner.run()
         assert paused_result.status == "paused"
 
@@ -478,7 +486,7 @@ class TestResumeEventEmission:
         result = await PlaybookRunner.resume(
             db_run,
             human_review_graph,
-            mock_supervisor,
+            mock_services,
             "Looks good, approved!",
             db=mock_db,
             event_bus=event_bus,
@@ -490,7 +498,7 @@ class TestResumeEventEmission:
         assert captured[0]["run_id"] == paused_result.run_id
 
     async def test_resume_failure_emits_failed_event(
-        self, mock_supervisor, mock_db, event_data, event_bus
+        self, mock_services, mock_db, event_data, event_bus
     ):
         """Resumed run that fails (no current_node) emits playbook.run.failed."""
         db_run = PlaybookRun(
@@ -518,7 +526,7 @@ class TestResumeEventEmission:
         result = await PlaybookRunner.resume(
             db_run,
             graph,
-            mock_supervisor,
+            mock_services,
             "input",
             db=mock_db,
             event_bus=event_bus,
@@ -539,7 +547,7 @@ class TestEventBusResilience:
     """Ensure runner doesn't crash when EventBus subscribers fail."""
 
     async def test_bus_subscriber_error_does_not_crash_runner(
-        self, mock_supervisor, simple_graph, event_data, event_bus
+        self, mock_services, simple_graph, event_data, event_bus
     ):
         """If a subscriber raises, the runner still completes."""
 
@@ -548,7 +556,7 @@ class TestEventBusResilience:
 
         event_bus.subscribe("playbook.run.completed", bad_handler)
 
-        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(simple_graph, event_data, mock_services, event_bus=event_bus)
         # The runner's _emit_bus_event wraps in try/except, but the EventBus
         # itself may propagate. The test verifies it doesn't crash.
         # Note: EventBus calls handlers sequentially, so the exception will
@@ -557,7 +565,7 @@ class TestEventBusResilience:
         assert result.status == "completed"
 
     async def test_failed_bus_error_does_not_crash_runner(
-        self, mock_supervisor, no_entry_graph, event_data, event_bus
+        self, mock_services, no_entry_graph, event_data, event_bus
     ):
         """If a subscriber raises on failure event, the runner still fails cleanly."""
 
@@ -566,7 +574,7 @@ class TestEventBusResilience:
 
         event_bus.subscribe("playbook.run.failed", bad_handler)
 
-        runner = PlaybookRunner(no_entry_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(no_entry_graph, event_data, mock_services, event_bus=event_bus)
         result = await runner.run()
         assert result.status == "failed"
 
@@ -580,7 +588,7 @@ class TestEventSchemaCompliance:
     """Verify emitted payloads pass schema validation."""
 
     async def test_completed_payload_passes_validation(
-        self, mock_supervisor, simple_graph, event_data
+        self, mock_services, simple_graph, event_data
     ):
         """Completed event payload satisfies the schema."""
         from src.event_schemas import validate_event
@@ -590,7 +598,7 @@ class TestEventSchemaCompliance:
         captured = []
         bus.subscribe("playbook.run.completed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=bus)
+        runner = PlaybookRunner(simple_graph, event_data, mock_services, event_bus=bus)
         result = await runner.run()
         assert result.status == "completed"
 
@@ -603,7 +611,7 @@ class TestEventSchemaCompliance:
         assert errors == []
 
     async def test_failed_payload_passes_validation(
-        self, mock_supervisor, no_entry_graph, event_data
+        self, mock_services, no_entry_graph, event_data
     ):
         """Failed event payload satisfies the schema."""
         from src.event_schemas import validate_event
@@ -612,7 +620,7 @@ class TestEventSchemaCompliance:
         captured = []
         bus.subscribe("playbook.run.failed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(no_entry_graph, event_data, mock_supervisor, event_bus=bus)
+        runner = PlaybookRunner(no_entry_graph, event_data, mock_services, event_bus=bus)
         result = await runner.run()
         assert result.status == "failed"
 
@@ -742,14 +750,14 @@ class TestNotifyPlaybookRunEvents:
     """
 
     async def test_notify_started_emitted_on_run(
-        self, mock_supervisor, simple_graph, event_data, event_bus, mock_db
+        self, mock_services, simple_graph, event_data, event_bus, mock_db
     ):
         """Running a playbook fires notify.playbook_run_started with version + trigger type."""
         captured = []
         event_bus.subscribe("notify.playbook_run_started", lambda d: captured.append(d))
 
         runner = PlaybookRunner(
-            simple_graph, event_data, mock_supervisor, db=mock_db, event_bus=event_bus
+            simple_graph, event_data, mock_services, db=mock_db, event_bus=event_bus
         )
         await runner.run()
 
@@ -766,20 +774,20 @@ class TestNotifyPlaybookRunEvents:
         assert payload["project_id"] == "test-proj"
 
     async def test_notify_started_emitted_before_completed(
-        self, mock_supervisor, simple_graph, event_data, event_bus
+        self, mock_services, simple_graph, event_data, event_bus
     ):
         """Started must fire before completed — the dashboard uses the order for UI state."""
         order = []
         event_bus.subscribe("notify.playbook_run_started", lambda d: order.append("started"))
         event_bus.subscribe("notify.playbook_run_completed", lambda d: order.append("completed"))
 
-        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(simple_graph, event_data, mock_services, event_bus=event_bus)
         await runner.run()
 
         assert order == ["started", "completed"]
 
     async def test_notify_completed_mirrors_raw_event(
-        self, mock_supervisor, simple_graph, event_data, event_bus
+        self, mock_services, simple_graph, event_data, event_bus
     ):
         """notify.playbook_run_completed carries the same run identity as the raw event."""
         raw = []
@@ -787,7 +795,7 @@ class TestNotifyPlaybookRunEvents:
         event_bus.subscribe("playbook.run.completed", lambda d: raw.append(d))
         event_bus.subscribe("notify.playbook_run_completed", lambda d: notify.append(d))
 
-        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(simple_graph, event_data, mock_services, event_bus=event_bus)
         await runner.run()
 
         assert len(raw) == 1
@@ -798,13 +806,13 @@ class TestNotifyPlaybookRunEvents:
         assert notify[0]["event_type"] == "notify.playbook_run_completed"
 
     async def test_notify_failed_fires_on_missing_node(
-        self, mock_supervisor, failing_graph, event_data, event_bus
+        self, mock_services, failing_graph, event_data, event_bus
     ):
         """Run failures emit notify.playbook_run_failed with failed_at_node populated."""
         captured = []
         event_bus.subscribe("notify.playbook_run_failed", lambda d: captured.append(d))
 
-        runner = PlaybookRunner(failing_graph, event_data, mock_supervisor, event_bus=event_bus)
+        runner = PlaybookRunner(failing_graph, event_data, mock_services, event_bus=event_bus)
         result = await runner.run()
 
         assert result.status == "failed"
@@ -818,9 +826,9 @@ class TestNotifyPlaybookRunEvents:
         assert payload["severity"] == "error"
 
     async def test_notify_events_skip_when_no_event_bus(
-        self, mock_supervisor, simple_graph, event_data
+        self, mock_services, simple_graph, event_data
     ):
         """Without an EventBus, nothing is emitted (no crashes, no captures)."""
-        runner = PlaybookRunner(simple_graph, event_data, mock_supervisor, event_bus=None)
+        runner = PlaybookRunner(simple_graph, event_data, mock_services, event_bus=None)
         result = await runner.run()
         assert result.status == "completed"
