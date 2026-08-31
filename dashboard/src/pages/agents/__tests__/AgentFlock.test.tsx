@@ -206,11 +206,9 @@ describe("Agent flock sidebar", () => {
     const row = await screen.findByRole("button", { name: /open supervisor/i });
     expect(within(row).getByText(/anthropic/)).toBeInTheDocument();
     expect(within(row).getByText(/claude-sonnet-4-6/)).toBeInTheDocument();
-    expect(within(row).getByText(/standard-high/)).toBeInTheDocument();
+    expect(within(row).getByText("int: standard-high")).toBeInTheDocument();
     expect(within(row).getByText("Review deployment")).toBeInTheDocument();
-    expect(within(row).getByText("2+ active sub-agents")).toHaveAttribute("title", expect.stringMatching(/partial|incomplete|unavailable/i));
-    expect(within(await screen.findByRole("button", { name: /open builder/i })).getByText("Sub-agents unknown")).toBeInTheDocument();
-    expect(within(await screen.findByRole("button", { name: /open reviewer/i })).getByText("0 active sub-agents")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Agent flock" })).queryByText(/sub-agents/i)).not.toBeInTheDocument();
     expect(api.listAgents).toHaveBeenCalledWith({ body: {}, throwOnError: true });
   });
 
