@@ -133,6 +133,46 @@ _TRIAGE_COMMANDS = frozenset({
     "list_profiles", "list_intelligence_classes", "task_route",
 })
 
+_PLAYBOOK_COMPILER_COMMANDS = frozenset({"playbook_validate", "playbook_install"})
+
+
+async def _has_live_playbook_compiler_assignment(db, scope: RequestScope) -> bool:
+    """Grant compiler mutations only to the exact active compiler claim."""
+    from src.models import AgentState, TaskStatus
+
+    if db is None or not scope.session_id or not scope.task_id or not scope.project_id:
+        return False
+    session = await db.get_session(scope.session_id)
+    if (
+        session is None
+        or session.task_id != scope.task_id
+        or session.project_id != scope.project_id
+        or session.profile_id != "playbook-compiler"
+        or session.lifecycle != "task"
+        or session.state not in {"starting", "running"}
+        or session.desired_state != "running"
+        or not session.agent_id
+    ):
+        return False
+    task = await db.get_task(scope.task_id)
+    if (
+        task is None
+        or task.project_id != scope.project_id
+        or task.profile_id != "playbook-compiler"
+        or task.status != TaskStatus.IN_PROGRESS
+        or task.assigned_agent_id != session.agent_id
+        or task.claim_epoch != session.last_claim_epoch
+    ):
+        return False
+    agent = await db.get_agent(session.agent_id)
+    return bool(
+        agent is not None
+        and agent.enabled
+        and agent.deleted_at is None
+        and agent.state == AgentState.BUSY
+        and agent.current_task_id == task.id
+    )
+
 
 async def _has_live_triage_assignment(db, scope: RequestScope) -> bool:
     from src.models import AgentState, TaskStatus
@@ -182,6 +222,25 @@ async def check_request_scope(
     task/session identity; granting queue access never grants operator commands
     or loosens the ownership checks for task mutations such as task_close.
     """
+    if (
+        scope.kind == "session"
+        and not scope.elevated
+        and command in _PLAYBOOK_COMPILER_COMMANDS
+    ):
+        if not await _has_live_playbook_compiler_assignment(db, scope):
+            return check_command_scope(command, args, scope)
+        for key, expected in (
+            ("task_id", scope.task_id),
+            ("project_id", scope.project_id),
+            ("session_id", scope.session_id),
+        ):
+            value = args.get(key)
+            if value is None:
+                args[key] = expected
+            elif value != expected:
+                return f"out of scope: {key} mismatch"
+        return None
+
     if scope.kind != "session" or scope.elevated or command not in _TRIAGE_COMMANDS:
         return check_command_scope(command, args, scope)
 
