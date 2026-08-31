@@ -267,3 +267,38 @@ async def test_triage_ordinary_mutations_stay_pinned_to_its_own_task(api):
     assert result["id"] == "triager-job"
     result = api.result(await api.post("task_show", {"task_id": "worker-job"}, worker="worker"))
     assert result["id"] == "worker-job"
+
+
+async def test_triage_typed_and_execute_routes_have_identical_scoped_error_shapes(api):
+    """Plan 9: both transports refuse with the same status and error string.
+
+    The fixture parameterizes the transport, so pinning each denial to one
+    exact literal proves /api/execute and the generated typed route cannot
+    drift apart in status code or message — a CLI retrying against the
+    other surface must see the identical contract.
+    """
+    cases = [
+        # Foreign-project task read.
+        ("task_show", {"task_id": "foreign"},
+         "out of scope: task must belong to this triage project's queue"),
+        # Non-routing (human) gate read.
+        ("gate_show", {"gate_id": api.human_gate},
+         "out of scope: triage may only read its project's open routing gates"),
+        # Ordinary mutation stays pinned to the triager's own task.
+        ("task_close", {"task_id": "target", "outcome": "done"},
+         "out of scope: task_id mismatch"),
+    ]
+    for command, args, expected_error in cases:
+        response = await api.post(command, args)
+        assert response.status_code == 403, (command, response.text)
+        assert response.json()["error"] == expected_error, command
+
+    # Routing without an open routing gate — the fixture's gate is resolved
+    # first so the denial comes from the gate check, again identically.
+    await api.db.resolve_gate(api.gate, resolved_by="test", resolution="done")
+    response = await api.post("task_route", {"task_id": "target", "profile_id": "coder"})
+    assert response.status_code == 403, response.text
+    assert response.json()["error"] == (
+        "out of scope: triage may only route tasks with an open routing gate"
+    )
+    assert (await api.db.get_task("target")).profile_id is None

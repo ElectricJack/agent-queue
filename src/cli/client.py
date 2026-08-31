@@ -1,8 +1,13 @@
 """REST client for CLI operations.
 
-Delegates commands to the daemon's typed API endpoints (``/api/{category}/{command}``)
-via the generated ``agent_queue_api_client`` package.  Falls back to the generic
-``/api/execute`` endpoint for commands not covered by the generated client.
+``CLIClient.execute()`` delegates every command to the daemon's generic
+``/api/execute`` endpoint — intentional per the aq-surface implementation
+spec: the generated ``agent_queue_api_client`` package is a dashboard
+client, not the CLI transport.  The typed-dispatch machinery below
+(``_build_typed_dispatch`` / ``CLIClient._execute_typed``) is dormant
+compatibility code with no live caller; it is kept working (verified by
+``tests/test_cli_client_generated.py``) so the CLI could route through the
+typed routes again without rediscovering how.
 
 Plugin operations still need direct database access (filesystem ops that
 don't belong in CommandHandler), so ``PluginClient`` is provided as a
@@ -156,8 +161,8 @@ def _get_typed_dispatch() -> dict[str, tuple[Any, type]]:
 class CLIClient:
     """Async HTTP client that delegates commands to the daemon.
 
-    Routes commands through the generated typed API client when possible,
-    falling back to ``/api/execute`` for unrecognized commands.
+    All commands go through the generic ``/api/execute`` endpoint (see the
+    module docstring — typed dispatch exists but is deliberately unused).
 
     Usage::
 
