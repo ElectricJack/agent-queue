@@ -194,14 +194,16 @@ class TestClaimStatementBudgets:
         ``_attempt_claim``'s ``immediate()`` block plus the outer loop's two
         pre-reads, which are then subtracted.
 
-        **Measured on SQLite: 9** — BEGIN, the slot CAS
-        (``UPDATE … RETURNING``), the §10 work query, the fenced
-        take (``UPDATE tasks SET status, assigned_agent_id, claim_epoch+1
-        … RETURNING``), the session / agent / workspace holder writes, the
-        batched two-key metadata upsert, COMMIT.  Seven of those are the
-        spec's logical statements; BEGIN and COMMIT are SQLite's explicit
-        ``BEGIN IMMEDIATE`` / ``COMMIT`` (PostgreSQL does not emit them as
-        cursor statements, hence the lower budget there).
+        **Measured on SQLite: 10** — BEGIN, the slot CAS
+        (``UPDATE … RETURNING``), the §10 work query, the durable-flock
+        agent-eligibility guard (``SELECT agents.id … enabled/role/
+        deleted_at``), the fenced take (``UPDATE tasks SET status,
+        assigned_agent_id, claim_epoch+1 … RETURNING``), the session /
+        agent / workspace holder writes, the batched two-key metadata
+        upsert, COMMIT.  Eight of those are logical statements; BEGIN and
+        COMMIT are SQLite's explicit ``BEGIN IMMEDIATE`` / ``COMMIT``
+        (PostgreSQL does not emit them as cursor statements, hence the
+        lower budget there).
         """
         _require_returning(any_db)
         await _seed_worker_scale(any_db)
@@ -224,7 +226,7 @@ class TestClaimStatementBudgets:
         # The two outer-loop pre-reads (session+profile join, project) are
         # not part of the transaction.
         n = c["n"] - 2
-        budget = 9 if dialect == "sqlite" else 8
+        budget = 10 if dialect == "sqlite" else 8
         print(f"\nclaim transaction only ({dialect}): {n} statements (budget {budget})")
         assert n <= budget, f"{n} statements > budget {budget}"
 

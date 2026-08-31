@@ -45,6 +45,12 @@ jobs:
       # concurrent workers would let one worker's reset_for_tests() truncate
       # race another's in-flight seed/assert -- see tests/pg_dsn.py.
       POSTGRES_TEST_DSN: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/agent_queue
+      # Git-integration tests create real commits and merges; hosted runners
+      # ship with no git identity ("Author identity unknown" otherwise).
+      GIT_AUTHOR_NAME: CI
+      GIT_AUTHOR_EMAIL: ci@example.invalid
+      GIT_COMMITTER_NAME: CI
+      GIT_COMMITTER_EMAIL: ci@example.invalid
 
     steps:
       - name: Checkout repository

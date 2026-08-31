@@ -87,8 +87,8 @@ dependencies = [
     "click>=8.3.3",
     # mcp — PYSEC-2026-3481, 3482, 3483. Also pinned in [mcp] extras; hoisted
     # here so transitive pulls (claude-agent-sdk, etc.) resolve to a safe
-    # version.
-    "mcp>=1.28.1",
+    # version. <2 because the FastMCP import moved in mcp 2.x.
+    "mcp>=1.28.1,<2",
 ]
 
 [project.optional-dependencies]
