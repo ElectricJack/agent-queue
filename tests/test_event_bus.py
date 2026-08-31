@@ -1,4 +1,7 @@
 import asyncio
+
+import pytest
+
 from src.event_bus import EventBus
 
 
@@ -246,9 +249,7 @@ class TestEventBus:
         foo_events = []
 
         bus.subscribe("task.done", lambda d: all_events.append(d))  # no filter
-        bus.subscribe(
-            "task.done", lambda d: foo_events.append(d), filter={"project_id": "foo"}
-        )
+        bus.subscribe("task.done", lambda d: foo_events.append(d), filter={"project_id": "foo"})
 
         await bus.emit("task.done", {"project_id": "foo", "task_id": "t-1"})
         await bus.emit("task.done", {"project_id": "bar", "task_id": "t-2"})
@@ -576,12 +577,15 @@ class TestEventBusFilterEdgeCases:
         received = []
         bus.subscribe("build", lambda d: received.append(d), filter={"status": "success"})
 
-        await bus.emit("build", {
-            "status": "success",
-            "duration_ms": 12345,
-            "commit": "abc123",
-            "artifacts": ["dist.tar.gz"],
-        })
+        await bus.emit(
+            "build",
+            {
+                "status": "success",
+                "duration_ms": 12345,
+                "commit": "abc123",
+                "artifacts": ["dist.tar.gz"],
+            },
+        )
         assert len(received) == 1
         assert received[0]["commit"] == "abc123"
 
@@ -595,13 +599,16 @@ class TestEventBusFilterEdgeCases:
             filter={"stage": "test", "passed": True},
         )
 
-        await bus.emit("pipeline", {
-            "stage": "test",
-            "passed": True,
-            "duration": 42,
-            "runner": "ci-node-3",
-            "coverage": 0.87,
-        })
+        await bus.emit(
+            "pipeline",
+            {
+                "stage": "test",
+                "passed": True,
+                "duration": 42,
+                "runner": "ci-node-3",
+                "coverage": 0.87,
+            },
+        )
         assert len(received) == 1
 
     # --- (c) empty payload {} does not match any filter with required fields ---
@@ -703,6 +710,93 @@ class TestEventBusFilterEdgeCases:
         expected_seqs = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18]
         actual_seqs = [d["seq"] for d in received]
         assert actual_seqs == expected_seqs
+
+
+class TestEventBusSubscriptionLifecycle:
+    async def test_unsubscribe_during_emit_removes_later_handler_from_snapshot(self):
+        bus = EventBus()
+        calls = []
+        holder = {}
+
+        def second(data):
+            calls.append(data)
+
+        def first(data):
+            holder["unsubscribe"]()
+
+        bus.subscribe("lifecycle", first)
+        holder["unsubscribe"] = bus.subscribe("lifecycle", second)
+        await bus.emit("lifecycle", {"n": 1})
+        assert [data["n"] for data in calls] == [1]
+        assert bus.subscriber_count("lifecycle") == 1
+        await bus.emit("lifecycle", {"n": 2})
+        assert [data["n"] for data in calls] == [1]
+
+    async def test_handler_subscribed_during_emit_waits_until_next_emit(self):
+        bus = EventBus()
+        order = []
+        received = []
+        subscribed = False
+
+        def late(data):
+            order.append("late")
+            received.append(data)
+
+        def first(data):
+            nonlocal subscribed
+            order.append("specific")
+            if not subscribed:
+                bus.subscribe("mutate", late)
+                subscribed = True
+
+        bus.subscribe("mutate", first)
+        bus.subscribe("*", lambda data: order.append("wildcard"))
+        await bus.emit("mutate", {"n": 1})
+        assert received == []
+        assert order == ["specific", "wildcard"]
+        await bus.emit("mutate", {"n": 2})
+        assert [data["n"] for data in received] == [2]
+        assert order == ["specific", "wildcard", "specific", "late", "wildcard"]
+
+    async def test_wait_for_matching_event_returns_copy_and_removes_subscriptions(self):
+        bus = EventBus()
+        seen = []
+        bus.subscribe("second", lambda data: seen.append(data))
+        waiter = asyncio.create_task(
+            bus.wait_for(["first", "second"], filter={"keep": True}, timeout=5)
+        )
+        await asyncio.sleep(0)
+        await bus.emit("second", {"keep": False, "n": 1})
+        assert not waiter.done()
+        await bus.emit("second", {"keep": True, "n": 2})
+        result = await waiter
+        assert result is not None and result["n"] == 2 and result["_event_type"] == "second"
+        assert bus.subscriber_count("first") == 0
+        assert bus.subscriber_count("second") == 1
+        result["n"] = "changed"
+        assert [data["n"] for data in seen] == [1, 2]
+
+    async def test_wait_for_timeout_removes_all_subscriptions(self):
+        bus = EventBus()
+        assert await bus.wait_for(["alpha", "beta"], timeout=0.01) is None
+        assert bus.subscriber_count("alpha") == 0
+        assert bus.subscriber_count("beta") == 0
+
+    async def test_handler_error_stops_remaining_specific_and_wildcard_handlers(self):
+        bus = EventBus()
+        later, wildcard = [], []
+
+        def boom(data):
+            raise RuntimeError("handler exploded")
+
+        bus.subscribe("fanout", boom)
+        bus.subscribe("fanout", lambda data: later.append(data))
+        bus.subscribe("*", lambda data: wildcard.append(data))
+        await bus.emit("other", {"n": 0})
+        with pytest.raises(RuntimeError, match="handler exploded"):
+            await bus.emit("fanout", {"n": 1})
+        assert later == []
+        assert len(wildcard) == 1
 
     async def test_rapid_mixed_events_multiple_filters_correct_subsets(self):
         """Two filtered subscribers on the same event each receive their correct subset

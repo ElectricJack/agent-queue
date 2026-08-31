@@ -275,3 +275,33 @@ class TestTimerEventValidation:
         bus = _make_bus(env="dev")
         with pytest.raises(EventValidationError):
             await bus.emit("timer.7m", {})
+
+
+class _StubPlaybookManager:
+    def __init__(self, triggers: list[str]) -> None:
+        self._triggers = triggers
+
+    def get_all_triggers(self) -> list[str]:
+        return list(self._triggers)
+
+
+class TestRealProducerReachesSubscriber:
+    async def test_real_timer_service_payload_validates_and_reaches_real_bus_subscriber(self):
+        import time
+
+        from src.timer_service import TimerService
+
+        bus = EventBus(env="dev", validate_events=True)
+        received = []
+        bus.subscribe("timer.1m", lambda data: received.append(dict(data)))
+        service = TimerService(event_bus=bus, playbook_manager=_StubPlaybookManager(["timer.1m"]))
+        service.start()
+        assert await service.tick() == 0
+        service._last_fire["timer.1m"] = time.monotonic() - 61
+        assert await service.tick() == 1
+        assert len(received) == 1
+        payload = received[0]
+        assert payload["interval"] == "1m"
+        assert "T" in payload["tick_time"]
+        assert payload["_event_type"] == "timer.1m"
+        assert payload["event_id"]
