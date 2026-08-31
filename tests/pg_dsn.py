@@ -75,6 +75,32 @@ async def _create_database_if_missing(base_dsn: str, target_db: str) -> None:
         await conn.close()
 
 
+async def create_scratch_database(suffix: str) -> str:
+    """Drop and recreate ``<worker_db>_<suffix>``; return its DSN.
+
+    For migration tests that drive ``alembic`` up and down against a
+    database of their own — the shared per-worker database holds live
+    schema for the adapter suites and must never be downgraded under
+    them.  The suffix rides on the per-worker name, so parallel xdist
+    workers cannot collide either.
+    """
+    import asyncpg
+
+    base = ensure_worker_postgres_dsn()
+    if not base:
+        raise RuntimeError("create_scratch_database requires POSTGRES_TEST_DSN")
+    prefix, _, dbname = base.rpartition("/")
+    target = f"{dbname}_{suffix}"
+    admin_dsn = f"{prefix}/{dbname}".replace("postgresql+asyncpg://", "postgresql://")
+    conn = await asyncpg.connect(admin_dsn)
+    try:
+        await conn.execute(f'DROP DATABASE IF EXISTS "{target}"')
+        await conn.execute(f'CREATE DATABASE "{target}"')
+    finally:
+        await conn.close()
+    return f"{prefix}/{target}"
+
+
 def ensure_worker_postgres_dsn() -> str | None:
     """Rewrite ``POSTGRES_TEST_DSN`` to this worker's own database in-place.
 
@@ -90,6 +116,15 @@ def ensure_worker_postgres_dsn() -> str | None:
         return _CACHED_DSN  # type: ignore[return-value]
     base = os.environ.get("POSTGRES_TEST_DSN")
     if not base:
+        if os.environ.get("AQ_REQUIRE_POSTGRES_TESTS") == "1":
+            # CI sets this alongside its Postgres service: a missing DSN
+            # there means every PostgreSQL contract arm would silently
+            # skip, which is exactly the regression this guard exists to
+            # catch.  Fail collection loudly instead.
+            raise RuntimeError(
+                "AQ_REQUIRE_POSTGRES_TESTS=1 but POSTGRES_TEST_DSN is not set — "
+                "the PostgreSQL test arms would silently skip"
+            )
         _CACHED_DSN = None
         return None
     worker_dsn = _derive_worker_dsn(base)

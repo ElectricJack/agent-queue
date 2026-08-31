@@ -39,5 +39,18 @@ def test_repeated_calls_return_the_same_dsn(monkeypatch):
 def test_unset_dsn_is_cached_as_none(monkeypatch):
     monkeypatch.setattr(pg_dsn, "_CACHED_DSN", pg_dsn._UNSET)
     monkeypatch.delenv("POSTGRES_TEST_DSN", raising=False)
+    monkeypatch.delenv("AQ_REQUIRE_POSTGRES_TESTS", raising=False)
     assert pg_dsn.ensure_worker_postgres_dsn() is None
     assert pg_dsn.ensure_worker_postgres_dsn() is None
+
+
+def test_missing_dsn_fails_loudly_when_postgres_tests_are_required(monkeypatch):
+    """CI sets ``AQ_REQUIRE_POSTGRES_TESTS=1`` next to its Postgres service:
+    losing the DSN there must abort collection, not skip every PG arm."""
+    import pytest
+
+    monkeypatch.setattr(pg_dsn, "_CACHED_DSN", pg_dsn._UNSET)
+    monkeypatch.delenv("POSTGRES_TEST_DSN", raising=False)
+    monkeypatch.setenv("AQ_REQUIRE_POSTGRES_TESTS", "1")
+    with pytest.raises(RuntimeError, match="silently skip"):
+        pg_dsn.ensure_worker_postgres_dsn()

@@ -45,6 +45,10 @@ jobs:
       # concurrent workers would let one worker's reset_for_tests() truncate
       # race another's in-flight seed/assert -- see tests/pg_dsn.py.
       POSTGRES_TEST_DSN: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/agent_queue
+      # Proof that the PostgreSQL contract arms actually run in CI: with this
+      # set, tests/pg_dsn.py raises at collection if the DSN ever goes
+      # missing, instead of letting every Postgres arm silently skip.
+      AQ_REQUIRE_POSTGRES_TESTS: "1"
       # Git-integration tests create real commits and merges; hosted runners
       # ship with no git identity ("Author identity unknown" otherwise).
       GIT_AUTHOR_NAME: CI

@@ -73,33 +73,160 @@ def test_deferred_tables_have_a_primary_key() -> None:
         assert list(table.primary_key.columns), f"{table_name} has no primary key"
 
 
+async def _empty_pg_adapter():
+    """The worker's Postgres database, truncated to the empty state the
+    migration requires of its target.  Caller closes it."""
+    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+    adapter = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
+    await adapter.initialize()
+    await adapter.reset_for_tests()
+    return adapter
+
+
+async def _seeded_source(tmp_path) -> str:
+    """A SQLite source at head with rows across the deferred-FK tables:
+    a self-FK parent pointer (tasks) and the agents⇄tasks circular FK."""
+    from sqlalchemy import text
+
+    from src.database import Database
+
+    path = str(tmp_path / "source.db")
+    source = Database(path)
+    await source.initialize()
+    async with source._engine.begin() as conn:
+        await conn.execute(text("INSERT INTO projects (id, name, created_at) VALUES ('x','x',0)"))
+        await conn.execute(
+            text("INSERT INTO agent_profiles (id, name, created_at, updated_at) "
+                 "VALUES ('worker','Worker',0,0)")
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO tasks (id, project_id, parent_task_id, title, description, "
+                "status, created_at, updated_at) VALUES "
+                "('p','x',NULL,'p','p','IN_PROGRESS',0,0), ('c','x','p','c','c','READY',0,0)"
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO agents (id, name, profile_id, current_task_id, created_at) "
+                "VALUES ('a','a','worker','p',0)"
+            )
+        )
+        for i in (1, 2, 3):
+            await conn.execute(
+                text(
+                    "INSERT INTO hierarchy_migration_rejects "
+                    "(id, run_id, task_id, source, reason, detail, created_at) "
+                    f"VALUES ({i}, 'run', 't{i}', 'edge', 'cycle', '', 0)"
+                )
+            )
+    await source.close()
+    return path
+
+
 @pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
 async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(tmp_path) -> None:
-    """The migration's two-pass contract is guarded by its deferred FK list."""
-    from src.database import Database
+    """Rows land, and the NULLed-on-insert deferred columns are restored.
+
+    ``tasks.parent_task_id`` (self-FK) and ``agents.current_task_id``
+    (agents⇄tasks circular FK) are inserted as NULL in pass one; pass two
+    must put the source values back.
+    """
+    from sqlalchemy import text
+
     from src.database.migrate_sqlite_to_pg import migrate_sqlite_to_postgres
 
-    source = Database(str(tmp_path / "source.db"))
-    await source.initialize()
-    await source.close()
-    counts = await migrate_sqlite_to_postgres(str(tmp_path / "source.db"), POSTGRES_DSN)
-    assert set(counts) == {table.name for table in _ORDERED_TABLES}
+    path = await _seeded_source(tmp_path)
+    target = await _empty_pg_adapter()
+    try:
+        counts = await migrate_sqlite_to_postgres(path, POSTGRES_DSN)
+        assert set(counts) == {table.name for table in _ORDERED_TABLES}
+        assert counts["tasks"] == 2 and counts["agents"] == 1
+        async with target._engine.connect() as conn:
+            assert (
+                await conn.execute(text("SELECT parent_task_id FROM tasks WHERE id='c'"))
+            ).scalar() == "p"
+            assert (
+                await conn.execute(text("SELECT current_task_id FROM agents WHERE id='a'"))
+            ).scalar() == "p"
+        await target.reset_for_tests()
+    finally:
+        await target.close()
 
 
 @pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
-async def test_migrate_sqlite_to_postgres_resets_postgres_sequences() -> None:
-    assert POSTGRES_DSN.startswith(("postgres://", "postgresql://"))
+async def test_migrate_sqlite_to_postgres_resets_postgres_sequences(tmp_path) -> None:
+    """After copying explicit integer PKs, a plain insert must not collide.
+
+    The copied rows carry ids 1..3; without ``setval`` the sequence would
+    hand out 1 again and the next default-id insert would violate the PK.
+    """
+    from sqlalchemy import text
+
+    from src.database.migrate_sqlite_to_pg import migrate_sqlite_to_postgres
+
+    path = await _seeded_source(tmp_path)
+    target = await _empty_pg_adapter()
+    try:
+        await migrate_sqlite_to_postgres(path, POSTGRES_DSN)
+        async with target._engine.begin() as conn:
+            new_id = (
+                await conn.execute(
+                    text(
+                        "INSERT INTO hierarchy_migration_rejects "
+                        "(run_id, task_id, source, reason, detail, created_at) "
+                        "VALUES ('run', 't4', 'edge', 'cycle', '', 0) RETURNING id"
+                    )
+                )
+            ).scalar()
+        assert new_id == 4
+        await target.reset_for_tests()
+    finally:
+        await target.close()
 
 
 @pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
-async def test_migrate_sqlite_to_postgres_rejects_nonempty_target_without_copying() -> None:
-    # The implementation checks target emptiness before opening the source copy loop.
-    from src.database.migrate_sqlite_to_pg import _check_pg_empty
+async def test_migrate_sqlite_to_postgres_rejects_nonempty_target_without_copying(
+    tmp_path,
+) -> None:
+    from sqlalchemy import text
 
-    assert callable(_check_pg_empty)
+    from src.database.migrate_sqlite_to_pg import migrate_sqlite_to_postgres
+
+    path = await _seeded_source(tmp_path)
+    target = await _empty_pg_adapter()
+    try:
+        async with target._engine.begin() as conn:
+            await conn.execute(
+                text("INSERT INTO projects (id, name, created_at) VALUES ('existing','e',0)")
+            )
+        with pytest.raises(RuntimeError, match="already contains data"):
+            await migrate_sqlite_to_postgres(path, POSTGRES_DSN)
+        async with target._engine.connect() as conn:
+            rows = (await conn.execute(text("SELECT id FROM projects"))).scalars().all()
+            assert rows == ["existing"]  # nothing was copied
+            assert (
+                await conn.execute(text("SELECT COUNT(*) FROM tasks"))
+            ).scalar() == 0
+        await target.reset_for_tests()
+    finally:
+        await target.close()
 
 
 @pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
-async def test_migrate_sqlite_to_postgres_reports_per_table_progress_in_order() -> None:
-    observed = [table.name for table in _ORDERED_TABLES]
-    assert observed == [table.name for table in _ORDERED_TABLES]
+async def test_migrate_sqlite_to_postgres_reports_per_table_progress_in_order(tmp_path) -> None:
+    from src.database.migrate_sqlite_to_pg import migrate_sqlite_to_postgres
+
+    path = await _seeded_source(tmp_path)
+    target = await _empty_pg_adapter()
+    try:
+        calls: list[tuple[str, int]] = []
+        counts = await migrate_sqlite_to_postgres(
+            path, POSTGRES_DSN, progress_cb=lambda name, n: calls.append((name, n))
+        )
+        assert [name for name, _ in calls] == [table.name for table in _ORDERED_TABLES]
+        assert dict(calls) == counts
+        await target.reset_for_tests()
+    finally:
+        await target.close()

@@ -23,6 +23,9 @@ from src.orchestrator.workspace_attachments import (
     acquire_for_task,
     effective_requirements,
 )
+from tests.pg_dsn import ensure_worker_postgres_dsn
+
+POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
@@ -470,3 +473,138 @@ class TestAcquireForTask:
         with pytest.raises(AcquisitionFailed) as exc:
             await acquire_for_task(db, task, agent.id)
         assert exc.value.kind_id == "nonexistent"
+
+
+# ─────────────────────────────────────────────── real-PostgreSQL contracts ──
+
+
+@pytest.fixture
+async def pg_db():
+    """The multi-kind acquisition contracts on a real PostgreSQL backend.
+
+    Each per-kind lock is its own transaction, so the interesting failure
+    modes — a concurrent second backend, rollback of already-taken locks,
+    recovery from a crash between per-kind transactions — only mean
+    anything against a server that runs the two acquirers genuinely
+    concurrently (the SQLite twin of the race test is xfail'd as ORC-1).
+    """
+    if not POSTGRES_DSN:
+        pytest.skip("POSTGRES_TEST_DSN not set")
+    from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+    database = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
+    await database.initialize()
+    await database.reset_for_tests()
+    await database.create_project(Project(id="p1", name="test"))
+    yield database
+    await database.close()
+
+
+async def _two_kind_world(db):
+    """Two lockable kinds with one instance each, two tasks, two agents."""
+    for kind in ("alpha", "beta"):
+        await _add_kind(
+            db,
+            kind_id=kind,
+            writable=True,
+            lockable=True,
+            is_git_repo=True,
+            default_lock_mode="exclusive",
+        )
+        await _add_workspace(
+            db, ws_id=f"ws-{kind}", project_id="p1", path=f"/{kind}", kind_id=kind
+        )
+    first, second = await _mktask(db, task_id="first"), await _mktask(db, task_id="second")
+    await db.add_task_workspace_requirements(first.id, [("alpha", None), ("beta", None)])
+    await db.add_task_workspace_requirements(second.id, [("beta", None), ("alpha", None)])
+    agents = (await _mkagent(db, agent_id="a-first"), await _mkagent(db, agent_id="a-second"))
+    return first, second, agents
+
+
+class TestAcquireForTaskOnPostgres:
+    async def test_concurrent_opposite_orders_one_complete_winner_no_partial_locks(self, pg_db):
+        """Canonical (kind_id, position) ordering on a genuinely concurrent
+        backend: one racer gets *both* kinds, the loser gets neither,
+        nothing hangs."""
+        first, second, (a1, a2) = await _two_kind_world(pg_db)
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                acquire_for_task(pg_db, first, a1.id),
+                acquire_for_task(pg_db, second, a2.id),
+                return_exceptions=True,
+            ),
+            timeout=10,
+        )
+        winners = [r for r in results if not isinstance(r, Exception)]
+        losers = [r for r in results if isinstance(r, AcquisitionFailed)]
+        assert len(winners) == 1 and len(losers) == 1
+        winner_task = first.id if results[0] is winners[0] else second.id
+        assert {a.workspace.id for a in winners[0].attachments if a.lockable} == {
+            "ws-alpha",
+            "ws-beta",
+        }
+        for ws_id in ("ws-alpha", "ws-beta"):
+            ws = await pg_db.get_workspace(ws_id)
+            assert ws.locked_by_task_id == winner_task  # loser holds nothing
+
+    async def test_partial_failure_rolls_back_acquired_locks(self, pg_db):
+        """All-or-nothing on PG: [alpha, missing] releases the alpha lock."""
+        await _add_kind(
+            pg_db,
+            kind_id="alpha",
+            writable=True,
+            lockable=True,
+            is_git_repo=True,
+            default_lock_mode="exclusive",
+        )
+        await _add_workspace(
+            pg_db, ws_id="ws-alpha", project_id="p1", path="/alpha", kind_id="alpha"
+        )
+        await _add_kind(
+            pg_db,
+            kind_id="package-foo",
+            writable=True,
+            lockable=True,
+            is_git_repo=True,
+            default_lock_mode="exclusive",
+        )  # kind exists, but no instance
+        task = await _mktask(pg_db)
+        agent = await _mkagent(pg_db)
+        await pg_db.add_task_workspace_requirements(
+            task.id, [("alpha", None), ("package-foo", None)]
+        )
+        with pytest.raises(AcquisitionFailed) as exc:
+            await acquire_for_task(pg_db, task, agent.id)
+        assert exc.value.kind_id == "package-foo"
+        ws = await pg_db.get_workspace("ws-alpha")
+        assert (ws.locked_by_task_id, ws.locked_by_agent_id) == (None, None)
+
+    async def test_crash_between_kind_transactions_recovers_via_task_release(self, pg_db):
+        """Each kind locks in its own transaction, so a crash between them
+        leaves the first lock committed — that partial state must be fully
+        recoverable by ``release_workspaces_for_task`` (what the orchestrator
+        runs when it reaps the dead claim)."""
+        first, _second, (a1, _a2) = await _two_kind_world(pg_db)
+        # The crashed acquirer took alpha and died before beta: reproduce the
+        # exact committed state its first per-kind transaction left behind.
+        taken = await pg_db.acquire_one_unlocked(
+            project_id="p1",
+            kind_id="alpha",
+            mode="exclusive",
+            locked_by_task_id=first.id,
+            locked_by_agent_id=a1.id,
+        )
+        assert taken is not None and taken.id == "ws-alpha"
+        assert (await pg_db.get_workspace("ws-alpha")).locked_by_task_id == first.id
+
+        released = await pg_db.release_workspaces_for_task(first.id)
+        assert released == 1
+        for ws_id in ("ws-alpha", "ws-beta"):
+            ws = await pg_db.get_workspace(ws_id)
+            assert (ws.locked_by_task_id, ws.locked_by_agent_id) == (None, None)
+        # The world is clean again: a fresh acquirer gets both kinds.
+        att = await acquire_for_task(pg_db, first, a1.id)
+        assert {a.workspace.id for a in att.attachments if a.lockable} == {
+            "ws-alpha",
+            "ws-beta",
+        }

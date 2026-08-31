@@ -122,23 +122,64 @@ async def claim_once(db, sid, *, cap=None, task_id=None):
         return "claimed", task
 
 
-async def test_postgres_stale_epoch_cannot_complete_or_release_new_claim(db):
-    if db.__class__.__name__ != "PostgreSQLDatabaseAdapter":
-        pytest.skip("PostgreSQL-specific claim epoch contract")
+async def test_stale_epoch_cannot_activate_a_reclaimed_task(db):
+    """A holder from a superseded claim cannot activate against the new epoch.
+
+    Claim (epoch 1) -> release -> re-claim (epoch 2).  ``activate_claim``
+    carrying the stale epoch must lose; the current epoch must win.  Runs on
+    both backends; on Postgres the epoch check is a genuine second-connection
+    row read rather than SQLite's serialized writer.
+    """
     await mktask(db, "epoch", profile_id="worker")
     sid = await pool_session(db)
     kind, task = await claim_once(db, sid)
     assert kind == "claimed" and task.claim_epoch == 1
+    await db.release_claim(sid, task_status=TaskStatus.READY, context="crash", now=NOW)
+    kind, task = await claim_once(db, sid)
+    assert kind == "claimed" and task.claim_epoch == 2
+    assert await db.activate_claim(sid, "epoch", epoch=1, now=NOW) is None
+    session = await db.get_session(sid)
+    assert session.claim_phase == "preparing"  # the stale writer changed nothing
+    activated = await db.activate_claim(sid, "epoch", epoch=2, now=NOW)
+    assert activated is not None and activated.claim_phase == "active"
 
 
-async def test_postgres_two_sessions_race_one_task_and_leave_one_complete_holder_graph(db):
-    if db.__class__.__name__ != "PostgreSQLDatabaseAdapter":
-        pytest.skip("PostgreSQL-specific race contract")
+async def test_two_sessions_race_one_task_and_leave_one_complete_holder_graph(db):
+    """Exactly one racer claims, and its holder graph is complete.
+
+    The winner must hold every row the claim transaction stamps (task,
+    session, agent, workspace, metadata); the loser must be left fully
+    clean, not half-claimed.
+    """
     await mktask(db, "race", profile_id="worker")
     first = await pool_session(db, sid="race-1", agent_id="race-agent-1")
     second = await pool_session(db, sid="race-2", agent_id="race-agent-2")
     results = await asyncio.gather(claim_once(db, first), claim_once(db, second))
-    assert [kind for kind, _ in results].count("claimed") == 1
+    kinds = [kind for kind, _ in results]
+    assert kinds.count("claimed") == 1
+    assert all(kind in ("claimed", "no_ready_work", "claim_conflict") for kind in kinds)
+    winner_sid = (first, second)[kinds.index("claimed")]
+    loser_sid = second if winner_sid == first else first
+    winner_agent = f"race-agent-{winner_sid[-1]}"
+    loser_agent = f"race-agent-{loser_sid[-1]}"
+
+    task = await db.get_task("race")
+    assert (task.status, task.assigned_agent_id, task.claim_epoch) == (
+        TaskStatus.IN_PROGRESS,
+        winner_agent,
+        1,
+    )
+    winner = await db.get_session(winner_sid)
+    assert (winner.task_id, winner.claim_phase) == ("race", "preparing")
+    agent = await db.get_agent(winner_agent)
+    assert (agent.state, agent.current_task_id) == (AgentState.BUSY, "race")
+    assert (await db.get_workspace_for_agent(winner_agent)).locked_by_task_id == "race"
+    assert await db.get_task_meta("race", "claimed_by_session") == winner_sid
+
+    loser = await db.get_session(loser_sid)
+    assert (loser.task_id, loser.claim_phase) == (None, None)
+    assert (await db.get_agent(loser_agent)).state == AgentState.IDLE
+    assert (await db.get_workspace_for_agent(loser_agent)).locked_by_task_id is None
 
 
 async def test_take_task_rejects_soft_deleted_or_nonworker_agent_on_both_backends(db):
@@ -146,8 +187,46 @@ async def test_take_task_rejects_soft_deleted_or_nonworker_agent_on_both_backend
     await db.create_agent(
         Agent(id="reviewer-agent", name="r", profile_id="reviewer", role="supervisor")
     )
+    await db.create_agent(
+        Agent(id="deleted-agent", name="d", profile_id="worker", deleted_at=NOW)
+    )
     async with db.immediate() as conn:
         assert await db.take_task(conn, "eligible", agent_id="reviewer-agent", now=NOW) is None
+        assert await db.take_task(conn, "eligible", agent_id="deleted-agent", now=NOW) is None
+    task = await db.get_task("eligible")
+    assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+
+
+async def test_record_holder_stamps_and_release_clears_every_agent_workspace_slot(db):
+    """DB-4: an agent holding several workspace slots gets them all stamped.
+
+    ``record_holder``'s workspace UPDATE matches on ``locked_by_agent_id``,
+    so a multi-kind agent (e.g. project-repo + readonly-dir) must see
+    ``locked_by_task_id`` land on every slot it holds — and a release must
+    clear every slot while keeping the agent lock itself.
+    """
+    await mktask(db, "multi", profile_id="worker")
+    sid = await pool_session(db)  # locks ws-agent-1 (project-repo) for agent-1
+    await db.create_workspace(
+        Workspace(
+            id="ws-agent-1-extra",
+            project_id=PROJECT_ID,
+            workspace_path="/wd/agent-1-extra",
+            source_type=RepoSourceType.LINK,
+            kind_id="readonly-dir",
+            locked_by_agent_id="agent-1",
+        )
+    )
+    kind, task = await claim_once(db, sid)
+    assert kind == "claimed" and task.id == "multi"
+    for ws_id in ("ws-agent-1", "ws-agent-1-extra"):
+        ws = await db.get_workspace(ws_id)
+        assert (ws.locked_by_task_id, ws.locked_by_agent_id) == ("multi", "agent-1")
+
+    await db.release_claim(sid, task_status=TaskStatus.READY, context="done", now=NOW)
+    for ws_id in ("ws-agent-1", "ws-agent-1-extra"):
+        ws = await db.get_workspace(ws_id)
+        assert (ws.locked_by_task_id, ws.locked_by_agent_id) == (None, "agent-1")
 
 
 class TestClaimTransaction:

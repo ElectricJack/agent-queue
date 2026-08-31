@@ -13,16 +13,53 @@ from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import task_metadata
-from src.models import AgentState, DepType, Project, Task, TaskStatus
+from src.models import (
+    Agent,
+    AgentProfile,
+    AgentState,
+    DepType,
+    Project,
+    RepoSourceType,
+    SessionRecord,
+    Task,
+    TaskStatus,
+    Workspace,
+)
 from src.orchestrator import Orchestrator
+from tests.pg_dsn import ensure_worker_postgres_dsn
 
 PROJECT_ID = "proj"
+POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
 async def db(tmp_path):
     database = Database(str(tmp_path / "test.db"))
     await database.initialize()
+    await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
+    yield database
+    await database.close()
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+async def any_db(request, tmp_path):
+    """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI).
+
+    The module ``db`` fixture stays SQLite-only to keep the bulk of the
+    suite fast; the tests below assert the guards whose SQL genuinely
+    differs per dialect (FOR UPDATE, recursive CTEs) on both backends.
+    """
+    if request.param == "postgres":
+        if not POSTGRES_DSN:
+            pytest.skip("POSTGRES_TEST_DSN not set")
+        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+        database = PostgreSQLDatabaseAdapter(POSTGRES_DSN)
+        await database.initialize()
+        await database.reset_for_tests()
+    else:
+        database = Database(str(tmp_path / "any.db"))
+        await database.initialize()
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
     await database.close()
@@ -53,16 +90,26 @@ async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
     return tid
 
 
-async def test_set_parent_rejects_blocking_dependency_cycle_on_postgres(db):
-    # SQLite runs the same query path; the PostgreSQL fixture exercises it in CI.
+async def test_set_parent_rejects_blocking_dependency_cycle_on_both_backends(any_db):
+    """DB-3: a drifted blocking edge must not let a reparent close a cycle.
+
+    ``parent`` already waits on ``child`` through a blocking edge; adding
+    the parent-child edge child -> parent would make the blocking DAG
+    cyclic, so ``set_parent`` must raise ``cycle`` and leave the pointer
+    untouched.
+    """
+    db = any_db
     await mktask(db, "parent", status=TaskStatus.IN_PROGRESS)
     await mktask(db, "child")
+    await db.add_dependency("parent", "child", DepType.WAITS_FOR.value)
     async with db._engine.begin() as conn:
-        await db.set_parent("child", "parent", conn=conn)
-    assert (await db.get_task("child")).parent_task_id == "parent"
+        with pytest.raises(HierarchyError, match="cycle"):
+            await db.set_parent("child", "parent", conn=conn)
+    assert (await db.get_task("child")).parent_task_id is None
 
 
-async def test_set_parent_bulk_rejects_nonleaf_and_preserves_all_children_on_postgres(db):
+async def test_set_parent_bulk_rejects_nonleaf_and_preserves_all_children(any_db):
+    db = any_db
     await mktask(db, "parent", status=TaskStatus.IN_PROGRESS)
     await mktask(db, "child")
     await mktask(db, "grandchild")
@@ -70,25 +117,80 @@ async def test_set_parent_bulk_rejects_nonleaf_and_preserves_all_children_on_pos
         await db.set_parent("grandchild", "child", conn=conn)
         with pytest.raises(HierarchyError, match="cycle_check_skipped"):
             await db.set_parent_bulk(["child"], "parent", conn=conn)
+    # The refused bulk link left the whole existing structure intact.
     assert (await db.get_task("child")).parent_task_id is None
+    assert (await db.get_task("grandchild")).parent_task_id == "child"
 
 
-async def test_abandon_subtree_refuses_when_live_descendant_session_is_locked_on_postgres(db):
+async def test_live_descendant_sessions_reports_holder_of_any_subtree_task(any_db):
+    """The abandon guard sees a live session holding a descendant.
+
+    On PostgreSQL the rows come back FOR UPDATE so a session cannot start
+    holding a descendant between the check and the abandonment; a stopped
+    session must not block the subtree.
+    """
+    db = any_db
+    await db.create_profile(AgentProfile(id="worker", name="Worker"))
     await mktask(db, "container", status=TaskStatus.IN_PROGRESS)
     await mktask(db, "descendant", status=TaskStatus.IN_PROGRESS)
+    await db.create_session(
+        SessionRecord(
+            id="live-1",
+            project_id=PROJECT_ID,
+            profile_id="worker",
+            harness="claude",
+            provider="fake",
+            name="p-worker--proj--live-1",
+            lifecycle="pool",
+            work_dir="/wd/live-1",
+            epoch="e",
+            instance_token="t",
+            started_at=0.0,
+            state="running",
+            task_id="descendant",
+        )
+    )
     async with db._engine.begin() as conn:
         await db.set_parent("descendant", "container", conn=conn)
+        assert await db.live_descendant_sessions("container", conn=conn) == [
+            ("live-1", "descendant")
+        ]
+    await db.update_session("live-1", state="stopped")
+    async with db._engine.begin() as conn:
         assert await db.live_descendant_sessions("container", conn=conn) == []
 
 
-async def test_abandon_subtree_postgres_releases_each_descendant_resource_once(db):
+async def test_abandon_subtree_releases_each_descendant_resource_once(any_db):
+    """Abandonment frees the workspace lock and the agent, same transaction."""
+    db = any_db
+    await db.create_profile(AgentProfile(id="worker", name="Worker"))
     await mktask(db, "root", status=TaskStatus.IN_PROGRESS)
     await mktask(db, "leaf", status=TaskStatus.IN_PROGRESS)
+    await db.create_agent(
+        Agent(id="leaf-agent", name="leaf-agent", profile_id="worker", state=AgentState.BUSY,
+              current_task_id="leaf")
+    )
+    await db.create_workspace(
+        Workspace(
+            id="ws-leaf",
+            project_id=PROJECT_ID,
+            workspace_path="/wd/leaf",
+            source_type=RepoSourceType.CLONE,
+            kind_id="project-repo",
+            locked_by_agent_id="leaf-agent",
+            locked_by_task_id="leaf",
+        )
+    )
     async with db._engine.begin() as conn:
         await db.set_parent("leaf", "root", conn=conn)
         result = await db.abandon_subtree("root", conn=conn)
     assert result.abandoned == ["leaf"]
     assert (await db.get_task("leaf")).status == TaskStatus.COMPLETED
+    assert await db.get_task_meta("leaf", "work_outcome") == "abandoned"
+    ws = await db.get_workspace("ws-leaf")
+    assert (ws.locked_by_task_id, ws.locked_by_agent_id) == (None, None)
+    agent = await db.get_agent("leaf-agent")
+    assert (agent.state, agent.current_task_id) == (AgentState.IDLE, None)
 
 
 class TestSchemaFields:
