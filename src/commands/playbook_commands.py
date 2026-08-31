@@ -700,7 +700,7 @@ class PlaybookCommandsMixin:
         # scoped playbooks compiled via this command keep their project id.
         scope_identifier: str | None = None
         try:
-            from src.vault import VaultManager
+            from src.vault_manager import VaultManager
             from src.playbooks.handler import derive_playbook_scope
 
             vault_root = VaultManager(self.config).vault_root

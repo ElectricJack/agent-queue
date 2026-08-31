@@ -26,7 +26,12 @@ class AgentCommandsMixin(FlockCommandsMixin):
             return {"error": f"Project '{project_id}' not found"}
 
         source = args.get("source", "clone")
-        source_type = RepoSourceType(source)
+        try:
+            source_type = RepoSourceType(source)
+        except ValueError:
+            # Same contract as the WORKTREE fall-through below: a source this
+            # command cannot provision is a clean refusal, not a traceback.
+            return {"error": f"Unsupported workspace source_type '{source}'"}
         path = args.get("path")
         name = args.get("name")
 

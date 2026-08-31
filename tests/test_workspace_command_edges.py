@@ -107,15 +107,21 @@ async def test_add_workspace_rejects_unknown_kind_cross_project_link_and_clone_f
     assert init_failed == {"error": "git init failed: bad perms"}
     assert await _workspace_ids(handler) == ["ws-p2"]
 
-    # Unsupported source string: the enum conversion raises inside the mixin,
-    # which ``execute()`` turns into the command error convention.  Either way
-    # no workspace row is written.
-    with pytest.raises(ValueError):
-        await handler._cmd_add_workspace({"project_id": "p1", "source": "teleport"})
-    through_execute = await handler.execute(
-        "add_workspace", {"project_id": "p1", "source": "teleport"}
-    )
-    assert "error" in through_execute
+    # Unsupported source strings fail cleanly with the same error contract
+    # whether the string is a RepoSourceType this command does not provision
+    # (worktree slots are orchestrator-managed, never created here) or not an
+    # enum member at all.  Either way no workspace row is written.
+    for unsupported in ("worktree", "teleport"):
+        refused = await handler._cmd_add_workspace(
+            {"project_id": "p1", "source": unsupported}
+        )
+        assert refused == {"error": f"Unsupported workspace source_type '{unsupported}'"}
+        through_execute = await handler.execute(
+            "add_workspace", {"project_id": "p1", "source": unsupported}
+        )
+        assert through_execute == {
+            "error": f"Unsupported workspace source_type '{unsupported}'"
+        }
     assert await _workspace_ids(handler) == ["ws-p2"]
 
 
