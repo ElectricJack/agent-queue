@@ -32,6 +32,13 @@ while IFS= read -r branch_ref; do
     branch_ref=$(echo "$branch_ref" | xargs)  # trim whitespace
     [ -z "$branch_ref" ] && continue
 
+    # Skip the symbolic HEAD pointer line ("origin/HEAD -> origin/main");
+    # newer git sets origin/HEAD on fetch, so it appears in CI but not in
+    # older local clones.
+    case "$branch_ref" in
+        *" -> "*) continue ;;
+    esac
+
     # Strip origin/ prefix to get branch name
     branch_name="${branch_ref#origin/}"
 
