@@ -9,11 +9,9 @@ security) is tested separately at the end.
 import pytest
 from unittest.mock import MagicMock
 
-from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.models import Project, RepoConfig, RepoSourceType, Workspace
-from src.orchestrator import Orchestrator
 
 
 # ---------------------------------------------------------------------------
@@ -42,32 +40,21 @@ def config(tmp_path):
 
 @pytest.fixture
 def mock_git():
+    """Autospec'd GitManager (F2): mocked methods track the real surface."""
+    from unittest.mock import create_autospec
+
     from src.git.manager import GitManager
 
-    git = MagicMock(spec=GitManager)
+    git = create_autospec(GitManager, instance=True)
+    git.slugify.side_effect = GitManager.slugify
     return git
 
 
 @pytest.fixture
-async def handler(db, config, mock_git):
-    """Create a CommandHandler with mocked orchestrator and internal plugins."""
-    from src.event_bus import EventBus
-    from src.plugins.registry import PluginRegistry
-    from src.plugins.services import build_internal_services
-
-    orchestrator = Orchestrator(config)
-    orchestrator.db = db
-    orchestrator.git = mock_git
-
-    services = build_internal_services(db=db, git=mock_git, config=config)
-    registry = PluginRegistry(db=db, bus=EventBus(), config=config)
-    registry._internal_services = services
-    await registry.load_internal_plugins()
-    orchestrator.plugin_registry = registry
-
-    handler = CommandHandler(orchestrator, config)
-    registry.set_active_project_id_getter(lambda: handler._active_project_id)
-    return handler
+async def handler(db, config, mock_git, internal_plugins_handler):
+    """CommandHandler with mocked git and internal plugins loaded (built by
+    the shared ``internal_plugins_handler`` factory — FU-13)."""
+    return await internal_plugins_handler(db=db, config=config, git=mock_git)
 
 
 @pytest.fixture
@@ -695,7 +682,6 @@ class TestPathValidation:
 class TestFilesCategoryRegistry:
     def _registry_with_plugins(self):
         """Create a ToolRegistry with plugin tools included."""
-        from unittest.mock import MagicMock
         from src.tools import ToolRegistry, _ALL_TOOL_DEFINITIONS
 
         mock_pr = MagicMock()

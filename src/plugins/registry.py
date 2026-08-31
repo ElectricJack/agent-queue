@@ -600,15 +600,18 @@ class PluginRegistry:
         except Exception as e:
             logger.warning("Plugin '%s' shutdown error: %s", name, e)
 
-        # Remove registered commands — find prefixed commands first,
-        # then remove any short-name aliases that share the same handler.
-        prefixed_cmds = {k for k in self._commands if k.startswith(f"{name}.")}
-        plugin_handlers = {id(self._commands[k]) for k in prefixed_cmds if k in self._commands}
-        to_remove_cmds = set(prefixed_cmds)
-        for k, v in list(self._commands.items()):
-            if id(v) in plugin_handlers:
-                to_remove_cmds.add(k)
-        for key in to_remove_cmds:
+        # Remove exactly the command keys this plugin's context registered.
+        # A key is only removed while it still maps to the handler this
+        # plugin registered — if another plugin has since overwritten a
+        # short-name alias, that registration is left alone.  (Matching by
+        # handler ``id()`` removed other plugins' aliases whenever two
+        # plugins registered the same callable — PLG-6.)
+        registered = getattr(loaded.context, "_registered_commands", {})
+        for key, handler in registered.items():
+            if self._commands.get(key) is handler:
+                self._commands.pop(key, None)
+        # Safety net: name-prefixed keys are namespaced to this plugin.
+        for key in [k for k in self._commands if k.startswith(f"{name}.")]:
             self._commands.pop(key, None)
 
         # Remove registered tools

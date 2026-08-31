@@ -7,14 +7,11 @@ logic in isolation.
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
-from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitError, GitManager
 from src.models import Project, RepoConfig, RepoSourceType, TaskStatus
-from src.orchestrator import Orchestrator
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +40,16 @@ def config(tmp_path):
 
 @pytest.fixture
 def mock_git():
-    """Create a mock GitManager with sensible defaults."""
-    git = MagicMock(spec=GitManager)
+    """Autospec'd GitManager with sensible defaults.
+
+    ``create_autospec(GitManager, instance=True)`` (F2) makes every
+    configured method track the real ``GitManager`` surface — renaming a
+    method in production now fails these tests instead of leaving them
+    green against a test-defined mock surface.
+    """
+    from unittest.mock import create_autospec
+
+    git = create_autospec(GitManager, instance=True)
     # Sync defaults (kept for backward compat / sync-path tests)
     git.validate_checkout.return_value = True
     git.get_current_branch.return_value = "main"
@@ -56,48 +61,34 @@ def mock_git():
     git.commit_all.return_value = True
     git.push_branch.return_value = None
     git.merge_branch.return_value = True
+    git.slugify.side_effect = GitManager.slugify
     # Async defaults — command handler now uses the async API
-    git.avalidate_checkout = AsyncMock(return_value=True)
-    git.aget_current_branch = AsyncMock(return_value="main")
-    git.aget_recent_commits = AsyncMock(return_value="abc1234 Initial commit")
-    git.aget_diff = AsyncMock(return_value="diff --git a/file.py b/file.py")
-    git._arun = AsyncMock(return_value="")
-    git.acreate_branch = AsyncMock(return_value=None)
-    git.acheckout_branch = AsyncMock(return_value=None)
-    git.acommit_all = AsyncMock(return_value=True)
-    git.apush_branch = AsyncMock(return_value=None)
-    git.amerge_branch = AsyncMock(return_value=True)
-    git.apull_branch = AsyncMock(return_value="main")
-    git.aget_changed_files = AsyncMock(return_value=[])
-    git.alist_branches = AsyncMock(return_value=["* main"])
-    git.acreate_pr = AsyncMock(return_value="https://github.com/test/pr/1")
-    git.acheck_gh_auth = AsyncMock(return_value=True)
-    git.acreate_github_repo = AsyncMock(return_value="https://github.com/user/repo")
-    git.aget_status = AsyncMock(return_value="")
-    git.aget_default_branch = AsyncMock(return_value="main")
+    git.avalidate_checkout.return_value = True
+    git.aget_current_branch.return_value = "main"
+    git.aget_recent_commits.return_value = "abc1234 Initial commit"
+    git.aget_diff.return_value = "diff --git a/file.py b/file.py"
+    git._arun.return_value = ""
+    git.acreate_branch.return_value = None
+    git.acheckout_branch.return_value = None
+    git.acommit_all.return_value = True
+    git.apush_branch.return_value = None
+    git.amerge_branch.return_value = True
+    git.apull_branch.return_value = "main"
+    git.aget_changed_files.return_value = []
+    git.alist_branches.return_value = ["* main"]
+    git.acreate_pr.return_value = "https://github.com/test/pr/1"
+    git.acheck_gh_auth.return_value = True
+    git.acreate_github_repo.return_value = "https://github.com/user/repo"
+    git.aget_status.return_value = ""
+    git.aget_default_branch.return_value = "main"
     return git
 
 
 @pytest.fixture
-async def handler(db, config, mock_git):
-    """Create a CommandHandler with a mocked GitManager and internal plugins."""
-    from src.event_bus import EventBus
-    from src.plugins.registry import PluginRegistry
-    from src.plugins.services import build_internal_services
-
-    orchestrator = Orchestrator(config)
-    orchestrator.db = db
-    orchestrator.git = mock_git
-
-    services = build_internal_services(db=db, git=mock_git, config=config)
-    registry = PluginRegistry(db=db, bus=EventBus(), config=config)
-    registry._internal_services = services
-    await registry.load_internal_plugins()
-    orchestrator.plugin_registry = registry
-
-    handler = CommandHandler(orchestrator, config)
-    registry.set_active_project_id_getter(lambda: handler._active_project_id)
-    return handler
+async def handler(db, config, mock_git, internal_plugins_handler):
+    """CommandHandler with a mocked GitManager and internal plugins loaded
+    (built by the shared ``internal_plugins_handler`` factory — FU-13)."""
+    return await internal_plugins_handler(db=db, config=config, git=mock_git)
 
 
 @pytest.fixture
