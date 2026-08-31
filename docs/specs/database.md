@@ -613,6 +613,30 @@ One row per playbook execution. Playbooks replaced the removed `hooks` /
 | `paused_at` | REAL | nullable | Set when the run pauses on a human/event wait |
 | `waiting_for_event` | TEXT | nullable | Event type the run is waiting for |
 
+### Table: `task_completion_records`
+
+Append-only audit records for accepted task-close operations.  This deliberately
+uses a logical `task_id` reference rather than a foreign key, so completion
+history survives archival of the active task row.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Completion record identifier |
+| `task_id` | TEXT | NOT NULL | Logical task reference |
+| `outcome` | TEXT | NOT NULL | Close outcome |
+| `work_outcome` | TEXT | nullable | Work result classification |
+| `failure_class` | TEXT | nullable | Failure classification when applicable |
+| `changes` | TEXT | NOT NULL DEFAULT '' | Reported changes |
+| `verification` | TEXT | NOT NULL DEFAULT '' | Verification summary |
+| `tests` | TEXT | NOT NULL DEFAULT '[]' | JSON test list |
+| `commands` | TEXT | NOT NULL DEFAULT '[]' | JSON command list |
+| `branch` | TEXT | nullable | Source branch |
+| `commits` | TEXT | NOT NULL DEFAULT '[]' | JSON commit list |
+| `pr_url` | TEXT | nullable | Pull request URL |
+| `summary` | TEXT | NOT NULL DEFAULT '' | Human-readable close summary |
+| `notes` | TEXT | NOT NULL DEFAULT '' | Supplemental close notes |
+| `completed_at` | REAL | NOT NULL | Unix timestamp |
+
 ### Table: `workflows`
 
 Multi-agent pipelines with stage gates and agent affinity.

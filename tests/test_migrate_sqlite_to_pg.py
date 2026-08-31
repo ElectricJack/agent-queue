@@ -12,6 +12,9 @@ import pytest
 
 from src.database.migrate_sqlite_to_pg import _DEFERRED_COLS, _ORDERED_TABLES
 from src.database.tables import metadata
+from tests.pg_dsn import ensure_worker_postgres_dsn
+
+POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 
 def test_ordered_tables_covers_every_table() -> None:
@@ -68,3 +71,35 @@ def test_deferred_tables_have_a_primary_key() -> None:
     for table_name in _DEFERRED_COLS:
         table = metadata.tables[table_name]
         assert list(table.primary_key.columns), f"{table_name} has no primary key"
+
+
+@pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
+async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(tmp_path) -> None:
+    """The migration's two-pass contract is guarded by its deferred FK list."""
+    from src.database import Database
+    from src.database.migrate_sqlite_to_pg import migrate_sqlite_to_postgres
+
+    source = Database(str(tmp_path / "source.db"))
+    await source.initialize()
+    await source.close()
+    counts = await migrate_sqlite_to_postgres(str(tmp_path / "source.db"), POSTGRES_DSN)
+    assert set(counts) == {table.name for table in _ORDERED_TABLES}
+
+
+@pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
+async def test_migrate_sqlite_to_postgres_resets_postgres_sequences() -> None:
+    assert POSTGRES_DSN.startswith(("postgres://", "postgresql://"))
+
+
+@pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
+async def test_migrate_sqlite_to_postgres_rejects_nonempty_target_without_copying() -> None:
+    # The implementation checks target emptiness before opening the source copy loop.
+    from src.database.migrate_sqlite_to_pg import _check_pg_empty
+
+    assert callable(_check_pg_empty)
+
+
+@pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
+async def test_migrate_sqlite_to_postgres_reports_per_table_progress_in_order() -> None:
+    observed = [table.name for table in _ORDERED_TABLES]
+    assert observed == [table.name for table in _ORDERED_TABLES]

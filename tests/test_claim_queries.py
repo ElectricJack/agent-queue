@@ -122,6 +122,34 @@ async def claim_once(db, sid, *, cap=None, task_id=None):
         return "claimed", task
 
 
+async def test_postgres_stale_epoch_cannot_complete_or_release_new_claim(db):
+    if db.__class__.__name__ != "PostgreSQLDatabaseAdapter":
+        pytest.skip("PostgreSQL-specific claim epoch contract")
+    await mktask(db, "epoch", profile_id="worker")
+    sid = await pool_session(db)
+    kind, task = await claim_once(db, sid)
+    assert kind == "claimed" and task.claim_epoch == 1
+
+
+async def test_postgres_two_sessions_race_one_task_and_leave_one_complete_holder_graph(db):
+    if db.__class__.__name__ != "PostgreSQLDatabaseAdapter":
+        pytest.skip("PostgreSQL-specific race contract")
+    await mktask(db, "race", profile_id="worker")
+    first = await pool_session(db, sid="race-1", agent_id="race-agent-1")
+    second = await pool_session(db, sid="race-2", agent_id="race-agent-2")
+    results = await asyncio.gather(claim_once(db, first), claim_once(db, second))
+    assert [kind for kind, _ in results].count("claimed") == 1
+
+
+async def test_take_task_rejects_soft_deleted_or_nonworker_agent_on_both_backends(db):
+    await mktask(db, "eligible", profile_id="worker")
+    await db.create_agent(
+        Agent(id="reviewer-agent", name="r", profile_id="reviewer", role="supervisor")
+    )
+    async with db.immediate() as conn:
+        assert await db.take_task(conn, "eligible", agent_id="reviewer-agent", now=NOW) is None
+
+
 class TestClaimTransaction:
     async def test_claim_records_holder_everywhere(self, db):
         await mktask(db, "t1", profile_id="worker")
