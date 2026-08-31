@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
 _SKIP_DIRS = {".obsidian", "__pycache__", ".git"}
@@ -37,6 +39,32 @@ _CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```", re.MULTILINE)
 _INLINE_CODE_RE = re.compile(r"`[^`]+`")
 _WIKI_LINK_RE = re.compile(r"\[\[[^\]]+\]\]")
 _FRONTMATTER_RE = re.compile(r"^---\n[\s\S]*?\n---\n", re.MULTILINE)
+
+
+def _parse_alias_field(raw: str) -> list[str]:
+    """Parse the ``aliases:`` frontmatter value into a list of alias strings.
+
+    :meth:`GlossaryConcept.render` writes JSON (``["foo", "bar"]``), but
+    Obsidian and every other YAML writer emits an unquoted flow list
+    (``[foo, bar]``), and hand-edited entries use a bare comma-separated
+    line.  All three are accepted.  The flow-list form used to fall through
+    to a naive comma split that kept the ``[``/``]`` characters inside the
+    aliases, so the concept silently stopped matching any real text.
+    """
+    if not raw:
+        return []
+
+    for loader in (json.loads, yaml.safe_load):
+        try:
+            parsed = loader(raw)
+        except Exception:
+            continue
+        if isinstance(parsed, list):
+            return [str(a).strip() for a in parsed if str(a).strip()]
+
+    # Bare comma-separated fallback.  Strip any surrounding brackets so a
+    # flow list neither loader could read still yields clean aliases.
+    return [a.strip().strip("[]").strip() for a in raw.split(",") if a.strip().strip("[]").strip()]
 
 
 @dataclass
@@ -149,11 +177,7 @@ class VaultGlossary:
                 fm = content[4:end]
                 for line in fm.split("\n"):
                     if line.startswith("aliases:"):
-                        raw = line[len("aliases:"):].strip()
-                        try:
-                            aliases = json.loads(raw)
-                        except (json.JSONDecodeError, TypeError):
-                            aliases = [a.strip() for a in raw.split(",") if a.strip()]
+                        aliases = _parse_alias_field(line[len("aliases:") :].strip())
 
                 # Body after frontmatter
                 body = content[end + 4:].strip()

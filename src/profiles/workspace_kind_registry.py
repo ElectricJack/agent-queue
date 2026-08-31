@@ -89,6 +89,12 @@ class WorkspaceKindStore:
                     seen.add((SYSTEM_KIND_SCOPE, kind.id))
                 except Exception as e:
                     logger.warning("Failed to parse %s: %s", f, e)
+                    # The file is still on disk, so its row is not an orphan.
+                    # Bootstrap names each file after the kind id, so the stem
+                    # is the right fallback key: a mid-edit parse failure must
+                    # not be read as "the markdown was deleted" and prune the
+                    # last good row.
+                    seen.add((SYSTEM_KIND_SCOPE, f.stem))
 
         # Project-scoped kinds.
         projects_root = self.vault_root / "projects"
@@ -110,6 +116,7 @@ class WorkspaceKindStore:
                         seen.add((pid, kind.id))
                     except Exception as e:
                         logger.warning("Failed to parse %s: %s", f, e)
+                        seen.add((pid, f.stem))
 
         # Prune: any DB row not seen on disk gets deleted (spec §3.5 — file
         # delete reconciles to row delete).  Only prune rows from scopes

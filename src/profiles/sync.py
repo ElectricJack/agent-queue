@@ -734,9 +734,14 @@ async def scan_and_sync_existing_profiles(
         return []
 
     results: list[ProfileSyncResult] = []
+    # Every id we could derive from a file that is *on disk*, whether or not
+    # its contents parsed.  Used by the prune below.
+    on_disk_ids: set[str] = set()
 
     for abs_path, rel_path in profile_files:
         fallback_id = derive_profile_id(rel_path)
+        if fallback_id:
+            on_disk_ids.add(fallback_id)
 
         try:
             text = Path(abs_path).read_text(encoding="utf-8")
@@ -790,9 +795,14 @@ async def scan_and_sync_existing_profiles(
     # every row for nothing.
     pruned = 0
     if profile_files:
-        current_ids = {
-            (r.profile_id or "") for r in results if r.success and r.profile_id
-        }
+        # The predicate is "an id was derivable from a file found on disk",
+        # not "the sync succeeded".  A profile whose ``## Config`` JSON is
+        # momentarily malformed is still present, and
+        # ``docs/specs/design/profiles.md`` §3 requires its previous DB
+        # config to stay active until a valid replacement lands.  Pruning it
+        # here would delete the last known-good row on a mid-edit save.
+        current_ids = {(r.profile_id or "") for r in results if r.success and r.profile_id}
+        current_ids |= on_disk_ids
         try:
             existing = await db.list_profiles()
         except Exception:

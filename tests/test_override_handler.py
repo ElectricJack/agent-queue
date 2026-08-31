@@ -469,3 +469,202 @@ class TestEndToEndDispatch:
         await watcher.check()
 
         assert len(dispatched) == 0
+
+
+# ---------------------------------------------------------------------------
+# OverrideIndexer — chunking, tagging, stale cleanup and delete
+# ---------------------------------------------------------------------------
+#
+# These exercise the real memsearch chunker: faking ``chunk_markdown`` would
+# leave the unit under test replaced by the fake.  Only the Milvus-backed
+# store, the collection router and the embedding provider are doubled.
+# ---------------------------------------------------------------------------
+
+
+class _FakeStore:
+    """Records what the indexer writes; stands in for a Milvus collection."""
+
+    def __init__(self, existing: set[str] | None = None) -> None:
+        self.existing = set(existing or ())
+        self.upserted: list[list[dict]] = []
+        self.deleted: list[list[str]] = []
+        self.sources_queried: list[str] = []
+
+    def hashes_by_source(self, source: str) -> set[str]:
+        self.sources_queried.append(source)
+        return set(self.existing)
+
+    def delete_by_hashes(self, hashes: list[str]) -> int:
+        self.deleted.append(list(hashes))
+        return len(hashes)
+
+    def upsert(self, records: list[dict]) -> int:
+        self.upserted.append(list(records))
+        return len(records)
+
+
+class _FakeRouter:
+    def __init__(self, store: _FakeStore | None = None, *, has: bool = True) -> None:
+        self.store = store
+        self.has = has
+        self.get_store_calls: list[tuple] = []
+        self.has_store_calls: list[tuple] = []
+
+    def has_store(self, scope, key) -> bool:
+        self.has_store_calls.append((scope, key))
+        return self.has
+
+    def get_store(self, scope, key, description: str | None = None):
+        self.get_store_calls.append((scope, key, description))
+        if self.store is None:
+            raise AssertionError("get_store must not be called")
+        return self.store
+
+
+class _FakeEmbedder:
+    model_name = "fake-embed-v1"
+
+    def __init__(self) -> None:
+        self.batches: list[list[str]] = []
+
+    async def embed(self, contents: list[str]) -> list[list[float]]:
+        self.batches.append(list(contents))
+        return [[float(i), 0.5] for i in range(len(contents))]
+
+
+_OVERRIDE_MD = """\
+# Coding override
+
+Prefer small, reviewable diffs over sweeping rewrites.
+
+## Testing
+
+Run the section's existing tests before opening a PR.
+
+## Style
+
+Match the surrounding code rather than the linter's minimum.
+"""
+
+
+def _make_indexer(router, embedder):
+    from src.override_handler import OverrideIndexer
+
+    return OverrideIndexer(router=router, embedder=embedder, max_chunk_size=200, overlap_lines=1)
+
+
+class TestOverrideIndexer:
+    @pytest.mark.asyncio
+    async def test_index_override_upserts_chunks_with_override_tag_and_weight(self, tmp_path):
+        """Every indexed chunk carries the override tag plus its agent type."""
+        pytest.importorskip("memsearch")
+        import json
+
+        from memsearch.scoping import MemoryScope
+
+        path = tmp_path / "coding.md"
+        path.write_text(_OVERRIDE_MD)
+        store = _FakeStore()
+        router = _FakeRouter(store)
+        embedder = _FakeEmbedder()
+
+        n = await _make_indexer(router, embedder).index_override("proj-x", "coding", str(path))
+
+        assert store.upserted, "nothing was written to the store"
+        records = store.upserted[0]
+        assert n == len(records)
+        for record in records:
+            assert json.loads(record["tags"]) == ["override", "coding"]
+            assert record["entry_type"] == "document"
+            assert record["source"] == str(path.resolve())
+            assert record["embedding"]
+        assert router.get_store_calls == [(MemoryScope.PROJECT, "proj-x", "project/proj-x")]
+
+    @pytest.mark.asyncio
+    async def test_index_override_deletes_stale_chunks_from_same_source(self, tmp_path):
+        """Re-indexing removes the previous version's chunks and re-embeds only new ones."""
+        pytest.importorskip("memsearch")
+
+        path = tmp_path / "coding.md"
+        path.write_text(_OVERRIDE_MD)
+        store = _FakeStore()
+        embedder = _FakeEmbedder()
+        indexer = _make_indexer(_FakeRouter(store), embedder)
+
+        await indexer.index_override("proj-x", "coding", str(path))
+        written = [r["chunk_hash"] for r in store.upserted[0]]
+        assert len(written) >= 2, "fixture must produce more than one chunk"
+
+        # Second pass: the store already holds the first chunk plus one chunk
+        # from an older revision of the same file that no longer exists.
+        store.existing = {written[0], "stale-chunk-from-old-revision"}
+        store.upserted.clear()
+        embedder.batches.clear()
+
+        await indexer.index_override("proj-x", "coding", str(path))
+
+        assert store.deleted == [["stale-chunk-from-old-revision"]]
+        assert len(embedder.batches) == 1
+        assert len(embedder.batches[0]) == len(written) - 1
+        assert [r["chunk_hash"] for r in store.upserted[0]] == written[1:]
+
+    @pytest.mark.asyncio
+    async def test_delete_override_does_not_create_collection(self, tmp_path):
+        """Deleting from a project with no collection must not create one."""
+        pytest.importorskip("memsearch")
+
+        path = tmp_path / "coding.md"
+        router = _FakeRouter(store=None, has=False)
+        indexer = _make_indexer(router, _FakeEmbedder())
+
+        assert await indexer.delete_override("proj-x", str(path)) is False
+        assert router.get_store_calls == []
+
+        store = _FakeStore({"h1", "h2"})
+        router = _FakeRouter(store, has=True)
+        indexer = _make_indexer(router, _FakeEmbedder())
+
+        assert await indexer.delete_override("proj-x", str(path)) is True
+        assert sorted(store.deleted[0]) == ["h1", "h2"]
+
+    @pytest.mark.asyncio
+    async def test_on_override_changed_routes_delete_to_indexer_and_survives_raise(
+        self, tmp_path, caplog
+    ):
+        """A raising index call is logged and the remaining changes still run."""
+        from src.override_handler import set_indexer
+
+        class _RecordingIndexer:
+            def __init__(self) -> None:
+                self.indexed: list[tuple[str, str, str]] = []
+                self.deleted: list[tuple[str, str]] = []
+                self.calls = 0
+
+            async def index_override(self, project_id, agent_type, file_path):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("milvus is down")
+                self.indexed.append((project_id, agent_type, file_path))
+                return 3
+
+            async def delete_override(self, project_id, file_path):
+                self.deleted.append((project_id, file_path))
+                return True
+
+        indexer = _RecordingIndexer()
+        changes = [
+            VaultChange(str(tmp_path / "a.md"), "projects/p/overrides/coding.md", "created"),
+            VaultChange(str(tmp_path / "b.md"), "projects/p/overrides/review.md", "deleted"),
+            VaultChange(str(tmp_path / "c.md"), "projects/p/overrides/qa.md", "modified"),
+        ]
+
+        set_indexer(indexer)
+        try:
+            with caplog.at_level(logging.ERROR, logger="src.override_handler"):
+                await on_override_changed(changes)
+        finally:
+            set_indexer(None)
+
+        assert indexer.deleted == [("p", str(tmp_path / "b.md"))]
+        assert indexer.indexed == [("p", "qa", str(tmp_path / "c.md"))]
+        assert "milvus is down" in caplog.text

@@ -135,3 +135,75 @@ class TestVaultGlossary:
         assert result.startswith("---\ntags: [vault]\n---")
         # Body mention should be linked
         assert "[[glossary/vault|vault]]" in result
+
+
+class TestAnnotateAllSafeFiles:
+    def test_annotate_all_safe_files_skips_facts_hubs_and_glossary(self, tmp_path):
+        """Only ordinary notes are rewritten; generated/hub files are left alone."""
+        glossary = VaultGlossary(tmp_path)
+        glossary.add_concept(
+            name="widget",
+            definition="A unit of work.",
+            aliases=["widget"],
+        )
+
+        note = tmp_path / "projects" / "p" / "notes.md"
+        note.parent.mkdir(parents=True)
+        body = "We ship one widget per release.\n"
+        note.write_text(body)
+
+        untouched = {
+            tmp_path / "projects" / "p" / "facts.md": "A widget is tracked here.\n",
+            tmp_path / "projects" / "p" / "spec-overview.md": "The widget spec.\n",
+            tmp_path / "projects" / "p" / "index.md": "Every widget, listed.\n",
+            tmp_path / ".obsidian" / "cache.md": "widget cache\n",
+        }
+        for path, text in untouched.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+
+        modified = VaultGlossary(tmp_path).annotate_all_safe_files()
+
+        assert modified == 1
+        assert "[[glossary/widget|widget]]" in note.read_text()
+        for path, text in untouched.items():
+            assert path.read_text() == text, f"{path.name} should not have been rewritten"
+
+        entry = (tmp_path / "glossary" / "widget.md").read_text()
+        assert "## Referenced In" in entry
+        assert "projects/p/notes" in entry
+
+
+class TestFlowListAliases:
+    def test_flow_list_aliases_link_concept(self, tmp_path):
+        """``aliases: [foo, bar]`` is a YAML flow list, not JSON (VP-3).
+
+        Obsidian writes this form.  Parsing it with a bare comma split kept
+        the brackets inside the aliases, so the concept silently stopped
+        matching any real text.
+        """
+        glossary_dir = tmp_path / "glossary"
+        glossary_dir.mkdir()
+        (glossary_dir / "widget.md").write_text(
+            "---\n"
+            "tags: [glossary, concept]\n"
+            "aliases: [foo, bar]\n"
+            "---\n\n"
+            "# Widget\n\n"
+            "A unit of work.\n"
+        )
+
+        glossary = VaultGlossary(tmp_path)
+        glossary.load()
+
+        concept = glossary._concepts["widget"]
+        assert "foo" in concept.aliases
+        assert "bar" in concept.aliases
+        assert not any("[" in a or "]" in a for a in concept.aliases)
+
+        assert [c.name for c in glossary.find_concepts("we use foo here")] == ["widget"]
+        assert [c.name for c in glossary.find_concepts("a bar walks in")] == ["widget"]
+        assert glossary.annotate_content("we use foo here") == (
+            "we use [[glossary/widget|foo]] here"
+        )
+        assert glossary.annotate_content("a bar walks in") == "a [[glossary/widget|bar]] walks in"

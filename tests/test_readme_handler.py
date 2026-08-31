@@ -1775,3 +1775,76 @@ class TestOrchestratorMemoryFromProjectReadmes:
         await watcher.check()
 
         assert not summary.is_file()
+
+
+class TestSummaryRemovalAndWriteFailure:
+    """The delete and write-error arms, asserted on filesystem *and* events."""
+
+    @pytest.mark.asyncio
+    async def test_deleted_readme_emits_summary_updated_removed(self, tmp_path):
+        """Deleting a README removes its summary file and says so on the bus."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        summary = _write_summary(str(vault), "my-app", "# My App\n\nOld summary.\n")
+        assert os.path.isfile(summary)
+
+        bus = EventBus(validate_events=False)
+        events: list[dict] = []
+        bus.subscribe("notify.readme_summary_updated", lambda data: events.append(data))
+
+        change = VaultChange(
+            path=str(vault / "projects" / "my-app" / "README.md"),
+            rel_path="projects/my-app/README.md",
+            operation="deleted",
+        )
+        results = await on_readme_changed([change], vault_root=str(vault), event_bus=bus)
+
+        assert not os.path.exists(summary)
+        assert len(results) == 1
+        assert results[0].success is True
+        assert results[0].action == "removed"
+        assert len(events) == 1
+        assert events[0]["action"] == "removed"
+        assert events[0]["project_id"] == "my-app"
+        assert events[0]["source_path"] == change.path
+
+    @pytest.mark.asyncio
+    async def test_unwritable_summary_dir_emits_summary_failed(self, tmp_path):
+        """A write failure is reported as an error result *and* a failed event."""
+        if os.geteuid() == 0:
+            pytest.skip("root ignores directory permissions")
+
+        vault = tmp_path / "vault"
+        proj_dir = vault / "projects" / "my-app"
+        proj_dir.mkdir(parents=True)
+        readme = proj_dir / "README.md"
+        readme.write_text("# My App\n\nA readable README.\n")
+
+        summary_dir = os.path.dirname(summary_path_for_project(str(vault), "my-app"))
+        os.makedirs(summary_dir, exist_ok=True)
+        os.chmod(summary_dir, 0o500)
+
+        bus = EventBus(validate_events=False)
+        failed: list[dict] = []
+        updated: list[dict] = []
+        bus.subscribe("notify.readme_summary_failed", lambda data: failed.append(data))
+        bus.subscribe("notify.readme_summary_updated", lambda data: updated.append(data))
+
+        change = VaultChange(
+            path=str(readme),
+            rel_path="projects/my-app/README.md",
+            operation="created",
+        )
+        try:
+            results = await on_readme_changed([change], vault_root=str(vault), event_bus=bus)
+        finally:
+            os.chmod(summary_dir, 0o700)
+
+        assert len(results) == 1
+        assert results[0].success is False
+        assert results[0].action == "error"
+        assert results[0].errors
+        assert updated == []
+        assert len(failed) == 1
+        assert failed[0]["project_id"] == "my-app"
+        assert failed[0]["errors"] == results[0].errors

@@ -545,3 +545,31 @@ class TestDiffFacts:
             "project": ["b"],
             "conventions": ["c"],
         }
+
+
+class TestRenderFrontmatter:
+    def test_render_facts_file_emits_frontmatter_block(self):
+        """The render/parse round trip closes even with frontmatter present."""
+        data = {"project": {"lang": "Python", "db": "SQLite"}}
+        rendered = render_facts_file(
+            data,
+            frontmatter={
+                "tags": ["facts", "project"],
+                "scope": "project",
+                "updated": "2026-08-31",
+            },
+        )
+
+        lines = rendered.splitlines()
+        assert lines[0] == "---"
+        # Keys are emitted in sorted order for deterministic diffs, and list
+        # values are JSON-encoded so they survive a YAML reader.
+        assert lines[1:4] == [
+            "scope: project",
+            'tags: ["facts", "project"]',
+            "updated: 2026-08-31",
+        ]
+        assert lines[4] == "---"
+
+        # The body still round-trips through the parser unchanged.
+        assert parse_facts_file(rendered) == data

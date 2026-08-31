@@ -580,3 +580,84 @@ class TestWatcherIntegration:
         )
         assert ids == ids2
         assert watcher.get_handler_count() == len(MCP_SERVER_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# Watcher reload safety and frontmatter error reporting
+# ---------------------------------------------------------------------------
+
+
+class TestReloadSafetyAndParseErrors:
+    @pytest.mark.asyncio
+    async def test_reload_keeps_previous_entry_when_file_becomes_unparseable(
+        self, tmp_path: Path, caplog
+    ):
+        """A bad save must not evict the working config loaded from the vault.
+
+        Unlike the sibling test above, the "previous" entry here came from a
+        real :func:`load_from_vault` pass, so this pins the whole
+        disk → registry → bad-edit path rather than a hand-seeded entry.
+        """
+        vault = tmp_path / "vault"
+        sys_dir = vault / "mcp-servers"
+        sys_dir.mkdir(parents=True)
+        path = sys_dir / "foo.md"
+        path.write_text(
+            "---\nname: foo\ntransport: stdio\ncommand: npx\nargs: ['-y', 'foo']\n---\n"
+        )
+
+        registry = McpRegistry()
+        assert load_from_vault(registry, str(vault)) == []
+        assert registry.get("foo").command == "npx"
+
+        # An empty ``command:`` — the classic mid-edit save.
+        path.write_text("---\nname: foo\ntransport: stdio\ncommand:\n---\n")
+
+        with caplog.at_level("WARNING", logger="src.profiles.mcp_registry"):
+            await _on_mcp_server_changed(
+                [_make_change("mcp-servers/foo.md", str(vault), "modified")],
+                registry=registry,
+                vault_root=str(vault),
+                on_reload=None,
+            )
+
+        kept = registry.get("foo")
+        assert kept is not None
+        assert kept.command == "npx"
+        assert kept.args == ["-y", "foo"]
+        assert "keeping previous entry" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("text", "expected_fragment"),
+        [
+            # YAML that raises inside safe_load.
+            ("---\na: [unclosed\n---\n", "Invalid YAML in frontmatter"),
+            # Opening marker with no closing one.
+            ("---\nname: x\ntransport: stdio\ncommand: ls\n", "Unterminated YAML frontmatter"),
+            # Frontmatter that parses to a bare scalar, not a mapping.
+            ("---\njust a string\n---\n\nbody\n", "must be a mapping"),
+            # No frontmatter at all.
+            ("# just a heading\n\nsome notes\n", "Missing YAML frontmatter"),
+        ],
+    )
+    def test_malformed_frontmatter_variants_are_rejected_not_crashed(self, text, expected_fragment):
+        """Each parse-failure mode reports its own actionable error (VP-6).
+
+        Telling an operator with a YAML typo that the block is "missing" sends
+        them to fix the wrong thing.
+        """
+        result = parse_server_markdown(text, fallback_name="x")
+
+        assert result.is_valid is False
+        assert result.errors
+        assert expected_fragment in result.errors[0]
+
+    def test_non_string_args_is_rejected_with_its_own_error(self):
+        """A well-formed block with a bad field reports the *field*, not YAML."""
+        result = parse_server_markdown(
+            "---\nname: x\ntransport: stdio\ncommand: ls\nargs: notalist\n---\n",
+            fallback_name="x",
+        )
+
+        assert result.is_valid is False
+        assert result.errors == ["'args' must be a list of strings"]

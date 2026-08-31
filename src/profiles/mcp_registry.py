@@ -182,34 +182,43 @@ class ParsedMcpServer:
         return not self.errors and self.config is not None
 
 
-def _parse_frontmatter(text: str) -> tuple[dict, str]:
+def _parse_frontmatter(text: str) -> tuple[dict, str, str | None]:
     """Extract YAML frontmatter from the start of a markdown file.
 
-    Returns ``(data, body)``.  Returns ``({}, text)`` if no frontmatter or
-    if the YAML is malformed.
+    Returns ``(data, body, error)``.  On failure *data* is empty and *error*
+    names the **specific** failure mode — a missing block, an unterminated
+    block, invalid YAML, or a block that is not a mapping.  The distinction
+    is what the operator acts on: "add frontmatter" is the wrong advice for a
+    file whose closing ``---`` is simply missing.
     """
     if not text or not text.lstrip().startswith("---"):
-        return {}, text
+        return {}, text, "Missing YAML frontmatter — wrap the config between '---' markers"
 
     stripped = text.lstrip()
     after_open = stripped[3:].lstrip("\r\n")
 
     close_idx = after_open.find("\n---")
     if close_idx == -1:
-        return {}, text
+        return {}, text, "Unterminated YAML frontmatter — no closing '---' marker found"
 
     yaml_text = after_open[:close_idx]
     body = after_open[close_idx + 4 :].lstrip("\r\n")
 
     try:
         data = yaml.safe_load(yaml_text)
-    except yaml.YAMLError:
-        return {}, text
+    except yaml.YAMLError as exc:
+        detail = str(exc).strip().splitlines()
+        first_line = detail[0] if detail else exc.__class__.__name__
+        return {}, text, f"Invalid YAML in frontmatter: {first_line}"
 
     if not isinstance(data, dict):
-        return {}, text
+        return (
+            {},
+            text,
+            f"YAML frontmatter must be a mapping of keys to values, got {type(data).__name__}",
+        )
 
-    return data, body
+    return data, body, None
 
 
 def parse_server_markdown(
@@ -242,10 +251,13 @@ def parse_server_markdown(
         result.errors.append("Empty file")
         return result
 
-    data, body = _parse_frontmatter(text)
+    data, body, fm_error = _parse_frontmatter(text)
+    if fm_error is not None:
+        result.errors.append(fm_error)
+        return result
     if not data:
         result.errors.append(
-            "Missing or invalid YAML frontmatter — wrap the config between '---' markers"
+            "Empty YAML frontmatter — the block between '---' markers has no fields"
         )
         return result
 

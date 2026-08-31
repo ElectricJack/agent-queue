@@ -4962,3 +4962,106 @@ class TestUnderlyingAgentType:
         assert underlying_agent_type("project:only-two-parts") == "project:only-two-parts"
         # Empty type segment.
         assert underlying_agent_type("project:proj:") == "project:proj:"
+
+
+# ---------------------------------------------------------------------------
+# Startup scan — orphan prune semantics
+# ---------------------------------------------------------------------------
+
+
+class TestStartupScanPrune:
+    """The prune must key on "file is on disk", not "the file parsed"."""
+
+    @pytest.mark.asyncio
+    async def test_prune_keeps_row_when_profile_file_fails_to_parse(self, db, tmp_path):
+        """A mid-edit parse failure must not delete the last known-good row.
+
+        ``docs/specs/design/profiles.md`` §3: a failed sync leaves the
+        previous DB config active until a valid replacement lands.
+        """
+        vault = tmp_path / "vault"
+        profile_path = vault / "agent-types" / "alpha" / "profile.md"
+        valid = """\
+---
+id: alpha
+name: Alpha Agent
+---
+
+## Config
+```json
+{"model": "claude-sonnet-4-6"}
+```
+"""
+        _create_file(str(profile_path), valid)
+
+        first = await scan_and_sync_existing_profiles(str(vault), db)
+        assert [r.success for r in first] == [True]
+        assert (await db.get_profile("alpha")).model == "claude-sonnet-4-6"
+
+        # Corrupt the Config block: unterminated JSON.
+        profile_path.write_text(valid.replace('{"model": "claude-sonnet-4-6"}', '{"model": '))
+
+        second = await scan_and_sync_existing_profiles(str(vault), db)
+
+        assert sum(1 for r in second if not r.success) >= 1
+        surviving = await db.get_profile("alpha")
+        assert surviving is not None, "parse failure pruned the row the spec says to keep"
+        assert surviving.model == "claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
+    async def test_prune_deletes_row_when_profile_file_removed(self, db, tmp_path, caplog):
+        """Removing the file — and only that — prunes the row."""
+        vault = tmp_path / "vault"
+        for agent_type in ("gone", "kept"):
+            _create_file(
+                str(vault / "agent-types" / agent_type / "profile.md"),
+                f"""\
+---
+id: {agent_type}
+name: {agent_type.title()} Agent
+---
+
+## Config
+```json
+{{"model": "claude-sonnet-4-6"}}
+```
+""",
+            )
+
+        await scan_and_sync_existing_profiles(str(vault), db)
+        assert await db.get_profile("gone") is not None
+
+        (vault / "agent-types" / "gone" / "profile.md").unlink()
+
+        with caplog.at_level(logging.INFO, logger="src.profiles.sync"):
+            await scan_and_sync_existing_profiles(str(vault), db)
+
+        assert await db.get_profile("gone") is None
+        kept = await db.get_profile("kept")
+        assert kept is not None
+        assert kept.model == "claude-sonnet-4-6"
+        assert "Pruned orphan profile row: gone" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_stray_scoped_profile_change_is_ignored_by_watcher(self, db, tmp_path, caplog):
+        """Colon-encoded ids in the global folder are skipped, not resurrected."""
+        rel_path = "agent-types/project:foo:supervisor/profile.md"
+        vault = tmp_path / "vault"
+        _create_file(str(vault / rel_path), MINIMAL_PROFILE)
+
+        with caplog.at_level(logging.WARNING, logger="src.profiles.sync"):
+            await on_profile_changed(
+                [VaultChange(str(vault / rel_path), rel_path, "created")],
+                db=db,
+            )
+
+        assert await db.get_profile("project:foo:supervisor") is None
+        assert "stray scoped profile" in caplog.text
+
+        # The startup scanner applies the same rule, so the file cannot
+        # re-enter through the other door either.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="src.profiles.sync"):
+            found = _find_profile_files(str(vault))
+        assert found == []
+        assert "stray scoped profile" in caplog.text
