@@ -14,8 +14,7 @@ import {
   useSessionKill,
 } from "../api/hooks";
 import { useTranscriptStream } from "../ws/useTranscriptStream";
-import { usePaneStream } from "../ws/usePaneStream";
-import LivePaneConsole from "../components/LivePaneConsole";
+import InteractiveTerminal from "../components/InteractiveTerminal";
 import { workspaceHref } from "../shell/projectNavigation";
 
 export default function SessionDetail() {
@@ -31,7 +30,9 @@ export default function SessionDetail() {
   const { entries, status, error, clear } = useTranscriptStream(sessionId, {
     enabled: streamOn,
   });
-  const pane = usePaneStream(sessionId, { enabled: streamOn && viewMode === "pane" });
+  const running = session?.state === "running" || session?.state === "draining";
+  const paneAvailable = running && session?.provider === "tmux";
+  const showingPane = paneAvailable && viewMode === "pane";
 
   if (isLoading) return <div className="p-6 text-gray-400">Loading…</div>;
   if (!session) return <div className="p-6 text-gray-400">Session not found</div>;
@@ -116,53 +117,59 @@ export default function SessionDetail() {
         </div>
       </section>
 
-      <section className="rounded border border-gray-800 bg-gray-950">
+      <section className="overflow-hidden rounded-lg border border-gray-800 bg-gray-950">
         <div className="flex items-center justify-between border-b border-gray-800 px-3 py-2">
           <div className="flex items-center gap-3">
             <h2 className="text-sm font-semibold text-gray-300">
-              {viewMode === "transcript" ? "Transcript stream" : "Pane view"}
-              <span className="ml-2 text-xs text-gray-500">({status})</span>
+              {showingPane ? "Pane view" : "Transcript stream"}
+              {!showingPane && <span className="ml-2 text-xs text-gray-500">({status})</span>}
             </h2>
-            <div className="inline-flex rounded border border-gray-800 text-xs">
-              <button
+            <div role="tablist" aria-label="Session views" className="inline-flex rounded border border-gray-800 text-xs">
+              <button role="tab" aria-selected={!showingPane}
                 onClick={() => setViewMode("transcript")}
                 className={
                   "px-2 py-0.5 " +
-                  (viewMode === "transcript"
+                  (!showingPane
                     ? "bg-indigo-600 text-white"
                     : "text-gray-300 hover:bg-gray-900")
                 }
               >
                 Transcript
               </button>
-              <button
-                onClick={() => setViewMode("pane")}
-                className={
-                  "px-2 py-0.5 " +
-                  (viewMode === "pane"
-                    ? "bg-indigo-600 text-white"
-                    : "text-gray-300 hover:bg-gray-900")
-                }
-              >
-                Pane
-              </button>
+              {paneAvailable && (
+                <button role="tab" aria-selected={showingPane}
+                  onClick={() => setViewMode("pane")}
+                  className={
+                    "px-2 py-0.5 " +
+                    (showingPane
+                      ? "bg-indigo-600 text-white"
+                      : "text-gray-300 hover:bg-gray-900")
+                  }
+                >
+                  Pane
+                </button>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setStreamOn((v) => !v)}
-              className="inline-flex items-center gap-1 rounded border border-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-900"
-            >
-              {streamOn ? <StopIcon className="h-3 w-3" /> : <PlayIcon className="h-3 w-3" />}
-              {streamOn ? "Pause" : "Resume"}
-            </button>
-            <button
-              onClick={clear}
-              className="inline-flex items-center gap-1 rounded border border-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-900"
-            >
-              <ArrowPathIcon className="h-3 w-3" />
-              Clear
-            </button>
+            {!showingPane && (
+              <>
+                <button
+                  onClick={() => setStreamOn((v) => !v)}
+                  className="inline-flex items-center gap-1 rounded border border-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-900"
+                >
+                  {streamOn ? <StopIcon className="h-3 w-3" /> : <PlayIcon className="h-3 w-3" />}
+                  {streamOn ? "Pause" : "Resume"}
+                </button>
+                <button
+                  onClick={clear}
+                  className="inline-flex items-center gap-1 rounded border border-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-900"
+                >
+                  <ArrowPathIcon className="h-3 w-3" />
+                  Clear
+                </button>
+              </>
+            )}
             <button
               onClick={() => kill.mutate({ session_id: sessionId })}
               className="inline-flex items-center gap-1 rounded border border-red-900 px-2 py-1 text-xs text-red-400 hover:bg-red-950"
@@ -171,14 +178,11 @@ export default function SessionDetail() {
             </button>
           </div>
         </div>
-        {error && <p className="px-3 py-1 text-xs text-amber-400">{error}</p>}
-        {viewMode === "pane" ? (
-          <LivePaneConsole
-            screen={pane.screen}
-            status={pane.status}
-            error={pane.error}
-            className="max-h-[60vh]"
-          />
+        {!showingPane && error && <p className="px-3 py-1 text-xs text-amber-400">{error}</p>}
+        {showingPane ? (
+          <div className="h-[60vh] min-h-80">
+            <InteractiveTerminal key={sessionId} sessionId={sessionId} name={session.name} />
+          </div>
         ) : (
           <div className="max-h-[60vh] overflow-y-auto p-3 font-mono text-xs">
             {entries.length === 0 ? (

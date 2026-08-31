@@ -36,6 +36,7 @@ vi.mock("./pages/command-center/TaskWorkspace", () => ({ TaskWorkspaceProvider: 
 vi.mock("./pages/command-center/TaskToolbar", () => ({ default: () => <div role="toolbar" aria-label="Task controls" /> }));
 vi.mock("./pages/project/Overview", () => ({ default: () => <WorkspaceProbe title="Project overview" /> }));
 vi.mock("./pages/project/Workspaces", () => ({ default: () => <WorkspaceProbe title="Project workspaces" /> }));
+vi.mock("./pages/project/Profiles", () => ({ default: () => <h1>Former project profiles</h1> }));
 vi.mock("./pages/project/Config", () => ({ default: () => <WorkspaceProbe title="Project config" /> }));
 vi.mock("./pages/chat/ChatConversation", () => ({ default: () => <h1>Former project chat</h1> }));
 vi.mock("./pages/GlobalChat", () => ({ default: () => <h1>Former Home chat</h1> }));
@@ -92,6 +93,7 @@ describe("Dashboard navigation", () => {
     ["/playbooks", "/settings/playbooks"],
     ["/system/playbooks", "/settings/playbooks"],
     ["/system/profiles", "/settings/profiles"],
+    ["/projects/p1/profiles", "/projects/p1/config"],
     ["/system/config", "/settings/config"],
     ["/system/intelligence-classes", "/settings/intelligence-classes"],
     ["/work", "/projects/p1/tasks"],
@@ -101,6 +103,13 @@ describe("Dashboard navigation", () => {
   ])("redirects legacy route %s to %s while preserving filters", async (from, to) => {
     renderApp(from + "?q=needle&status=READY");
     await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(to + "?q=needle&status=READY"));
+  });
+
+  it("keeps profile overrides under Config rather than a separate project tab", async () => {
+    renderApp("/projects/p1/config");
+    await screen.findByRole("heading", { name: "Project config" });
+    expect(screen.getByRole("link", { name: "Config" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("link", { name: "Profiles" })).not.toBeInTheDocument();
   });
 
   it.each(["demo%2Freview", "demo%2520review", "draft%25complete"])(

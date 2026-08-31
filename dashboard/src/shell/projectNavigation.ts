@@ -9,7 +9,6 @@ export const PROJECT_TABS = [
   { tab: "overview", label: "Overview" },
   { tab: "sessions", label: "Sessions" },
   { tab: "workspaces", label: "Workspaces" },
-  { tab: "profiles", label: "Profiles" },
   { tab: "playbooks", label: "Playbooks" },
   { tab: "config", label: "Config" },
 ] as const;
@@ -27,7 +26,7 @@ export function projectNavigation(pathname: string): {
   const project = matchPath("/projects/:projectId/*", pathname);
   const global = matchPath("/command-center/*", pathname);
   const requestedTab = (project ?? global)?.params["*"]?.replace(/\/$/, "") || "graph";
-  const tab = [...TASK_TABS, ...PROJECT_TABS].find((item) => item.tab === requestedTab)?.tab ?? "graph";
+  const tab = [...TASK_TABS, ...PROJECT_TABS].find((item) => item.tab === (requestedTab === "profiles" ? "config" : requestedTab))?.tab ?? "graph";
   let projectId = project?.params.projectId ?? null;
   if (projectId) {
     try { projectId = decodeURIComponent(projectId); }

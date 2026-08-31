@@ -7,7 +7,7 @@ describe("fullSettingsRoute", () => {
     [{ subject: "profile", subjectId: "reviewer" } as const, "/settings/profiles"],
     [
       { subject: "project-profile", subjectId: "coder", projectId: "demo" } as const,
-      "/projects/demo/profiles",
+      "/projects/demo/config",
     ],
     [{ subject: "playbook", subjectId: "review-gate" } as const, "/playbooks/review-gate"],
     [
