@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ChevronDownIcon, ChevronRightIcon, UsersIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { useAgentFlock } from "../api/agents";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
-import { AgentSubagents, AgentState, AgentEligibility, AgentWaitingQuestion } from "../pages/agents/AgentMetadata";
+import { AgentState, AgentEligibility, AgentWaitingQuestion } from "../pages/agents/AgentMetadata";
 
 const COLLAPSED_KEY = "aq:flock:collapsed";
 
@@ -70,23 +70,24 @@ export default function AgentFlock() {
                 aria-describedby={descriptionId}
                 aria-pressed={selected}
                 onClick={(event) => setLimitAt(selection.select(agent.id, event.shiftKey) ? null : selection.locationKey)}
-                className={"block w-full rounded-lg border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400 "
+                className={"block w-full rounded-lg border px-3 py-1.5 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400 "
                   + (selected ? "border-indigo-500/40 bg-indigo-500/10" : "border-transparent hover:border-gray-700 hover:bg-gray-800/70")}
               >
-                <span className="mb-1 flex items-center justify-between gap-2">
+                <span className="mb-0.5 flex items-center justify-between gap-2">
                   <span className="truncate text-sm font-medium text-gray-200">{agent.name}</span>
                   <span className={"shrink-0 text-[10px] capitalize " + (agent.waiting_question ? "text-amber-300" : agent.state === "busy" ? "text-emerald-400" : "text-gray-500")}>
                     <AgentState agent={agent} />
                   </span>
                 </span>
-                <span id={descriptionId} className="block space-y-0.5 text-[10px] leading-relaxed text-gray-500">
-                  <span className="block truncate text-gray-400" title={(agent.provider || "Provider unknown") + " · " + (agent.model || "Model unknown")}>
-                    {agent.provider || "Provider unknown"} · {agent.model || "Model unknown"}
+                <span id={descriptionId} className="block space-y-0.5 text-[10px] leading-tight text-gray-500">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 truncate text-gray-400" title={(agent.provider || "Provider unknown") + " · " + (agent.model || "Model unknown")}>
+                      {agent.provider || "Provider unknown"} · {agent.model || "Model unknown"}
+                    </span>
+                    <span className="shrink-0" title={agent.intelligence_class || "Intelligence level unknown"}>
+                      int: {agent.intelligence_class || "Unknown"}
+                    </span>
                   </span>
-                  <span className="block truncate" title={agent.intelligence_class || "Intelligence level unknown"}>
-                    Intelligence: {agent.intelligence_class || "Unknown"}
-                  </span>
-                  <span className="block"><AgentSubagents agent={agent} /></span>
                   <AgentEligibility agent={agent} />
                   <AgentWaitingQuestion agent={agent} />
                   <span className="block truncate text-gray-400" title={agent.current_task_title || agent.current_task_id || "Idle — no assigned task"}>
