@@ -77,8 +77,31 @@ class TestTransitionTableCompleteness:
         assert result == TaskStatus.READY
 
 
-
 class TestDAGValidation:
+    @pytest.mark.parametrize(
+        "dep_type", ["blocks", "parent-child", "waits-for", "conditional-blocks"]
+    )
+    def test_validate_dag_with_new_edge_rejects_cycle_for_each_blocking_dep_type(self, dep_type):
+        with pytest.raises(CyclicDependencyError):
+            validate_dag_with_new_edge({"second": {"first"}}, "first", "second", dep_type)
+
+    @pytest.mark.parametrize("dep_type", ["related", "discovered-from"])
+    def test_validate_dag_with_new_edge_allows_nonblocking_cycle_annotations(self, dep_type):
+        validate_dag_with_new_edge({"second": {"first"}}, "first", "second", dep_type)
+
+    def test_validate_dag_handles_five_thousand_node_chain_without_recursion_error(self):
+        deps = {f"n{i}": {f"n{i - 1}"} for i in range(1, 5000)}
+        validate_dag(deps)
+        with pytest.raises(CyclicDependencyError):
+            validate_dag_with_new_edge(deps, "n0", "n4999")
+
+    def test_validate_waits_for_rejects_transitive_child_waiting_on_ancestor(self):
+        from src.state_machine import validate_waits_for
+
+        with pytest.raises(CyclicDependencyError, match="leaf.*middle.*container"):
+            validate_waits_for({"leaf": {"middle"}, "middle": {"container"}}, "leaf", "container")
+        validate_waits_for({"leaf": {"middle"}, "middle": {"container"}}, "sibling", "container")
+
     def test_no_dependencies(self):
         deps = {}
         validate_dag(deps)  # should not raise

@@ -121,7 +121,10 @@ class TestEffectiveRequirements:
         # Create a real workspace so the FK on tasks.preferred_workspace_id
         # is satisfied.
         await _add_workspace(
-            db, ws_id="ws-pref", project_id="p1", path="/repo-pref",
+            db,
+            ws_id="ws-pref",
+            project_id="p1",
+            path="/repo-pref",
             kind_id="project-repo",
         )
         task = await _mktask(db, preferred="ws-pref")
@@ -131,8 +134,11 @@ class TestEffectiveRequirements:
 
     async def test_explicit_requirements_wins_over_synthesis(self, db):
         await _add_kind(
-            db, kind_id="game-repo",
-            writable=True, lockable=True, is_git_repo=True,
+            db,
+            kind_id="game-repo",
+            writable=True,
+            lockable=True,
+            is_git_repo=True,
             default_lock_mode="exclusive",
         )
         task = await _mktask(db)
@@ -157,13 +163,19 @@ class TestEffectiveRequirements:
 
     async def test_canonical_lock_order(self, db):
         await _add_kind(
-            db, kind_id="alpha",
-            writable=True, lockable=True, is_git_repo=True,
+            db,
+            kind_id="alpha",
+            writable=True,
+            lockable=True,
+            is_git_repo=True,
             default_lock_mode="exclusive",
         )
         await _add_kind(
-            db, kind_id="zeta",
-            writable=True, lockable=True, is_git_repo=True,
+            db,
+            kind_id="zeta",
+            writable=True,
+            lockable=True,
+            is_git_repo=True,
             default_lock_mode="exclusive",
         )
         task = await _mktask(db)
@@ -178,13 +190,19 @@ class TestEffectiveRequirements:
     async def test_input_order_does_not_affect_canonical_order(self, db):
         """Spec §6.3: canonical order is independent of input list order."""
         await _add_kind(
-            db, kind_id="alpha",
-            writable=True, lockable=True, is_git_repo=True,
+            db,
+            kind_id="alpha",
+            writable=True,
+            lockable=True,
+            is_git_repo=True,
             default_lock_mode="exclusive",
         )
         await _add_kind(
-            db, kind_id="beta",
-            writable=True, lockable=True, is_git_repo=True,
+            db,
+            kind_id="beta",
+            writable=True,
+            lockable=True,
+            is_git_repo=True,
             default_lock_mode="exclusive",
         )
         task1 = await _mktask(db, task_id="t1")
@@ -200,11 +218,152 @@ class TestEffectiveRequirements:
 
 
 class TestAcquireForTask:
+    @pytest.mark.xfail(
+        run=False,
+        reason="ORC-1: SQLite multi-kind concurrent acquisition can block inside its per-kind transactions",
+    )
+    async def test_concurrent_opposite_requirement_orders_complete_without_partial_locks(self, db):
+        """Canonical ordering means a two-kind race has one complete winner."""
+        for kind in ("alpha", "beta"):
+            await _add_kind(
+                db,
+                kind_id=kind,
+                writable=True,
+                lockable=True,
+                is_git_repo=True,
+                default_lock_mode="exclusive",
+            )
+            await _add_workspace(
+                db, ws_id=f"ws-{kind}", project_id="p1", path=f"/{kind}", kind_id=kind
+            )
+        first, second = await _mktask(db, task_id="first"), await _mktask(db, task_id="second")
+        await db.add_task_workspace_requirements(first.id, [("alpha", None), ("beta", None)])
+        await db.add_task_workspace_requirements(second.id, [("beta", None), ("alpha", None)])
+        first_agent, second_agent = (
+            await _mkagent(db, agent_id="a-first"),
+            await _mkagent(db, agent_id="a-second"),
+        )
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                acquire_for_task(db, first, first_agent.id),
+                acquire_for_task(db, second, second_agent.id),
+                return_exceptions=True,
+            ),
+            timeout=2,
+        )
+        winners = [result for result in results if not isinstance(result, Exception)]
+        assert len(winners) == 1
+        assert {attachment.workspace.id for attachment in winners[0].attachments} == {
+            "ws-alpha",
+            "ws-beta",
+        }
+        for workspace_id in ("ws-alpha", "ws-beta"):
+            assert (await db.get_workspace(workspace_id)).locked_by_task_id in {first.id, second.id}
+
+    async def test_second_task_acquires_both_kinds_after_first_releases(self, db):
+        for kind in ("alpha", "beta"):
+            await _add_kind(
+                db,
+                kind_id=kind,
+                writable=True,
+                lockable=True,
+                is_git_repo=True,
+                default_lock_mode="exclusive",
+            )
+            await _add_workspace(
+                db, ws_id=f"ws-{kind}", project_id="p1", path=f"/{kind}", kind_id=kind
+            )
+        first, second = await _mktask(db, task_id="first"), await _mktask(db, task_id="second")
+        for task in (first, second):
+            await db.add_task_workspace_requirements(task.id, [("alpha", None), ("beta", None)])
+        await acquire_for_task(db, first, (await _mkagent(db, agent_id="a-first")).id)
+        assert await db.release_workspaces_for_task(first.id) == 2
+        attachments = await acquire_for_task(
+            db, second, (await _mkagent(db, agent_id="a-second")).id
+        )
+        assert {
+            attachment.workspace.locked_by_task_id
+            for attachment in attachments.attachments
+            if attachment.lockable
+        } == {second.id}
+
+    async def test_two_positions_of_same_kind_receive_distinct_instances(self, db):
+        await _add_kind(
+            db,
+            kind_id="package",
+            writable=True,
+            lockable=True,
+            is_git_repo=True,
+            default_lock_mode="exclusive",
+        )
+        for number in (1, 2):
+            await _add_workspace(
+                db,
+                ws_id=f"package-{number}",
+                project_id="p1",
+                path=f"/package-{number}",
+                kind_id="package",
+            )
+        task, agent = await _mktask(db), await _mkagent(db)
+        await db.add_task_workspace_requirements(task.id, [("package", "one"), ("package", "two")])
+        attachments = (await acquire_for_task(db, task, agent.id)).by_kind("package")
+        assert [attachment.alias for attachment in attachments] == ["one", "two"]
+        assert {attachment.workspace.id for attachment in attachments} == {"package-1", "package-2"}
+
+    async def test_preferred_workspace_falls_back_to_another_unlocked_same_kind_instance(self, db):
+        await _add_workspace(
+            db, ws_id="preferred", project_id="p1", path="/preferred", kind_id="project-repo"
+        )
+        await _add_workspace(
+            db, ws_id="fallback", project_id="p1", path="/fallback", kind_id="project-repo"
+        )
+        blocked, task = (
+            await _mktask(db, task_id="blocked"),
+            await _mktask(db, task_id="wanted", preferred="preferred"),
+        )
+        other_agent = await _mkagent(db, agent_id="other-agent")
+        await db.acquire_workspace(
+            "p1", other_agent.id, blocked.id, preferred_workspace_id="preferred"
+        )
+        attachment = (await acquire_for_task(db, task, (await _mkagent(db)).id)).first_of_kind(
+            "project-repo"
+        )
+        assert attachment.workspace.id == "fallback"
+        assert (await db.get_workspace("preferred")).locked_by_task_id == blocked.id
+
+    async def test_read_only_mixed_requirements_attach_without_any_write_locks(self, db):
+        await _add_workspace(
+            db, ws_id="repo", project_id="p1", path="/repo", kind_id="project-repo"
+        )
+        await _add_kind(db, kind_id="reference", writable=False, lockable=False, is_git_repo=False)
+        await _add_workspace(
+            db, ws_id="reference", project_id="p1", path="/reference", kind_id="reference"
+        )
+        task, agent = await _mktask(db), await _mkagent(db)
+        await db.add_task_workspace_requirements(
+            task.id, [("project-repo", None), ("reference", None)]
+        )
+        attachments = await acquire_for_task(db, task, agent.id, read_only=True)
+        assert {attachment.kind_id for attachment in attachments.attachments} == {
+            "project-repo",
+            "reference",
+            "vault",
+        }
+        workspaces = [
+            await db.get_workspace(attachment.workspace.id)
+            for attachment in attachments.attachments
+        ]
+        assert all(workspace.locked_by_task_id is None for workspace in workspaces)
+
     async def test_back_compat_single_workspace(self, db):
         """Spec §14 #7: existing tasks with no requirements get a project-repo
         attachment via synthesis."""
         await _add_workspace(
-            db, ws_id="ws-pr", project_id="p1", path="/repo", kind_id="project-repo",
+            db,
+            ws_id="ws-pr",
+            project_id="p1",
+            path="/repo",
+            kind_id="project-repo",
         )
         task = await _mktask(db)
         agent = await _mkagent(db)
@@ -222,11 +381,18 @@ class TestAcquireForTask:
     async def test_partial_failure_rolls_back_acquired_locks(self, db):
         """Spec §14 #3: task wants [A, B], B unavailable, A is released."""
         await _add_workspace(
-            db, ws_id="ws-pr", project_id="p1", path="/repo", kind_id="project-repo",
+            db,
+            ws_id="ws-pr",
+            project_id="p1",
+            path="/repo",
+            kind_id="project-repo",
         )
         await _add_kind(
-            db, kind_id="package-foo",
-            writable=True, lockable=True, is_git_repo=True,
+            db,
+            kind_id="package-foo",
+            writable=True,
+            lockable=True,
+            is_git_repo=True,
             default_lock_mode="exclusive",
         )
         # No package-foo workspace exists — second acquisition will fail.
@@ -248,7 +414,11 @@ class TestAcquireForTask:
     async def test_concurrent_same_kind_one_winner(self, db):
         """Spec §14 #1: two tasks racing for one instance — exactly one wins."""
         await _add_workspace(
-            db, ws_id="ws-pr", project_id="p1", path="/repo", kind_id="project-repo",
+            db,
+            ws_id="ws-pr",
+            project_id="p1",
+            path="/repo",
+            kind_id="project-repo",
         )
         task1 = await _mktask(db, task_id="t1")
         task2 = await _mktask(db, task_id="t2")
@@ -270,7 +440,11 @@ class TestAcquireForTask:
     async def test_auto_attach_appears_without_being_declared(self, db):
         """Spec §14 #6: vault attaches without declaration."""
         await _add_workspace(
-            db, ws_id="ws-pr", project_id="p1", path="/repo", kind_id="project-repo",
+            db,
+            ws_id="ws-pr",
+            project_id="p1",
+            path="/repo",
+            kind_id="project-repo",
         )
         # Vault workspace already provisioned by migration via init.
         task = await _mktask(db)
@@ -282,7 +456,11 @@ class TestAcquireForTask:
 
     async def test_unknown_kind_raises(self, db):
         await _add_workspace(
-            db, ws_id="ws-pr", project_id="p1", path="/repo", kind_id="project-repo",
+            db,
+            ws_id="ws-pr",
+            project_id="p1",
+            path="/repo",
+            kind_id="project-repo",
         )
         task = await _mktask(db)
         agent = await _mkagent(db)

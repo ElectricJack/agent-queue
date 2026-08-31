@@ -22,7 +22,7 @@ from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.explain import build_capacity_reasons
-from src.models import AgentState, Project, Task, TaskStatus
+from src.models import Agent, AgentState, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 
 
@@ -180,6 +180,31 @@ class TestBuildCapacityReasons:
         reasons = build_capacity_reasons(task, state, {PROJECT_ID: 1}, {PROJECT_ID: 1})
         codes = [r["code"] for r in reasons]
         assert "rate_limited" in codes
+
+    def test_capacity_reasons_are_stably_ordered_and_rate_limit_is_deduplicated(self):
+        project = Project(id=PROJECT_ID, name="p")
+        task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
+        agents = [
+            Agent(id=f"a{n}", name=f"a{n}", profile_id="claude", state=AgentState.IDLE)
+            for n in range(2)
+        ]
+        now = 100.0
+        state = make_state(
+            projects=[project],
+            agents=agents,
+            global_budget=10,
+            global_tokens_used=10,
+            provider_cooldowns={"claude": now + 30},
+            now=now,
+        )
+        reasons = build_capacity_reasons(task, state, {}, {PROJECT_ID: 0})
+        assert [reason["code"] for reason in reasons] == [
+            "workspace_locked",
+            "no_idle_agent",
+            "budget_exhausted",
+            "rate_limited",
+        ]
+        assert reasons[-1]["ref"] == "claude"
 
 
 # ── _describe_task_blocker uses reasons[0]["detail"] ─────────────────────

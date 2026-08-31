@@ -141,6 +141,69 @@ async def _run_cycle_and_approve_plan(orch, task_id: str) -> list:
     return await _approve_plan_for_task(orch, task_id)
 
 
+async def test_conditional_completion_cascades_contingency_to_noop_and_emits_event(
+    orchestrator_factory,
+):
+    orch = await orchestrator_factory()
+    try:
+        await orch.db.create_project(Project(id="conditional", name="conditional"))
+        await orch.db.create_task(
+            Task(
+                id="done",
+                project_id="conditional",
+                title="done",
+                description="",
+                status=TaskStatus.COMPLETED,
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="contingency",
+                project_id="conditional",
+                title="contingency",
+                description="",
+                status=TaskStatus.DEFINED,
+            )
+        )
+        await orch.db.add_dependency("contingency", "done", "conditional-blocks")
+        await orch._close_dead_conditional_tasks()
+        assert (await orch.db.get_task("contingency")).status == TaskStatus.COMPLETED
+        events = await orch.db.get_recent_events(task_id="contingency")
+        assert any(event["event_type"] == "task.skipped_conditional" for event in events)
+    finally:
+        await orch.db.close()
+
+
+async def test_conditional_autoclose_disabled_leaves_contingency_defined(orchestrator_factory):
+    orch = await orchestrator_factory()
+    try:
+        orch.config.work_graph.conditional_autoclose = False
+        await orch.db.create_project(Project(id="conditional", name="conditional"))
+        await orch.db.create_task(
+            Task(
+                id="done",
+                project_id="conditional",
+                title="done",
+                description="",
+                status=TaskStatus.COMPLETED,
+            )
+        )
+        await orch.db.create_task(
+            Task(
+                id="contingency",
+                project_id="conditional",
+                title="contingency",
+                description="",
+                status=TaskStatus.DEFINED,
+            )
+        )
+        await orch.db.add_dependency("contingency", "done", "conditional-blocks")
+        await orch._close_dead_conditional_tasks()
+        assert (await orch.db.get_task("contingency")).status == TaskStatus.DEFINED
+    finally:
+        await orch.db.close()
+
+
 class TestOrchestratorLifecycle:
     async def test_full_task_lifecycle(self, orch):
         """DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED"""
@@ -365,22 +428,16 @@ class TestAgentReconcilerWiring:
     See docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md §7.
     """
 
-    async def test_ready_task_dispatches_with_only_workspace_and_default_profile(
-        self, orch
-    ):
+    async def test_ready_task_dispatches_with_only_workspace_and_default_profile(self, orch):
         """The original quick-ember bug: project with workspace +
         default_profile_id + READY task should dispatch within one cycle —
         no manual agent creation. Tests the full reconciler → scheduler →
         executor chain.
         """
         # Profile must exist before project references it.
-        await orch.db.create_profile(
-            AgentProfile(id="claude", name="claude", harness="claude")
-        )
+        await orch.db.create_profile(AgentProfile(id="claude", name="claude", harness="claude"))
         # Project with default_profile_id and a workspace.
-        await orch.db.create_project(
-            Project(id="p-1", name="alpha", default_profile_id="claude")
-        )
+        await orch.db.create_project(Project(id="p-1", name="alpha", default_profile_id="claude"))
         await orch.db.create_workspace(
             Workspace(
                 id="ws-p-1",

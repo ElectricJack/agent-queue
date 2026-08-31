@@ -142,6 +142,16 @@ class TestGenerateAgentName:
 
 
 class TestGenerateUniqueAgentName:
+    async def test_unique_agent_name_uses_numeric_suffix_after_retry_budget(self, monkeypatch):
+        import src.agent_names as names
+
+        monkeypatch.setattr(names, "generate_agent_name", lambda: "Atlas")
+        monkeypatch.setattr(names.random, "randint", lambda _low, _high: 42)
+        db = AsyncMock()
+        db.get_agent.side_effect = [object()] * names._MAX_RETRIES + [None]
+        assert await generate_unique_agent_name(db) == "Atlas 42"
+        assert db.get_agent.call_args_list[-1].args == ("atlas-42",)
+
     """Test unique name generation with database collision checks."""
 
     async def test_returns_unique_name_no_collisions(self):

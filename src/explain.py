@@ -105,9 +105,9 @@ def build_capacity_reasons(
     candidates = idle_workers(state, include_cooldown=True)
     compatible = [agent for agent in candidates if routing_mismatch(task, agent, state) is None]
     if candidates and not compatible:
-        mismatches = list(dict.fromkeys(
-            routing_mismatch(task, agent, state) for agent in candidates
-        ))
+        mismatches = list(
+            dict.fromkeys(routing_mismatch(task, agent, state) for agent in candidates)
+        )
         reasons.append(
             Reason(
                 code="no_compatible_agent",
@@ -134,17 +134,16 @@ def build_capacity_reasons(
                 ref=None,
             )
         )
-    for agent in compatible:
-        cool = (state.provider_cooldowns or {}).get(agent.profile_id, 0)
+    # Several idle agents may share a profile; a cooldown is a provider-level
+    # constraint, so reporting it once is both stable and actionable.
+    for profile_id in dict.fromkeys(agent.profile_id for agent in compatible):
+        cool = (state.provider_cooldowns or {}).get(profile_id, 0)
         if cool > state.now:
             reasons.append(
                 Reason(
                     code="rate_limited",
-                    detail=(
-                        f"provider '{agent.profile_id}' in cooldown for "
-                        f"{int(cool - state.now)}s"
-                    ),
-                    ref=agent.profile_id,
+                    detail=(f"provider '{profile_id}' in cooldown for {int(cool - state.now)}s"),
+                    ref=profile_id,
                 )
             )
     return reasons
