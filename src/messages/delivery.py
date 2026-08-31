@@ -184,7 +184,10 @@ class MessageDeliveryEngine:
             )
 
         resolved = 0
-        seen_threads: set[str] = set()
+        seen_threads: set[tuple] = set()
+        # Cover the newest delivered request first; creation order can differ
+        # when older queued feedback is injected by prime later.
+        candidates.sort(key=lambda msg: (msg.delivered_at or 0, msg.created_at, msg.id), reverse=True)
         for msg in candidates:
             # Internal question handoffs use explicit question commands;
             # never fabricate a user reply from the supervisor's transcript.
@@ -202,12 +205,10 @@ class MessageDeliveryEngine:
             )
             if kind is None:
                 continue
-            # Dedupe per recipient thread so we don't post the same tail
-            # twice when several delivered messages share it.
+            # Scope both ends of the conversation: unrelated workers/users
+            # sharing a channel must not suppress one another's replies.
             thread_key = (
-                f"{project_id}:{msg.thread_id}"
-                if msg.thread_id
-                else f"{kind}:{target_id}:{project_id}"
+                project_id, msg.thread_id, kind, target_id, msg.from_kind, msg.from_id,
             )
             if thread_key in seen_threads:
                 continue
@@ -301,17 +302,7 @@ class MessageDeliveryEngine:
         return parked
 
     async def _has_reply(self, msg: Message) -> bool:
-        """True if a reply row already links back to ``msg``.
-
-        Cheap-enough scan of the recent project message stream — the
-        sweep runs once per cascade cycle and only inspects the small
-        set of unresolved candidates.
-        """
-        rows = await self._db.list_messages(
-            project_id=msg.project_id, system_only=msg.project_id is None,
-            include_archived=True, limit=200
-        )
-        return any(r.reply_to_id == msg.id for r in rows)
+        return await self._db.has_reply_covering_message(msg)
 
     async def _emit(self, event: str, payload: dict) -> None:
         if self._bus is None:

@@ -445,6 +445,76 @@ class TestReplyTimeouts:
         assert await engine.check_reply_timeouts() == 0
 
 
+class TestTranscriptTailDeduplication:
+    @pytest.mark.parametrize("project_id", ["p1", None])
+    @pytest.mark.parametrize("delivery_times", [(100, 101, 102), (102, 100, 101)])
+    async def test_backlog_reuses_one_reply_across_sweeps_and_restart(
+        self, db, project_id, delivery_times,
+    ):
+        sessions = FakeSessionManager(tail_map={("task", "review", project_id): "Review updated."})
+        bus = RecordingBus()
+        backlog = [await _send(db, project_id=project_id, to_kind="task", to_id="review")
+                   for _ in range(3)]
+        newest = backlog[delivery_times.index(102)]
+        oldest = backlog[delivery_times.index(100)]
+        async with db._engine.begin() as conn:
+            for i, msg in enumerate(backlog):
+                await conn.execute(sa_update(messages).where(messages.c.id == msg.id)
+                                   .values(delivered_at=delivery_times[i]))
+
+        assert await make_engine(db, sessions, bus=bus).check_reply_timeouts() == 1
+        first = (await db.list_messages(to_kind="user"))[0]
+        assert first.reply_to_id == newest.id
+        # Forget process state, archive the original reply and its request,
+        # and push them beyond the old 200-row history scan.
+        await db.archive_messages([first.id, newest.id])
+        for _ in range(201):
+            await _send(db, to_kind="profile", to_id="unrelated")
+        restarted = make_engine(db, sessions, bus=bus)
+        for _ in range(3):
+            assert await restarted.check_reply_timeouts() == 0
+        replies = await db.list_messages(to_kind="user", include_archived=True)
+        assert [r.id for r in replies] == [first.id]
+        assert len([e for e in bus.events if e.event == "message.sent"]) == 1
+        # No incoming feedback is discarded or marked read by suppression.
+        assert (await db.get_message(oldest.id)).archived_at is None
+        assert (await db.get_message(oldest.id)).read_at is None
+
+    async def test_new_request_can_receive_the_same_text(self, db):
+        sessions = FakeSessionManager(tail_map={("task", "review", "p1"): "Still waiting."})
+        first = await _send(db, to_kind="task", to_id="review")
+        async with db._engine.begin() as conn:
+            await conn.execute(sa_update(messages).where(messages.c.id == first.id)
+                               .values(delivered_at=100))
+        assert await make_engine(db, sessions).check_reply_timeouts() == 1
+        later = await _send(db, to_kind="task", to_id="review")
+        async with db._engine.begin() as conn:
+            await conn.execute(sa_update(messages).where(messages.c.id == later.id)
+                               .values(delivered_at=200))
+        assert await make_engine(db, sessions).check_reply_timeouts() == 1
+        replies = await db.list_messages(to_kind="user")
+        assert {r.reply_to_id for r in replies} == {first.id, later.id}
+
+    @pytest.mark.parametrize("different", [
+        {"from_id": "discord:2"}, {"thread_id": "discord:other"},
+        {"to_id": "other-worker"}, {"project_id": "p2"},
+    ])
+    async def test_fallback_does_not_suppress_other_conversations(self, db, different):
+        await db.create_project(Project(id="p2", name="p2"))
+        sessions = FakeSessionManager()
+        first = await _send(db, to_kind="task", to_id="review", thread_id="discord:channel")
+        other = await _send(db, **({"to_kind": "task", "to_id": "review",
+                                   "thread_id": "discord:channel"} | different))
+        async with db._engine.begin() as conn:
+            await conn.execute(sa_update(messages).where(messages.c.id.in_([first.id, other.id]))
+                               .values(delivered_at=100))
+        for msg in [first, other]:
+            sessions.tail_map[(msg.to_kind, msg.to_id, msg.project_id)] = "Same reply text."
+        assert await make_engine(db, sessions).check_reply_timeouts() == 2
+        replies = await db.list_messages(to_kind="user")
+        assert {r.reply_to_id for r in replies} == {first.id, other.id}
+
+
 class TestTranscriptTailFanout:
     async def test_tail_reply_emits_message_sent_with_full_payload(self, db):
         sessions = FakeSessionManager()

@@ -21,7 +21,7 @@ from __future__ import annotations
 import time
 import uuid
 
-from sqlalchemy import and_, insert, select, update
+from sqlalchemy import and_, insert, or_, select, update
 
 from src.database.tables import messages
 from src.models import Message
@@ -238,6 +238,33 @@ class MessageQueriesMixin:
                 .values(archived_at=time.time())
             )
             return result.rowcount
+
+    async def has_reply_covering_message(self, msg: Message) -> bool:
+        """An exact reply, or a fallback for a newer delivery in this conversation.
+
+        A transcript tail answers a batch, not each older inbox row separately.
+        Keep that coverage in persisted reply links (including archived history),
+        rather than a per-pass cache or a truncated recent-message scan. A later
+        incoming delivery remains eligible even if its answer has identical text.
+        """
+        reply = messages.alias("reply")
+        covered = False
+        if msg.delivered_at is not None:
+            covered = and_(
+                reply.c.via == "transcript_tail",
+                messages.c.project_id == msg.project_id,
+                messages.c.thread_id == msg.thread_id,
+                messages.c.from_kind == msg.from_kind,
+                messages.c.from_id == msg.from_id,
+                messages.c.to_kind == msg.to_kind,
+                messages.c.to_id == msg.to_id,
+                messages.c.delivered_at >= msg.delivered_at,
+            )
+        stmt = select(reply.c.id).select_from(
+            messages.join(reply, reply.c.reply_to_id == messages.c.id)
+        ).where(or_(reply.c.reply_to_id == msg.id, covered)).limit(1)
+        async with self._engine.begin() as conn:
+            return (await conn.execute(stmt)).first() is not None
 
     async def list_messages(
         self,
