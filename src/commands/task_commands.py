@@ -2333,6 +2333,45 @@ class TaskCommandsMixin:
             return {"error": error}
         return {"stopped": args["task_id"]}
 
+    async def _cmd_task_recover(self, args: dict) -> dict:
+        task_id = args.get("task_id")
+        error = await self._task_control_scope_error(task_id)
+        if error:
+            return error
+        decision = args.get("decision")
+        reason = args.get("reason")
+        if decision not in ("retry", "hold") or not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 4000:
+            return {"error": "Provide decision retry|hold and a reason of 1 to 4000 characters"}
+        scope = self._current_scope or {}
+        stopped_session = None
+        if decision == "retry":
+            from src.sessions.provider import SessionHandle
+
+            incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
+            if incident.get("id") != args.get("incident_id"):
+                return {"error": "Incident is stale or not found"}
+            row = await self.db.get_session(incident["session_id"])
+            if row is None:
+                return {"error": "Cannot confirm the old worker has stopped; operator review required"}
+            try:
+                provider = self.orchestrator.session_providers.create(row.provider, self.config)
+                stopped = await asyncio.wait_for(provider.confirm_stopped(
+                    SessionHandle(row.name, row.provider, row.instance_token)
+                ), timeout=10)
+            except Exception:
+                return {"error": "Worker liveness check unavailable; recovery was not accepted"}
+            if stopped is not True:
+                return {"error": "The old worker may still be running; recovery was not accepted"}
+            stopped_session = {"id": row.id, "instance_token": row.instance_token}
+        result = await self.db.decide_task_recovery(
+            task_id, args.get("incident_id"), decision, reason.strip(),
+            author_kind="supervisor" if scope.get("kind") == "session" else "user",
+            author_id=scope.get("session_id") or "operator",
+            project_id=scope.get("project_id"), stopped_session=stopped_session,
+        )
+        await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
+        return result
+
     async def _cmd_restart_task(self, args: dict) -> dict:
         task = await self.db.get_task(args["task_id"])
         if not task:

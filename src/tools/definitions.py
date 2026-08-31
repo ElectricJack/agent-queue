@@ -85,6 +85,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "pause_task": "task",
     "resume_task": "task",
     "restart_task": "task",
+    "task_recover": "task",
     "reopen_with_feedback": "task",
     "delete_task": "task",
     "skip_task": "task",
@@ -1427,6 +1428,20 @@ _ALL_TOOL_DEFINITIONS = [
                 "task_id": {"type": "string", "description": "Task ID to stop"},
             },
             "required": ["task_id"],
+        },
+    },
+    {
+        "name": "task_recover",
+        "description": "Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded diagnosis. Never bypass a rejection using restart_task or status edits.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID"},
+                "incident_id": {"type": "string", "description": "Exact recovery incident ID from the supervisor notification"},
+                "decision": {"type": "string", "enum": ["retry", "hold"]},
+                "reason": {"type": "string", "description": "Diagnosis and rationale for this decision"},
+            },
+            "required": ["task_id", "incident_id", "decision", "reason"],
         },
     },
     {

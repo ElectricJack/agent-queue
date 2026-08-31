@@ -191,7 +191,7 @@ class MessageDeliveryEngine:
         for msg in candidates:
             # Internal question handoffs use explicit question commands;
             # never fabricate a user reply from the supervisor's transcript.
-            if msg.body_kind == "agent_question":
+            if msg.body_kind in {"agent_question", "task_recovery"}:
                 continue
             if msg.delivered_at is None or msg.delivered_at > cutoff:
                 continue
@@ -396,9 +396,12 @@ def _render_nudge(batch: list[Message]) -> str:
         if msg.subject:
             header = f"{header} {msg.subject}"
         parts.append(f"{header}\n{msg.body}")
-    ids = ", ".join(msg.id for msg in batch)
+    replies = [msg for msg in batch if msg.body_kind not in {"agent_question", "task_recovery"}]
+    if not replies:
+        return "\n\n".join(parts)
+    ids = ", ".join(msg.id for msg in replies)
     instruction = (
-        f'Reply with `aq reply <msg-id> "…"` (ids: {ids}).' if len(batch) > 1
-        else f'Reply with `aq reply {batch[0].id} "…"`.'
+        f'Reply with `aq reply <msg-id> "…"` (ids: {ids}).' if len(replies) > 1
+        else f'Reply with `aq reply {replies[0].id} "…"`.'
     )
     return "\n\n".join(parts) + "\n\n" + instruction

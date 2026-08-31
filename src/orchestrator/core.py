@@ -3003,6 +3003,10 @@ class Orchestrator(
             return
         self._last_delivery_pass = now
         try:
+            await self.db.queue_task_recovery_notifications()
+        except Exception:
+            logger.exception("Recovery incident notification pass failed")
+        try:
             await self.message_delivery.run_delivery_pass()
             await self.message_delivery.check_reply_timeouts()
         except Exception:

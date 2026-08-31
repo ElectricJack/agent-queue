@@ -354,6 +354,14 @@ class SessionProvider(ABC):
     async def is_running(self, h: SessionHandle) -> bool:
         """True when the runtime artifact (pane / process record) exists."""
 
+    async def confirm_stopped(self, h: SessionHandle) -> bool:
+        """Authoritative termination evidence for discretionary recovery.
+
+        Ordinary is_running may use cached/partial discovery. Providers must
+        explicitly implement a fresh probe here; unsupported/unknown is unsafe.
+        """
+        return False
+
     @abstractmethod
     async def process_alive(self, h: SessionHandle, process_names: tuple[str, ...]) -> bool:
         """True when the agent process itself is alive.

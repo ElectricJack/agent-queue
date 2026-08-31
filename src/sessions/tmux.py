@@ -393,6 +393,13 @@ class TmuxProvider(SessionProvider):
             return False
         return await self._fenced(h)
 
+    async def confirm_stopped(self, h: SessionHandle) -> bool:
+        # Bypass both pane and token caches. A failed list (including an
+        # inaccessible socket) propagates; it must never mean "safe to retry".
+        # A same-named successor also withholds recovery conservatively.
+        names = await self._tmux("list-sessions", "-F", "#{session_name}")
+        return h.name not in names.splitlines()
+
     async def process_alive(self, h: SessionHandle, process_names: tuple[str, ...] = ()) -> bool:
         try:
             panes = await self._panes()

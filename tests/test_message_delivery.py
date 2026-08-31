@@ -9,6 +9,8 @@ does) plus an in-process :class:`FakeSessionManager` that implements
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from dataclasses import dataclass, field
 
 import pytest
@@ -864,6 +866,7 @@ class _StubOrch:
     def __init__(self, *, enabled: bool, engine: _FakeEngine, interval: float = 5.0):
         self.config = _FakeOrchConfig(enabled, interval)
         self.message_delivery = engine
+        self.db = SimpleNamespace(queue_task_recovery_notifications=AsyncMock())
         self._last_delivery_pass: float = 0.0
 
 
@@ -924,10 +927,11 @@ class TestCascadeWiring:
         assert engine.timeout_calls == 0
 
 
-async def test_internal_question_handoff_does_not_generate_user_transcript_reply(db):
+@pytest.mark.parametrize("body_kind", ["agent_question", "task_recovery"])
+async def test_internal_question_handoff_does_not_generate_user_transcript_reply(db, body_kind):
     msg = await db.create_message(project_id=None, from_kind="system", from_id="agent-questions",
         to_kind="session", to_id="n-supervisor--global", body="Untrusted worker question",
-        body_kind="agent_question")
+        body_kind=body_kind)
     await db.mark_delivered(msg.id)
     async with db._engine.begin() as conn:
         await conn.execute(sa_update(messages).where(messages.c.id == msg.id).values(delivered_at=1))

@@ -43,6 +43,7 @@ from src.database.queries.session_queries import SessionQueryMixin
 from src.database.queries.task_session_queries import TaskSessionQueryMixin
 from src.database.queries.task_comment_queries import TaskCommentQueriesMixin
 from src.database.queries.task_queries import TaskQueryMixin
+from src.database.queries.task_recovery_queries import TaskRecoveryQueryMixin
 from src.database.queries.task_requirements_queries import TaskRequirementsQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
 from src.database.queries.transaction_queries import TransactionQueryMixin
@@ -62,6 +63,7 @@ class SQLiteDatabaseAdapter(
     ProfileQueryMixin,
     RepoQueryMixin,
     TaskQueryMixin,
+    TaskRecoveryQueryMixin,
     TaskCommentQueriesMixin,
     DependencyQueryMixin,
     BlockedStateMixin,

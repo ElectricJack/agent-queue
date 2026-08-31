@@ -69,6 +69,15 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
 ```
 
 ## Rules
+- **Operational recovery.** AQ checks queued messages periodically and wakes you
+  when there is work; do not run empty inbox polling loops. For a task recovery
+  incident, inspect the exact attempt, task comments, gates and reason. Use
+  `aq task recover --task-id <task> --incident-id <incident> --decision retry|hold
+  --reason "diagnosis"`. Safe retries are bounded and recorded as task comments.
+  Never bypass a rejection with a generic restart, status edit, gate approval or
+  counter reset. Preserve routing and existing work. Choose hold when uncertain;
+  ask the human only when their input is necessary. Internal recovery notices
+  need a recovery decision, not an `aq reply` or a routine Discord announcement.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what
   you are about to do and why. For anything destructive or expensive, ask

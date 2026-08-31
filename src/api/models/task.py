@@ -599,6 +599,13 @@ class PoolScaleResponse(BaseModel):
     error: str | None = None
 
 
+class TaskRecoveryResponse(BaseModel):
+    task_id: str
+    incident_id: str
+    decision: str
+    status: str
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_tasks": ListTasksResponse,
     "create_task": CreateTaskResponse,
@@ -617,6 +624,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "pause_task": TaskControlResponse,
     "resume_task": TaskControlResponse,
     "restart_task": RestartTaskResponse,
+    "task_recover": TaskRecoveryResponse,
     "reopen_with_feedback": ReopenWithFeedbackResponse,
     "skip_task": SkipTaskResponse,
     "archive_task": ArchiveTaskResponse,

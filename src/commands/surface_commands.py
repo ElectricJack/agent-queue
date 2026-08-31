@@ -166,6 +166,9 @@ class SurfaceCommandsMixin:
         if any(str(key).startswith("manual_pause") for key in (args.get("meta") or {})):
             return {"error": "manual_pause is reserved; use pause_task/resume_task."}
 
+        if any(str(key).startswith("supervisor_recovery") for key in (args.get("meta") or {})):
+            return {"error": "supervisor_recovery metadata is reserved; use task_recover."}
+
         # Validate the description contract before touching any legacy field.
         for field in ("description", "expected_description"):
             if field in args and not isinstance(args[field], str):
