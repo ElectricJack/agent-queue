@@ -42,7 +42,6 @@ See ``docs/specs/design/vault.md`` Section 4 for the full specification.
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import hashlib
 import logging
 import os
@@ -50,6 +49,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING
+
+from src import vault_watcher as vault_glob
 
 if TYPE_CHECKING:
     from src.database.base import DatabaseInterface
@@ -310,50 +311,8 @@ def matches_any_pattern(rel_path: str, patterns: tuple[str, ...] | list[str]) ->
     # that may originate from Windows or WSL.
     rel_path = rel_path.replace("\\", "/")
     for pattern in patterns:
-        p = pattern.replace("\\", "/")
-        if "**" in p:
-            if _match_recursive(rel_path, p):
-                return True
-        elif fnmatch.fnmatch(rel_path, p):
+        if vault_glob.matches_path_pattern(rel_path, pattern):
             return True
-    return False
-
-
-def _match_recursive(rel_path: str, pattern: str) -> bool:
-    """Match a path against a pattern containing ``**``."""
-    path_parts = rel_path.split("/")
-    pattern_parts = pattern.split("/")
-    return _match_segments(path_parts, pattern_parts)
-
-
-def _match_segments(path_parts: list[str], pattern_parts: list[str]) -> bool:
-    """Recursively match path segments against pattern segments.
-
-    ``**`` matches zero or more path segments.  Other segments use
-    :func:`fnmatch.fnmatch`.
-    """
-    if not pattern_parts:
-        return not path_parts
-
-    head = pattern_parts[0]
-    rest = pattern_parts[1:]
-
-    if head == "**":
-        # Skip consecutive ** segments
-        while rest and rest[0] == "**":
-            rest = rest[1:]
-        # Try matching the rest at every position
-        for i in range(len(path_parts) + 1):
-            if _match_segments(path_parts[i:], rest):
-                return True
-        return False
-
-    if not path_parts:
-        return False
-
-    if fnmatch.fnmatch(path_parts[0], head):
-        return _match_segments(path_parts[1:], rest)
-
     return False
 
 

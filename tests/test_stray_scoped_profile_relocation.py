@@ -171,6 +171,21 @@ class TestRelocateStrayScopedProfiles:
         assert report["success"] is False
         assert weird.exists()
 
+    def test_partial_relocation_is_not_reported_as_success(self, tmp_path):
+        """Every candidate must move before the migration reports success."""
+        stray = _stray_dir(tmp_path, SCOPED_ID)
+        _write(stray / "profile.md", "movable")
+        weird = _stray_dir(tmp_path, "not:a:scoped:id:really")
+        _write(weird / "profile.md", "manual review required")
+
+        report = relocate_stray_scoped_profiles(str(tmp_path))
+
+        assert report["relocated"] == 1
+        assert report["skipped"] == 1
+        assert report["success"] is False
+        assert not stray.exists()
+        assert weird.exists()
+
     def test_missing_vault_is_a_noop(self, tmp_path):
         report = relocate_stray_scoped_profiles(str(tmp_path))
         assert report == {"success": True, "relocated": 0, "skipped": 0, "details": []}

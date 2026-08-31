@@ -593,7 +593,11 @@ def relocate_stray_scoped_profiles(data_dir: str) -> dict[str, Any]:
     Returns
     -------
     dict
-        ``{"success", "relocated", "skipped", "details"}``.
+        ``{"success", "relocated", "skipped", "details"}``.  ``success``
+        is strict: it is true only when every candidate directory was
+        relocated.  A partial migration that leaves even one directory for
+        manual review reports ``success=False`` while retaining the count of
+        directories that were moved successfully.
     """
     agent_types_root = Path(data_dir) / "vault" / "agent-types"
     details: list[str] = []

@@ -67,9 +67,7 @@ class TestVaultGlossary:
 
     def test_find_concepts_no_match(self, tmp_path):
         glossary = VaultGlossary(tmp_path)
-        glossary.add_concept(
-            name="foo", definition="Foo.", aliases=["foo"]
-        )
+        glossary.add_concept(name="foo", definition="Foo.", aliases=["foo"])
         assert glossary.find_concepts("no match here") == []
 
     def test_annotate_content(self, tmp_path):
@@ -87,11 +85,29 @@ class TestVaultGlossary:
         # Should appear only once as a wiki-link
         assert result.count("[[glossary/pytest-asyncio|") == 1
 
+    def test_annotate_links_first_mention_in_each_h2_section(self, tmp_path):
+        """A concept may be linked once in every ``##`` section, not once per file."""
+        glossary = VaultGlossary(tmp_path)
+        glossary.add_concept(name="widget", definition="A unit.", aliases=["widget"])
+
+        content = (
+            "Preamble widget and widget again.\n\n"
+            "## Alpha\n\nAlpha widget and widget again.\n\n"
+            "### Nested\n\nNested widget stays in Alpha.\n\n"
+            "## Beta\n\nBeta widget and widget again.\n"
+        )
+
+        result = glossary.annotate_content(content)
+
+        assert result.count("[[glossary/widget|widget]]") == 3
+        assert "Preamble [[glossary/widget|widget]] and widget again." in result
+        assert "Alpha [[glossary/widget|widget]] and widget again." in result
+        assert "Nested widget stays in Alpha." in result
+        assert "Beta [[glossary/widget|widget]] and widget again." in result
+
     def test_annotate_skips_code_blocks(self, tmp_path):
         glossary = VaultGlossary(tmp_path)
-        glossary.add_concept(
-            name="foo", definition="Foo.", aliases=["foo"]
-        )
+        glossary.add_concept(name="foo", definition="Foo.", aliases=["foo"])
 
         content = "```\nfoo in code\n```\nfoo outside"
         result = glossary.annotate_content(content)
@@ -101,9 +117,7 @@ class TestVaultGlossary:
 
     def test_annotate_skips_existing_links(self, tmp_path):
         glossary = VaultGlossary(tmp_path)
-        glossary.add_concept(
-            name="bar", definition="Bar.", aliases=["bar"]
-        )
+        glossary.add_concept(name="bar", definition="Bar.", aliases=["bar"])
 
         content = "[[bar|existing link]] and bar outside"
         result = glossary.annotate_content(content)
@@ -112,9 +126,7 @@ class TestVaultGlossary:
 
     def test_update_backlinks(self, tmp_path):
         glossary = VaultGlossary(tmp_path)
-        glossary.add_concept(
-            name="test", definition="Test.", aliases=["test"]
-        )
+        glossary.add_concept(name="test", definition="Test.", aliases=["test"])
         glossary.update_backlinks("test", "projects/foo/notes/bar.md")
 
         # Reload and verify
@@ -125,9 +137,7 @@ class TestVaultGlossary:
 
     def test_annotate_preserves_frontmatter(self, tmp_path):
         glossary = VaultGlossary(tmp_path)
-        glossary.add_concept(
-            name="vault", definition="File storage.", aliases=["vault"]
-        )
+        glossary.add_concept(name="vault", definition="File storage.", aliases=["vault"])
 
         content = "---\ntags: [vault]\n---\n\nvault is great"
         result = glossary.annotate_content(content)
