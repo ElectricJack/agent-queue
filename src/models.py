@@ -425,6 +425,27 @@ class Task:
 
 
 @dataclass
+class TaskCompletion:
+    """Append-only account of one accepted ``task_close`` invocation."""
+
+    id: str
+    task_id: str
+    outcome: str
+    work_outcome: str | None = None
+    failure_class: str | None = None
+    changes: str = ""
+    verification: str = ""
+    tests: list[str] = field(default_factory=list)
+    commands: list[str] = field(default_factory=list)
+    branch: str | None = None
+    commits: list[str] = field(default_factory=list)
+    pr_url: str | None = None
+    summary: str = ""
+    notes: str = ""
+    completed_at: float = 0.0
+
+
+@dataclass
 class Agent:
     """Durable global worker identity; projects belong to its current task.
 

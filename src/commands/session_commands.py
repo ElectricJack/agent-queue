@@ -23,10 +23,11 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 
 from src.commands.claim_commands import remove_claim_file
 from src.database.queries.task_queries import StaleClaim
-from src.models import TaskStatus
+from src.models import TaskCompletion, TaskStatus
 from src.sessions.provider import (
     Cap,
     CapabilityUnsupported,
@@ -728,17 +729,6 @@ class SessionCommandsMixin:
         if summary:
             await self.db.set_task_meta(task_id, "summary", summary)
 
-        # Capture commit hash from branch when the agent did not supply
-        # ``commit`` explicitly.  Best-effort — a missing branch, a
-        # missing checkout, or a git error all leave ``work_commit_auto``
-        # unset (rather than failing the close).
-        if needs_ws and not args.get("commit") and task.branch_name:
-            checkout = await self.db.get_project_workspace_path(task.project_id)
-            if checkout:
-                sha = await self.orchestrator.git.arev_parse(checkout, task.branch_name)
-                if sha:
-                    await self.db.set_task_meta(task_id, "work_commit_auto", sha)
-
         # aq-surface Phase S2: revoke any session-scoped API bearer tokens
         # tied to the closed session.  Single choke point for terminal
         # state; the 60s cascade sweep is the safety net if this line ever
@@ -779,6 +769,55 @@ class SessionCommandsMixin:
                     except Exception:
                         # Revoke is best-effort — expiry is the safety net.
                         pass
+
+        final_task = await self.db.get_task(task_id)
+        # Capture the final branch tip after verification/integration. The
+        # pipeline may auto-commit dirty work, so a pre-pipeline SHA describes
+        # the input state rather than the commit that actually closed the task.
+        if needs_ws and not args.get("commit") and final_task and final_task.branch_name:
+            checkout = await self.db.get_project_workspace_path(task.project_id)
+            if checkout:
+                sha = await self.orchestrator.git.arev_parse(
+                    checkout, final_task.branch_name
+                )
+                if sha:
+                    await self.db.set_task_meta(task_id, "work_commit_auto", sha)
+        explicit_commit = str(args.get("commit") or "").strip()
+        auto_commit = await self.db.get_task_meta(task_id, "work_commit_auto")
+        commit = explicit_commit or str(auto_commit or "").strip()
+
+        def _string_list(value) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, str):
+                return [value] if value.strip() else []
+            return [str(item) for item in value if str(item).strip()]
+
+        # Append only: a reopened task may be closed again, and both accounts
+        # remain available while task detail shows the latest one.
+        await self.db.save_task_completion(
+            TaskCompletion(
+                id=str(uuid.uuid4()),
+                task_id=task_id,
+                outcome=outcome,
+                work_outcome=work_outcome or None,
+                failure_class=failure_class or None,
+                changes=str(args.get("changes") or summary).strip(),
+                verification=str(args.get("verification") or "").strip(),
+                tests=_string_list(args.get("tests")),
+                commands=_string_list(args.get("commands")),
+                branch=(final_task.branch_name if final_task else task.branch_name),
+                commits=[commit] if commit else [],
+                pr_url=(
+                    (final_task.pr_url if final_task else None)
+                    or result.get("pr_url")
+                    or task.pr_url
+                ),
+                summary=summary,
+                notes=str(args.get("notes") or "").strip(),
+                completed_at=time.time(),
+            )
+        )
 
         if is_pool:
             # The workspace agent-lock is retained (``terminate_pool_session``

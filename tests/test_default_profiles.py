@@ -15,6 +15,7 @@ from src.vault import ensure_default_profiles, ensure_vault_layout
 
 
 SHIPPED_PROFILE_IDS = ("supervisor", "planner", "reviewer", "final-reviewer")
+WORKER_PROFILE_IDS = ("worker-fast", "worker-standard", "worker-deep")
 
 
 def _vault_profile_path(root: Path, profile_id: str) -> Path:
@@ -58,6 +59,21 @@ def test_seeded_profiles_parse_without_errors(tmp_path):
         parsed = parse_profile(text)
         assert parsed.is_valid, f"{pid} parse errors: {parsed.errors}"
         assert parsed.frontmatter.id == pid
+
+
+def test_seeded_worker_profiles_require_material_progress_notes(tmp_path):
+    """Shipped worker instructions must make in-progress enrichment explicit."""
+    ensure_default_profiles(str(tmp_path))
+
+    for profile_id in WORKER_PROFILE_IDS:
+        text = _vault_profile_path(tmp_path, profile_id).read_text(encoding="utf-8")
+        parsed = parse_profile(text)
+        prompt = f"{parsed.role}\n{parsed.rules}".lower()
+        assert "aq task set" in prompt, profile_id
+        assert "--note" in prompt, profile_id
+        assert "material findings" in prompt, profile_id
+        assert "decisions" in prompt, profile_id
+        assert "while working" in prompt, profile_id
 
 
 def test_seeded_supervisor_profile_has_named_session_config(tmp_path):

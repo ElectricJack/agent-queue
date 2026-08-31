@@ -10,6 +10,7 @@ from src.api.codegen import API_EXCLUDED, _CODEGEN_INPUT_SCHEMAS, _make_input_mo
 from src.api.models import get_all_response_models
 from src.api.models.message import MessageModel
 from src.api.models.session import SessionSummary
+from src.api.models.task import TaskShowResponse
 from src.tools import _CLI_CATEGORY_OVERRIDES, _TOOL_CATEGORIES
 
 # Commands that intentionally return an unstructured dict (extra="allow") and
@@ -192,3 +193,29 @@ def test_session_summary_accepts_hex_string_epoch() -> None:
     }
     model = SessionSummary.model_validate(row)
     assert model.epoch == "5b8c0ab48772"
+
+
+def test_task_show_response_preserves_completion_story() -> None:
+    """Typed API validation must not silently drop dashboard completion data."""
+    model = TaskShowResponse.model_validate(
+        {
+            "id": "task-1",
+            "project_id": "project-1",
+            "title": "Ship completion records",
+            "completion": {
+                "id": "completion-1",
+                "task_id": "task-1",
+                "outcome": "pass",
+                "tests": ["pytest -q"],
+                "commands": ["ruff check src tests"],
+                "summary": "Completion stories are typed.",
+                "completed_at": 1234.5,
+            },
+        }
+    )
+
+    assert model.completion is not None
+    assert model.completion.task_id == "task-1"
+    assert model.completion.tests == ["pytest -q"]
+    assert model.completion.commands == ["ruff check src tests"]
+    assert model.completion.summary == "Completion stories are typed."

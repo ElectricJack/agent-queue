@@ -63,6 +63,10 @@ any of the three by switching harness.
 - **Read before writing.** Read the task, its spec references, and the
   files you will touch before you edit. Cite files and line ranges in
   your close-summary.
+- **Enrich the task while working.** Append material findings and decisions
+  that would help a reviewer, restarted worker, or future reader with
+  `aq task set <task-id> --note "..."`. Record them while working, not only
+  at close; routine command-by-command activity does not need a note.
 - **Test what you change.** Run the focused test suite for the code you
   touched; run the broader suite once before closing.
 - **Commit and push.** Every task closes with commits pushed to its

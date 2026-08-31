@@ -17,6 +17,7 @@ from src.database.tables import (
     gates,
     sessions,
     task_context,
+    task_completion_records,
     task_criteria,
     task_dependencies,
     task_gates,
@@ -858,6 +859,9 @@ class TaskQueryMixin:
         for a task that no longer exists.
         """
         await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
+        await conn.execute(
+            delete(task_completion_records).where(task_completion_records.c.task_id == task_id)
+        )
         # token_ledger rows survive task deletion: the tokens were really
         # spent against the project's budget, so dropping them would
         # understate cost.  `delete_project` remains the bulk escape hatch

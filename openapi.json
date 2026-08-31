@@ -18752,6 +18752,16 @@
               }
             ],
             "title": "Children"
+          },
+          "completion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskCompletionDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -28848,6 +28858,56 @@
             ],
             "title": "Wait",
             "description": "Seconds to long-poll for the next claim when claim_next is set (optional, clamped to swarm.claim_wait_max)."
+          },
+          "changes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changes",
+            "description": "What changed while completing the task (optional)"
+          },
+          "verification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification",
+            "description": "How the completed work was verified (optional)"
+          },
+          "tests": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tests",
+            "description": "Test commands run while completing the task (optional)"
+          },
+          "commands": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commands",
+            "description": "Other commands run while completing the task (optional)"
           }
         },
         "type": "object",
@@ -29094,6 +29154,16 @@
               }
             ],
             "title": "Children"
+          },
+          "completion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskCompletionDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -29656,6 +29726,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ClaimedBy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskCompletionDetail"
               },
               {
                 "type": "null"
@@ -30454,6 +30534,122 @@
         },
         "type": "object",
         "title": "WriteNoteResponse"
+      },
+      "TaskCompletionDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "work_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Outcome"
+          },
+          "failure_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Class"
+          },
+          "changes": {
+            "type": "string",
+            "title": "Changes",
+            "default": ""
+          },
+          "verification": {
+            "type": "string",
+            "title": "Verification",
+            "default": ""
+          },
+          "tests": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tests",
+            "default": []
+          },
+          "commands": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Commands",
+            "default": []
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "commits": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Commits",
+            "default": []
+          },
+          "pr_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Url"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "default": ""
+          },
+          "notes": {
+            "type": "string",
+            "title": "Notes",
+            "default": ""
+          },
+          "completed_at": {
+            "type": "number",
+            "title": "Completed At",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "task_id",
+          "outcome"
+        ],
+        "title": "TaskCompletionDetail"
       }
     }
   }

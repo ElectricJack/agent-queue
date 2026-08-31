@@ -8,7 +8,8 @@ import uuid
 
 from sqlalchemy import insert, select
 
-from src.database.tables import task_results
+from src.database.tables import task_completion_records, task_results
+from src.models import TaskCompletion
 
 
 class ResultQueryMixin:
@@ -74,3 +75,68 @@ class ResultQueryMixin:
             "tokens_used": row["tokens_used"],
             "created_at": row["created_at"],
         }
+
+    async def save_task_completion(self, completion: TaskCompletion) -> None:
+        """Append one durable task-close record."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(task_completion_records).values(
+                    id=completion.id,
+                    task_id=completion.task_id,
+                    outcome=completion.outcome,
+                    work_outcome=completion.work_outcome,
+                    failure_class=completion.failure_class,
+                    changes=completion.changes,
+                    verification=completion.verification,
+                    tests=json.dumps(completion.tests),
+                    commands=json.dumps(completion.commands),
+                    branch=completion.branch,
+                    commits=json.dumps(completion.commits),
+                    pr_url=completion.pr_url,
+                    summary=completion.summary,
+                    notes=completion.notes,
+                    completed_at=completion.completed_at,
+                )
+            )
+
+    async def get_task_completion(self, task_id: str) -> TaskCompletion | None:
+        """Return the latest completion record for *task_id*."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(task_completion_records)
+                .where(task_completion_records.c.task_id == task_id)
+                .order_by(task_completion_records.c.completed_at.desc())
+                .limit(1)
+            )
+            row = result.mappings().fetchone()
+            return self._row_to_task_completion(row) if row else None
+
+    async def get_task_completions(self, task_id: str) -> list[TaskCompletion]:
+        """Return every completion record for *task_id*, oldest first."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(task_completion_records)
+                .where(task_completion_records.c.task_id == task_id)
+                .order_by(task_completion_records.c.completed_at.asc())
+            )
+            return [self._row_to_task_completion(row) for row in result.mappings().fetchall()]
+
+    @staticmethod
+    def _row_to_task_completion(row) -> TaskCompletion:
+        return TaskCompletion(
+            id=row["id"],
+            task_id=row["task_id"],
+            outcome=row["outcome"],
+            work_outcome=row["work_outcome"],
+            failure_class=row["failure_class"],
+            changes=row["changes"],
+            verification=row["verification"],
+            tests=json.loads(row["tests"]),
+            commands=json.loads(row["commands"]),
+            branch=row["branch"],
+            commits=json.loads(row["commits"]),
+            pr_url=row["pr_url"],
+            summary=row["summary"],
+            notes=row["notes"],
+            completed_at=row["completed_at"],
+        )

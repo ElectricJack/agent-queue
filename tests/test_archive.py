@@ -312,8 +312,13 @@ class TestCountArchivedTasks:
 
 class TestDeleteArchivedTask:
     async def test_delete_archived_task(self, db):
+        from src.models import TaskCompletion
+
         await _seed_project(db)
         await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+        await db.save_task_completion(
+            TaskCompletion(id="close-1", task_id="t-1", outcome="pass", completed_at=1.0)
+        )
         await db.archive_task("t-1")
 
         result = await db.delete_archived_task("t-1")
@@ -322,6 +327,7 @@ class TestDeleteArchivedTask:
         # Should be gone from everywhere
         assert await db.get_task("t-1") is None
         assert await db.get_archived_task("t-1") is None
+        assert await db.get_task_completion("t-1") is None
 
     async def test_delete_nonexistent_archived_returns_false(self, db):
         result = await db.delete_archived_task("no-such-task")

@@ -166,6 +166,58 @@ class TestTaskShow:
         assert result["labels"] == []
         assert result["context"] == []
 
+    async def test_includes_latest_completion_story(self, handler, db, task):
+        """A re-close must expose the newest durable completion account."""
+        from src.models import TaskCompletion
+
+        await db.save_task_completion(
+            TaskCompletion(
+                id="completion-old",
+                task_id=task.id,
+                outcome="fail",
+                summary="First close failed.",
+                completed_at=1000.0,
+            )
+        )
+        await db.save_task_completion(
+            TaskCompletion(
+                id="completion-new",
+                task_id=task.id,
+                outcome="pass",
+                work_outcome="shipped",
+                changes="Added completion records.",
+                verification="Backend and dashboard tests passed.",
+                tests=["pytest tests/test_surface_commands.py -q"],
+                commands=["ruff check src tests"],
+                branch="feature/completion",
+                commits=["abc123"],
+                pr_url="https://github.com/example/repo/pull/17",
+                summary="Completion details now survive close.",
+                notes="Ready for review.",
+                completed_at=1234.5,
+            )
+        )
+
+        result = await handler.execute("task_show", {"task_id": task.id})
+
+        assert result["completion"] == {
+            "id": "completion-new",
+            "task_id": task.id,
+            "outcome": "pass",
+            "work_outcome": "shipped",
+            "failure_class": None,
+            "changes": "Added completion records.",
+            "verification": "Backend and dashboard tests passed.",
+            "tests": ["pytest tests/test_surface_commands.py -q"],
+            "commands": ["ruff check src tests"],
+            "branch": "feature/completion",
+            "commits": ["abc123"],
+            "pr_url": "https://github.com/example/repo/pull/17",
+            "summary": "Completion details now survive close.",
+            "notes": "Ready for review.",
+            "completed_at": 1234.5,
+        }
+
 
 # ---------------------------------------------------------------------------
 # task_set

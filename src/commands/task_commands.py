@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Callable
+from dataclasses import asdict
 
 from src.models import (
     BLOCKING_DEP_TYPES,
@@ -1841,6 +1842,8 @@ class TaskCommandsMixin:
         }
         if task.pr_url:
             info["pr_url"] = task.pr_url
+        completion = await self.db.get_task_completion(task.id)
+        info["completion"] = asdict(completion) if completion else None
 
         # Dependency visualization: show what this task depends on and blocks
         deps = await self.db.get_dependencies(task.id)

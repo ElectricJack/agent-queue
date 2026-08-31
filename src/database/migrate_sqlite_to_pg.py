@@ -41,6 +41,7 @@ from src.database.tables import (
     sessions,
     system_config,
     task_context,
+    task_completion_records,
     task_criteria,
     task_dependencies,
     task_gates,
@@ -80,6 +81,7 @@ _ORDERED_TABLES = [
     api_session_tokens,
     chat_analyzer_suggestions,
     archived_tasks,
+    task_completion_records,
     # FK → agent_profiles
     projects,
     # FK → projects

@@ -14,6 +14,7 @@ from src.database.tables import (
     agents,
     archived_tasks,
     task_context,
+    task_completion_records,
     task_criteria,
     task_dependencies,
     task_labels,
@@ -291,6 +292,11 @@ class ArchiveQueryMixin:
             )
             if not result.fetchone():
                 return False
+            await conn.execute(
+                delete(task_completion_records).where(
+                    task_completion_records.c.task_id == task_id
+                )
+            )
             await conn.execute(delete(archived_tasks).where(archived_tasks.c.id == task_id))
         return True
 

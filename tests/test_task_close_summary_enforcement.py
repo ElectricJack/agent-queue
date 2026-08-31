@@ -80,6 +80,7 @@ async def test_close_rejects_missing_summary_for_workspace_profile(handler, db):
 
     assert result["success"] is False
     assert "summary" in result["error"].lower()
+    assert await db.get_task_completion(tid) is None
 
 
 # ---------------------------------------------------------------------------
@@ -265,3 +266,101 @@ async def test_close_succeeds_even_when_arev_parse_returns_none(handler, db, mon
     )
     assert result["success"] is True
     assert await db.get_task_meta(tid, "work_commit_auto") is None
+
+
+@pytest.mark.asyncio
+async def test_close_captures_auto_commit_sha_after_completion_pipeline(handler, db, monkeypatch):
+    """Auto-remediation in the pipeline must be reflected in the durable commit."""
+    await db.create_project(Project(id="p", name="P"))
+    await db.upsert_profile(AgentProfile(id="worker", name="Worker", needs_workspace=True))
+    created = await handler.execute(
+        "create_task", {"project_id": "p", "title": "t", "profile_id": "worker"}
+    )
+    tid = created["created"]
+    await db.update_task(tid, branch_name="feature/auto-remediated")
+    await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
+
+    from src.models import RepoSourceType, Workspace
+
+    await db.create_workspace(
+        Workspace(
+            id="ws1",
+            project_id="p",
+            workspace_path="/tmp/p",
+            source_type=RepoSourceType.LINK,
+        )
+    )
+    pipeline_finished = False
+    original_complete = handler.orchestrator.complete_session_task
+
+    async def complete_with_auto_commit(*args, **kwargs):
+        nonlocal pipeline_finished
+        result = await original_complete(*args, **kwargs)
+        pipeline_finished = True
+        return result
+
+    async def final_sha(checkout_path, ref):
+        return "after-pipeline" if pipeline_finished else "before-pipeline"
+
+    monkeypatch.setattr(handler.orchestrator, "complete_session_task", complete_with_auto_commit)
+    monkeypatch.setattr(handler.orchestrator.git, "arev_parse", final_sha)
+
+    result = await handler.execute(
+        "task_close",
+        {"task_id": tid, "outcome": "pass", "summary": "auto-remediated"},
+    )
+
+    assert result["success"] is True
+    assert await db.get_task_meta(tid, "work_commit_auto") == "after-pipeline"
+    completion = await db.get_task_completion(tid)
+    assert completion is not None
+    assert completion.commits == ["after-pipeline"]
+
+
+@pytest.mark.asyncio
+async def test_close_persists_structured_completion_story(handler, db):
+    """A successful close must save the normalized completion account."""
+    await db.create_project(Project(id="p", name="P"))
+    await db.upsert_profile(AgentProfile(id="worker", name="Worker", needs_workspace=True))
+    created = await handler.execute(
+        "create_task", {"project_id": "p", "title": "t", "profile_id": "worker"}
+    )
+    tid = created["created"]
+    await db.update_task(
+        tid,
+        branch_name="feature/completion-story",
+        pr_url="https://github.com/example/repo/pull/17",
+    )
+    await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
+
+    result = await handler.execute(
+        "task_close",
+        {
+            "task_id": tid,
+            "outcome": "pass",
+            "work_outcome": "shipped",
+            "summary": "Added durable completion records.",
+            "changes": "Added the model, persistence, and task detail surfaces.",
+            "verification": "Focused backend and dashboard tests passed.",
+            "tests": ["pytest tests/test_task_close_summary_enforcement.py -q"],
+            "commands": ["npm test -- task-detail", "ruff check src tests"],
+            "commit": "abc123",
+            "notes": "Ready for reviewer.",
+        },
+    )
+
+    assert result["success"] is True
+    completion = await db.get_task_completion(tid)
+    assert completion is not None
+    assert completion.task_id == tid
+    assert completion.outcome == "pass"
+    assert completion.work_outcome == "shipped"
+    assert completion.changes == "Added the model, persistence, and task detail surfaces."
+    assert completion.verification == "Focused backend and dashboard tests passed."
+    assert completion.tests == ["pytest tests/test_task_close_summary_enforcement.py -q"]
+    assert completion.commands == ["npm test -- task-detail", "ruff check src tests"]
+    assert completion.branch == "feature/completion-story"
+    assert completion.commits == ["abc123"]
+    assert completion.pr_url == "https://github.com/example/repo/pull/17"
+    assert completion.summary == "Added durable completion records."
+    assert completion.notes == "Ready for reviewer."

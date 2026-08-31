@@ -423,6 +423,29 @@ task_results = Table(
     Column("created_at", Float, nullable=False),
 )
 
+task_completion_records = Table(
+    "task_completion_records",
+    metadata,
+    Column("id", Text, primary_key=True),
+    # Logical reference, not an FK: archival deletes the active task row,
+    # while its completion history must remain available after restore.
+    Column("task_id", Text, nullable=False),
+    Column("outcome", Text, nullable=False),
+    Column("work_outcome", Text, nullable=True),
+    Column("failure_class", Text, nullable=True),
+    Column("changes", Text, nullable=False, server_default="''"),
+    Column("verification", Text, nullable=False, server_default="''"),
+    Column("tests", Text, nullable=False, server_default="'[]'"),
+    Column("commands", Text, nullable=False, server_default="'[]'"),
+    Column("branch", Text, nullable=True),
+    Column("commits", Text, nullable=False, server_default="'[]'"),
+    Column("pr_url", Text, nullable=True),
+    Column("summary", Text, nullable=False, server_default="''"),
+    Column("notes", Text, nullable=False, server_default="''"),
+    Column("completed_at", Float, nullable=False),
+    Index("idx_task_completion_records_task_time", "task_id", "completed_at"),
+)
+
 system_config = Table(
     "system_config",
     metadata,

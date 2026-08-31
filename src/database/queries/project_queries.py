@@ -14,6 +14,7 @@ from src.database.tables import (
     projects,
     repos,
     task_context,
+    task_completion_records,
     task_criteria,
     task_dependencies,
     task_metadata,
@@ -89,6 +90,11 @@ class ProjectQueryMixin:
 
             for tid in task_ids:
                 await conn.execute(delete(task_results).where(task_results.c.task_id == tid))
+                await conn.execute(
+                    delete(task_completion_records).where(
+                        task_completion_records.c.task_id == tid
+                    )
+                )
                 await conn.execute(
                     delete(task_dependencies).where(
                         (task_dependencies.c.task_id == tid)

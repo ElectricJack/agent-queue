@@ -191,6 +191,36 @@ def format_task_detail(
     for desc_line in desc.split("\n"):
         lines.append(Text(f"    {desc_line}", style="white"))
 
+    completion = task.completion
+    if completion:
+        def completion_value(name: str, default=None):
+            if isinstance(completion, dict):
+                return completion.get(name, default)
+            value = getattr(completion, name, default)
+            return default if type(value).__name__ == "Unset" else value
+
+        lines.append("")
+        lines.append(Text("  Completion:", style="bold cyan"))
+        completion_fields = [
+            ("Outcome", completion_value("outcome")),
+            ("Work outcome", completion_value("work_outcome")),
+            ("Changes", completion_value("changes")),
+            ("Verification", completion_value("verification")),
+            ("Tests", ", ".join(completion_value("tests", []) or [])),
+            ("Commands", ", ".join(completion_value("commands", []) or [])),
+            ("Branch", completion_value("branch")),
+            ("Commits", ", ".join(completion_value("commits", []) or [])),
+            ("PR", completion_value("pr_url")),
+            ("Summary", completion_value("summary")),
+            ("Notes", completion_value("notes")),
+        ]
+        for label, value in completion_fields:
+            if value:
+                line = Text("    ")
+                line.append(f"{label}: ", style="bold cyan")
+                line.append(str(value), style="white")
+                lines.append(line)
+
     content = Group(*lines)
 
     type_tag = ""

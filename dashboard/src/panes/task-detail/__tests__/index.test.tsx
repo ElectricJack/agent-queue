@@ -157,6 +157,47 @@ describe("TaskDetailPane — metadata, PR link, relationships", () => {
     expect(screen.queryByText("Pull request")).not.toBeInTheDocument();
   });
 
+  it("renders the structured completion story when present", () => {
+    mockUseTask.mockReturnValue({
+      data: {
+        ...fixtureTask,
+        status: "COMPLETED",
+        completion: {
+          id: "completion-1",
+          task_id: "t1",
+          outcome: "pass",
+          work_outcome: "shipped",
+          changes: "Added durable completion records.",
+          verification: "Focused backend and dashboard tests passed.",
+          tests: ["pytest tests/test_surface_commands.py -q"],
+          commands: ["ruff check src tests"],
+          branch: "feature/completion",
+          commits: ["abc123"],
+          pr_url: "https://github.com/org/repo/pull/17",
+          summary: "Completion story stored.",
+          notes: "Ready for review.",
+          completed_at: 1234.5,
+        },
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+
+    expect(screen.getByRole("heading", { name: "Completion" })).toBeInTheDocument();
+    expect(screen.getByText("Added durable completion records.")).toBeInTheDocument();
+    expect(screen.getByText("Focused backend and dashboard tests passed.")).toBeInTheDocument();
+    expect(screen.getByText("pytest tests/test_surface_commands.py -q")).toBeInTheDocument();
+    expect(screen.getByText("ruff check src tests")).toBeInTheDocument();
+    expect(screen.getByText("abc123")).toBeInTheDocument();
+    expect(screen.getByText("Ready for review.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /pull\/17/i })).toHaveAttribute(
+      "href",
+      "https://github.com/org/repo/pull/17",
+    );
+  });
+
   it("clicking a subtask row calls useShellPaneStore().open with the ref's taskId", () => {
     mockUseTask.mockReturnValue({
       data: { ...fixtureTask, subtasks: [{ id: "t2", title: "Sub one", status: "COMPLETED" }] },
