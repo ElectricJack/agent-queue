@@ -78,7 +78,8 @@ export function useShortcut(key: string, opts: ShortcutOpts): void {
   }, [register, id, expanded, labelDep, sectionDep]);
 
   useHotkeys(
-    expanded,
+    // Accept legacy modifier-key notation as well as the library's modifier+key syntax.
+    expanded.replace(/\b(meta|ctrl|alt|shift)-/g, "$1+"),
     (e) => {
       if (optsRef.current.when && !optsRef.current.when()) return;
       e.preventDefault();

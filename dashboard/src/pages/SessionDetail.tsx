@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import {
   PlayIcon,
   StopIcon,
@@ -16,9 +16,11 @@ import {
 import { useTranscriptStream } from "../ws/useTranscriptStream";
 import { usePaneStream } from "../ws/usePaneStream";
 import LivePaneConsole from "../components/LivePaneConsole";
+import { workspaceHref } from "../shell/projectNavigation";
 
 export default function SessionDetail() {
   const { sessionId = "" } = useParams();
+  const location = useLocation();
   const { data: session, isLoading } = useSession(sessionId);
   const attach = useSessionAttach(sessionId);
   const nudge = useSessionNudge();
@@ -34,15 +36,17 @@ export default function SessionDetail() {
   if (isLoading) return <div className="p-6 text-gray-400">Loading…</div>;
   if (!session) return <div className="p-6 text-gray-400">Session not found</div>;
 
+  const from = (location.state as { from?: string } | null)?.from ?? workspaceHref(session.project_id, "sessions");
   return (
     <div className="h-full overflow-y-auto p-6 space-y-4">
+      <Link to={from} className="text-sm text-indigo-400 hover:underline">Back to sessions</Link>
       <header className="space-y-1">
         <p className="text-xs uppercase tracking-wider text-gray-500">Session</p>
         <h1 className="text-2xl font-bold">{session.name}</h1>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
           <span>id: <span className="font-mono">{session.id}</span></span>
-          <span>task: {session.task_id ?? "—"}</span>
-          <span>project: {session.project_id ?? "—"}</span>
+          <span>task: {session.task_id ? <Link className="text-indigo-400 hover:underline" to={`/tasks/${encodeURIComponent(session.task_id)}`} state={{ from }}>{session.task_id}</Link> : "—"}</span>
+          <span>project: {session.project_id ? <Link className="text-indigo-400 hover:underline" to={workspaceHref(session.project_id, "sessions")}>{session.project_id}</Link> : "—"}</span>
           <span>harness: {session.harness ?? "—"}</span>
           <span>provider: {session.provider ?? "—"}</span>
           <span>lifecycle: {session.lifecycle ?? "—"}</span>

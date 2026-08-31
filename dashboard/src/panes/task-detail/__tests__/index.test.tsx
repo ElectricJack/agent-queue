@@ -23,10 +23,11 @@ vi.mock("../../../api/hooks", async () => {
 });
 
 const mockOpen = vi.fn();
+const mockClose = vi.fn();
 vi.mock("../../store", () => ({
   useShellPaneStore: () => ({
     open: mockOpen,
-    close: vi.fn(),
+    close: mockClose,
     state: { kind: "closed" },
     setArgs: vi.fn(),
     setWidth: vi.fn(),
@@ -67,7 +68,7 @@ const fixtureTask: Task = {
 function noopProps() {
   return {
     args: { taskId: "t1" },
-    close: vi.fn(),
+    close: mockClose,
     setArgs: vi.fn(),
     setToolbar: vi.fn(),
     setShortcuts: vi.fn(),
@@ -90,6 +91,7 @@ beforeEach(() => {
   mockUseGates.mockReset();
   mockUseResolveGate.mockReset();
   mockOpen.mockReset();
+  mockClose.mockReset();
   mockNavigate.mockReset();
   mockUseGates.mockReturnValue({ data: [] });
   mockUseResolveGate.mockReturnValue({ mutate: vi.fn() });
@@ -232,7 +234,8 @@ describe("TaskDetailPane — toolbar and shortcuts", () => {
     renderWithRouter(<TaskDetailPane {...noopProps()} setToolbar={setToolbar} />);
     const actions = setToolbar.mock.calls[setToolbar.mock.calls.length - 1]?.[0];
     actions.find((a: { id: string }) => a.id === "open-full").onClick();
-    expect(mockNavigate).toHaveBeenCalledWith("/tasks/t1");
+    expect(mockClose).toHaveBeenCalledOnce();
+    expect(mockNavigate).toHaveBeenCalledWith("/tasks/t1", { state: { from: "/" } });
   });
 
   it("Copy id writes the task id to the clipboard", () => {
@@ -259,7 +262,8 @@ describe("TaskDetailPane — toolbar and shortcuts", () => {
     renderWithRouter(<TaskDetailPane {...noopProps()} setShortcuts={setShortcuts} />);
     const bindings = setShortcuts.mock.calls[setShortcuts.mock.calls.length - 1]?.[0];
     bindings.find((b: { key: string }) => b.key === "o").onFire();
-    expect(mockNavigate).toHaveBeenCalledWith("/tasks/t1");
+    expect(mockClose).toHaveBeenCalledOnce();
+    expect(mockNavigate).toHaveBeenCalledWith("/tasks/t1", { state: { from: "/" } });
   });
 
   it("c shortcut opens the close/delete confirmation", () => {

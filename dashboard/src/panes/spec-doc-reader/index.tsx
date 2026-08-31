@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import type { PaneViewProps } from "../types";
 import type { SpecDocReaderArgs } from "./manifest";
 import type { TocEntry } from "./docProcessing";
@@ -135,6 +135,7 @@ function siblingPath(currentPath: string, companionFile: string): string {
 
 export default function SpecDocReaderPane({
   args,
+  close,
   setArgs,
   setToolbar,
   setShortcuts,
@@ -153,7 +154,10 @@ export default function SpecDocReaderPane({
   const width = useContainerWidth(containerRef);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const location = useLocation();
   const navigate = useNavigate();
+  // Keep the original list context when this pane was opened from a detail view.
+  const from = (location.state as { from?: string } | null)?.from ?? `${location.pathname}${location.search}`;
 
   const toc = useMemo(() => doc?.toc ?? [], [doc]);
 
@@ -216,11 +220,11 @@ export default function SpecDocReaderPane({
     const pathOrUrl = args.path ?? args.url ?? "";
     if (/vault\/.*\/playbooks\/[^/]+\.md$/.test(pathOrUrl)) {
       const playbookId = pathOrUrl.split("/").pop()!.replace(/\.md$/, "");
-      return `/settings/playbooks/${playbookId}`;
+      return `/playbooks/${encodeURIComponent(playbookId)}`;
     }
     const fmPlaybookId = doc?.frontmatter?.playbook_id;
     if (typeof fmPlaybookId === "string" && fmPlaybookId) {
-      return `/settings/playbooks/${fmPlaybookId}`;
+      return `/playbooks/${encodeURIComponent(fmPlaybookId)}`;
     }
     return null;
   }, [args.path, args.url, doc?.frontmatter]);
@@ -255,7 +259,10 @@ export default function SpecDocReaderPane({
             {
               id: "open-full-page",
               label: "Open full-page view",
-              onClick: () => navigate(fullPageRoute),
+              onClick: () => {
+                close();
+                navigate(fullPageRoute, { state: { from } });
+              },
             },
           ]
         : []),
@@ -271,6 +278,8 @@ export default function SpecDocReaderPane({
     fullPageRoute,
     copyToClipboard,
     setToolbar,
+    close,
+    from,
     navigate,
   ]);
 

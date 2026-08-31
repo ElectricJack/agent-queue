@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { PauseIcon, PlayIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
 import {
   usePlaybooks,
@@ -14,6 +14,8 @@ const SCOPE_FILTERS = ["all", "system", "project", "agent-type"] as const;
 type ScopeFilter = (typeof SCOPE_FILTERS)[number];
 
 export default function Playbooks() {
+  const location = useLocation();
+  const from = `${location.pathname}${location.search}`;
   const [scope, setScope] = useState<ScopeFilter>("all");
   const [createOpen, setCreateOpen] = useState(false);
   const { data: playbooks, isLoading } = usePlaybooks(scope === "all" ? undefined : scope);
@@ -56,13 +58,13 @@ export default function Playbooks() {
       ) : rows.length === 0 ? (
         <p className="text-sm text-gray-500">No playbooks compiled for this scope.</p>
       ) : (
-        <PlaybookTable rows={rows} />
+        <PlaybookTable rows={rows} from={from} />
       )}
     </div>
   );
 }
 
-function PlaybookTable({ rows }: { rows: PlaybookSummary[] }) {
+function PlaybookTable({ rows, from }: { rows: PlaybookSummary[]; from: string }) {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const setEnabled = useSetPlaybookEnabled();
 
@@ -98,6 +100,7 @@ function PlaybookTable({ rows }: { rows: PlaybookSummary[] }) {
                 <td className="px-4 py-3">
                   <Link
                     to={`/playbooks/${encodeURIComponent(p.id)}`}
+                    state={{ from }}
                     className="font-medium text-indigo-400 hover:underline"
                   >
                     {p.id}
@@ -186,6 +189,7 @@ function PlaybookTable({ rows }: { rows: PlaybookSummary[] }) {
           open={true}
           onClose={() => setDeleteId(null)}
           playbookId={deleteId}
+          returnTo={from}
         />
       )}
     </div>

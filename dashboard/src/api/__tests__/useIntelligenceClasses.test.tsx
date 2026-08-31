@@ -1,10 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { useIntelligenceClasses } from "../hooks";
 
-const api = vi.hoisted(() => ({ listIntelligenceClasses: vi.fn() }));
+const api = vi.hoisted(() => {
+  // isolate:false lets an earlier test file cache hooks with a different client.
+  // Reload this dependency graph before binding this test's SDK mock.
+  vi.resetModules();
+  return { listIntelligenceClasses: vi.fn() };
+});
 vi.mock("../client", () => api);
 const clients: QueryClient[] = [];
 
@@ -16,6 +21,11 @@ function wrapper({ children }: { children: ReactNode }) {
 
 beforeEach(() => vi.clearAllMocks());
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()); });
+afterAll(() => {
+  // Do not leave hooks bound to this one-method mock for later test files.
+  vi.doUnmock("../client");
+  vi.resetModules();
+});
 
 describe("useIntelligenceClasses", () => {
   it("returns effective mappings and edit revisions through the SDK", async () => {

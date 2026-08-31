@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   StopIcon,
   ArrowPathIcon,
@@ -25,15 +25,19 @@ import {
   useProvideInput,
 } from "../api/hooks";
 import Modal from "./Modal";
+import { workspaceHref } from "../shell/projectNavigation";
 
 interface TaskActionsProps {
   task: Task;
+  returnTo?: string;
+  onDeleted?: () => void;
 }
 
 type ModalType = "reject-plan" | "reopen" | "answer" | "delete" | null;
 
-export default function TaskActions({ task }: TaskActionsProps) {
+export default function TaskActions({ task, returnTo, onDeleted }: TaskActionsProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [modal, setModal] = useState<ModalType>(null);
   const [textInput, setTextInput] = useState("");
 
@@ -79,7 +83,12 @@ export default function TaskActions({ task }: TaskActionsProps) {
     } else if (modal === "delete") {
       deleteTask.mutate(
         { task_id: task.id },
-        { onSuccess: () => { closeModal(); navigate("/tasks"); } },
+        { onSuccess: () => {
+          closeModal();
+          onDeleted?.();
+          const destination = returnTo ?? (location.state as { from?: string } | null)?.from ?? workspaceHref(task.project_id, "tasks");
+          if (destination !== location.pathname + location.search) navigate(destination);
+        } },
       );
     }
   };

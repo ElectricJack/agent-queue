@@ -15,6 +15,7 @@ import {
 import StatusBadge from "../components/StatusBadge";
 import TaskActions from "../components/TaskActions";
 import TaskGraph, { TaskExplain } from "./task/TaskGraph";
+import { workspaceHref } from "../shell/projectNavigation";
 
 interface FormState {
   title: string;
@@ -86,10 +87,9 @@ export default function TaskDetail() {
   if (isLoading) return <p className="p-6 text-sm text-gray-500">Loading...</p>;
   if (!task) return <p className="p-6 text-sm text-gray-500">Task not found.</p>;
 
-  const agent = task.assigned_agent;
-  const from = (location.state as { from?: string } | null)?.from ?? "/system";
+  const from = (location.state as { from?: string } | null)?.from ?? workspaceHref(task.project_id, "tasks");
   const backLabel = labelForBack(from);
-
+  const agent = task.assigned_agent;
   const profileOptions = (profiles?.agent_types ?? [])
     .flatMap((row) => [row.scoped, row.global].filter(Boolean) as { id: string; name: string }[])
     .filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i);
@@ -161,7 +161,7 @@ export default function TaskDetail() {
           <div className="mt-2 flex flex-wrap items-center gap-3">
             <StatusBadge status={task.status} />
             {task.project_id && (
-              <span className="text-sm text-gray-400">{task.project_id}</span>
+              <Link to={workspaceHref(task.project_id, "tasks")} className="text-sm text-indigo-400 hover:underline">{task.project_id}</Link>
             )}
             {task.priority != null && (
               <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-300">
@@ -219,7 +219,7 @@ export default function TaskDetail() {
       </div>
 
       {activeTab === "explain" && taskId && <TaskExplain taskId={taskId} />}
-      {activeTab === "graph" && taskId && <TaskGraph taskId={taskId} />}
+      {activeTab === "graph" && taskId && <TaskGraph taskId={taskId} from={from} />}
 
       {activeTab === "details" && (
         <>
@@ -317,7 +317,7 @@ export default function TaskDetail() {
               <span className="text-gray-500">Parent Task</span>
               <p>
                 <Link
-                  to={`/tasks/${task.parent_task_id}`}
+                  to={`/tasks/${encodeURIComponent(task.parent_task_id)}`}
                   state={{ from }}
                   className="text-indigo-400 hover:underline"
                 >
@@ -397,10 +397,8 @@ export default function TaskDetail() {
  * Falls back to "Back" when the source path is unfamiliar.
  */
 function labelForBack(from: string): string {
-  if (from.match(/^\/projects\/[^/]+\/tasks$/)) return "Back to tasks";
+  if (from.match(/^\/(projects\/[^/]+|command-center)\/tasks/)) return "Back to tasks";
   if (from.match(/^\/projects\/[^/]+\/?$/)) return "Back to project";
-  if (from === "/system") return "Back to overview";
-  if (from === "/system/events") return "Back to events";
   if (from.startsWith("/tasks/")) return "Back";
   return "Back";
 }
@@ -536,7 +534,7 @@ function TaskRefList({ title, items, from }: { title: string; items: TaskRef[]; 
             className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-4 py-2"
           >
             <Link
-              to={`/tasks/${ref.id}`}
+              to={`/tasks/${encodeURIComponent(ref.id)}`}
               state={{ from }}
               className="truncate text-sm font-medium text-indigo-400 hover:underline"
             >

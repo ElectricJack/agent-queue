@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import {
   ArrowLeftIcon,
   CheckCircleIcon,
@@ -26,7 +26,9 @@ const TABS: { id: TabId; label: string }[] = [
 
 export default function PlaybookDetail() {
   const { playbookId = "" } = useParams<{ playbookId: string }>();
-  const id = decodeURIComponent(playbookId);
+  const location = useLocation();
+  const id = playbookId;
+  const from = (location.state as { from?: string } | null)?.from ?? "/settings/playbooks";
   const [tab, setTab] = useState<TabId>("source");
   const [deleteOpen, setDeleteOpen] = useState(false);
 
@@ -36,7 +38,7 @@ export default function PlaybookDetail() {
   return (
     <div className="h-full overflow-y-auto p-6 space-y-6">
       <Link
-        to="/playbooks"
+        to={from}
         className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-gray-200"
       >
         <ArrowLeftIcon className="h-4 w-4" /> Back to playbooks
@@ -76,6 +78,7 @@ export default function PlaybookDetail() {
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
         playbookId={id}
+        returnTo={from}
       />
 
       <div className="flex items-center gap-1 border-b border-gray-800">

@@ -8,7 +8,7 @@ import type { ContextualSettingsArgs } from "../args";
 
 type Args = Extract<ContextualSettingsArgs, { subject: "intelligence-class" }>;
 
-export default function IntelligenceClassSubject({ args, setToolbar }: PaneViewProps<Args>) {
+export default function IntelligenceClassSubject({ args, setToolbar, close }: PaneViewProps<Args>) {
   const { data, isLoading, error } = useIntelligenceClasses();
   const navigate = useNavigate();
   const cls = data?.classes.find((c) => c.id === args.subjectId);
@@ -19,7 +19,10 @@ export default function IntelligenceClassSubject({ args, setToolbar }: PaneViewP
         id: "open-full",
         label: "Open full settings page",
         icon: ArrowTopRightOnSquareIcon,
-        onClick: () => navigate("/settings/intelligence-classes"),
+        onClick: () => {
+          close();
+          navigate("/settings/intelligence-classes");
+        },
       },
     ]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -45,7 +48,7 @@ export default function IntelligenceClassSubject({ args, setToolbar }: PaneViewP
           ))}
       </ul>
       <p className="text-xs text-gray-500">
-        <Link to="/settings/intelligence-classes" className="text-indigo-300 hover:underline">Edit in Intelligence Classes</Link>.
+        <Link to="/settings/intelligence-classes" onClick={close} className="text-indigo-300 hover:underline">Edit in Intelligence Classes</Link>.
         Changes apply to future launches; running sessions are unchanged.
       </p>
     </div>

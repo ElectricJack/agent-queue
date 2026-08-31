@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ReactNode } from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation, useParams } from "react-router-dom";
+import { MemoryRouter, Outlet, useLocation, useParams } from "react-router-dom";
 import { useShellPaneStore } from "./panes/store";
+import { useRightSurface } from "./shell/useRightSurface";
 import App from "./App";
+import ActivityDrawer from "./shell/ActivityDrawer";
 
 const actions = vi.hoisted(() => ({ pause: vi.fn(), resume: vi.fn(), remove: vi.fn() }));
 const projects = [{ id: "p1", name: "First project" }, { id: "p2", name: "Second project" }];
@@ -13,11 +15,14 @@ vi.mock("./panes/registry", () => ({ PANE_REGISTRY: {
 } }));
 vi.mock("./api/hooks", () => ({
   useProjects: () => ({ data: projects }),
+  useAllOpenGates: () => ({ data: [] }),
+  useResolveGate: () => ({ mutate: vi.fn() }),
   useProject: (id: string) => ({ data: { ...projects.find((p) => p.id === id), id, paused: id === "p2" } }),
   usePauseProject: () => ({ mutate: actions.pause, isPending: false }),
   useResumeProject: () => ({ mutate: actions.resume, isPending: false }),
   useDeleteProject: () => ({ mutateAsync: actions.remove, isPending: false }),
 }));
+vi.mock("./ws/useEventStream", () => ({ useEventStream: () => {} }));
 vi.mock("./panes/agentPush", () => ({ useAgentPushBridge: () => {} }));
 vi.mock("./shell/AgentFlock", () => ({ default: () => <div>Global flock sidebar</div> }));
 vi.mock("./shell/TopBar", () => ({ default: () => null }));
@@ -34,6 +39,12 @@ vi.mock("./pages/project/Config", () => ({ default: () => <WorkspaceProbe title=
 vi.mock("./pages/chat/ChatConversation", () => ({ default: () => <h1>Former project chat</h1> }));
 vi.mock("./pages/GlobalChat", () => ({ default: () => <h1>Former Home chat</h1> }));
 vi.mock("./pages/agents/AgentWorkspace", () => ({ default: () => <h1>Agent flock</h1> }));
+vi.mock("./pages/settings/SettingsLayout", () => ({ default: () => <Outlet /> }));
+vi.mock("./pages/system/Playbooks", () => ({ default: () => <h1>Settings playbooks</h1> }));
+vi.mock("./pages/system/Profiles", () => ({ default: () => <h1>Settings profiles</h1> }));
+vi.mock("./pages/system/Config", () => ({ default: () => <h1>Settings config</h1> }));
+vi.mock("./pages/settings/IntelligenceClassesStub", () => ({ default: () => <h1>Settings intelligence classes</h1> }));
+vi.mock("./pages/PlaybookDetail", () => ({ default: () => <h1>Playbook detail</h1> }));
 
 function WorkspaceProbe({ title }: { title: string }) {
   const { projectId } = useParams();
@@ -44,7 +55,10 @@ function WorkspaceProbe({ title }: { title: string }) {
 
 function PaneProbe() {
   const pane = useShellPaneStore();
+  const surface = useRightSurface();
   return <><output aria-label="Current pane">{JSON.stringify(pane.state)}</output>
+    <output aria-label="Current surface">{surface.kind ?? "closed"}</output>
+    {surface.kind === "drawer" && <ActivityDrawer />}
     <button onClick={() => pane.open("task-detail", { taskId: "task-p1" })}>Open task pane</button>
     <button onClick={() => pane.open("contextual-settings", { subject: "project", subjectId: "p1" })}>Open settings pane</button></>;
 }
@@ -62,6 +76,44 @@ beforeEach(() => { vi.clearAllMocks(); actions.remove.mockResolvedValue({ succes
 afterEach(cleanup);
 
 describe("Dashboard navigation", () => {
+  it.each([
+    ["/system", "/command-center/graph"],
+    ["/tasks", "/command-center/tasks"],
+    ["/playbooks", "/settings/playbooks"],
+    ["/system/playbooks", "/settings/playbooks"],
+    ["/system/profiles", "/settings/profiles"],
+    ["/system/config", "/settings/config"],
+    ["/system/intelligence-classes", "/settings/intelligence-classes"],
+    ["/work", "/command-center/tasks"],
+    ["/work/tasks", "/command-center/tasks"],
+    ["/work/agents", "/agents"],
+    ["/work/sessions", "/agents"],
+  ])("redirects legacy route %s to %s while preserving filters", async (from, to) => {
+    renderApp(from + "?q=needle&status=READY");
+    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(to + "?q=needle&status=READY"));
+  });
+
+  it.each(["demo%2Freview", "demo%2520review", "draft%25complete"])(
+    "redirects a legacy playbook settings detail without decoding %s twice", async (id) => {
+      renderApp(`/settings/playbooks/${id}?q=needle`);
+      await screen.findByRole("heading", { name: "Playbook detail" });
+      expect(screen.getByLabelText("Current location")).toHaveTextContent(`/playbooks/${id}?q=needle`);
+    },
+  );
+
+  it.each([
+    ["/system/events", "Waiting for events…"],
+    ["/system/gates", "No open gates."],
+    ["/work/events", "Waiting for events…"],
+    ["/work/gates", "No open gates."],
+  ])("routes legacy %s to tasks and opens the requested activity tab", async (path, content) => {
+    renderApp(path + "?q=needle");
+    await screen.findByRole("heading", { name: "Command Center tasks" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/command-center/tasks?q=needle");
+    expect(screen.getByLabelText("Current surface")).toHaveTextContent("drawer");
+    expect(await screen.findByText(content)).toBeInTheDocument();
+  });
+
   it("keeps only Graph and Tasks in Command Center navigation", async () => {
     renderApp("/command-center/graph");
     await screen.findByRole("heading", { name: "Command Center graph" });

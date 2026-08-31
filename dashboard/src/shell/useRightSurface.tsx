@@ -8,10 +8,13 @@ import {
 } from "react";
 
 export type SurfaceKind = "pane" | "drawer" | null;
+export type ActivityTab = "gates" | "events";
 
 interface State {
   kind: SurfaceKind;
   width: number;
+  activityTab: ActivityTab;
+  setActivityTab: (tab: ActivityTab) => void;
   setKind: (k: SurfaceKind) => void;
   setWidth: (w: number) => void;
 }
@@ -35,6 +38,7 @@ function loadWidth(): number {
 
 export function RightSurfaceProvider({ children }: { children: ReactNode }) {
   const [kind, setKind] = useState<SurfaceKind>(null);
+  const [activityTab, setActivityTab] = useState<ActivityTab>("gates");
   const [width, setWidthRaw] = useState<number>(loadWidth);
   const setWidth = useCallback((w: number) => {
     const clamped = Math.max(MIN, Math.min(MAX, w));
@@ -46,8 +50,8 @@ export function RightSurfaceProvider({ children }: { children: ReactNode }) {
     }
   }, []);
   const value = useMemo<State>(
-    () => ({ kind, width, setKind, setWidth }),
-    [kind, width, setKind, setWidth],
+    () => ({ kind, width, setKind, setWidth, activityTab, setActivityTab }),
+    [kind, width, setKind, setWidth, activityTab],
   );
   return <C.Provider value={value}>{children}</C.Provider>;
 }

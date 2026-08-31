@@ -66,7 +66,7 @@ export default function ProjectProfiles() {
             tasks in this project. Reset to global to remove an override.
           </p>
           <Link
-            to="/system/profiles"
+            to="/settings/profiles"
             className="inline-flex items-center gap-1 text-xs text-indigo-400 hover:underline"
           >
             View / edit system profiles

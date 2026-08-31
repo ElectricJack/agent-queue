@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import Modal from "./Modal";
 import { useDeletePlaybook } from "../api/hooks";
@@ -8,11 +8,17 @@ interface Props {
   open: boolean;
   onClose: () => void;
   playbookId: string;
+  returnTo?: string;
 }
 
-export default function DeletePlaybookModal({ open, onClose, playbookId }: Props) {
+export default function DeletePlaybookModal({ open, onClose, playbookId, returnTo }: Props) {
   const del = useDeletePlaybook();
+  const location = useLocation();
   const navigate = useNavigate();
+  const destination =
+    returnTo ??
+    (location.state as { from?: string } | null)?.from ??
+    `${location.pathname}${location.search}`;
   const [typed, setTyped] = useState("");
   const [fatal, setFatal] = useState<string | null>(null);
 
@@ -30,7 +36,7 @@ export default function DeletePlaybookModal({ open, onClose, playbookId }: Props
     try {
       await del.mutateAsync({ playbook_id: playbookId });
       onClose();
-      navigate("/playbooks");
+      navigate(destination);
     } catch (err) {
       setFatal(err instanceof Error ? err.message : String(err));
     }

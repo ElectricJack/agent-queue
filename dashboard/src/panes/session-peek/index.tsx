@@ -14,7 +14,7 @@ import {
   ArrowTopRightOnSquareIcon,
   XCircleIcon,
 } from "@heroicons/react/24/outline";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { usePaneStream } from "../../ws/usePaneStream";
 import { useSession, useSessionKill } from "../../api/hooks";
 import LivePaneConsole from "../../components/LivePaneConsole";
@@ -23,11 +23,14 @@ import type { SessionPeekArgs } from "./manifest";
 
 export default function SessionPeekPane({
   args,
+  close,
   setToolbar,
   setShortcuts,
 }: PaneViewProps<SessionPeekArgs>) {
   const { sessionId } = args;
   const navigate = useNavigate();
+  const location = useLocation();
+  const from = (location.state as { from?: string } | null)?.from ?? location.pathname + location.search;
 
   const { data: session } = useSession(sessionId);
   const kill = useSessionKill();
@@ -38,7 +41,10 @@ export default function SessionPeekPane({
   const [confirmingKill, setConfirmingKill] = useState(false);
 
   const copyScrollback = () => navigator.clipboard.writeText(screen ?? "");
-  const openFullSession = () => navigate(`/sessions/${sessionId}`);
+  const openFullSession = () => {
+    close();
+    navigate(`/sessions/${encodeURIComponent(sessionId)}`, { state: { from } });
+  };
   const doKill = () => {
     if (!confirmingKill) {
       setConfirmingKill(true);

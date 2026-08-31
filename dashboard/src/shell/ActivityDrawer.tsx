@@ -10,7 +10,7 @@ import type { NotifyEvent } from "../ws/types";
 import { useShellPaneStore } from "../panes/store";
 import { useListNav } from "./hotkeys/useListNav";
 
-type Tab = "gates" | "events";
+import { useRightSurface } from "./useRightSurface";
 
 function tabClass(active: boolean): string {
   return `rounded px-2 py-1 text-xs ${
@@ -136,7 +136,7 @@ function EventsList() {
 }
 
 export default function ActivityDrawer() {
-  const [tab, setTab] = useState<Tab>("gates");
+  const { activityTab: tab, setActivityTab: setTab } = useRightSurface();
   return (
     <div className="flex h-full flex-col">
       <div className="flex gap-1 border-b border-gray-800 p-2">

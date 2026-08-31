@@ -5,9 +5,10 @@ import PlaybookRunInspectorPane from "../index";
 import * as hooks from "../../../api/hooks";
 
 const mockNavigate = vi.fn();
+const mockLocation = { pathname: "/projects/project-1/playbooks", search: "?scope=project", state: { from: "/command-center/tasks?owner=me" } };
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
-  return { ...actual, useNavigate: () => mockNavigate };
+  return { ...actual, useLocation: () => mockLocation, useNavigate: () => mockNavigate };
 });
 
 let capturedOnEvent: ((event: unknown) => void) | undefined;
@@ -378,8 +379,9 @@ describe("PlaybookRunInspectorPane", () => {
     expect(cancelAction.disabled).toBe(true);
   });
 
-  it("Open playbook page navigates to the encoded playbook route", () => {
+  it("Open playbook page closes the pane and keeps the encoded source route", () => {
     const setToolbar = vi.fn();
+    const close = vi.fn();
     vi.mocked(hooks.useInspectPlaybookRun).mockReturnValue({
       data: mockRun({ playbook_id: "demo/review" }),
       isLoading: false,
@@ -388,12 +390,15 @@ describe("PlaybookRunInspectorPane", () => {
       refetch: vi.fn(),
     } as never);
 
-    render(<PlaybookRunInspectorPane {...baseProps({ setToolbar })} />);
+    render(<PlaybookRunInspectorPane {...baseProps({ setToolbar, close })} />);
 
     const lastCall = setToolbar.mock.calls[setToolbar.mock.calls.length - 1]![0];
     const openAction = lastCall.find((a: { id: string }) => a.id === "open-playbook");
     openAction.onClick();
-    expect(mockNavigate).toHaveBeenCalledWith("/playbooks/demo%2Freview");
+    expect(close).toHaveBeenCalledOnce();
+    expect(mockNavigate).toHaveBeenCalledWith("/playbooks/demo%2Freview", {
+      state: { from: "/command-center/tasks?owner=me" },
+    });
   });
 
   it("registers ArrowUp/ArrowDown/Enter/r/x shortcuts", () => {

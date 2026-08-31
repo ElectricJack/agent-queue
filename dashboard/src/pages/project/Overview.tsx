@@ -241,7 +241,7 @@ export default function ProjectOverview() {
               {activeTasks.slice(0, 8).map((task) => (
                 <Link
                   key={task.id}
-                  to={`/tasks/${task.id}`}
+                  to={`/tasks/${encodeURIComponent(task.id)}`}
                   state={{ from: location.pathname + location.search }}
                   className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 transition-colors hover:border-indigo-500/50"
                 >

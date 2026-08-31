@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowTopRightOnSquareIcon,
   ClipboardIcon,
@@ -39,11 +39,19 @@ export default function TaskDetailPane({
   const resolveGate = useResolveGate();
   const deleteTask = useDeleteTask();
   const reopenWithFeedback = useReopenWithFeedback();
-  const { open } = useShellPaneStore();
+  const { open, close } = useShellPaneStore();
 
   const [modal, setModal] = useState<LocalModal>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const location = useLocation();
+  const from = (location.state as { from?: string } | null)?.from ?? location.pathname + location.search;
+  const openFull = useCallback(() => {
+    close();
+    navigate(`/tasks/${encodeURIComponent(args.taskId)}`, {
+      state: { from },
+    });
+  }, [args.taskId, close, from, navigate]);
 
   const loose = task as TaskWithLooseFields | undefined;
 
@@ -60,7 +68,7 @@ export default function TaskDetailPane({
         id: "open-full",
         label: "Open full detail page",
         icon: ArrowTopRightOnSquareIcon,
-        onClick: () => navigate(`/tasks/${args.taskId}`),
+        onClick: openFull,
       },
       {
         id: "copy-id",
@@ -71,18 +79,18 @@ export default function TaskDetailPane({
     ]);
     return () => setToolbar([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [args.taskId]);
+  }, [openFull]);
 
   useEffect(() => {
     setShortcuts([
-      { key: "o", label: "Open full detail page", onFire: () => navigate(`/tasks/${args.taskId}`) },
+      { key: "o", label: "Open full detail page", onFire: openFull },
       { key: "c", label: "Close task", onFire: () => setModal("close") },
       { key: "r", label: "Reopen with feedback", onFire: () => setModal("reopen") },
       { key: ".", label: "More actions", onFire: () => setMoreOpen(true) },
     ]);
     return () => setShortcuts([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [args.taskId]);
+  }, [openFull]);
 
   if (isError) {
     return (
@@ -130,7 +138,7 @@ export default function TaskDetailPane({
         </div>
       </header>
 
-      {task && <TaskActions task={task} />}
+      {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={close} />}
 
       {task?.description ? (
         <section>
@@ -312,7 +320,7 @@ export default function TaskDetailPane({
               <button
                 role="menuitem"
                 onClick={() => {
-                  navigate(`/tasks/${args.taskId}`);
+                  openFull();
                   setMoreOpen(false);
                 }}
                 className="block w-full rounded px-3 py-1.5 text-left text-gray-200 hover:bg-gray-800"

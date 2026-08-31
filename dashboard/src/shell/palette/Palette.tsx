@@ -1,10 +1,12 @@
 import { Command } from "cmdk";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useShortcut } from "../hotkeys/useShortcuts";
 import { useActions } from "./registerActions";
 import { usePaletteState } from "./paletteState";
 import { useProjects, useActiveTasksAllProjects } from "../../api/hooks";
+import { useShellPaneStore } from "../../panes/store";
+import { workspaceHref, workspaceNavigation } from "../projectNavigation";
 
 /**
  * Linear-style command palette.
@@ -18,6 +20,12 @@ export function Palette() {
   const { open, setOpen, toggle } = usePaletteState();
   const [q, setQ] = useState("");
   const navigate = useNavigate();
+  const location = useLocation();
+  const pane = useShellPaneStore();
+  const workspace = workspaceNavigation(location);
+  const from = workspace.isWorkspace
+    ? workspaceHref(workspace.projectId, workspace.tab, workspace.search)
+    : (location.state as { from?: string } | null)?.from ?? location.pathname + location.search;
 
   useShortcut("$mod-k", {
     label: "toggle command palette",
@@ -92,7 +100,10 @@ export function Palette() {
                   key={t.id}
                   value={t.id}
                   onSelect={() => {
-                    navigate(`/tasks/${t.id}`);
+                    navigate(`/tasks/${encodeURIComponent(t.id)}`, {
+                      state: { from },
+                    });
+                    pane.close();
                     setOpen(false);
                     setQ("");
                   }}
@@ -111,7 +122,7 @@ export function Palette() {
                   key={p.id}
                   value={p.id}
                   onSelect={() => {
-                    navigate(`/projects/${p.id}`);
+                    navigate(workspaceHref(p.id, workspace.tab, workspace.search));
                     setOpen(false);
                     setQ("");
                   }}

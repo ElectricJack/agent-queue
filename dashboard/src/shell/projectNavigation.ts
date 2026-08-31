@@ -42,3 +42,22 @@ export function workspaceHref(projectId: string | null | undefined, tab: Workspa
   const target = projectId || isTaskTab(tab) ? tab : "graph";
   return `${base}/${target}${search}`;
 }
+
+/** Detail pages keep their originating workspace in router state for Back links. */
+export function workspaceNavigation(location: { pathname: string; search: string; state?: unknown }) {
+  const current = { ...projectNavigation(location.pathname), search: location.search };
+  if (current.isWorkspace || ![
+    "/tasks/:taskId", "/tasks/:taskId/files", "/sessions/:sessionId", "/playbooks/:playbookId",
+  ].some((path) => matchPath(path, location.pathname))) return current;
+  const from = location.state && typeof location.state === "object"
+    ? (location.state as { from?: unknown }).from : undefined;
+  if (typeof from !== "string" || !from.startsWith("/") || from.startsWith("//")) return current;
+  try {
+    const url = new URL(from, "http://aq.local");
+    if (url.origin !== "http://aq.local") return current;
+    const origin = projectNavigation(url.pathname);
+    return origin.isWorkspace ? { ...origin, search: url.search } : current;
+  } catch {
+    return current;
+  }
+}

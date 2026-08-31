@@ -1,8 +1,9 @@
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { useSessions } from "../../api/hooks";
 
 export default function ProjectSessions() {
   const { projectId = "" } = useParams();
+  const location = useLocation();
   const { data: sessions = [], isLoading } = useSessions(projectId);
 
   return (
@@ -24,7 +25,8 @@ export default function ProjectSessions() {
               <tr key={s.id} className="hover:bg-gray-900">
                 <td className="px-3 py-2">
                   <Link
-                    to={`/sessions/${s.id}`}
+                    to={`/sessions/${encodeURIComponent(s.id)}`}
+                    state={{ from: location.pathname + location.search }}
                     className="text-indigo-400 hover:text-indigo-300"
                   >
                     {s.name}

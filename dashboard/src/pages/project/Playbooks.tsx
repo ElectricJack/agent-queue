@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { PauseIcon, PlayIcon, TrashIcon } from "@heroicons/react/24/outline";
 import {
   usePlaybooks,
@@ -11,6 +11,8 @@ import DeletePlaybookModal from "../../components/DeletePlaybookModal";
 
 export default function ProjectPlaybooks() {
   const { projectId = "" } = useParams();
+  const location = useLocation();
+  const from = `${location.pathname}${location.search}`;
   const { data: playbooks, isLoading } = usePlaybooks();
 
   const rows = (playbooks ?? []).filter(
@@ -22,15 +24,15 @@ export default function ProjectPlaybooks() {
     return (
       <p className="text-sm text-gray-500">
         No playbooks scoped to this project. System and agent-type playbooks may still apply —
-        see <Link to="/system/playbooks" className="text-indigo-400 hover:underline">System Playbooks</Link>.
+        see <Link to="/settings/playbooks" className="text-indigo-400 hover:underline">System Playbooks</Link>.
       </p>
     );
   }
 
-  return <PlaybookTable rows={rows} />;
+  return <PlaybookTable rows={rows} from={from} />;
 }
 
-function PlaybookTable({ rows }: { rows: PlaybookSummary[] }) {
+function PlaybookTable({ rows, from }: { rows: PlaybookSummary[]; from: string }) {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const setEnabled = useSetPlaybookEnabled();
 
@@ -64,6 +66,7 @@ function PlaybookTable({ rows }: { rows: PlaybookSummary[] }) {
                 <td className="px-4 py-3">
                   <Link
                     to={`/playbooks/${encodeURIComponent(p.id)}`}
+                    state={{ from }}
                     className="font-medium text-indigo-400 hover:underline"
                   >
                     {p.id}
@@ -151,6 +154,7 @@ function PlaybookTable({ rows }: { rows: PlaybookSummary[] }) {
           open={true}
           onClose={() => setDeleteId(null)}
           playbookId={deleteId}
+          returnTo={from}
         />
       )}
     </div>

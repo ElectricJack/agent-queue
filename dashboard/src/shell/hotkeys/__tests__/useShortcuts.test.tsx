@@ -1,7 +1,13 @@
 import { render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { ShortcutsProvider, useShortcut } from "../useShortcuts";
+
+const originalUserAgent = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+afterEach(() => {
+  if (originalUserAgent) Object.defineProperty(navigator, "userAgent", originalUserAgent);
+  else Reflect.deleteProperty(navigator, "userAgent");
+});
 
 function Probe({ onFire }: { onFire: () => void }) {
   useShortcut("$mod-k", { label: "open palette", onFire });

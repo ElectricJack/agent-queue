@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowPathIcon,
   ClipboardIcon,
@@ -17,11 +17,14 @@ const NARROW_BREAKPOINT = 400;
 
 export default function DiffReviewChangesPane({
   args,
+  close,
   setArgs,
   setToolbar,
   setShortcuts,
 }: PaneViewProps<DiffReviewChangesArgs>) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const from = (location.state as { from?: string } | null)?.from ?? location.pathname + location.search;
   const filterInputRef = useRef<HTMLInputElement>(null);
   const [narrow, setNarrow] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
@@ -122,12 +125,17 @@ export default function DiffReviewChangesPane({
         id: "open-full-page",
         label: "Open full-page view",
         icon: ArrowTopRightOnSquareIcon,
-        onClick: () => navigate(`/tasks/${encodeURIComponent(args.taskId)}/files`),
+        onClick: () => {
+          close();
+          navigate(`/tasks/${encodeURIComponent(args.taskId)}/files`, {
+            state: { from },
+          });
+        },
       },
     ]);
     return () => setToolbar([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, args.taskId]);
+  }, [selected, args.taskId, close, from, navigate]);
 
   useEffect(() => {
     setShortcuts([

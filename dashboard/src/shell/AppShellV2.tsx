@@ -19,12 +19,13 @@ import { useNavigate } from "react-router-dom";
  */
 function useOpenDrawerParam() {
   const [params, setParams] = useSearchParams();
-  const { setKind } = useRightSurface();
+  const { setKind, setActivityTab } = useRightSurface();
   const pane = useShellPaneStore();
   useEffect(() => {
     const v = params.get("openDrawer");
     if (v !== "events" && v !== "gates") return;
     if (pane.state.kind === "open") pane.close();
+    setActivityTab(v);
     setKind("drawer");
     const next = new URLSearchParams(params);
     next.delete("openDrawer");

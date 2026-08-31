@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowPathIcon,
@@ -104,11 +104,15 @@ function HitlBanner({ runId }: { runId: string }) {
 
 export default function PlaybookRunInspectorPane({
   args,
+  close,
   setToolbar,
   setShortcuts,
 }: PaneViewProps<PlaybookRunInspectorArgs>) {
+  const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  // Keep the original list context when this pane was opened from a detail view.
+  const from = (location.state as { from?: string } | null)?.from ?? `${location.pathname}${location.search}`;
   const { data: run, isLoading, isError, error, refetch } = useInspectPlaybookRun(args.runId);
   const trace = (run?.node_trace ?? []) as unknown as NodeTraceEntry[];
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
@@ -156,13 +160,17 @@ export default function PlaybookRunInspectorPane({
         id: "open-playbook",
         label: "Open playbook page",
         icon: ArrowTopRightOnSquareIcon,
-        onClick: () => run && navigate(`/playbooks/${encodeURIComponent(run.playbook_id)}`),
+        onClick: () => {
+          if (!run) return;
+          close();
+          navigate(`/playbooks/${encodeURIComponent(run.playbook_id)}`, { state: { from } });
+        },
         disabled: !run,
       },
     ]);
     return () => setToolbar([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [run?.status, run?.playbook_id]);
+  }, [run?.status, run?.playbook_id, close, from]);
 
   useEffect(() => {
     setShortcuts([

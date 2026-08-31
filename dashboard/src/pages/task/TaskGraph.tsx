@@ -3,6 +3,7 @@ import { useExplainTask, useTaskDeps, type TaskDepsResponse } from "../../api/ho
 
 interface Props {
   taskId: string;
+  from: string;
 }
 
 function StatusPill({ status }: { status: string }) {
@@ -22,9 +23,11 @@ function StatusPill({ status }: { status: string }) {
 function TaskList({
   title,
   items,
+  from,
 }: {
   title: string;
   items: TaskDepsResponse["depends_on"];
+  from: string;
 }) {
   return (
     <div className="rounded border border-gray-800 bg-gray-950 p-3">
@@ -38,7 +41,8 @@ function TaskList({
           {items.map((t) => (
             <li key={t.id} className="flex items-center justify-between gap-2">
               <Link
-                to={`/tasks/${t.id}`}
+                to={`/tasks/${encodeURIComponent(t.id)}`}
+                state={{ from }}
                 className="truncate font-mono text-indigo-400 hover:text-indigo-300"
               >
                 {t.id}
@@ -53,15 +57,15 @@ function TaskList({
   );
 }
 
-export default function TaskGraph({ taskId }: Props) {
+export default function TaskGraph({ taskId, from }: Props) {
   const { data, isLoading, error } = useTaskDeps(taskId);
   if (isLoading) return <p className="text-sm text-gray-400">Loading graph…</p>;
   if (error) return <p className="text-sm text-red-400">{(error as Error).message}</p>;
   if (!data) return null;
   return (
     <div className="grid gap-4 md:grid-cols-2">
-      <TaskList title="Depends on (upstream)" items={data.depends_on ?? []} />
-      <TaskList title="Blocks (downstream)" items={data.blocks ?? []} />
+      <TaskList title="Depends on (upstream)" items={data.depends_on ?? []} from={from} />
+      <TaskList title="Blocks (downstream)" items={data.blocks ?? []} from={from} />
     </div>
   );
 }

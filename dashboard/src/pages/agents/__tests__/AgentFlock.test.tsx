@@ -40,7 +40,7 @@ function Location() {
   return <output aria-label="Current location">{location.pathname}{location.search}</output>;
 }
 
-function renderFlock(initial = "/", workspace = false) {
+function renderFlock(initial: string | { pathname: string; search?: string; state?: unknown } = "/", workspace = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   clients.push(client);
   return render(
@@ -106,6 +106,44 @@ afterEach(() => {
 });
 
 describe("Agent flock sidebar", () => {
+
+  it.each([
+    ["/tasks/task-1", "/projects/first/tasks?q=worktree&completed=1", "/projects/second/tasks?q=worktree&completed=1"],
+    ["/tasks/task-1/files", "/projects/first/graph?status=READY", "/projects/second/graph?status=READY"],
+    ["/sessions/session-1", "/projects/first/sessions?q=triage", "/projects/second/sessions?q=triage"],
+    ["/playbooks/audit", "/projects/first/playbooks?completed=1", "/projects/second/playbooks?completed=1"],
+  ])("keeps the originating project and view when navigating from %s", async (pathname, from, destination) => {
+    api.listProjects.mockResolvedValue({ data: { projects: [{ id: "first", name: "First project" }, { id: "second", name: "Second project" }] } });
+    renderFlock({ pathname, state: { from } });
+    const currentProject = await screen.findByRole("link", { name: "First project" });
+    expect(currentProject).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Command Center" })).toHaveAttribute("href", from);
+    fireEvent.click(screen.getByRole("link", { name: "Second project" }));
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(destination);
+  });
+
+  it("keeps All projects and graph filters selected through a task detail", async () => {
+    renderFlock({ pathname: "/tasks/task-1", state: { from: "/command-center/graph?q=review&completed=1" } });
+    expect(screen.getByRole("link", { name: "All projects" })).toHaveAttribute("aria-current", "page");
+    fireEvent.click(screen.getByRole("link", { name: "Command Center" }));
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/command-center/graph?q=review&completed=1");
+  });
+
+
+  it.each([
+    ["/settings/config", "/projects/first/tasks?q=old"],
+    ["/tasks/task-1", "//other.example/projects/first/tasks?q=old"],
+    ["/tasks/task-1", "/settings/profiles"],
+  ])("does not apply an unrelated origin to %s", async (pathname, from) => {
+    renderFlock({ pathname, state: { from } });
+    expect(screen.getByRole("link", { name: "Command Center" })).toHaveAttribute("href", "/command-center/graph");
+  });
+
+  it("uses the explicit workspace URL ahead of stale detail origin state", () => {
+    renderFlock({ pathname: "/projects/second/config", search: "?q=current", state: { from: "/projects/first/tasks?q=old" } });
+    expect(screen.getByRole("link", { name: "Command Center" })).toHaveAttribute("href", "/projects/second/config?q=current");
+  });
+
   it("keeps Command Center navigation and removes Home", async () => {
     renderFlock();
     await screen.findByRole("button", { name: "Open Supervisor" });

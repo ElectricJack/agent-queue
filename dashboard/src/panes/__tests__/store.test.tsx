@@ -1,3 +1,16 @@
+import { afterAll, vi } from "vitest";
+
+vi.hoisted(() => {
+  class Socket {
+    static OPEN = 1;
+    static CONNECTING = 0;
+    readyState = 0;
+    close() { this.readyState = 3; }
+  }
+  vi.stubGlobal("WebSocket", Socket);
+});
+afterAll(() => vi.unstubAllGlobals());
+
 import { renderHook, act } from "@testing-library/react";
 import { z } from "zod";
 import type { ReactNode } from "react";

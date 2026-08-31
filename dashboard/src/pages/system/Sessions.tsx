@@ -1,7 +1,8 @@
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useSessions } from "../../api/hooks";
 
 export default function SystemSessions() {
+  const location = useLocation();
   const { data: sessions = [], isLoading, error } = useSessions();
 
   return (
@@ -38,7 +39,8 @@ export default function SystemSessions() {
               <tr key={s.id} className="hover:bg-gray-900">
                 <td className="px-3 py-2">
                   <Link
-                    to={`/sessions/${s.id}`}
+                    to={`/sessions/${encodeURIComponent(s.id)}`}
+                    state={{ from: location.pathname + location.search }}
                     className="text-indigo-400 hover:text-indigo-300"
                   >
                     {s.name}

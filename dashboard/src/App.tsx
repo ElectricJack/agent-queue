@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef } from "react";
-import { Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, useParams, type Params } from "react-router-dom";
 import { ShellPaneProvider, useShellPaneStore } from "./panes/store";
 import { projectNavigation, workspaceHref } from "./shell/projectNavigation";
 
@@ -50,6 +50,27 @@ function ProjectScopePaneSync() {
   return null;
 }
 
+type RedirectTarget = string | ((params: Readonly<Params<string>>) => string);
+
+function withPreservedSearch(destination: string, search: string): string {
+  const [pathname, destinationSearch = ""] = destination.split("?", 2);
+  const params = new URLSearchParams(search);
+  new URLSearchParams(destinationSearch).forEach((value, key) => params.set(key, value));
+  const nextSearch = params.toString();
+  return pathname + (nextSearch ? "?" + nextSearch : "");
+}
+
+function LegacyRedirect({ to }: { to: RedirectTarget }) {
+  const location = useLocation();
+  const params = useParams();
+  const destination = typeof to === "function" ? to(params) : to;
+  return <Navigate to={withPreservedSearch(destination, location.search)} replace />;
+}
+
+function encodePlaybookParam(params: Readonly<Params<string>>): string {
+  return "/playbooks/" + encodeURIComponent(params.playbookId ?? "");
+}
+
 function RouteFallback() {
   return (
     <div className="flex h-full min-h-[40vh] items-center justify-center text-sm text-gray-500">
@@ -76,22 +97,26 @@ export default function App() {
               <Route path="agents" element={<Navigate to="/agents" replace />} />
             </Route>
 
-            {/* Legacy /work* — kept as redirects for external deep-links. */}
-            <Route path="work" element={<Navigate to="/command-center/tasks" replace />} />
-            <Route path="work/tasks" element={<Navigate to="/command-center/tasks" replace />} />
-            <Route path="work/agents" element={<Navigate to="/agents" replace />} />
-            <Route path="work/sessions" element={<Navigate to="/agents" replace />} />
-            <Route
-              path="work/events"
-              element={<Navigate to="/command-center/tasks?openDrawer=events" replace />}
-            />
-            <Route
-              path="work/gates"
-              element={<Navigate to="/command-center/tasks?openDrawer=gates" replace />}
-            />
+            {/* Legacy deep-links retain their filters while moving to current surfaces. */}
+            <Route path="system" element={<LegacyRedirect to="/command-center/graph" />} />
+            <Route path="system/events" element={<LegacyRedirect to="/command-center/tasks?openDrawer=events" />} />
+            <Route path="system/gates" element={<LegacyRedirect to="/command-center/tasks?openDrawer=gates" />} />
+            <Route path="system/playbooks" element={<LegacyRedirect to="/settings/playbooks" />} />
+            <Route path="system/profiles" element={<LegacyRedirect to="/settings/profiles" />} />
+            <Route path="system/config" element={<LegacyRedirect to="/settings/config" />} />
+            <Route path="system/intelligence-classes" element={<LegacyRedirect to="/settings/intelligence-classes" />} />
+            <Route path="tasks" element={<LegacyRedirect to="/command-center/tasks" />} />
+            <Route path="playbooks" element={<LegacyRedirect to="/settings/playbooks" />} />
+            <Route path="work" element={<LegacyRedirect to="/command-center/tasks" />} />
+            <Route path="work/tasks" element={<LegacyRedirect to="/command-center/tasks" />} />
+            <Route path="work/agents" element={<LegacyRedirect to="/agents" />} />
+            <Route path="work/sessions" element={<LegacyRedirect to="/agents" />} />
+            <Route path="work/events" element={<LegacyRedirect to="/command-center/tasks?openDrawer=events" />} />
+            <Route path="work/gates" element={<LegacyRedirect to="/command-center/tasks?openDrawer=gates" />} />
 
             <Route path="settings" element={<SettingsLayout />}>
               <Route index element={<Navigate to="playbooks" replace />} />
+              <Route path="playbooks/:playbookId" element={<LegacyRedirect to={encodePlaybookParam} />} />
               <Route path="playbooks" element={<SystemPlaybooks />} />
               <Route path="profiles" element={<SystemProfiles />} />
               <Route path="intelligence-classes" element={<IntelligenceClassesStub />} />

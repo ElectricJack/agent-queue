@@ -6,6 +6,13 @@ import SpecDocReaderPane, { MetaCard } from "../index";
 import type { PaneViewProps } from "../../types";
 import type { SpecDocReaderArgs } from "../manifest";
 
+const mockNavigate = vi.fn();
+const mockLocation = { pathname: "/projects/project-1/playbooks", search: "?scope=project", state: { from: "/command-center/tasks?owner=me" } };
+vi.mock("react-router-dom", async () => {
+  const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
+  return { ...actual, useLocation: () => mockLocation, useNavigate: () => mockNavigate };
+});
+
 function baseProps(args: SpecDocReaderArgs): PaneViewProps<SpecDocReaderArgs> {
   return {
     args,
@@ -138,6 +145,23 @@ describe("SpecDocReaderPane — toolbar", () => {
     const openInEditor = actions.find((a: { id: string }) => a.id === "open-in-editor");
     openInEditor.onClick();
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("docs/x.md");
+  });
+
+  it("opens a frontmatter playbook on its encoded detail route and closes the pane", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("---\nplaybook_id: demo/review\n---\n\n# Doc\n\nbody\n", { status: 200 })),
+    );
+    const props = baseProps({ url: "/api/specs/x.md" });
+    renderWithQuery(<SpecDocReaderPane {...props} />);
+    await screen.findByText("Doc");
+    const actions = lastCallArg0(props.setToolbar as ReturnType<typeof vi.fn>);
+    const openFullPage = actions.find((a: { id: string }) => a.id === "open-full-page");
+    openFullPage.onClick();
+    expect(props.close).toHaveBeenCalledOnce();
+    expect(mockNavigate).toHaveBeenCalledWith("/playbooks/demo%2Freview", {
+      state: { from: "/command-center/tasks?owner=me" },
+    });
   });
 });
 

@@ -10,7 +10,7 @@ import DiffReviewChangesPane from "../index";
 const mockNavigate = vi.fn();
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
-  return { ...actual, useNavigate: () => mockNavigate };
+  return { ...actual, useLocation: () => ({ pathname: "/command-center/tasks", search: "?completed=1&q=worktree" }), useNavigate: () => mockNavigate };
 });
 
 Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
@@ -291,7 +291,9 @@ describe("DiffReviewChangesPane toolbar", () => {
     const lastCall = last(setToolbar.mock.calls)[0] as { id: string; onClick: () => void }[];
     lastCall.find((a) => a.id === "open-full-page")!.onClick();
 
-    expect(mockNavigate).toHaveBeenCalledWith("/tasks/abc-123/files");
+    expect(mockNavigate).toHaveBeenCalledWith("/tasks/abc-123/files", {
+      state: { from: "/command-center/tasks?completed=1&q=worktree" },
+    });
   });
 });
 

@@ -33,7 +33,7 @@ export default function DeleteProjectModal({ open, onClose, projectId, projectNa
     try {
       await del.mutateAsync({ project_id: projectId });
       onClose();
-      navigate("/system");
+      navigate("/command-center/graph");
     } catch (err) {
       setFatal(err instanceof Error ? err.message : String(err));
     }

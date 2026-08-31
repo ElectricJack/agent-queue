@@ -14,8 +14,10 @@ vi.mock("../../../api/hooks", () => ({
   useSession: (...args: unknown[]) => mockUseSession(...args),
   useSessionKill: () => mockUseSessionKill(),
 }));
+const mockNavigate = vi.fn();
 vi.mock("react-router-dom", () => ({
-  useNavigate: () => vi.fn(),
+  useLocation: () => ({ pathname: "/projects/demo/sessions", search: "?q=active" }),
+  useNavigate: () => mockNavigate,
 }));
 
 function baseProps() {
@@ -37,6 +39,7 @@ function lastCallArg0<T>(mockFn: { mock: { calls: T[][] } }): T | undefined {
 
 describe("SessionPeekPane component", () => {
   beforeEach(() => {
+    mockNavigate.mockReset();
     mockUsePaneStream.mockReset();
     mockUseSession.mockReset();
     mockUseSessionKill.mockReset();
@@ -107,12 +110,16 @@ describe("SessionPeekPane component", () => {
     expect(copy.disabled).toBe(true);
   });
 
-  it("open-full navigates to the session detail route", () => {
+  it("open-full closes the pane and retains its workspace source", () => {
     const props = baseProps();
     render(<SessionPeekPane {...props} />);
     const actions = lastCallArg0(props.setToolbar);
     const open = actions.find((a: { id: string }) => a.id === "open-full");
-    expect(() => open.onClick()).not.toThrow();
+    open.onClick();
+    expect(props.close).toHaveBeenCalledOnce();
+    expect(mockNavigate).toHaveBeenCalledWith("/sessions/sess-1", {
+      state: { from: "/projects/demo/sessions?q=active" },
+    });
   });
 
   it("kill-session arms on first click, commits on second", () => {
