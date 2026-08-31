@@ -55,6 +55,7 @@ import {
   removeWorkspace,
   reopenWithFeedback,
   restartTask,
+  playbookGraphView,
   resumePlaybook,
   runPlaybook,
   inspectPlaybookRun,
@@ -111,6 +112,7 @@ import type {
   ListMcpToolCatalogResponse,
   ListPlaybookRunsResponse,
   ListPlaybooksResponse,
+  PlaybookGraphViewResponse,
   ListProfilesResponse2 as ListProfilesResponse,
   ListProjectProfilesResponse,
   ListProjectsResponse2 as ListProjectsResponse,
@@ -734,6 +736,33 @@ export function usePlaybookSource(playbookId: string) {
     queryFn: async () =>
       (await getPlaybookSource({ body: { playbook_id: playbookId }, throwOnError: true }))
         .data as GetPlaybookSourceResponse,
+    enabled: !!playbookId,
+  });
+}
+
+/** Query key for one playbook's compiled graph view. */
+export const playbookGraphKey = (playbookId: string) => ["playbook-graph", playbookId] as const;
+
+/** The compiled definition of a playbook, for the Graph tab.
+ *
+ *  Run overlays, history, health metrics and live current-node state are
+ *  explicitly disabled: this view describes the active compiled definition
+ *  only (design spec §4). */
+export function usePlaybookGraph(playbookId?: string) {
+  return useQuery({
+    queryKey: playbookGraphKey(playbookId ?? ""),
+    queryFn: async () =>
+      (await playbookGraphView({
+        body: {
+          playbook_id: playbookId!,
+          direction: "TD",
+          show_prompts: true,
+          include_live_state: false,
+          include_metrics: false,
+          include_history: false,
+        },
+        throwOnError: true,
+      })).data as PlaybookGraphViewResponse,
     enabled: !!playbookId,
   });
 }
