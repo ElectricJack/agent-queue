@@ -149,6 +149,16 @@ describe("GraphCanvas interactions", () => {
     expect(screen.getByLabelText("Blocked by dependencies or gates")).toBeInTheDocument();
   });
 
+  it("keeps dependency-blocked defined tasks pale yellow while actual blocked tasks stay amber", () => {
+    render(<GraphCanvas graph={graph([
+      task("defined", { status: "DEFINED", is_blocked: true }),
+      task("blocked", { status: "BLOCKED" }),
+    ])} onTaskClick={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Open task Task defined" }).closest("[data-task-card]")).toHaveClass("border-yellow-300");
+    expect(screen.getByRole("button", { name: "Open task Task blocked" }).closest("[data-task-card]")).toHaveClass("border-amber-500");
+    expect(screen.getByLabelText("Blocked by dependencies or gates")).toBeInTheDocument();
+  });
+
   it("keeps terminal colors and labels despite stale blocked flags", () => {
     render(<GraphCanvas graph={graph([
       task("done", { status: "COMPLETED", is_blocked: true }),

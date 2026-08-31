@@ -7,7 +7,7 @@ export type { TaskNodeData } from "./types";
 type TaskNodeType = Node<TaskNodeData, "task">;
 
 const STATUS_TONE: Record<string, string> = {
-  DEFINED: "border-gray-600 bg-gray-900 text-gray-200",
+  DEFINED: "border-yellow-300 bg-yellow-950 text-yellow-100",
   PENDING: "border-gray-600 bg-gray-900 text-gray-200",
   READY: "border-sky-500 bg-sky-950 text-sky-100",
   ASSIGNED: "border-indigo-500 bg-indigo-950 text-indigo-100",
@@ -34,7 +34,7 @@ interface CardProps {
 export function TaskCard({ data, selected = false, fluid = false }: CardProps) {
   const { task, gates, hierarchy, onOpenTask, onToggleChildren } = data;
   const blocked = isTaskBlocked(task);
-  const tone = STATUS_TONE[blocked ? "BLOCKED" : task.status] ?? STATUS_TONE.DEFINED;
+  const tone = STATUS_TONE[task.status] ?? STATUS_TONE.DEFINED;
   const priority = task.priority ?? 100;
   const urgent = priority <= 20 ? "ring-2 ring-red-400" : priority <= 50 ? "ring-1 ring-amber-400" : "";
   const cannotToggle = hierarchy.autoExpanded || hierarchy.visibleChildCount === 0;
